@@ -59,6 +59,10 @@ path = "src/bin/stress_orchestrator.rs"
 name = "bvll-test"
 path = "src/bin/bvll_test.rs"
 
+[[bin]]
+name = "routed-test"
+path = "src/bin/routed_test.rs"
+
 [[bench]]
 name = "encoding"
 harness = false

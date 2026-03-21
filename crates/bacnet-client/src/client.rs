@@ -922,7 +922,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         service_choice: ConfirmedServiceChoice,
         service_data: &[u8],
     ) -> Result<Bytes, Error> {
-        let target = target.into();
+        let target = self.resolve_target(target.into()).await?;
         let ct = match &target {
             RequestTarget::Direct(mac) => ConfirmedTarget::Local { mac },
             RequestTarget::Routed {
@@ -1309,7 +1309,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         service_choice: UnconfirmedServiceChoice,
         service_data: &[u8],
     ) -> Result<(), Error> {
-        let target = target.into();
+        let target = self.resolve_target(target.into()).await?;
         let pdu = Apdu::UnconfirmedRequest(bacnet_encoding::apdu::UnconfirmedRequest {
             service_choice,
             service_request: Bytes::copy_from_slice(service_data),
