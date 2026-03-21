@@ -430,6 +430,8 @@ class BACnetClient:
         object_identifier: ObjectIdentifier,
         property_identifier: PropertyIdentifier,
         array_index: Optional[int] = None,
+        *,
+        router: Optional[str] = None,
     ) -> PropertyValue:
         """Read a single property from a remote device."""
         ...
@@ -442,6 +444,8 @@ class BACnetClient:
         value: Any,
         priority: Optional[int] = None,
         array_index: Optional[int] = None,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Write a single property on a remote device."""
         ...
@@ -459,6 +463,8 @@ class BACnetClient:
         self,
         address: str,
         specs: list[dict[str, Any]],
+        *,
+        router: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read multiple properties from a remote device (ReadPropertyMultiple)."""
         ...
@@ -467,6 +473,8 @@ class BACnetClient:
         self,
         address: str,
         specs: list[dict[str, Any]],
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Write multiple properties on a remote device (WritePropertyMultiple)."""
         ...
@@ -478,6 +486,8 @@ class BACnetClient:
         process_id: int = 1,
         confirmed: bool = False,
         lifetime: Optional[int] = None,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Subscribe to Change-of-Value notifications for an object."""
         ...
@@ -487,6 +497,8 @@ class BACnetClient:
         address: str,
         object_identifier: ObjectIdentifier,
         process_id: int = 1,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Cancel a COV subscription."""
         ...
@@ -520,7 +532,7 @@ class BACnetClient:
         ...
 
     async def delete_object(
-        self, address: str, object_identifier: ObjectIdentifier
+        self, address: str, object_identifier: ObjectIdentifier, *, router: Optional[str] = None
     ) -> None:
         """Delete an object on a remote device (DeleteObject service)."""
         ...
@@ -532,6 +544,8 @@ class BACnetClient:
         instance: Optional[int] = None,
         name: Optional[str] = None,
         initial_values: Optional[dict[str, Any]] = None,
+        *,
+        router: Optional[str] = None,
     ) -> ObjectIdentifier:
         """Create an object on a remote device (CreateObject service)."""
         ...
@@ -542,6 +556,8 @@ class BACnetClient:
         enable_disable: EnableDisable,
         duration: Optional[int] = None,
         password: Optional[str] = None,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Send DeviceCommunicationControl to a remote device."""
         ...
@@ -551,6 +567,8 @@ class BACnetClient:
         address: str,
         state: ReinitializedState,
         password: Optional[str] = None,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Send ReinitializeDevice to a remote device."""
         ...
@@ -562,12 +580,14 @@ class BACnetClient:
         object_identifier: ObjectIdentifier,
         event_state: int,
         source: str,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Acknowledge an alarm on a remote device."""
         ...
 
     async def get_event_information(
-        self, address: str, last_object: Optional[ObjectIdentifier] = None
+        self, address: str, last_object: Optional[ObjectIdentifier] = None, *, router: Optional[str] = None
     ) -> dict[str, Any]:
         """Get event information from a remote device."""
         ...
@@ -581,6 +601,8 @@ class BACnetClient:
         count: Optional[int] = None,
         range_type: Optional[str] = None,
         reference: Optional[int] = None,
+        *,
+        router: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read a range of list items from a remote device."""
         ...
@@ -592,6 +614,8 @@ class BACnetClient:
         start: int,
         length: int,
         stream: bool = True,
+        *,
+        router: Optional[str] = None,
     ) -> dict[str, Any]:
         """Read file data from a remote device (AtomicReadFile)."""
         ...
@@ -603,6 +627,8 @@ class BACnetClient:
         start: int,
         data: bytes,
         stream: bool = True,
+        *,
+        router: Optional[str] = None,
     ) -> int:
         """Write file data to a remote device (AtomicWriteFile). Returns start position."""
         ...
@@ -613,6 +639,8 @@ class BACnetClient:
         object_identifier: ObjectIdentifier,
         property_identifier: PropertyIdentifier,
         elements: bytes,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Add elements to a list property (AddListElement service)."""
         ...
@@ -623,6 +651,8 @@ class BACnetClient:
         object_identifier: ObjectIdentifier,
         property_identifier: PropertyIdentifier,
         elements: bytes,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Remove elements from a list property (RemoveListElement service)."""
         ...
@@ -633,6 +663,8 @@ class BACnetClient:
         vendor_id: int,
         service_number: int,
         data: Optional[bytes] = None,
+        *,
+        router: Optional[str] = None,
     ) -> Optional[bytes]:
         """Send a ConfirmedPrivateTransfer request."""
         ...
@@ -643,6 +675,8 @@ class BACnetClient:
         vendor_id: int,
         service_number: int,
         data: Optional[bytes] = None,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Send an UnconfirmedPrivateTransfer request."""
         ...
@@ -654,6 +688,8 @@ class BACnetClient:
         message: str,
         priority: MessagePriority,
         message_class: Optional[str | int] = None,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Send a ConfirmedTextMessage."""
         ...
@@ -665,6 +701,8 @@ class BACnetClient:
         message: str,
         priority: MessagePriority,
         message_class: Optional[str | int] = None,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Send an UnconfirmedTextMessage."""
         ...
@@ -676,6 +714,8 @@ class BACnetClient:
         operation: LifeSafetyOperation,
         target: ObjectIdentifier,
         source: Optional[str] = None,
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Send a LifeSafetyOperation request."""
         ...
@@ -689,11 +729,13 @@ class BACnetClient:
         min_priority: Optional[int] = None,
         max_priority: Optional[int] = None,
         notification_class: Optional[int] = None,
+        *,
+        router: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """Get enrollment summary from a remote device."""
         ...
 
-    async def get_alarm_summary(self, address: str) -> list[dict[str, Any]]:
+    async def get_alarm_summary(self, address: str, *, router: Optional[str] = None) -> list[dict[str, Any]]:
         """Get alarm summary from a remote device."""
         ...
 
@@ -707,6 +749,8 @@ class BACnetClient:
         group_number: int,
         write_priority: int,
         change_list: list[dict[str, Any]],
+        *,
+        router: Optional[str] = None,
     ) -> None:
         """Send a WriteGroup request."""
         ...

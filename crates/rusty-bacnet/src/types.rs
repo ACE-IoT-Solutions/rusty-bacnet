@@ -427,6 +427,87 @@ pub fn parse_address(address: &str) -> PyResult<Vec<u8>> {
     Ok(mac)
 }
 
+/// Parse a target address string, optionally with a router, into a `RequestTarget`.
+///
+/// Supported formats:
+/// - Direct IPv4: `"192.168.1.100:47808"`
+/// - Direct IPv6: `"[::1]:47808"`
+/// - Direct hex MAC: `"aa:bb:cc:dd:ee:ff"`
+/// - Implicit routed: `"1001:10.1.0.10:47808"` (network 1001, auto-discover router)
+/// - Explicit routed: `"1001:10.1.0.10:47808"` with `router="192.168.1.254:47808"`
+/// - MS/TP routed: `"1001:0a"` (network 1001, 1-byte MAC 0x0a)
+pub fn parse_target(
+    address: &str,
+    router: Option<&str>,
+) -> PyResult<bacnet_client::client::RequestTarget> {
+    use bacnet_client::client::RequestTarget;
+
+    // IPv6 addresses start with '[' — never a routed prefix.
+    if address.starts_with('[') {
+        if router.is_some() {
+            return Err(PyValueError::new_err(
+                "router= requires address in 'network:mac' format",
+            ));
+        }
+        return Ok(RequestTarget::Direct(parse_address(address)?));
+    }
+
+    // Try to detect "network:device_mac" format.
+    // Split on first colon. If the left side is a valid BACnet network number
+    // (1-65534) and is NOT an IPv4 octet or 2-char hex byte, treat as routed.
+    if let Some((prefix, rest)) = address.split_once(':') {
+        if let Ok(dnet) = prefix.parse::<u16>() {
+            // Disambiguate:
+            // - IPv4: prefix contains dots (can't — we split on first colon, prefix has no dots for IP)
+            //   Actually for IPv4 "192.168.1.100:47808", prefix is "192.168.1.100" which contains dots.
+            // - Hex MAC: all segments are exactly 2-char hex pairs
+            let is_ipv4_prefix = prefix.contains('.');
+            let is_hex_mac_prefix =
+                prefix.len() == 2 && prefix.chars().all(|c| c.is_ascii_hexdigit());
+
+            if !is_ipv4_prefix && !is_hex_mac_prefix && dnet >= 1 && dnet <= 65534 {
+                // It's a network number — rest is the device MAC
+                let dadr = parse_address_or_raw(rest)?;
+                return match router {
+                    Some(r) => Ok(RequestTarget::Routed {
+                        router_mac: parse_address(r)?,
+                        dest_network: dnet,
+                        dest_mac: dadr,
+                    }),
+                    None => Ok(RequestTarget::ImplicitRouted {
+                        dest_network: dnet,
+                        dest_mac: dadr,
+                    }),
+                };
+            }
+        }
+    }
+
+    // Not a routed address
+    if router.is_some() {
+        return Err(PyValueError::new_err(
+            "router= requires address in 'network:mac' format",
+        ));
+    }
+    Ok(RequestTarget::Direct(parse_address(address)?))
+}
+
+/// Parse the device MAC portion of a routed address.
+///
+/// Supports:
+/// - `"10.1.0.10:47808"` → IPv4 MAC (6 bytes)
+/// - `"0a"` or `"10"` → single hex byte (MS/TP address)
+/// - `"aa:bb:cc:dd:ee:ff"` → hex MAC
+fn parse_address_or_raw(s: &str) -> PyResult<Vec<u8>> {
+    // Single hex byte (1-2 chars, e.g. MS/TP address "0a" or "a")
+    if s.len() <= 2 && !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return u8::from_str_radix(s, 16)
+            .map(|b| vec![b])
+            .map_err(|e| PyValueError::new_err(format!("invalid hex byte: {e}")));
+    }
+    parse_address(s)
+}
+
 // ---------------------------------------------------------------------------
 // PropertyValue → native Python conversion (used by PropertyValue.value getter)
 // ---------------------------------------------------------------------------
@@ -957,5 +1038,116 @@ mod tests {
     #[test]
     fn parse_address_ipv6_missing_bracket() {
         assert!(parse_address("[::1").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_target tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_target_direct_ipv4() {
+        use bacnet_client::client::RequestTarget;
+        let t = parse_target("192.168.1.100:47808", None).unwrap();
+        match t {
+            RequestTarget::Direct(mac) => {
+                assert_eq!(mac, vec![192, 168, 1, 100, 0xBA, 0xC0]);
+            }
+            _ => panic!("expected Direct"),
+        }
+    }
+
+    #[test]
+    fn parse_target_direct_ipv6() {
+        use bacnet_client::client::RequestTarget;
+        let t = parse_target("[::1]:47808", None).unwrap();
+        match t {
+            RequestTarget::Direct(mac) => {
+                assert_eq!(mac.len(), 18);
+            }
+            _ => panic!("expected Direct"),
+        }
+    }
+
+    #[test]
+    fn parse_target_direct_hex_mac() {
+        use bacnet_client::client::RequestTarget;
+        let t = parse_target("aa:bb:cc:dd:ee:ff", None).unwrap();
+        match t {
+            RequestTarget::Direct(mac) => {
+                assert_eq!(mac, vec![0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
+            }
+            _ => panic!("expected Direct"),
+        }
+    }
+
+    #[test]
+    fn parse_target_implicit_routed_ipv4() {
+        use bacnet_client::client::RequestTarget;
+        let t = parse_target("1001:10.1.0.10:47808", None).unwrap();
+        match t {
+            RequestTarget::ImplicitRouted {
+                dest_network,
+                dest_mac,
+            } => {
+                assert_eq!(dest_network, 1001);
+                assert_eq!(dest_mac, vec![10, 1, 0, 10, 0xBA, 0xC0]);
+            }
+            _ => panic!("expected ImplicitRouted, got {:?}", t),
+        }
+    }
+
+    #[test]
+    fn parse_target_explicit_routed() {
+        use bacnet_client::client::RequestTarget;
+        let t = parse_target("1001:0a", Some("192.168.1.1:47808")).unwrap();
+        match t {
+            RequestTarget::Routed {
+                router_mac,
+                dest_network,
+                dest_mac,
+            } => {
+                assert_eq!(router_mac, vec![192, 168, 1, 1, 0xBA, 0xC0]);
+                assert_eq!(dest_network, 1001);
+                assert_eq!(dest_mac, vec![0x0a]);
+            }
+            _ => panic!("expected Routed"),
+        }
+    }
+
+    #[test]
+    fn parse_target_mstp_routed() {
+        use bacnet_client::client::RequestTarget;
+        let t = parse_target("1001:0a", None).unwrap();
+        match t {
+            RequestTarget::ImplicitRouted {
+                dest_network,
+                dest_mac,
+            } => {
+                assert_eq!(dest_network, 1001);
+                assert_eq!(dest_mac, vec![0x0a]);
+            }
+            _ => panic!("expected ImplicitRouted"),
+        }
+    }
+
+    #[test]
+    fn parse_target_large_network_number() {
+        use bacnet_client::client::RequestTarget;
+        let t = parse_target("47808:10.1.0.10:47808", None).unwrap();
+        match t {
+            RequestTarget::ImplicitRouted {
+                dest_network,
+                dest_mac,
+            } => {
+                assert_eq!(dest_network, 47808);
+                assert_eq!(dest_mac, vec![10, 1, 0, 10, 0xBA, 0xC0]);
+            }
+            _ => panic!("expected ImplicitRouted"),
+        }
+    }
+
+    #[test]
+    fn parse_target_router_without_network_fails() {
+        assert!(parse_target("192.168.1.100:47808", Some("10.0.0.1:47808")).is_err());
     }
 }

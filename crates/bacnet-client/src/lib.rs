@@ -2,5 +2,6 @@
 
 pub mod client;
 pub mod discovery;
+pub mod routing;
 pub mod segmentation;
 pub mod tsm;
