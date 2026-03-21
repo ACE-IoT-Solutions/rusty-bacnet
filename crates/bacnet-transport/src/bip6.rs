@@ -607,6 +607,7 @@ impl TransportPort for Bip6Transport {
                                             npdu: frame.payload.clone(),
                                             source_mac,
                                             reply_tx: None,
+                                            transport_meta: None,
                                         })
                                         .await;
                                 }
@@ -627,6 +628,7 @@ impl TransportPort for Bip6Transport {
                                                         &originating_vmac,
                                                     ),
                                                     reply_tx: None,
+                                                    transport_meta: None,
                                                 })
                                                 .await;
                                         }

@@ -515,6 +515,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                                 npdu,
                                                 source_mac: MacAddr::from_slice(&source_vmac),
                                                 reply_tx: None,
+                                                transport_meta: None,
                                             })
                                             .is_err()
                                         {

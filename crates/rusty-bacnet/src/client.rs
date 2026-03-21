@@ -40,12 +40,14 @@ use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::mstp::NoSerial;
 use bacnet_types::enums::{ConfirmedServiceChoice, UnconfirmedServiceChoice};
 
+use bacnet_client::client::RequestTarget;
+
 use crate::errors::to_py_err;
 use crate::types::{
-    parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyCovNotificationIterator,
-    PyDiscoveredDevice, PyEnableDisable, PyEventState, PyEventType, PyLifeSafetyOperation,
-    PyMessagePriority, PyObjectIdentifier, PyObjectType, PyPropertyIdentifier, PyPropertyValue,
-    PyReinitializedState,
+    parse_address, parse_target, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
+    PyCovNotificationIterator, PyDiscoveredDevice, PyEnableDisable, PyEventState, PyEventType,
+    PyIAmEventIterator, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier, PyObjectType,
+    PyPropertyIdentifier, PyPropertyValue, PyReinitializedState,
 };
 
 /// Async BACnet client for reading/writing properties on remote devices.
@@ -264,7 +266,7 @@ impl BACnetClient {
     ///     array_index: Optional array index (for array properties)
     ///
     /// Returns: PropertyValue with `.tag`, `.value` accessors
-    #[pyo3(signature = (address, object_id, property_id, array_index=None))]
+    #[pyo3(signature = (address, object_id, property_id, array_index=None, *, router=None))]
     fn read_property<'py>(
         &self,
         py: Python<'py>,
@@ -272,23 +274,18 @@ impl BACnetClient {
         object_id: PyObjectIdentifier,
         property_id: PyPropertyIdentifier,
         array_index: Option<u32>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = object_id.to_rust();
         let pid = property_id.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            // Mutex released here — concurrent calls can proceed
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
 
             let ack = c
-                .read_property(&mac, oid, pid, array_index)
+                .read_property(target, oid, pid, array_index)
                 .await
                 .map_err(to_py_err)?;
 
@@ -308,7 +305,7 @@ impl BACnetClient {
     ///     value: PropertyValue to write (e.g. `PropertyValue.real(72.5)`)
     ///     priority: Optional priority (1-16, for commandable properties)
     ///     array_index: Optional array index
-    #[pyo3(signature = (address, object_id, property_id, value, priority=None, array_index=None))]
+    #[pyo3(signature = (address, object_id, property_id, value, priority=None, array_index=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn write_property<'py>(
         &self,
@@ -319,6 +316,7 @@ impl BACnetClient {
         value: PyPropertyValue,
         priority: Option<u8>,
         array_index: Option<u32>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if let Some(p) = priority {
             if !(1..=16).contains(&p) {
@@ -334,20 +332,14 @@ impl BACnetClient {
         let prop_value = value.inner;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            // Mutex released here — concurrent calls can proceed
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
 
             // Encode PropertyValue to application-tagged bytes
             let mut value_buf = BytesMut::new();
             encode_property_value(&mut value_buf, &prop_value).map_err(to_py_err)?;
 
-            c.write_property(&mac, oid, pid, array_index, value_buf.to_vec(), priority)
+            c.write_property(target, oid, pid, array_index, value_buf.to_vec(), priority)
                 .await
                 .map_err(to_py_err)?;
 
@@ -382,27 +374,23 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Read multiple properties from multiple objects in a single request.
-    #[pyo3(signature = (address, specs))]
+    #[pyo3(signature = (address, specs, *, router=None))]
     #[allow(clippy::type_complexity)]
     fn read_property_multiple<'py>(
         &self,
         py: Python<'py>,
         address: String,
         specs: Vec<(PyObjectIdentifier, Vec<(PyPropertyIdentifier, Option<u32>)>)>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let rust_specs = py_to_rpm_specs(specs);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let ack = c
-                .read_property_multiple(&mac, rust_specs)
+                .read_property_multiple(target, rust_specs)
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| rpm_ack_to_py(py, ack))
@@ -410,7 +398,7 @@ impl BACnetClient {
     }
 
     /// Write multiple properties to multiple objects in a single request.
-    #[pyo3(signature = (address, specs))]
+    #[pyo3(signature = (address, specs, *, router=None))]
     #[allow(clippy::type_complexity)]
     fn write_property_multiple<'py>(
         &self,
@@ -425,19 +413,15 @@ impl BACnetClient {
                 Option<u32>,
             )>,
         )>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let rust_specs = py_to_wpm_specs(specs);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            c.write_property_multiple(&mac, rust_specs)
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
+            c.write_property_multiple(target, rust_specs)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -449,7 +433,7 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Subscribe to COV notifications for an object.
-    #[pyo3(signature = (address, subscriber_process_identifier, monitored_object_identifier, confirmed, lifetime=None))]
+    #[pyo3(signature = (address, subscriber_process_identifier, monitored_object_identifier, confirmed, lifetime=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe_cov<'py>(
         &self,
@@ -459,20 +443,16 @@ impl BACnetClient {
         monitored_object_identifier: PyObjectIdentifier,
         confirmed: bool,
         lifetime: Option<u32>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = monitored_object_identifier.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             c.subscribe_cov(
-                &mac,
+                target,
                 subscriber_process_identifier,
                 oid,
                 confirmed,
@@ -485,26 +465,22 @@ impl BACnetClient {
     }
 
     /// Unsubscribe from COV notifications for an object.
-    #[pyo3(signature = (address, subscriber_process_identifier, monitored_object_identifier))]
+    #[pyo3(signature = (address, subscriber_process_identifier, monitored_object_identifier, *, router=None))]
     fn unsubscribe_cov<'py>(
         &self,
         py: Python<'py>,
         address: String,
         subscriber_process_identifier: u32,
         monitored_object_identifier: PyObjectIdentifier,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = monitored_object_identifier.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            c.unsubscribe_cov(&mac, subscriber_process_identifier, oid)
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
+            c.unsubscribe_cov(target, subscriber_process_identifier, oid)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -521,6 +497,49 @@ impl BACnetClient {
                 .ok_or_else(|| PyRuntimeError::new_err("client not started — use 'async with'"))?;
             let rx = c.cov_notifications();
             Ok(PyCovNotificationIterator::new(rx))
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // IAm event streaming
+    // -----------------------------------------------------------------------
+
+    /// Subscribe to IAm events, send a WhoIs, and return an async iterator.
+    ///
+    /// The subscription is created *before* the WhoIs is sent so no responses
+    /// are lost. Use ``async for event in await client.who_is_stream(): ...``
+    #[pyo3(signature = (low_limit=None, high_limit=None))]
+    fn who_is_stream<'py>(
+        &self,
+        py: Python<'py>,
+        low_limit: Option<u32>,
+        high_limit: Option<u32>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let c = {
+                let guard = inner.lock().await;
+                Arc::clone(guard.as_ref().ok_or_else(|| {
+                    PyRuntimeError::new_err("client not started — use 'async with'")
+                })?)
+            };
+            // Subscribe before sending WhoIs so we don't miss any replies
+            let rx = c.iam_events();
+            c.who_is(low_limit, high_limit).await.map_err(to_py_err)?;
+            Ok(PyIAmEventIterator::new(rx))
+        })
+    }
+
+    /// Get a passive async iterator for incoming IAm events (no WhoIs sent).
+    fn iam_events<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let guard = inner.lock().await;
+            let c = guard
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("client not started — use 'async with'"))?;
+            let rx = c.iam_events();
+            Ok(PyIAmEventIterator::new(rx))
         })
     }
 
@@ -636,25 +655,21 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Delete an object on a remote device.
-    #[pyo3(signature = (address, object_id))]
+    #[pyo3(signature = (address, object_id, *, router=None))]
     fn delete_object<'py>(
         &self,
         py: Python<'py>,
         address: String,
         object_id: PyObjectIdentifier,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = object_id.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            c.delete_object(&mac, oid).await.map_err(to_py_err)?;
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
+            c.delete_object(target, oid).await.map_err(to_py_err)?;
             Ok(())
         })
     }
@@ -664,7 +679,7 @@ impl BACnetClient {
     /// `object_specifier` accepts either an `ObjectType` (server picks instance)
     /// or an `ObjectIdentifier` (specific instance).
     /// `initial_values` is an optional list of `(PropertyIdentifier, PropertyValue, priority, array_index)` tuples.
-    #[pyo3(signature = (address, object_specifier, initial_values=None))]
+    #[pyo3(signature = (address, object_specifier, initial_values=None, *, router=None))]
     #[allow(clippy::type_complexity)]
     fn create_object<'py>(
         &self,
@@ -679,6 +694,7 @@ impl BACnetClient {
                 Option<u32>,
             )>,
         >,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
 
@@ -709,15 +725,10 @@ impl BACnetClient {
             .collect();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let raw = c
-                .create_object(&mac, specifier, init_vals)
+                .create_object(target, specifier, init_vals)
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
@@ -729,7 +740,8 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Send a DeviceCommunicationControl request.
-    #[pyo3(signature = (address, enable_disable, time_duration=None, password=None))]
+    #[pyo3(signature = (address, enable_disable, time_duration=None, password=None, *, router=None))]
+    #[allow(clippy::too_many_arguments)]
     fn device_communication_control<'py>(
         &self,
         py: Python<'py>,
@@ -737,19 +749,15 @@ impl BACnetClient {
         enable_disable: PyEnableDisable,
         time_duration: Option<u16>,
         password: Option<String>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let ed = enable_disable.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            c.device_communication_control(&mac, ed, time_duration, password)
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
+            c.device_communication_control(target, ed, time_duration, password)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -757,26 +765,22 @@ impl BACnetClient {
     }
 
     /// Send a ReinitializeDevice request.
-    #[pyo3(signature = (address, reinitialized_state, password=None))]
+    #[pyo3(signature = (address, reinitialized_state, password=None, *, router=None))]
     fn reinitialize_device<'py>(
         &self,
         py: Python<'py>,
         address: String,
         reinitialized_state: PyReinitializedState,
         password: Option<String>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let state = reinitialized_state.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            c.reinitialize_device(&mac, state, password)
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
+            c.reinitialize_device(target, state, password)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -788,7 +792,7 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Acknowledge an alarm on a remote device.
-    #[pyo3(signature = (address, acknowledging_process_identifier, event_object_identifier, event_state_acknowledged, acknowledgment_source))]
+    #[pyo3(signature = (address, acknowledging_process_identifier, event_object_identifier, event_state_acknowledged, acknowledgment_source, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn acknowledge_alarm<'py>(
         &self,
@@ -798,20 +802,16 @@ impl BACnetClient {
         event_object_identifier: PyObjectIdentifier,
         event_state_acknowledged: u32,
         acknowledgment_source: String,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = event_object_identifier.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             c.acknowledge_alarm(
-                &mac,
+                target,
                 acknowledging_process_identifier,
                 oid,
                 event_state_acknowledged,
@@ -824,26 +824,22 @@ impl BACnetClient {
     }
 
     /// Get event information from a remote device.
-    #[pyo3(signature = (address, last_received_object_identifier=None))]
+    #[pyo3(signature = (address, last_received_object_identifier=None, *, router=None))]
     fn get_event_information<'py>(
         &self,
         py: Python<'py>,
         address: String,
         last_received_object_identifier: Option<PyObjectIdentifier>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let last_oid = last_received_object_identifier.map(|o| o.to_rust());
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let raw = c
-                .get_event_information(&mac, last_oid)
+                .get_event_information(target, last_oid)
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
@@ -857,7 +853,7 @@ impl BACnetClient {
     /// Read a range of items from a list or log object.
     ///
     /// `range_type` is `"position"`, `"sequence"`, or `None` (no range).
-    #[pyo3(signature = (address, object_id, property_id, array_index=None, range_type=None, reference_index=None, reference_seq=None, count=None))]
+    #[pyo3(signature = (address, object_id, property_id, array_index=None, range_type=None, reference_index=None, reference_seq=None, count=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn read_range<'py>(
         &self,
@@ -870,6 +866,7 @@ impl BACnetClient {
         reference_index: Option<u32>,
         reference_seq: Option<u32>,
         count: Option<i32>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = object_id.to_rust();
@@ -893,15 +890,10 @@ impl BACnetClient {
         };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let ack = c
-                .read_range(&mac, oid, pid, array_index, range)
+                .read_range(target, oid, pid, array_index, range)
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| {
@@ -932,7 +924,7 @@ impl BACnetClient {
     /// Read from a file object (stream or record access).
     ///
     /// `access_method` is `"stream"` or `"record"`.
-    #[pyo3(signature = (address, file_identifier, access_method, start_position=0, requested_octet_count=0, start_record=0, requested_record_count=0))]
+    #[pyo3(signature = (address, file_identifier, access_method, start_position=0, requested_octet_count=0, start_record=0, requested_record_count=0, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn atomic_read_file<'py>(
         &self,
@@ -944,6 +936,7 @@ impl BACnetClient {
         requested_octet_count: u32,
         start_record: i32,
         requested_record_count: u32,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let fid = file_identifier.to_rust();
@@ -965,15 +958,10 @@ impl BACnetClient {
         };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let raw = c
-                .atomic_read_file(&mac, fid, access)
+                .atomic_read_file(target, fid, access)
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
@@ -983,7 +971,7 @@ impl BACnetClient {
     /// Write to a file object (stream or record access).
     ///
     /// `access_method` is `"stream"` or `"record"`.
-    #[pyo3(signature = (address, file_identifier, access_method, start_position=0, file_data=vec![], start_record=0, record_count=0, file_record_data=None))]
+    #[pyo3(signature = (address, file_identifier, access_method, start_position=0, file_data=vec![], start_record=0, record_count=0, file_record_data=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn atomic_write_file<'py>(
         &self,
@@ -996,6 +984,7 @@ impl BACnetClient {
         start_record: i32,
         record_count: u32,
         file_record_data: Option<Vec<Vec<u8>>>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let fid = file_identifier.to_rust();
@@ -1018,15 +1007,10 @@ impl BACnetClient {
         };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let raw = c
-                .atomic_write_file(&mac, fid, access)
+                .atomic_write_file(target, fid, access)
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
@@ -1038,7 +1022,7 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Add elements to a list property.
-    #[pyo3(signature = (address, object_id, property_id, list_of_elements, array_index=None))]
+    #[pyo3(signature = (address, object_id, property_id, list_of_elements, array_index=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_list_element<'py>(
         &self,
@@ -1048,20 +1032,16 @@ impl BACnetClient {
         property_id: PyPropertyIdentifier,
         list_of_elements: Vec<u8>,
         array_index: Option<u32>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = object_id.to_rust();
         let pid = property_id.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            c.add_list_element(&mac, oid, pid, array_index, list_of_elements)
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
+            c.add_list_element(target, oid, pid, array_index, list_of_elements)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -1069,7 +1049,7 @@ impl BACnetClient {
     }
 
     /// Remove elements from a list property.
-    #[pyo3(signature = (address, object_id, property_id, list_of_elements, array_index=None))]
+    #[pyo3(signature = (address, object_id, property_id, list_of_elements, array_index=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn remove_list_element<'py>(
         &self,
@@ -1079,20 +1059,16 @@ impl BACnetClient {
         property_id: PyPropertyIdentifier,
         list_of_elements: Vec<u8>,
         array_index: Option<u32>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = object_id.to_rust();
         let pid = property_id.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            c.remove_list_element(&mac, oid, pid, array_index, list_of_elements)
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
+            c.remove_list_element(target, oid, pid, array_index, list_of_elements)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -1106,7 +1082,7 @@ impl BACnetClient {
     /// Send a ConfirmedPrivateTransfer request.
     ///
     /// Returns a dict with `vendor_id`, `service_number`, and optional `result_block` (bytes).
-    #[pyo3(signature = (address, vendor_id, service_number, service_parameters=None))]
+    #[pyo3(signature = (address, vendor_id, service_number, service_parameters=None, *, router=None))]
     fn confirmed_private_transfer<'py>(
         &self,
         py: Python<'py>,
@@ -1114,16 +1090,12 @@ impl BACnetClient {
         vendor_id: u32,
         service_number: u32,
         service_parameters: Option<Vec<u8>>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = PrivateTransferRequest {
                 vendor_id,
                 service_number,
@@ -1133,7 +1105,7 @@ impl BACnetClient {
             req.encode(&mut buf);
             let resp = c
                 .confirmed_request(
-                    &mac,
+                    target,
                     ConfirmedServiceChoice::CONFIRMED_PRIVATE_TRANSFER,
                     &buf,
                 )
@@ -1158,7 +1130,7 @@ impl BACnetClient {
     }
 
     /// Send an UnconfirmedPrivateTransfer request.
-    #[pyo3(signature = (address, vendor_id, service_number, service_parameters=None))]
+    #[pyo3(signature = (address, vendor_id, service_number, service_parameters=None, *, router=None))]
     fn unconfirmed_private_transfer<'py>(
         &self,
         py: Python<'py>,
@@ -1166,16 +1138,12 @@ impl BACnetClient {
         vendor_id: u32,
         service_number: u32,
         service_parameters: Option<Vec<u8>>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = PrivateTransferRequest {
                 vendor_id,
                 service_number,
@@ -1184,7 +1152,7 @@ impl BACnetClient {
             let mut buf = BytesMut::new();
             req.encode(&mut buf);
             c.unconfirmed_request(
-                &mac,
+                target,
                 UnconfirmedServiceChoice::UNCONFIRMED_PRIVATE_TRANSFER,
                 &buf,
             )
@@ -1202,7 +1170,7 @@ impl BACnetClient {
     ///
     /// `message_class_type` is `"numeric"` or `"text"` (or None for no class).
     /// `message_class_value` is the numeric value or text string.
-    #[pyo3(signature = (address, source_device, message_priority, message, message_class_type=None, message_class_value=None))]
+    #[pyo3(signature = (address, source_device, message_priority, message, message_class_type=None, message_class_value=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn confirmed_text_message<'py>(
         &self,
@@ -1213,6 +1181,7 @@ impl BACnetClient {
         message: String,
         message_class_type: Option<String>,
         message_class_value: Option<Bound<'py, PyAny>>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let src = source_device.to_rust();
@@ -1220,13 +1189,8 @@ impl BACnetClient {
         let mc = build_message_class(message_class_type, message_class_value)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = TextMessageRequest {
                 source_device: src,
                 message_class: mc,
@@ -1235,7 +1199,7 @@ impl BACnetClient {
             };
             let mut buf = BytesMut::new();
             req.encode(&mut buf).map_err(to_py_err)?;
-            c.confirmed_request(&mac, ConfirmedServiceChoice::CONFIRMED_TEXT_MESSAGE, &buf)
+            c.confirmed_request(target, ConfirmedServiceChoice::CONFIRMED_TEXT_MESSAGE, &buf)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -1243,7 +1207,7 @@ impl BACnetClient {
     }
 
     /// Send an UnconfirmedTextMessage request.
-    #[pyo3(signature = (address, source_device, message_priority, message, message_class_type=None, message_class_value=None))]
+    #[pyo3(signature = (address, source_device, message_priority, message, message_class_type=None, message_class_value=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn unconfirmed_text_message<'py>(
         &self,
@@ -1254,6 +1218,7 @@ impl BACnetClient {
         message: String,
         message_class_type: Option<String>,
         message_class_value: Option<Bound<'py, PyAny>>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let src = source_device.to_rust();
@@ -1261,13 +1226,8 @@ impl BACnetClient {
         let mc = build_message_class(message_class_type, message_class_value)?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = TextMessageRequest {
                 source_device: src,
                 message_class: mc,
@@ -1277,7 +1237,7 @@ impl BACnetClient {
             let mut buf = BytesMut::new();
             req.encode(&mut buf).map_err(to_py_err)?;
             c.unconfirmed_request(
-                &mac,
+                target,
                 UnconfirmedServiceChoice::UNCONFIRMED_TEXT_MESSAGE,
                 &buf,
             )
@@ -1292,7 +1252,7 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Send a LifeSafetyOperation request.
-    #[pyo3(signature = (address, requesting_process_identifier, requesting_source, operation, object_identifier=None))]
+    #[pyo3(signature = (address, requesting_process_identifier, requesting_source, operation, object_identifier=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn life_safety_operation<'py>(
         &self,
@@ -1302,19 +1262,15 @@ impl BACnetClient {
         requesting_source: String,
         operation: PyLifeSafetyOperation,
         object_identifier: Option<PyObjectIdentifier>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let op = operation.to_rust();
         let oid = object_identifier.map(|o| o.to_rust());
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = LifeSafetyOperationRequest {
                 requesting_process_identifier,
                 requesting_source,
@@ -1323,7 +1279,7 @@ impl BACnetClient {
             };
             let mut buf = BytesMut::new();
             req.encode(&mut buf).map_err(to_py_err)?;
-            c.confirmed_request(&mac, ConfirmedServiceChoice::LIFE_SAFETY_OPERATION, &buf)
+            c.confirmed_request(target, ConfirmedServiceChoice::LIFE_SAFETY_OPERATION, &buf)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -1338,7 +1294,7 @@ impl BACnetClient {
     ///
     /// `acknowledgment_filter`: 0=all, 1=acked, 2=not-acked.
     /// Returns a list of dicts with `object_id`, `event_type`, `event_state`, `priority`, `notification_class`.
-    #[pyo3(signature = (address, acknowledgment_filter=0, event_state_filter=None, event_type_filter=None, min_priority=None, max_priority=None, notification_class_filter=None))]
+    #[pyo3(signature = (address, acknowledgment_filter=0, event_state_filter=None, event_type_filter=None, min_priority=None, max_priority=None, notification_class_filter=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn get_enrollment_summary<'py>(
         &self,
@@ -1350,6 +1306,7 @@ impl BACnetClient {
         min_priority: Option<u8>,
         max_priority: Option<u8>,
         notification_class_filter: Option<u16>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let es = event_state_filter.map(|e| e.to_rust());
@@ -1363,13 +1320,8 @@ impl BACnetClient {
         };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = GetEnrollmentSummaryRequest {
                 acknowledgment_filter,
                 event_state_filter: es,
@@ -1380,7 +1332,7 @@ impl BACnetClient {
             let mut buf = BytesMut::new();
             req.encode(&mut buf);
             let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY, &buf)
+                .confirmed_request(target, ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY, &buf)
                 .await
                 .map_err(to_py_err)?;
             let ack = GetEnrollmentSummaryAck::decode(&resp).map_err(to_py_err)?;
@@ -1420,23 +1372,19 @@ impl BACnetClient {
     /// Get alarm summary from a remote device (deprecated service).
     ///
     /// Returns a list of dicts with `object_id`, `alarm_state`, `acknowledged_transitions`.
-    #[pyo3(signature = (address,))]
+    #[pyo3(signature = (address, *, router=None))]
     fn get_alarm_summary<'py>(
         &self,
         py: Python<'py>,
         address: String,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::GET_ALARM_SUMMARY, &[])
+                .confirmed_request(target, ConfirmedServiceChoice::GET_ALARM_SUMMARY, &[])
                 .await
                 .map_err(to_py_err)?;
             let ack = GetAlarmSummaryAck::decode(&resp).map_err(to_py_err)?;
@@ -1474,7 +1422,7 @@ impl BACnetClient {
     ///
     /// `specs` is a list of `(ObjectIdentifier, [(PropertyIdentifier, array_index, cov_increment, timestamped), ...])`.
     /// `cov_increment` is an optional float; `timestamped` is a bool.
-    #[pyo3(signature = (address, subscriber_process_identifier, specs, max_notification_delay=None, issue_confirmed_notifications=None))]
+    #[pyo3(signature = (address, subscriber_process_identifier, specs, max_notification_delay=None, issue_confirmed_notifications=None, *, router=None))]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn subscribe_cov_property_multiple<'py>(
         &self,
@@ -1487,6 +1435,7 @@ impl BACnetClient {
         )>,
         max_notification_delay: Option<u32>,
         issue_confirmed_notifications: Option<bool>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let rust_specs: Vec<COVSubscriptionSpecification> = specs
@@ -1508,13 +1457,8 @@ impl BACnetClient {
             .collect();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = SubscribeCOVPropertyMultipleRequest {
                 subscriber_process_identifier,
                 max_notification_delay,
@@ -1524,7 +1468,7 @@ impl BACnetClient {
             let mut buf = BytesMut::new();
             req.encode(&mut buf);
             c.confirmed_request(
-                &mac,
+                target,
                 ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY_MULTIPLE,
                 &buf,
             )
@@ -1565,7 +1509,7 @@ impl BACnetClient {
     /// Send a WriteGroup request (unconfirmed).
     ///
     /// `change_list` is a list of `(channel_oid_or_none, override_priority_or_none, value_bytes)` tuples.
-    #[pyo3(signature = (address, group_number, write_priority, change_list, inhibit_delay=None))]
+    #[pyo3(signature = (address, group_number, write_priority, change_list, inhibit_delay=None, *, router=None))]
     #[allow(clippy::too_many_arguments)]
     fn write_group<'py>(
         &self,
@@ -1575,6 +1519,7 @@ impl BACnetClient {
         write_priority: u8,
         change_list: Vec<(Option<PyObjectIdentifier>, Option<u8>, Vec<u8>)>,
         inhibit_delay: Option<bool>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if !(1..=16).contains(&write_priority) {
             return Err(PyValueError::new_err(format!(
@@ -1592,13 +1537,8 @@ impl BACnetClient {
             .collect();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = WriteGroupRequest {
                 group_number,
                 write_priority,
@@ -1607,7 +1547,7 @@ impl BACnetClient {
             };
             let mut buf = BytesMut::new();
             req.encode(&mut buf);
-            c.unconfirmed_request(&mac, UnconfirmedServiceChoice::WRITE_GROUP, &buf)
+            c.unconfirmed_request(target, UnconfirmedServiceChoice::WRITE_GROUP, &buf)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -1619,27 +1559,23 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Open a virtual terminal session. Returns the remote session identifier.
-    #[pyo3(signature = (address, vt_class))]
+    #[pyo3(signature = (address, vt_class, *, router=None))]
     fn vt_open<'py>(
         &self,
         py: Python<'py>,
         address: String,
         vt_class: u32,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = VTOpenRequest { vt_class };
             let mut buf = BytesMut::new();
             req.encode(&mut buf);
             let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::VT_OPEN, &buf)
+                .confirmed_request(target, ConfirmedServiceChoice::VT_OPEN, &buf)
                 .await
                 .map_err(to_py_err)?;
             let ack = VTOpenAck::decode(&resp).map_err(to_py_err)?;
@@ -1648,28 +1584,24 @@ impl BACnetClient {
     }
 
     /// Close one or more virtual terminal sessions.
-    #[pyo3(signature = (address, session_ids))]
+    #[pyo3(signature = (address, session_ids, *, router=None))]
     fn vt_close<'py>(
         &self,
         py: Python<'py>,
         address: String,
         session_ids: Vec<u8>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = VTCloseRequest {
                 list_of_remote_vt_session_identifiers: session_ids,
             };
             let mut buf = BytesMut::new();
             req.encode(&mut buf);
-            c.confirmed_request(&mac, ConfirmedServiceChoice::VT_CLOSE, &buf)
+            c.confirmed_request(target, ConfirmedServiceChoice::VT_CLOSE, &buf)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -1679,7 +1611,7 @@ impl BACnetClient {
     /// Send data over a virtual terminal session.
     ///
     /// Returns a dict with optional `all_new_data_accepted` and `accepted_octet_count`.
-    #[pyo3(signature = (address, session_id, data, data_flag))]
+    #[pyo3(signature = (address, session_id, data, data_flag, *, router=None))]
     fn vt_data<'py>(
         &self,
         py: Python<'py>,
@@ -1687,16 +1619,12 @@ impl BACnetClient {
         session_id: u8,
         data: Vec<u8>,
         data_flag: bool,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = VTDataRequest {
                 vt_session_identifier: session_id,
                 vt_new_data: data,
@@ -1705,7 +1633,7 @@ impl BACnetClient {
             let mut buf = BytesMut::new();
             req.encode(&mut buf);
             let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::VT_DATA, &buf)
+                .confirmed_request(target, ConfirmedServiceChoice::VT_DATA, &buf)
                 .await
                 .map_err(to_py_err)?;
             let ack = VTDataAck::decode(&resp).map_err(to_py_err)?;
@@ -1725,24 +1653,20 @@ impl BACnetClient {
     /// Send a ConfirmedAuditNotification request (raw service data).
     ///
     /// `service_data` is the pre-encoded AuditNotification-Request payload.
-    #[pyo3(signature = (address, service_data))]
+    #[pyo3(signature = (address, service_data, *, router=None))]
     fn confirmed_audit_notification<'py>(
         &self,
         py: Python<'py>,
         address: String,
         service_data: Vec<u8>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             c.confirmed_request(
-                &mac,
+                target,
                 ConfirmedServiceChoice::CONFIRMED_AUDIT_NOTIFICATION,
                 &service_data,
             )
@@ -1753,24 +1677,20 @@ impl BACnetClient {
     }
 
     /// Send an UnconfirmedAuditNotification request (raw service data).
-    #[pyo3(signature = (address, service_data))]
+    #[pyo3(signature = (address, service_data, *, router=None))]
     fn unconfirmed_audit_notification<'py>(
         &self,
         py: Python<'py>,
         address: String,
         service_data: Vec<u8>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             c.unconfirmed_request(
-                &mac,
+                target,
                 UnconfirmedServiceChoice::UNCONFIRMED_AUDIT_NOTIFICATION,
                 &service_data,
             )
@@ -1781,23 +1701,19 @@ impl BACnetClient {
     }
 
     /// Send an AuditLogQuery request. Returns raw response bytes.
-    #[pyo3(signature = (address, acknowledgment_filter, query_options_raw=vec![]))]
+    #[pyo3(signature = (address, acknowledgment_filter, query_options_raw=vec![], *, router=None))]
     fn audit_log_query<'py>(
         &self,
         py: Python<'py>,
         address: String,
         acknowledgment_filter: u32,
         query_options_raw: Vec<u8>,
+        router: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let (c, target) =
+                resolve_client_and_target(&inner, &address, router.as_deref()).await?;
             let req = AuditLogQueryRequest {
                 acknowledgment_filter,
                 query_options_raw,
@@ -1805,7 +1721,7 @@ impl BACnetClient {
             let mut buf = BytesMut::new();
             req.encode(&mut buf);
             let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::AUDIT_LOG_QUERY, &buf)
+                .confirmed_request(target, ConfirmedServiceChoice::AUDIT_LOG_QUERY, &buf)
                 .await
                 .map_err(to_py_err)?;
             Python::attach(|py| Ok(PyBytes::new(py, &resp).into_any().unbind()))
@@ -1962,6 +1878,31 @@ impl BACnetClient {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve the address + optional router into a `RequestTarget` and obtain
+/// the client Arc. If the target is `ImplicitRouted`, auto-discovers the
+/// router via Who-Is-Router-To-Network.
+async fn resolve_client_and_target(
+    inner: &ClientInner,
+    address: &str,
+    router: Option<&str>,
+) -> PyResult<(
+    Arc<client::BACnetClient<AnyTransport<NoSerial>>>,
+    RequestTarget,
+)> {
+    let target = parse_target(address, router)?;
+    let c = {
+        let guard = inner.lock().await;
+        Arc::clone(
+            guard
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("client not started — use 'async with'"))?,
+        )
+    };
+    // Resolve implicit routing (auto-discover router).
+    let resolved = c.resolve_target(target).await.map_err(to_py_err)?;
+    Ok((c, resolved))
+}
 
 /// Build an optional `MessageClass` from Python arguments.
 fn build_message_class(
