@@ -6,7 +6,7 @@
 //! devices through local routers via NPDU destination fields (DNET/DADR).
 
 use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
-use bacnet_transport::port::TransportPort;
+use bacnet_transport::port::{TransportMeta, TransportPort};
 use bacnet_types::enums::NetworkPriority;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -37,6 +37,8 @@ pub struct ReceivedApdu {
     /// Optional reply channel for MS/TP DataExpectingReply flows.
     /// The application layer can send NPDU-wrapped reply bytes through this channel.
     pub reply_tx: Option<oneshot::Sender<Bytes>>,
+    /// Optional BVLL transport metadata (BACnet/IP only).
+    pub transport_meta: Option<TransportMeta>,
 }
 
 impl Clone for ReceivedApdu {
@@ -46,6 +48,7 @@ impl Clone for ReceivedApdu {
             source_mac: self.source_mac.clone(),
             source_network: self.source_network.clone(),
             reply_tx: None,
+            transport_meta: self.transport_meta.clone(),
         }
     }
 }
@@ -57,6 +60,7 @@ impl std::fmt::Debug for ReceivedApdu {
             .field("source_mac", &self.source_mac)
             .field("source_network", &self.source_network)
             .field("reply_tx", &self.reply_tx.as_ref().map(|_| "Some(...)"))
+            .field("transport_meta", &self.transport_meta)
             .finish()
     }
 }
@@ -156,6 +160,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                             source_mac: received.source_mac,
                             source_network,
                             reply_tx: received.reply_tx,
+                            transport_meta: received.transport_meta,
                         };
 
                         if apdu_tx.send(apdu).await.is_err() {

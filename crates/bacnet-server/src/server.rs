@@ -694,6 +694,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                             source_mac: bacnet_types::MacAddr::new(),
                                                             source_network: None,
                                                             reply_tx: None,
+                                                            transport_meta: None,
                                                         }
                                                     }),
                                                 )
@@ -738,6 +739,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                         source_mac: bacnet_types::MacAddr::new(),
                                         source_network: None,
                                         reply_tx: None,
+                                        transport_meta: None,
                                     }
                                 }),
                             )

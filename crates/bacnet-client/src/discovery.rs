@@ -7,6 +7,37 @@ use bacnet_types::enums::Segmentation;
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
 
+/// A raw IAm event as received from the network, with full BVLL metadata.
+///
+/// Unlike `DiscoveredDevice` (which is last-write-wins in the device table),
+/// every IAm produces an `IAmEvent` on the broadcast channel, allowing
+/// consumers to see duplicates, BBMD relay paths, and timing.
+#[derive(Debug, Clone)]
+pub struct IAmEvent {
+    /// The device's object identifier.
+    pub object_identifier: ObjectIdentifier,
+    /// Maximum APDU length the device accepts.
+    pub max_apdu_length: u32,
+    /// Segmentation support level.
+    pub segmentation_supported: Segmentation,
+    /// Vendor identifier.
+    pub vendor_id: u16,
+    /// The MAC address from which the IAm was received (transport-level).
+    pub source_mac: MacAddr,
+    /// If routed: the BACnet network number the device resides on.
+    pub source_network: Option<u16>,
+    /// If routed: the device's MAC address on the remote network.
+    pub source_address: Option<MacAddr>,
+    /// BVLC function code from the transport layer (e.g. 0x0a, 0x0b, 0x04).
+    pub bvlc_function: Option<u8>,
+    /// For Forwarded-NPDU: the originating device's IPv4 address.
+    pub forwarded_from_ip: Option<[u8; 4]>,
+    /// For Forwarded-NPDU: the originating device's port.
+    pub forwarded_from_port: Option<u16>,
+    /// When this IAm was received.
+    pub timestamp: Instant,
+}
+
 /// Information about a discovered BACnet device.
 #[derive(Debug, Clone)]
 pub struct DiscoveredDevice {

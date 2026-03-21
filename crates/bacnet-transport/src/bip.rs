@@ -23,7 +23,7 @@ use crate::bvll::{
     self, decode_bip_mac, decode_bvll, encode_bip_mac, encode_bvll, encode_bvll_forwarded,
     BvllMessage,
 };
-use crate::port::{ReceivedNpdu, TransportPort};
+use crate::port::{ReceivedNpdu, TransportMeta, TransportPort};
 
 /// Default BACnet/IP port (0xBAC0 = 47808).
 pub const DEFAULT_BACNET_PORT: u16 = 0xBAC0;
@@ -484,6 +484,10 @@ async fn handle_bvll_message(msg: &bvll::BvllMessage, sender: ([u8; 4], u16), ct
                     npdu: msg.payload.clone(),
                     source_mac,
                     reply_tx: None,
+                    transport_meta: Some(TransportMeta {
+                        bvlc_function: Some(BvlcFunction::ORIGINAL_UNICAST_NPDU.to_raw()),
+                        ..Default::default()
+                    }),
                 })
                 .await;
         }
@@ -500,6 +504,10 @@ async fn handle_bvll_message(msg: &bvll::BvllMessage, sender: ([u8; 4], u16), ct
                     npdu: msg.payload.clone(),
                     source_mac,
                     reply_tx: None,
+                    transport_meta: Some(TransportMeta {
+                        bvlc_function: Some(BvlcFunction::ORIGINAL_BROADCAST_NPDU.to_raw()),
+                        ..Default::default()
+                    }),
                 })
                 .await;
 
@@ -553,6 +561,11 @@ async fn handle_bvll_message(msg: &bvll::BvllMessage, sender: ([u8; 4], u16), ct
                         npdu: msg.payload.clone(),
                         source_mac,
                         reply_tx: None,
+                        transport_meta: Some(TransportMeta {
+                            bvlc_function: Some(BvlcFunction::FORWARDED_NPDU.to_raw()),
+                            forwarded_from_ip: msg.originating_ip,
+                            forwarded_from_port: msg.originating_port,
+                        }),
                     })
                     .await;
 
@@ -588,6 +601,11 @@ async fn handle_bvll_message(msg: &bvll::BvllMessage, sender: ([u8; 4], u16), ct
                         npdu: msg.payload.clone(),
                         source_mac,
                         reply_tx: None,
+                        transport_meta: Some(TransportMeta {
+                            bvlc_function: Some(BvlcFunction::FORWARDED_NPDU.to_raw()),
+                            forwarded_from_ip: msg.originating_ip,
+                            forwarded_from_port: msg.originating_port,
+                        }),
                     })
                     .await;
             }
@@ -623,6 +641,10 @@ async fn handle_bvll_message(msg: &bvll::BvllMessage, sender: ([u8; 4], u16), ct
                         npdu: msg.payload.clone(),
                         source_mac,
                         reply_tx: None,
+                        transport_meta: Some(TransportMeta {
+                            bvlc_function: Some(BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK.to_raw()),
+                            ..Default::default()
+                        }),
                     })
                     .await;
 
