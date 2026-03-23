@@ -7,6 +7,7 @@ use bacnet_types::MacAddr;
 use bytes::Bytes;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
+use tracing::{debug, warn};
 
 /// TSM configuration.
 #[derive(Debug, Clone)]
@@ -156,6 +157,12 @@ impl Tsm {
     }
 
     /// Deliver a response to a pending transaction. Returns `true` if found.
+    ///
+    /// First attempts an exact match on `(source_mac, invoke_id)`. If that
+    /// fails, falls back to matching by `invoke_id` alone — this handles
+    /// cross-subnet scenarios where the response may arrive from a different
+    /// transport address than the request was sent to (e.g., BBMD relay,
+    /// asymmetric routing).
     pub fn complete_transaction(
         &mut self,
         source_mac: &[u8],
@@ -163,13 +170,62 @@ impl Tsm {
         response: TsmResponse,
     ) -> bool {
         let key = (MacAddr::from_slice(source_mac), invoke_id);
+
+        // Fast path: exact (source_mac, invoke_id) match.
         if let Some(tx) = self.pending.remove(&key) {
             self.release_invoke_id(source_mac, invoke_id);
             let _ = tx.send(response);
-            true
-        } else {
-            false
+            return true;
         }
+
+        // Fallback: match by invoke_id alone. This catches cross-subnet
+        // routed responses where the transport source address differs from
+        // the original destination (e.g., response routed through a BBMD
+        // or arriving from a different IP path).
+        let mut fallback_key = None;
+        for (pending_key, _) in self.pending.iter() {
+            if pending_key.1 == invoke_id {
+                if fallback_key.is_some() {
+                    // Multiple pending transactions share this invoke_id
+                    // (different destinations) — ambiguous, can't safely match.
+                    debug!(
+                        invoke_id,
+                        source_mac = ?MacAddr::from_slice(source_mac),
+                        "TSM fallback match aborted: multiple pending transactions with invoke_id"
+                    );
+                    fallback_key = None;
+                    break;
+                }
+                fallback_key = Some(pending_key.clone());
+            }
+        }
+
+        if let Some(fk) = fallback_key {
+            warn!(
+                invoke_id,
+                response_source = ?MacAddr::from_slice(source_mac),
+                expected_source = ?fk.0,
+                "TSM cross-subnet fallback: response arrived from unexpected address, \
+                 matched by invoke_id alone"
+            );
+            if let Some(tx) = self.pending.remove(&fk) {
+                self.release_invoke_id(&fk.0, invoke_id);
+                let _ = tx.send(response);
+                return true;
+            }
+        }
+
+        if !self.pending.is_empty() {
+            warn!(
+                invoke_id,
+                source_mac = ?MacAddr::from_slice(source_mac),
+                pending_count = self.pending.len(),
+                pending_keys = ?self.pending.keys().collect::<Vec<_>>(),
+                "TSM: no matching transaction for response"
+            );
+        }
+
+        false
     }
 
     /// Cancel a pending transaction. Returns `true` if found.
@@ -269,6 +325,61 @@ mod tests {
         let mac = MacAddr::from_slice(&[127, 0, 0, 1, 0xBA, 0xC0]);
         let completed = tsm.complete_transaction(&mac, 42, TsmResponse::SimpleAck);
         assert!(!completed);
+    }
+
+    #[tokio::test]
+    async fn fallback_match_by_invoke_id_alone() {
+        // Simulate cross-subnet scenario: request sent to router A,
+        // response arrives from a different address (e.g., BBMD relay).
+        let mut tsm = Tsm::new(TsmConfig::default());
+        let router_mac = [10, 2, 0, 10, 0xBA, 0xC0]; // 10.2.0.10:47808
+        let invoke_id = tsm.allocate_invoke_id(&router_mac).unwrap();
+        let rx = tsm.register_transaction(MacAddr::from_slice(&router_mac), invoke_id);
+
+        // Response arrives from a different address (e.g., BBMD at 10.1.0.2)
+        let bbmd_mac = [10, 1, 0, 2, 0xBA, 0xC0]; // 10.1.0.2:47808
+        let completed = tsm.complete_transaction(
+            &bbmd_mac,
+            invoke_id,
+            TsmResponse::ComplexAck {
+                service_data: Bytes::from_static(&[0xBE, 0xEF]),
+            },
+        );
+        assert!(completed, "fallback match should succeed");
+
+        let result = rx.await.unwrap();
+        match result {
+            TsmResponse::ComplexAck { service_data } => {
+                assert_eq!(service_data, vec![0xBE, 0xEF]);
+            }
+            _ => panic!("Expected ComplexAck"),
+        }
+
+        // Verify invoke_id was released (allocator cleaned up)
+        assert_eq!(tsm.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn fallback_match_ambiguous_skipped() {
+        // When multiple pending transactions share the same invoke_id
+        // (different destinations), fallback should NOT match.
+        let mut tsm = Tsm::new(TsmConfig::default());
+        let mac_a = [10, 0, 0, 1, 0xBA, 0xC0];
+        let mac_b = [10, 0, 0, 2, 0xBA, 0xC0];
+
+        let id_a = tsm.allocate_invoke_id(&mac_a).unwrap();
+        let id_b = tsm.allocate_invoke_id(&mac_b).unwrap();
+        // Both get invoke_id 0 (per-destination allocation)
+        assert_eq!(id_a, id_b);
+
+        let _rx_a = tsm.register_transaction(MacAddr::from_slice(&mac_a), id_a);
+        let _rx_b = tsm.register_transaction(MacAddr::from_slice(&mac_b), id_b);
+
+        // Response from an unknown source — should NOT match because ambiguous
+        let unknown_mac = [10, 0, 0, 99, 0xBA, 0xC0];
+        let completed = tsm.complete_transaction(&unknown_mac, 0, TsmResponse::SimpleAck);
+        assert!(!completed, "ambiguous fallback should not match");
+        assert_eq!(tsm.pending_count(), 2);
     }
 
     #[test]

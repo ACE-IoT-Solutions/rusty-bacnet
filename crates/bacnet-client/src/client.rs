@@ -2655,4 +2655,105 @@ mod tests {
     fn seg_receiver_timeout_is_4s() {
         assert_eq!(SEG_RECEIVER_TIMEOUT, Duration::from_secs(4));
     }
+
+    /// Verify that a routed confirmed request succeeds when the router
+    /// responds with an NPDU containing SNET/SADR fields (as a real
+    /// BACnet router does for MSTP devices behind it).
+    ///
+    /// Client A sends a routed ConfirmedRequest to "router" B with
+    /// DNET/DADR addressing. B responds with a ComplexACK wrapped in
+    /// an NPDU with SNET/SADR. The TSM must match the response by
+    /// (source_mac, invoke_id) regardless of NPDU source fields.
+    #[tokio::test]
+    async fn routed_confirmed_request_with_snet_sadr() {
+        use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
+
+        let mut client_a = make_client().await;
+
+        // "Router" B — raw transport so we can send NPDU with SNET/SADR
+        let mut transport_b = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+        let mut rx_b = transport_b.start().await.unwrap();
+        let b_mac = transport_b.local_mac().to_vec();
+
+        let b_handle = tokio::spawn(async move {
+            let received = timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .expect("B timed out waiting for request")
+                .expect("B channel closed");
+
+            // Decode the NPDU to extract the APDU and verify DNET/DADR
+            let npdu =
+                bacnet_encoding::npdu::decode_npdu(received.npdu.clone()).unwrap();
+            assert!(npdu.destination.is_some(), "routed request should have DNET");
+            let dest = npdu.destination.as_ref().unwrap();
+            assert_eq!(dest.network, 2100);
+            assert_eq!(dest.mac_address.as_slice(), &[0x02]);
+
+            // Decode the APDU from the NPDU payload
+            let decoded = apdu::decode_apdu(npdu.payload.clone()).unwrap();
+            let invoke_id = match decoded {
+                Apdu::ConfirmedRequest(req) => req.invoke_id,
+                other => panic!("expected ConfirmedRequest, got {:?}", other),
+            };
+
+            // Build a ComplexACK response
+            let ack = Apdu::ComplexAck(ComplexAck {
+                segmented: false,
+                more_follows: false,
+                invoke_id,
+                sequence_number: None,
+                proposed_window_size: None,
+                service_choice: ConfirmedServiceChoice::READ_PROPERTY,
+                service_ack: Bytes::from_static(&[0xCA, 0xFE]),
+            });
+            let mut apdu_buf = BytesMut::new();
+            encode_apdu(&mut apdu_buf, &ack);
+
+            // Wrap in NPDU with SNET/SADR — simulates a real router response
+            // from an MSTP device on network 2100, address 0x02
+            let response_npdu = Npdu {
+                is_network_message: false,
+                expecting_reply: false,
+                priority: NetworkPriority::NORMAL,
+                destination: None,
+                source: Some(NpduAddress {
+                    network: 2100,
+                    mac_address: MacAddr::from_slice(&[0x02]),
+                }),
+                payload: Bytes::from(apdu_buf.to_vec()),
+                ..Npdu::default()
+            };
+            let mut npdu_buf = BytesMut::with_capacity(64);
+            encode_npdu(&mut npdu_buf, &response_npdu).unwrap();
+
+            // Send back to A via raw transport unicast
+            transport_b
+                .send_unicast(&npdu_buf, &received.source_mac)
+                .await
+                .unwrap();
+
+            transport_b.stop().await.unwrap();
+        });
+
+        // A sends a routed confirmed request through "router" B
+        let result = client_a
+            .confirmed_request_routed(
+                &b_mac,
+                2100,
+                &[0x02],
+                ConfirmedServiceChoice::READ_PROPERTY,
+                &[0x01],
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "routed confirmed request should succeed, got: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), vec![0xCA, 0xFE]);
+
+        b_handle.await.unwrap();
+        client_a.stop().await.unwrap();
+    }
 }
