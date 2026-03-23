@@ -46,7 +46,7 @@ use crate::errors::to_py_err;
 use crate::types::{
     parse_address, parse_target, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
     PyCovNotificationIterator, PyDiscoveredDevice, PyEnableDisable, PyEventState, PyEventType,
-    PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier, PyObjectType,
+    PyIAmEventIterator, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier, PyObjectType,
     PyPropertyIdentifier, PyPropertyValue, PyReinitializedState,
 };
 
@@ -497,6 +497,49 @@ impl BACnetClient {
                 .ok_or_else(|| PyRuntimeError::new_err("client not started — use 'async with'"))?;
             let rx = c.cov_notifications();
             Ok(PyCovNotificationIterator::new(rx))
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // IAm event streaming
+    // -----------------------------------------------------------------------
+
+    /// Subscribe to IAm events, send a WhoIs, and return an async iterator.
+    ///
+    /// The subscription is created *before* the WhoIs is sent so no responses
+    /// are lost. Use ``async for event in await client.who_is_stream(): ...``
+    #[pyo3(signature = (low_limit=None, high_limit=None))]
+    fn who_is_stream<'py>(
+        &self,
+        py: Python<'py>,
+        low_limit: Option<u32>,
+        high_limit: Option<u32>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let c = {
+                let guard = inner.lock().await;
+                Arc::clone(guard.as_ref().ok_or_else(|| {
+                    PyRuntimeError::new_err("client not started — use 'async with'")
+                })?)
+            };
+            // Subscribe before sending WhoIs so we don't miss any replies
+            let rx = c.iam_events();
+            c.who_is(low_limit, high_limit).await.map_err(to_py_err)?;
+            Ok(PyIAmEventIterator::new(rx))
+        })
+    }
+
+    /// Get a passive async iterator for incoming IAm events (no WhoIs sent).
+    fn iam_events<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let guard = inner.lock().await;
+            let c = guard
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("client not started — use 'async with'"))?;
+            let rx = c.iam_events();
+            Ok(PyIAmEventIterator::new(rx))
         })
     }
 

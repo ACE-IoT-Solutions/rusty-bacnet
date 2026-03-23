@@ -13,7 +13,7 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use pyo3::Py;
 use tokio::sync::broadcast;
 
-use bacnet_client::discovery::DiscoveredDevice;
+use bacnet_client::discovery::{DiscoveredDevice, IAmEvent};
 use bacnet_encoding::primitives::{decode_application_value, encode_property_value};
 use bacnet_services::common::{BACnetPropertyValue, PropertyReference};
 use bacnet_services::cov::COVNotificationRequest;
@@ -747,6 +747,150 @@ impl PyCovNotificationIterator {
 }
 
 // ---------------------------------------------------------------------------
+// IAm Event — read-only wrapper with BVLL metadata
+// ---------------------------------------------------------------------------
+
+/// A raw IAm event as received from the network, with full BVLL metadata.
+#[pyclass(name = "IAmEvent", frozen)]
+pub struct PyIAmEvent {
+    inner: IAmEvent,
+}
+
+#[pymethods]
+impl PyIAmEvent {
+    #[getter]
+    fn object_identifier(&self) -> PyObjectIdentifier {
+        PyObjectIdentifier::from_rust(self.inner.object_identifier)
+    }
+
+    #[getter]
+    fn max_apdu_length(&self) -> u32 {
+        self.inner.max_apdu_length
+    }
+
+    #[getter]
+    fn segmentation_supported(&self) -> PySegmentation {
+        PySegmentation {
+            inner: self.inner.segmentation_supported,
+        }
+    }
+
+    #[getter]
+    fn vendor_id(&self) -> u16 {
+        self.inner.vendor_id
+    }
+
+    /// Source MAC as "ip:port" string for BIP, hex bytes otherwise.
+    #[getter]
+    fn source_mac(&self) -> String {
+        format_mac(&self.inner.source_mac)
+    }
+
+    #[getter]
+    fn source_network(&self) -> Option<u16> {
+        self.inner.source_network
+    }
+
+    #[getter]
+    fn source_address(&self) -> Option<String> {
+        self.inner.source_address.as_ref().map(format_mac)
+    }
+
+    #[getter]
+    fn bvlc_function(&self) -> Option<u8> {
+        self.inner.bvlc_function
+    }
+
+    /// Forwarded-from address as "ip:port" string, or None.
+    #[getter]
+    fn forwarded_from(&self) -> Option<String> {
+        match (self.inner.forwarded_from_ip, self.inner.forwarded_from_port) {
+            (Some(ip), Some(port)) => Some(format!(
+                "{}.{}.{}.{}:{}",
+                ip[0], ip[1], ip[2], ip[3], port
+            )),
+            _ => None,
+        }
+    }
+
+    /// Seconds elapsed since this IAm was received.
+    #[getter]
+    fn seconds_ago(&self) -> f64 {
+        self.inner.timestamp.elapsed().as_secs_f64()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "IAmEvent(device={}, vendor={}, mac={}, bvlc={:?})",
+            self.inner.object_identifier.instance_number(),
+            self.inner.vendor_id,
+            format_mac(&self.inner.source_mac),
+            self.inner.bvlc_function,
+        )
+    }
+}
+
+/// Format a MacAddr as "ip:port" for 6-byte BIP MACs, hex otherwise.
+fn format_mac(mac: &bacnet_types::MacAddr) -> String {
+    let s = mac.as_slice();
+    if s.len() == 6 {
+        let port = u16::from_be_bytes([s[4], s[5]]);
+        format!("{}.{}.{}.{}:{}", s[0], s[1], s[2], s[3], port)
+    } else {
+        s.iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IAm Event async iterator
+// ---------------------------------------------------------------------------
+
+/// Async iterator yielding IAm events from a broadcast channel.
+#[pyclass(name = "IAmEventIterator")]
+pub struct PyIAmEventIterator {
+    rx: Arc<tokio::sync::Mutex<broadcast::Receiver<IAmEvent>>>,
+}
+
+impl PyIAmEventIterator {
+    pub fn new(rx: broadcast::Receiver<IAmEvent>) -> Self {
+        Self {
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+        }
+    }
+}
+
+#[pymethods]
+impl PyIAmEventIterator {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let rx = self.rx.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = rx.lock().await;
+            loop {
+                match guard.recv().await {
+                    Ok(event) => {
+                        return Ok(PyIAmEvent { inner: event });
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        eprintln!("IAm event iterator lagged, skipped {n} messages");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(PyStopAsyncIteration::new_err("channel closed"));
+                    }
+                }
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RPM/WPM conversion helpers (crate-internal)
 // ---------------------------------------------------------------------------
 
@@ -986,6 +1130,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDiscoveredDevice>()?;
     m.add_class::<PyCovNotification>()?;
     m.add_class::<PyCovNotificationIterator>()?;
+    m.add_class::<PyIAmEvent>()?;
+    m.add_class::<PyIAmEventIterator>()?;
 
     // BVLL / router types
     m.add_class::<PyBdtEntry>()?;

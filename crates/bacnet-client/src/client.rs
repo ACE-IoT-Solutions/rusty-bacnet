@@ -30,7 +30,9 @@ use bacnet_types::enums::{
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 
-use crate::discovery::{DeviceTable, DiscoveredDevice};
+use bacnet_transport::port::TransportMeta;
+
+use crate::discovery::{DeviceTable, DiscoveredDevice, IAmEvent};
 use crate::routing::ClientRouterTable;
 use crate::segmentation::{max_segment_payload, split_payload, SegmentReceiver, SegmentedPduType};
 use crate::tsm::{Tsm, TsmConfig, TsmResponse};
@@ -229,6 +231,7 @@ pub struct BACnetClient<T: TransportPort> {
     device_table: Arc<Mutex<DeviceTable>>,
     router_table: Arc<Mutex<ClientRouterTable>>,
     cov_tx: broadcast::Sender<COVNotificationRequest>,
+    iam_tx: broadcast::Sender<IAmEvent>,
     dispatch_task: Option<JoinHandle<()>>,
     router_task: Option<JoinHandle<()>>,
     seg_ack_senders: Arc<Mutex<HashMap<SegKey, mpsc::Sender<SegmentAckPdu>>>>,
@@ -535,6 +538,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let network_dispatch = Arc::clone(&network);
         let (cov_tx, _) = broadcast::channel::<COVNotificationRequest>(64);
         let cov_tx_dispatch = cov_tx.clone();
+        let (iam_tx, _) = broadcast::channel::<IAmEvent>(64);
+        let iam_tx_dispatch = iam_tx.clone();
         let seg_ack_senders: Arc<Mutex<HashMap<SegKey, mpsc::Sender<SegmentAckPdu>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let seg_ack_senders_dispatch = Arc::clone(&seg_ack_senders);
@@ -555,10 +560,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             &device_table_dispatch,
                             &network_dispatch,
                             &cov_tx_dispatch,
+                            &iam_tx_dispatch,
                             &mut seg_state,
                             &seg_ack_senders_dispatch,
                             &received.source_mac,
                             &received.source_network,
+                            received.transport_meta.as_ref(),
                             decoded,
                         )
                         .await;
@@ -611,6 +618,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             device_table,
             router_table,
             cov_tx,
+            iam_tx,
             dispatch_task: Some(dispatch_task),
             router_task,
             seg_ack_senders,
@@ -625,10 +633,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         device_table: &Arc<Mutex<DeviceTable>>,
         network: &Arc<NetworkLayer<T>>,
         cov_tx: &broadcast::Sender<COVNotificationRequest>,
+        iam_tx: &broadcast::Sender<IAmEvent>,
         seg_state: &mut HashMap<SegKey, SegmentedReceiveState>,
         seg_ack_senders: &Arc<Mutex<HashMap<SegKey, mpsc::Sender<SegmentAckPdu>>>>,
         source_mac: &[u8],
         source_network: &Option<NpduAddress>,
+        transport_meta: Option<&TransportMeta>,
         apdu: Apdu,
     ) {
         match apdu {
@@ -745,9 +755,24 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 vendor_id: i_am.vendor_id,
                                 last_seen: std::time::Instant::now(),
                                 source_network: src_net,
-                                source_address: src_addr,
+                                source_address: src_addr.clone(),
                             };
                             device_table.lock().await.upsert(device);
+
+                            let iam_event = IAmEvent {
+                                object_identifier: i_am.object_identifier,
+                                max_apdu_length: i_am.max_apdu_length,
+                                segmentation_supported: i_am.segmentation_supported,
+                                vendor_id: i_am.vendor_id,
+                                source_mac: MacAddr::from_slice(source_mac),
+                                source_network: src_net,
+                                source_address: src_addr,
+                                bvlc_function: transport_meta.and_then(|m| m.bvlc_function),
+                                forwarded_from_ip: transport_meta.and_then(|m| m.forwarded_from_ip),
+                                forwarded_from_port: transport_meta.and_then(|m| m.forwarded_from_port),
+                                timestamp: Instant::now(),
+                            };
+                            let _ = iam_tx.send(iam_event);
                         }
                         Err(e) => {
                             warn!(error = %e, "Failed to decode IAm");
@@ -2111,6 +2136,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// independent receiver.
     pub fn cov_notifications(&self) -> broadcast::Receiver<COVNotificationRequest> {
         self.cov_tx.subscribe()
+    }
+
+    /// Get a receiver for incoming IAm events. Each call returns a new
+    /// independent receiver. Every IAm received by this client is broadcast
+    /// on this channel, including duplicates from BBMD relays.
+    pub fn iam_events(&self) -> broadcast::Receiver<IAmEvent> {
+        self.iam_tx.subscribe()
     }
 
     /// Get a snapshot of all discovered devices.

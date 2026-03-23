@@ -508,6 +508,7 @@ mod transport {
                                             npdu: frame.payload.clone(),
                                             source_mac: MacAddr::from(frame.source),
                                             reply_tx: None,
+                                            transport_meta: None,
                                         })
                                         .await;
                                 }

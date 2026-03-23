@@ -240,6 +240,7 @@ impl MasterNode {
                         npdu: frame.data.clone(),
                         source_mac: MacAddr::from_slice(&[frame.source]),
                         reply_tx: None,
+                        transport_meta: None,
                     });
                 }
                 None
@@ -254,6 +255,7 @@ impl MasterNode {
                         npdu: frame.data.clone(),
                         source_mac: MacAddr::from_slice(&[frame.source]),
                         reply_tx: Some(tx),
+                        transport_meta: None,
                     });
                 }
                 None

@@ -212,6 +212,7 @@ impl BACnetRouter {
                                         source_mac: received.source_mac,
                                         source_network: npdu.source,
                                         reply_tx: received.reply_tx,
+                                        transport_meta: received.transport_meta,
                                     };
                                     let _ = local_tx.send(apdu).await;
                                     continue;
@@ -237,6 +238,7 @@ impl BACnetRouter {
                                             source_mac: received.source_mac,
                                             source_network: npdu.source,
                                             reply_tx: received.reply_tx,
+                                            transport_meta: received.transport_meta,
                                         };
                                         let _ = local_tx.send(apdu).await;
                                     } else {
@@ -264,6 +266,7 @@ impl BACnetRouter {
                                     source_mac: received.source_mac,
                                     source_network: npdu.source,
                                     reply_tx: received.reply_tx,
+                                    transport_meta: received.transport_meta,
                                 };
                                 let _ = local_tx.send(apdu).await;
                             }

@@ -312,6 +312,62 @@ class CovNotificationIterator:
     async def __anext__(self) -> dict[str, Any]: ...
 
 
+class IAmEvent:
+    """A raw IAm event with full BVLL transport metadata.
+
+    Yielded by ``who_is_stream()`` and ``iam_events()``. Unlike
+    ``DiscoveredDevice`` (last-write-wins in the device table), every
+    IAm produces an ``IAmEvent``, including duplicates from BBMD relays.
+    """
+
+    @property
+    def object_identifier(self) -> ObjectIdentifier: ...
+
+    @property
+    def max_apdu_length(self) -> int: ...
+
+    @property
+    def segmentation_supported(self) -> Segmentation: ...
+
+    @property
+    def vendor_id(self) -> int: ...
+
+    @property
+    def source_mac(self) -> str:
+        """Source MAC as ``'ip:port'`` for BIP, hex otherwise."""
+        ...
+
+    @property
+    def source_network(self) -> Optional[int]: ...
+
+    @property
+    def source_address(self) -> Optional[str]: ...
+
+    @property
+    def bvlc_function(self) -> Optional[int]:
+        """BVLC function code (0x0a=unicast, 0x0b=broadcast, 0x04=forwarded, 0x06=distribute)."""
+        ...
+
+    @property
+    def forwarded_from(self) -> Optional[str]:
+        """Forwarded-from address as ``'ip:port'``, or None."""
+        ...
+
+    @property
+    def seconds_ago(self) -> float:
+        """Seconds elapsed since this IAm was received."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class IAmEventIterator:
+    """Async iterator yielding ``IAmEvent`` objects."""
+
+    def __aiter__(self) -> IAmEventIterator: ...
+    async def __anext__(self) -> IAmEvent: ...
+
+
 class BdtEntry:
     """A Broadcast Distribution Table entry from a BBMD."""
 
@@ -505,6 +561,26 @@ class BACnetClient:
 
     async def cov_notifications(self) -> CovNotificationIterator:
         """Get an async iterator for incoming COV notifications."""
+        ...
+
+    async def who_is_stream(
+        self,
+        low_limit: Optional[int] = None,
+        high_limit: Optional[int] = None,
+    ) -> IAmEventIterator:
+        """Send a WhoIs broadcast and return a streaming async iterator of IAm events.
+
+        The subscription is created *before* the WhoIs is sent so no
+        responses are lost. Each IAm arrives as an ``IAmEvent`` with full
+        BVLL metadata (``bvlc_function``, ``forwarded_from``, etc.).
+        """
+        ...
+
+    async def iam_events(self) -> IAmEventIterator:
+        """Get a passive async iterator for IAm events (no WhoIs sent).
+
+        Useful for monitoring IAm traffic without triggering discovery.
+        """
         ...
 
     async def who_has_by_id(
