@@ -578,13 +578,15 @@ async fn handle_bvll_message(msg: &bvll::BvllMessage, sender: ([u8; 4], u16), ct
                 encode_bvll_forwarded(&mut buf, orig_ip, orig_port, &msg.payload);
                 let _ = ctx.socket.send_to(&buf, dest).await;
             } else {
-                // Non-BBMD: use actual UDP sender as source_mac (originator may be behind NAT).
-                let sender_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
+                // Non-BBMD: use originating IP from BVLL header as source_mac.
+                // This matches the BBMD path and ensures TSM can correlate
+                // responses with the router that forwarded them (rather than
+                // the BBMD relay that re-sent the Forwarded-NPDU).
                 let _ = ctx
                     .npdu_tx
                     .send(ReceivedNpdu {
                         npdu: msg.payload.clone(),
-                        source_mac: sender_mac,
+                        source_mac,
                         reply_tx: None,
                     })
                     .await;

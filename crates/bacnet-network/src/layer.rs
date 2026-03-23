@@ -140,16 +140,14 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                             continue;
                         }
 
-                        // Non-routing node: discard messages with a specific DNET.
-                        if let Some(ref dest) = npdu.destination {
-                            if dest.network != 0xFFFF {
-                                debug!(
-                                    dnet = dest.network,
-                                    "Discarding routed message (non-router)"
-                                );
-                                continue;
-                            }
-                        }
+                        // Note: network-layer messages are already handled above,
+                        // so all messages here are application-layer APDUs. A
+                        // non-router can be the destination of a routed APDU
+                        // response (e.g. a reply to a confirmed request we sent
+                        // through a router with DNET/DADR), so we accept APDUs
+                        // regardless of whether they carry a destination field.
+                        // Only broadcast (0xFFFF) vs. specific DNET matters for
+                        // routing decisions, not for endpoint acceptance.
 
                         let source_network = npdu.source.clone();
 
