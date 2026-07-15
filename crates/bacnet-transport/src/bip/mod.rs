@@ -23,6 +23,54 @@ use bacnet_types::error::Error;
 mod io;
 use io::{handle_bvll_message, resolve_local_ip, send_register_foreign_device, RecvContext};
 
+/// Resolve the OS interface name and index that owns an IPv4 address.
+///
+/// B/IP sockets bind to INADDR_ANY so they can receive subnet broadcasts. When
+/// several same-port clients coexist, an interface binding is also required or
+/// the kernel may deliver one attachment's broadcast to another attachment's
+/// socket.
+#[allow(unsafe_code)]
+#[cfg(unix)]
+fn resolve_ipv4_interface(addr: Ipv4Addr) -> Option<(Vec<u8>, u32)> {
+    use std::ffi::CStr;
+
+    struct IfAddrsGuard(*mut libc::ifaddrs);
+    impl Drop for IfAddrsGuard {
+        fn drop(&mut self) {
+            // SAFETY: getifaddrs allocated this list and this guard owns it.
+            unsafe { libc::freeifaddrs(self.0) }
+        }
+    }
+
+    // SAFETY: cursor and address pointers are null-checked, and sockaddr_in is
+    // read only after confirming AF_INET. Interface names are kernel-provided
+    // NUL-terminated strings.
+    unsafe {
+        let mut ifaddrs: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifaddrs) != 0 {
+            return None;
+        }
+        let _guard = IfAddrsGuard(ifaddrs);
+        let mut cursor = ifaddrs;
+        while !cursor.is_null() {
+            let ifa = &*cursor;
+            if !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_INET {
+                let socket_addr = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                let candidate = Ipv4Addr::from(u32::from_be(socket_addr.sin_addr.s_addr));
+                if candidate == addr {
+                    let name = CStr::from_ptr(ifa.ifa_name);
+                    let index = libc::if_nametoindex(name.as_ptr());
+                    if index != 0 {
+                        return Some((name.to_bytes().to_vec(), index));
+                    }
+                }
+            }
+            cursor = ifa.ifa_next;
+        }
+        None
+    }
+}
+
 /// Default BACnet/IP port (0xBAC0 = 47808).
 pub const DEFAULT_BACNET_PORT: u16 = 0xBAC0;
 
@@ -89,7 +137,7 @@ pub(super) fn decode_bvlc_result_code(msg: &BvllMessage) -> Result<BvlcResultCod
 
 fn bvlc_result_error(msg: &BvllMessage) -> Error {
     match decode_bvlc_result_code(msg) {
-        Ok(code) => Error::Encoding(format!("BVLC-Result: {code:?}")),
+        Ok(code) => Error::Bvlc { result_code: code },
         Err(err) => err,
     }
 }
@@ -420,6 +468,41 @@ impl TransportPort for BipTransport {
         if !self.interface.is_unspecified() {
             std::net::UdpSocket::bind(SocketAddrV4::new(self.interface, 0))
                 .map_err(Error::Transport)?;
+
+            #[cfg(unix)]
+            if let Some((_name, _index)) = resolve_ipv4_interface(self.interface) {
+                #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+                socket2
+                    .bind_device(Some(&_name))
+                    .map_err(Error::Transport)?;
+
+                #[cfg(any(
+                    target_os = "ios",
+                    target_os = "visionos",
+                    target_os = "macos",
+                    target_os = "tvos",
+                    target_os = "watchos",
+                    target_os = "illumos",
+                    target_os = "solaris"
+                ))]
+                socket2
+                    .bind_device_by_index_v4(std::num::NonZeroU32::new(_index))
+                    .map_err(Error::Transport)?;
+
+                #[cfg(not(any(
+                    target_os = "android",
+                    target_os = "fuchsia",
+                    target_os = "linux",
+                    target_os = "ios",
+                    target_os = "visionos",
+                    target_os = "macos",
+                    target_os = "tvos",
+                    target_os = "watchos",
+                    target_os = "illumos",
+                    target_os = "solaris"
+                )))]
+                let _ = (_name, _index);
+            }
         }
 
         // Always bind to INADDR_ANY so subnet- and limited-broadcast packets

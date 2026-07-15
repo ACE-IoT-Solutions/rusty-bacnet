@@ -1,4 +1,6 @@
 target/
+dist/
+.venv/
 .git/
 _spec/
 docs/
