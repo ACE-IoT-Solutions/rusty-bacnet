@@ -320,6 +320,8 @@ struct SegmentedReceiveState {
     receiver: SegmentReceiver,
     /// Immediate MAC used to send SegmentAck/Abort PDUs.
     reply_mac: MacAddr,
+    /// Routed source to restore on SegmentAck/Abort control replies.
+    reply_network: Option<NpduAddress>,
     /// Next expected sequence number (for gap detection).
     expected_next_seq: u8,
     /// Timestamp of last received segment (for reaping stale sessions).
@@ -342,6 +344,7 @@ pub struct BACnetClient<T: TransportPort> {
     network: Arc<NetworkLayer<T>>,
     tsm: Arc<Mutex<Tsm>>,
     device_table: Arc<Mutex<DeviceTable>>,
+    router_snapshot: Arc<Mutex<Vec<RouterInfo>>>,
     cov_tx: broadcast::Sender<ReceivedCOVNotification>,
     device_tx: broadcast::Sender<DeviceEvent>,
     dispatch_task: Option<JoinHandle<()>>,
@@ -735,6 +738,8 @@ mod lifecycle;
 mod object_mgmt;
 mod property;
 mod requests;
+mod router_discovery;
+pub use router_discovery::RouterInfo;
 mod segmentation;
 
 pub use cov_notifications::{

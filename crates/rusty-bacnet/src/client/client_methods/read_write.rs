@@ -15,7 +15,7 @@ impl BACnetClient {
     fn read_property<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         object_id: PyObjectIdentifier,
         property_id: PyPropertyIdentifier,
         array_index: Option<u32>,
@@ -25,7 +25,7 @@ impl BACnetClient {
         let pid = property_id.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -34,10 +34,13 @@ impl BACnetClient {
             };
             // Mutex released here — concurrent calls can proceed
 
-            let ack = c
-                .read_property(&mac, oid, pid, array_index)
-                .await
-                .map_err(to_py_err)?;
+            let ack = if let Some((dnet, dadr)) = routing {
+                c.read_property_routed(&mac, dnet, &dadr, oid, pid, array_index)
+                    .await
+            } else {
+                c.read_property(&mac, oid, pid, array_index).await
+            }
+            .map_err(to_py_err)?;
 
             // Decode application-tagged value bytes → PropertyValue
             let (value, _) = decode_application_value(&ack.property_value, 0).map_err(to_py_err)?;
@@ -60,7 +63,7 @@ impl BACnetClient {
     fn write_property<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         object_id: PyObjectIdentifier,
         property_id: PyPropertyIdentifier,
         value: PyPropertyValue,
@@ -81,7 +84,7 @@ impl BACnetClient {
         let prop_value = value.inner;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -94,9 +97,23 @@ impl BACnetClient {
             let mut value_buf = BytesMut::new();
             encode_property_value(&mut value_buf, &prop_value).map_err(to_py_err)?;
 
-            c.write_property(&mac, oid, pid, array_index, value_buf.to_vec(), priority)
+            if let Some((dnet, dadr)) = routing {
+                c.write_property_routed(
+                    &mac,
+                    dnet,
+                    &dadr,
+                    oid,
+                    pid,
+                    array_index,
+                    value_buf.to_vec(),
+                    priority,
+                )
                 .await
-                .map_err(to_py_err)?;
+            } else {
+                c.write_property(&mac, oid, pid, array_index, value_buf.to_vec(), priority)
+                    .await
+            }
+            .map_err(to_py_err)?;
 
             Ok(())
         })
@@ -163,24 +180,27 @@ impl BACnetClient {
     fn read_property_multiple<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         specs: Vec<(PyObjectIdentifier, Vec<(PyPropertyIdentifier, Option<u32>)>)>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let rust_specs = py_to_rpm_specs(specs);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            let ack = c
-                .read_property_multiple(&mac, rust_specs)
-                .await
-                .map_err(to_py_err)?;
+            let ack = if let Some((dnet, dadr)) = routing {
+                c.read_property_multiple_routed(&mac, dnet, &dadr, rust_specs)
+                    .await
+            } else {
+                c.read_property_multiple(&mac, rust_specs).await
+            }
+            .map_err(to_py_err)?;
             Python::attach(|py| rpm_ack_to_py(py, ack))
         })
     }
@@ -191,7 +211,7 @@ impl BACnetClient {
     fn write_property_multiple<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         specs: Vec<(
             PyObjectIdentifier,
             Vec<(
@@ -206,16 +226,20 @@ impl BACnetClient {
         let rust_specs = py_to_wpm_specs(specs);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.write_property_multiple(&mac, rust_specs)
-                .await
-                .map_err(to_py_err)?;
+            if let Some((dnet, dadr)) = routing {
+                c.write_property_multiple_routed(&mac, dnet, &dadr, rust_specs)
+                    .await
+            } else {
+                c.write_property_multiple(&mac, rust_specs).await
+            }
+            .map_err(to_py_err)?;
             Ok(())
         })
     }

@@ -9,6 +9,102 @@ from __future__ import annotations
 from typing import Any, Optional, Union
 
 
+class DirectTarget:
+    """Direct BACnet/IP destination with an explicit UDP port."""
+    def __init__(self, address: str) -> None: ...
+    @property
+    def address(self) -> str: ...
+    @property
+    def mac(self) -> bytes: ...
+
+
+class RoutedTarget:
+    """Explicit router, destination network, and raw destination address."""
+    def __init__(self, router: str, network: int, address: bytes) -> None: ...
+    @property
+    def router(self) -> str: ...
+    @property
+    def router_mac(self) -> bytes: ...
+    @property
+    def network(self) -> int: ...
+    @property
+    def address(self) -> bytes: ...
+
+
+class RouterInfo:
+    """Immutable I-Am-Router-To-Network responder snapshot."""
+    @property
+    def mac_address(self) -> bytes: ...
+    @property
+    def address(self) -> Optional[str]: ...
+    @property
+    def source_network(self) -> Optional[int]: ...
+    @property
+    def source_address(self) -> Optional[bytes]: ...
+    @property
+    def networks(self) -> list[int]: ...
+
+
+class BdtEntry:
+    """Immutable Broadcast Distribution Table entry."""
+    @property
+    def ip(self) -> str: ...
+    @property
+    def ip_bytes(self) -> bytes: ...
+    @property
+    def port(self) -> int: ...
+    @property
+    def broadcast_mask(self) -> str: ...
+    @property
+    def broadcast_mask_bytes(self) -> bytes: ...
+
+
+class FdtEntry:
+    """Immutable Foreign Device Table entry."""
+    @property
+    def ip(self) -> str: ...
+    @property
+    def ip_bytes(self) -> bytes: ...
+    @property
+    def port(self) -> int: ...
+    @property
+    def ttl(self) -> int: ...
+    @property
+    def seconds_remaining(self) -> int: ...
+
+
+class ManagedCOVEvent:
+    @property
+    def kind(self) -> str: ...
+    @property
+    def time_remaining(self) -> Optional[int]: ...
+    @property
+    def requested_lifetime(self) -> Optional[int]: ...
+    @property
+    def renew_after_ms(self) -> Optional[int]: ...
+    @property
+    def error(self) -> Optional[str]: ...
+    @property
+    def skipped(self) -> Optional[int]: ...
+
+
+class ManagedCOVEventIterator:
+    def __aiter__(self) -> ManagedCOVEventIterator: ...
+    async def __anext__(self) -> ManagedCOVEvent: ...
+
+
+class ManagedCOVSubscription:
+    @property
+    def closed(self) -> bool: ...
+    @property
+    def finished(self) -> bool: ...
+    @property
+    def last_event(self) -> Optional[ManagedCOVEvent]: ...
+    def events(self) -> ManagedCOVEventIterator: ...
+    async def close(self) -> None: ...
+    async def cancel(self) -> None: ...
+
+
 # ---------------------------------------------------------------------------
 # Enum types
 # ---------------------------------------------------------------------------
@@ -767,6 +863,14 @@ class BacnetAbortError(BacnetError):
     """
     reason: int
 
+class BacnetBvlcError(BacnetError):
+    """Raised when a BVLC management request returns a negative result."""
+    result_code: int
+
+class BacnetNotificationLagError(BacnetError):
+    """Raised when a COV iterator loses notifications due to backpressure."""
+    skipped: int
+
 
 # ---------------------------------------------------------------------------
 # Client
@@ -812,11 +916,31 @@ class BACnetClient:
         _exc_tb: Any = None,
     ) -> None: ...
 
+    async def who_is_router(
+        self,
+        network: Optional[int] = None,
+        timeout_ms: int = 1000,
+    ) -> list[RouterInfo]:
+        """Collect and merge I-Am-Router-To-Network announcements."""
+        ...
+
+    async def router_snapshot(self) -> list[RouterInfo]:
+        """Return the latest complete or cancellation-partial router snapshot."""
+        ...
+
+    async def read_bdt(
+        self, address: str, timeout_ms: int = 3000
+    ) -> list[BdtEntry]: ...
+
+    async def read_fdt(
+        self, address: str, timeout_ms: int = 3000
+    ) -> list[FdtEntry]: ...
+
     # --- Property operations ---
 
     async def read_property(
         self,
-        address: str,
+        address: Union[str, DirectTarget, RoutedTarget],
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         array_index: Optional[int] = None,
@@ -826,7 +950,7 @@ class BACnetClient:
 
     async def write_property(
         self,
-        address: str,
+        address: Union[str, DirectTarget, RoutedTarget],
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         value: PropertyValue,
@@ -838,7 +962,7 @@ class BACnetClient:
 
     async def read_property_multiple(
         self,
-        address: str,
+        address: Union[str, DirectTarget, RoutedTarget],
         specs: list[
             tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int]]]]
         ],
@@ -852,7 +976,7 @@ class BACnetClient:
 
     async def write_property_multiple(
         self,
-        address: str,
+        address: Union[str, DirectTarget, RoutedTarget],
         specs: list[
             tuple[
                 ObjectIdentifier,
@@ -1058,7 +1182,7 @@ class BACnetClient:
 
     async def subscribe_cov(
         self,
-        address: str,
+        address: Union[str, DirectTarget, RoutedTarget],
         subscriber_process_identifier: int,
         monitored_object_identifier: ObjectIdentifier,
         confirmed: bool,
@@ -1069,12 +1193,23 @@ class BACnetClient:
 
     async def unsubscribe_cov(
         self,
-        address: str,
+        address: Union[str, DirectTarget, RoutedTarget],
         subscriber_process_identifier: int,
         monitored_object_identifier: ObjectIdentifier,
     ) -> None:
         """Cancel a COV subscription."""
         ...
+
+    async def manage_cov_subscription(
+        self,
+        address: Union[str, DirectTarget, RoutedTarget],
+        subscriber_process_identifier: int,
+        monitored_object_identifier: ObjectIdentifier,
+        confirmed: bool,
+        lifetime: int,
+        renewal_margin_ms: int = 30000,
+        event_channel_capacity: int = 16,
+    ) -> ManagedCOVSubscription: ...
 
     async def subscribe_cov_property_multiple(
         self,

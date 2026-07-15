@@ -15,6 +15,13 @@ use bacnet_services::alarm_summary::GetAlarmSummaryAck;
 use bacnet_services::audit::AuditLogQueryRequest;
 
 type ClientInner = Arc<Mutex<Option<Arc<client::BACnetClient<AnyTransport<NoSerial>>>>>>;
+pub(crate) type ManagedCOVState =
+    std::sync::Arc<std::sync::Mutex<Option<client::ManagedCOVSubscription>>>;
+type ManagedCOVRegistry = Arc<
+    std::sync::Mutex<
+        Vec<std::sync::Weak<std::sync::Mutex<Option<client::ManagedCOVSubscription>>>>,
+    >,
+>;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
@@ -42,10 +49,11 @@ use bacnet_types::enums::{ConfirmedServiceChoice, UnconfirmedServiceChoice};
 
 use crate::errors::to_py_err;
 use crate::types::{
-    parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyCovNotificationIterator,
-    PyDiscoveredDevice, PyEnableDisable, PyEventState, PyEventType, PyLifeSafetyOperation,
+    parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyBdtEntry,
+    PyCovNotificationIterator, PyDiscoveredDevice, PyEnableDisable, PyEventState, PyEventType,
+    PyFdtEntry, PyLifeSafetyOperation, PyManagedCOVSubscription, PyManagedCOVTarget,
     PyMessagePriority, PyObjectIdentifier, PyObjectType, PyPropertyIdentifier, PyPropertyValue,
-    PyReinitializedState,
+    PyReinitializedState, PyRouterInfo, PyTarget,
 };
 
 /// Async BACnet client for reading/writing properties on remote devices.
@@ -64,6 +72,7 @@ use crate::types::{
 #[pyclass(name = "BACnetClient")]
 pub struct BACnetClient {
     inner: ClientInner,
+    managed_cov: ManagedCOVRegistry,
     transport_type: String,
     // BIP config
     interface: String,
@@ -87,6 +96,7 @@ mod client_methods {
     mod enrollment_alarm_covmulti_who_writegroup;
     mod file_list_private_text_life;
     mod lifecycle;
+    mod management;
     mod object_device_alarm;
     mod read_write;
     mod vt_audit_time_directed;

@@ -169,7 +169,7 @@ async fn receive_routed_subscribe_cov_property(
 }
 
 #[tokio::test]
-async fn subscribe_cov_to_device_uses_routed_addressing() {
+async fn subscribe_cov_routed_uses_explicit_addressing_without_device_table() {
     let client_mac = vec![0x01];
     let router_mac = vec![0x02];
     let remote_network = 100;
@@ -185,16 +185,19 @@ async fn subscribe_cov_to_device_uses_routed_addressing() {
         .await
         .unwrap();
 
-    client.device_table.lock().await.upsert(routed_device(
-        2001,
-        &router_mac,
-        remote_network,
-        &remote_mac,
-    ));
-
+    let request_router = router_mac.clone();
+    let request_remote = remote_mac.clone();
     let request_task = tokio::spawn(async move {
         let result = client
-            .subscribe_cov_to_device(2001, 77, monitored_object, true, Some(120))
+            .subscribe_cov_routed(
+                &request_router,
+                remote_network,
+                &request_remote,
+                77,
+                monitored_object,
+                true,
+                Some(120),
+            )
             .await;
         client.stop().await.unwrap();
         result
@@ -223,7 +226,7 @@ async fn subscribe_cov_to_device_uses_routed_addressing() {
 }
 
 #[tokio::test]
-async fn unsubscribe_cov_to_device_uses_routed_addressing() {
+async fn unsubscribe_cov_routed_uses_explicit_addressing_without_device_table() {
     let client_mac = vec![0x11];
     let router_mac = vec![0x12];
     let remote_network = 101;
@@ -239,16 +242,17 @@ async fn unsubscribe_cov_to_device_uses_routed_addressing() {
         .await
         .unwrap();
 
-    client.device_table.lock().await.upsert(routed_device(
-        2002,
-        &router_mac,
-        remote_network,
-        &remote_mac,
-    ));
-
+    let request_router = router_mac.clone();
+    let request_remote = remote_mac.clone();
     let request_task = tokio::spawn(async move {
         let result = client
-            .unsubscribe_cov_to_device(2002, 78, monitored_object)
+            .unsubscribe_cov_routed(
+                &request_router,
+                remote_network,
+                &request_remote,
+                78,
+                monitored_object,
+            )
             .await;
         client.stop().await.unwrap();
         result

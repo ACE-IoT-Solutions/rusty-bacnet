@@ -1,0 +1,7 @@
+FROM python:3.11-slim-bookworm
+
+RUN python -m pip install --no-cache-dir bacpypes3==0.0.102
+
+COPY crates/rusty-bacnet/tests/container/bacpypes3_bbmd.py /fixture.py
+
+ENTRYPOINT ["python", "/fixture.py"]

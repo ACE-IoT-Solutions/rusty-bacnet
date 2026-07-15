@@ -11,7 +11,7 @@ use bacnet_types::enums::NetworkPriority;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -28,6 +28,19 @@ pub struct ReceivedApdu {
     /// Optional reply channel for MS/TP DataExpectingReply flows.
     /// The application layer can send NPDU-wrapped reply bytes through this channel.
     pub reply_tx: Option<oneshot::Sender<Bytes>>,
+}
+
+/// A received BACnet network-layer message with its immediate source MAC.
+#[derive(Debug, Clone)]
+pub struct ReceivedNetworkMessage {
+    /// Standard or vendor-proprietary network message type.
+    pub message_type: u8,
+    /// Raw network-message payload following the message type/vendor fields.
+    pub payload: Bytes,
+    /// Immediate source MAC in transport-native format.
+    pub source_mac: MacAddr,
+    /// NPDU source address when the network message was routed.
+    pub source_network: Option<NpduAddress>,
 }
 
 impl Clone for ReceivedApdu {
@@ -63,14 +76,17 @@ impl std::fmt::Debug for ReceivedApdu {
 pub struct NetworkLayer<T: TransportPort> {
     transport: T,
     dispatch_task: Option<JoinHandle<()>>,
+    network_message_tx: broadcast::Sender<ReceivedNetworkMessage>,
 }
 
 impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// Create a new network layer wrapping the given transport.
     pub fn new(transport: T) -> Self {
+        let (network_message_tx, _) = broadcast::channel(64);
         Self {
             transport,
             dispatch_task: None,
+            network_message_tx,
         }
     }
 
@@ -83,15 +99,20 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
 
         let (apdu_tx, apdu_rx) = mpsc::channel(256);
 
+        let network_message_tx = self.network_message_tx.clone();
         let dispatch_task = tokio::spawn(async move {
             while let Some(received) = npdu_rx.recv().await {
                 match decode_npdu(received.npdu.clone()) {
                     Ok(npdu) => {
                         if npdu.is_network_message {
-                            debug!(
-                                message_type = npdu.message_type,
-                                "Ignoring network layer message (non-router mode)"
-                            );
+                            if let Some(message_type) = npdu.message_type {
+                                let _ = network_message_tx.send(ReceivedNetworkMessage {
+                                    message_type,
+                                    payload: npdu.payload,
+                                    source_mac: received.source_mac,
+                                    source_network: npdu.source,
+                                });
+                            }
                             continue;
                         }
 
@@ -130,6 +151,28 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         self.dispatch_task = Some(dispatch_task);
 
         Ok(apdu_rx)
+    }
+
+    /// Subscribe to network-layer messages received after this call.
+    pub fn subscribe_network_messages(&self) -> broadcast::Receiver<ReceivedNetworkMessage> {
+        self.network_message_tx.subscribe()
+    }
+
+    /// Broadcast a BACnet network-layer message on the local data link.
+    pub async fn broadcast_network_message(
+        &self,
+        message_type: u8,
+        payload: &[u8],
+    ) -> Result<(), Error> {
+        let npdu = Npdu {
+            is_network_message: true,
+            message_type: Some(message_type),
+            payload: Bytes::copy_from_slice(payload),
+            ..Npdu::default()
+        };
+        let mut buf = BytesMut::with_capacity(5 + payload.len());
+        encode_npdu(&mut buf, &npdu)?;
+        self.transport.send_broadcast(&buf).await
     }
 
     /// Send an APDU to a specific local destination by MAC address.
@@ -407,6 +450,7 @@ impl<T: TransportPort> Drop for NetworkLayer<T> {
 mod tests {
     use super::*;
     use bacnet_transport::bip::BipTransport;
+    use bacnet_transport::loopback::LoopbackTransport;
     use bacnet_transport::sc::{LoopbackWebSocket, ScTransport, WebSocketPort};
     use bacnet_transport::sc_frame::{
         decode_sc_message, encode_sc_message, ScFunction, ScMessage, ScOption, Vmac,
@@ -506,6 +550,37 @@ mod tests {
         assert_eq!(received.apdu, test_apdu);
         assert_eq!(received.source_mac.as_slice(), net_a.local_mac());
         assert!(received.source_network.is_none());
+
+        net_a.stop().await.unwrap();
+        net_b.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn network_messages_are_published_without_entering_the_apdu_channel() {
+        let (transport_a, transport_b) =
+            LoopbackTransport::pair(MacAddr::from_slice(&[0x01]), MacAddr::from_slice(&[0x02]));
+        let mut net_a = NetworkLayer::new(transport_a);
+        let mut net_b = NetworkLayer::new(transport_b);
+        let _rx_a = net_a.start().await.unwrap();
+        let mut apdu_rx_b = net_b.start().await.unwrap();
+        let mut message_rx_b = net_b.subscribe_network_messages();
+
+        net_a
+            .broadcast_network_message(0x01, &[0x03, 0xE8, 0x07, 0xD0])
+            .await
+            .unwrap();
+
+        let received = timeout(Duration::from_secs(1), message_rx_b.recv())
+            .await
+            .expect("timed out waiting for network message")
+            .expect("network message channel closed");
+        assert_eq!(received.message_type, 0x01);
+        assert_eq!(received.payload.as_ref(), &[0x03, 0xE8, 0x07, 0xD0]);
+        assert_eq!(received.source_mac.as_slice(), &[0x01]);
+        assert!(received.source_network.is_none());
+        assert!(timeout(Duration::from_millis(25), apdu_rx_b.recv())
+            .await
+            .is_err());
 
         net_a.stop().await.unwrap();
         net_b.stop().await.unwrap();

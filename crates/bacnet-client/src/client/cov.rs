@@ -93,6 +93,34 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         .await
     }
 
+    /// Subscribe to COV notifications through an explicit router/DNET/DADR.
+    pub async fn subscribe_cov_routed(
+        &self,
+        router_mac: &[u8],
+        dest_network: u16,
+        dest_mac: &[u8],
+        subscriber_process_identifier: u32,
+        monitored_object_identifier: ObjectIdentifier,
+        confirmed: bool,
+        lifetime: Option<u32>,
+    ) -> Result<(), Error> {
+        let request = Self::subscribe_cov_request(
+            subscriber_process_identifier,
+            monitored_object_identifier,
+            Some(confirmed),
+            lifetime,
+        );
+        self.send_subscribe_cov_request(
+            ConfirmedTarget::Routed {
+                router_mac,
+                dest_network,
+                dest_mac,
+            },
+            request,
+        )
+        .await
+    }
+
     /// Subscribe to COV notifications for a discovered device, auto-routing if needed.
     pub async fn subscribe_cov_to_device(
         &self,
@@ -143,6 +171,32 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         self.send_subscribe_cov_request(
             ConfirmedTarget::Local {
                 mac: destination_mac,
+            },
+            request,
+        )
+        .await
+    }
+
+    /// Cancel a COV subscription through an explicit router/DNET/DADR.
+    pub async fn unsubscribe_cov_routed(
+        &self,
+        router_mac: &[u8],
+        dest_network: u16,
+        dest_mac: &[u8],
+        subscriber_process_identifier: u32,
+        monitored_object_identifier: ObjectIdentifier,
+    ) -> Result<(), Error> {
+        let request = Self::subscribe_cov_request(
+            subscriber_process_identifier,
+            monitored_object_identifier,
+            None,
+            None,
+        );
+        self.send_subscribe_cov_request(
+            ConfirmedTarget::Routed {
+                router_mac,
+                dest_network,
+                dest_mac,
             },
             request,
         )

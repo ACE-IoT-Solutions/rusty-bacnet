@@ -58,6 +58,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let tsm = Arc::new(Mutex::new(Tsm::new(tsm_config)));
         let tsm_dispatch = Arc::clone(&tsm);
         let device_table = Arc::new(Mutex::new(DeviceTable::new()));
+        let router_snapshot = Arc::new(Mutex::new(Vec::new()));
         let device_table_dispatch = Arc::clone(&device_table);
         let network_dispatch = Arc::clone(&network);
         let (cov_tx, _) =
@@ -118,9 +119,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                     warn!(error = %e, "Failed to encode segmented receive timeout Abort");
                                     continue;
                                 }
-                                let _ = network_dispatch
-                                    .send_apdu(&buf, &state.reply_mac, false, NetworkPriority::NORMAL)
-                                    .await;
+                                let _ = Self::send_segment_control(
+                                    &network_dispatch,
+                                    &buf,
+                                    &state.reply_mac,
+                                    &state.reply_network,
+                                )
+                                .await;
                             }
                         }
 
@@ -156,6 +161,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             network,
             tsm,
             device_table,
+            router_snapshot,
             cov_tx,
             device_tx,
             dispatch_task: Some(dispatch_task),

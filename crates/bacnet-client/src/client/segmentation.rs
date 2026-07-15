@@ -1,6 +1,33 @@
 use super::*;
 
 impl<T: TransportPort + 'static> BACnetClient<T> {
+    pub(super) async fn send_segment_control(
+        network: &Arc<NetworkLayer<T>>,
+        apdu: &[u8],
+        source_mac: &[u8],
+        source_network: &Option<NpduAddress>,
+    ) -> Result<(), Error> {
+        match source_network {
+            Some(address) if !address.mac_address.is_empty() => {
+                network
+                    .send_apdu_routed(
+                        apdu,
+                        address.network,
+                        &address.mac_address,
+                        source_mac,
+                        false,
+                        NetworkPriority::NORMAL,
+                    )
+                    .await
+            }
+            _ => {
+                network
+                    .send_apdu(apdu, source_mac, false, NetworkPriority::NORMAL)
+                    .await
+            }
+        }
+    }
+
     /// Handle a segmented ComplexAck: accumulate segments, send SegmentAcks,
     /// and reassemble when all segments are received.
     pub(super) async fn handle_segmented_complex_ack(
@@ -35,9 +62,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 warn!(error = %e, "Failed to encode segmentation-not-supported Abort");
                 return;
             }
-            let _ = network
-                .send_apdu(&buf, source_mac, false, NetworkPriority::NORMAL)
-                .await;
+            let _ = Self::send_segment_control(network, &buf, source_mac, source_network).await;
             return;
         }
 
@@ -57,6 +82,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             .or_insert_with(|| SegmentedReceiveState {
                 receiver: SegmentReceiver::new(),
                 reply_mac: MacAddr::from_slice(source_mac),
+                reply_network: source_network.clone(),
                 expected_next_seq: 0,
                 last_activity: Instant::now(),
                 window_position: 0,
@@ -99,9 +125,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 warn!(error = %e, "Failed to encode negative SegmentAck");
                 return;
             }
-            if let Err(e) = network
-                .send_apdu(&buf, source_mac, false, NetworkPriority::NORMAL)
-                .await
+            if let Err(e) =
+                Self::send_segment_control(network, &buf, source_mac, source_network).await
             {
                 warn!(error = %e, "Failed to send SegmentAck");
             }
@@ -132,9 +157,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 warn!(error = %e, "Failed to encode SegmentAck");
                 return;
             }
-            if let Err(e) = network
-                .send_apdu(&buf, source_mac, false, NetworkPriority::NORMAL)
-                .await
+            if let Err(e) =
+                Self::send_segment_control(network, &buf, source_mac, source_network).await
             {
                 warn!(error = %e, "Failed to send SegmentAck");
             }

@@ -10,6 +10,8 @@ create_exception!(rusty_bacnet, BacnetProtocolError, BacnetError);
 create_exception!(rusty_bacnet, BacnetTimeoutError, BacnetError);
 create_exception!(rusty_bacnet, BacnetRejectError, BacnetError);
 create_exception!(rusty_bacnet, BacnetAbortError, BacnetError);
+create_exception!(rusty_bacnet, BacnetBvlcError, BacnetError);
+create_exception!(rusty_bacnet, BacnetNotificationLagError, BacnetError);
 
 /// Convert a Rust `Error` into a Python exception.
 ///
@@ -45,6 +47,15 @@ pub fn to_py_err(err: Error) -> PyErr {
             });
             py_err
         }
+        Error::Bvlc { result_code } => {
+            let raw = result_code.to_raw();
+            let py_err =
+                BacnetBvlcError::new_err(format!("BVLC management error: {result_code:?}"));
+            Python::attach(|py| {
+                let _ = py_err.value(py).setattr("result_code", raw);
+            });
+            py_err
+        }
         _ => BacnetError::new_err(err.to_string()),
     }
 }
@@ -62,5 +73,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("BacnetRejectError", m.py().get_type::<BacnetRejectError>())?;
     m.add("BacnetAbortError", m.py().get_type::<BacnetAbortError>())?;
+    m.add("BacnetBvlcError", m.py().get_type::<BacnetBvlcError>())?;
+    m.add(
+        "BacnetNotificationLagError",
+        m.py().get_type::<BacnetNotificationLagError>(),
+    )?;
     Ok(())
 }

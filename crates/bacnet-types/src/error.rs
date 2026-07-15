@@ -9,7 +9,7 @@ use alloc::string::String;
 #[cfg(feature = "std")]
 use std::time::Duration;
 
-use crate::enums::{ErrorClass, ErrorCode};
+use crate::enums::{BvlcResultCode, ErrorClass, ErrorCode};
 
 fn format_protocol_error(class: u32, code: u32) -> String {
     let class_name = ErrorClass::ALL_NAMED
@@ -53,6 +53,13 @@ pub enum Error {
     Abort {
         /// Abort reason value.
         reason: u8,
+    },
+
+    /// BACnet/IP BVLC management result other than success (Annex J).
+    #[error("BVLC management error: {result_code:?}")]
+    Bvlc {
+        /// Typed BVLC result code, including unknown raw values.
+        result_code: BvlcResultCode,
     },
 
     /// Error encoding a PDU.

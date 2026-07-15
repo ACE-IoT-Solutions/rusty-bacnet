@@ -1,6 +1,7 @@
 //! Router and BBMD commands.
 
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::bip::BipTransport;
@@ -21,11 +22,61 @@ pub async fn devices_cmd<T: TransportPort + 'static>(
 
 /// Send Who-Is-Router-To-Network.
 pub async fn whois_router_cmd<T: TransportPort + 'static>(
-    _client: &BACnetClient<T>,
+    client: &BACnetClient<T>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // TODO: Send Who-Is-Router-To-Network (network layer message, not APDU).
-    output::print_success("Who-Is-Router-To-Network not yet implemented", format);
+    let routers = client
+        .who_is_router_to_network(None, Duration::from_secs(1))
+        .await?;
+    match format {
+        OutputFormat::Table => {
+            if routers.is_empty() {
+                println!("No routers found.");
+            } else {
+                let mut table = comfy_table::Table::new();
+                table.set_header(vec!["Router", "Routed Source", "Networks"]);
+                for router in &routers {
+                    let routed_source = router
+                        .source_network
+                        .as_ref()
+                        .map(|source| {
+                            format!(
+                                "{} / {}",
+                                source.network,
+                                output::format_mac(source.mac_address.as_slice())
+                            )
+                        })
+                        .unwrap_or_else(|| "-".into());
+                    table.add_row(vec![
+                        output::format_mac(router.source_mac.as_slice()),
+                        routed_source,
+                        router
+                            .networks
+                            .iter()
+                            .map(u16::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ]);
+                }
+                println!("{table}");
+            }
+        }
+        OutputFormat::Json => {
+            let values: Vec<_> = routers
+                .iter()
+                .map(|router| {
+                    serde_json::json!({
+                        "mac_address": router.source_mac.as_slice(),
+                        "address": output::format_mac(router.source_mac.as_slice()),
+                        "source_network": router.source_network.as_ref().map(|source| source.network),
+                        "source_address": router.source_network.as_ref().map(|source| source.mac_address.as_slice()),
+                        "networks": router.networks,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&values)?);
+        }
+    }
     Ok(())
 }
 

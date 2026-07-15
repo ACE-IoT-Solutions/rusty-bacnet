@@ -13,7 +13,10 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use pyo3::Py;
 use tokio::sync::broadcast;
 
-use bacnet_client::client::{COVNotificationDelivery, ReceivedCOVNotification};
+use bacnet_client::client::{
+    COVNotificationDelivery, ManagedCOVSubscription, ManagedCOVSubscriptionEvent,
+    ReceivedCOVNotification, RouterInfo,
+};
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_encoding::primitives::{decode_application_value, encode_property_value};
 use bacnet_services::common::{BACnetPropertyValue, PropertyReference};
@@ -23,19 +26,26 @@ use bacnet_types::enums as bacnet_enums;
 use bacnet_types::primitives;
 
 mod address;
+mod bbmd;
 mod cov;
 mod device;
 mod enums;
 mod object_identifier;
 mod property_value;
+mod router;
 mod rpm_wpm;
 
-pub use address::parse_address;
-pub use cov::{PyCovNotification, PyCovNotificationIterator};
+pub use address::{parse_address, PyDirectTarget, PyRoutedTarget, PyTarget};
+pub use bbmd::{PyBdtEntry, PyFdtEntry};
+pub use cov::{
+    PyCovNotification, PyCovNotificationIterator, PyManagedCOVEvent, PyManagedCOVEventIterator,
+    PyManagedCOVSubscription, PyManagedCOVTarget,
+};
 pub use device::PyDiscoveredDevice;
 pub use enums::*;
 pub use object_identifier::PyObjectIdentifier;
 pub use property_value::PyPropertyValue;
+pub use router::PyRouterInfo;
 pub(crate) use rpm_wpm::{py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py};
 
 // Module registration
@@ -80,9 +90,17 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Composite types
     m.add_class::<PyObjectIdentifier>()?;
     m.add_class::<PyPropertyValue>()?;
+    m.add_class::<PyDirectTarget>()?;
+    m.add_class::<PyRoutedTarget>()?;
+    m.add_class::<PyRouterInfo>()?;
+    m.add_class::<PyBdtEntry>()?;
+    m.add_class::<PyFdtEntry>()?;
     m.add_class::<PyDiscoveredDevice>()?;
     m.add_class::<PyCovNotification>()?;
     m.add_class::<PyCovNotificationIterator>()?;
+    m.add_class::<PyManagedCOVEvent>()?;
+    m.add_class::<PyManagedCOVEventIterator>()?;
+    m.add_class::<PyManagedCOVSubscription>()?;
 
     Ok(())
 }

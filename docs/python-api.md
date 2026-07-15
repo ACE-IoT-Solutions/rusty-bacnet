@@ -44,6 +44,79 @@ asyncio.run(main())
 
 ---
 
+## Destination targets
+
+`DirectTarget` and `RoutedTarget` are immutable records for preserving BACnet/IP
+destination data, including non-default UDP ports. `RoutedTarget.address` is the
+raw NPDU destination address (DADR), not a BACnet/IP address.
+
+```python
+from rusty_bacnet import DirectTarget, RoutedTarget
+
+direct = DirectTarget("192.0.2.10:47809")
+routed = RoutedTarget(
+    router="198.51.100.7:47810",
+    network=2001,
+    address=b"\x00\x7f\x01",
+)
+```
+
+Direct and router addresses must be IPv4 `ip:port` values. Routed networks must
+be in `1..=65534`, and DADRs must contain 1 to 255 bytes; local, remote, and
+global broadcast forms are not represented by these target types.
+
+The `read_property`, `read_property_multiple`, `write_property`, and
+`write_property_multiple` client methods accept a legacy address string, a
+`DirectTarget`, or a `RoutedTarget`. A routed target sends directly through its
+router and does not require a preceding Who-Is or an entry in the client device
+table. Device-instance methods remain available when automatic routing through
+the learned device table is preferred.
+
+`await client.who_is_router(network=None, timeout_ms=1000)` broadcasts an
+unscoped or DNET-scoped Who-Is-Router-To-Network and returns immutable
+`RouterInfo` records after the observation window. Repeated announcements from
+the same source are merged, and `networks` is sorted and deduplicated.
+
+```python
+routers = await client.who_is_router(timeout_ms=500)
+for router in routers:
+    print(router.address, router.mac_address, router.networks)
+
+network_2001 = await client.who_is_router(network=2001, timeout_ms=500)
+```
+
+If the coroutine is cancelled by an outer `asyncio` timeout, valid responses
+received before cancellation remain available from
+`await client.router_snapshot()`. A normal observation-window expiry returns
+successfully (including an empty list); protocol and transport failures raise
+their typed exceptions.
+
+For BACnet/IP, `RouterInfo.address` preserves the responder's UDP port and
+`mac_address` exposes all six source bytes. Routed announcements also expose
+`source_network` and raw `source_address`.
+
+### BBMD table inspection
+
+`await client.read_bdt(address, timeout_ms=3000)` and
+`await client.read_fdt(address, timeout_ms=3000)` are available only when the
+client is configured for BACnet/IP. Each call creates a fresh ephemeral UDP
+probe, correlates the reply to the exact BBMD IPv4 address and port, and closes
+the probe on success, failure, timeout, or cancellation. The live application
+socket and client dispatcher are not reused.
+
+BDT results are immutable `BdtEntry` records with `ip`, `ip_bytes`, `port`,
+`broadcast_mask`, and `broadcast_mask_bytes`. FDT results are immutable
+`FdtEntry` records with `ip`, `ip_bytes`, `port`, `ttl`, and
+`seconds_remaining`. A BVLC negative result raises `BacnetBvlcError` with its
+raw `result_code`; a silent peer raises `BacnetTimeoutError`.
+
+```python
+bdt = await client.read_bdt("192.0.2.10:47809", timeout_ms=1000)
+fdt = await client.read_fdt("192.0.2.10:47809", timeout_ms=1000)
+```
+
+---
+
 ## Enums
 
 All enums have class-level named constants, plus `from_raw(int)` and `to_raw()` for raw access. They support `==`, `hash()`, and `repr()`.
@@ -218,6 +291,10 @@ Read-only incoming COV notification (frozen).
 | `.initiating_device_identifier` | `ObjectIdentifier` | Source device |
 | `.monitored_object_identifier` | `ObjectIdentifier` | Changed object |
 | `.time_remaining` | `int` | Subscription seconds remaining |
+| `.delivery` | `str` | `"confirmed"` or `"unconfirmed"` |
+| `.source_mac` | `bytes` | Immediate peer MAC |
+| `.source_network` | `int \| None` | Routed source network |
+| `.source_address` | `bytes \| None` | Routed source address |
 | `.values` | `list[dict]` | Changed properties (see below) |
 
 Each item in `.values` is a dict:
@@ -242,7 +319,9 @@ async for notification in client.cov_notifications():
         print(f"  {v['property_id']}: {v['value']}")
 ```
 
-Automatically retries on lagged messages. Raises `StopAsyncIteration` when the client is stopped.
+Raises `BacnetNotificationLagError` with a `.skipped` count if channel
+backpressure loses notifications. Raises `StopAsyncIteration` when the client
+is stopped.
 
 ---
 
@@ -384,6 +463,37 @@ await client.unsubscribe_cov(
     monitored_object_identifier=ObjectIdentifier(ObjectType.ANALOG_INPUT, 1),
 )
 ```
+
+Both methods accept a string address, `DirectTarget`, or `RoutedTarget`.
+
+#### `manage_cov_subscription(..., lifetime, renewal_margin_ms=30000, event_channel_capacity=16)`
+
+Creates a finite subscription and renews it before expiry. The returned
+`ManagedCOVSubscription` has idempotent async `close()` and `cancel()` methods,
+`closed`/`finished` state, a durable `last_event`, and an `events()` async
+iterator. Event kinds are `notification_observed`, `impending_expiry`,
+`renewed`, `renewal_failed`, and `notification_lagged`; their optional detail
+fields are `time_remaining`, `requested_lifetime`, `renew_after_ms`, `error`,
+and `skipped`.
+
+```python
+handle = await client.manage_cov_subscription(
+    RoutedTarget("192.168.1.10:47808", 2001, b"\x05"),
+    subscriber_process_identifier=1,
+    monitored_object_identifier=ObjectIdentifier(ObjectType.ANALOG_INPUT, 1),
+    confirmed=False,
+    lifetime=60,
+    renewal_margin_ms=15_000,
+)
+try:
+    async for event in handle.events():
+        if event.kind == "renewal_failed":
+            raise RuntimeError(event.error)
+finally:
+    await handle.close()
+```
+
+Stopping the owning client also stops all registered managed renewal tasks.
 
 #### `cov_notifications() -> CovNotificationIterator`
 

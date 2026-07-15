@@ -36,6 +36,7 @@ impl BACnetClient {
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
+            managed_cov: Arc::new(std::sync::Mutex::new(Vec::new())),
             transport_type: transport.to_string(),
             interface: interface.to_string(),
             port,
@@ -150,7 +151,9 @@ impl BACnetClient {
         _exc_tb: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let managed_cov = Arc::clone(&self.managed_cov);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            stop_managed_cov_subscriptions(&managed_cov).await;
             let arc = {
                 let mut guard = inner.lock().await;
                 guard.take()
@@ -175,7 +178,9 @@ impl BACnetClient {
     /// Explicitly stop the client.
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let managed_cov = Arc::clone(&self.managed_cov);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            stop_managed_cov_subscriptions(&managed_cov).await;
             let arc = {
                 let mut guard = inner.lock().await;
                 guard.take()
@@ -193,5 +198,18 @@ impl BACnetClient {
             }
             Ok(())
         })
+    }
+}
+
+async fn stop_managed_cov_subscriptions(registry: &ManagedCOVRegistry) {
+    let states = registry
+        .lock()
+        .map(|mut registry| std::mem::take(&mut *registry))
+        .unwrap_or_default();
+    for state in states.into_iter().filter_map(|state| state.upgrade()) {
+        let managed = state.lock().ok().and_then(|mut managed| managed.take());
+        if let Some(managed) = managed {
+            managed.stop().await;
+        }
     }
 }
