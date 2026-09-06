@@ -117,7 +117,6 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
         broadcast_addr: Ipv4Addr::BROADCAST,
         broadcast_port: 47808,
         pending_bvlc_response: pending_bvlc_response.clone(),
-        bdt_persist_path: None,
         force_dbtn_forward_failure: false,
     };
 
@@ -322,7 +321,7 @@ async fn read_fdt_from_non_bbmd_surfaces_typed_nak() {
 }
 
 #[tokio::test]
-async fn write_bdt_to_bbmd() {
+async fn write_bdt_to_bbmd_always_naks_and_preserves_table() {
     let mut bbmd_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let old_bdt_entry = BdtEntry {
         ip: [10, 0, 0, 1],
@@ -330,6 +329,8 @@ async fn write_bdt_to_bbmd() {
         broadcast_mask: [255, 255, 255, 0],
     };
     bbmd_transport.enable_bbmd(vec![old_bdt_entry.clone()]);
+    // Even an explicitly listed sender must observe the not-supported result.
+    bbmd_transport.set_bbmd_management_acl(vec![[127, 0, 0, 1]]);
     let _bbmd_rx = bbmd_transport.start().await.unwrap();
     let bbmd_mac = bbmd_transport.local_mac().to_vec();
 
@@ -345,16 +346,21 @@ async fn write_bdt_to_bbmd() {
         .write_bdt(&bbmd_mac, &new_bdt)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
+    assert_eq!(
+        result,
+        BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
+    );
 
-    // Verify by reading back — includes written entry plus auto-inserted self
+    // Verify memory is unchanged: prior entry remains, replacement absent.
     let bdt = client_transport.read_bdt(&bbmd_mac).await.unwrap();
-    assert!(bdt
-        .iter()
-        .any(|e| e.ip == [192, 168, 1, 1] && e.port == 0xBAC0));
     assert!(
-        !bdt.iter().any(|e| e == &old_bdt_entry),
-        "Write-BDT must replace the prior configured BDT entries"
+        bdt.iter().any(|e| e == &old_bdt_entry),
+        "rejected Write-BDT must preserve the prior BDT"
+    );
+    assert!(
+        !bdt.iter()
+            .any(|e| e.ip == [192, 168, 1, 1] && e.port == 0xBAC0),
+        "rejected Write-BDT must not apply the replacement entry"
     );
 
     client_transport.stop().await.unwrap();
@@ -408,6 +414,18 @@ async fn write_bdt_to_non_bbmd_surfaces_typed_nak() {
     let result = client_transport.write_bdt(&server_mac, &[]).await.unwrap();
     assert_eq!(
         result,
+        BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
+    );
+
+    // A malformed payload to a non-BBMD answers the same not-supported result.
+    let response = raw_bvlc_request(
+        &server_mac,
+        BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE,
+        &[0; bbmd::BDT_ENTRY_SIZE - 1],
+    )
+    .await;
+    assert_eq!(
+        decode_bvlc_result_code(&response).unwrap(),
         BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
     );
 
@@ -556,6 +574,7 @@ async fn delete_fdt_entry_to_non_bbmd_surfaces_typed_nak() {
 async fn delete_fdt_entry_removes_registered_foreign_device() {
     let mut bbmd_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     bbmd_transport.enable_bbmd(vec![]);
+    bbmd_transport.set_bbmd_management_acl(vec![[127, 0, 0, 1]]);
     let _bbmd_rx = bbmd_transport.start().await.unwrap();
     let bbmd_mac = bbmd_transport.local_mac().to_vec();
 
@@ -586,6 +605,7 @@ async fn delete_fdt_entry_removes_registered_foreign_device() {
 async fn delete_fdt_entry_rejects_malformed_payload_and_preserves_entry() {
     let mut bbmd_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     bbmd_transport.enable_bbmd(vec![]);
+    bbmd_transport.set_bbmd_management_acl(vec![[127, 0, 0, 1]]);
     let _bbmd_rx = bbmd_transport.start().await.unwrap();
     let bbmd_mac = bbmd_transport.local_mac().to_vec();
 

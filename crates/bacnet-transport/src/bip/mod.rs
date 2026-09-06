@@ -135,7 +135,9 @@ pub struct BipTransport {
     registration_task: Option<JoinHandle<()>>,
     /// Pending BVLC management response, including the expected sender and response kind.
     pending_bvlc_response: Arc<Mutex<Option<PendingBvlcResponse>>>,
-    /// Optional path for persisting the BDT across restarts.
+    /// Optional path for loading an externally provisioned persisted BDT
+    /// (wire format, 10 bytes per entry) at startup. Inbound Write-BDT does
+    /// not update this file.
     bdt_persist_path: Option<std::path::PathBuf>,
 }
 
@@ -172,15 +174,17 @@ impl BipTransport {
         });
     }
 
-    /// Set the path for persisting the BDT across restarts.
-    /// Must be called before `start()`. The BDT is stored using the wire encoding
-    /// (10 bytes per entry) — no additional serialization dependencies needed.
+    /// Set the path for loading an externally provisioned persisted BDT
+    /// (wire format, 10 bytes per entry) at startup.
+    /// Must be called before `start()`. Inbound Write-BDT does not update
+    /// this file — no additional serialization dependencies needed.
     pub fn set_bdt_persist_path(&mut self, path: std::path::PathBuf) {
         self.bdt_persist_path = Some(path);
     }
 
-    /// Set the management ACL for BBMD mode.
+    /// Set the management ACL for BBMD Delete-FDT-Entry.
     /// Must be called after `enable_bbmd()` and before `start()`.
+    /// An empty ACL denies all Delete-FDT-Entry senders (fail closed).
     pub fn set_bbmd_management_acl(&mut self, acl: Vec<[u8; 4]>) {
         if let Some(config) = &mut self.bbmd_config {
             config.management_acl = acl;
@@ -315,6 +319,9 @@ impl BipTransport {
     }
 
     /// Send Write-Broadcast-Distribution-Table and return the result code.
+    ///
+    /// Outbound client helper only. A conforming 135-2020 receiver answers
+    /// with the not-supported result and leaves its table unchanged.
     pub async fn write_bdt(
         &self,
         target: &[u8],
@@ -514,7 +521,6 @@ impl TransportPort for BipTransport {
             broadcast_addr: self.broadcast_address,
             broadcast_port: self.port,
             pending_bvlc_response: self.pending_bvlc_response.clone(),
-            bdt_persist_path: self.bdt_persist_path.clone(),
             #[cfg(test)]
             force_dbtn_forward_failure: false,
         };

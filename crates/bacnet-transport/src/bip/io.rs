@@ -78,7 +78,6 @@ pub(super) struct RecvContext {
     pub(super) broadcast_addr: Ipv4Addr,
     pub(super) broadcast_port: u16,
     pub(super) pending_bvlc_response: Arc<Mutex<Option<PendingBvlcResponse>>>,
-    pub(super) bdt_persist_path: Option<std::path::PathBuf>,
     #[cfg(test)]
     pub(super) force_dbtn_forward_failure: bool,
 }
@@ -379,77 +378,14 @@ pub(super) async fn handle_bvll_message(
         }
 
         f if f == BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE => {
-            if let Some(bbmd) = &ctx.bbmd {
-                // Check management ACL before accepting Write-BDT
-                let allowed = {
-                    let state = bbmd.lock().await;
-                    state.is_management_allowed(&sender.0)
-                };
-                if !allowed {
-                    debug!(
-                        "Rejecting Write-BDT from non-ACL sender {:?}:{}",
-                        Ipv4Addr::from(sender.0),
-                        sender.1
-                    );
-                    send_bvlc_result(
-                        &ctx.socket,
-                        sender,
-                        BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK,
-                    )
-                    .await;
-                } else {
-                    match BbmdState::decode_bdt(&msg.payload) {
-                        Ok(entries) => {
-                            let mut state = bbmd.lock().await;
-                            match state.set_bdt(entries) {
-                                Ok(()) => {
-                                    // Persist BDT to disk if configured
-                                    if let Some(ref path) = ctx.bdt_persist_path {
-                                        let mut buf = BytesMut::new();
-                                        state.encode_bdt(&mut buf);
-                                        if let Err(e) = std::fs::write(path, &buf) {
-                                            warn!(
-                                                error = %e,
-                                                path = %path.display(),
-                                                "Failed to persist BDT"
-                                            );
-                                        }
-                                    }
-                                    send_bvlc_result(
-                                        &ctx.socket,
-                                        sender,
-                                        BvlcResultCode::SUCCESSFUL_COMPLETION,
-                                    )
-                                    .await;
-                                }
-                                Err(_) => {
-                                    send_bvlc_result(
-                                        &ctx.socket,
-                                        sender,
-                                        BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            send_bvlc_result(
-                                &ctx.socket,
-                                sender,
-                                BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK,
-                            )
-                            .await;
-                        }
-                    }
-                }
-            } else {
-                send_bvlc_result(
-                    &ctx.socket,
-                    sender,
-                    BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK,
-                )
-                .await;
-            }
+            // Annex J.4.4.2 requires receivers to answer Write-BDT with the
+            // not-supported result. No decoding, state change, or persistence.
+            send_bvlc_result(
+                &ctx.socket,
+                sender,
+                BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK,
+            )
+            .await;
         }
 
         f if f == BvlcFunction::READ_FOREIGN_DEVICE_TABLE => {
