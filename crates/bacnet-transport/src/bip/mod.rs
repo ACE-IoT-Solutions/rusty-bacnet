@@ -22,10 +22,12 @@ use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
 use bacnet_types::error::Error;
 
 mod io;
+mod rate_limit;
 use io::{
     handle_bvll_message, original_destination_matches, resolve_local_ip,
     send_register_foreign_device, RecvContext,
 };
+use rate_limit::ManagementRateLimiter;
 
 /// Default BACnet/IP port (0xBAC0 = 47808).
 pub const DEFAULT_BACNET_PORT: u16 = 0xBAC0;
@@ -533,6 +535,7 @@ impl TransportPort for BipTransport {
             broadcast_addr: self.broadcast_address,
             broadcast_port: self.port,
             pending_bvlc_response: self.pending_bvlc_response.clone(),
+            management_limiter: std::sync::Mutex::new(ManagementRateLimiter::new()),
             #[cfg(test)]
             force_dbtn_forward_failure: false,
         };
@@ -708,5 +711,7 @@ mod management_ack_tests;
 mod npdu_addressing_tests;
 #[cfg(test)]
 mod original_tests;
+#[cfg(test)]
+mod rate_limit_tests;
 #[cfg(test)]
 mod tests;

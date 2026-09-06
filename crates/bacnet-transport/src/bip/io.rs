@@ -13,6 +13,7 @@ use crate::bbmd::BbmdState;
 use crate::bvll::{self, encode_bip_mac, encode_bvll, encode_bvll_forwarded};
 use crate::port::ReceivedNpdu;
 
+use super::rate_limit::{is_covered_management_request, ManagementRateLimiter};
 use super::{decode_bvlc_result_code, PendingBvlcResponse};
 
 pub(super) fn original_destination_matches(
@@ -78,6 +79,7 @@ pub(super) struct RecvContext {
     pub(super) broadcast_addr: Ipv4Addr,
     pub(super) broadcast_port: u16,
     pub(super) pending_bvlc_response: Arc<Mutex<Option<PendingBvlcResponse>>>,
+    pub(super) management_limiter: std::sync::Mutex<ManagementRateLimiter>,
     #[cfg(test)]
     pub(super) force_dbtn_forward_failure: bool,
 }
@@ -106,6 +108,24 @@ pub(super) async fn handle_bvll_message(
     sender: ([u8; 4], u16),
     ctx: &RecvContext,
 ) {
+    // Bounded inbound management quota. Excess covered requests are
+    // silently discarded before payload validation, table access, ACL
+    // evaluation, or any response/NAK. Write-BDT and data-plane functions
+    // are excluded and fall through below.
+    if is_covered_management_request(msg.function) {
+        let allowed = match ctx.management_limiter.lock() {
+            Ok(mut limiter) => limiter.check_now(sender.0),
+            Err(poison) => poison.into_inner().check_now(sender.0),
+        };
+        if !allowed {
+            debug!(
+                function = msg.function.to_raw(),
+                ip = %Ipv4Addr::from(sender.0),
+                "Discarding over-limit BBMD management request"
+            );
+            return;
+        }
+    }
     match msg.function {
         f if f == BvlcFunction::ORIGINAL_UNICAST_NPDU => {
             let source_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
