@@ -543,7 +543,9 @@ async fn recipient_send_and_reservation_failures_do_not_retract_ack_or_block_oth
     drop(leases);
 }
 
-#[tokio::test]
+// Keep the worker's 20 ms retry deadline ahead of the 30 ms observation without
+// depending on platform timer granularity or a fixed number of scheduler yields.
+#[tokio::test(start_paused = true)]
 async fn duplicate_is_silent_new_invoke_notifies_again_and_confirmed_retry_is_immutable() {
     let duplicate = Harness::new(
         vec![local_recipient(UNCONFIRMED_RECIPIENT, 17, false)],
@@ -563,9 +565,6 @@ async fn duplicate_is_silent_new_invoke_notifies_again_and_confirmed_retry_is_im
         20,
     );
     assert_ack(retry.dispatch_with_reply(0x62).await.unwrap(), 0x62);
-    for _ in 0..16 {
-        tokio::task::yield_now().await;
-    }
     tokio::time::sleep(Duration::from_millis(30)).await;
     let frames = retry.frames();
     assert!(

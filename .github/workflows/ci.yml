@@ -176,7 +176,7 @@ jobs:
         with:
           key: ${{ matrix.os }}
           cache-bin: false
-      - run: cargo test --workspace --exclude rusty-bacnet --locked ${{ matrix.features }}
+      - run: cargo test --workspace --exclude rusty-bacnet --locked --no-fail-fast ${{ matrix.features }}
 
   deny:
     name: Cargo Deny
