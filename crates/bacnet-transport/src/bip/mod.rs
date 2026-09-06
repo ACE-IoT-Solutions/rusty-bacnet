@@ -479,17 +479,29 @@ impl TransportPort for BipTransport {
 
         if let Some(config) = self.bbmd_config.take() {
             let mut state = BbmdState::new(local_ip.octets(), local_port);
-            // Try loading persisted BDT; fall back to initial config BDT
+            // Try loading persisted BDT; fall back to initial config BDT on
+            // missing/unreadable files, structural decode failure, or semantic
+            // validation/conflict failure. A valid persisted BDT wins; an
+            // invalid configured fallback fails startup via `set_bdt` below.
             let initial_bdt = if let Some(ref path) = self.bdt_persist_path {
                 match std::fs::read(path) {
                     Ok(data) => match BbmdState::decode_bdt(&data) {
                         Ok(entries) => {
-                            debug!(
-                                path = %path.display(),
-                                entries = entries.len(),
-                                "Loaded persisted BDT"
-                            );
-                            entries
+                            let mut probe = BbmdState::new(local_ip.octets(), local_port);
+                            match probe.set_bdt(entries) {
+                                Ok(()) => {
+                                    debug!(
+                                        path = %path.display(),
+                                        entries = probe.bdt().len(),
+                                        "Loaded persisted BDT"
+                                    );
+                                    probe.bdt().to_vec()
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "Persisted BDT invalid, using config");
+                                    config.initial_bdt
+                                }
+                            }
                         }
                         Err(e) => {
                             warn!(error = %e, "Failed to decode persisted BDT, using config");

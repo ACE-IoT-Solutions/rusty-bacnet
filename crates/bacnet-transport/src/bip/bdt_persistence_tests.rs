@@ -199,3 +199,112 @@ async fn invalid_persisted_bdt_falls_back_to_configured_bdt() {
     client_transport.stop().await.unwrap();
     bbmd_transport.stop().await.unwrap();
 }
+
+#[tokio::test]
+async fn semantically_invalid_persisted_bdt_falls_back_to_configured_bdt() {
+    let persist = TempBdtFile::new("bdt-semantic-invalid");
+    // Structurally valid wire format (one 10-byte entry) but semantically
+    // invalid: UDP port 0 must be rejected before commit.
+    let invalid_entry = BdtEntry {
+        ip: [192, 0, 2, 44],
+        port: 0,
+        broadcast_mask: [255, 255, 255, 255],
+    };
+    let mut seed_buf = BytesMut::new();
+    bbmd::encode_bdt_entries(std::slice::from_ref(&invalid_entry), &mut seed_buf);
+    fs::write(persist.path(), &seed_buf).unwrap();
+
+    let fallback_entry = BdtEntry {
+        ip: [198, 51, 100, 12],
+        port: 0xBAC0,
+        broadcast_mask: [255, 255, 255, 0],
+    };
+    let mut bbmd_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    bbmd_transport.enable_bbmd(vec![fallback_entry.clone()]);
+    bbmd_transport.set_bdt_persist_path(persist.path().to_path_buf());
+    let _bbmd_rx = bbmd_transport.start().await.unwrap();
+    let bbmd_mac = bbmd_transport.local_mac().to_vec();
+
+    let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    let _client_rx = client_transport.start().await.unwrap();
+
+    let bdt = client_transport.read_bdt(&bbmd_mac).await.unwrap();
+    assert!(
+        bdt.iter().any(|entry| entry == &fallback_entry),
+        "semantically invalid persisted BDT must fall back to the configured BDT"
+    );
+    assert!(
+        !bdt.iter().any(|entry| entry == &invalid_entry),
+        "semantically invalid persisted entry must not be committed"
+    );
+
+    client_transport.stop().await.unwrap();
+    bbmd_transport.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn conflicting_persisted_bdt_falls_back_to_configured_bdt() {
+    let persist = TempBdtFile::new("bdt-conflict");
+    // Same (ip, port) with different masks conflicts and must be rejected.
+    let first = BdtEntry {
+        ip: [192, 0, 2, 45],
+        port: 0xBAC0,
+        broadcast_mask: [255, 255, 255, 255],
+    };
+    let conflicting = BdtEntry {
+        ip: [192, 0, 2, 45],
+        port: 0xBAC0,
+        broadcast_mask: [255, 255, 255, 0],
+    };
+    let mut seed_buf = BytesMut::new();
+    bbmd::encode_bdt_entries(&[first.clone(), conflicting.clone()], &mut seed_buf);
+    fs::write(persist.path(), &seed_buf).unwrap();
+
+    let fallback_entry = BdtEntry {
+        ip: [198, 51, 100, 13],
+        port: 0xBAC0,
+        broadcast_mask: [255, 255, 255, 0],
+    };
+    let mut bbmd_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    bbmd_transport.enable_bbmd(vec![fallback_entry.clone()]);
+    bbmd_transport.set_bdt_persist_path(persist.path().to_path_buf());
+    let _bbmd_rx = bbmd_transport.start().await.unwrap();
+    let bbmd_mac = bbmd_transport.local_mac().to_vec();
+
+    let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    let _client_rx = client_transport.start().await.unwrap();
+
+    let bdt = client_transport.read_bdt(&bbmd_mac).await.unwrap();
+    assert!(
+        bdt.iter().any(|entry| entry == &fallback_entry),
+        "conflicting persisted BDT must fall back to the configured BDT"
+    );
+    assert!(
+        !bdt.iter().any(|entry| entry == &first),
+        "conflicting persisted entries must not be committed"
+    );
+
+    client_transport.stop().await.unwrap();
+    bbmd_transport.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_configured_bdt_fails_startup() {
+    let invalid_entry = BdtEntry {
+        ip: [224, 0, 0, 1],
+        port: 0xBAC0,
+        broadcast_mask: [255, 255, 255, 255],
+    };
+    let mut bbmd_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    bbmd_transport.enable_bbmd(vec![invalid_entry]);
+    let err = bbmd_transport.start().await.unwrap_err();
+    let text = format!("{err}");
+    assert!(
+        text.contains("BDT configuration error"),
+        "invalid configured BDT must fail startup, got: {text}"
+    );
+    assert!(
+        text.to_lowercase().contains("multicast"),
+        "invalid configured error must name the category, got: {text}"
+    );
+}
