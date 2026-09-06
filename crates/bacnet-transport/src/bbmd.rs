@@ -106,8 +106,8 @@ pub struct BbmdState {
     fdt: Vec<FdtEntry>,
     local_ip: [u8; 4],
     local_port: u16,
-    /// Allowed source IPs for management operations (Write-BDT, Delete-FDT).
-    /// Empty = all sources allowed (legacy/default behavior).
+    /// Allowed source IPs for Delete-Foreign-Device-Table-Entry.
+    /// Empty means deny all (fail closed).
     management_acl: Vec<[u8; 4]>,
 }
 
@@ -309,14 +309,13 @@ impl BbmdState {
     // Management ACL
     // -----------------------------------------------------------------------
 
-    /// Check whether a source IP is allowed to perform management operations
-    /// (Write-BDT, Delete-FDT-Entry). Returns `true` if the ACL is empty
-    /// (all allowed) or the IP is in the ACL.
+    /// Check whether a source IP is allowed to perform Delete-FDT-Entry.
+    /// An empty ACL denies all sources (fail closed).
     pub fn is_management_allowed(&self, source_ip: &[u8; 4]) -> bool {
-        self.management_acl.is_empty() || self.management_acl.contains(source_ip)
+        self.management_acl.contains(source_ip)
     }
 
-    /// Set the management ACL. An empty list means all sources are allowed.
+    /// Set the Delete-FDT-Entry management ACL. An empty list denies all sources.
     pub fn set_management_acl(&mut self, acl: Vec<[u8; 4]>) {
         self.management_acl = acl;
     }
@@ -765,10 +764,10 @@ mod tests {
     }
 
     #[test]
-    fn management_acl_empty_allows_all() {
+    fn management_acl_empty_denies_all() {
         let bbmd = make_bbmd();
-        assert!(bbmd.is_management_allowed(&[10, 0, 0, 1]));
-        assert!(bbmd.is_management_allowed(&[192, 168, 1, 1]));
+        assert!(!bbmd.is_management_allowed(&[10, 0, 0, 1]));
+        assert!(!bbmd.is_management_allowed(&[192, 168, 1, 1]));
     }
 
     #[test]
@@ -834,11 +833,12 @@ mod tests {
     }
 
     #[test]
-    fn management_acl_clear_restores_open() {
+    fn management_acl_clear_denies_all() {
         let mut bbmd = make_bbmd();
         bbmd.set_management_acl(vec![[10, 0, 0, 1]]);
         assert!(!bbmd.is_management_allowed(&[10, 0, 0, 2]));
         bbmd.set_management_acl(Vec::new());
-        assert!(bbmd.is_management_allowed(&[10, 0, 0, 2]));
+        assert!(!bbmd.is_management_allowed(&[10, 0, 0, 2]));
+        assert!(!bbmd.is_management_allowed(&[10, 0, 0, 1]));
     }
 }
