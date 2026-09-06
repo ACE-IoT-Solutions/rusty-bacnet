@@ -102,7 +102,9 @@ impl TransportPort for BlockingRetryTransport {
     }
 }
 
-#[tokio::test]
+// Loopback uses only Tokio channels, so advance retry timers without depending
+// on OS timer resolution across 256 waits (particularly on Windows).
+#[tokio::test(start_paused = true)]
 async fn max_retry_budget_sends_exactly_255_retransmissions() {
     let (client_transport, mut server_transport) =
         LoopbackTransport::pair(CLIENT_MAC.to_vec(), SERVER_MAC.to_vec());
