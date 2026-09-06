@@ -3,6 +3,7 @@
 //! Manages the Broadcast Distribution Table (BDT) and Foreign Device Table
 //! (FDT) per ASHRAE 135-2020 Annex J. Pure state/logic — no async or I/O.
 
+use std::collections::{hash_map::Entry, HashMap};
 use std::time::{Duration, Instant};
 
 use bacnet_types::enums::BvlcResultCode;
@@ -47,6 +48,49 @@ impl FdtEntry {
         let elapsed = self.registered_at.elapsed().as_secs();
         let total = self.ttl as u64 + Self::GRACE_PERIOD;
         total.saturating_sub(elapsed).min(u16::MAX as u64) as u16
+    }
+}
+
+/// Prefix length of a contiguous IPv4 netmask, or `None` when non-contiguous.
+fn bdt_mask_prefix_len(mask: [u8; 4]) -> Option<u32> {
+    let m = u32::from_be_bytes(mask);
+    let inv = !m;
+    (inv & inv.wrapping_add(1) == 0).then_some(m.count_ones())
+}
+
+fn bdt_invalid(e: &BdtEntry, reason: &str) -> Error {
+    Error::Encoding(format!("BDT {reason}: {e:?}"))
+}
+
+/// Validate one BDT candidate entry against the issue #529 security policy.
+fn validate_bdt_entry(e: &BdtEntry) -> Result<(), Error> {
+    let mask = u32::from_be_bytes(e.broadcast_mask);
+    let ip = u32::from_be_bytes(e.ip);
+    let host = !mask;
+    let prefix = bdt_mask_prefix_len(e.broadcast_mask).unwrap_or(33);
+    let reason = if e.port == 0 {
+        "invalid port 0"
+    } else if e.ip == [0, 0, 0, 0] {
+        "unspecified IP"
+    } else if e.ip == [255, 255, 255, 255] {
+        "limited-broadcast"
+    } else if (224..=239).contains(&e.ip[0]) {
+        "multicast IP"
+    } else if prefix == 33 {
+        "non-contiguous mask"
+    } else if prefix < 32 && ip & host == 0 {
+        "subnet network address"
+    } else if prefix < 32 && ip | mask == u32::MAX {
+        "subnet directed-broadcast"
+    } else if ip | host == u32::MAX {
+        "limited-broadcast target"
+    } else {
+        ""
+    };
+    if reason.is_empty() {
+        Ok(())
+    } else {
+        Err(bdt_invalid(e, reason))
     }
 }
 
@@ -132,21 +176,42 @@ impl BbmdState {
 
     /// Replace the entire BDT.
     ///
-    /// Returns an error if the number of entries exceeds `MAX_BDT_ENTRIES`.
+    /// Central commit choke point for issue #529: validates and canonicalizes
+    /// the complete candidate before changing `self.bdt`. Byte-identical
+    /// duplicates collapse in stable first-seen order; the same `(ip, port)`
+    /// with different masks rejects the whole candidate. The local BBMD is
+    /// auto-inserted as `/32` when absent. Any invalid, conflicting, or
+    /// over-capacity candidate returns `Error::Encoding` and preserves the
+    /// previously committed table exactly.
     pub fn set_bdt(&mut self, entries: Vec<BdtEntry>) -> Result<(), Error> {
-        let needs_self = !entries
+        let cap = entries.len().min(Self::MAX_BDT_ENTRIES);
+        let mut seen: HashMap<([u8; 4], u16), [u8; 4]> = HashMap::with_capacity(cap);
+        let mut canonical: Vec<BdtEntry> = Vec::with_capacity(cap);
+        for entry in entries {
+            validate_bdt_entry(&entry)?;
+            match seen.entry((entry.ip, entry.port)) {
+                Entry::Occupied(o) => {
+                    if *o.get() != entry.broadcast_mask {
+                        return Err(bdt_invalid(&entry, "conflicting masks"));
+                    }
+                }
+                Entry::Vacant(v) => {
+                    v.insert(entry.broadcast_mask);
+                    canonical.push(entry);
+                }
+            }
+        }
+        let has_self = canonical
             .iter()
             .any(|e| e.ip == self.local_ip && e.port == self.local_port);
-        let effective_len = entries.len() + usize::from(needs_self);
-
+        let effective_len = canonical.len() + usize::from(!has_self);
         if effective_len > Self::MAX_BDT_ENTRIES {
             return Err(Error::Encoding(format!(
-                "BDT size {} exceeds maximum of {} after self-entry insertion",
-                effective_len,
+                "BDT size {effective_len} exceeds maximum of {} after self-entry insertion",
                 Self::MAX_BDT_ENTRIES
             )));
         }
-        self.bdt = entries;
+        self.bdt = canonical;
         self.ensure_self_in_bdt();
         Ok(())
     }
@@ -384,6 +449,9 @@ impl BbmdState {
         targets
     }
 }
+
+#[cfg(test)]
+mod validation_tests;
 
 #[cfg(test)]
 mod tests {
@@ -692,52 +760,6 @@ mod tests {
             !bbmd.fdt().is_empty(),
             "should still be alive during grace period"
         );
-    }
-
-    #[test]
-    fn is_bdt_peer_check() {
-        let mut bbmd = make_bbmd();
-        bbmd.set_bdt(vec![BdtEntry {
-            ip: [10, 0, 0, 1],
-            port: 0xBAC0,
-            broadcast_mask: [255, 255, 255, 255],
-        }])
-        .unwrap();
-        assert!(bbmd.is_bdt_peer([10, 0, 0, 1], 0xBAC0));
-        assert!(!bbmd.is_bdt_peer([10, 0, 0, 2], 0xBAC0));
-    }
-
-    #[test]
-    fn forwarded_npdu_needs_local_broadcast_for_unicast_peer() {
-        let mut bbmd = make_bbmd();
-        bbmd.set_bdt(vec![BdtEntry {
-            ip: [10, 0, 0, 1],
-            port: 0xBAC0,
-            broadcast_mask: [255, 255, 255, 255],
-        }])
-        .unwrap();
-
-        assert!(bbmd.forwarded_npdu_needs_local_broadcast([10, 0, 0, 1], 0xBAC0));
-    }
-
-    #[test]
-    fn forwarded_npdu_skips_local_broadcast_for_directed_broadcast_peer() {
-        let mut bbmd = make_bbmd();
-        bbmd.set_bdt(vec![BdtEntry {
-            ip: [10, 0, 0, 1],
-            port: 0xBAC0,
-            broadcast_mask: [255, 255, 255, 0],
-        }])
-        .unwrap();
-
-        assert!(!bbmd.forwarded_npdu_needs_local_broadcast([10, 0, 0, 1], 0xBAC0));
-    }
-
-    #[test]
-    fn forwarded_npdu_skips_local_broadcast_for_unknown_peer() {
-        let bbmd = make_bbmd();
-
-        assert!(!bbmd.forwarded_npdu_needs_local_broadcast([10, 0, 0, 1], 0xBAC0));
     }
 
     #[test]
