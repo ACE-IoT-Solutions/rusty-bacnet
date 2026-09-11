@@ -92,6 +92,34 @@ fn validate_atomic_read_file_ack(
 }
 
 impl<T: TransportPort + 'static> BACnetClient<T> {
+    async fn read_range_target(
+        &self,
+        target: ConfirmedTarget<'_>,
+        object_identifier: bacnet_types::primitives::ObjectIdentifier,
+        property_identifier: bacnet_types::enums::PropertyIdentifier,
+        property_array_index: Option<u32>,
+        range: Option<bacnet_services::read_range::RangeSpec>,
+    ) -> Result<bacnet_services::read_range::ReadRangeAck, Error> {
+        use bacnet_services::read_range::{ReadRangeAck, ReadRangeRequest};
+
+        let request = ReadRangeRequest {
+            object_identifier,
+            property_identifier,
+            property_array_index,
+            range,
+        };
+        let mut buf = BytesMut::new();
+        request.encode(&mut buf);
+
+        let response_data = self
+            .confirmed_request_inner(target, ConfirmedServiceChoice::READ_RANGE, &buf)
+            .await?;
+
+        let ack = ReadRangeAck::decode(&response_data)?;
+        validate_read_range_ack(&request, &ack)?;
+        Ok(ack)
+    }
+
     /// Get event information from a remote device.
     pub async fn get_event_information(
         &self,
@@ -174,24 +202,41 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         property_array_index: Option<u32>,
         range: Option<bacnet_services::read_range::RangeSpec>,
     ) -> Result<bacnet_services::read_range::ReadRangeAck, Error> {
-        use bacnet_services::read_range::{ReadRangeAck, ReadRangeRequest};
-
-        let request = ReadRangeRequest {
+        self.read_range_target(
+            ConfirmedTarget::Local {
+                mac: destination_mac,
+            },
             object_identifier,
             property_identifier,
             property_array_index,
             range,
-        };
-        let mut buf = BytesMut::new();
-        request.encode(&mut buf);
+        )
+        .await
+    }
 
-        let response_data = self
-            .confirmed_request(destination_mac, ConfirmedServiceChoice::READ_RANGE, &buf)
-            .await?;
-
-        let ack = ReadRangeAck::decode(&response_data)?;
-        validate_read_range_ack(&request, &ack)?;
-        Ok(ack)
+    /// Read a range through an explicit BACnet router.
+    pub async fn read_range_routed(
+        &self,
+        router_mac: &[u8],
+        dest_network: u16,
+        dest_mac: &[u8],
+        object_identifier: bacnet_types::primitives::ObjectIdentifier,
+        property_identifier: bacnet_types::enums::PropertyIdentifier,
+        property_array_index: Option<u32>,
+        range: Option<bacnet_services::read_range::RangeSpec>,
+    ) -> Result<bacnet_services::read_range::ReadRangeAck, Error> {
+        self.read_range_target(
+            ConfirmedTarget::Routed {
+                router_mac,
+                dest_network,
+                dest_mac,
+            },
+            object_identifier,
+            property_identifier,
+            property_array_index,
+            range,
+        )
+        .await
     }
 
     /// Read file data from a remote device (stream or record access).
@@ -212,6 +257,34 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 
         self.confirmed_request(
             destination_mac,
+            ConfirmedServiceChoice::ATOMIC_READ_FILE,
+            &buf,
+        )
+        .await
+    }
+
+    /// Read file data through an explicit BACnet router.
+    pub async fn atomic_read_file_routed(
+        &self,
+        router_mac: &[u8],
+        dest_network: u16,
+        dest_mac: &[u8],
+        file_identifier: bacnet_types::primitives::ObjectIdentifier,
+        access: bacnet_services::file::FileAccessMethod,
+    ) -> Result<Bytes, Error> {
+        use bacnet_services::file::AtomicReadFileRequest;
+
+        let request = AtomicReadFileRequest {
+            file_identifier,
+            access,
+        };
+        let mut buf = BytesMut::new();
+        request.encode(&mut buf);
+
+        self.confirmed_request_routed(
+            router_mac,
+            dest_network,
+            dest_mac,
             ConfirmedServiceChoice::ATOMIC_READ_FILE,
             &buf,
         )
@@ -239,6 +312,24 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         Ok(ack)
     }
 
+    /// Read and strictly decode one routed AtomicReadFile ACK window.
+    pub async fn atomic_read_file_decoded_routed(
+        &self,
+        router_mac: &[u8],
+        dest_network: u16,
+        dest_mac: &[u8],
+        file_identifier: bacnet_types::primitives::ObjectIdentifier,
+        access: bacnet_services::file::FileAccessMethod,
+    ) -> Result<bacnet_services::file::AtomicReadFileAck, Error> {
+        let requested_access = access.clone();
+        let response = self
+            .atomic_read_file_routed(router_mac, dest_network, dest_mac, file_identifier, access)
+            .await?;
+        let ack = bacnet_services::file::AtomicReadFileAck::decode(&response)?;
+        validate_atomic_read_file_ack(&requested_access, &ack)?;
+        Ok(ack)
+    }
+
     /// Write file data to a remote device (stream or record access).
     pub async fn atomic_write_file(
         &self,
@@ -257,6 +348,34 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 
         self.confirmed_request(
             destination_mac,
+            ConfirmedServiceChoice::ATOMIC_WRITE_FILE,
+            &buf,
+        )
+        .await
+    }
+
+    /// Write file data through an explicit BACnet router.
+    pub async fn atomic_write_file_routed(
+        &self,
+        router_mac: &[u8],
+        dest_network: u16,
+        dest_mac: &[u8],
+        file_identifier: bacnet_types::primitives::ObjectIdentifier,
+        access: bacnet_services::file::FileWriteAccessMethod,
+    ) -> Result<Bytes, Error> {
+        use bacnet_services::file::AtomicWriteFileRequest;
+
+        let request = AtomicWriteFileRequest {
+            file_identifier,
+            access,
+        };
+        let mut buf = BytesMut::new();
+        request.encode(&mut buf);
+
+        self.confirmed_request_routed(
+            router_mac,
+            dest_network,
+            dest_mac,
             ConfirmedServiceChoice::ATOMIC_WRITE_FILE,
             &buf,
         )

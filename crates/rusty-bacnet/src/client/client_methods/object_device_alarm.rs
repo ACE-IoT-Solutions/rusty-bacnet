@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::types::PyTarget;
 
 #[allow(clippy::too_many_arguments)]
 fn build_acknowledge_alarm_request(
@@ -30,21 +31,26 @@ impl BACnetClient {
     fn delete_object<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         object_id: PyObjectIdentifier,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = object_id.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.delete_object(&mac, oid).await.map_err(to_py_err)?;
+            if let Some((dnet, dadr)) = routing {
+                c.delete_object_routed(&mac, dnet, &dadr, oid).await
+            } else {
+                c.delete_object(&mac, oid).await
+            }
+            .map_err(to_py_err)?;
             Ok(())
         })
     }
@@ -59,7 +65,7 @@ impl BACnetClient {
     fn create_object<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         object_specifier: Bound<'py, PyAny>,
         initial_values: Option<
             Vec<(
@@ -99,17 +105,20 @@ impl BACnetClient {
             .collect();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            let raw = c
-                .create_object(&mac, specifier, init_vals)
-                .await
-                .map_err(to_py_err)?;
+            let raw = if let Some((dnet, dadr)) = routing {
+                c.create_object_routed(&mac, dnet, &dadr, specifier, init_vals)
+                    .await
+            } else {
+                c.create_object(&mac, specifier, init_vals).await
+            }
+            .map_err(to_py_err)?;
             Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
         })
     }
@@ -123,7 +132,7 @@ impl BACnetClient {
     fn device_communication_control<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         enable_disable: PyEnableDisable,
         time_duration: Option<u16>,
         password: Option<String>,
@@ -132,16 +141,28 @@ impl BACnetClient {
         let ed = enable_disable.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.device_communication_control(&mac, ed, time_duration, password)
+            if let Some((dnet, dadr)) = routing {
+                c.device_communication_control_routed(
+                    &mac,
+                    dnet,
+                    &dadr,
+                    ed,
+                    time_duration,
+                    password,
+                )
                 .await
-                .map_err(to_py_err)?;
+            } else {
+                c.device_communication_control(&mac, ed, time_duration, password)
+                    .await
+            }
+            .map_err(to_py_err)?;
             Ok(())
         })
     }
@@ -151,7 +172,7 @@ impl BACnetClient {
     fn reinitialize_device<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         reinitialized_state: PyReinitializedState,
         password: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -159,16 +180,20 @@ impl BACnetClient {
         let state = reinitialized_state.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.reinitialize_device(&mac, state, password)
-                .await
-                .map_err(to_py_err)?;
+            if let Some((dnet, dadr)) = routing {
+                c.reinitialize_device_routed(&mac, dnet, &dadr, state, password)
+                    .await
+            } else {
+                c.reinitialize_device(&mac, state, password).await
+            }
+            .map_err(to_py_err)?;
             Ok(())
         })
     }
@@ -303,7 +328,7 @@ impl BACnetClient {
     fn read_range<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         object_id: PyObjectIdentifier,
         property_id: PyPropertyIdentifier,
         array_index: Option<u32>,
@@ -334,17 +359,20 @@ impl BACnetClient {
         };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            let ack = c
-                .read_range(&mac, oid, pid, array_index, range)
-                .await
-                .map_err(to_py_err)?;
+            let ack = if let Some((dnet, dadr)) = routing {
+                c.read_range_routed(&mac, dnet, &dadr, oid, pid, array_index, range)
+                    .await
+            } else {
+                c.read_range(&mac, oid, pid, array_index, range).await
+            }
+            .map_err(to_py_err)?;
             Python::attach(|py| {
                 let dict = PyDict::new(py);
                 dict.set_item(

@@ -596,6 +596,39 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             .await
     }
 
+    /// Send an unconfirmed request to a device on a remote BACnet network.
+    ///
+    /// The APDU is addressed to `dest_network`/`dest_mac` in the NPDU and the
+    /// resulting packet is sent to the explicit next-hop `router_mac`. This is
+    /// the unconfirmed counterpart of [`Self::confirmed_request_routed`].
+    pub async fn unconfirmed_request_routed(
+        &self,
+        router_mac: &[u8],
+        dest_network: u16,
+        dest_mac: &[u8],
+        service_choice: UnconfirmedServiceChoice,
+        service_data: &[u8],
+    ) -> Result<(), Error> {
+        let pdu = Apdu::UnconfirmedRequest(bacnet_encoding::apdu::UnconfirmedRequest {
+            service_choice,
+            service_request: Bytes::copy_from_slice(service_data),
+        });
+
+        let mut buf = BytesMut::with_capacity(2 + service_data.len());
+        encode_apdu(&mut buf, &pdu)?;
+
+        self.network
+            .send_apdu_routed(
+                &buf,
+                dest_network,
+                dest_mac,
+                router_mac,
+                false,
+                NetworkPriority::NORMAL,
+            )
+            .await
+    }
+
     /// Broadcast an unconfirmed request on the local network.
     pub async fn broadcast_unconfirmed(
         &self,

@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::types::PyTarget;
 
 #[pymethods]
 impl BACnetClient {
@@ -14,7 +15,7 @@ impl BACnetClient {
     fn atomic_read_file<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         file_identifier: PyObjectIdentifier,
         access_method: String,
         start_position: i32,
@@ -42,17 +43,20 @@ impl BACnetClient {
         };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            let raw = c
-                .atomic_read_file(&mac, fid, access)
-                .await
-                .map_err(to_py_err)?;
+            let raw = if let Some((dnet, dadr)) = routing {
+                c.atomic_read_file_routed(&mac, dnet, &dadr, fid, access)
+                    .await
+            } else {
+                c.atomic_read_file(&mac, fid, access).await
+            }
+            .map_err(to_py_err)?;
             Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
         })
     }
@@ -65,7 +69,7 @@ impl BACnetClient {
     fn atomic_write_file<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         file_identifier: PyObjectIdentifier,
         access_method: String,
         start_position: i32,
@@ -95,17 +99,20 @@ impl BACnetClient {
         };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            let raw = c
-                .atomic_write_file(&mac, fid, access)
-                .await
-                .map_err(to_py_err)?;
+            let raw = if let Some((dnet, dadr)) = routing {
+                c.atomic_write_file_routed(&mac, dnet, &dadr, fid, access)
+                    .await
+            } else {
+                c.atomic_write_file(&mac, fid, access).await
+            }
+            .map_err(to_py_err)?;
             Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
         })
     }

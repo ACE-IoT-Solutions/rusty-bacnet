@@ -1914,7 +1914,7 @@ class BACnetClient:
 
     async def time_synchronization(
         self,
-        address: str,
+        address: Target,
         date: tuple[int, int, int, int],
         time: tuple[int, int, int, int],
     ) -> None:
@@ -1927,7 +1927,7 @@ class BACnetClient:
 
     async def utc_time_synchronization(
         self,
-        address: str,
+        address: Target,
         date: tuple[int, int, int, int],
         time: tuple[int, int, int, int],
     ) -> None:
@@ -2024,7 +2024,7 @@ class BACnetClient:
 
     async def subscribe_cov_property_multiple(
         self,
-        address: str,
+        address: Target,
         subscriber_process_identifier: int,
         specs: list[
             tuple[
@@ -2052,14 +2052,14 @@ class BACnetClient:
     # --- Object management ---
 
     async def delete_object(
-        self, address: str, object_id: ObjectIdentifier
+        self, address: Target, object_id: ObjectIdentifier
     ) -> None:
         """Delete an object on a remote device (DeleteObject service)."""
         ...
 
     async def create_object(
         self,
-        address: str,
+        address: Target,
         object_specifier: Union[ObjectType, ObjectIdentifier],
         initial_values: Optional[
             list[tuple[PropertyIdentifier, PropertyValue, Optional[int], Optional[int]]]
@@ -2078,7 +2078,7 @@ class BACnetClient:
 
     async def device_communication_control(
         self,
-        address: str,
+        address: Target,
         enable_disable: EnableDisable,
         time_duration: Optional[int] = None,
         password: Optional[str] = None,
@@ -2088,7 +2088,7 @@ class BACnetClient:
 
     async def reinitialize_device(
         self,
-        address: str,
+        address: Target,
         reinitialized_state: ReinitializedState,
         password: Optional[str] = None,
     ) -> None:
@@ -2167,7 +2167,7 @@ class BACnetClient:
 
     async def read_range(
         self,
-        address: str,
+        address: Target,
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         array_index: Optional[int] = None,
@@ -2189,7 +2189,7 @@ class BACnetClient:
 
     async def atomic_read_file(
         self,
-        address: str,
+        address: Target,
         file_identifier: ObjectIdentifier,
         access_method: str,
         start_position: int = 0,
@@ -2203,7 +2203,7 @@ class BACnetClient:
 
     async def atomic_write_file(
         self,
-        address: str,
+        address: Target,
         file_identifier: ObjectIdentifier,
         access_method: str,
         start_position: int = 0,

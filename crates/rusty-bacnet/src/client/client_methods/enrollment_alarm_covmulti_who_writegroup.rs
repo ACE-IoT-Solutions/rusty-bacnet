@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::types::PyTarget;
 
 #[pymethods]
 impl BACnetClient {
@@ -155,7 +156,7 @@ impl BACnetClient {
     fn subscribe_cov_property_multiple<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         subscriber_process_identifier: u32,
         specs: Vec<(
             PyObjectIdentifier,
@@ -204,7 +205,7 @@ impl BACnetClient {
             .collect();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -218,14 +219,12 @@ impl BACnetClient {
                 max_notification_delay,
                 list_of_cov_subscription_specifications: rust_specs,
             };
-            let mut buf = BytesMut::new();
-            req.try_encode(&mut buf).map_err(to_py_err)?;
-            c.confirmed_request(
-                &mac,
-                ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY_MULTIPLE,
-                &buf,
-            )
-            .await
+            if let Some((dnet, dadr)) = routing {
+                c.subscribe_cov_property_multiple_routed(&mac, dnet, &dadr, &req)
+                    .await
+            } else {
+                c.subscribe_cov_property_multiple(&mac, &req).await
+            }
             .map_err(to_py_err)?;
             Ok(())
         })
