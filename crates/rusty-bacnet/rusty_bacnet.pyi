@@ -1011,6 +1011,19 @@ class BacnetAbortError(BacnetError):
     """
     reason: int
 
+class BacnetNetworkRejectError(BacnetError):
+    """Raised when a safely correlated router rejection terminates a request."""
+    network: int
+    reason: int
+
+class BacnetBvlcError(BacnetError):
+    """Raised when a BACnet/IP management request receives a BVLC NAK."""
+    result_code: int
+
+class BacnetForeignDeviceRegistrationError(BacnetBvlcError):
+    """Raised when a BBMD rejects foreign-device registration."""
+    ...
+
 
 # ---------------------------------------------------------------------------
 # Client
@@ -1041,6 +1054,38 @@ class RoutedTarget:
 
 
 Target = Union[str, DirectTarget, RoutedTarget]
+
+
+class ManagedCOVEvent:
+    @property
+    def kind(self) -> str: ...
+    @property
+    def time_remaining(self) -> Optional[int]: ...
+    @property
+    def requested_lifetime(self) -> Optional[int]: ...
+    @property
+    def renew_after_ms(self) -> Optional[int]: ...
+    @property
+    def error(self) -> Optional[str]: ...
+    @property
+    def skipped(self) -> Optional[int]: ...
+
+
+class ManagedCOVEventIterator:
+    def __aiter__(self) -> ManagedCOVEventIterator: ...
+    async def __anext__(self) -> ManagedCOVEvent: ...
+
+
+class ManagedCOVSubscription:
+    @property
+    def closed(self) -> bool: ...
+    @property
+    def finished(self) -> bool: ...
+    @property
+    def last_event(self) -> Optional[ManagedCOVEvent]: ...
+    def events(self) -> ManagedCOVEventIterator: ...
+    async def close(self) -> None: ...
+    async def cancel(self) -> None: ...
 
 
 class BACnetClient:
@@ -1370,6 +1415,19 @@ class BACnetClient:
         monitored_object_identifier: ObjectIdentifier,
     ) -> None:
         """Cancel a COV subscription."""
+        ...
+
+    async def manage_cov_subscription(
+        self,
+        address: Target,
+        subscriber_process_identifier: int,
+        monitored_object_identifier: ObjectIdentifier,
+        confirmed: bool,
+        lifetime: int,
+        renewal_margin_ms: int = 30000,
+        event_channel_capacity: int = 16,
+    ) -> ManagedCOVSubscription:
+        """Start a finite COV subscription with automatic renewal and explicit cancellation."""
         ...
 
     async def subscribe_cov_property_multiple(
