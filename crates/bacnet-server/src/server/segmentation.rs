@@ -17,6 +17,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         seg_ack_senders: &Arc<segmented_send::SegmentedSendRegistry>,
         seg_send_permits: &Arc<Semaphore>,
         request_tasks: &super::request_tasks::RequestTaskSpawner,
+        pending_request: Option<super::confirmed_request_tracker::PendingConfirmedRequest>,
         source_mac: &[u8],
         source_network: Option<NpduAddress>,
         invoke_id: u8,
@@ -43,6 +44,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 client_max_segments,
             )
             .await;
+            if let Some(pending) = pending_request {
+                pending.complete();
+            }
         });
     }
 

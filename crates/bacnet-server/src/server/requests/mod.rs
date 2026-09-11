@@ -41,6 +41,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         dcc_outcomes: &Arc<dcc_outcomes::DccOutcomes>,
         config: &ServerConfig,
         request_tasks: &super::request_tasks::RequestTaskSpawner,
+        mut pending_request: Option<super::confirmed_request_tracker::PendingConfirmedRequest>,
         source_mac: &[u8],
         source_network: Option<NpduAddress>,
         req: bacnet_encoding::apdu::ConfirmedRequest,
@@ -75,6 +76,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 service = service_choice.to_raw(),
                 "DCC DISABLE: dropping confirmed request"
             );
+            if let Some(pending) = pending_request.take() {
+                pending.complete();
+            }
             return;
         }
 
@@ -574,6 +578,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         seg_ack_senders,
                         seg_send_permits,
                         request_tasks,
+                        pending_request.take(),
                         source_mac,
                         source_network,
                         invoke_id,
@@ -722,6 +727,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     .await;
                 }
             }
+        }
+
+        if let Some(pending) = pending_request {
+            pending.complete();
         }
     }
 }

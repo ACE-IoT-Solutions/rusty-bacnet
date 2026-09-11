@@ -344,7 +344,7 @@ pub(super) async fn present_value<T: TransportPort + 'static>(server: &BACnetSer
 }
 
 #[tokio::test]
-async fn reassembled_request_uses_direct_request_duplicate_admission_boundary() {
+async fn reassembled_request_can_reuse_a_completed_direct_transaction() {
     let (server, client, mut rx) = start_reassembly_server(Segmentation::BOTH).await;
     let invoke_id = 5;
     let text = "direct-then-reassembled-duplicate";
@@ -380,12 +380,10 @@ async fn reassembled_request_uses_direct_request_duplicate_admission_boundary() 
         .await;
         expect_positive_ack(&mut rx, invoke_id, index as u8).await;
     }
-    assert!(
-        timeout(Duration::from_millis(250), rx.recv())
-            .await
-            .is_err(),
-        "the reassembled exact duplicate must not produce a service response"
-    );
+    match recv_apdu(&mut rx, "completed invoke-id reuse response").await {
+        Apdu::SimpleAck(ack) => assert_eq!(ack.invoke_id, invoke_id),
+        other => panic!("expected SimpleAck for completed reuse, got {other:?}"),
+    }
     assert_eq!(present_value(&server).await, text);
 }
 

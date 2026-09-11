@@ -52,12 +52,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             &Arc::new(dcc_outcomes::DccOutcomes::default()),
             config,
             request_tasks,
+            Some(pending),
             source_mac,
             source_network,
             req,
             reply_tx,
         )
         .await;
-        pending.complete();
     }
 }

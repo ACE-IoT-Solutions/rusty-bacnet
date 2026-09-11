@@ -100,6 +100,59 @@ async fn segmented_worker_stop_joins_production_descendant() {
 }
 
 #[tokio::test]
+async fn exact_retransmission_stays_pending_until_segmented_child_finishes() {
+    let (mut server, tx, mut started) = fixture_with_name(&"x".repeat(100)).await;
+    let request = oversized_request();
+
+    inject(&tx, request.clone()).await;
+    let first_send = started_send(&mut started).await;
+    let key = segmented_transaction_key(&[1], None, 7);
+    let first_sender = server.seg_ack_senders.lock().get(&key).unwrap().clone();
+
+    server.network.transport().release.notify_one();
+    first_send.await.unwrap();
+
+    inject(&tx, request.clone()).await;
+    inject(
+        &tx,
+        Apdu::Abort(AbortPdu {
+            sent_by_server: false,
+            invoke_id: 7,
+            abort_reason: AbortReason::OTHER,
+        }),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !first_sender.closed.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("segmented response did not observe client Abort");
+    wait_reaped(&server).await;
+
+    assert_eq!(
+        server.network.transport().frames.lock().unwrap().len(),
+        1,
+        "an exact retransmission while awaiting SegmentACK must be silent"
+    );
+    assert!(server.seg_ack_senders.lock().is_empty());
+
+    inject(&tx, request).await;
+    let mut second_send = started_send(&mut started).await;
+    let second_sender = server.seg_ack_senders.lock().get(&key).unwrap().clone();
+    assert!(!Arc::ptr_eq(&first_sender, &second_sender));
+    assert_eq!(
+        server.network.transport().frames.lock().unwrap().len(),
+        2,
+        "the same invoke ID must be reusable after the segmented child ends"
+    );
+
+    server.stop().await.unwrap();
+    assert_eq!(second_send.try_recv(), Ok(()));
+}
+
+#[tokio::test]
 async fn segmented_worker_old_cancel_preserves_same_key_replacement() {
     let (mut server, _tx, mut started) = fixture().await;
     let key = segmented_transaction_key(&[1], None, 7);

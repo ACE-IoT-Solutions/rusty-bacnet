@@ -167,13 +167,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                             &dcc_outcomes,
                             &config,
                             &descendants,
+                            Some(pending),
                             &source_mac,
                             source_network,
                             req,
                             reply_tx,
                         )
                         .await;
-                        pending.complete();
                     }
                 });
                 if result == Err(Rejection::Overloaded) {

@@ -604,7 +604,7 @@ async fn network_write_property_and_multiple_use_exact_status_deltas() {
 }
 
 #[tokio::test]
-async fn operation_ack_precedes_exact_cov_and_duplicate_is_silent() {
+async fn operation_ack_precedes_cov_and_completed_reuse_is_acked() {
     let mut point = LifeSafetyPointObject::new(1, "point").unwrap();
     point.set_present_value(bacnet_types::enums::LifeSafetyState::ALARM.to_raw());
     point.set_operation_expected(LifeSafetyOperation::RESET);
@@ -649,7 +649,14 @@ async fn operation_ack_precedes_exact_cov_and_duplicate_is_silent() {
     fixture
         .dispatch(0x51, ConfirmedServiceChoice::LIFE_SAFETY_OPERATION, encoded)
         .await;
-    assert!(fixture.take_apdus().is_empty(), "exact duplicate is silent");
+    let apdus = fixture.take_apdus();
+    assert_eq!(apdus.len(), 1, "reevaluated reuse must not emit another COV");
+    assert!(matches!(
+        &apdus[0],
+        Apdu::Error(error)
+            if error.error_class == ErrorClass::OBJECT
+                && error.error_code == ErrorCode::INVALID_OPERATION_IN_THIS_STATE
+    ));
 
     {
         let mut db = fixture.db.write().await;

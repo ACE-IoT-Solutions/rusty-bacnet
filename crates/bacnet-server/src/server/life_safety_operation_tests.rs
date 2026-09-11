@@ -467,7 +467,7 @@ async fn life_safety_operation_panicking_authorizer_fails_closed() {
 }
 
 #[tokio::test]
-async fn exact_success_duplicate_is_silent_and_changed_reuse_executes_normally() {
+async fn completed_exact_reuse_is_reevaluated_and_changed_reuse_executes() {
     let oid = point_oid(1);
     let executions = Arc::new(AtomicUsize::new(0));
     let observed_executions = Arc::clone(&executions);
@@ -514,7 +514,7 @@ async fn exact_success_duplicate_is_silent_and_changed_reuse_executes_normally()
     .await
     .unwrap();
     assert_simple_ack(first);
-    assert!(dispatch_life_safety_operation_with_tracker(
+    let reused = dispatch_life_safety_operation_with_tracker(
         Arc::clone(&db),
         config.clone(),
         &tracker,
@@ -524,8 +524,13 @@ async fn exact_success_duplicate_is_silent_and_changed_reuse_executes_normally()
         reset,
     )
     .await
-    .is_err());
-    assert_eq!(authorizations.load(Ordering::Acquire), 1);
+    .unwrap();
+    assert_error(
+        reused,
+        ErrorClass::OBJECT,
+        ErrorCode::INVALID_OPERATION_IN_THIS_STATE,
+    );
+    assert_eq!(authorizations.load(Ordering::Acquire), 2);
     assert_eq!(executions.load(Ordering::Acquire), 1);
     assert_eq!(
         db.read()
@@ -555,7 +560,7 @@ async fn exact_success_duplicate_is_silent_and_changed_reuse_executes_normally()
     .await
     .unwrap();
     assert_simple_ack(changed);
-    assert_eq!(authorizations.load(Ordering::Acquire), 2);
+    assert_eq!(authorizations.load(Ordering::Acquire), 3);
     assert_eq!(executions.load(Ordering::Acquire), 2);
     assert_eq!(
         db.read()
@@ -569,7 +574,7 @@ async fn exact_success_duplicate_is_silent_and_changed_reuse_executes_normally()
 }
 
 #[tokio::test]
-async fn exact_denied_duplicate_is_silent_without_second_authorization() {
+async fn completed_denied_request_reuse_is_authorized_again() {
     let oid = point_oid(1);
     let mut point = LifeSafetyPointObject::new(1, "point").unwrap();
     point.set_operation_expected(LifeSafetyOperation::SILENCE);
@@ -605,7 +610,7 @@ async fn exact_denied_duplicate_is_silent_without_second_authorization() {
         ErrorClass::SERVICES,
         ErrorCode::SERVICE_REQUEST_DENIED,
     );
-    assert!(dispatch_life_safety_operation_with_tracker(
+    let reused = dispatch_life_safety_operation_with_tracker(
         Arc::clone(&db),
         config,
         &tracker,
@@ -615,8 +620,13 @@ async fn exact_denied_duplicate_is_silent_without_second_authorization() {
         denied,
     )
     .await
-    .is_err());
-    assert_eq!(authorizations.load(Ordering::Acquire), 1);
+    .unwrap();
+    assert_error(
+        reused,
+        ErrorClass::SERVICES,
+        ErrorCode::SERVICE_REQUEST_DENIED,
+    );
+    assert_eq!(authorizations.load(Ordering::Acquire), 2);
     assert_eq!(
         db.read()
             .await
