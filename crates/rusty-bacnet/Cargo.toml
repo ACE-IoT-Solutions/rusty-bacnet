@@ -14,6 +14,8 @@ crate-type = ["cdylib"]
 bacnet-types.workspace = true
 bacnet-encoding.workspace = true
 bacnet-client.workspace = true
+bacnet-runtime = { workspace = true, features = ["mstp", "sc"] }
+bacnet-network.workspace = true
 bacnet-server.workspace = true
 bacnet-transport = { workspace = true, features = ["sc-tls", "ipv6", "serial"] }
 bacnet-objects.workspace = true

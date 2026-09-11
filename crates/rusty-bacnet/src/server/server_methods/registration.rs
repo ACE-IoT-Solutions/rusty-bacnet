@@ -70,6 +70,19 @@ impl BACnetServer {
         mstp_mac=1,
         mstp_max_master=127,
         mstp_max_info_frames=1,
+        bbmd=false,
+        bbmd_bdt=None,
+        bbmd_bdt_persist_path=None,
+        bbmd_accept_foreign_devices=false,
+        bbmd_max_fdt_entries=128,
+        bbmd_management_acl=None,
+        bbmd_wire_management_enabled=false,
+        bvll_policy=None,
+        bvll_policy_timeout_ms=50,
+        bvll_policy_queue_capacity=32,
+        bvll_policy_failure_threshold=3,
+        bvll_policy_cooldown_ms=1000,
+        reuse_port=false,
         max_confirmed_in_flight=64,
         max_unconfirmed_in_flight=32,
         max_confirmed_in_flight_per_peer=16,
@@ -103,6 +116,7 @@ impl BACnetServer {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         device_instance: u32,
         device_name: &str,
         interface: &str,
@@ -127,6 +141,19 @@ impl BACnetServer {
         mstp_mac: u8,
         mstp_max_master: u8,
         mstp_max_info_frames: u8,
+        bbmd: bool,
+        bbmd_bdt: Option<Vec<(String, u16, String)>>,
+        bbmd_bdt_persist_path: Option<String>,
+        bbmd_accept_foreign_devices: bool,
+        bbmd_max_fdt_entries: usize,
+        bbmd_management_acl: Option<Vec<String>>,
+        bbmd_wire_management_enabled: bool,
+        bvll_policy: Option<Py<PyAny>>,
+        bvll_policy_timeout_ms: u64,
+        bvll_policy_queue_capacity: usize,
+        bvll_policy_failure_threshold: usize,
+        bvll_policy_cooldown_ms: u64,
+        reuse_port: bool,
         max_confirmed_in_flight: usize,
         max_unconfirmed_in_flight: usize,
         max_confirmed_in_flight_per_peer: usize,
@@ -158,6 +185,99 @@ impl BACnetServer {
         application_software_version: &str,
         sc_device_uuid: Option<Vec<u8>>,
     ) -> PyResult<Self> {
+        if bbmd && transport != "bip" {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "bbmd=True requires transport='bip'",
+            ));
+        }
+        if reuse_port && transport != "bip" {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "reuse_port=True requires transport='bip'",
+            ));
+        }
+        if bbmd_wire_management_enabled {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "inbound Write-BDT is intentionally unsupported and always NAKs",
+            ));
+        }
+        if !bbmd
+            && (bbmd_bdt.is_some()
+                || bbmd_bdt_persist_path.is_some()
+                || bbmd_accept_foreign_devices
+                || bbmd_max_fdt_entries != 128
+                || bbmd_management_acl.is_some()
+                || bvll_policy.is_some())
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "BBMD options require bbmd=True",
+            ));
+        }
+        if bbmd_max_fdt_entries == 0
+            || bbmd_max_fdt_entries > bacnet_transport::bbmd::BbmdState::MAX_FDT_ENTRIES
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "bbmd_max_fdt_entries must be in 1..={}",
+                bacnet_transport::bbmd::BbmdState::MAX_FDT_ENTRIES
+            )));
+        }
+        let policy = bvll_policy
+            .map(|callable| {
+                crate::types::PythonBvllPolicyBridge::new(
+                    py,
+                    callable,
+                    bvll_policy_timeout_ms,
+                    bvll_policy_queue_capacity,
+                    bvll_policy_failure_threshold,
+                    bvll_policy_cooldown_ms,
+                )
+            })
+            .transpose()?;
+
+        let (pending_bbmd_transport, bbmd_transport_config, bbmd_control) = if bbmd {
+            let interface = interface.parse::<Ipv4Addr>().map_err(|error| {
+                pyo3::exceptions::PyValueError::new_err(format!("invalid BBMD interface: {error}"))
+            })?;
+            let broadcast = broadcast_address.parse::<Ipv4Addr>().map_err(|error| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid BBMD broadcast address: {error}"
+                ))
+            })?;
+            let initial_bdt = crate::types::parse_bdt_entries(bbmd_bdt.unwrap_or_default())?;
+            let management_acl =
+                crate::types::parse_management_acl(bbmd_management_acl.unwrap_or_default())?;
+            let persist_path = bbmd_bdt_persist_path
+                .map(|path| {
+                    if path.is_empty() {
+                        Err(pyo3::exceptions::PyValueError::new_err(
+                            "bbmd_bdt_persist_path must not be empty",
+                        ))
+                    } else {
+                        Ok(std::path::PathBuf::from(path))
+                    }
+                })
+                .transpose()?;
+            let config = crate::types::PyBbmdTransportConfig {
+                interface,
+                port,
+                broadcast,
+                reuse_port,
+                initial_bdt,
+                persist_path,
+                accept_foreign_devices: bbmd_accept_foreign_devices,
+                max_fdt_entries: bbmd_max_fdt_entries,
+                management_acl,
+                policy,
+            };
+            let transport = config.transport()?;
+            let control = transport
+                .bbmd_control()
+                .expect("configured BBMD creates control capability");
+            let control = crate::types::PyBbmdControl::from_rust(control, config.policy.clone());
+            (Some(transport), Some(config), Some(control))
+        } else {
+            (None, None, None)
+        };
+
         let dcc_policy = match dcc_policy {
             "deny_all" => server::DccPolicy::DenyAll,
             "require_password" => server::DccPolicy::RequirePassword,
@@ -286,6 +406,10 @@ impl BACnetServer {
             interface: interface.to_string(),
             port,
             broadcast_address: broadcast_address.to_string(),
+            reuse_port,
+            pending_bbmd_transport: Arc::new(std::sync::Mutex::new(pending_bbmd_transport)),
+            bbmd_transport_config,
+            bbmd_control: Arc::new(std::sync::Mutex::new(bbmd_control)),
             sc_hub,
             sc_vmac,
             sc_device_uuid,
@@ -316,6 +440,16 @@ impl BACnetServer {
             started: Arc::new(AtomicBool::new(false)),
             pending_objects: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// Return the capability-limited local BBMD control handle.
+    #[getter]
+    fn bbmd_control(&self) -> PyResult<crate::types::PyBbmdControl> {
+        self.bbmd_control
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("BBMD control lock poisoned"))?
+            .clone()
+            .ok_or_else(|| PyRuntimeError::new_err("server is not configured as a B/IP BBMD"))
     }
 
     /// Test seam for verifying that fallible startup leaves registrations intact.

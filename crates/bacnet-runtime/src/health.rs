@@ -1,10 +1,6 @@
 use crate::AttachmentId;
 
 /// Runtime view of managed B/IP foreign-device registration.
-///
-/// Upstream 0.11 performs registration in the transport background but does
-/// not currently expose its live state. These variants preserve the runtime
-/// API for the point at which that transport telemetry is available again.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForeignDeviceRegistrationState {
     /// The initial registration is awaiting a result.
@@ -26,6 +22,31 @@ pub struct ForeignDeviceRegistrationStatus {
     pub last_result_code: Option<bacnet_types::enums::BvlcResultCode>,
     /// Whole seconds until the next renewal, if available.
     pub seconds_to_renewal: Option<u64>,
+}
+
+impl From<bacnet_transport::bip::ForeignDeviceRegistrationStatus>
+    for ForeignDeviceRegistrationStatus
+{
+    fn from(status: bacnet_transport::bip::ForeignDeviceRegistrationStatus) -> Self {
+        Self {
+            state: match status.state {
+                bacnet_transport::bip::ForeignDeviceRegistrationState::Pending => {
+                    ForeignDeviceRegistrationState::Pending
+                }
+                bacnet_transport::bip::ForeignDeviceRegistrationState::Registered => {
+                    ForeignDeviceRegistrationState::Registered
+                }
+                bacnet_transport::bip::ForeignDeviceRegistrationState::Rejected => {
+                    ForeignDeviceRegistrationState::Rejected
+                }
+                bacnet_transport::bip::ForeignDeviceRegistrationState::Expired => {
+                    ForeignDeviceRegistrationState::Expired
+                }
+            },
+            last_result_code: status.last_result_code,
+            seconds_to_renewal: status.seconds_to_renewal,
+        }
+    }
 }
 
 /// Lifecycle state of one attachment.
@@ -62,8 +83,6 @@ pub struct AttachmentHealth {
     pub last_error: Option<crate::ErrorCode>,
     /// Foreign-device registration status for configured B/IP foreign attachments.
     ///
-    /// This remains `None` on upstream 0.11 because the transport does not
-    /// expose its background registration state.
     pub foreign_device_registration: Option<ForeignDeviceRegistrationStatus>,
 }
 

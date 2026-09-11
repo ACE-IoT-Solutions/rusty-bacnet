@@ -178,9 +178,7 @@ async fn mixed_foreign_and_normal_health_is_ordered_and_reconciles_independently
             .collect::<Vec<_>>(),
         vec![AttachmentId::from(2), AttachmentId::from(1)]
     );
-    // Upstream 0.11 configures and renews foreign registration but does not
-    // expose registration telemetry through the client boundary.
-    assert!(initial.attachments[0].foreign_device_registration.is_none());
+    assert!(initial.attachments[0].foreign_device_registration.is_some());
     assert!(initial.attachments[1].foreign_device_registration.is_none());
 
     let reordered = runtime
@@ -204,7 +202,7 @@ async fn mixed_foreign_and_normal_health_is_ordered_and_reconciles_independently
         .is_none());
     assert!(reordered_health.attachments[1]
         .foreign_device_registration
-        .is_none());
+        .is_some());
 
     let removed = runtime.reconcile(3, vec![normal]).await.unwrap();
     assert_eq!(removed.removed, vec![AttachmentId::from(2)]);
@@ -219,7 +217,6 @@ async fn mixed_foreign_and_normal_health_is_ordered_and_reconciles_independently
 }
 
 #[tokio::test]
-#[ignore = "upstream 0.11 does not expose live foreign-device registration telemetry"]
 async fn background_foreign_registration_health_tracks_live_transitions_in_order() {
     // Scripted BBMD response modes: 0 drops, 1 succeeds, 2 rejects.
     let socket = Arc::new(

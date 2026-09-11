@@ -105,6 +105,29 @@ impl BACnetClient {
     // Discovery
     // -----------------------------------------------------------------------
 
+    /// Subscribe to I-Am observations, then send Who-Is and return the iterator.
+    #[pyo3(signature = (low_limit=None, high_limit=None))]
+    fn who_is_stream<'py>(
+        &self,
+        py: Python<'py>,
+        low_limit: Option<u32>,
+        high_limit: Option<u32>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let c = {
+                let guard = inner.lock().await;
+                Arc::clone(guard.as_ref().ok_or_else(|| {
+                    PyRuntimeError::new_err("client not started — use 'async with'")
+                })?)
+            };
+            // Subscribe before sending so a fast local response cannot race us.
+            let rx = c.iam_events();
+            c.who_is(low_limit, high_limit).await.map_err(to_py_err)?;
+            Ok(PyIAmEventIterator::new(rx))
+        })
+    }
+
     /// Send a WhoHas broadcast to find an object by identifier.
     #[pyo3(signature = (object_id, low_limit=None, high_limit=None))]
     fn who_has_by_id<'py>(

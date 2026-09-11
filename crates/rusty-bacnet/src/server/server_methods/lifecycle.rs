@@ -40,6 +40,10 @@ impl BACnetServer {
         let interface_str = self.interface.clone();
         let port = self.port;
         let broadcast_str = self.broadcast_address.clone();
+        let reuse_port = self.reuse_port;
+        let pending_bbmd_transport = self.pending_bbmd_transport.clone();
+        let bbmd_transport_config = self.bbmd_transport_config.clone();
+        let bbmd_control = self.bbmd_control.clone();
         let sc_hub = self.sc_hub.clone();
         let sc_vmac = self.sc_vmac.clone();
         let sc_device_uuid = self.sc_device_uuid;
@@ -113,13 +117,35 @@ impl BACnetServer {
             // Build transport based on type
             let transport: AnyTransport<crate::mstp_py::PySerial> = match transport_type.as_str() {
                 "bip" => {
-                    let interface: Ipv4Addr = interface_str
-                        .parse()
-                        .map_err(|e| PyRuntimeError::new_err(format!("invalid interface: {e}")))?;
-                    let broadcast: Ipv4Addr = broadcast_str
-                        .parse()
-                        .map_err(|e| PyRuntimeError::new_err(format!("invalid broadcast: {e}")))?;
-                    AnyTransport::Bip(BipTransport::new(interface, port, broadcast))
+                    if let Some(config) = &bbmd_transport_config {
+                        let transport = pending_bbmd_transport
+                            .lock()
+                            .map_err(|_| PyRuntimeError::new_err("BBMD transport lock poisoned"))?
+                            .take()
+                            .map(Ok)
+                            .unwrap_or_else(|| config.transport())?;
+                        let control = transport
+                            .bbmd_control()
+                            .expect("configured BBMD creates control capability");
+                        *bbmd_control
+                            .lock()
+                            .map_err(|_| PyRuntimeError::new_err("BBMD control lock poisoned"))? =
+                            Some(crate::types::PyBbmdControl::from_rust(
+                                control,
+                                config.policy.clone(),
+                            ));
+                        AnyTransport::Bip(transport)
+                    } else {
+                        let interface: Ipv4Addr = interface_str.parse().map_err(|e| {
+                            PyRuntimeError::new_err(format!("invalid interface: {e}"))
+                        })?;
+                        let broadcast: Ipv4Addr = broadcast_str.parse().map_err(|e| {
+                            PyRuntimeError::new_err(format!("invalid broadcast: {e}"))
+                        })?;
+                        let mut transport = BipTransport::new(interface, port, broadcast);
+                        transport.set_reuse_port(reuse_port).map_err(to_py_err)?;
+                        AnyTransport::Bip(transport)
+                    }
                 }
                 "ipv6" => {
                     let iface_str = ipv6_interface.as_deref().unwrap_or("::");

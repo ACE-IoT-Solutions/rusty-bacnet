@@ -8,6 +8,415 @@ from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, Optional, TypedDict, Union
 
+ScanRead = tuple[int, int, int, int, Optional[int], str]
+class RuntimeAttachment:
+    def __init__(
+        self,
+        attachment_id: int,
+        label: str,
+        interface: str,
+        port: int = 47808,
+        broadcast: Optional[str] = None,
+        bbmd_address: Optional[str] = None,
+        foreign_device_ttl: Optional[int] = None,
+    ) -> None: ...
+    attachment_id: int
+    label: str
+    interface: str
+    port: int
+    broadcast: Optional[str]
+    bbmd_address: Optional[str]
+    foreign_device_ttl: Optional[int]
+
+class RuntimeMstpAttachment:
+    def __init__(
+        self,
+        attachment_id: int,
+        label: str,
+        device: str,
+        baud: int = 38400,
+        mac: int = 0,
+        max_master: int = 127,
+        max_info_frames: int = 1,
+    ) -> None: ...
+    attachment_id: int
+    label: str
+    device: str
+    baud: int
+    mac: int
+    max_master: int
+    max_info_frames: int
+
+class RuntimeScAttachment:
+    def __init__(
+        self,
+        attachment_id: int,
+        label: str,
+        primary_hub: str,
+        local_vmac: bytes,
+        ca_cert: str,
+        client_cert: str,
+        client_key: str,
+        failover_hub: Optional[str] = None,
+        heartbeat_interval_ms: int = 30000,
+        heartbeat_timeout_ms: int = 60000,
+        reconnect_initial_delay_ms: int = 10000,
+        reconnect_max_delay_ms: int = 600000,
+        reconnect_max_retries: int = 10,
+    ) -> None: ...
+    attachment_id: int
+    label: str
+    primary_hub: str
+    failover_hub: Optional[str]
+    local_vmac: list[int]
+    ca_cert: Optional[str]
+    client_cert: Optional[str]
+    client_key: Optional[str]
+    heartbeat_interval_ms: int
+    heartbeat_timeout_ms: int
+    reconnect_initial_delay_ms: int
+    reconnect_max_delay_ms: int
+    reconnect_max_retries: int
+
+
+class ForeignDeviceStatus:
+    """Immutable snapshot of a BACnet/IP foreign-device registration."""
+    state: str
+    last_result: Optional[int]
+    seconds_to_renewal: Optional[int]
+
+
+class RuntimeHealth:
+    generation: int
+    accepting_commands: bool
+    task_count: int
+    supervisor_task_count: int
+    attachment_task_count: int
+    event_queue_depth: int
+    event_lag_count: int
+    cov_notification_lag_count: int
+    i_am_observation_lag_count: int
+    device_count: int
+    device_observation_count: int
+    capability_count: int
+    cached_value_count: int
+    observation_count: int
+    attachment_ids: list[int]
+    attachment_states: list[str]
+    attachment_error_codes: list[Optional[str]]
+    foreign_device_statuses: list[Optional[ForeignDeviceStatus]]
+
+
+class RuntimeReconcileReport:
+    revision: int
+    generation: int
+    added: list[int]
+    updated: list[int]
+    removed: list[int]
+    idempotent: bool
+
+class RuntimePersistedDevice:
+    attachment_id: int
+    device_instance: int
+    path_mac: list[int]
+    routed_dnet: Optional[int]
+    routed_dadr: Optional[list[int]]
+    vendor_id: int
+    max_apdu_length: int
+    def __init__(
+        self,
+        attachment_id: int,
+        device_instance: int,
+        path_mac: list[int],
+        vendor_id: int = 0,
+        max_apdu_length: int = 1476,
+        routed_dnet: Optional[int] = None,
+        routed_dadr: Optional[list[int]] = None,
+    ) -> None: ...
+
+class RuntimeDeviceRestoreReport:
+    added: int
+    updated: int
+    unchanged: int
+    index_revision: int
+
+
+class RuntimeCrossingCounters:
+    calls: int
+    input_items: int
+    output_items: int
+
+class RuntimeDiscoveredDevice:
+    attachment_id: int
+    device_instance: int
+    selected: bool
+    path_kind: str
+    path_mac: list[int]
+    routed_dnet: Optional[int]
+    routed_dadr: Optional[list[int]]
+    vendor_id: int
+    max_apdu_length: int
+    revision: int
+
+class RuntimeDiscoveredRouter:
+    attachment_id: int
+    path_kind: str
+    path_mac: list[int]
+    routed_dnet: Optional[int]
+    routed_dadr: Optional[list[int]]
+    networks: list[int]
+
+class RuntimeDiscoverySnapshot:
+    generation: int
+    index_revision: int
+    devices: list[RuntimeDiscoveredDevice]
+    routers: list[RuntimeDiscoveredRouter]
+    error_codes: list[str]
+
+class RuntimeBdtEntry:
+    ip: list[int]
+    port: int
+    broadcast_mask: list[int]
+
+class RuntimeFdtEntry:
+    ip: list[int]
+    port: int
+    ttl: int
+    seconds_remaining: int
+
+class RuntimeBbmdSnapshot:
+    mac: list[int]
+    bdt: list[RuntimeBdtEntry]
+    fdt: list[RuntimeFdtEntry]
+
+class RuntimeAttachmentTopology:
+    attachment_id: int
+    local_mac: list[int]
+    bbmds: list[RuntimeBbmdSnapshot]
+    routers: list[RuntimeDiscoveredRouter]
+    truncated: bool
+
+class RuntimeTopologySnapshot:
+    generation: int
+    attachments: list[RuntimeAttachmentTopology]
+    error_codes: list[str]
+
+class RuntimeRead:
+    def __init__(self, input_index: int, attachment_id: int, device_instance: int,
+        object_type: int, object_instance: int, property_id: int, value_category: str,
+        array_index: Optional[int] = None, max_age_ms: Optional[int] = None) -> None: ...
+
+class RuntimeWrite:
+    def __init__(self, input_index: int, attachment_id: int, device_instance: int,
+        object_type: int, object_instance: int, property_id: int, value: PropertyValue,
+        authorization_id: str, array_index: Optional[int] = None,
+        bacnet_priority: Optional[int] = None, verify_readback: bool = False) -> None: ...
+
+class RuntimeBatchOutcome:
+    input_index: int
+    attachment_id: int
+    device_instance: int
+    value: Optional[PropertyValue]
+    raw_value: Optional[list[int]]
+    source: Optional[str]
+    authorization_id: Optional[str]
+    written: Optional[bool]
+    error_code: Optional[str]
+    retryable: bool
+
+class RuntimeObservation:
+    def __init__(self, attachment_id: int, device_instance: int, object_type: int,
+        object_instance: int, subscriber_process_id: int, lifetime_seconds: int,
+        confirmed: bool = False, renewal_margin_seconds: int = 30,
+        suppress_poll_when_fresh: bool = False) -> None: ...
+
+class RuntimeObservationReport:
+    revision: int
+    added: int
+    updated: int
+    removed: int
+    idempotent: bool
+
+class RuntimeCancelReport:
+    operation_id: int
+    queued: bool
+    in_flight: bool
+    found: bool
+
+class RuntimeReadOperation:
+    operation_id: int
+    async def result(self) -> list[RuntimeBatchOutcome]: ...
+
+class RuntimeWriteOperation:
+    operation_id: int
+    async def result(self) -> list[RuntimeBatchOutcome]: ...
+
+class RuntimeCovValue:
+    property_id: int
+    array_index: Optional[int]
+    value: Optional[PropertyValue]
+    raw_value: bytes
+    priority: Optional[int]
+
+class RuntimeEvent:
+    generation: int
+    sequence: int
+    attachment_id: Optional[int]
+    kind: str
+    device_instance: Optional[int]
+    completed: Optional[int]
+    total: Optional[int]
+    final_update: Optional[bool]
+    lost_count: Optional[int]
+    error_code: Optional[str]
+    observation_process_id: Optional[int]
+    subscriber_process_identifier: Optional[int]
+    initiating_device_identifier: Optional[ObjectIdentifier]
+    monitored_object_identifier: Optional[ObjectIdentifier]
+    time_remaining: Optional[int]
+    delivery: Optional[str]
+    object_identifier: Optional[int]
+    max_apdu_length: Optional[int]
+    segmentation_supported: Optional[int]
+    vendor_id: Optional[int]
+    udp_source_ip: Optional[list[int]]
+    udp_source_port: Optional[int]
+    source_mac: Optional[bytes]
+    source_network: Optional[int]
+    source_address: Optional[bytes]
+    bvlc_function: Optional[int]
+    forwarded_from_ip: Optional[list[int]]
+    forwarded_from_port: Optional[int]
+    timestamp: Optional[float]
+    """I-Am receipt time in the ``time.monotonic()`` clock domain."""
+    values: list[RuntimeCovValue]
+
+class RuntimeEventBatch:
+    events: list[RuntimeEvent]
+
+
+class ScanOutcome:
+    """One ordered result produced inside a native scan operation."""
+    @property
+    def input_index(self) -> int: ...
+    @property
+    def object_type(self) -> int: ...
+    @property
+    def object_instance(self) -> int: ...
+    @property
+    def property_id(self) -> int: ...
+    @property
+    def array_index(self) -> Optional[int]: ...
+    @property
+    def value_category(self) -> str: ...
+    @property
+    def value(self) -> Optional[PropertyValue]: ...
+    @property
+    def raw_value(self) -> Optional[list[int]]: ...
+    @property
+    def error_code(self) -> Optional[str]: ...
+    @property
+    def retryable(self) -> bool: ...
+    @property
+    def bacnet_class(self) -> Optional[int]: ...
+    @property
+    def bacnet_code(self) -> Optional[int]: ...
+
+
+class ScanSnapshot:
+    """Final result and provenance for one coarse native scan call."""
+    generation: int
+    attachment_id: int
+    device_instance: int
+    path_kind: str
+    path_mac: list[int]
+    routed_dnet: Optional[int]
+    routed_dadr: Optional[list[int]]
+    outcomes: list[ScanOutcome]
+    rpm_attempts: int
+    rp_fallbacks: int
+    elapsed_ms: int
+
+class RuntimeScannedObject:
+    object_type: int
+    object_instance: int
+
+class RuntimeDeviceScanSnapshot:
+    objects: list[RuntimeScannedObject]
+    properties: ScanSnapshot
+
+
+class BACnetRuntime:
+    """Supervised runtime exposing coarse operations rather than APDU calls."""
+    @classmethod
+    async def start(
+        cls,
+        attachments: list[Union[RuntimeAttachment, RuntimeMstpAttachment, RuntimeScAttachment]],
+        event_capacity: int = 1024,
+        max_event_batch: int = 256,
+    ) -> BACnetRuntime: ...
+    async def reconcile(
+        self,
+        revision: int,
+        attachments: list[Union[RuntimeAttachment, RuntimeMstpAttachment, RuntimeScAttachment]],
+    ) -> RuntimeReconcileReport: ...
+    async def restore_devices(
+        self, devices: list[RuntimePersistedDevice]
+    ) -> RuntimeDeviceRestoreReport: ...
+    async def discover(
+        self,
+        timeout_ms: int = 1000,
+        low_limit: Optional[int] = None,
+        high_limit: Optional[int] = None,
+    ) -> RuntimeDiscoverySnapshot: ...
+    async def topology(
+        self,
+        attachment_ids: list[int] = [],
+        bbmd_seeds: list[tuple[int, list[int]]] = [],
+        include_fdt: bool = True,
+        max_bbmds_per_attachment: int = 256,
+    ) -> RuntimeTopologySnapshot: ...
+    async def scan(
+        self,
+        attachment_id: int,
+        device_instance: int,
+        reads: list[ScanRead],
+        max_request_bytes: int = 1476,
+        max_response_bytes: int = 1476,
+        max_properties: int = 32,
+        progress_interval_ms: int = 250,
+    ) -> ScanSnapshot: ...
+    async def load_property_catalog(self, catalog_json: bytes, version: int,
+        sha256: str) -> None: ...
+    async def scan_device(
+        self,
+        attachment_id: int,
+        device_instance: int,
+        max_objects: int = 50000,
+        max_request_bytes: int = 1476,
+        max_response_bytes: int = 1476,
+        max_properties: int = 32,
+        progress_interval_ms: int = 250,
+    ) -> RuntimeDeviceScanSnapshot: ...
+    async def read_batch(self, reads: list[RuntimeRead], timeout_ms: int = 5000,
+        priority: str = "foreground") -> list[RuntimeBatchOutcome]: ...
+    async def submit_read_batch(self, reads: list[RuntimeRead], timeout_ms: int = 5000,
+        priority: str = "foreground") -> RuntimeReadOperation: ...
+    async def write_batch(self, writes: list[RuntimeWrite], timeout_ms: int = 5000,
+        priority: str = "foreground") -> list[RuntimeBatchOutcome]: ...
+    async def submit_write_batch(self, writes: list[RuntimeWrite], timeout_ms: int = 5000,
+        priority: str = "foreground") -> RuntimeWriteOperation: ...
+    async def apply_observation_plan(self, revision: int,
+        subscriptions: list[RuntimeObservation]) -> RuntimeObservationReport: ...
+    async def cancel(self, operation_id: int) -> RuntimeCancelReport: ...
+    async def next_events(self, max_items: int = 256, wait_ms: int = 0) -> RuntimeEventBatch: ...
+    async def stop(self) -> None: ...
+    async def health(self) -> RuntimeHealth: ...
+    def crossing_counters(self) -> RuntimeCrossingCounters: ...
+
+
+
+
 
 # ---------------------------------------------------------------------------
 # Enum types
@@ -931,6 +1340,48 @@ class DiscoveredDevice:
     def __repr__(self) -> str: ...
 
 
+class ApduDecodeError:
+    """Typed failure from the unstable APDU diagnostic observer."""
+    @property
+    def stage(self) -> Literal["npdu", "apdu"]: ...
+    @property
+    def category(self) -> str: ...
+    @property
+    def message(self) -> str: ...
+
+
+class ApduObserverEvent:
+    """Unstable event whose exact raw NPDU may contain secrets."""
+    @property
+    def direction(self) -> Literal["inbound", "outbound"]: ...
+    @property
+    def immediate_peer(self) -> bytes: ...
+    @property
+    def claimed_forwarded_origin(self) -> Optional[bytes]: ...
+    @property
+    def routed_network(self) -> Optional[int]: ...
+    @property
+    def routed_address(self) -> Optional[bytes]: ...
+    @property
+    def raw_npdu(self) -> bytes: ...
+    @property
+    def decoded(self) -> bool: ...
+    @property
+    def pdu_type(self) -> Optional[str]: ...
+    @property
+    def service_choice(self) -> Optional[int]: ...
+    @property
+    def invoke_id(self) -> Optional[int]: ...
+    @property
+    def decode_error(self) -> Optional[ApduDecodeError]: ...
+
+
+class ApduObserverEventIterator:
+    """Bounded async APDU event iterator with explicit lag errors."""
+    def __aiter__(self) -> ApduObserverEventIterator: ...
+    async def __anext__(self) -> ApduObserverEvent: ...
+
+
 class CovNotification:
     """A Change-of-Value notification received from a remote device."""
 
@@ -971,6 +1422,85 @@ class CovNotificationIterator:
 
     def __aiter__(self) -> CovNotificationIterator: ...
     async def __anext__(self) -> CovNotification: ...
+
+
+# ---------------------------------------------------------------------------
+# Local BBMD control and narrowing policy
+# ---------------------------------------------------------------------------
+
+class BdtEntry:
+    ip: str
+    ip_bytes: bytes
+    port: int
+    broadcast_mask: str
+    broadcast_mask_bytes: bytes
+
+class FdtEntry:
+    ip: str
+    ip_bytes: bytes
+    port: int
+    ttl: int
+    seconds_remaining: int
+
+class BbmdCounters:
+    registrations_accepted: int
+    registrations_rejected: int
+    registrations_expired: int
+    capacity_exhausted: int
+    management_response_bytes: int
+    management_responses_throttled: int
+    fanout_packets_forwarded: int
+    fanout_packets_throttled: int
+    fanout_destinations_deduplicated: int
+    fanout_queue_overflow_drops: int
+    fanout_send_errors: int
+
+class BbmdSnapshot:
+    revision: int
+    bdt: list[BdtEntry]
+    fdt: list[FdtEntry]
+    accept_foreign_devices: bool
+    max_fdt_entries: int
+    management_acl: list[str]
+    wire_bdt_writes_enabled: bool
+    bdt_persist_path: Optional[str]
+    counters: BbmdCounters
+
+class BvllPolicyContext:
+    function: int
+    source_ip: str
+    source_port: int
+    payload_len: int
+    payload_prefix: bytes
+
+class BvllPolicyVerdict:
+    kind: str
+    result_code: Optional[int]
+    @staticmethod
+    def continue_native() -> BvllPolicyVerdict: ...
+    @staticmethod
+    def drop() -> BvllPolicyVerdict: ...
+    @staticmethod
+    def reject(result_code: int) -> BvllPolicyVerdict: ...
+
+class BvllPolicyCounters:
+    evaluated: int
+    continued: int
+    dropped: int
+    rejected: int
+    errors: int
+    timeouts: int
+    overloads: int
+    circuit_open_drops: int
+
+class BbmdControl:
+    lifecycle: Literal["not_started", "running", "stopped"]
+    async def snapshot(self) -> BbmdSnapshot: ...
+    def policy_counters(self) -> BvllPolicyCounters: ...
+    async def replace_bdt(self, entries: list[tuple[str, int, str]]) -> int: ...
+    async def set_accept_foreign_devices(self, accept: bool) -> int: ...
+    async def set_max_fdt_entries(self, maximum: int) -> int: ...
+    async def set_management_acl(self, acl: list[str]) -> int: ...
 
 
 # ---------------------------------------------------------------------------
@@ -1020,9 +1550,17 @@ class BacnetBvlcError(BacnetError):
     """Raised when a BACnet/IP management request receives a BVLC NAK."""
     result_code: int
 
+class BacnetBbmdControlError(BacnetError):
+    """Raised when a local BBMD control operation is unavailable or invalid."""
+    code: Literal["not_started", "stopped", "invalid", "io"]
+
 class BacnetForeignDeviceRegistrationError(BacnetBvlcError):
     """Raised when a BBMD rejects foreign-device registration."""
     ...
+
+class BacnetNotificationLagError(BacnetError):
+    """Raised when a bounded event iterator has skipped observations."""
+    skipped: int
 
 
 # ---------------------------------------------------------------------------
@@ -1088,6 +1626,54 @@ class ManagedCOVSubscription:
     async def cancel(self) -> None: ...
 
 
+class RouterPortCounters:
+    @property
+    def config_index(self) -> int: ...
+    @property
+    def network_number(self) -> int: ...
+    @property
+    def transport_kind(self) -> str: ...
+    @property
+    def identity(self) -> str: ...
+    @property
+    def forwarded_unicast(self) -> int: ...
+    @property
+    def forwarded_broadcast(self) -> int: ...
+    @property
+    def decode_drops(self) -> int: ...
+    @property
+    def encode_drops(self) -> int: ...
+    @property
+    def hop_drops(self) -> int: ...
+    @property
+    def no_route_drops(self) -> int: ...
+    @property
+    def busy_drops(self) -> int: ...
+    @property
+    def output_full_drops(self) -> int: ...
+    @property
+    def send_errors(self) -> int: ...
+    @property
+    def shutdown_drops(self) -> int: ...
+
+
+class BACnetRouter:
+    def __init__(
+        self,
+        bip_network: int,
+        virtual_ports: list[tuple[int, str, int]],
+        interface: str = "0.0.0.0",
+        port: int = 0xBAC0,
+        broadcast_address: str = "255.255.255.255",
+        reuse_port: bool = False,
+    ) -> None: ...
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    @property
+    def local_address(self) -> str: ...
+    def port_counters(self) -> list[RouterPortCounters]: ...
+
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
@@ -1143,6 +1729,8 @@ class BACnetClient:
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
         sc_device_uuid: Optional[bytes | bytearray] = None,
+        apdu_observer: bool = False,
+        apdu_observer_capacity: int = 64,
     ) -> None: ...
 
     async def __aenter__(self) -> BACnetClient: ...
@@ -1152,6 +1740,10 @@ class BACnetClient:
         _exc_val: Any = None,
         _exc_tb: Any = None,
     ) -> None: ...
+
+    def apdu_events(self) -> ApduObserverEventIterator:
+        """Return the unstable stream; raw NPDUs may contain secrets."""
+        ...
 
     # --- Property operations ---
 
@@ -1906,6 +2498,19 @@ class BACnetServer:
         mstp_mac: int = 1,
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
+        bbmd: bool = False,
+        bbmd_bdt: Optional[list[tuple[str, int, str]]] = None,
+        bbmd_bdt_persist_path: Optional[str] = None,
+        bbmd_accept_foreign_devices: bool = False,
+        bbmd_max_fdt_entries: int = 128,
+        bbmd_management_acl: Optional[list[str]] = None,
+        bbmd_wire_management_enabled: bool = False,
+        bvll_policy: Optional[Any] = None,
+        bvll_policy_timeout_ms: int = 50,
+        bvll_policy_queue_capacity: int = 32,
+        bvll_policy_failure_threshold: int = 3,
+        bvll_policy_cooldown_ms: int = 1000,
+        reuse_port: bool = False,
         max_confirmed_in_flight: int = 64,
         max_unconfirmed_in_flight: int = 32,
         max_confirmed_in_flight_per_peer: int = 16,
@@ -1929,23 +2534,98 @@ class BACnetServer:
         event_information_max_objects: int = 4096,
         event_information_max_returned_summaries: int = 256,
         event_information_max_service_ack_bytes: int = 16384,
+        vendor_name: str = "Rusty BACnet",
+        vendor_identifier: int = 555,
+        model_name: str = "rusty-bacnet",
+        description: str = "",
+        firmware_revision: str = "0.1.0",
+        application_software_version: str = "0.1.0",
         sc_device_uuid: Optional[bytes | bytearray] = None,
     ) -> None: ...
 
+    @property
+    def bbmd_control(self) -> BbmdControl: ...
+
     # --- Analog objects ---
-    def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0) -> None: ...
-    def add_analog_output(self, instance: int, name: str, units: int = 62) -> None: ...
-    def add_analog_value(self, instance: int, name: str, units: int = 62) -> None: ...
+    def add_analog_input(
+        self,
+        instance: int,
+        name: str,
+        units: int = 62,
+        present_value: float = 0.0,
+        description: str = "",
+        cov_increment: float = 0.0,
+    ) -> None: ...
+    def add_analog_output(
+        self,
+        instance: int,
+        name: str,
+        units: int = 62,
+        present_value: float = 0.0,
+        description: str = "",
+        cov_increment: float = 0.0,
+    ) -> None: ...
+    def add_analog_value(
+        self,
+        instance: int,
+        name: str,
+        units: int = 62,
+        present_value: float = 0.0,
+        description: str = "",
+        cov_increment: float = 0.0,
+    ) -> None: ...
 
     # --- Binary objects ---
-    def add_binary_input(self, instance: int, name: str) -> None: ...
-    def add_binary_output(self, instance: int, name: str) -> None: ...
-    def add_binary_value(self, instance: int, name: str) -> None: ...
+    def add_binary_input(
+        self,
+        instance: int,
+        name: str,
+        present_value: bool = False,
+        description: str = "",
+    ) -> None: ...
+    def add_binary_output(
+        self,
+        instance: int,
+        name: str,
+        present_value: bool = False,
+        description: str = "",
+    ) -> None: ...
+    def add_binary_value(
+        self,
+        instance: int,
+        name: str,
+        present_value: bool = False,
+        description: str = "",
+    ) -> None: ...
 
     # --- Multi-state objects ---
-    def add_multistate_input(self, instance: int, name: str, number_of_states: int) -> None: ...
-    def add_multistate_output(self, instance: int, name: str, number_of_states: int) -> None: ...
-    def add_multistate_value(self, instance: int, name: str, number_of_states: int) -> None: ...
+    def add_multistate_input(
+        self,
+        instance: int,
+        name: str,
+        number_of_states: int,
+        state_text: Optional[list[str]] = None,
+        present_value: int = 1,
+        description: str = "",
+    ) -> None: ...
+    def add_multistate_output(
+        self,
+        instance: int,
+        name: str,
+        number_of_states: int,
+        state_text: Optional[list[str]] = None,
+        present_value: int = 1,
+        description: str = "",
+    ) -> None: ...
+    def add_multistate_value(
+        self,
+        instance: int,
+        name: str,
+        number_of_states: int,
+        state_text: Optional[list[str]] = None,
+        present_value: int = 1,
+        description: str = "",
+    ) -> None: ...
 
     # --- Date/time/pattern objects ---
     def add_calendar(self, instance: int, name: str) -> None: ...
@@ -2023,7 +2703,13 @@ class BACnetServer:
     def add_integer_value(self, instance: int, name: str) -> None: ...
     def add_positive_integer_value(self, instance: int, name: str) -> None: ...
     def add_large_analog_value(self, instance: int, name: str) -> None: ...
-    def add_character_string_value(self, instance: int, name: str) -> None: ...
+    def add_character_string_value(
+        self,
+        instance: int,
+        name: str,
+        present_value: str = "",
+        description: str = "",
+    ) -> None: ...
     def add_octet_string_value(self, instance: int, name: str) -> None: ...
     def add_bit_string_value(self, instance: int, name: str) -> None: ...
 

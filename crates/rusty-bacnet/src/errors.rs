@@ -10,13 +10,29 @@ create_exception!(rusty_bacnet, BacnetProtocolError, BacnetError);
 create_exception!(rusty_bacnet, BacnetTimeoutError, BacnetError);
 create_exception!(rusty_bacnet, BacnetRejectError, BacnetError);
 create_exception!(rusty_bacnet, BacnetAbortError, BacnetError);
+create_exception!(rusty_bacnet, BacnetNotificationLagError, BacnetError);
 create_exception!(rusty_bacnet, BacnetNetworkRejectError, BacnetError);
 create_exception!(rusty_bacnet, BacnetBvlcError, BacnetError);
+create_exception!(rusty_bacnet, BacnetBbmdControlError, BacnetError);
 create_exception!(
     rusty_bacnet,
     BacnetForeignDeviceRegistrationError,
     BacnetBvlcError
 );
+
+pub fn bbmd_control_to_py_err(error: bacnet_transport::bip::BbmdControlError) -> PyErr {
+    let code = match &error {
+        bacnet_transport::bip::BbmdControlError::NotStarted => "not_started",
+        bacnet_transport::bip::BbmdControlError::Stopped => "stopped",
+        bacnet_transport::bip::BbmdControlError::Invalid(_) => "invalid",
+        bacnet_transport::bip::BbmdControlError::Io(_) => "io",
+    };
+    let py_err = BacnetBbmdControlError::new_err(error.to_string());
+    Python::attach(|py| {
+        let _ = py_err.value(py).setattr("code", code);
+    });
+    py_err
+}
 
 fn network_reject_py_err(network: u16, reason: u8, message: String) -> PyErr {
     let py_err = BacnetNetworkRejectError::new_err(message);
@@ -109,10 +125,18 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("BacnetRejectError", m.py().get_type::<BacnetRejectError>())?;
     m.add("BacnetAbortError", m.py().get_type::<BacnetAbortError>())?;
     m.add(
+        "BacnetNotificationLagError",
+        m.py().get_type::<BacnetNotificationLagError>(),
+    )?;
+    m.add(
         "BacnetNetworkRejectError",
         m.py().get_type::<BacnetNetworkRejectError>(),
     )?;
     m.add("BacnetBvlcError", m.py().get_type::<BacnetBvlcError>())?;
+    m.add(
+        "BacnetBbmdControlError",
+        m.py().get_type::<BacnetBbmdControlError>(),
+    )?;
     m.add(
         "BacnetForeignDeviceRegistrationError",
         m.py().get_type::<BacnetForeignDeviceRegistrationError>(),

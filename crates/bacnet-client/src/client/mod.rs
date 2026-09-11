@@ -25,6 +25,7 @@ use bacnet_encoding::apdu::{
 use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
 use bacnet_endpoint_core::coordinator::{CanonicalPeer, OutboundTransactionCoordinator};
 use bacnet_network::layer::NetworkLayer;
+use bacnet_network::observer::ApduObserver;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_transport::bip::BipTransport;
 #[cfg(feature = "ipv6")]
@@ -128,6 +129,11 @@ pub struct ClientOptions {
     /// they call `recv()`. The default preserves the historical fixed capacity
     /// of 64.
     pub cov_channel_capacity: usize,
+    /// Optional, bounded, passive APDU diagnostics observer.
+    ///
+    /// When absent, the network layer does not materialize observer events or
+    /// cross an observer channel on packet ingress or egress.
+    pub apdu_observer: Option<ApduObserver>,
     confirmed_cov_notification_ack_policy: ConfirmedCOVNotificationAckPolicy,
 }
 
@@ -151,6 +157,7 @@ impl Default for ClientOptions {
     fn default() -> Self {
         Self {
             cov_channel_capacity: DEFAULT_COV_CHANNEL_CAPACITY,
+            apdu_observer: None,
             confirmed_cov_notification_ack_policy:
                 cov_notifications::default_confirmed_cov_notification_ack_policy(),
         }
@@ -229,6 +236,12 @@ impl<T: TransportPort + 'static> ClientBuilder<T> {
     /// Set the COV notification broadcast channel capacity.
     pub fn cov_channel_capacity(mut self, capacity: usize) -> Self {
         self.options.cov_channel_capacity = capacity;
+        self
+    }
+
+    /// Enable bounded, passive APDU diagnostics for this client.
+    pub fn apdu_observer(mut self, observer: ApduObserver) -> Self {
+        self.options.apdu_observer = Some(observer);
         self
     }
 
@@ -462,6 +475,13 @@ impl BACnetClient<BipTransport> {
 
     pub fn builder() -> BipClientBuilder {
         Self::bip_builder()
+    }
+
+    /// Return live managed foreign-device registration telemetry, when configured.
+    pub fn foreign_device_registration(
+        &self,
+    ) -> Option<bacnet_transport::bip::ForeignDeviceRegistrationHandle> {
+        self.network.transport().foreign_device_registration()
     }
 
     /// Read the Broadcast Distribution Table from a BBMD.
@@ -854,6 +874,8 @@ pub use router_discovery::RouterInfo;
 
 #[cfg(test)]
 mod acknowledge_alarm_tests;
+#[cfg(test)]
+mod apdu_observer_tests;
 #[cfg(test)]
 mod audit_tests;
 #[cfg(test)]

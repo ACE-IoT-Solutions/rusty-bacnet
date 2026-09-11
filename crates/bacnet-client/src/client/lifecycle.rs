@@ -41,7 +41,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
         options.validate()?;
 
-        let mut network = NetworkLayer::new(transport);
+        let mut network = match options.apdu_observer.clone() {
+            Some(observer) => NetworkLayer::with_observer(transport, observer),
+            None => NetworkLayer::new(transport),
+        };
         let mut network_control_rx = network.enable_network_control_receiver()?;
         let (network_control_tx, _) =
             broadcast::channel::<bacnet_network::layer::ReceivedNetworkControl>(256);

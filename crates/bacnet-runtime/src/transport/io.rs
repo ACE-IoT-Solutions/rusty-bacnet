@@ -3,7 +3,7 @@ use super::*;
 impl RuntimeTransport {
     pub(crate) fn background_task_count(&self) -> usize {
         match self {
-            Self::Bip(_) => 2,
+            Self::Bip(client) => 2 + usize::from(client.foreign_device_registration().is_some()),
             #[cfg(feature = "mstp")]
             Self::Mstp(_) => 2,
             #[cfg(feature = "sc")]
@@ -25,7 +25,9 @@ impl RuntimeTransport {
         &self,
     ) -> Option<ForeignDeviceRegistrationStatus> {
         match self {
-            Self::Bip(_) => None,
+            Self::Bip(client) => client
+                .foreign_device_registration()
+                .map(|registration| registration.status().into()),
             #[cfg(feature = "mstp")]
             Self::Mstp(_) => None,
             #[cfg(feature = "sc")]

@@ -23,12 +23,17 @@ use bacnet_types::enums as bacnet_enums;
 use bacnet_types::primitives;
 
 mod address;
+mod apdu_observer;
 mod audit;
 mod audit_projection;
+mod bbmd_control;
 mod bvll_management;
+mod bvll_policy_control;
 mod cov;
 mod device;
 mod enums;
+mod foreign_device;
+mod iam;
 mod managed_cov;
 mod object_identifier;
 mod property_value;
@@ -38,12 +43,20 @@ mod rpm_wpm;
 mod timestamp;
 
 pub use address::{parse_address, PyDirectTarget, PyRoutedTarget, PyTarget};
+pub use apdu_observer::{PyApduDecodeError, PyApduObserverEvent, PyApduObserverEventIterator};
+pub(crate) use apdu_observer::{PyApduObserverStartGuard, PyApduObserverState};
 pub(crate) use audit::{audit_log_query_request_from_py, audit_notification_request_from_py};
 pub(crate) use audit_projection::audit_log_query_ack_to_py;
+pub(crate) use bbmd_control::{parse_bdt_entries, parse_management_acl, PyBbmdTransportConfig};
+pub use bbmd_control::{PyBbmdControl, PyBbmdCounters, PyBbmdSnapshot};
 pub use bvll_management::{PyBdtEntry, PyFdtEntry};
+pub(crate) use bvll_policy_control::PythonBvllPolicyBridge;
+pub use bvll_policy_control::{PyBvllPolicyContext, PyBvllPolicyCounters, PyBvllPolicyVerdict};
 pub use cov::{PyCovNotification, PyCovNotificationIterator};
 pub use device::PyDiscoveredDevice;
 pub use enums::*;
+pub use foreign_device::PyForeignDeviceStatus;
+pub use iam::{PyIAmEvent, PyIAmEventIterator};
 pub(crate) use managed_cov::PyManagedCOVTarget;
 pub use managed_cov::{PyManagedCOVEvent, PyManagedCOVEventIterator, PyManagedCOVSubscription};
 pub use object_identifier::PyObjectIdentifier;
@@ -58,6 +71,12 @@ pub use timestamp::PyBACnetTimeStamp;
 
 /// Register all type classes with the module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyBbmdControl>()?;
+    m.add_class::<PyBbmdCounters>()?;
+    m.add_class::<PyBbmdSnapshot>()?;
+    m.add_class::<PyBvllPolicyContext>()?;
+    m.add_class::<PyBvllPolicyCounters>()?;
+    m.add_class::<PyBvllPolicyVerdict>()?;
     // Enum types — add class then populate constants from ALL_NAMED.
     m.add_class::<PyObjectType>()?;
     PyObjectType::register_constants(&m.getattr("ObjectType")?)?;
@@ -107,12 +126,18 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDiscoveredDevice>()?;
     m.add_class::<PyCovNotification>()?;
     m.add_class::<PyCovNotificationIterator>()?;
+    m.add_class::<PyForeignDeviceStatus>()?;
+    m.add_class::<PyIAmEvent>()?;
+    m.add_class::<PyIAmEventIterator>()?;
     m.add_class::<PyManagedCOVEvent>()?;
     m.add_class::<PyManagedCOVEventIterator>()?;
     m.add_class::<PyManagedCOVSubscription>()?;
     m.add_class::<PyBdtEntry>()?;
     m.add_class::<PyFdtEntry>()?;
     m.add_class::<PyRouterInfo>()?;
+    m.add_class::<PyApduDecodeError>()?;
+    m.add_class::<PyApduObserverEvent>()?;
+    m.add_class::<PyApduObserverEventIterator>()?;
     m.add_class::<PyDirectTarget>()?;
     m.add_class::<PyRoutedTarget>()?;
     m.add_class::<PyRawTag>()?;

@@ -2221,7 +2221,9 @@ version = "0.11.0"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
+ "bacnet-network",
  "bacnet-objects",
+ "bacnet-runtime",
  "bacnet-server",
  "bacnet-services",
  "bacnet-transport",

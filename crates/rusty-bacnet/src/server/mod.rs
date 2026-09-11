@@ -54,7 +54,9 @@ use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitVal
 use bacnet_types::primitives::PropertyValue;
 
 use crate::errors::to_py_err;
-use crate::types::{PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue};
+use crate::types::{
+    PyBbmdControl, PyBbmdTransportConfig, PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue,
+};
 
 /// Async BACnet server that hosts objects and responds to requests.
 ///
@@ -88,6 +90,10 @@ pub struct BACnetServer {
     interface: String,
     port: u16,
     broadcast_address: String,
+    reuse_port: bool,
+    pending_bbmd_transport: Arc<std::sync::Mutex<Option<BipTransport>>>,
+    bbmd_transport_config: Option<PyBbmdTransportConfig>,
+    bbmd_control: Arc<std::sync::Mutex<Option<PyBbmdControl>>>,
     // SC config
     sc_hub: Option<String>,
     sc_vmac: Option<Vec<u8>>,

@@ -43,11 +43,11 @@ use bacnet_types::primitives::BACnetTimeStamp;
 use crate::errors::to_py_err;
 use crate::types::{
     audit_log_query_ack_to_py, audit_log_query_request_from_py, audit_notification_request_from_py,
-    parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyBACnetTimeStamp,
-    PyCovNotificationIterator, PyDiscoveredDevice, PyEnableDisable,
-    PyEnrollmentSummaryEventStateFilter, PyEventState, PyEventType, PyLifeSafetyOperation,
-    PyMessagePriority, PyObjectIdentifier, PyObjectType, PyPropertyIdentifier, PyPropertyValue,
-    PyReinitializedState,
+    parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyApduObserverStartGuard,
+    PyApduObserverState, PyBACnetTimeStamp, PyCovNotificationIterator, PyDiscoveredDevice,
+    PyEnableDisable, PyEnrollmentSummaryEventStateFilter, PyEventState, PyEventType,
+    PyIAmEventIterator, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier, PyObjectType,
+    PyPropertyIdentifier, PyPropertyValue, PyReinitializedState,
 };
 
 /// Async BACnet client for reading/writing properties on remote devices.
@@ -72,6 +72,7 @@ use crate::types::{
 #[pyclass(name = "BACnetClient")]
 pub struct BACnetClient {
     inner: ClientInner,
+    apdu_observer: Option<Arc<PyApduObserverState>>,
     managed_cov: client_methods::managed_cov::ManagedCOVRegistry,
     transport_type: String,
     // BIP config
@@ -99,6 +100,7 @@ pub struct BACnetClient {
 }
 
 mod client_methods {
+    mod apdu_observer;
     mod cov_discovery;
     mod enrollment_alarm_covmulti_who_writegroup;
     mod file_list_private_text_life;

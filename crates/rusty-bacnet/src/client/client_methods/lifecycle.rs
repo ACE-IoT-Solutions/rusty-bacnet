@@ -23,7 +23,9 @@ impl BACnetClient {
         mstp_mac=1,
         mstp_max_master=127,
         mstp_max_info_frames=1,
-        sc_device_uuid=None
+        sc_device_uuid=None,
+        apdu_observer=false,
+        apdu_observer_capacity=64
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -46,6 +48,8 @@ impl BACnetClient {
         mstp_max_master: u8,
         mstp_max_info_frames: u8,
         sc_device_uuid: Option<Vec<u8>>,
+        apdu_observer: bool,
+        apdu_observer_capacity: usize,
     ) -> PyResult<Self> {
         if transport == "sc" {
             crate::tls::required_sc_credentials(
@@ -56,8 +60,10 @@ impl BACnetClient {
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         }
         let sc_device_uuid = crate::sc_identity::device_uuid(transport, sc_device_uuid)?;
+        let apdu_observer = PyApduObserverState::configured(apdu_observer, apdu_observer_capacity)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
+            apdu_observer,
             managed_cov: Arc::new(std::sync::Mutex::new(Vec::new())),
             transport_type: transport.to_string(),
             interface: interface.to_string(),
@@ -104,6 +110,7 @@ impl BACnetClient {
         let mstp_mac = slf.borrow().mstp_mac;
         let mstp_max_master = slf.borrow().mstp_max_master;
         let mstp_max_info_frames = slf.borrow().mstp_max_info_frames;
+        let apdu_observer = slf.borrow().apdu_observer.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let transport: AnyTransport<crate::mstp_py::PySerial> = match transport_type.as_str() {
@@ -171,14 +178,20 @@ impl BACnetClient {
                 }
             };
 
-            let c = client::BACnetClient::generic_builder()
+            let mut observer_start_guard = PyApduObserverStartGuard::new(apdu_observer.clone());
+            let mut builder = client::BACnetClient::generic_builder()
                 .transport(transport)
-                .apdu_timeout_ms(timeout_ms)
-                .build()
-                .await
-                .map_err(to_py_err)?;
+                .apdu_timeout_ms(timeout_ms);
+            if let Some(state) = apdu_observer.as_ref() {
+                builder = builder.apdu_observer(state.observer()?);
+            }
+            let c = match builder.build().await {
+                Ok(client) => client,
+                Err(error) => return Err(to_py_err(error)),
+            };
 
             *inner.lock().await = Some(Arc::new(c));
+            observer_start_guard.commit();
             Ok(self_ref)
         })
     }
@@ -194,6 +207,7 @@ impl BACnetClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let managed_cov = Arc::clone(&self.managed_cov);
+        let apdu_observer = self.apdu_observer.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             super::managed_cov::stop_managed_cov_subscriptions(&managed_cov).await;
             let arc = {
@@ -214,6 +228,9 @@ impl BACnetClient {
                     }
                 }
             }
+            if let Some(state) = apdu_observer.as_ref() {
+                state.close_and_reset();
+            }
             Ok(())
         })
     }
@@ -221,23 +238,29 @@ impl BACnetClient {
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let managed_cov = Arc::clone(&self.managed_cov);
+        let apdu_observer = self.apdu_observer.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             super::managed_cov::stop_managed_cov_subscriptions(&managed_cov).await;
             let arc = {
                 let mut guard = inner.lock().await;
                 guard.take()
             };
-            if let Some(arc) = arc {
+            let stop_result = if let Some(arc) = arc {
                 match Arc::try_unwrap(arc) {
-                    Ok(mut c) => {
-                        c.stop().await.map_err(to_py_err)?;
-                    }
+                    Ok(mut c) => c.stop().await.map_err(to_py_err),
                     Err(_arc) => {
                         // Other async operations still hold references;
                         // cleanup will happen when they complete and drop the Arc.
+                        Ok(())
                     }
                 }
+            } else {
+                Ok(())
+            };
+            if let Some(state) = apdu_observer.as_ref() {
+                state.close_and_reset();
             }
+            stop_result?;
             Ok(())
         })
     }
