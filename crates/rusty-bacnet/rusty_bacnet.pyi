@@ -1016,6 +1016,33 @@ class BacnetAbortError(BacnetError):
 # Client
 # ---------------------------------------------------------------------------
 
+class DirectTarget:
+    """A direct BACnet/IP target with an explicitly preserved UDP port."""
+
+    def __init__(self, address: str) -> None: ...
+    @property
+    def address(self) -> str: ...
+    @property
+    def mac(self) -> bytes: ...
+
+
+class RoutedTarget:
+    """A routed target with an explicit next-hop router, DNET, and DADR."""
+
+    def __init__(self, router: str, network: int, address: bytes) -> None: ...
+    @property
+    def router(self) -> str: ...
+    @property
+    def router_mac(self) -> bytes: ...
+    @property
+    def network(self) -> int: ...
+    @property
+    def address(self) -> bytes: ...
+
+
+Target = Union[str, DirectTarget, RoutedTarget]
+
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
@@ -1085,7 +1112,7 @@ class BACnetClient:
 
     async def read_property(
         self,
-        address: str,
+        address: Target,
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         array_index: Optional[int] = None,
@@ -1095,7 +1122,7 @@ class BACnetClient:
 
     async def write_property(
         self,
-        address: str,
+        address: Target,
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         value: PropertyValue,
@@ -1107,7 +1134,7 @@ class BACnetClient:
 
     async def read_property_multiple(
         self,
-        address: str,
+        address: Target,
         specs: list[
             tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int]]]]
         ],
@@ -1121,7 +1148,7 @@ class BACnetClient:
 
     async def write_property_multiple(
         self,
-        address: str,
+        address: Target,
         specs: list[
             tuple[
                 ObjectIdentifier,
@@ -1327,7 +1354,7 @@ class BACnetClient:
 
     async def subscribe_cov(
         self,
-        address: str,
+        address: Target,
         subscriber_process_identifier: int,
         monitored_object_identifier: ObjectIdentifier,
         confirmed: bool,
@@ -1338,7 +1365,7 @@ class BACnetClient:
 
     async def unsubscribe_cov(
         self,
-        address: str,
+        address: Target,
         subscriber_process_identifier: int,
         monitored_object_identifier: ObjectIdentifier,
     ) -> None:

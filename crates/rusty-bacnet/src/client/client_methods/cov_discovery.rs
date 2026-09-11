@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::types::PyTarget;
 
 #[pymethods]
 impl BACnetClient {
@@ -12,7 +13,7 @@ impl BACnetClient {
     fn subscribe_cov<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         subscriber_process_identifier: u32,
         monitored_object_identifier: PyObjectIdentifier,
         confirmed: bool,
@@ -22,21 +23,34 @@ impl BACnetClient {
         let oid = monitored_object_identifier.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.subscribe_cov(
-                &mac,
-                subscriber_process_identifier,
-                oid,
-                confirmed,
-                lifetime,
-            )
-            .await
+            if let Some((dnet, dadr)) = routing {
+                c.subscribe_cov_routed(
+                    &mac,
+                    dnet,
+                    &dadr,
+                    subscriber_process_identifier,
+                    oid,
+                    confirmed,
+                    lifetime,
+                )
+                .await
+            } else {
+                c.subscribe_cov(
+                    &mac,
+                    subscriber_process_identifier,
+                    oid,
+                    confirmed,
+                    lifetime,
+                )
+                .await
+            }
             .map_err(to_py_err)?;
             Ok(())
         })
@@ -47,7 +61,7 @@ impl BACnetClient {
     fn unsubscribe_cov<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         subscriber_process_identifier: u32,
         monitored_object_identifier: PyObjectIdentifier,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -55,16 +69,21 @@ impl BACnetClient {
         let oid = monitored_object_identifier.to_rust();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let (mac, routing) = address.into_parts()?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.unsubscribe_cov(&mac, subscriber_process_identifier, oid)
-                .await
-                .map_err(to_py_err)?;
+            if let Some((dnet, dadr)) = routing {
+                c.unsubscribe_cov_routed(&mac, dnet, &dadr, subscriber_process_identifier, oid)
+                    .await
+            } else {
+                c.unsubscribe_cov(&mac, subscriber_process_identifier, oid)
+                    .await
+            }
+            .map_err(to_py_err)?;
             Ok(())
         })
     }
