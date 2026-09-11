@@ -17,6 +17,7 @@ pub mod event;
 pub mod event_enrollment;
 pub mod event_log;
 pub mod file;
+pub mod forwarder;
 pub mod group;
 pub mod life_safety;
 pub mod lighting;

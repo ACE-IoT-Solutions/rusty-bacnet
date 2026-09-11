@@ -1,5 +1,5 @@
-//! Lighting Output (type 54) and Binary Lighting Output (type 55) objects per
-//! ASHRAE 135-2020 Clauses 12.54 and 12.55.
+//! Lighting Output (type 54), Binary Lighting Output (type 55), and Channel
+//! (type 53) objects.
 
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
@@ -293,6 +293,9 @@ impl BACnetObject for LightingOutputObject {
 
 mod binary;
 pub use binary::BinaryLightingOutputObject;
+
+mod channel;
+pub use channel::ChannelObject;
 
 // ---------------------------------------------------------------------------
 // Tests

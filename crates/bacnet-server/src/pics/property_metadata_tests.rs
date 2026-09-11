@@ -2,6 +2,7 @@ use bacnet_objects::{
     audit::AuditReporterObject,
     binary::BinaryInputObject,
     event_enrollment::{AlertEnrollmentObject, EventEnrollmentObject},
+    forwarder::NotificationForwarderObject,
     staging::{StagingConfig, StagingObject},
     value_types::TimeValueObject,
 };
@@ -26,6 +27,49 @@ fn property_support(
                 .find(|property| property.property_id == property_id)
         })
         .expect("property should be in the PICS list")
+}
+
+#[test]
+fn pics_projects_notification_forwarder_registration_model_exactly() {
+    let mut db = ObjectDatabase::new();
+    db.add(Box::new(
+        NotificationForwarderObject::new(1, "nf-1").unwrap(),
+    ))
+    .unwrap();
+    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+    let support = pics
+        .supported_object_types
+        .iter()
+        .find(|support| support.object_type == ObjectType::NOTIFICATION_FORWARDER)
+        .expect("Notification Forwarder support");
+
+    assert!(!support.createable);
+    assert!(support.deleteable);
+    assert_eq!(
+        support
+            .supported_properties
+            .iter()
+            .map(|property| (
+                property.property_id,
+                property.access.optional,
+                property.access.writable,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (PropertyIdentifier::OBJECT_IDENTIFIER, false, false),
+            (PropertyIdentifier::OBJECT_NAME, false, false),
+            (PropertyIdentifier::DESCRIPTION, true, true),
+            (PropertyIdentifier::OBJECT_TYPE, false, false),
+            (PropertyIdentifier::STATUS_FLAGS, false, false),
+            (PropertyIdentifier::OUT_OF_SERVICE, false, true),
+            (PropertyIdentifier::RELIABILITY, false, false),
+            (PropertyIdentifier::PROCESS_IDENTIFIER_FILTER, false, false),
+            (PropertyIdentifier::SUBSCRIBED_RECIPIENTS, false, false),
+            (PropertyIdentifier::LOCAL_FORWARDING_ONLY, false, true),
+            (PropertyIdentifier::EVENT_DETECTION_ENABLE, false, true),
+            (PropertyIdentifier::PROPERTY_LIST, false, false),
+        ]
+    );
 }
 
 #[test]
