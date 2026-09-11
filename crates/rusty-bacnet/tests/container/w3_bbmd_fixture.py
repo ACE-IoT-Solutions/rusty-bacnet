@@ -21,7 +21,7 @@ CHECK_EXPIRY_PATH = Path("/tmp/w3-check-expiry")
 
 ALLOW_A = b"\x01\x00W3:ALLOW:A"
 ALLOW_B = b"\x01\x00W3:ALLOW:B"
-CUT_THROUGH = b"\x01\x00W3:CUT"
+CONTINUE_NATIVE = b"\x01\x00W3:CUT"
 DROP = b"\x01\x00W3:DROP"
 
 
@@ -31,65 +31,63 @@ def emit(message: str) -> None:
 
 def policy(context: BvllPolicyContext) -> object:
     if SIDE != "A":
-        return "allow"
-    if context.function == 0x05 and context.body == b"\x00\x0d":
+        return "continue"
+    payload = bytes(context.payload_prefix)
+    if context.function == 0x05 and context.payload_len == 2 and payload == b"\x00\x0d":
         return ("reject", 0x0030)
-    if context.function == 0x09 and context.npdu == DROP:
+    if context.function == 0x09 and context.payload_len == len(DROP) and payload == DROP:
         return "drop"
-    if context.function == 0x09 and context.npdu == CUT_THROUGH:
-        return "allow_and_forward"
-    return "allow"
+    if (
+        context.function == 0x09
+        and context.payload_len == len(CONTINUE_NATIVE)
+        and payload == CONTINUE_NATIVE
+    ):
+        return "continue"
+    return "continue"
 
 
-def validate_counters(control) -> None:
-    counters = control.counters()
+def validate_counters(control, snapshot) -> None:
+    counters = snapshot.counters
     bridge = control.policy_counters()
-    if counters.fanout_failure != 0:
-        raise AssertionError(f"side {SIDE} had fanout failures: {counters.fanout_failure}")
-    if counters.fanout_success < 2:
-        raise AssertionError(f"side {SIDE} did not exercise successful fanout: {counters.fanout_success}")
-    if counters.policy_errors != 0 or counters.policy_invalid_verdicts != 0:
+    if counters.fanout_send_errors != 0:
+        raise AssertionError(f"side {SIDE} had fanout errors: {counters.fanout_send_errors}")
+    if counters.fanout_packets_forwarded < 2:
         raise AssertionError(
-            f"side {SIDE} policy errors={counters.policy_errors} "
-            f"invalid={counters.policy_invalid_verdicts}"
+            f"side {SIDE} did not exercise successful fanout: "
+            f"{counters.fanout_packets_forwarded}"
         )
-    if bridge.exceptions or bridge.timeouts or bridge.overloads or bridge.invalid_verdicts:
+    if counters.fanout_packets_throttled or counters.fanout_queue_overflow_drops:
+        raise AssertionError(
+            f"side {SIDE} unexpectedly throttled or dropped fanout: "
+            f"throttled={counters.fanout_packets_throttled} "
+            f"queue_drops={counters.fanout_queue_overflow_drops}"
+        )
+    if bridge.errors or bridge.timeouts or bridge.overloads or bridge.circuit_open_drops:
         raise AssertionError(
             f"side {SIDE} policy bridge failed closed unexpectedly: "
-            f"exceptions={bridge.exceptions} timeouts={bridge.timeouts} "
-            f"overloads={bridge.overloads} invalid={bridge.invalid_verdicts}"
+            f"errors={bridge.errors} timeouts={bridge.timeouts} "
+            f"overloads={bridge.overloads} circuit_open={bridge.circuit_open_drops}"
         )
 
     if SIDE == "A":
-        dbtn = counters.policy_by_function[0x09]
-        register = counters.policy_by_function[0x05]
-        if counters.policy_dropped != 1 or dbtn.dropped != 1:
+        if bridge.dropped != 1:
             raise AssertionError(
-                f"drop decision was not counted exactly once: total={counters.policy_dropped} "
-                f"dbtn={dbtn.dropped}"
+                f"drop decision was not counted exactly once: {bridge.dropped}"
             )
-        if counters.policy_rejected != 1 or register.rejected != 1:
+        if bridge.rejected != 1:
             raise AssertionError(
-                f"registration rejection was not counted exactly once: "
-                f"total={counters.policy_rejected} register={register.rejected}"
+                f"registration rejection was not counted exactly once: {bridge.rejected}"
             )
-        if counters.policy_cutthrough != 1 or dbtn.cutthrough != 1:
+        if bridge.continued < 1:
             raise AssertionError(
-                f"cut-through was not counted exactly once: total={counters.policy_cutthrough} "
-                f"dbtn={dbtn.cutthrough}"
+                f"native continuation was not exercised: continued={bridge.continued}"
             )
-        if bridge.dropped != 1 or bridge.rejected != 1 or bridge.cutthrough != 1:
-            raise AssertionError(
-                f"Python bridge decision totals mismatch: dropped={bridge.dropped} "
-                f"rejected={bridge.rejected} cutthrough={bridge.cutthrough}"
-            )
-
 
     emit(
-        f"BBMD_COUNTERS side={SIDE} decoded={counters.decoded} "
-        f"processed={counters.terminal_processed} fanout_success={counters.fanout_success} "
-        f"allowed={counters.policy_allowed} dropped={counters.policy_dropped} "
-        f"rejected={counters.policy_rejected} cutthrough={counters.policy_cutthrough}"
+        f"BBMD_COUNTERS side={SIDE} fanout_forwarded={counters.fanout_packets_forwarded} "
+        f"fanout_send_errors={counters.fanout_send_errors} "
+        f"continued={bridge.continued} dropped={bridge.dropped} "
+        f"rejected={bridge.rejected} policy_errors={bridge.errors}"
     )
 
 
@@ -158,7 +156,7 @@ async def main() -> None:
                     snapshot = await control.snapshot()
                     if SIDE == "A" and any(entry.ttl == 13 for entry in snapshot.fdt):
                         raise AssertionError("rejected TTL-13 probe mutated side A FDT")
-                    validate_counters(control)
+                    validate_counters(control, snapshot)
                 await asyncio.sleep(0.1)
     finally:
         await server.stop()

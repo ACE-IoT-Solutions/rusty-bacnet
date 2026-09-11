@@ -62,8 +62,8 @@ wait_for_log "$(container_id bbmd_b)" W12_BBMD_READY 30
 touch "$W12_ARTIFACT_DIR/bbmd.ready"
 
 wait_for_log "$(container_id client)" W12_ACCEPTANCE_PASS 90
-wait_for_log "$(container_id bbmd_a)" W12_BBMD_PROVENANCE_PASS 10
-wait_for_log "$(container_id bbmd_b)" W12_BBMD_PROVENANCE_PASS 10
+wait_for_log "$(container_id bbmd_a)" W12_BBMD_SOURCE_PASS 10
+wait_for_log "$(container_id bbmd_b)" W12_BBMD_SOURCE_PASS 10
 
 client_exit=$(podman wait "$(container_id client)")
 capture_logs
