@@ -7,7 +7,7 @@
 
 use crate::observer::{decode_npdu_event, ApduDirection, ApduObserver};
 use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
-use bacnet_transport::port::{DataAttribute, TransportPort};
+use bacnet_transport::port::{DataAttribute, TransportMeta, TransportPort};
 use bacnet_types::enums::NetworkPriority;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -37,6 +37,8 @@ pub struct ReceivedApdu {
     pub is_group: bool,
     /// Data-link attributes associated with the NPDU, if the transport supplied any.
     pub data_attributes: Vec<DataAttribute>,
+    /// BACnet/IP framing and immediate UDP peer context, when applicable.
+    pub transport_meta: Option<TransportMeta>,
     /// Optional reply channel for MS/TP DataExpectingReply flows.
     /// The application layer can send NPDU-wrapped reply bytes through this channel.
     pub reply_tx: Option<oneshot::Sender<Bytes>>,
@@ -57,6 +59,8 @@ pub struct ReceivedNetworkControl {
     pub link_layer_group: bool,
     /// Data-link attributes supplied by the transport.
     pub data_attributes: Vec<DataAttribute>,
+    /// BACnet/IP framing and immediate UDP peer context, when applicable.
+    pub transport_meta: Option<TransportMeta>,
     /// Monotonic decoded-ingress sequence assigned before channel delivery.
     ///
     /// A consumer can compare this with [`NetworkLayer::network_control_ingress_sequence`]
@@ -74,6 +78,7 @@ impl Clone for ReceivedApdu {
             link_layer_group: self.link_layer_group,
             is_group: self.is_group,
             data_attributes: self.data_attributes.clone(),
+            transport_meta: self.transport_meta.clone(),
             reply_tx: None,
         }
     }
@@ -88,6 +93,7 @@ impl std::fmt::Debug for ReceivedApdu {
             .field("link_layer_group", &self.link_layer_group)
             .field("is_group", &self.is_group)
             .field("data_attributes", &self.data_attributes)
+            .field("transport_meta", &self.transport_meta)
             .field("reply_tx", &self.reply_tx.as_ref().map(|_| "Some(...)"))
             .finish()
     }
@@ -198,6 +204,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                                     source_mac: received.source_mac,
                                     link_layer_group: received.link_layer_group,
                                     data_attributes: received.data_attributes,
+                                    transport_meta: received.transport_meta,
                                     ingress_sequence,
                                 };
                                 if tx.send(control).await.is_err() {
@@ -235,6 +242,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                             link_layer_group: received.link_layer_group,
                             is_group,
                             data_attributes: received.data_attributes,
+                            transport_meta: received.transport_meta,
                             reply_tx: received.reply_tx,
                         };
 
@@ -693,6 +701,7 @@ mod tests {
             source_mac: MacAddr::from_slice(source_mac),
             link_layer_group: false,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: None,
         }
     }

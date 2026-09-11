@@ -20,4 +20,21 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     pub fn device_collision_events(&self) -> broadcast::Receiver<DeviceCollisionEvent> {
         self.device_collision_tx.subscribe()
     }
+
+    /// Subscribe to raw I-Am observations.
+    ///
+    /// Every valid I-Am is broadcast, including duplicates. Receivers that
+    /// fall behind observe Tokio's `RecvError::Lagged`; packet dispatch never
+    /// waits for a consumer.
+    pub fn iam_events(&self) -> broadcast::Receiver<IAmEvent> {
+        self.iam_tx.subscribe()
+    }
+
+    /// Take the receiver reserved before the client's dispatch task started.
+    ///
+    /// Intended for composed runtimes that install their consumer immediately
+    /// after construction. Returns `None` after the first call.
+    pub fn take_initial_iam_receiver(&mut self) -> Option<broadcast::Receiver<IAmEvent>> {
+        self.initial_iam_rx.take()
+    }
 }

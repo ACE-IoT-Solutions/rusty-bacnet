@@ -72,6 +72,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let (device_collision_tx, _) =
             broadcast::channel::<DeviceCollisionEvent>(DEVICE_EVENT_CHANNEL_CAPACITY);
         let device_collision_tx_dispatch = device_collision_tx.clone();
+        // Reserve one receiver before dispatch starts so runtimes can attach
+        // after construction without losing very early I-Am observations.
+        let (iam_tx, initial_iam_rx) = broadcast::channel::<IAmEvent>(IAM_EVENT_CHANNEL_CAPACITY);
+        let iam_tx_dispatch = iam_tx.clone();
         let seg_ack_senders: Arc<Mutex<HashMap<SegKey, SegmentAckRoute>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let seg_ack_senders_dispatch = Arc::clone(&seg_ack_senders);
@@ -166,10 +170,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                     &confirmed_cov_ack_policy,
                                     &device_tx_dispatch,
                                     &device_collision_tx_dispatch,
+                                    &iam_tx_dispatch,
                                     &mut seg_state,
                                     &seg_ack_senders_dispatch,
                                     &received.source_mac,
                                     &received.source_network,
+                                    received.transport_meta.as_ref(),
                                     received.is_group,
                                     received.reply_tx,
                                     decoded,
@@ -197,6 +203,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             cov_tx,
             device_tx,
             device_collision_tx,
+            iam_tx,
+            initial_iam_rx: Some(initial_iam_rx),
             dispatch_task: Some(dispatch_task),
             seg_ack_senders,
             cleanup_tx,

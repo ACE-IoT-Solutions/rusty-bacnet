@@ -172,6 +172,7 @@ mod tests {
             source_mac: MacAddr::from_slice(source_mac),
             link_layer_group: true,
             data_attributes: Vec::new(),
+            transport_meta: None,
             ingress_sequence: 1,
         }
     }

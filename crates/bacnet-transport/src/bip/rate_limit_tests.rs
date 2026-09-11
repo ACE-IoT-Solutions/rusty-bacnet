@@ -56,6 +56,7 @@ fn test_ctx(
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     }
 }
@@ -324,6 +325,7 @@ async fn rate_limit_discards_malformed_and_unauthorized_before_normal_handling()
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
 

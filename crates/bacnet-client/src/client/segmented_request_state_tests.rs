@@ -318,6 +318,7 @@ impl ImmediateFinalResponseTransport {
             source_mac: MacAddr::from_slice(SERVER_MAC),
             link_layer_group: false,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: None,
         }
     }

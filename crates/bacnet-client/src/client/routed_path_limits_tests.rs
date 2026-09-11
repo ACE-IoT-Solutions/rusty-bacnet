@@ -178,6 +178,7 @@ fn reason_4_control(router: &[u8], dnet: u16, ingress_sequence: u64) -> Received
         source_mac: MacAddr::from_slice(router),
         link_layer_group: false,
         data_attributes: Vec::new(),
+        transport_meta: None,
         ingress_sequence,
     }
 }

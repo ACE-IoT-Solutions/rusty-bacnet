@@ -177,6 +177,11 @@ pub struct BbmdState {
     /// Explicit policy for foreign device registrations.
     /// None means fail closed (deny all registrations).
     foreign_device_policy: Option<ForeignDevicePolicy>,
+    /// Live administrative gate layered on top of the configured policy.
+    /// A policy is still required; this flag can only narrow admission.
+    accept_foreign_devices: bool,
+    /// Administrative FDT bound, never larger than the protocol hard cap.
+    max_fdt_entries: usize,
     rate_tracker: ForeignDeviceRateTracker,
     counters: FdtCounters,
 }
@@ -191,6 +196,8 @@ impl BbmdState {
             local_port,
             management_acl: Vec::new(),
             foreign_device_policy: None,
+            accept_foreign_devices: true,
+            max_fdt_entries: Self::MAX_FDT_ENTRIES,
             rate_tracker: ForeignDeviceRateTracker::new(),
             counters: FdtCounters::default(),
         }
@@ -209,6 +216,35 @@ impl BbmdState {
     /// Current foreign device registration policy, if enabled.
     pub fn foreign_device_policy(&self) -> Option<&ForeignDevicePolicy> {
         self.foreign_device_policy.as_ref()
+    }
+
+    /// Whether live foreign-device registration is enabled. A configured
+    /// [`ForeignDevicePolicy`] remains independently required.
+    pub fn accepts_foreign_devices(&self) -> bool {
+        self.accept_foreign_devices && self.foreign_device_policy.is_some()
+    }
+
+    /// Enable or disable registration without weakening the configured policy.
+    pub fn set_accept_foreign_devices(&mut self, accept: bool) {
+        self.accept_foreign_devices = accept;
+    }
+
+    /// Return the live FDT capacity bound.
+    pub fn max_fdt_entries(&self) -> usize {
+        self.max_fdt_entries
+    }
+
+    /// Set a live FDT capacity bound. Existing entries are never evicted by a
+    /// policy update; callers must retry after entries expire or are removed.
+    pub fn set_max_fdt_entries(&mut self, maximum: usize) -> Result<(), Error> {
+        if maximum == 0 || maximum > Self::MAX_FDT_ENTRIES || self.fdt.len() > maximum {
+            return Err(Error::Encoding(format!(
+                "FDT capacity must be in 1..={} and cannot be below the current table size",
+                Self::MAX_FDT_ENTRIES
+            )));
+        }
+        self.max_fdt_entries = maximum;
+        Ok(())
     }
 
     /// Operational counters for Foreign Device Table management.
@@ -285,6 +321,15 @@ impl BbmdState {
         &self.bdt
     }
 
+    /// Return configured peer entries without the auto-inserted local entry.
+    pub fn bdt_peers_snapshot(&self) -> Vec<BdtEntry> {
+        self.bdt
+            .iter()
+            .filter(|entry| entry.ip != self.local_ip || entry.port != self.local_port)
+            .cloned()
+            .collect()
+    }
+
     /// Encode the BDT for a Read-BDT-ACK payload.
     pub fn encode_bdt(&self, buf: &mut BytesMut) {
         buf.reserve(self.bdt.len() * BDT_ENTRY_SIZE);
@@ -349,9 +394,9 @@ impl BbmdState {
         ttl: u16,
         now: Instant,
     ) -> BvlcResultCode {
-        let policy = match &self.foreign_device_policy {
-            Some(p) => p.clone(),
-            None => {
+        let policy = match (&self.foreign_device_policy, self.accept_foreign_devices) {
+            (Some(p), true) => p.clone(),
+            _ => {
                 self.counters.registrations_rejected += 1;
                 return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
             }
@@ -399,9 +444,10 @@ impl BbmdState {
             // Check capacity pressure and reserved capacity
             let is_reserved = policy.reserved_sources.contains(&ip);
             let effective_limit = if is_reserved {
-                Self::MAX_FDT_ENTRIES
+                self.max_fdt_entries
             } else {
-                Self::MAX_FDT_ENTRIES.saturating_sub(policy.reserved_capacity)
+                self.max_fdt_entries
+                    .saturating_sub(policy.reserved_capacity)
             };
 
             if self.fdt.len() >= effective_limit {
@@ -508,6 +554,27 @@ impl BbmdState {
     /// Set the Delete-FDT-Entry management ACL. An empty list denies all sources.
     pub fn set_management_acl(&mut self, acl: Vec<[u8; 4]>) {
         self.management_acl = acl;
+    }
+
+    /// Return the current management ACL. Empty remains fail-closed.
+    pub fn management_acl(&self) -> &[[u8; 4]] {
+        &self.management_acl
+    }
+
+    /// Produce an owned, internally consistent FDT snapshot after purging
+    /// expired registrations.
+    pub fn fdt_snapshot(&mut self) -> Vec<FdtEntryWire> {
+        self.purge_expired();
+        let now = Instant::now();
+        self.fdt
+            .iter()
+            .map(|entry| FdtEntryWire {
+                ip: entry.ip,
+                port: entry.port,
+                ttl: entry.ttl,
+                seconds_remaining: entry.seconds_remaining_at(now),
+            })
+            .collect()
     }
 
     #[cfg(test)]

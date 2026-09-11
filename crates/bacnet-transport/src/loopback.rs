@@ -68,6 +68,7 @@ impl TransportPort for LoopbackTransport {
             source_mac: self.local_mac.clone(),
             link_layer_group: false,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: None,
         };
         self.peer_tx
@@ -82,6 +83,7 @@ impl TransportPort for LoopbackTransport {
             source_mac: self.local_mac.clone(),
             link_layer_group: true,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: None,
         };
         self.peer_tx

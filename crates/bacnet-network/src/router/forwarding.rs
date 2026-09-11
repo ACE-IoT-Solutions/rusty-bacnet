@@ -8,6 +8,16 @@ use tracing::warn;
 
 use super::SendRequest;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ForwardOutcome {
+    Queued,
+    HopExhausted,
+    EncodeFailed,
+    InvalidRoute,
+    OutputFull { port: usize },
+    OutputClosed { port: usize },
+}
+
 /// Build the source NpduAddress for a forwarded message.
 fn build_source(npdu: &Npdu, source_network: u16, source_mac: &[u8]) -> NpduAddress {
     npdu.source.clone().unwrap_or(NpduAddress {
@@ -25,10 +35,10 @@ pub(super) fn forward_unicast(
     npdu: Npdu,
     _source_port_idx: usize,
     data_attributes: &[DataAttribute],
-) {
+) -> ForwardOutcome {
     if npdu.hop_count == 0 {
         warn!("Discarding NPDU with hop_count=0");
-        return;
+        return ForwardOutcome::HopExhausted;
     }
 
     let payload_len = npdu.payload.len();
@@ -67,7 +77,7 @@ pub(super) fn forward_unicast(
     let mut buf = BytesMut::with_capacity(32 + payload_len);
     if let Err(e) = encode_npdu(&mut buf, &forwarded) {
         warn!("Failed to encode forwarded NPDU: {e}");
-        return;
+        return ForwardOutcome::EncodeFailed;
     }
 
     if route.port_index >= send_txs.len() {
@@ -75,21 +85,43 @@ pub(super) fn forward_unicast(
             port = route.port_index,
             "Route references invalid port index"
         );
-        return;
+        return ForwardOutcome::InvalidRoute;
     }
     if dest_mac.is_empty() {
-        if let Err(e) = send_txs[route.port_index].try_send(SendRequest::Broadcast {
+        match send_txs[route.port_index].try_send(SendRequest::Broadcast {
             npdu: buf.freeze(),
             data_attributes: data_attributes.to_vec(),
+            count_forward: true,
         }) {
-            warn!(%e, "Router dropped message: output channel full");
+            Ok(()) => ForwardOutcome::Queued,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!("Router dropped message: output channel full");
+                ForwardOutcome::OutputFull {
+                    port: route.port_index,
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => ForwardOutcome::OutputClosed {
+                port: route.port_index,
+            },
         }
-    } else if let Err(e) = send_txs[route.port_index].try_send(SendRequest::Unicast {
-        npdu: buf.freeze(),
-        mac: dest_mac,
-        data_attributes: data_attributes.to_vec(),
-    }) {
-        warn!(%e, "Router dropped message: output channel full");
+    } else {
+        match send_txs[route.port_index].try_send(SendRequest::Unicast {
+            npdu: buf.freeze(),
+            mac: dest_mac,
+            data_attributes: data_attributes.to_vec(),
+            count_forward: true,
+        }) {
+            Ok(()) => ForwardOutcome::Queued,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!("Router dropped message: output channel full");
+                ForwardOutcome::OutputFull {
+                    port: route.port_index,
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => ForwardOutcome::OutputClosed {
+                port: route.port_index,
+            },
+        }
     }
 }
 
@@ -101,10 +133,10 @@ pub(super) fn forward_broadcast(
     source_mac: &[u8],
     npdu: &Npdu,
     data_attributes: &[DataAttribute],
-) {
+) -> Vec<ForwardOutcome> {
     if npdu.hop_count == 0 {
         warn!("Discarding NPDU with hop_count=0");
-        return;
+        return vec![ForwardOutcome::HopExhausted];
     }
 
     let forwarded = Npdu {
@@ -122,21 +154,33 @@ pub(super) fn forward_broadcast(
     let mut buf = BytesMut::with_capacity(32 + npdu.payload.len());
     if let Err(e) = encode_npdu(&mut buf, &forwarded) {
         warn!("Failed to encode forwarded broadcast NPDU: {e}");
-        return;
+        return vec![ForwardOutcome::EncodeFailed];
     }
 
     let encoded = buf.freeze();
+    let mut outcomes = Vec::with_capacity(send_txs.len().saturating_sub(1));
     for (idx, tx) in send_txs.iter().enumerate() {
         if idx == source_port {
             continue;
         }
-        if let Err(e) = tx.try_send(SendRequest::Broadcast {
-            npdu: encoded.clone(),
-            data_attributes: data_attributes.to_vec(),
-        }) {
-            warn!(%e, "Router dropped broadcast: output channel full");
-        }
+        outcomes.push(
+            match tx.try_send(SendRequest::Broadcast {
+                npdu: encoded.clone(),
+                data_attributes: data_attributes.to_vec(),
+                count_forward: true,
+            }) {
+                Ok(()) => ForwardOutcome::Queued,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("Router dropped broadcast: output channel full");
+                    ForwardOutcome::OutputFull { port: idx }
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    ForwardOutcome::OutputClosed { port: idx }
+                }
+            },
+        );
     }
+    outcomes
 }
 
 /// Send a Reject-Message-To-Network.

@@ -76,6 +76,7 @@ async fn dbtn_registered_foreign_device_fans_out_without_origin_echo() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
     let sender = (Ipv4Addr::LOCALHOST.octets(), origin_fd_port);
@@ -153,6 +154,7 @@ async fn dbtn_registered_foreign_device_naks_when_forwarding_fails() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: true,
     };
     let sender = (Ipv4Addr::LOCALHOST.octets(), origin_fd_port);

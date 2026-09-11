@@ -468,6 +468,7 @@ async fn dbtn_delivers_local_subnet_broadcast_under_tight_fanout_budget() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: Some(fanout_dispatcher),
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
 

@@ -67,6 +67,7 @@ async fn forwarded_npdu_from_bdt_peer_uses_originating_source_mac() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
     let msg = BvllMessage {
@@ -88,6 +89,12 @@ async fn forwarded_npdu_from_bdt_peer_uses_originating_source_mac() {
         &encode_bip_mac(origin.0, origin.1)
     );
     assert!(received.link_layer_group);
+    let meta = received.transport_meta.expect("forwarded B/IP provenance");
+    assert_eq!(meta.bvlc_function, BvlcFunction::FORWARDED_NPDU.to_raw());
+    assert_eq!(meta.udp_source_ip, peer.0);
+    assert_eq!(meta.udp_source_port, peer.1);
+    assert_eq!(meta.forwarded_from_ip, Some(origin.0));
+    assert_eq!(meta.forwarded_from_port, Some(origin.1));
 
     let local_frame = recv_bvll(&local_broadcast_sink).await;
     assert_eq!(local_frame.function, BvlcFunction::FORWARDED_NPDU);
@@ -156,6 +163,7 @@ async fn forwarded_npdu_from_non_bdt_sender_is_rejected_without_delivery() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
     let msg = BvllMessage {
@@ -234,6 +242,7 @@ async fn forwarded_npdu_from_directed_broadcast_peer_skips_local_rebroadcast() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
     let msg = BvllMessage {
@@ -333,6 +342,7 @@ async fn forwarded_npdu_fdt_fanout_respects_budget_and_increments_counter() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
     let msg = BvllMessage {

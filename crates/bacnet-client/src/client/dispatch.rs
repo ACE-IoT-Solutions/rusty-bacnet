@@ -16,10 +16,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         confirmed_cov_ack_policy: &ConfirmedCOVNotificationAckPolicy,
         device_tx: &broadcast::Sender<DeviceEvent>,
         device_collision_tx: &broadcast::Sender<DeviceCollisionEvent>,
+        iam_tx: &broadcast::Sender<IAmEvent>,
         seg_state: &mut HashMap<SegKey, SegmentedReceiveState>,
         seg_ack_senders: &Arc<Mutex<HashMap<SegKey, SegmentAckRoute>>>,
         source_mac: &[u8],
         source_network: &Option<NpduAddress>,
+        transport_meta: Option<&TransportMeta>,
         is_group: bool,
         reply_tx: Option<oneshot::Sender<Bytes>>,
         apdu: Apdu,
@@ -449,8 +451,28 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 vendor_id: i_am.vendor_id,
                                 last_seen: std::time::Instant::now(),
                                 source_network: src_net,
-                                source_address: src_addr,
+                                source_address: src_addr.clone(),
                             };
+                            // Publish every valid packet before the merged-table
+                            // upsert so duplicate observations remain visible.
+                            let _ = iam_tx.send(IAmEvent {
+                                device_instance: i_am.object_identifier.instance_number(),
+                                object_identifier: i_am.object_identifier,
+                                max_apdu_length: i_am.max_apdu_length,
+                                segmentation_supported: i_am.segmentation_supported,
+                                vendor_id: i_am.vendor_id,
+                                udp_source_ip: transport_meta.map(|meta| meta.udp_source_ip),
+                                udp_source_port: transport_meta.map(|meta| meta.udp_source_port),
+                                source_mac: MacAddr::from_slice(source_mac),
+                                source_network: src_net,
+                                source_address: src_addr,
+                                bvlc_function: transport_meta.map(|meta| meta.bvlc_function),
+                                forwarded_from_ip: transport_meta
+                                    .and_then(|meta| meta.forwarded_from_ip),
+                                forwarded_from_port: transport_meta
+                                    .and_then(|meta| meta.forwarded_from_port),
+                                timestamp: Instant::now(),
+                            });
                             let status = {
                                 let mut table = device_table.lock().await;
                                 table.upsert_with_result(device.clone())

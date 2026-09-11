@@ -10,6 +10,7 @@
 //! - Reject-Message-To-Network for unknown routes
 //! - Learned routes from I-Am-Router-To-Network announcements
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,7 +31,113 @@ mod control_messages;
 mod forwarding;
 
 use control_messages::handle_network_message;
-use forwarding::{forward_broadcast, forward_unicast, send_reject};
+use forwarding::{forward_broadcast, forward_unicast, send_reject, ForwardOutcome};
+
+fn saturating_increment(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(1))
+    });
+}
+
+#[derive(Default)]
+struct PortCounterState {
+    forwarded_unicast: AtomicU64,
+    forwarded_broadcast: AtomicU64,
+    decode_drops: AtomicU64,
+    encode_drops: AtomicU64,
+    hop_drops: AtomicU64,
+    busy_drops: AtomicU64,
+    no_route_drops: AtomicU64,
+    output_full_drops: AtomicU64,
+    send_errors: AtomicU64,
+    shutdown_drops: AtomicU64,
+}
+
+/// Monotonic forwarding counters for one configured router port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterPortCounters {
+    /// Zero-based position in the original router configuration.
+    pub config_index: usize,
+    /// Configured BACnet network number.
+    pub network_number: u16,
+    /// Transport implementation used by this router instance.
+    pub transport_kind: String,
+    /// Local transport MAC after startup, formatted as hexadecimal octets.
+    pub identity: String,
+    /// Data NPDUs successfully sent as unicasts by this port.
+    pub forwarded_unicast: u64,
+    /// Data NPDU copies successfully sent as broadcasts by this port.
+    pub forwarded_broadcast: u64,
+    /// Ingress NPDUs discarded because NPDU decoding failed.
+    pub decode_drops: u64,
+    /// Ingress NPDUs discarded because forwarding encoding failed.
+    pub encode_drops: u64,
+    /// Ingress NPDUs discarded because their hop count was exhausted.
+    pub hop_drops: u64,
+    /// Ingress NPDUs discarded because no usable route existed.
+    pub no_route_drops: u64,
+    /// Ingress NPDUs discarded because the selected route was busy.
+    pub busy_drops: u64,
+    /// Data forwarding attempts discarded because the output queue was full.
+    pub output_full_drops: u64,
+    /// Data forwarding attempts that reached a transport but failed to send.
+    pub send_errors: u64,
+    /// Accepted data forwarding attempts cancelled during router shutdown.
+    pub shutdown_drops: u64,
+}
+
+#[derive(Clone)]
+struct PortCounterEntry {
+    config_index: usize,
+    network_number: u16,
+    transport_kind: String,
+    identity: String,
+    state: Arc<PortCounterState>,
+}
+
+impl PortCounterEntry {
+    fn snapshot(&self) -> RouterPortCounters {
+        RouterPortCounters {
+            config_index: self.config_index,
+            network_number: self.network_number,
+            transport_kind: self.transport_kind.clone(),
+            identity: self.identity.clone(),
+            forwarded_unicast: self.state.forwarded_unicast.load(Ordering::Relaxed),
+            forwarded_broadcast: self.state.forwarded_broadcast.load(Ordering::Relaxed),
+            decode_drops: self.state.decode_drops.load(Ordering::Relaxed),
+            encode_drops: self.state.encode_drops.load(Ordering::Relaxed),
+            hop_drops: self.state.hop_drops.load(Ordering::Relaxed),
+            no_route_drops: self.state.no_route_drops.load(Ordering::Relaxed),
+            busy_drops: self.state.busy_drops.load(Ordering::Relaxed),
+            output_full_drops: self.state.output_full_drops.load(Ordering::Relaxed),
+            send_errors: self.state.send_errors.load(Ordering::Relaxed),
+            shutdown_drops: self.state.shutdown_drops.load(Ordering::Relaxed),
+        }
+    }
+}
+
+fn record_forward_outcome(
+    counters: &[PortCounterEntry],
+    ingress_port: usize,
+    outcome: ForwardOutcome,
+) {
+    let state = match outcome {
+        ForwardOutcome::Queued => return,
+        ForwardOutcome::OutputFull { port } | ForwardOutcome::OutputClosed { port } => {
+            counters.get(port).map(|entry| &entry.state)
+        }
+        _ => counters.get(ingress_port).map(|entry| &entry.state),
+    };
+    let Some(state) = state else { return };
+    match outcome {
+        ForwardOutcome::Queued => {}
+        ForwardOutcome::HopExhausted => saturating_increment(&state.hop_drops),
+        ForwardOutcome::EncodeFailed => saturating_increment(&state.encode_drops),
+        ForwardOutcome::InvalidRoute => saturating_increment(&state.no_route_drops),
+        ForwardOutcome::OutputFull { .. } => saturating_increment(&state.output_full_drops),
+        ForwardOutcome::OutputClosed { .. } => saturating_increment(&state.shutdown_drops),
+    }
+}
 
 /// A send request to be forwarded on a port.
 #[derive(Debug)]
@@ -39,10 +146,12 @@ enum SendRequest {
         npdu: Bytes,
         mac: MacAddr,
         data_attributes: Vec<DataAttribute>,
+        count_forward: bool,
     },
     Broadcast {
         npdu: Bytes,
         data_attributes: Vec<DataAttribute>,
+        count_forward: bool,
     },
 }
 
@@ -52,6 +161,7 @@ impl SendRequest {
             npdu,
             mac,
             data_attributes: Vec::new(),
+            count_forward: false,
         }
     }
 
@@ -59,6 +169,7 @@ impl SendRequest {
         Self::Broadcast {
             npdu,
             data_attributes: Vec::new(),
+            count_forward: false,
         }
     }
 }
@@ -85,6 +196,8 @@ pub struct BACnetRouter {
     sender_tasks: Vec<JoinHandle<()>>,
     /// Background task that purges stale learned routes.
     aging_task: Option<JoinHandle<()>>,
+    /// Stable metadata and monotonic state for configured ports.
+    counters: Vec<PortCounterEntry>,
 }
 
 impl BACnetRouter {
@@ -126,19 +239,39 @@ impl BACnetRouter {
         let mut port_networks = Vec::new();
         let mut port_local_macs = Vec::new();
 
-        for port in &mut ports {
+        let mut counters: Vec<PortCounterEntry> = ports
+            .iter()
+            .enumerate()
+            .map(|(config_index, port)| PortCounterEntry {
+                config_index,
+                network_number: port.network_number,
+                transport_kind: std::any::type_name::<T>().to_string(),
+                identity: String::new(),
+                state: Arc::new(PortCounterState::default()),
+            })
+            .collect();
+
+        for (port_idx, port) in ports.iter_mut().enumerate() {
             let rx = port.transport.start().await?;
             port_receivers.push(rx);
             port_networks.push(port.network_number);
             port_local_macs.push(MacAddr::from_slice(port.transport.local_mac()));
+            counters[port_idx].identity = port
+                .transport
+                .local_mac()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(":");
         }
 
         // Move transports into sender tasks
-        for port in ports {
+        for (port_idx, port) in ports.into_iter().enumerate() {
             let (send_tx, mut send_rx) = mpsc::channel::<SendRequest>(256);
             send_txs.push(send_tx);
 
             let transport = port.transport;
+            let counter = Arc::clone(&counters[port_idx].state);
             let task = tokio::spawn(async move {
                 while let Some(req) = send_rx.recv().await {
                     match req {
@@ -146,23 +279,35 @@ impl BACnetRouter {
                             npdu,
                             mac,
                             data_attributes,
+                            count_forward,
                         } => {
                             if let Err(e) = transport
                                 .send_unicast_with_data_attributes(&npdu, &mac, &data_attributes)
                                 .await
                             {
+                                if count_forward {
+                                    saturating_increment(&counter.send_errors);
+                                }
                                 warn!(error = %e, "Router send_unicast failed");
+                            } else if count_forward {
+                                saturating_increment(&counter.forwarded_unicast);
                             }
                         }
                         SendRequest::Broadcast {
                             npdu,
                             data_attributes,
+                            count_forward,
                         } => {
                             if let Err(e) = transport
                                 .send_broadcast_with_data_attributes(&npdu, &data_attributes)
                                 .await
                             {
+                                if count_forward {
+                                    saturating_increment(&counter.send_errors);
+                                }
                                 warn!(error = %e, "Router send_broadcast failed");
+                            } else if count_forward {
+                                saturating_increment(&counter.forwarded_broadcast);
                             }
                         }
                     }
@@ -218,6 +363,8 @@ impl BACnetRouter {
             let send_txs = Arc::clone(&send_txs);
             let port_network = port_networks[port_idx];
             let local_mac = port_local_macs[port_idx].clone();
+            let counter = Arc::clone(&counters[port_idx].state);
+            let dispatch_counters = counters.clone();
 
             let task = tokio::spawn(async move {
                 while let Some(received) = rx.recv().await {
@@ -253,14 +400,20 @@ impl BACnetRouter {
 
                                 // Global broadcast — forward to all other ports
                                 if dest_net == 0xFFFF {
-                                    forward_broadcast(
+                                    for outcome in forward_broadcast(
                                         &send_txs,
                                         port_idx,
                                         port_network,
                                         &received.source_mac,
                                         &npdu,
                                         &received.data_attributes,
-                                    );
+                                    ) {
+                                        record_forward_outcome(
+                                            &dispatch_counters,
+                                            port_idx,
+                                            outcome,
+                                        );
+                                    }
 
                                     // Deliver locally as well
                                     let apdu = ReceivedApdu {
@@ -270,6 +423,7 @@ impl BACnetRouter {
                                         link_layer_group: received.link_layer_group,
                                         is_group: true,
                                         data_attributes: received.data_attributes,
+                                        transport_meta: received.transport_meta,
                                         reply_tx: received.reply_tx,
                                     };
                                     let _ = local_tx.send(apdu).await;
@@ -291,6 +445,7 @@ impl BACnetRouter {
                                     // Check reachability before forwarding (spec 6.6.3.6)
                                     match reachability.unwrap_or(ReachabilityStatus::Reachable) {
                                         ReachabilityStatus::Busy => {
+                                            saturating_increment(&counter.busy_drops);
                                             send_reject(
                                                 &send_txs[port_idx],
                                                 &received.source_mac,
@@ -300,6 +455,7 @@ impl BACnetRouter {
                                             continue;
                                         }
                                         ReachabilityStatus::Unreachable => {
+                                            saturating_increment(&counter.no_route_drops);
                                             send_reject(
                                                 &send_txs[port_idx],
                                                 &received.source_mac,
@@ -325,6 +481,7 @@ impl BACnetRouter {
                                                 link_layer_group: received.link_layer_group,
                                                 is_group: false,
                                                 data_attributes: received.data_attributes,
+                                                transport_meta: received.transport_meta,
                                                 reply_tx: received.reply_tx,
                                             };
                                             let _ = local_tx.send(apdu).await;
@@ -341,11 +498,12 @@ impl BACnetRouter {
                                                     data_attributes: received
                                                         .data_attributes
                                                         .clone(),
+                                                    transport_meta: received.transport_meta.clone(),
                                                     reply_tx: None,
                                                 };
                                                 let _ = local_tx.send(apdu).await;
                                             }
-                                            forward_unicast(
+                                            let outcome = forward_unicast(
                                                 &send_txs,
                                                 &route,
                                                 port_network,
@@ -354,9 +512,14 @@ impl BACnetRouter {
                                                 port_idx,
                                                 &received.data_attributes,
                                             );
+                                            record_forward_outcome(
+                                                &dispatch_counters,
+                                                port_idx,
+                                                outcome,
+                                            );
                                         }
                                     } else {
-                                        forward_unicast(
+                                        let outcome = forward_unicast(
                                             &send_txs,
                                             &route,
                                             port_network,
@@ -365,9 +528,15 @@ impl BACnetRouter {
                                             port_idx,
                                             &received.data_attributes,
                                         );
+                                        record_forward_outcome(
+                                            &dispatch_counters,
+                                            port_idx,
+                                            outcome,
+                                        );
                                     }
                                 } else {
                                     // Unknown network: send reject
+                                    saturating_increment(&counter.no_route_drops);
                                     send_reject(
                                         &send_txs[port_idx],
                                         &received.source_mac,
@@ -383,12 +552,14 @@ impl BACnetRouter {
                                     link_layer_group: received.link_layer_group,
                                     is_group: is_group_delivery(received.link_layer_group, None),
                                     data_attributes: received.data_attributes,
+                                    transport_meta: received.transport_meta,
                                     reply_tx: received.reply_tx,
                                 };
                                 let _ = local_tx.send(apdu).await;
                             }
                         }
                         Err(e) => {
+                            saturating_increment(&counter.decode_drops);
                             warn!(error = %e, port = port_idx, "Router decode failed");
                         }
                     }
@@ -421,6 +592,7 @@ impl BACnetRouter {
                 dispatch_tasks,
                 sender_tasks,
                 aging_task: Some(aging_task),
+                counters,
             },
             local_rx,
         ))
@@ -429,6 +601,14 @@ impl BACnetRouter {
     /// Get a reference to the routing table.
     pub fn table(&self) -> &Arc<Mutex<RouterTable>> {
         &self.table
+    }
+
+    /// Return one stable snapshot per configured port, in configuration order.
+    pub fn port_counters(&self) -> Vec<RouterPortCounters> {
+        self.counters
+            .iter()
+            .map(PortCounterEntry::snapshot)
+            .collect()
     }
 
     /// Stop the router.

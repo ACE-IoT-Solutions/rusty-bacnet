@@ -449,6 +449,7 @@ async fn unsupported_confirmed_request_uses_immediate_reply_channel() {
             source_mac: router_mac,
             link_layer_group: false,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: Some(reply_tx),
         })
         .await

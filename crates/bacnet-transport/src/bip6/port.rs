@@ -534,6 +534,7 @@ impl TransportPort for Bip6Transport {
                                                 link_layer_group: frame.function
                                                     == Bvlc6Function::OriginalBroadcast,
                                                 data_attributes: Vec::new(),
+                                                transport_meta: None,
                                                 reply_tx: None,
                                             })
                                             .is_err()
@@ -583,6 +584,7 @@ impl TransportPort for Bip6Transport {
                                                         ),
                                                         link_layer_group: true,
                                                         data_attributes: Vec::new(),
+                                                        transport_meta: None,
                                                         reply_tx: None,
                                                     })
                                                     .is_err()

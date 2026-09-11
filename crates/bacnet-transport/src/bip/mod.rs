@@ -25,13 +25,20 @@ use crate::udp_metadata::{DestinationReceiver, IpVersion};
 use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
 use bacnet_types::error::Error;
 
+mod control;
 mod fanout;
 mod io;
+mod policy_bridge;
 mod rate_limit;
+pub use control::{BbmdControl, BbmdControlError, BbmdLifecycle, BbmdSnapshot};
 pub use fanout::{FanoutCounters, FanoutPolicy};
 use io::{
     handle_bvll_message, original_destination_matches, resolve_local_ip,
     send_register_foreign_device, RecvContext,
+};
+pub use policy_bridge::{
+    evaluate_narrowing_policy, BvllPolicy, BvllPolicyContext, BvllPolicyVerdict,
+    EvaluatedBvllPolicy,
 };
 pub use rate_limit::ManagementCounters;
 use rate_limit::ManagementRateLimiter;
@@ -355,6 +362,8 @@ struct BbmdConfig {
     initial_bdt: Vec<BdtEntry>,
     management_acl: Vec<[u8; 4]>,
     foreign_device_policy: Option<ForeignDevicePolicy>,
+    accept_foreign_devices: bool,
+    max_fdt_entries: usize,
 }
 
 /// Builder for native BACnet/IP socket configuration.
@@ -406,6 +415,8 @@ pub struct BipTransport {
     bbmd_config: Option<BbmdConfig>,
     /// BBMD state (when acting as a BBMD, created in `start()`).
     bbmd: Option<Arc<Mutex<BbmdState>>>,
+    /// Cloneable, capability-limited live BBMD administration core.
+    bbmd_control_core: Option<Arc<control::BbmdControlCore>>,
     /// BBMD FDT expiry purge task.
     bbmd_fdt_purge_task: Option<JoinHandle<()>>,
     /// Foreign device config (when registered as a foreign device).
@@ -433,6 +444,8 @@ pub struct BipTransport {
     fanout_counters: Arc<fanout::AtomicFanoutCounters>,
     /// Rate limiter for broadcast forwarding fanout.
     fanout_limiter: Arc<std::sync::Mutex<fanout::FanoutRateLimiter>>,
+    /// Optional narrowing-only BVLL extension policy.
+    bvll_policy: Option<Arc<dyn BvllPolicy>>,
     /// Opt-in SO_REUSEPORT setting applied before bind.
     reuse_port: bool,
     /// Set after the first successful start so socket policy cannot be mutated.
@@ -460,6 +473,7 @@ impl BipTransport {
             recv_task: None,
             bbmd_config: None,
             bbmd: None,
+            bbmd_control_core: None,
             bbmd_fdt_purge_task: None,
             foreign_device: None,
             registration_task: None,
@@ -473,6 +487,7 @@ impl BipTransport {
             fanout_task: None,
             fanout_counters,
             fanout_limiter,
+            bvll_policy: None,
             reuse_port: false,
             start_committed: false,
         }
@@ -507,11 +522,45 @@ impl BipTransport {
     /// Enable BBMD mode with the given initial BDT.
     /// Must be called before `start()`.
     pub fn enable_bbmd(&mut self, bdt: Vec<BdtEntry>) {
+        if self.bbmd_control_core.is_none() {
+            self.bbmd_control_core = Some(control::BbmdControlCore::new());
+        }
         self.bbmd_config = Some(BbmdConfig {
             initial_bdt: bdt,
             management_acl: Vec::new(),
             foreign_device_policy: None,
+            accept_foreign_devices: true,
+            max_fdt_entries: BbmdState::MAX_FDT_ENTRIES,
         });
+    }
+
+    /// Return a cloneable live-control capability after BBMD mode is configured.
+    pub fn bbmd_control(&self) -> Option<BbmdControl> {
+        self.bbmd_control_core.as_ref().map(BbmdControl::new)
+    }
+
+    /// Configure the initial administrative registration gate.
+    pub fn set_bbmd_accept_foreign_devices(&mut self, accept: bool) -> Result<(), Error> {
+        let config = self.bbmd_config.as_mut().ok_or_else(|| {
+            Error::Encoding("set_bbmd_accept_foreign_devices requires enable_bbmd".into())
+        })?;
+        config.accept_foreign_devices = accept;
+        Ok(())
+    }
+
+    /// Configure the initial bounded FDT capacity.
+    pub fn set_bbmd_max_fdt_entries(&mut self, maximum: usize) -> Result<(), Error> {
+        if maximum == 0 || maximum > BbmdState::MAX_FDT_ENTRIES {
+            return Err(Error::Encoding(format!(
+                "FDT capacity must be in 1..={} ",
+                BbmdState::MAX_FDT_ENTRIES
+            )));
+        }
+        let config = self.bbmd_config.as_mut().ok_or_else(|| {
+            Error::Encoding("set_bbmd_max_fdt_entries requires enable_bbmd".into())
+        })?;
+        config.max_fdt_entries = maximum;
+        Ok(())
     }
 
     /// Enable foreign device registration on this BBMD with the given policy.
@@ -592,6 +641,18 @@ impl BipTransport {
             limiter.set_policy(policy.clone());
         }
         self.fanout_policy = policy;
+    }
+
+    /// Install an optional narrowing-only BVLL policy before start.
+    /// Native structural, source, quota, and fanout gates retain precedence.
+    pub fn set_bvll_policy(&mut self, policy: Arc<dyn BvllPolicy>) -> Result<(), Error> {
+        if self.start_committed || self.recv_task.is_some() {
+            return Err(Error::Encoding(
+                "BVLL policy must be configured before transport start".into(),
+            ));
+        }
+        self.bvll_policy = Some(policy);
+        Ok(())
     }
 
     /// Timeout for BVLC management response waiting.
@@ -1005,7 +1066,20 @@ impl TransportPort for BipTransport {
             }
             state.set_management_acl(config.management_acl);
             state.set_foreign_device_policy(config.foreign_device_policy);
-            self.bbmd = Some(Arc::new(Mutex::new(state)));
+            state.set_accept_foreign_devices(config.accept_foreign_devices);
+            state
+                .set_max_fdt_entries(config.max_fdt_entries)
+                .expect("pre-start FDT capacity was validated");
+            let bbmd = Arc::new(Mutex::new(state));
+            if let Some(core) = &self.bbmd_control_core {
+                core.attach(
+                    &bbmd,
+                    self.bdt_persist_path.clone(),
+                    &self.management_limiter,
+                    &self.fanout_counters,
+                );
+            }
+            self.bbmd = Some(bbmd);
         }
 
         /// NPDU receive channel capacity for high-throughput UDP transports.
@@ -1038,6 +1112,7 @@ impl TransportPort for BipTransport {
             bvlc_result_quarantine: Arc::clone(&self.bvlc_result_quarantine),
             management_limiter: Arc::clone(&self.management_limiter),
             fanout: Some(fanout_dispatcher),
+            bvll_policy: self.bvll_policy.clone(),
             #[cfg(test)]
             force_dbtn_forward_failure: false,
         };
@@ -1125,6 +1200,9 @@ impl TransportPort for BipTransport {
     }
 
     async fn stop(&mut self) -> Result<(), Error> {
+        if let Some(core) = &self.bbmd_control_core {
+            core.stop();
+        }
         for task in self.abort_background_tasks() {
             let _ = task.await;
         }
@@ -1132,6 +1210,9 @@ impl TransportPort for BipTransport {
     }
 
     fn abort(&mut self) {
+        if let Some(core) = &self.bbmd_control_core {
+            core.stop();
+        }
         let _ = self.abort_background_tasks();
     }
 

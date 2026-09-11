@@ -701,6 +701,7 @@ mod transport {
                                             source_mac: MacAddr::from(frame.source),
                                             link_layer_group: is_ethernet_group(&frame.destination),
                                             data_attributes: Vec::new(),
+                                            transport_meta: None,
                                             reply_tx: None,
                                         })
                                         .is_err()

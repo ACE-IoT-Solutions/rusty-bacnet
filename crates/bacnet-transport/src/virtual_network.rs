@@ -246,6 +246,7 @@ impl VirtualNetwork {
             source_mac: self.local_mac.clone(),
             link_layer_group,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: None,
         }
     }

@@ -121,6 +121,7 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
 

@@ -1,10 +1,66 @@
 use super::*;
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_transport::bip::BipTransport;
+use bacnet_transport::port::TransportPort;
+use bacnet_transport::virtual_network::VirtualNetwork;
 use std::net::Ipv4Addr;
 use tokio::time::Duration;
 
 mod data_attributes;
+
+#[tokio::test]
+async fn virtual_network_ports_route_apdus_and_count_output() {
+    let network_a = "router-current-upstream-virtual-a";
+    let network_b = "router-current-upstream-virtual-b";
+    let mut endpoint_a = VirtualNetwork::join(network_a, 0xA1).unwrap();
+    let mut endpoint_b = VirtualNetwork::join(network_b, 0xB1).unwrap();
+    let _rx_a = endpoint_a.start().await.unwrap();
+    let mut rx_b = endpoint_b.start().await.unwrap();
+    let ports = vec![
+        RouterPort {
+            transport: VirtualNetwork::join(network_a, 1).unwrap(),
+            network_number: 1000,
+        },
+        RouterPort {
+            transport: VirtualNetwork::join(network_b, 1).unwrap(),
+            network_number: 2000,
+        },
+    ];
+    let (mut router, _local_rx) = BACnetRouter::start(ports).await.unwrap();
+
+    // Discard the initial I-Am-Router announcement on the destination segment.
+    rx_b.recv().await.unwrap();
+    let routed = Npdu {
+        expecting_reply: true,
+        priority: bacnet_types::enums::NetworkPriority::URGENT,
+        destination: Some(NpduAddress {
+            network: 2000,
+            mac_address: MacAddr::from_slice(&[0xB1]),
+        }),
+        hop_count: 7,
+        payload: Bytes::from_static(&[0x10, 0x08]),
+        ..Npdu::default()
+    };
+    let mut encoded = BytesMut::new();
+    encode_npdu(&mut encoded, &routed).unwrap();
+    endpoint_a.send_unicast(&encoded, &[1]).await.unwrap();
+
+    let forwarded = tokio::time::timeout(Duration::from_secs(1), rx_b.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let decoded = decode_npdu(forwarded.npdu).unwrap();
+    assert_eq!(decoded.payload.as_ref(), &[0x10, 0x08]);
+    assert!(decoded.destination.is_none());
+    assert!(decoded.expecting_reply);
+    assert_eq!(
+        decoded.priority,
+        bacnet_types::enums::NetworkPriority::URGENT
+    );
+    assert_eq!(router.port_counters()[1].forwarded_unicast, 1);
+
+    router.stop().await;
+}
 
 #[tokio::test]
 async fn router_forwards_between_networks() {
@@ -86,6 +142,17 @@ async fn router_table_populated_on_start() {
     assert_eq!(table.lookup(200).unwrap().port_index, 1);
     assert_eq!(table.lookup(300).unwrap().port_index, 2);
     drop(table);
+
+    let counters = router.port_counters();
+    assert_eq!(counters.len(), 3);
+    assert_eq!(
+        counters
+            .iter()
+            .map(|counter| (counter.config_index, counter.network_number))
+            .collect::<Vec<_>>(),
+        vec![(0, 100), (1, 200), (2, 300)]
+    );
+    assert!(counters.iter().all(|counter| !counter.identity.is_empty()));
 
     router.stop().await;
 }

@@ -8,7 +8,6 @@ use std::net::Ipv4Addr;
 #[cfg(feature = "ipv6")]
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-#[cfg(test)]
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
@@ -30,14 +29,16 @@ use bacnet_services::cov::COVNotificationRequest;
 use bacnet_transport::bip::BipTransport;
 #[cfg(feature = "ipv6")]
 use bacnet_transport::bip6::Bip6Transport;
-use bacnet_transport::port::TransportPort;
+use bacnet_transport::port::{TransportMeta, TransportPort};
 use bacnet_types::enums::{
     ConfirmedServiceChoice, NetworkPriority, RejectReason, UnconfirmedServiceChoice,
 };
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 
-use crate::discovery::{DeviceTable, DeviceUpsertResult, DiscoveredDevice, RoutedDeviceConfig};
+use crate::discovery::{
+    DeviceTable, DeviceUpsertResult, DiscoveredDevice, IAmEvent, RoutedDeviceConfig,
+};
 use crate::segmentation::{
     duplicate_in_window, max_segment_payload, split_payload, SegmentReceiver, SegmentedPduType,
 };
@@ -57,6 +58,9 @@ pub const MAX_COV_CHANNEL_CAPACITY: usize = 65_536;
 
 /// Device discovery event broadcast channel capacity.
 pub const DEVICE_EVENT_CHANNEL_CAPACITY: usize = 64;
+
+/// Raw I-Am observation broadcast channel capacity.
+pub const IAM_EVENT_CHANNEL_CAPACITY: usize = 64;
 
 const VALID_MAX_APDU_LENGTHS: [u16; 6] = [50, 128, 206, 480, 1024, 1476];
 
@@ -429,6 +433,8 @@ pub struct BACnetClient<T: TransportPort> {
     cov_tx: broadcast::Sender<ReceivedCOVNotification>,
     device_tx: broadcast::Sender<DeviceEvent>,
     device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
+    iam_tx: broadcast::Sender<IAmEvent>,
+    initial_iam_rx: Option<broadcast::Receiver<IAmEvent>>,
     dispatch_task: Option<JoinHandle<()>>,
     /// Owner-qualified channels feeding SegmentACKs to in-flight segmented sends.
     ///
@@ -864,6 +870,8 @@ mod cov_renewal_tests;
 mod cov_tests;
 #[cfg(test)]
 mod device_events_tests;
+#[cfg(test)]
+mod iam_events_tests;
 #[cfg(test)]
 mod peer_max_apdu_tests;
 #[cfg(test)]

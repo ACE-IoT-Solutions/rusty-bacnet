@@ -143,6 +143,7 @@ async fn original_unicast_npdu_uses_udp_sender_source_mac_and_ignores_self() {
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
     let sender = ([192, 0, 2, 30], 0xBAC0);
@@ -165,6 +166,15 @@ async fn original_unicast_npdu_uses_udp_sender_source_mac_and_ignores_self() {
         &encode_bip_mac(sender.0, sender.1)
     );
     assert!(!received.link_layer_group);
+    let meta = received.transport_meta.expect("B/IP receive provenance");
+    assert_eq!(
+        meta.bvlc_function,
+        BvlcFunction::ORIGINAL_UNICAST_NPDU.to_raw()
+    );
+    assert_eq!(meta.udp_source_ip, sender.0);
+    assert_eq!(meta.udp_source_port, sender.1);
+    assert_eq!(meta.forwarded_from_ip, None);
+    assert_eq!(meta.forwarded_from_port, None);
 
     handle_bvll_message(&msg, (Ipv4Addr::LOCALHOST.octets(), local_port), &ctx).await;
     assert!(
@@ -222,6 +232,7 @@ async fn original_broadcast_npdu_bbmd_forwards_to_bdt_and_fdt_without_local_echo
         bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
+        bvll_policy: None,
         force_dbtn_forward_failure: false,
     };
     let msg = BvllMessage {
@@ -243,6 +254,13 @@ async fn original_broadcast_npdu_bbmd_forwards_to_bdt_and_fdt_without_local_echo
         &encode_bip_mac(sender.0, sender.1)
     );
     assert!(received.link_layer_group);
+    let meta = received.transport_meta.expect("B/IP receive provenance");
+    assert_eq!(
+        meta.bvlc_function,
+        BvlcFunction::ORIGINAL_BROADCAST_NPDU.to_raw()
+    );
+    assert_eq!(meta.udp_source_ip, sender.0);
+    assert_eq!(meta.udp_source_port, sender.1);
 
     for (label, socket) in [
         ("BDT peer", &bdt_peer_sink),

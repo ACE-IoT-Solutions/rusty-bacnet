@@ -25,6 +25,24 @@ pub struct DataAttribute {
     pub data: Vec<u8>,
 }
 
+/// BACnet/IPv4 framing context for a received NPDU.
+///
+/// This is present only for Annex J BACnet/IP. Other transports leave
+/// [`ReceivedNpdu::transport_meta`] as `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportMeta {
+    /// Raw BVLC function code from the received datagram.
+    pub bvlc_function: u8,
+    /// Actual IPv4 address of the immediate UDP datagram sender.
+    pub udp_source_ip: [u8; 4],
+    /// Actual UDP source port, preserved without substituting 0xBAC0.
+    pub udp_source_port: u16,
+    /// Originating IPv4 address embedded in a Forwarded-NPDU.
+    pub forwarded_from_ip: Option<[u8; 4]>,
+    /// Originating UDP port embedded in a Forwarded-NPDU.
+    pub forwarded_from_port: Option<u16>,
+}
+
 /// A received NPDU from the transport layer.
 pub struct ReceivedNpdu {
     /// Raw NPDU bytes (NPDU header + APDU/network-message payload).
@@ -39,6 +57,8 @@ pub struct ReceivedNpdu {
     pub link_layer_group: bool,
     /// Optional data attributes carried by the data link.
     pub data_attributes: Vec<DataAttribute>,
+    /// BACnet/IP framing and immediate-peer context, or `None` for other links.
+    pub transport_meta: Option<TransportMeta>,
     /// Optional reply channel for MS/TP DataExpectingReply frames.
     /// When present, the application layer should send the reply NPDU bytes
     /// through this channel instead of via normal send_unicast.
@@ -52,6 +72,7 @@ impl Clone for ReceivedNpdu {
             source_mac: self.source_mac.clone(),
             link_layer_group: self.link_layer_group,
             data_attributes: self.data_attributes.clone(),
+            transport_meta: self.transport_meta.clone(),
             reply_tx: None, // oneshot::Sender is not Clone; clones lose the reply channel
         }
     }
@@ -64,6 +85,7 @@ impl std::fmt::Debug for ReceivedNpdu {
             .field("source_mac", &self.source_mac)
             .field("link_layer_group", &self.link_layer_group)
             .field("data_attributes", &self.data_attributes)
+            .field("transport_meta", &self.transport_meta)
             .field("reply_tx", &self.reply_tx.as_ref().map(|_| "Some(Sender)"))
             .finish()
     }

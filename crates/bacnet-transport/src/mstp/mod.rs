@@ -269,6 +269,7 @@ impl MasterNode {
                             source_mac: MacAddr::from_slice(&[frame.source]),
                             link_layer_group: false,
                             data_attributes: Vec::new(),
+                            transport_meta: None,
                             reply_tx: None,
                         });
                     }
@@ -283,6 +284,7 @@ impl MasterNode {
                         source_mac: MacAddr::from_slice(&[frame.source]),
                         link_layer_group: frame.destination == BROADCAST_MAC,
                         data_attributes: Vec::new(),
+                        transport_meta: None,
                         reply_tx: None,
                     });
                 }
@@ -302,6 +304,7 @@ impl MasterNode {
                         source_mac: MacAddr::from_slice(&[frame.source]),
                         link_layer_group: false,
                         data_attributes: Vec::new(),
+                        transport_meta: None,
                         reply_tx: Some(tx),
                     });
                 }

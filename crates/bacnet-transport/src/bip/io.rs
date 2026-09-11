@@ -14,9 +14,12 @@ use bacnet_types::MacAddr;
 
 use crate::bbmd::BbmdState;
 use crate::bvll::{self, encode_bip_mac, encode_bvll, encode_bvll_forwarded};
-use crate::port::ReceivedNpdu;
+use crate::port::{ReceivedNpdu, TransportMeta};
 
 use super::fanout::FanoutDispatcher;
+use super::policy_bridge::{
+    evaluate_narrowing_policy, BvllPolicy, BvllPolicyContext, EvaluatedBvllPolicy,
+};
 use super::rate_limit::{is_covered_management_request, ManagementRateLimiter};
 use super::{decode_bvlc_result_code, BipTransport, PendingBvlcResponse};
 
@@ -86,8 +89,30 @@ pub(super) struct RecvContext {
     pub(super) bvlc_result_quarantine: Arc<StdMutex<HashMap<([u8; 4], u16), Instant>>>,
     pub(super) management_limiter: Arc<std::sync::Mutex<ManagementRateLimiter>>,
     pub(super) fanout: Option<FanoutDispatcher>,
+    pub(super) bvll_policy: Option<Arc<dyn BvllPolicy>>,
     #[cfg(test)]
     pub(super) force_dbtn_forward_failure: bool,
+}
+
+/// Evaluate the optional extension only after the caller has completed the
+/// function's native cheap hard gates. No BBMD state lock is held here.
+async fn extension_policy_admits(
+    msg: &bvll::BvllMessage,
+    sender: ([u8; 4], u16),
+    ctx: &RecvContext,
+) -> bool {
+    let Some(policy) = ctx.bvll_policy.as_deref() else {
+        return true;
+    };
+    let context = BvllPolicyContext::new(msg.function, sender.0, sender.1, &msg.payload);
+    match evaluate_narrowing_policy(true, Some(policy), &context) {
+        EvaluatedBvllPolicy::Continue => true,
+        EvaluatedBvllPolicy::Drop => false,
+        EvaluatedBvllPolicy::Reject(code) => {
+            send_bvlc_result(&ctx.socket, sender, code).await;
+            false
+        }
+    }
 }
 
 fn complete_pending_bvlc_response(
@@ -136,6 +161,13 @@ pub(super) async fn handle_bvll_message(
     sender: ([u8; 4], u16),
     ctx: &RecvContext,
 ) {
+    let transport_meta = || TransportMeta {
+        bvlc_function: msg.function.to_raw(),
+        udp_source_ip: sender.0,
+        udp_source_port: sender.1,
+        forwarded_from_ip: msg.originating_ip,
+        forwarded_from_port: msg.originating_port,
+    };
     // Bounded inbound management quota. Excess covered requests are
     // silently discarded before payload validation, table access, ACL
     // evaluation, or any response/NAK. Write-BDT and data-plane functions
@@ -160,6 +192,9 @@ pub(super) async fn handle_bvll_message(
             if *source_mac == ctx.local_mac[..] {
                 return;
             }
+            if !extension_policy_admits(msg, sender, ctx).await {
+                return;
+            }
             if ctx
                 .npdu_tx
                 .try_send(ReceivedNpdu {
@@ -167,6 +202,7 @@ pub(super) async fn handle_bvll_message(
                     source_mac,
                     link_layer_group: false,
                     data_attributes: Vec::new(),
+                    transport_meta: Some(transport_meta()),
                     reply_tx: None,
                 })
                 .is_err()
@@ -180,6 +216,9 @@ pub(super) async fn handle_bvll_message(
             if *source_mac == ctx.local_mac[..] {
                 return;
             }
+            if !extension_policy_admits(msg, sender, ctx).await {
+                return;
+            }
 
             if ctx
                 .npdu_tx
@@ -188,6 +227,7 @@ pub(super) async fn handle_bvll_message(
                     source_mac,
                     link_layer_group: true,
                     data_attributes: Vec::new(),
+                    transport_meta: Some(transport_meta()),
                     reply_tx: None,
                 })
                 .is_err()
@@ -253,6 +293,9 @@ pub(super) async fn handle_bvll_message(
                     );
                     return;
                 }
+                if !extension_policy_admits(msg, sender, ctx).await {
+                    return;
+                }
 
                 if ctx
                     .npdu_tx
@@ -261,6 +304,7 @@ pub(super) async fn handle_bvll_message(
                         source_mac,
                         link_layer_group: true,
                         data_attributes: Vec::new(),
+                        transport_meta: Some(transport_meta()),
                         reply_tx: None,
                     })
                     .is_err()
@@ -309,6 +353,9 @@ pub(super) async fn handle_bvll_message(
                 }
             } else {
                 // Non-BBMD: use originating address as source_mac (spec J.2.5).
+                if !extension_policy_admits(msg, sender, ctx).await {
+                    return;
+                }
                 if ctx
                     .npdu_tx
                     .try_send(ReceivedNpdu {
@@ -316,6 +363,7 @@ pub(super) async fn handle_bvll_message(
                         source_mac,
                         link_layer_group: true,
                         data_attributes: Vec::new(),
+                        transport_meta: Some(transport_meta()),
                         reply_tx: None,
                     })
                     .is_err()
@@ -348,6 +396,9 @@ pub(super) async fn handle_bvll_message(
                     .await;
                     return;
                 }
+                if !extension_policy_admits(msg, sender, ctx).await {
+                    return;
+                }
 
                 if ctx
                     .npdu_tx
@@ -356,6 +407,7 @@ pub(super) async fn handle_bvll_message(
                         source_mac,
                         link_layer_group: true,
                         data_attributes: Vec::new(),
+                        transport_meta: Some(transport_meta()),
                         reply_tx: None,
                     })
                     .is_err()
@@ -428,6 +480,9 @@ pub(super) async fn handle_bvll_message(
                     return;
                 }
                 let ttl = u16::from_be_bytes([msg.payload[0], msg.payload[1]]);
+                if !extension_policy_admits(msg, sender, ctx).await {
+                    return;
+                }
                 let result = {
                     let mut state = bbmd.lock().await;
                     state.register_foreign_device(sender.0, sender.1, ttl)
@@ -451,6 +506,9 @@ pub(super) async fn handle_bvll_message(
 
         f if f == BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE => {
             if let Some(bbmd) = &ctx.bbmd {
+                if !extension_policy_admits(msg, sender, ctx).await {
+                    return;
+                }
                 let state = bbmd.lock().await;
                 let mut payload = BytesMut::new();
                 state.encode_bdt(&mut payload);
@@ -505,6 +563,9 @@ pub(super) async fn handle_bvll_message(
 
         f if f == BvlcFunction::READ_FOREIGN_DEVICE_TABLE => {
             if let Some(bbmd) = &ctx.bbmd {
+                if !extension_policy_admits(msg, sender, ctx).await {
+                    return;
+                }
                 let mut state = bbmd.lock().await;
                 let mut payload = BytesMut::new();
                 state.encode_fdt(&mut payload);
@@ -566,6 +627,9 @@ pub(super) async fn handle_bvll_message(
                     )
                     .await;
                 } else if msg.payload.len() == 6 {
+                    if !extension_policy_admits(msg, sender, ctx).await {
+                        return;
+                    }
                     let ip = [
                         msg.payload[0],
                         msg.payload[1],
