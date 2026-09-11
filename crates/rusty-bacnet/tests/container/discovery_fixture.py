@@ -132,7 +132,7 @@ async def run_client() -> None:
             "172.31.0.12:47808": [4000, 5000],
         }
         for _ in range(5):
-            unscoped = await client.who_is_router(timeout_ms=400)
+            unscoped = await client.who_is_router_to_network(observation_window_ms=400)
             actual = {router.address: router.networks for router in unscoped}
             if actual == expected_routers:
                 break
@@ -151,12 +151,12 @@ async def run_client() -> None:
             else:
                 raise AssertionError("RouterInfo must be immutable")
 
-        scoped = await client.who_is_router(network=2001, timeout_ms=400)
+        scoped = await client.who_is_router_to_network(network=2001, observation_window_ms=400)
         scoped_actual = {router.address: router.networks for router in scoped}
         if scoped_actual != {"172.31.0.11:47808": [1000, 2001, 3000]}:
             raise AssertionError(f"scoped router claims mismatch: {scoped_actual!r}")
 
-        unknown = await client.who_is_router(network=65000, timeout_ms=200)
+        unknown = await client.who_is_router_to_network(network=65000, observation_window_ms=200)
         if unknown:
             raise AssertionError(f"unknown scoped network returned routers: {unknown!r}")
 
