@@ -14,6 +14,7 @@ mod endpoint_responder;
 mod endpoint_shared_runtime_tests;
 mod enrollment_summary;
 mod event_information;
+mod initial_cov;
 #[cfg(test)]
 mod executed;
 mod read_range;
@@ -22,6 +23,7 @@ mod unconfirmed;
 mod unconfirmed_tests;
 #[cfg(test)]
 pub(crate) use self::{executed::EXECUTED_CONFIRMED, unconfirmed::EXECUTED_UNCONFIRMED};
+use initial_cov::InitialCovNotification;
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Handle one admitted confirmed request.
@@ -47,11 +49,6 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         req: bacnet_encoding::apdu::ConfirmedRequest,
         reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
     ) {
-        enum InitialCovNotification {
-            Single(CovSubscription),
-            Multiple(Vec<CovSubscription>),
-        }
-
         let invoke_id = req.invoke_id;
         let service_choice = req.service_choice;
         let client_max_apdu = req.max_apdu_length;
@@ -617,36 +614,17 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     &life_safety_cov_changes,
                 )
                 .await;
-                for notification in &initial_cov_notifications {
-                    match notification {
-                        InitialCovNotification::Single(subscription) => {
-                            Self::fire_initial_cov_notification(
-                                db,
-                                network,
-                                cov_table,
-                                cov_in_flight,
-                                notification_transactions,
-                                comm_state,
-                                config,
-                                subscription,
-                            )
-                            .await;
-                        }
-                        InitialCovNotification::Multiple(subscriptions) => {
-                            Self::fire_initial_cov_notification_multiple(
-                                db,
-                                network,
-                                cov_table,
-                                cov_in_flight,
-                                notification_transactions,
-                                comm_state,
-                                config,
-                                subscriptions,
-                            )
-                            .await;
-                        }
-                    }
-                }
+                Self::fire_initial_cov_notifications(
+                    db,
+                    network,
+                    cov_table,
+                    cov_in_flight,
+                    notification_transactions,
+                    comm_state,
+                    config,
+                    &initial_cov_notifications,
+                )
+                .await;
                 return;
             }
         }
@@ -705,35 +683,16 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         )
         .await;
 
-        for notification in &initial_cov_notifications {
-            match notification {
-                InitialCovNotification::Single(subscription) => {
-                    Self::fire_initial_cov_notification(
-                        db,
-                        network,
-                        cov_table,
-                        cov_in_flight,
-                        notification_transactions,
-                        comm_state,
-                        config,
-                        subscription,
-                    )
-                    .await;
-                }
-                InitialCovNotification::Multiple(subscriptions) => {
-                    Self::fire_initial_cov_notification_multiple(
-                        db,
-                        network,
-                        cov_table,
-                        cov_in_flight,
-                        notification_transactions,
-                        comm_state,
-                        config,
-                        subscriptions,
-                    )
-                    .await;
-                }
-            }
-        }
+        Self::fire_initial_cov_notifications(
+            db,
+            network,
+            cov_table,
+            cov_in_flight,
+            notification_transactions,
+            comm_state,
+            config,
+            &initial_cov_notifications,
+        )
+        .await;
     }
 }
