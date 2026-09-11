@@ -30,6 +30,7 @@ mod device;
 mod enums;
 mod object_identifier;
 mod property_value;
+mod raw_value;
 mod rpm_wpm;
 mod timestamp;
 
@@ -41,6 +42,7 @@ pub use device::PyDiscoveredDevice;
 pub use enums::*;
 pub use object_identifier::PyObjectIdentifier;
 pub use property_value::PyPropertyValue;
+pub use raw_value::{decode_raw_value, describe_tags, PyRawTag};
 pub(crate) use rpm_wpm::{py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py};
 pub use timestamp::PyBACnetTimeStamp;
 
@@ -100,6 +102,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCovNotificationIterator>()?;
     m.add_class::<PyDirectTarget>()?;
     m.add_class::<PyRoutedTarget>()?;
+    m.add_class::<PyRawTag>()?;
+    m.add_function(wrap_pyfunction!(decode_raw_value, m)?)?;
+    m.add_function(wrap_pyfunction!(describe_tags, m)?)?;
 
     Ok(())
 }
