@@ -159,6 +159,7 @@ fn received_npdu(apdu: &[u8]) -> ReceivedNpdu {
         source_mac: MacAddr::from_slice(&[0x11]),
         link_layer_group: false,
         data_attributes: Vec::new(),
+        transport_meta: None,
         reply_tx: None,
     }
 }
@@ -381,6 +382,7 @@ async fn request_route_preserves_the_complete_envelope_and_reply_sender() {
             source_mac: MacAddr::from_slice(&[0xde, 0xad]),
             link_layer_group: true,
             data_attributes: attributes.clone(),
+            transport_meta: None,
             reply_tx: Some(reply_tx),
         })
         .await
