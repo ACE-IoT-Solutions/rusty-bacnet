@@ -50,6 +50,30 @@ use crate::types::{
     PyObjectIdentifier, PyObjectType, PyPropertyIdentifier, PyPropertyValue, PyReinitializedState,
 };
 
+/// Decode the complete ReadProperty value production. BACnet list-valued
+/// properties place zero or more application values inside the ACK's property
+/// value wrapper, so decoding only the first element loses every later row.
+fn decode_read_property_value(
+    property: bacnet_types::enums::PropertyIdentifier,
+    encoded: &[u8],
+) -> Result<bacnet_types::primitives::PropertyValue, bacnet_types::error::Error> {
+    let mut values = Vec::new();
+    let mut offset = 0;
+    while offset < encoded.len() {
+        let (value, next) = decode_application_value(encoded, offset)?;
+        values.push(value);
+        offset = next;
+    }
+    let network_port_table = property
+        == bacnet_types::enums::PropertyIdentifier::BBMD_BROADCAST_DISTRIBUTION_TABLE
+        || property == bacnet_types::enums::PropertyIdentifier::BBMD_FOREIGN_DEVICE_TABLE;
+    Ok(if values.len() == 1 && !network_port_table {
+        values.pop().expect("one decoded property value")
+    } else {
+        bacnet_types::primitives::PropertyValue::List(values)
+    })
+}
+
 /// Async BACnet client for reading/writing properties on remote devices.
 ///
 /// Usage:

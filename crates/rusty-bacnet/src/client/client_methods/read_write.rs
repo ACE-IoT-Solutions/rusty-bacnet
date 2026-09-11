@@ -43,8 +43,10 @@ impl BACnetClient {
             }
             .map_err(to_py_err)?;
 
-            // Decode application-tagged value bytes → PropertyValue
-            let (value, _) = decode_application_value(&ack.property_value, 0).map_err(to_py_err)?;
+            // Decode the complete application-value production so list-valued
+            // properties preserve every member (and an empty list stays empty).
+            let value = decode_read_property_value(ack.property_identifier, &ack.property_value)
+                .map_err(to_py_err)?;
 
             Ok(PyPropertyValue::from_rust(value))
         })
@@ -296,8 +298,11 @@ impl BACnetClient {
                         let dict = PyDict::new(py);
                         dict.set_item("device_instance", r.device_instance).unwrap();
                         match r.result {
-                            Ok(ack) => match decode_application_value(&ack.property_value, 0) {
-                                Ok((value, _)) => {
+                            Ok(ack) => match decode_read_property_value(
+                                ack.property_identifier,
+                                &ack.property_value,
+                            ) {
+                                Ok(value) => {
                                     dict.set_item("value", PyPropertyValue::from_rust(value))
                                         .unwrap();
                                     dict.set_item("error", py.None()).unwrap();
