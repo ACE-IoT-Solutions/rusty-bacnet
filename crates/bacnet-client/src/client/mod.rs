@@ -619,6 +619,14 @@ impl BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
             reconnect: None,
         }
     }
+
+    /// Return the latest BACnet/SC connection state observed by the transport.
+    ///
+    /// This is a point-in-time health signal. Rapid intermediate transitions
+    /// may coalesce in the transport's watch channel.
+    pub fn sc_connection_state(&self) -> bacnet_transport::sc::ScConnectionState {
+        *self.network.transport().connection_state_changes().borrow()
+    }
 }
 
 /// SC-specific client builder.

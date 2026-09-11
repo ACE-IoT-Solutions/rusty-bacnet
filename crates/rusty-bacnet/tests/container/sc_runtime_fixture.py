@@ -6,6 +6,7 @@ import rusty_bacnet as bacnet
 PRIMARY_HUB_UUID = bytes.fromhex("10000000000000000000000000000001")
 FAILOVER_HUB_UUID = bytes.fromhex("20000000000000000000000000000001")
 SERVER_UUID = bytes.fromhex("42000000000000000000000000000001")
+FAILOVER_SERVER_UUID = bytes.fromhex("42000000000000000000000000000002")
 
 
 async def wait_for(predicate, message: str, timeout: float = 3.0) -> None:
@@ -57,7 +58,7 @@ async def main(
     primary_server.add_analog_input(1, "Primary temperature", present_value=31.5)
     await primary_server.start()
     failover_server = bacnet.BACnetServer(
-        4200,
+        4201,
         "failover-mtls-device",
         transport="sc",
         sc_hub=await failover.url(),
@@ -65,7 +66,7 @@ async def main(
         sc_ca_cert=ca_cert,
         sc_client_cert=client_cert,
         sc_client_key=client_key,
-        sc_device_uuid=SERVER_UUID,
+        sc_device_uuid=FAILOVER_SERVER_UUID,
     )
     failover_server.add_analog_input(1, "Failover temperature", present_value=32.5)
     await failover_server.start()
@@ -82,6 +83,8 @@ async def main(
                         ca_cert=ca_cert,
                         client_cert=rogue_cert,
                         client_key=rogue_key,
+                        heartbeat_interval_ms=3000,
+                        heartbeat_timeout_ms=4000,
                         reconnect_initial_delay_ms=20,
                         reconnect_max_delay_ms=20,
                         reconnect_max_retries=1,
@@ -104,6 +107,8 @@ async def main(
                     ca_cert=ca_cert,
                     client_cert=client_cert,
                     client_key=client_key,
+                    heartbeat_interval_ms=3000,
+                    heartbeat_timeout_ms=4000,
                     reconnect_initial_delay_ms=50,
                     reconnect_max_delay_ms=50,
                     reconnect_max_retries=1,
@@ -146,14 +151,14 @@ async def main(
             discovery = await runtime.discover(timeout_ms=100)
             failover_seen = any(
                 device.attachment_id == 30
-                and device.device_instance == 4200
+                and device.device_instance == 4201
                 and list(device.path_mac) == [2, 0, 0, 0, 0, 3]
                 for device in discovery.devices
             )
             if not failover_seen:
                 return False
             result = await runtime.read_batch(
-                [bacnet.RuntimeRead(0, 30, 4200, 0, 1, 85, "real")]
+                [bacnet.RuntimeRead(0, 30, 4201, 0, 1, 85, "real")]
             )
             return (
                 result[0].error_code is None
@@ -163,7 +168,7 @@ async def main(
         await wait_for(
             failover_device_operates,
             "runtime did not complete BACnet work through the failover hub",
-            timeout=6.0,
+            timeout=12.0,
         )
 
         await failover.stop()
@@ -172,7 +177,11 @@ async def main(
             current = await runtime.health()
             return current.attachment_error_codes == ["ScDisconnected"]
 
-        await wait_for(both_hubs_lost, "runtime did not expose BACnet/SC hub loss")
+        await wait_for(
+            both_hubs_lost,
+            "runtime did not expose BACnet/SC hub loss",
+            timeout=12.0,
+        )
     finally:
         if runtime is not None:
             await runtime.stop()
