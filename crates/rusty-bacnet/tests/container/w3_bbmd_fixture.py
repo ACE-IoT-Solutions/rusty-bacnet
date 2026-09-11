@@ -111,7 +111,7 @@ async def main() -> None:
 
     saw_fdt = False
     reported_expiry = False
-    expiry_revision = None
+    expiry_count = None
     try:
         async with asyncio.timeout(90):
             while True:
@@ -133,21 +133,27 @@ async def main() -> None:
                     snapshot = await control.snapshot()
                     if SIDE != "B" or not snapshot.fdt:
                         raise AssertionError(f"invalid expiry arm state on side {SIDE}: {snapshot.fdt!r}")
-                    expiry_revision = snapshot.revision
-                    emit(f"BBMD_FDT_EXPIRY_ARMED side={SIDE} revision={expiry_revision}")
+                    expiry_count = snapshot.counters.registrations_expired
+                    emit(f"BBMD_FDT_EXPIRY_ARMED side={SIDE} expired={expiry_count}")
 
                 if CHECK_EXPIRY_PATH.exists():
                     CHECK_EXPIRY_PATH.unlink()
                     snapshot = await control.snapshot()
                     if SIDE != "B" or snapshot.fdt:
                         raise AssertionError(f"side {SIDE} FDT did not expire: {snapshot.fdt!r}")
-                    if expiry_revision is None or snapshot.revision <= expiry_revision:
+                    if (
+                        expiry_count is None
+                        or snapshot.counters.registrations_expired <= expiry_count
+                    ):
                         raise AssertionError(
-                            f"actor expiry revision did not advance: armed={expiry_revision} "
-                            f"current={snapshot.revision}"
+                            f"actor expiry counter did not advance: armed={expiry_count} "
+                            f"current={snapshot.counters.registrations_expired}"
                         )
                     reported_expiry = True
-                    emit(f"BBMD_FDT_EXPIRED side={SIDE} revision={snapshot.revision}")
+                    emit(
+                        f"BBMD_FDT_EXPIRED side={SIDE} "
+                        f"expired={snapshot.counters.registrations_expired}"
+                    )
 
                 if REPORT_PATH.exists():
                     REPORT_PATH.unlink()
