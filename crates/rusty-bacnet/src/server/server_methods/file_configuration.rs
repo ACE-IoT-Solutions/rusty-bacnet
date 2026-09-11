@@ -181,6 +181,7 @@ mod tests {
     fn test_server() -> BACnetServer {
         BACnetServer {
             inner: Arc::new(Mutex::new(None)),
+            apdu_observer: None,
             device_identity: DeviceIdentityConfig {
                 instance: 1,
                 name: "Test Device".into(),

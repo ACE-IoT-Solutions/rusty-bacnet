@@ -19,6 +19,134 @@ from typing import Any
 
 DEFAULT_STUB = "crates/rusty-bacnet/rusty_bacnet.pyi"
 
+# Reviewed compatibility dispositions for local-only APIs that the
+# reconciliation intentionally does not reproduce verbatim. Keeping these in
+# the report makes the union exhaustive without presenting safety removals as
+# unfinished ports.
+RECORDED_REMOVALS: dict[str, dict[str, str]] = {
+    "method:BACnetClient.who_is_router": {
+        "disposition": "superseded",
+        "replacement": "method:BACnetClient.who_is_router_to_network",
+    },
+    "property:BACnetClient.bbmd_control": {
+        "disposition": "superseded",
+        "replacement": "property:BACnetServer.bbmd_control",
+    },
+    "method:BbmdControl.counters": {
+        "disposition": "superseded",
+        "replacement": "method:BbmdControl.snapshot and method:BbmdControl.policy_counters",
+    },
+    "method:BACnetRouter.local_address": {
+        "disposition": "superseded",
+        "replacement": "property:BACnetRouter.local_address",
+    },
+    "property:BacnetBbmdControlError.reason": {
+        "disposition": "superseded",
+        "replacement": "property:BacnetBbmdControlError.code",
+    },
+    "property:BacnetForeignDeviceRegistrationError.result_code": {
+        "disposition": "superseded",
+        "replacement": "inherited property:BacnetBvlcError.result_code",
+    },
+    "class:BvllPolicyDecisionCounters": {
+        "disposition": "intentional-removal",
+        "replacement": "class:BvllPolicyCounters and class:BbmdCounters",
+    },
+    "method:BbmdControl.set_wire_management_enabled": {
+        "disposition": "intentional-removal",
+        "replacement": "pre-start configuration only; live control cannot enable inbound Write-BDT",
+    },
+    "method:BvllPolicyVerdict.__init__": {
+        "disposition": "intentional-removal",
+        "replacement": "validated static verdict factories",
+    },
+    "method:BvllPolicyVerdict.allow": {
+        "disposition": "intentional-removal",
+        "replacement": "method:BvllPolicyVerdict.continue_native",
+    },
+    "method:BvllPolicyVerdict.allow_and_forward": {
+        "disposition": "intentional-removal",
+        "replacement": "narrowing-only policy has no forwarding bypass",
+    },
+}
+
+# The pre-reconciliation BBMD actor exposed transport-internal counters and
+# packet bodies. The replacement API deliberately exposes bounded,
+# protocol-facing snapshots and minimal policy metadata instead. Record each
+# retired child symbol as well as its class so union reports do not turn a
+# reviewed safety/encapsulation change into dozens of apparent port tasks.
+for _name in (
+    "admitted",
+    "control_queue_full",
+    "decoded",
+    "fanout_attempts",
+    "fanout_failure",
+    "fanout_success",
+    "local_delivery_drop",
+    "malformed_or_decode_drops",
+    "packet_queue_full",
+    "policy_allowed",
+    "policy_by_function",
+    "policy_cutthrough",
+    "policy_dropped",
+    "policy_errors",
+    "policy_invalid_verdicts",
+    "policy_rejected",
+    "result_sends",
+    "stopped_packet_drops",
+    "terminal_processed",
+):
+    RECORDED_REMOVALS[f"property:BbmdCounters.{_name}"] = {
+        "disposition": "intentional-removal",
+        "replacement": "protocol-facing properties on class:BbmdCounters",
+    }
+
+for _name in ("epoch", "generation", "wire_management_enabled"):
+    RECORDED_REMOVALS[f"property:BbmdSnapshot.{_name}"] = {
+        "disposition": "superseded",
+        "replacement": (
+            "property:BbmdSnapshot.revision"
+            if _name != "wire_management_enabled"
+            else "property:BbmdSnapshot.wire_bdt_writes_enabled"
+        ),
+    }
+
+for _name in (
+    "body",
+    "claimed_origin",
+    "claimed_origin_is_untrusted",
+    "function_name",
+    "local_endpoint",
+    "npdu",
+    "udp_sender",
+):
+    RECORDED_REMOVALS[f"property:BvllPolicyContext.{_name}"] = {
+        "disposition": "intentional-removal",
+        "replacement": "minimal source/payload metadata on class:BvllPolicyContext",
+    }
+
+for _name, _replacement in {
+    "allowed": "property:BvllPolicyCounters.continued",
+    "exceptions": "property:BvllPolicyCounters.errors",
+    "invalid_verdicts": "property:BvllPolicyCounters.errors",
+}.items():
+    RECORDED_REMOVALS[f"property:BvllPolicyCounters.{_name}"] = {
+        "disposition": "superseded",
+        "replacement": _replacement,
+    }
+
+for _name in ("cutthrough", "late_results"):
+    RECORDED_REMOVALS[f"property:BvllPolicyCounters.{_name}"] = {
+        "disposition": "intentional-removal",
+        "replacement": "narrowing-only bounded policy worker counters",
+    }
+
+for _name in ("allowed", "cutthrough", "dropped", "function", "rejected"):
+    RECORDED_REMOVALS[f"property:BvllPolicyDecisionCounters.{_name}"] = {
+        "disposition": "intentional-removal",
+        "replacement": "aggregate class:BvllPolicyCounters",
+    }
+
 
 def read_source(spec: str) -> str:
     """Read a path, or ``GIT_REF:path`` when the path does not exist."""
@@ -38,6 +166,13 @@ def rendered_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return f"{prefix}({ast.unparse(node.args)}){returns}"
 
 
+def is_property(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return any(
+        isinstance(decorator, ast.Name) and decorator.id == "property"
+        for decorator in node.decorator_list
+    )
+
+
 def build_manifest(spec: str) -> dict[str, Any]:
     tree = ast.parse(read_source(spec), filename=spec, type_comments=True)
     exports: list[dict[str, Any]] = []
@@ -49,13 +184,19 @@ def build_manifest(spec: str) -> dict[str, Any]:
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     if member.name.startswith("_") and member.name != "__init__":
                         continue
-                    exports.append(
-                        {
-                            "kind": "method",
-                            "name": f"{node.name}.{member.name}",
-                            "signature": rendered_signature(member),
-                        }
-                    )
+                    kind = "property" if is_property(member) else "method"
+                    exports.append({
+                        "kind": kind,
+                        "name": f"{node.name}.{member.name}",
+                        "signature": rendered_signature(member),
+                    })
+                elif isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name):
+                    if not member.target.id.startswith("_"):
+                        exports.append({
+                            "kind": "property",
+                            "name": f"{node.name}.{member.target.id}",
+                            "annotation": ast.unparse(member.annotation),
+                        })
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not node.name.startswith("_"):
                 exports.append(
@@ -96,7 +237,9 @@ def run_union(args: argparse.Namespace) -> int:
             disposition = "unexplained-upstream-loss"
             upstream_losses.append(key)
         else:
-            disposition = "planned-local-port"
+            disposition = RECORDED_REMOVALS.get(key, {}).get(
+                "disposition", "planned-local-port"
+            )
         rows.append(
             {
                 "symbol": key,
@@ -105,6 +248,7 @@ def run_union(args: argparse.Namespace) -> int:
                     name: mapping.get(key) for name, mapping in maps.items()
                 },
                 "disposition": disposition,
+                "replacement": RECORDED_REMOVALS.get(key, {}).get("replacement"),
             }
         )
     report = {
@@ -116,6 +260,10 @@ def run_union(args: argparse.Namespace) -> int:
             "present": sum(row["disposition"] == "present" for row in rows),
             "planned_local_ports": sum(
                 row["disposition"] == "planned-local-port" for row in rows
+            ),
+            "superseded": sum(row["disposition"] == "superseded" for row in rows),
+            "intentional_removals": sum(
+                row["disposition"] == "intentional-removal" for row in rows
             ),
             "unexplained_upstream_losses": len(upstream_losses),
         },

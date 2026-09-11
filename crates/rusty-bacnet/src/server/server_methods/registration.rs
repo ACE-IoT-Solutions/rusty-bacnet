@@ -112,7 +112,9 @@ impl BACnetServer {
         description="",
         firmware_revision="0.1.0",
         application_software_version="0.1.0",
-        sc_device_uuid=None
+        sc_device_uuid=None,
+        apdu_observer=false,
+        apdu_observer_capacity=64
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -184,6 +186,8 @@ impl BACnetServer {
         firmware_revision: &str,
         application_software_version: &str,
         sc_device_uuid: Option<Vec<u8>>,
+        apdu_observer: bool,
+        apdu_observer_capacity: usize,
     ) -> PyResult<Self> {
         if bbmd && transport != "bip" {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -390,8 +394,10 @@ impl BACnetServer {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         }
         let sc_device_uuid = crate::sc_identity::device_uuid(transport, sc_device_uuid)?;
+        let apdu_observer = PyApduObserverState::configured(apdu_observer, apdu_observer_capacity)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
+            apdu_observer,
             device_identity: DeviceIdentityConfig {
                 instance: device_instance,
                 name: device_name.to_string(),
@@ -780,6 +786,13 @@ impl BACnetServer {
         self.push_pending(Box::new(obj))
     }
 
+    /// Add a Channel object to the server (before starting).
+    #[pyo3(signature = (instance, name, channel_number))]
+    fn add_channel(&self, instance: u32, name: &str, channel_number: u32) -> PyResult<()> {
+        let obj = ChannelObject::new(instance, name, channel_number).map_err(to_py_err)?;
+        self.push_pending(Box::new(obj))
+    }
+
     /// Add a Life Safety Point object to the server (before starting).
     #[pyo3(signature = (instance, name))]
     fn add_life_safety_point(&self, instance: u32, name: &str) -> PyResult<()> {
@@ -812,6 +825,16 @@ impl BACnetServer {
     #[pyo3(signature = (instance, name))]
     fn add_structured_view(&self, instance: u32, name: &str) -> PyResult<()> {
         let obj = StructuredViewObject::new(instance, name).map_err(to_py_err)?;
+        self.push_pending(Box::new(obj))
+    }
+
+    /// Add an inert Notification Forwarder property model before starting.
+    ///
+    /// Registration does not create a separate notification sender; delivery
+    /// remains owned by the native server transaction path.
+    #[pyo3(signature = (instance, name))]
+    fn add_notification_forwarder(&self, instance: u32, name: &str) -> PyResult<()> {
+        let obj = NotificationForwarderObject::new(instance, name).map_err(to_py_err)?;
         self.push_pending(Box::new(obj))
     }
 

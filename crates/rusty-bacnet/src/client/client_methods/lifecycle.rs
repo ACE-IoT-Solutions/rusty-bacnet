@@ -17,6 +17,8 @@ impl BACnetClient {
         sc_heartbeat_interval_ms=None,
         sc_heartbeat_timeout_ms=None,
         ipv6_interface=None,
+        bbmd_address=None,
+        foreign_device_ttl=None,
         *,
         serial_port=None,
         mstp_baud=38400,
@@ -42,6 +44,8 @@ impl BACnetClient {
         sc_heartbeat_interval_ms: Option<u64>,
         sc_heartbeat_timeout_ms: Option<u64>,
         ipv6_interface: Option<String>,
+        bbmd_address: Option<String>,
+        foreign_device_ttl: Option<u16>,
         serial_port: Option<String>,
         mstp_baud: u32,
         mstp_mac: u8,
@@ -61,6 +65,45 @@ impl BACnetClient {
         }
         let sc_device_uuid = crate::sc_identity::device_uuid(transport, sc_device_uuid)?;
         let apdu_observer = PyApduObserverState::configured(apdu_observer, apdu_observer_capacity)?;
+        let foreign_device_config = match (bbmd_address, foreign_device_ttl) {
+            (None, None) => None,
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(PyValueError::new_err(
+                    "bbmd_address and foreign_device_ttl must be provided together",
+                ));
+            }
+            (Some(address), Some(ttl)) => {
+                if transport != "bip" {
+                    return Err(PyValueError::new_err(
+                        "managed foreign-device registration requires transport='bip'",
+                    ));
+                }
+                if ttl == 0 {
+                    return Err(PyValueError::new_err(
+                        "foreign_device_ttl must be in 1..=65535",
+                    ));
+                }
+                let endpoint = address.parse::<std::net::SocketAddrV4>().map_err(|_| {
+                    PyValueError::new_err(
+                        "bbmd_address must be a unicast IPv4 BACnet/IP address in 'ip:port' form",
+                    )
+                })?;
+                if endpoint.ip().is_unspecified()
+                    || endpoint.ip().is_multicast()
+                    || endpoint.ip().is_broadcast()
+                    || endpoint.port() == 0
+                {
+                    return Err(PyValueError::new_err(
+                        "bbmd_address must be a unicast IPv4 address with a nonzero port",
+                    ));
+                }
+                Some(bacnet_transport::bip::ForeignDeviceConfig {
+                    bbmd_ip: *endpoint.ip(),
+                    bbmd_port: endpoint.port(),
+                    ttl,
+                })
+            }
+        };
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
             apdu_observer,
@@ -70,6 +113,8 @@ impl BACnetClient {
             port,
             broadcast_address: broadcast_address.to_string(),
             apdu_timeout_ms,
+            foreign_device_config,
+            foreign_device_registration: Arc::new(std::sync::Mutex::new(None)),
             sc_hub,
             sc_vmac,
             sc_device_uuid,
@@ -96,6 +141,8 @@ impl BACnetClient {
         let port = slf.borrow().port;
         let broadcast_str = slf.borrow().broadcast_address.clone();
         let timeout_ms = slf.borrow().apdu_timeout_ms;
+        let foreign_device_config = slf.borrow().foreign_device_config.clone();
+        let foreign_device_registration = Arc::clone(&slf.borrow().foreign_device_registration);
         let sc_hub = slf.borrow().sc_hub.clone();
         let sc_vmac = slf.borrow().sc_vmac.clone();
         let sc_device_uuid = slf.borrow().sc_device_uuid;
@@ -113,7 +160,10 @@ impl BACnetClient {
         let apdu_observer = slf.borrow().apdu_observer.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let transport: AnyTransport<crate::mstp_py::PySerial> = match transport_type.as_str() {
+            let (transport, registration): (
+                AnyTransport<crate::mstp_py::PySerial>,
+                Option<bacnet_transport::bip::ForeignDeviceRegistrationHandle>,
+            ) = match transport_type.as_str() {
                 "bip" => {
                     let interface: Ipv4Addr = interface_str
                         .parse()
@@ -121,14 +171,22 @@ impl BACnetClient {
                     let broadcast: Ipv4Addr = broadcast_str
                         .parse()
                         .map_err(|e| PyRuntimeError::new_err(format!("invalid broadcast: {e}")))?;
-                    AnyTransport::Bip(BipTransport::new(interface, port, broadcast))
+                    let mut transport = BipTransport::new(interface, port, broadcast);
+                    if let Some(config) = foreign_device_config {
+                        transport.register_as_foreign_device(config);
+                    }
+                    let registration = transport.foreign_device_registration();
+                    (AnyTransport::Bip(transport), registration)
                 }
                 "ipv6" => {
                     let iface_str = ipv6_interface.as_deref().unwrap_or("::");
                     let interface: std::net::Ipv6Addr = iface_str.parse().map_err(|e| {
                         PyRuntimeError::new_err(format!("invalid IPv6 interface: {e}"))
                     })?;
-                    AnyTransport::Bip6(Bip6Transport::new(interface, port, None))
+                    (
+                        AnyTransport::Bip6(Bip6Transport::new(interface, port, None)),
+                        None,
+                    )
                 }
                 "sc" => {
                     let hub_url = sc_hub.ok_or_else(|| {
@@ -162,15 +220,18 @@ impl BACnetClient {
                     if let Some(ms) = sc_heartbeat_timeout_ms {
                         sc = sc.with_heartbeat_timeout_ms(ms);
                     }
-                    AnyTransport::Sc(Box::new(sc))
+                    (AnyTransport::Sc(Box::new(sc)), None)
                 }
-                "mstp" => crate::mstp_py::build_mstp_transport(
-                    serial_port.as_deref(),
-                    mstp_baud,
-                    mstp_mac,
-                    mstp_max_master,
-                    mstp_max_info_frames,
-                )?,
+                "mstp" => (
+                    crate::mstp_py::build_mstp_transport(
+                        serial_port.as_deref(),
+                        mstp_baud,
+                        mstp_mac,
+                        mstp_max_master,
+                        mstp_max_info_frames,
+                    )?,
+                    None,
+                ),
                 other => {
                     return Err(PyRuntimeError::new_err(format!(
                         "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', or 'mstp'"
@@ -191,8 +252,27 @@ impl BACnetClient {
             };
 
             *inner.lock().await = Some(Arc::new(c));
+            *foreign_device_registration
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("foreign-device status lock is poisoned"))? =
+                registration;
             observer_start_guard.commit();
             Ok(self_ref)
+        })
+    }
+
+    /// Return the managed BACnet/IP foreign-device registration snapshot.
+    fn foreign_device_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let registration = Arc::clone(&self.foreign_device_registration);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            registration
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("foreign-device status lock is poisoned"))
+                .map(|handle| {
+                    handle
+                        .as_ref()
+                        .map(|handle| PyForeignDeviceStatus::from_rust(handle.status().into()))
+                })
         })
     }
 

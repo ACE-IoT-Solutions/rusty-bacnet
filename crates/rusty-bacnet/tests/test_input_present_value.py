@@ -21,6 +21,7 @@ from rusty_bacnet import (
     ObjectType,
     PropertyIdentifier,
     PropertyValue,
+    decode_raw_value,
 )
 
 
@@ -167,12 +168,21 @@ class InputPresentValueArtifactTests(unittest.TestCase):
                         notifications.get(), timeout=NOTIFICATION_TIMEOUT
                     )
                     self.assertEqual(notification.monitored_object_identifier, oid)
-                    present_values = [
-                        item["value"]
+                    present_value_entries = [
+                        item
                         for item in notification.values
                         if item["property_id"] == PropertyIdentifier.PRESENT_VALUE
                     ]
-                    self.assertIn(value, present_values)
+                    self.assertIn(
+                        value, [item["value"] for item in present_value_entries]
+                    )
+                    for item in present_value_entries:
+                        self.assertIsInstance(item["raw_value"], bytes)
+                        self.assertIsNone(item["priority"])
+                        self.assertEqual(
+                            decode_raw_value(item["raw_value"], item["value"].tag),
+                            item["value"],
+                        )
 
                 invalid_updates = (
                     (ai, PropertyValue.enumerated(1), ErrorCode.INVALID_DATA_TYPE),

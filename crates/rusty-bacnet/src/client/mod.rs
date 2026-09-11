@@ -46,8 +46,8 @@ use crate::types::{
     parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyApduObserverStartGuard,
     PyApduObserverState, PyBACnetTimeStamp, PyCovNotificationIterator, PyDiscoveredDevice,
     PyEnableDisable, PyEnrollmentSummaryEventStateFilter, PyEventState, PyEventType,
-    PyIAmEventIterator, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier, PyObjectType,
-    PyPropertyIdentifier, PyPropertyValue, PyReinitializedState,
+    PyForeignDeviceStatus, PyIAmEventIterator, PyLifeSafetyOperation, PyMessagePriority,
+    PyObjectIdentifier, PyObjectType, PyPropertyIdentifier, PyPropertyValue, PyReinitializedState,
 };
 
 /// Async BACnet client for reading/writing properties on remote devices.
@@ -80,6 +80,9 @@ pub struct BACnetClient {
     port: u16,
     broadcast_address: String,
     apdu_timeout_ms: u64,
+    foreign_device_config: Option<bacnet_transport::bip::ForeignDeviceConfig>,
+    foreign_device_registration:
+        Arc<std::sync::Mutex<Option<bacnet_transport::bip::ForeignDeviceRegistrationHandle>>>,
     // SC config
     sc_hub: Option<String>,
     sc_vmac: Option<Vec<u8>>,

@@ -86,6 +86,7 @@ impl BACnetServer {
         let atomic_write_file_budget = self.atomic_write_file_budget;
         let read_range_budget = self.read_range_budget;
         let get_event_information_budget = self.get_event_information_budget;
+        let apdu_observer = self.apdu_observer.clone();
 
         let objects: Vec<Box<dyn BACnetObject + Send>> = {
             let mut guard = self.lock_pending()?;
@@ -223,6 +224,7 @@ impl BACnetServer {
                 }
             };
 
+            let mut observer_start_guard = PyApduObserverStartGuard::new(apdu_observer.clone());
             let mut builder = server::BACnetServer::generic_builder()
                 .database(db)
                 .vendor_id(device_identity.vendor_id)
@@ -236,6 +238,9 @@ impl BACnetServer {
                 .read_range_budget(read_range_budget)
                 .get_event_information_budget(get_event_information_budget)
                 .transport(transport);
+            if let Some(state) = apdu_observer.as_ref() {
+                builder = builder.apdu_observer(state.observer()?);
+            }
             if let Some(pw) = dcc_password {
                 builder = builder.dcc_password(pw);
             }
@@ -246,9 +251,13 @@ impl BACnetServer {
             if let Some(pw) = reinit_password {
                 builder = builder.reinit_password(pw);
             }
-            let srv = builder.build().await.map_err(to_py_err)?;
+            let srv = match builder.build().await {
+                Ok(server) => server,
+                Err(error) => return Err(to_py_err(error)),
+            };
 
             *inner.lock().await = Some(srv);
+            observer_start_guard.commit();
             started.store(true, Ordering::Release);
             Ok(())
         })
@@ -258,12 +267,18 @@ impl BACnetServer {
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let started = self.started.clone();
+        let apdu_observer = self.apdu_observer.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut guard = inner.lock().await;
-            if let Some(mut srv) = guard.take() {
-                srv.stop().await.map_err(to_py_err)?;
-            }
+            let stop_result = match guard.take() {
+                Some(mut srv) => srv.stop().await.map_err(to_py_err),
+                None => Ok(()),
+            };
             started.store(false, Ordering::Release);
+            if let Some(state) = apdu_observer.as_ref() {
+                state.close_and_reset();
+            }
+            stop_result?;
             Ok(())
         })
     }

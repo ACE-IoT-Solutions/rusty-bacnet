@@ -651,6 +651,10 @@ class PropertyIdentifier:
     EXECUTION_DELAY: PropertyIdentifier
     NETWORK_NUMBER: PropertyIdentifier
     NETWORK_TYPE: PropertyIdentifier
+    BACNET_IP_MODE: PropertyIdentifier
+    BBMD_ACCEPT_FD_REGISTRATIONS: PropertyIdentifier
+    BBMD_BROADCAST_DISTRIBUTION_TABLE: PropertyIdentifier
+    BBMD_FOREIGN_DEVICE_TABLE: PropertyIdentifier
     MAC_ADDRESS: PropertyIdentifier
     COMMAND_TIME_ARRAY: PropertyIdentifier
     CURRENT_COMMAND_PRIORITY: PropertyIdentifier
@@ -1049,6 +1053,32 @@ class ObjectIdentifier:
     def __hash__(self) -> int: ...
 
 
+class RawTag:
+    """Immutable description of one BACnet tag and its exact wire bytes."""
+    @property
+    def tag_class(self) -> str: ...
+    @property
+    def tag_number(self) -> int: ...
+    @property
+    def length(self) -> int: ...
+    @property
+    def content(self) -> bytes: ...
+    @property
+    def header(self) -> bytes: ...
+    @property
+    def full_tlv(self) -> bytes: ...
+    @property
+    def opening(self) -> bool: ...
+    @property
+    def closing(self) -> bool: ...
+    @property
+    def depth(self) -> int: ...
+
+
+def decode_raw_value(raw: bytes, hint: str) -> PropertyValue: ...
+def describe_tags(raw: bytes) -> list[RawTag]: ...
+
+
 class BACnetTimeStamp:
     """Lossless BACnetTimeStamp CHOICE.
 
@@ -1340,6 +1370,49 @@ class DiscoveredDevice:
     def __repr__(self) -> str: ...
 
 
+class IAmEvent:
+    """One duplicate-preserving I-Am observation with wire provenance."""
+    @property
+    def device_instance(self) -> int: ...
+    @property
+    def device_id(self) -> int: ...
+    @property
+    def object_identifier(self) -> ObjectIdentifier: ...
+    @property
+    def max_apdu_length(self) -> int: ...
+    @property
+    def segmentation_supported(self) -> Segmentation: ...
+    @property
+    def vendor_id(self) -> int: ...
+    @property
+    def udp_source(self) -> Optional[str]: ...
+    @property
+    def source_mac(self) -> bytes: ...
+    @property
+    def raw_mac(self) -> bytes: ...
+    @property
+    def source_network(self) -> Optional[int]: ...
+    @property
+    def snet(self) -> Optional[int]: ...
+    @property
+    def source_address(self) -> Optional[bytes]: ...
+    @property
+    def sadr(self) -> Optional[bytes]: ...
+    @property
+    def bvlc_function(self) -> Optional[int]: ...
+    @property
+    def bvll_function(self) -> Optional[int]: ...
+    @property
+    def forwarded_from(self) -> Optional[str]: ...
+    @property
+    def timestamp(self) -> float: ...
+
+
+class IAmEventIterator:
+    def __aiter__(self) -> IAmEventIterator: ...
+    async def __anext__(self) -> IAmEvent: ...
+
+
 class ApduDecodeError:
     """Typed failure from the unstable APDU diagnostic observer."""
     @property
@@ -1382,6 +1455,14 @@ class ApduObserverEventIterator:
     async def __anext__(self) -> ApduObserverEvent: ...
 
 
+class CovNotificationValue(TypedDict):
+    property_id: PropertyIdentifier
+    array_index: Optional[int]
+    value: Optional[Union[PropertyValue, bytes]]
+    raw_value: bytes
+    priority: Optional[int]
+
+
 class CovNotification:
     """A Change-of-Value notification received from a remote device."""
 
@@ -1410,7 +1491,7 @@ class CovNotification:
     def source_address(self) -> Optional[bytes]: ...
 
     @property
-    def values(self) -> Any:
+    def values(self) -> list[CovNotificationValue]:
         """List of property value change entries."""
         ...
 
@@ -1591,6 +1672,20 @@ class RoutedTarget:
     def address(self) -> bytes: ...
 
 
+class RouterInfo:
+    """Immutable I-Am-Router-To-Network responder snapshot."""
+    @property
+    def mac_address(self) -> bytes: ...
+    @property
+    def address(self) -> Optional[str]: ...
+    @property
+    def source_network(self) -> Optional[int]: ...
+    @property
+    def source_address(self) -> Optional[bytes]: ...
+    @property
+    def networks(self) -> list[int]: ...
+
+
 Target = Union[str, DirectTarget, RoutedTarget]
 
 
@@ -1722,6 +1817,8 @@ class BACnetClient:
         sc_heartbeat_interval_ms: Optional[int] = None,
         sc_heartbeat_timeout_ms: Optional[int] = None,
         ipv6_interface: Optional[str] = None,
+        bbmd_address: Optional[str] = None,
+        foreign_device_ttl: Optional[int] = None,
         *,
         serial_port: Optional[str] = None,
         mstp_baud: int = 38400,
@@ -1744,6 +1841,22 @@ class BACnetClient:
     def apdu_events(self) -> ApduObserverEventIterator:
         """Return the unstable stream; raw NPDUs may contain secrets."""
         ...
+
+    async def who_is_router_to_network(
+        self,
+        network: Optional[int] = None,
+        observation_window_ms: int = 500,
+    ) -> list[RouterInfo]: ...
+
+    async def router_snapshot(self) -> list[RouterInfo]: ...
+    async def read_bdt(self, address: str, timeout_ms: int = 3000) -> list[BdtEntry]: ...
+    async def read_fdt(self, address: str, timeout_ms: int = 3000) -> list[FdtEntry]: ...
+    async def foreign_device_status(self) -> Optional[ForeignDeviceStatus]: ...
+    async def who_is_stream(
+        self,
+        low_limit: Optional[int] = None,
+        high_limit: Optional[int] = None,
+    ) -> IAmEventIterator: ...
 
     # --- Property operations ---
 
@@ -2541,7 +2654,13 @@ class BACnetServer:
         firmware_revision: str = "0.1.0",
         application_software_version: str = "0.1.0",
         sc_device_uuid: Optional[bytes | bytearray] = None,
+        apdu_observer: bool = False,
+        apdu_observer_capacity: int = 64,
     ) -> None: ...
+
+    def apdu_events(self) -> ApduObserverEventIterator:
+        """Return the unstable stream; raw NPDUs may contain secrets."""
+        ...
 
     @property
     def bbmd_control(self) -> BbmdControl: ...
@@ -2655,6 +2774,7 @@ class BACnetServer:
     # --- Lighting ---
     def add_lighting_output(self, instance: int, name: str) -> None: ...
     def add_binary_lighting_output(self, instance: int, name: str) -> None: ...
+    def add_channel(self, instance: int, name: str, channel_number: int) -> None: ...
 
     # --- Life safety ---
     def add_life_safety_point(self, instance: int, name: str) -> None: ...
@@ -2664,6 +2784,7 @@ class BACnetServer:
     def add_group(self, instance: int, name: str) -> None: ...
     def add_global_group(self, instance: int, name: str) -> None: ...
     def add_structured_view(self, instance: int, name: str) -> None: ...
+    def add_notification_forwarder(self, instance: int, name: str) -> None: ...
 
     # --- Access control ---
     def add_access_door(self, instance: int, name: str) -> None: ...

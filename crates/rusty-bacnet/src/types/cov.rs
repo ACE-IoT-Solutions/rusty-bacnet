@@ -58,7 +58,7 @@ impl PyCovNotification {
             .map(|mac| PyBytes::new(py, mac).into_any().unbind())
     }
 
-    /// List of property values as dicts with `property_id`, `array_index`, `value`.
+    /// Ordered property values with both decoded and lossless wire forms.
     #[getter]
     fn values(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let list = PyList::empty(py);
@@ -71,6 +71,8 @@ impl PyCovNotification {
                 },
             )?;
             dict.set_item("array_index", pv.property_array_index)?;
+            dict.set_item("raw_value", PyBytes::new(py, &pv.value))?;
+            dict.set_item("priority", pv.priority)?;
             if !pv.value.is_empty() {
                 match decode_application_value(&pv.value, 0) {
                     Ok((val, _)) => {

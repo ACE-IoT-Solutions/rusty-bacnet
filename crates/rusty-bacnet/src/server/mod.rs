@@ -24,9 +24,10 @@ use bacnet_objects::elevator::{ElevatorGroupObject, EscalatorObject, LiftObject}
 use bacnet_objects::event_enrollment::{AlertEnrollmentObject, EventEnrollmentObject};
 use bacnet_objects::event_log::EventLogObject;
 use bacnet_objects::file::FileObject;
+use bacnet_objects::forwarder::NotificationForwarderObject;
 use bacnet_objects::group::{GlobalGroupObject, GroupObject, StructuredViewObject};
 use bacnet_objects::life_safety::{LifeSafetyPointObject, LifeSafetyZoneObject};
-use bacnet_objects::lighting::{BinaryLightingOutputObject, LightingOutputObject};
+use bacnet_objects::lighting::{BinaryLightingOutputObject, ChannelObject, LightingOutputObject};
 use bacnet_objects::load_control::LoadControlObject;
 use bacnet_objects::loop_obj::LoopObject;
 use bacnet_objects::multistate::{
@@ -55,7 +56,8 @@ use bacnet_types::primitives::PropertyValue;
 
 use crate::errors::to_py_err;
 use crate::types::{
-    PyBbmdControl, PyBbmdTransportConfig, PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue,
+    PyApduObserverStartGuard, PyApduObserverState, PyBbmdControl, PyBbmdTransportConfig,
+    PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue,
 };
 
 /// Async BACnet server that hosts objects and responds to requests.
@@ -83,6 +85,7 @@ use crate::types::{
 #[pyclass(name = "BACnetServer")]
 pub struct BACnetServer {
     inner: Arc<Mutex<Option<server::BACnetServer<AnyTransport<crate::mstp_py::PySerial>>>>>,
+    apdu_observer: Option<Arc<PyApduObserverState>>,
     /// Identity used for the Device object and discovery advertisements.
     device_identity: DeviceIdentityConfig,
     transport_type: String,
@@ -174,6 +177,7 @@ impl BACnetServer {
 }
 
 mod server_methods {
+    mod apdu_observer;
     mod dcc_outcomes;
     mod file_configuration;
     mod lifecycle;
