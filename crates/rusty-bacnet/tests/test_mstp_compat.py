@@ -61,7 +61,11 @@ MSTP_KEYWORD_ONLY = [
     "mstp_max_master",
     "mstp_max_info_frames",
 ]
-CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + ["sc_device_uuid"]
+CLIENT_KEYWORD_ONLY = ["bbmd_address", "foreign_device_ttl"] + MSTP_KEYWORD_ONLY + [
+    "sc_device_uuid",
+    "apdu_observer",
+    "apdu_observer_capacity",
+]
 SERVER_KEYWORD_ONLY = ["dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
     "max_confirmed_in_flight", "max_unconfirmed_in_flight",
     "max_confirmed_in_flight_per_peer", "max_unconfirmed_in_flight_per_peer",
