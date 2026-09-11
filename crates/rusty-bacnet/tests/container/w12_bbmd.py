@@ -7,7 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from rusty_bacnet import BACnetClient, BvllPolicyContext, BvllPolicyVerdict
+from rusty_bacnet import BACnetServer, BvllPolicyContext, BvllPolicyVerdict
 
 
 SIDE = os.environ["W12_SIDE"]
@@ -36,7 +36,9 @@ async def main() -> None:
     subprocess.run(
         ["ip", "route", "replace", REMOTE_SUBNET, "via", GATEWAY], check=True
     )
-    bbmd = BACnetClient(
+    bbmd = BACnetServer(
+        device_instance=4_121_210 + (0 if SIDE == "A" else 1),
+        device_name=f"W12 BBMD {SIDE}",
         interface=INTERFACE,
         port=47808,
         broadcast_address=BROADCAST,
@@ -44,7 +46,8 @@ async def main() -> None:
         bbmd_bdt=[(PEER, 47808, "255.255.255.255")],
         bvll_policy=policy,
     )
-    async with bbmd:
+    await bbmd.start()
+    try:
         print(f"W12_BBMD_READY side={SIDE} address={INTERFACE}:47808 peer={PEER}:47808", flush=True)
         await wait_for(COORD / "discovery.done")
         function = 0x0B if SIDE == "A" else 0x04
@@ -65,6 +68,8 @@ async def main() -> None:
             flush=True,
         )
         await wait_for(COORD / "complete", timeout=60.0)
+    finally:
+        await bbmd.stop()
 
 
 if __name__ == "__main__":
