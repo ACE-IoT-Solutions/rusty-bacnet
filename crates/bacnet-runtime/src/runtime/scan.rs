@@ -23,6 +23,10 @@ impl BacnetRuntime {
         let capabilities = self.inner.capabilities.read().await.get(request.device);
         let batches = ScanPlanner::plan_rpm(&request.reads, request.limits)?;
         let total_batches = batches.len();
+        // The registry read guard is a transport lifecycle lease: keep it
+        // through I/O and cache updates so reconciliation cannot retire this
+        // attachment and then receive stale results. State snapshots must
+        // release their guards before awaiting this lease (see health/batch).
         let registry = self.inner.registry.read().await;
         let transport = registry.transport(request.device.attachment_id)?;
         let mut outcomes = Vec::with_capacity(request.reads.len());
@@ -170,6 +174,8 @@ impl BacnetRuntime {
             .read()
             .await
             .object_list_attempts(device);
+        // As in scan, registry precedes capability writes; no capability or
+        // device-index guard may survive into this transport lifecycle lease.
         let registry = self.inner.registry.read().await;
         let transport = registry.transport(device.attachment_id)?;
         let whole = crate::PropertyRead {

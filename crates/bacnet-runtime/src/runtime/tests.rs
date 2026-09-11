@@ -45,3 +45,4 @@ include!("tests/group_5.rs");
 include!("tests/group_6.rs");
 include!("tests/group_7.rs");
 include!("tests/group_8.rs");
+include!("tests/lock_order.rs");

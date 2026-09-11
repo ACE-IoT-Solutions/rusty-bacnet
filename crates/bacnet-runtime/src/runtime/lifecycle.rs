@@ -66,15 +66,26 @@ impl BacnetRuntime {
         Ok(runtime)
     }
 
-    /// Returns a point-in-time health snapshot without performing BACnet I/O.
+    /// Returns a health snapshot without performing BACnet I/O.
+    ///
+    /// Component counters are sampled independently so concurrent updates do
+    /// not require holding several runtime locks at once.
     pub async fn health(&self) -> RuntimeHealth {
-        let device_index = self.inner.device_index.read().await;
-        let capabilities = self.inner.capabilities.read().await;
-        let values = self.inner.values.read().await;
-        let observations = self.inner.observations.read().await;
-        let registry = self.inner.registry.read().await;
+        // Snapshot each component independently. Retaining a cache/index guard
+        // while awaiting the registry can deadlock behind a queued lifecycle
+        // writer and an active scan that needs to update that same cache.
+        let (device_count, device_observation_count) = {
+            let index = self.inner.device_index.read().await;
+            (index.device_count(), index.observation_count())
+        };
+        let capability_count = self.inner.capabilities.read().await.len();
+        let cached_value_count = self.inner.values.read().await.len();
+        let observation_count = self.inner.observations.read().await.len();
+        let (attachment_task_count, attachments) = {
+            let registry = self.inner.registry.read().await;
+            (registry.background_task_count(), registry.health())
+        };
         let supervisor_task_count = self.inner.supervisor.task_count();
-        let attachment_task_count = registry.background_task_count();
         RuntimeHealth {
             generation: self.inner.generation.load(Ordering::Acquire),
             accepting_commands: self.inner.supervisor.accepting()
@@ -92,12 +103,12 @@ impl BacnetRuntime {
                 .inner
                 .i_am_observation_lag_count
                 .load(Ordering::Relaxed),
-            device_count: device_index.device_count(),
-            device_observation_count: device_index.observation_count(),
-            capability_count: capabilities.len(),
-            cached_value_count: values.len(),
-            observation_count: observations.len(),
-            attachments: registry.health(),
+            device_count,
+            device_observation_count,
+            capability_count,
+            cached_value_count,
+            observation_count,
+            attachments,
         }
     }
 

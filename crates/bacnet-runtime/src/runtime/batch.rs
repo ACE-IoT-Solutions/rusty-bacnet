@@ -100,13 +100,16 @@ impl BacnetRuntime {
         let now = std::time::Instant::now();
         for item in request.items {
             if let FreshnessPolicy::MaxAge(max_age) = item.freshness {
-                if let Some(value) =
+                // An if-let scrutinee guard lives through its body in Rust
+                // 2021. Own the cached value before awaiting the device index:
+                // reconciliation takes the index before clearing the cache.
+                let cached =
                     self.inner
                         .values
                         .read()
                         .await
-                        .get_fresh(item.device, &item.read, max_age, now)
-                {
+                        .get_fresh(item.device, &item.read, max_age, now);
+                if let Some(value) = cached {
                     let path = self
                         .inner
                         .device_index
