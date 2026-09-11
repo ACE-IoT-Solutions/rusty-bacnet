@@ -363,6 +363,29 @@ impl BacnetRuntime {
                 .await;
             return;
         };
+        let expected_path = self
+            .inner
+            .device_index
+            .read()
+            .await
+            .get(spec.key.device)
+            .map(|observation| observation.path.clone());
+        if !expected_path
+            .as_ref()
+            .is_some_and(|path| cov_sender_matches_path(&received, path))
+        {
+            self.inner
+                .events
+                .publish(
+                    self.inner.generation.load(Ordering::Acquire),
+                    Some(attachment_id),
+                    EventKind::UnsolicitedCovNotification {
+                        notification: crate::UnsolicitedCovNotification::from(&received),
+                    },
+                )
+                .await;
+            return;
+        }
         let notification = received.notification;
         let values = notification
             .list_of_values
@@ -597,6 +620,28 @@ impl BacnetRuntime {
                         .await;
                 }
             }
+        }
+    }
+}
+
+fn cov_sender_matches_path(
+    received: &bacnet_client::client::ReceivedCOVNotification,
+    path: &crate::DevicePath,
+) -> bool {
+    match path {
+        crate::DevicePath::Direct { mac } => {
+            received.source_network.is_none()
+                && received.source_address.is_none()
+                && received.source_mac.as_ref() == mac.as_slice()
+        }
+        crate::DevicePath::Routed {
+            ingress_mac,
+            dnet,
+            dadr,
+        } => {
+            received.source_mac.as_ref() == ingress_mac.as_slice()
+                && received.source_network == Some(*dnet)
+                && received.source_address.as_ref().map(AsRef::as_ref) == Some(dadr.as_slice())
         }
     }
 }
