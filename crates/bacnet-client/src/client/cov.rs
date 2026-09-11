@@ -429,4 +429,14 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     pub fn cov_notifications(&self) -> broadcast::Receiver<ReceivedCOVNotification> {
         self.cov_tx.subscribe()
     }
+
+    /// Take the startup-reserved COV receiver, if it has not already been taken.
+    ///
+    /// Aggregate runtimes use this once immediately after client construction
+    /// to retain notifications dispatched before their background pump starts.
+    pub fn take_initial_cov_receiver(
+        &mut self,
+    ) -> Option<broadcast::Receiver<ReceivedCOVNotification>> {
+        self.initial_cov_rx.take()
+    }
 }

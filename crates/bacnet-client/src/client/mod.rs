@@ -444,6 +444,7 @@ pub struct BACnetClient<T: TransportPort> {
     router_snapshot: Arc<Mutex<Vec<RouterInfo>>>,
     router_discovery_lock: Arc<Mutex<()>>,
     cov_tx: broadcast::Sender<ReceivedCOVNotification>,
+    initial_cov_rx: Option<broadcast::Receiver<ReceivedCOVNotification>>,
     device_tx: broadcast::Sender<DeviceEvent>,
     device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
     iam_tx: broadcast::Sender<IAmEvent>,

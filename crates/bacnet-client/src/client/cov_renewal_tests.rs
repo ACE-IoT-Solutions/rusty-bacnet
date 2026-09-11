@@ -177,7 +177,7 @@ async fn managed_cov_subscription_uses_notification_observed_during_initial_subs
                 &peer_mac,
             ))
             .unwrap(),
-        1
+        2
     );
     send_local_simple_ack(
         &peer_transport,

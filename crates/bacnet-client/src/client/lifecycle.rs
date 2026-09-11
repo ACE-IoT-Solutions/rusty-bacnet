@@ -66,7 +66,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let router_discovery_lock = Arc::new(Mutex::new(()));
         let device_table_dispatch = Arc::clone(&device_table);
         let network_dispatch = Arc::clone(&network);
-        let (cov_tx, _) =
+        // Reserve one receiver before dispatch starts so aggregate runtimes can
+        // attach after construction without losing startup-window notifications.
+        let (cov_tx, initial_cov_rx) =
             broadcast::channel::<ReceivedCOVNotification>(options.cov_channel_capacity);
         let cov_tx_dispatch = cov_tx.clone();
         let confirmed_cov_ack_policy = options.confirmed_cov_notification_ack_policy.clone();
@@ -204,6 +206,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             router_snapshot,
             router_discovery_lock,
             cov_tx,
+            initial_cov_rx: Some(initial_cov_rx),
             device_tx,
             device_collision_tx,
             iam_tx,

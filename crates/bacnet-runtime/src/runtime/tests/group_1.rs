@@ -98,7 +98,6 @@ fn unsolicited_cov_apdu(process_id: u32, device_instance: u32) -> Bytes {
 }
 
 #[tokio::test]
-#[ignore = "upstream 0.11 does not reserve COV receivers during client startup"]
 async fn reserved_cov_receiver_retains_notification_dispatched_during_transport_start() {
     let attachment_id = AttachmentId::from(501);
     crate::transport::install_bip_start_cov_hook(

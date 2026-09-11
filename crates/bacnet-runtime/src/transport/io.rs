@@ -633,7 +633,13 @@ impl RuntimeTransport {
     pub(crate) fn take_initial_cov_receiver(
         &mut self,
     ) -> Option<broadcast::Receiver<ReceivedCOVNotification>> {
-        Some(self.cov_receiver())
+        match self {
+            Self::Bip(client) => client.take_initial_cov_receiver(),
+            #[cfg(feature = "mstp")]
+            Self::Mstp(client) => client.take_initial_cov_receiver(),
+            #[cfg(feature = "sc")]
+            Self::Sc(client) => client.take_initial_cov_receiver(),
+        }
     }
 
     pub(crate) fn i_am_receiver(&self) -> broadcast::Receiver<IAmEvent> {

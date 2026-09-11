@@ -109,6 +109,21 @@ async fn cov_notification_channel_uses_configured_capacity() {
 }
 
 #[tokio::test]
+async fn initial_cov_receiver_is_reserved_and_takeable_once() {
+    let (transport, _) = LoopbackTransport::pair(vec![0x30], vec![0x31]);
+    let mut client = BACnetClient::generic_builder()
+        .transport(transport)
+        .build()
+        .await
+        .unwrap();
+
+    assert!(client.take_initial_cov_receiver().is_some());
+    assert!(client.take_initial_cov_receiver().is_none());
+
+    client.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn unconfirmed_cov_notification_includes_source_and_delivery() {
     let client_mac = vec![0x01];
     let peer_mac = vec![0x02];
