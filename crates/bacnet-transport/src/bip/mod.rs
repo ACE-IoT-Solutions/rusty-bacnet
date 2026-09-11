@@ -4,14 +4,17 @@
 //! incoming BVLL frames and extracts NPDU bytes + source MAC for the
 //! network layer. Optionally acts as a BBMD or foreign device.
 
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use bytes::BytesMut;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::bbmd::{self, BbmdState, BdtEntry, FdtEntryWire};
@@ -36,38 +39,270 @@ use rate_limit::ManagementRateLimiter;
 /// Default BACnet/IP port (0xBAC0 = 47808).
 pub const DEFAULT_BACNET_PORT: u16 = 0xBAC0;
 
+/// Resolve the OS interface name and index that owns an IPv4 address.
+///
+/// B/IP sockets bind to `INADDR_ANY` so subnet broadcasts remain visible. A
+/// kernel interface binding prevents two shared-port attachments from
+/// receiving traffic for one another's interfaces.
+#[allow(unsafe_code)]
+#[cfg(unix)]
+fn resolve_ipv4_interface(addr: Ipv4Addr) -> Option<(Vec<u8>, u32)> {
+    use std::ffi::CStr;
+
+    struct IfAddrsGuard(*mut libc::ifaddrs);
+
+    impl Drop for IfAddrsGuard {
+        fn drop(&mut self) {
+            // SAFETY: getifaddrs allocated this list and this guard owns it.
+            unsafe { libc::freeifaddrs(self.0) }
+        }
+    }
+
+    // SAFETY: pointers are null-checked, sockaddr_in is read only for AF_INET,
+    // and interface names are kernel-provided NUL-terminated strings.
+    unsafe {
+        let mut ifaddrs: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifaddrs) != 0 {
+            return None;
+        }
+        let _guard = IfAddrsGuard(ifaddrs);
+        let mut cursor = ifaddrs;
+        while !cursor.is_null() {
+            let ifa = &*cursor;
+            if !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_INET {
+                let socket_addr = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                let candidate = Ipv4Addr::from(u32::from_be(socket_addr.sin_addr.s_addr));
+                if candidate == addr {
+                    let name = CStr::from_ptr(ifa.ifa_name);
+                    let index = libc::if_nametoindex(name.as_ptr());
+                    if index != 0 {
+                        return Some((name.to_bytes().to_vec(), index));
+                    }
+                }
+            }
+            cursor = ifa.ifa_next;
+        }
+        None
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "cygwin",
+        target_os = "nuttx",
+        target_os = "wasi"
+    ))
+))]
+fn ensure_reuse_port_supported(_enabled: bool) -> Result<(), Error> {
+    Ok(())
+}
+
+#[cfg(not(all(
+    unix,
+    not(any(
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "cygwin",
+        target_os = "nuttx",
+        target_os = "wasi"
+    ))
+)))]
+fn ensure_reuse_port_supported(enabled: bool) -> Result<(), Error> {
+    if enabled {
+        Err(Error::Transport(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "SO_REUSEPORT is unsupported on this platform",
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "cygwin",
+        target_os = "nuttx",
+        target_os = "wasi"
+    ))
+))]
+fn set_socket_reuse_port(socket: &socket2::Socket, enabled: bool) -> std::io::Result<()> {
+    socket.set_reuse_port(enabled)
+}
+
+#[cfg(not(all(
+    unix,
+    not(any(
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "cygwin",
+        target_os = "nuttx",
+        target_os = "wasi"
+    ))
+)))]
+fn set_socket_reuse_port(_socket: &socket2::Socket, enabled: bool) -> std::io::Result<()> {
+    if enabled {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "SO_REUSEPORT is unsupported on this platform",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+// Linux permits port sharing when every participant sets SO_REUSEADDR even
+// without SO_REUSEPORT, so both options are coupled to the explicit opt-in.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn set_socket_reuse_address(socket: &socket2::Socket, reuse_port: bool) -> std::io::Result<()> {
+    socket.set_reuse_address(reuse_port)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn set_socket_reuse_address(socket: &socket2::Socket, _reuse_port: bool) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        setsockopt, WSAGetLastError, SOCKET_ERROR, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+    };
+
+    socket.set_reuse_address(false)?;
+    let enabled: i32 = 1;
+    // SAFETY: the socket is live and the option value has the expected size
+    // for the duration of this synchronous call.
+    let result = unsafe {
+        setsockopt(
+            socket.as_raw_socket() as usize,
+            SOL_SOCKET,
+            SO_EXCLUSIVEADDRUSE,
+            (&enabled as *const i32).cast(),
+            std::mem::size_of_val(&enabled) as i32,
+        )
+    };
+    if result == SOCKET_ERROR {
+        // SAFETY: setsockopt just failed on this thread.
+        Err(std::io::Error::from_raw_os_error(unsafe {
+            WSAGetLastError()
+        }))
+    } else {
+        Ok(())
+    }
+}
+
+// Apple platforms need SO_REUSEADDR for broadcast binds; SO_REUSEPORT gates
+// sharing the exact wildcard address and port. Other supported Unix targets
+// retain the established broadcast socket behavior.
+#[cfg(not(any(target_os = "android", target_os = "linux", windows)))]
+fn set_socket_reuse_address(socket: &socket2::Socket, _reuse_port: bool) -> std::io::Result<()> {
+    socket.set_reuse_address(true)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum BvlcResponseKind {
-    Result,
+    WriteBroadcastDistributionTableResult,
+    RegisterForeignDeviceResult,
+    DeleteForeignDeviceTableEntryResult,
     ReadBroadcastDistributionTableAck,
     ReadForeignDeviceTableAck,
 }
 
 impl BvlcResponseKind {
-    pub(super) fn accepts(self, function: BvlcFunction) -> bool {
+    pub(super) fn accepts(self, msg: &BvllMessage) -> bool {
+        if msg.function == BvlcFunction::BVLC_RESULT {
+            let Ok(code) = decode_bvlc_result_code(msg) else {
+                return true;
+            };
+            return match self {
+                Self::WriteBroadcastDistributionTableResult => matches!(
+                    code,
+                    BvlcResultCode::SUCCESSFUL_COMPLETION
+                        | BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
+                ),
+                Self::RegisterForeignDeviceResult => matches!(
+                    code,
+                    BvlcResultCode::SUCCESSFUL_COMPLETION
+                        | BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK
+                ),
+                Self::DeleteForeignDeviceTableEntryResult => matches!(
+                    code,
+                    BvlcResultCode::SUCCESSFUL_COMPLETION
+                        | BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK
+                ),
+                Self::ReadBroadcastDistributionTableAck => {
+                    code == BvlcResultCode::READ_BROADCAST_DISTRIBUTION_TABLE_NAK
+                }
+                Self::ReadForeignDeviceTableAck => {
+                    code == BvlcResultCode::READ_FOREIGN_DEVICE_TABLE_NAK
+                }
+            };
+        }
         match self {
-            Self::Result => function == BvlcFunction::BVLC_RESULT,
+            Self::WriteBroadcastDistributionTableResult
+            | Self::RegisterForeignDeviceResult
+            | Self::DeleteForeignDeviceTableEntryResult => false,
             Self::ReadBroadcastDistributionTableAck => {
-                function == BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK
-                    || function == BvlcFunction::BVLC_RESULT
+                msg.function == BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK
             }
             Self::ReadForeignDeviceTableAck => {
-                function == BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK
-                    || function == BvlcFunction::BVLC_RESULT
+                msg.function == BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK
             }
         }
     }
 }
 
 pub(super) struct PendingBvlcResponse {
+    id: u64,
     target: ([u8; 4], u16),
     expected: BvlcResponseKind,
     tx: oneshot::Sender<BvllMessage>,
 }
 
 impl PendingBvlcResponse {
-    pub(super) fn matches(&self, sender: ([u8; 4], u16), function: BvlcFunction) -> bool {
-        self.target == sender && self.expected.accepts(function)
+    pub(super) fn matches(&self, sender: ([u8; 4], u16), msg: &BvllMessage) -> bool {
+        self.target == sender && self.expected.accepts(msg)
+    }
+}
+
+struct PendingBvlcCleanup {
+    pending: Arc<StdMutex<Option<PendingBvlcResponse>>>,
+    quarantine: Arc<StdMutex<HashMap<([u8; 4], u16), Instant>>>,
+    target: ([u8; 4], u16),
+    request_id: u64,
+    armed: bool,
+}
+
+impl PendingBvlcCleanup {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingBvlcCleanup {
+    fn drop(&mut self) {
+        let mut slot = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot
+            .as_ref()
+            .is_some_and(|pending| pending.id == self.request_id)
+        {
+            *slot = None;
+        }
+        if self.armed {
+            let quiet_until = Instant::now() + BipTransport::BVLC_RESPONSE_TIMEOUT;
+            self.quarantine
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(self.target)
+                .and_modify(|deadline| *deadline = (*deadline).max(quiet_until))
+                .or_insert(quiet_until);
+        }
     }
 }
 
@@ -99,7 +334,7 @@ pub(super) fn decode_bvlc_result_code(msg: &BvllMessage) -> Result<BvlcResultCod
 
 fn bvlc_result_error(msg: &BvllMessage) -> Error {
     match decode_bvlc_result_code(msg) {
-        Ok(code) => Error::Encoding(format!("BVLC-Result: {code:?}")),
+        Ok(code) => Error::Bvlc { result_code: code },
         Err(err) => err,
     }
 }
@@ -122,6 +357,43 @@ struct BbmdConfig {
     foreign_device_policy: Option<ForeignDevicePolicy>,
 }
 
+/// Builder for native BACnet/IP socket configuration.
+#[derive(Debug, Clone)]
+pub struct BipTransportBuilder {
+    interface: Ipv4Addr,
+    port: u16,
+    broadcast_address: Ipv4Addr,
+    reuse_port: bool,
+}
+
+impl BipTransportBuilder {
+    /// Create a builder with shared-port binding disabled.
+    pub fn new(interface: Ipv4Addr, port: u16, broadcast_address: Ipv4Addr) -> Self {
+        Self {
+            interface,
+            port,
+            broadcast_address,
+            reuse_port: false,
+        }
+    }
+
+    /// Opt in or out of shared-port socket options before bind.
+    ///
+    /// Every socket sharing an address and port must opt in. Linux couples
+    /// `SO_REUSEADDR` to this setting so the disabled default stays exclusive.
+    pub fn reuse_port(mut self, enabled: bool) -> Self {
+        self.reuse_port = enabled;
+        self
+    }
+
+    /// Build an unstarted transport.
+    pub fn build(self) -> Result<BipTransport, Error> {
+        let mut transport = BipTransport::new(self.interface, self.port, self.broadcast_address);
+        transport.set_reuse_port(self.reuse_port)?;
+        Ok(transport)
+    }
+}
+
 /// BACnet/IP transport over UDP.
 pub struct BipTransport {
     interface: Ipv4Addr,
@@ -141,7 +413,12 @@ pub struct BipTransport {
     /// Re-registration timer task.
     registration_task: Option<JoinHandle<()>>,
     /// Pending BVLC management response, including the expected sender and response kind.
-    pending_bvlc_response: Arc<Mutex<Option<PendingBvlcResponse>>>,
+    pending_bvlc_response: Arc<StdMutex<Option<PendingBvlcResponse>>>,
+    /// Serializes requests because BVLC Result has no transaction identifier.
+    bvlc_request_lock: Arc<Mutex<()>>,
+    next_bvlc_request_id: Arc<AtomicU64>,
+    /// Per-target quiet windows after ambiguous timeout or cancellation.
+    bvlc_result_quarantine: Arc<StdMutex<HashMap<([u8; 4], u16), Instant>>>,
     /// Optional path for loading an externally provisioned persisted BDT
     /// (wire format, 10 bytes per entry) at startup. Inbound Write-BDT does
     /// not update this file.
@@ -156,6 +433,10 @@ pub struct BipTransport {
     fanout_counters: Arc<fanout::AtomicFanoutCounters>,
     /// Rate limiter for broadcast forwarding fanout.
     fanout_limiter: Arc<std::sync::Mutex<fanout::FanoutRateLimiter>>,
+    /// Opt-in SO_REUSEPORT setting applied before bind.
+    reuse_port: bool,
+    /// Set after the first successful start so socket policy cannot be mutated.
+    start_committed: bool,
 }
 
 impl BipTransport {
@@ -182,14 +463,45 @@ impl BipTransport {
             bbmd_fdt_purge_task: None,
             foreign_device: None,
             registration_task: None,
-            pending_bvlc_response: Arc::new(Mutex::new(None)),
+            pending_bvlc_response: Arc::new(StdMutex::new(None)),
+            bvlc_request_lock: Arc::new(Mutex::new(())),
+            next_bvlc_request_id: Arc::new(AtomicU64::new(1)),
+            bvlc_result_quarantine: Arc::new(StdMutex::new(HashMap::new())),
             bdt_persist_path: None,
             management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
             fanout_policy,
             fanout_task: None,
             fanout_counters,
             fanout_limiter,
+            reuse_port: false,
+            start_committed: false,
         }
+    }
+
+    /// Create a native B/IP transport builder.
+    pub fn builder(
+        interface: Ipv4Addr,
+        port: u16,
+        broadcast_address: Ipv4Addr,
+    ) -> BipTransportBuilder {
+        BipTransportBuilder::new(interface, port, broadcast_address)
+    }
+
+    /// Configure opt-in shared-port behavior before the first successful start.
+    ///
+    /// The default is `false`. Supported Unix platforms enable SO_REUSEPORT;
+    /// Linux also enables SO_REUSEADDR. An explicit interface is bound at the
+    /// kernel level so shared-port attachments remain isolated by interface.
+    pub fn set_reuse_port(&mut self, enabled: bool) -> Result<(), Error> {
+        if self.start_committed || self.socket.is_some() || self.recv_task.is_some() {
+            return Err(Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "SO_REUSEPORT must be configured before B/IP transport start",
+            )));
+        }
+        ensure_reuse_port_supported(enabled)?;
+        self.reuse_port = enabled;
+        Ok(())
     }
 
     /// Enable BBMD mode with the given initial BDT.
@@ -349,35 +661,90 @@ impl BipTransport {
     ) -> Result<BvllMessage, Error> {
         let socket = self.require_socket()?;
         let (ip, port) = decode_bip_mac(target)?;
+        let target = (ip, port);
+
+        // BVLC Result has no transaction identifier or echoed request
+        // function. After timeout/cancellation, drain late Results during a
+        // target-local quiet window before assigning a new request owner.
+        let _request_guard = loop {
+            let quiet_until = self
+                .bvlc_result_quarantine
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&target)
+                .copied();
+            if let Some(deadline) = quiet_until.filter(|deadline| *deadline > Instant::now()) {
+                tokio::time::sleep_until(deadline).await;
+                continue;
+            }
+
+            let request_guard = self.bvlc_request_lock.lock().await;
+            let quiet_until = self
+                .bvlc_result_quarantine
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&target)
+                .copied();
+            if quiet_until.is_some_and(|deadline| deadline > Instant::now()) {
+                drop(request_guard);
+                continue;
+            }
+            self.bvlc_result_quarantine
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&target);
+            break request_guard;
+        };
+
+        let request_id = self.next_bvlc_request_id.fetch_add(1, Ordering::Relaxed);
         let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
 
         let (tx, rx) = oneshot::channel();
         {
-            let mut slot = self.pending_bvlc_response.lock().await;
+            let mut slot = self
+                .pending_bvlc_response
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if slot.is_some() {
                 return Err(Error::Encoding(
                     "BVLC management request already in flight".into(),
                 ));
             }
             *slot = Some(PendingBvlcResponse {
-                target: (ip, port),
+                id: request_id,
+                target,
                 expected: expected_response,
                 tx,
             });
         }
+        let mut cleanup = PendingBvlcCleanup {
+            pending: Arc::clone(&self.pending_bvlc_response),
+            quarantine: Arc::clone(&self.bvlc_result_quarantine),
+            target,
+            request_id,
+            armed: true,
+        };
 
         let mut buf = BytesMut::with_capacity(4 + payload.len());
-        encode_bvll(&mut buf, function, payload)?;
-        socket.send_to(&buf, dest).await.map_err(Error::Transport)?;
+        if let Err(err) = encode_bvll(&mut buf, function, payload) {
+            cleanup.disarm();
+            return Err(err);
+        }
+        if let Err(err) = socket.send_to(&buf, dest).await {
+            cleanup.disarm();
+            return Err(Error::Transport(err));
+        }
 
         match tokio::time::timeout(Self::BVLC_RESPONSE_TIMEOUT, rx).await {
-            Ok(Ok(msg)) => Ok(msg),
-            Ok(Err(_)) => Err(Error::Encoding("BVLC response channel dropped".to_string())),
-            Err(_) => {
-                let mut slot = self.pending_bvlc_response.lock().await;
-                *slot = None;
-                Err(Error::Timeout(Self::BVLC_RESPONSE_TIMEOUT))
+            Ok(Ok(msg)) => {
+                cleanup.disarm();
+                Ok(msg)
             }
+            Ok(Err(_)) => {
+                cleanup.disarm();
+                Err(Error::Encoding("BVLC response channel dropped".to_string()))
+            }
+            Err(_) => Err(Error::Timeout(Self::BVLC_RESPONSE_TIMEOUT)),
         }
     }
 
@@ -413,7 +780,7 @@ impl BipTransport {
             .bvlc_request(
                 target,
                 BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE,
-                BvlcResponseKind::Result,
+                BvlcResponseKind::WriteBroadcastDistributionTableResult,
                 &payload,
             )
             .await?;
@@ -451,7 +818,7 @@ impl BipTransport {
             .bvlc_request(
                 target,
                 BvlcFunction::DELETE_FOREIGN_DEVICE_TABLE_ENTRY,
-                BvlcResponseKind::Result,
+                BvlcResponseKind::DeleteForeignDeviceTableEntryResult,
                 &payload,
             )
             .await?;
@@ -473,7 +840,7 @@ impl BipTransport {
             .bvlc_request(
                 target,
                 BvlcFunction::REGISTER_FOREIGN_DEVICE,
-                BvlcResponseKind::Result,
+                BvlcResponseKind::RegisterForeignDeviceResult,
                 &payload,
             )
             .await?;
@@ -497,7 +864,8 @@ impl TransportPort for BipTransport {
         )
         .map_err(Error::Transport)?;
 
-        socket2.set_reuse_address(true).map_err(Error::Transport)?;
+        set_socket_reuse_address(&socket2, self.reuse_port).map_err(Error::Transport)?;
+        set_socket_reuse_port(&socket2, self.reuse_port).map_err(Error::Transport)?;
         socket2.set_broadcast(true).map_err(Error::Transport)?;
         socket2.set_nonblocking(true).map_err(Error::Transport)?;
 
@@ -511,6 +879,45 @@ impl TransportPort for BipTransport {
         if !self.interface.is_unspecified() {
             std::net::UdpSocket::bind(SocketAddrV4::new(self.interface, 0))
                 .map_err(Error::Transport)?;
+
+            #[cfg(unix)]
+            if self.reuse_port {
+                if let Some((_interface_name, _interface_index)) =
+                    resolve_ipv4_interface(self.interface)
+                {
+                    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+                    socket2
+                        .bind_device(Some(&_interface_name))
+                        .map_err(Error::Transport)?;
+
+                    #[cfg(any(
+                        target_os = "ios",
+                        target_os = "visionos",
+                        target_os = "macos",
+                        target_os = "tvos",
+                        target_os = "watchos",
+                        target_os = "illumos",
+                        target_os = "solaris"
+                    ))]
+                    socket2
+                        .bind_device_by_index_v4(std::num::NonZeroU32::new(_interface_index))
+                        .map_err(Error::Transport)?;
+
+                    #[cfg(not(any(
+                        target_os = "android",
+                        target_os = "fuchsia",
+                        target_os = "linux",
+                        target_os = "ios",
+                        target_os = "visionos",
+                        target_os = "macos",
+                        target_os = "tvos",
+                        target_os = "watchos",
+                        target_os = "illumos",
+                        target_os = "solaris"
+                    )))]
+                    let _ = (_interface_name, _interface_index);
+                }
+            }
         }
 
         // Always bind to INADDR_ANY so subnet- and limited-broadcast packets
@@ -628,6 +1035,7 @@ impl TransportPort for BipTransport {
             broadcast_addr: self.broadcast_address,
             broadcast_port: self.port,
             pending_bvlc_response: self.pending_bvlc_response.clone(),
+            bvlc_result_quarantine: Arc::clone(&self.bvlc_result_quarantine),
             management_limiter: Arc::clone(&self.management_limiter),
             fanout: Some(fanout_dispatcher),
             #[cfg(test)]
@@ -712,6 +1120,7 @@ impl TransportPort for BipTransport {
             self.registration_task = Some(reg_task);
         }
 
+        self.start_committed = true;
         Ok(rx)
     }
 
@@ -811,5 +1220,7 @@ mod original_tests;
 mod rate_limit_tests;
 #[cfg(test)]
 mod response_amplification_tests;
+#[cfg(test)]
+mod socket_config_tests;
 #[cfg(test)]
 mod tests;

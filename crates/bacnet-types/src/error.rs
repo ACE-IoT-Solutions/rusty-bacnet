@@ -9,7 +9,7 @@ use alloc::{format, string::String};
 #[cfg(feature = "std")]
 use std::time::Duration;
 
-use crate::enums::{ErrorClass, ErrorCode};
+use crate::enums::{BvlcResultCode, ErrorClass, ErrorCode, RejectMessageReason};
 
 fn format_protocol_error(class: u32, code: u32) -> String {
     let class_name = ErrorClass::ALL_NAMED
@@ -53,6 +53,26 @@ pub enum Error {
     Abort {
         /// Abort reason value.
         reason: u8,
+    },
+
+    /// BACnet network-layer Reject-Message-To-Network (Clause 6.4.4).
+    ///
+    /// Callers must only construct this error after the rejection has been
+    /// correlated to the affected request. An unsolicited network message is
+    /// not, by itself, a transaction error.
+    #[error("BACnet route rejected: network={network}, reason={reason}")]
+    NetworkReject {
+        /// Destination network rejected by the router.
+        network: u16,
+        /// Typed network-layer reject reason, preserving unknown raw values.
+        reason: RejectMessageReason,
+    },
+
+    /// BACnet/IP BVLC management result other than success (Annex J).
+    #[error("BVLC management error: {result_code:?}")]
+    Bvlc {
+        /// Typed BVLC result code, including unknown raw values.
+        result_code: BvlcResultCode,
     },
 
     /// A router reported that the active message was too long for a routed path.
@@ -182,5 +202,23 @@ mod tests {
     fn routed_path_capacity_display_preserves_bound() {
         let err = Error::RoutedPathCapacityExceeded { capacity: 256 };
         assert!(err.to_string().contains("256"));
+    }
+
+    #[test]
+    fn network_reject_display_preserves_network_and_unknown_reason() {
+        let err = Error::NetworkReject {
+            network: 2001,
+            reason: RejectMessageReason::from_raw(0xFE),
+        };
+        assert!(err.to_string().contains("2001"));
+        assert!(err.to_string().contains("254"));
+    }
+
+    #[test]
+    fn bvlc_display_preserves_unknown_result_code() {
+        let err = Error::Bvlc {
+            result_code: BvlcResultCode::from_raw(0x1234),
+        };
+        assert!(err.to_string().contains("4660"));
     }
 }

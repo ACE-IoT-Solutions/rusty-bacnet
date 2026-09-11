@@ -97,12 +97,13 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
             .unwrap(),
     );
     let (npdu_tx, _npdu_rx) = mpsc::channel(1);
-    let pending_bvlc_response = Arc::new(Mutex::new(None));
+    let pending_bvlc_response = Arc::new(std::sync::Mutex::new(None));
     let (tx, mut rx) = oneshot::channel();
 
     {
-        let mut slot = pending_bvlc_response.lock().await;
+        let mut slot = pending_bvlc_response.lock().unwrap();
         *slot = Some(PendingBvlcResponse {
+            id: 1,
             target: ([127, 0, 0, 1], 47808),
             expected: BvlcResponseKind::ReadBroadcastDistributionTableAck,
             tx,
@@ -117,6 +118,7 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
         broadcast_addr: Ipv4Addr::BROADCAST,
         broadcast_port: 47808,
         pending_bvlc_response: pending_bvlc_response.clone(),
+        bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: None,
         force_dbtn_forward_failure: false,
@@ -124,21 +126,50 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
 
     let result = test_bvll_message(BvlcFunction::BVLC_RESULT, &[0x00, 0x00]);
     handle_bvll_message(&result, ([127, 0, 0, 2], 47808), &ctx).await;
-    assert!(pending_bvlc_response.lock().await.is_some());
+    assert!(pending_bvlc_response.lock().unwrap().is_some());
+    assert!(rx.try_recv().is_err());
+
+    let unrelated_result = test_bvll_message(BvlcFunction::BVLC_RESULT, &[0x00, 0x60]);
+    handle_bvll_message(&unrelated_result, ([127, 0, 0, 1], 47808), &ctx).await;
+    assert!(pending_bvlc_response.lock().unwrap().is_some());
     assert!(rx.try_recv().is_err());
 
     let wrong_ack = test_bvll_message(BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK, &[]);
     handle_bvll_message(&wrong_ack, ([127, 0, 0, 1], 47808), &ctx).await;
-    assert!(pending_bvlc_response.lock().await.is_some());
+    assert!(pending_bvlc_response.lock().unwrap().is_some());
     assert!(rx.try_recv().is_err());
 
     let expected_ack = test_bvll_message(BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK, &[]);
     handle_bvll_message(&expected_ack, ([127, 0, 0, 1], 47808), &ctx).await;
-    assert!(pending_bvlc_response.lock().await.is_none());
+    assert!(pending_bvlc_response.lock().unwrap().is_none());
     assert_eq!(
         rx.await.unwrap().function,
         BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK
     );
+}
+
+#[tokio::test]
+async fn cancelled_bvlc_request_clears_pending_slot() {
+    let silent_peer = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let peer_addr = silent_peer.local_addr().unwrap();
+    let peer_mac = encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), peer_addr.port());
+
+    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    let _rx = transport.start().await.unwrap();
+    let result = timeout(Duration::from_millis(20), transport.read_bdt(&peer_mac)).await;
+    assert!(
+        result.is_err(),
+        "outer timeout must cancel the BVLC request"
+    );
+    assert!(
+        transport.pending_bvlc_response.lock().unwrap().is_none(),
+        "cancellation must clear the request it installed"
+    );
+    assert!(transport.bvlc_request_lock.try_lock().is_ok());
+
+    transport.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -750,8 +781,9 @@ async fn bvlc_request_rejects_concurrent_calls() {
     {
         let (tx, _rx) = oneshot::channel();
         let (ip, port) = decode_bip_mac(transport.local_mac()).unwrap();
-        let mut slot = transport.pending_bvlc_response.lock().await;
+        let mut slot = transport.pending_bvlc_response.lock().unwrap();
         *slot = Some(PendingBvlcResponse {
+            id: 1,
             target: (ip, port),
             expected: BvlcResponseKind::ReadBroadcastDistributionTableAck,
             tx,

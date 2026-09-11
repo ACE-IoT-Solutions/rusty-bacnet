@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use bytes::BytesMut;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
@@ -15,7 +18,7 @@ use crate::port::ReceivedNpdu;
 
 use super::fanout::FanoutDispatcher;
 use super::rate_limit::{is_covered_management_request, ManagementRateLimiter};
-use super::{decode_bvlc_result_code, PendingBvlcResponse};
+use super::{decode_bvlc_result_code, BipTransport, PendingBvlcResponse};
 
 pub(super) fn original_destination_matches(
     function: BvlcFunction,
@@ -79,28 +82,51 @@ pub(super) struct RecvContext {
     pub(super) bbmd: Option<Arc<Mutex<BbmdState>>>,
     pub(super) broadcast_addr: Ipv4Addr,
     pub(super) broadcast_port: u16,
-    pub(super) pending_bvlc_response: Arc<Mutex<Option<PendingBvlcResponse>>>,
+    pub(super) pending_bvlc_response: Arc<StdMutex<Option<PendingBvlcResponse>>>,
+    pub(super) bvlc_result_quarantine: Arc<StdMutex<HashMap<([u8; 4], u16), Instant>>>,
     pub(super) management_limiter: Arc<std::sync::Mutex<ManagementRateLimiter>>,
     pub(super) fanout: Option<FanoutDispatcher>,
     #[cfg(test)]
     pub(super) force_dbtn_forward_failure: bool,
 }
 
-async fn complete_pending_bvlc_response(
+fn complete_pending_bvlc_response(
     msg: &bvll::BvllMessage,
     sender: ([u8; 4], u16),
     ctx: &RecvContext,
 ) -> bool {
-    let mut slot = ctx.pending_bvlc_response.lock().await;
+    let mut slot = ctx
+        .pending_bvlc_response
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if slot
         .as_ref()
-        .is_some_and(|pending| pending.matches(sender, msg.function))
+        .is_some_and(|pending| pending.matches(sender, msg))
     {
         let pending = slot.take().expect("pending response exists");
         let _ = pending.tx.send(msg.clone());
         true
     } else {
         false
+    }
+}
+
+fn quarantine_late_bvlc_result(sender: ([u8; 4], u16), ctx: &RecvContext) -> bool {
+    let now = Instant::now();
+    let mut quarantine = ctx
+        .bvlc_result_quarantine
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match quarantine.get_mut(&sender) {
+        Some(deadline) if *deadline > now => {
+            *deadline = now + BipTransport::BVLC_RESPONSE_TIMEOUT;
+            true
+        }
+        Some(_) => {
+            quarantine.remove(&sender);
+            false
+        }
+        None => false,
     }
 }
 
@@ -571,7 +597,11 @@ pub(super) async fn handle_bvll_message(
         }
 
         f if f == BvlcFunction::BVLC_RESULT => {
-            if !complete_pending_bvlc_response(msg, sender, ctx).await {
+            if !complete_pending_bvlc_response(msg, sender, ctx) {
+                if quarantine_late_bvlc_result(sender, ctx) {
+                    debug!(sender = ?sender, "Discarded late BVLC-Result during quiet interval");
+                    return;
+                }
                 match decode_bvlc_result_code(msg) {
                     Ok(BvlcResultCode::SUCCESSFUL_COMPLETION) => {
                         debug!("Received BVLC-Result: successful");
@@ -598,13 +628,13 @@ pub(super) async fn handle_bvll_message(
         }
 
         f if f == BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK => {
-            if !complete_pending_bvlc_response(msg, sender, ctx).await {
+            if !complete_pending_bvlc_response(msg, sender, ctx) {
                 debug!("Received Read-BDT-ACK with no pending request");
             }
         }
 
         f if f == BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK => {
-            if !complete_pending_bvlc_response(msg, sender, ctx).await {
+            if !complete_pending_bvlc_response(msg, sender, ctx) {
                 debug!("Received Read-FDT-ACK with no pending request");
             }
         }
