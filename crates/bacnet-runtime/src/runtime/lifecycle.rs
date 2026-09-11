@@ -138,7 +138,12 @@ impl BacnetRuntime {
                 observed_instances.insert(observation.key.device_instance);
                 index.upsert(observation);
             }
-            routers.extend(result.routers);
+            routers.extend(
+                result
+                    .routers
+                    .into_iter()
+                    .map(|router| router_observation(attachment_id, router)),
+            );
             errors.extend(result.errors);
         }
         let devices = observed_instances

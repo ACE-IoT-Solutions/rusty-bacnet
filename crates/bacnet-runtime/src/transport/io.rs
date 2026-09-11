@@ -634,19 +634,23 @@ impl RuntimeTransport {
         Some(self.cov_receiver())
     }
 
-    pub(crate) fn i_am_receiver(&self) -> broadcast::Receiver<DeviceEvent> {
+    pub(crate) fn i_am_receiver(&self) -> broadcast::Receiver<IAmEvent> {
         match self {
-            Self::Bip(client) => client.device_events(),
+            Self::Bip(client) => client.iam_events(),
             #[cfg(feature = "mstp")]
-            Self::Mstp(client) => client.device_events(),
+            Self::Mstp(client) => client.iam_events(),
             #[cfg(feature = "sc")]
-            Self::Sc(client) => client.device_events(),
+            Self::Sc(client) => client.iam_events(),
         }
     }
 
-    pub(crate) fn take_initial_i_am_receiver(
-        &mut self,
-    ) -> Option<broadcast::Receiver<DeviceEvent>> {
-        Some(self.i_am_receiver())
+    pub(crate) fn take_initial_i_am_receiver(&mut self) -> Option<broadcast::Receiver<IAmEvent>> {
+        match self {
+            Self::Bip(client) => client.take_initial_iam_receiver(),
+            #[cfg(feature = "mstp")]
+            Self::Mstp(client) => client.take_initial_iam_receiver(),
+            #[cfg(feature = "sc")]
+            Self::Sc(client) => client.take_initial_iam_receiver(),
+        }
     }
 }

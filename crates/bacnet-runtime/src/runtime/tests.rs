@@ -20,8 +20,8 @@ use bacnet_transport::bbmd::BdtEntry;
 use bacnet_transport::bip::{BipTransport, ForeignDeviceConfig};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, RejectReason,
-    Segmentation, UnconfirmedServiceChoice,
+    BvlcFunction, ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
+    RejectReason, Segmentation, UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;

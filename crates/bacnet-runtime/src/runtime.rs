@@ -10,7 +10,7 @@ use tokio::sync::{oneshot, watch, Mutex, Notify, RwLock, Semaphore};
 
 use crate::cache::ValueCache;
 use crate::config::validate_attachments;
-use crate::discovery::device_observation;
+use crate::discovery::{device_observation, router_observation};
 use crate::event::EventBus;
 use crate::observation::ObservationRegistry;
 use crate::registry::AttachmentRegistry;

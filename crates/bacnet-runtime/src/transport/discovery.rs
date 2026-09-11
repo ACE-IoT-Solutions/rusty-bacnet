@@ -38,15 +38,31 @@ impl RuntimeTransport {
                     tokio::time::sleep(request.observation_window).await;
                     Ok::<_, bacnet_types::error::Error>(client.discovered_devices().await)
                 };
-                let devices = devices.await;
+                let routers = async {
+                    if request.collect_routers {
+                        client
+                            .who_is_router_to_network(
+                                request.router_network,
+                                request.observation_window,
+                            )
+                            .await
+                    } else {
+                        Ok(Vec::new())
+                    }
+                };
+                let (devices, routers) = tokio::join!(devices, routers);
                 let mut errors = Vec::new();
                 let devices = devices.unwrap_or_else(|error| {
                     errors.push(RuntimeError::operation(attachment_id, error));
                     Vec::new()
                 });
+                let routers = routers.unwrap_or_else(|error| {
+                    errors.push(RuntimeError::operation(attachment_id, error));
+                    Vec::new()
+                });
                 AttachmentDiscovery {
                     devices,
-                    routers: Vec::new(),
+                    routers,
                     errors,
                 }
             }
@@ -60,15 +76,31 @@ impl RuntimeTransport {
                     tokio::time::sleep(request.observation_window).await;
                     Ok::<_, bacnet_types::error::Error>(client.discovered_devices().await)
                 };
-                let devices = devices.await;
+                let routers = async {
+                    if request.collect_routers {
+                        client
+                            .who_is_router_to_network(
+                                request.router_network,
+                                request.observation_window,
+                            )
+                            .await
+                    } else {
+                        Ok(Vec::new())
+                    }
+                };
+                let (devices, routers) = tokio::join!(devices, routers);
                 let mut errors = Vec::new();
                 let devices = devices.unwrap_or_else(|error| {
                     errors.push(RuntimeError::operation(attachment_id, error));
                     Vec::new()
                 });
+                let routers = routers.unwrap_or_else(|error| {
+                    errors.push(RuntimeError::operation(attachment_id, error));
+                    Vec::new()
+                });
                 AttachmentDiscovery {
                     devices,
-                    routers: Vec::new(),
+                    routers,
                     errors,
                 }
             }
@@ -82,15 +114,31 @@ impl RuntimeTransport {
                     tokio::time::sleep(request.observation_window).await;
                     Ok::<_, bacnet_types::error::Error>(client.discovered_devices().await)
                 };
-                let devices = devices.await;
+                let routers = async {
+                    if request.collect_routers {
+                        client
+                            .who_is_router_to_network(
+                                request.router_network,
+                                request.observation_window,
+                            )
+                            .await
+                    } else {
+                        Ok(Vec::new())
+                    }
+                };
+                let (devices, routers) = tokio::join!(devices, routers);
                 let mut errors = Vec::new();
                 let devices = devices.unwrap_or_else(|error| {
                     errors.push(RuntimeError::operation(attachment_id, error));
                     Vec::new()
                 });
+                let routers = routers.unwrap_or_else(|error| {
+                    errors.push(RuntimeError::operation(attachment_id, error));
+                    Vec::new()
+                });
                 AttachmentDiscovery {
                     devices,
-                    routers: Vec::new(),
+                    routers,
                     errors,
                 }
             }
@@ -165,10 +213,16 @@ impl RuntimeTransport {
                         fdt,
                     });
                 }
+                let routers = client
+                    .router_snapshot()
+                    .await
+                    .into_iter()
+                    .map(|router| router_observation(attachment_id, router))
+                    .collect();
                 AttachmentTopologyResult {
                     local_mac: client.local_mac().to_vec(),
                     bbmds,
-                    routers: Vec::new(),
+                    routers,
                     truncated,
                     errors,
                 }
@@ -182,10 +236,16 @@ impl RuntimeTransport {
                         "BBMD/FDT topology operations are only available on B/IP attachments",
                     ));
                 }
+                let routers = client
+                    .router_snapshot()
+                    .await
+                    .into_iter()
+                    .map(|router| router_observation(attachment_id, router))
+                    .collect();
                 AttachmentTopologyResult {
                     local_mac: client.local_mac().to_vec(),
                     bbmds: Vec::new(),
-                    routers: Vec::new(),
+                    routers,
                     truncated: false,
                     errors,
                 }
@@ -199,10 +259,16 @@ impl RuntimeTransport {
                         "BBMD/FDT topology operations are only available on B/IP attachments",
                     ));
                 }
+                let routers = client
+                    .router_snapshot()
+                    .await
+                    .into_iter()
+                    .map(|router| router_observation(attachment_id, router))
+                    .collect();
                 AttachmentTopologyResult {
                     local_mac: client.local_mac().to_vec(),
                     bbmds: Vec::new(),
-                    routers: Vec::new(),
+                    routers,
                     truncated: false,
                     errors,
                 }

@@ -380,6 +380,7 @@ async fn raw_i_am_observations_preserve_duplicates_and_attachment_provenance() {
     let transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let mut sender = NetworkLayer::new(transport);
     sender.start().await.unwrap();
+    let sender_mac = sender.local_mac().to_vec();
     let announcement = i_am_apdu(400_041, 808);
     for _ in 0..2 {
         sender
@@ -413,6 +414,20 @@ async fn raw_i_am_observations_preserve_duplicates_and_attachment_provenance() {
         };
         assert_eq!(observation.device_instance, 400_041);
         assert_eq!(observation.vendor_id, 808);
+        assert_eq!(observation.source_mac.as_slice(), sender_mac.as_slice());
+        assert_eq!(observation.udp_source_ip, Some([127, 0, 0, 1]));
+        assert_eq!(
+            observation.udp_source_port,
+            Some(u16::from_be_bytes([sender_mac[4], sender_mac[5]]))
+        );
+        assert_eq!(
+            observation.bvlc_function,
+            Some(BvlcFunction::ORIGINAL_UNICAST_NPDU.to_raw())
+        );
+        assert_eq!(observation.source_network, None);
+        assert_eq!(observation.source_address, None);
+        assert_eq!(observation.forwarded_from_ip, None);
+        assert_eq!(observation.forwarded_from_port, None);
     }
     sender.stop().await.unwrap();
     runtime.stop().await.unwrap();

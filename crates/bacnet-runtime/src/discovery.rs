@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use bacnet_client::client::RouterInfo;
 use bacnet_client::discovery::DiscoveredDevice;
 
 use crate::{
@@ -19,10 +20,7 @@ pub struct DiscoveryRequest {
     pub observation_window: Duration,
     /// Clear each selected client table before sending Who-Is.
     pub clear_existing: bool,
-    /// Request I-Am-Router-To-Network announcements in the same operation.
-    ///
-    /// Upstream 0.11 does not yet expose router observations to clients, so
-    /// the initial compatibility runtime returns an empty router collection.
+    /// Collect I-Am-Router-To-Network announcements in the same operation.
     pub collect_routers: bool,
     /// Optional network for a scoped router query; `None` requests all networks.
     pub router_network: Option<u16>,
@@ -94,18 +92,41 @@ pub(crate) fn device_observation(
     }
 }
 
+pub(crate) fn router_observation(
+    attachment_id: AttachmentId,
+    router: RouterInfo,
+) -> RouterObservation {
+    let path = match router.source_network {
+        Some(source) => DevicePath::Routed {
+            ingress_mac: router.source_mac.to_vec(),
+            dnet: source.network,
+            dadr: source.mac_address.to_vec(),
+        },
+        None => DevicePath::Direct {
+            mac: router.source_mac.to_vec(),
+        },
+    };
+    RouterObservation {
+        attachment_id,
+        path,
+        networks: router.networks,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
 
+    use bacnet_client::client::RouterInfo;
     use bacnet_client::discovery::DiscoveredDevice;
+    use bacnet_encoding::npdu::NpduAddress;
     use bacnet_types::enums::{ObjectType, Segmentation};
     use bacnet_types::primitives::ObjectIdentifier;
     use bacnet_types::MacAddr;
 
     use crate::{AttachmentId, DevicePath};
 
-    use super::device_observation;
+    use super::{device_observation, router_observation};
 
     #[test]
     fn routed_device_mapping_preserves_ingress_and_every_dadr_byte() {
@@ -131,5 +152,29 @@ mod tests {
                 dadr: vec![0, 0x7f, 1],
             }
         );
+    }
+
+    #[test]
+    fn routed_router_mapping_retains_source_path_and_networks() {
+        let mapped = router_observation(
+            AttachmentId::from(2),
+            RouterInfo {
+                source_mac: MacAddr::from_slice(&[192, 0, 2, 1, 0xba, 0xc0]),
+                source_network: Some(NpduAddress {
+                    network: 1001,
+                    mac_address: MacAddr::from_slice(&[0, 5]),
+                }),
+                networks: vec![2001, 2002],
+            },
+        );
+        assert_eq!(
+            mapped.path,
+            DevicePath::Routed {
+                ingress_mac: vec![192, 0, 2, 1, 0xba, 0xc0],
+                dnet: 1001,
+                dadr: vec![0, 5],
+            }
+        );
+        assert_eq!(mapped.networks, vec![2001, 2002]);
     }
 }

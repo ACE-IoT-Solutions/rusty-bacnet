@@ -2,8 +2,9 @@ use std::collections::{BTreeSet, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_client::client::ReceivedCOVNotification;
-use bacnet_client::client::{BACnetClient, DeviceEvent};
+use bacnet_client::client::{BACnetClient, RouterInfo};
 use bacnet_client::discovery::DiscoveredDevice;
+use bacnet_client::discovery::IAmEvent;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_transport::bip::{BipTransport, ForeignDeviceConfig};
@@ -19,6 +20,7 @@ use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use tokio::sync::broadcast;
 
+use crate::discovery::router_observation;
 use crate::{AttachmentConfig, DevicePath, PropertyRead, RpmBatch, RuntimeError, TransportConfig};
 use crate::{
     BbmdSnapshot, BdtRecord, FdtRecord, ForeignDeviceRegistrationStatus, RouterObservation,
@@ -27,7 +29,7 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct AttachmentDiscovery {
     pub(crate) devices: Vec<DiscoveredDevice>,
-    pub(crate) routers: Vec<RouterObservation>,
+    pub(crate) routers: Vec<RouterInfo>,
     pub(crate) errors: Vec<RuntimeError>,
 }
 

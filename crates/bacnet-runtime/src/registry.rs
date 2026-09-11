@@ -7,8 +7,8 @@ use crate::{
     AttachmentConfig, AttachmentHealth, AttachmentId, AttachmentState, DiscoveryRequest,
     RuntimeError, RuntimeTransport, TopologyRequest,
 };
-use bacnet_client::client::DeviceEvent;
 use bacnet_client::client::ReceivedCOVNotification;
+use bacnet_client::discovery::IAmEvent;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::broadcast;
 
@@ -44,7 +44,7 @@ struct AttachmentEntry {
     transport: RuntimeTransport,
     epoch: u64,
     initial_cov_receiver: std::sync::Mutex<Option<broadcast::Receiver<ReceivedCOVNotification>>>,
-    initial_i_am_receiver: std::sync::Mutex<Option<broadcast::Receiver<DeviceEvent>>>,
+    initial_i_am_receiver: std::sync::Mutex<Option<broadcast::Receiver<IAmEvent>>>,
 }
 
 impl AttachmentEntry {
@@ -196,7 +196,7 @@ impl AttachmentRegistry {
     pub(crate) fn i_am_receiver(
         &self,
         attachment_id: AttachmentId,
-    ) -> Result<(u64, broadcast::Receiver<DeviceEvent>), RuntimeError> {
+    ) -> Result<(u64, broadcast::Receiver<IAmEvent>), RuntimeError> {
         let entry = self
             .entries
             .get(&attachment_id)

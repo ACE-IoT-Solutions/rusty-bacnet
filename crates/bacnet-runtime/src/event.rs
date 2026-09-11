@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify};
 
-use bacnet_client::client::DeviceEvent;
 use bacnet_client::client::{COVNotificationDelivery, ReceivedCOVNotification};
+use bacnet_client::discovery::IAmEvent;
 use bacnet_types::enums::Segmentation;
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
@@ -74,10 +74,7 @@ impl From<&ReceivedCOVNotification> for UnsolicitedCovNotification {
     }
 }
 
-/// I-Am-derived device observation exposed through the aggregate runtime stream.
-///
-/// Upstream 0.11 supplies the authoritative discovery-table snapshot but not
-/// BVLL datagram metadata; fields requiring that raw envelope are `None`.
+/// Lossless raw I-Am payload exposed through the aggregate runtime stream.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IAmObservation {
     /// Device instance extracted from `object_identifier`.
@@ -110,24 +107,23 @@ pub struct IAmObservation {
     pub timestamp: std::time::Instant,
 }
 
-impl From<DeviceEvent> for IAmObservation {
-    fn from(event: DeviceEvent) -> Self {
-        let device = event.device;
+impl From<IAmEvent> for IAmObservation {
+    fn from(event: IAmEvent) -> Self {
         Self {
-            device_instance: device.object_identifier.instance_number(),
-            object_identifier: device.object_identifier,
-            max_apdu_length: device.max_apdu_length,
-            segmentation_supported: device.segmentation_supported,
-            vendor_id: device.vendor_id,
-            udp_source_ip: None,
-            udp_source_port: None,
-            source_mac: device.mac_address,
-            source_network: device.source_network,
-            source_address: device.source_address,
-            bvlc_function: None,
-            forwarded_from_ip: None,
-            forwarded_from_port: None,
-            timestamp: device.last_seen,
+            device_instance: event.device_instance,
+            object_identifier: event.object_identifier,
+            max_apdu_length: event.max_apdu_length,
+            segmentation_supported: event.segmentation_supported,
+            vendor_id: event.vendor_id,
+            udp_source_ip: event.udp_source_ip,
+            udp_source_port: event.udp_source_port,
+            source_mac: event.source_mac,
+            source_network: event.source_network,
+            source_address: event.source_address,
+            bvlc_function: event.bvlc_function,
+            forwarded_from_ip: event.forwarded_from_ip,
+            forwarded_from_port: event.forwarded_from_port,
+            timestamp: event.timestamp,
         }
     }
 }
@@ -142,10 +138,11 @@ pub enum EventKind {
     RuntimeStopped,
     /// One attachment changed lifecycle state.
     AttachmentStateChanged,
-    /// I-Am-derived device observation received by one attachment.
+    /// Raw I-Am observation received by one attachment.
     ///
-    /// Discovery and refresh events remain independently visible. Upstream's
-    /// device-event boundary does not expose rejected duplicate endpoint claims.
+    /// Unlike the device index, this stream intentionally preserves repeated
+    /// announcements and observations of the same device through different
+    /// BACnet paths.
     IAmObservation {
         /// Lossless client observation, including NPDU and BVLL provenance.
         observation: IAmObservation,

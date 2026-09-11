@@ -474,9 +474,6 @@ impl BacnetRuntime {
                     let runtime = BacnetRuntime { inner };
                     match received {
                         Ok(observation) => {
-                            if observation.kind == bacnet_client::client::DeviceEventKind::Lost {
-                                continue;
-                            }
                             let registry = runtime.inner.registry.read().await;
                             if registry.attachment_epoch(attachment_id) != Some(attachment_epoch) {
                                 return;
