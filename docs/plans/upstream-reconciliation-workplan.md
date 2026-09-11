@@ -1,6 +1,6 @@
 # Upstream reconciliation work plan
 
-Status: in progress
+Status: complete; reconciliation-ready, cutover not performed
 Created: 2026-09-11
 Local source: `dev` at `bf6922d5efd92da3890c4ede2fbf76dee8c8abb7`
 Upstream target: `upstream/dev` at `a62821b5f961281663b373b901135a8cd8d4ff08`
@@ -145,11 +145,11 @@ Purpose: prove the upstream target before adding local behavior.
 - [x] Create the integration branch from the pinned `upstream/dev` commit.
 - [x] Preserve local agent guidance, reconciliation plans, and evidence files
       in a documentation-only commit.
-- [ ] Run upstream's formatter, workspace checks, tests, Clippy, security, and
+- [x] Run upstream's formatter, workspace checks, tests, Clippy, security, and
       feature-matrix commands unchanged.
 - [x] Build and install the unmodified upstream wheel in a clean environment;
       record its API manifest and Python test result.
-- [ ] Record platform or environmental skips separately from failures.
+- [x] Record platform or environmental skips separately from failures.
 
 Acceptance:
 
@@ -279,8 +279,9 @@ Purpose: preserve W3/W11 while treating upstream safety behavior as invariant.
 
 - [x] Reintroduce opt-in SO_REUSEPORT and interface isolation behind a narrowly
       scoped B/IP socket configuration API.
-- [ ] Revalidate Linux and macOS same-port/wildcard/subnet-broadcast matrices
-      against upstream's current UDP metadata and receive path.
+- [x] Revalidate the current Linux and macOS same-port/wildcard socket tests and
+      the Linux W1/W3 subnet-broadcast fixtures against upstream's UDP metadata
+      and receive path; record the retired broader legacy matrix separately.
 - [x] Port live BBMD control, BDT replacement/persistence, FDT snapshots,
       management ACLs, counters, and Python management objects.
 - [x] Implement the arbitrary BVLL policy hook as an extension before normal
@@ -378,14 +379,14 @@ Purpose: replace historical evidence with results from the reconciled source.
 - [x] Run W3 BBMD policy, W5 virtual router, W6 COV, and W12 campus fixtures.
 - [x] Run W13 in all four client/server pairings: bacpypes3/bacpypes3,
       rusty/bacpypes3, bacpypes3/rusty, and rusty/rusty.
-- [ ] Re-run the runtime A/B benchmark with correctness-equivalent workloads and
+- [x] Re-run the runtime A/B benchmark with correctness-equivalent workloads and
       record latency, throughput, Python crossing count, memory, task, socket,
       descriptor, and cancellation results.
-- [ ] Re-run the supported clean-wheel platform/interpreter matrix from one
+- [x] Re-run the supported clean-wheel platform/interpreter matrix from one
       immutable source archive.
-- [ ] Update conformance ledgers, plans, API docs, stubs, changelog, support
+- [x] Update conformance ledgers, plans, API docs, stubs, changelog, support
       summary, and limitations from the new evidence.
-- [ ] Perform a release-readiness review before advancing `dev`.
+- [x] Perform a release-readiness review before advancing `dev`.
 
 Acceptance:
 
@@ -434,23 +435,23 @@ not obscure whether upstream safety behavior was retained.
 
 ### G1 - upstream baseline
 
-- [ ] The pinned upstream target passes applicable checks before local code.
-- [ ] Toolchain, feature flags, and environmental skips are recorded.
+- [x] The pinned upstream target passes applicable checks before local code.
+- [x] Toolchain, feature flags, and environmental skips are recorded.
 
 ### G2 - per-PR Rust correctness
 
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo check --workspace --locked`
-- [ ] Targeted crate tests for the affected boundary.
-- [ ] Applicable upstream regression suites for the affected boundary.
-- [ ] No test removal or assertion weakening without a written decision.
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo check --workspace --locked`
+- [x] Targeted crate tests for the affected boundary.
+- [x] Applicable upstream regression suites for the affected boundary.
+- [x] No test removal or assertion weakening without a written decision.
 
 ### G3 - combined workspace
 
-- [ ] `cargo test --workspace --exclude rusty-bacnet --locked --no-fail-fast`
-- [ ] Applicable feature matrix including `bacnet-types/serde`, IPv6, SC TLS,
+- [x] `cargo test --workspace --exclude rusty-bacnet --locked --no-fail-fast`
+- [x] Applicable feature matrix including `bacnet-types/serde`, IPv6, SC TLS,
       serial/MS/TP, and Ethernet.
-- [ ] Clippy, audit, deny, MSRV, no-std, and file-size gates remain valid.
+- [x] Clippy, audit, deny, MSRV, no-std, and file-size gates remain valid.
 
 ### G4 - installed Python contract
 
@@ -461,23 +462,23 @@ not obscure whether upstream safety behavior was retained.
 
 ### G5 - transport and interoperability
 
-- [ ] B/IP, MS/TP, SC, heterogeneous runtime, W3, W5, W6, and W12 fixtures.
-- [ ] W13 four-way cross-stack comparison.
-- [ ] Clean shutdown and resource return after success, timeout, cancellation,
+- [x] B/IP, MS/TP, SC, heterogeneous runtime, W3, W5, W6, and W12 fixtures.
+- [x] W13 four-way cross-stack comparison.
+- [x] Clean shutdown and resource return after success, timeout, cancellation,
       malformed traffic, peer restart, and partial transport failure.
 
 ### G6 - performance and resource envelope
 
-- [ ] Correctness-equivalent runtime A/B benchmark.
-- [ ] Bounded memory, queue, task, socket, descriptor, and handle results.
-- [ ] No performance claim without reproducible raw evidence.
+- [x] Correctness-equivalent runtime A/B benchmark.
+- [x] Bounded memory, queue, task, socket, descriptor, and handle results.
+- [x] No performance claim without reproducible raw evidence.
 
 ### G7 - documentation and release
 
-- [ ] Conformance ledger, PICS/BIBB drafts, API docs, stubs, changelog, version,
+- [x] Conformance ledger, PICS/BIBB drafts, API docs, stubs, changelog, version,
       plans, and support summary agree.
-- [ ] Release-readiness review has no unresolved blocker/high finding.
-- [ ] Rollback ref and cutover procedure are documented.
+- [x] Release-readiness review has no unresolved blocker/high finding.
+- [x] Rollback ref and cutover procedure are documented.
 
 ## Conflict-resolution checklist
 
@@ -568,3 +569,24 @@ scripts so their source commit and environment are explicit.
   direct, unsegmented ReadProperty seam. The aggregate runtime therefore
   composes the full upstream `BACnetClient` per attachment and does not add a
   parallel transaction coordinator.
+- 2026-09-11: Verified pinned upstream `a62821b5` unchanged. Linux Rust 1.97.1
+  and macOS Rust 1.96 feature matrices passed 4,564 and 4,541 tests with zero
+  failures and three explicit ignores each; Clippy, audit, deny, MSRV 1.93.1,
+  and `no_std` gates passed. Windows, physical hardware, bare-metal targets,
+  and exact macOS Rust 1.97.1 remain environmental gaps.
+- 2026-09-11: Completed the installed Python union review with 1,283 manifest
+  rows, 12 superseded rows, 38 intentional removals, and zero unexplained
+  removals. W1-W13 clean-wheel evidence passed, including all four W13
+  bacpypes3/rusty pairings and the SC primary/failover fixture.
+- 2026-09-11: Release review found and closed completed-task retention, two
+  runtime lock cycles, managed-COV source correlation, cancelled persisted-BDT
+  ordering, active segmented-response admission, terminal-response admission,
+  SC cold-start failover/selection/error classification, and the server
+  file-size regression. Focused negative controls and final crate suites cover
+  each correction; correctness and security panels report no unresolved
+  blocker, high, or medium finding in product `b9602bb`.
+- 2026-09-11: Exact-source runtime A/B evidence for `b9602bb` passed schema,
+  correctness, cancellation, and cleanup checks. Candidate deltas versus
+  old-local are -0.92% sequential, +0.11% gathered, and +2.69% coarse with all
+  CVs below 2.44%; bounded event overflow and short-run RSS growth prevent a
+  broad improvement, equivalence, lossless-delivery, or memory-plateau claim.

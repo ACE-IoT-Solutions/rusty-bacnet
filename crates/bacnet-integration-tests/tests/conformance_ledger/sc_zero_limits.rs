@@ -18,7 +18,7 @@ fn zero_limit_policy_has_wire_lifecycle_and_native_evidence_without_promotion() 
         19
     );
     assert_eq!(data["reviewed_at"], "2026-09-11");
-    assert_eq!(data["repo_sha"], "2b7c588e6d316bfbaaca4700c754d6692bb6e736");
+    assert_eq!(data["repo_sha"], "b9602bb477c5395f60077a8effdb862f3baa70fa");
     for anchor in [
         "crates/bacnet-transport/src/sc_frame/connect_test_support.rs",
         "crates/bacnet-transport/src/sc_hub/peer_uuid_tests.rs",

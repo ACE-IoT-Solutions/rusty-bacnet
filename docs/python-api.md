@@ -1172,9 +1172,10 @@ to an observed healthy alternative.
 The reconciliation runtime benchmark compares six sequential Python client
 reads with one six-property runtime batch using the same installed-wheel
 fixture. On the retained matched Linux arm64 runs, the old-local baseline and
-reconciled candidate both show about a 4.8x coarse-boundary advantage. Absolute
-candidate throughput was 3.66% lower for sequential reads and 5.00% lower for
-the coarse batch, so this is not a broad performance-improvement claim. Raw
+reconciled candidate show about 4.8x and 5.0x coarse-boundary advantages,
+respectively. Candidate throughput was 0.92% lower for sequential reads, 0.11%
+higher for gathered reads, and 2.69% higher for the coarse batch. These small
+descriptive differences do not establish improvement or equivalence. Raw
 artifacts, provenance, variance, cancellation, and resource observations are
 recorded in the upstream reconciliation evidence ledger.
 

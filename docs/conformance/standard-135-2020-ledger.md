@@ -6,7 +6,7 @@
 
 - Standard: ANSI/ASHRAE Standard 135-2020.
 - Reviewed at: 2026-09-11.
-- Implementation evidence SHA reviewed: `2b7c588e6d316bfbaaca4700c754d6692bb6e736`.
+- Implementation evidence SHA reviewed: `b9602bb477c5395f60077a8effdb862f3baa70fa`.
 - Machine-readable source: `docs/conformance/bacnet-135-2020.json`.
 - The SHA above identifies the last repository-wide review. Individual rows may cite later PR reviews that update narrower evidence.
 - Current scope: PR-0808 / #291 corrects Alert Enrollment's bounded Table 12-61 served-property model. `Present_Value` is the explicit `ObjectIdentifier` of the last alert source; `Notify_Type` is configurable as `ALARM` or `EVENT`; exact metadata drives Property_List, RPM, and PICS; and the non-table `Status_Flags`, `Out_Of_Service`, and `Reliability` routes are removed. Rust and Python constructors require the initial source. Existing detection reset/history and acknowledgement behavior remain. Fences: no Alert evaluator, source discovery, transition generation, notification sending, acknowledgement-flow implementation, or optional-property expansion.

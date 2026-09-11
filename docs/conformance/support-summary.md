@@ -4,7 +4,7 @@
 
 - Standard: ANSI/ASHRAE Standard 135-2020
 - Reviewed at: 2026-09-11
-- Implementation evidence SHA reviewed: `2b7c588e6d316bfbaaca4700c754d6692bb6e736`
+- Implementation evidence SHA reviewed: `b9602bb477c5395f60077a8effdb862f3baa70fa`
 - Scope: Upstream-first reconciliation of the ACE runtime, Python surface, BBMD lifecycle/control, virtual routing, observation, server segmentation configuration, confirmed-request reuse, SC runtime health, installed-wheel interoperability, and matched runtime A/B evidence. Existing row statuses remain bounded; this review adds evidence and limitations rather than broader PICS, BIBB, BTL, or full-profile claims.
 - Addenda/errata: No new external addenda/errata check was performed for the reconciliation tranche. Protocol decisions retain the pinned upstream Standard 135-2020 clause/addenda evidence and the local 135-2020 source contract. The reconciliation does not promote any conformance row solely from cross-stack, runtime, or performance evidence.
 
