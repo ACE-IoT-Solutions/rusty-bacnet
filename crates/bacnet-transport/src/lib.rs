@@ -33,3 +33,4 @@ mod sc_limits;
 #[cfg(feature = "sc-tls")]
 pub mod sc_tls;
 mod udp_metadata;
+pub mod virtual_network;

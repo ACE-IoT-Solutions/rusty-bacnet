@@ -12,6 +12,7 @@ use crate::bip6::Bip6Transport;
 use crate::loopback::LoopbackTransport;
 use crate::mstp::{MstpTransport, SerialPort};
 use crate::port::{DataAttribute, ReceivedNpdu, TransportPort};
+use crate::virtual_network::VirtualNetwork;
 
 #[cfg(all(feature = "ethernet", target_os = "linux"))]
 use crate::ethernet::EthernetTransport;
@@ -40,6 +41,8 @@ pub enum AnyTransport<S: SerialPort + 'static> {
     Sc(Box<ScTransport<TlsWebSocket>>),
     /// In-process loopback (for gateway client/server composition).
     Loopback(LoopbackTransport),
+    /// Named in-process N-node virtual network.
+    Virtual(VirtualNetwork),
 }
 
 impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
@@ -54,6 +57,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.start().await,
             Self::Loopback(t) => t.start().await,
+            Self::Virtual(t) => t.start().await,
         }
     }
 
@@ -68,6 +72,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.stop().await,
             Self::Loopback(t) => t.stop().await,
+            Self::Virtual(t) => t.stop().await,
         }
     }
 
@@ -82,6 +87,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.abort(),
             Self::Loopback(t) => t.abort(),
+            Self::Virtual(t) => t.abort(),
         }
     }
 
@@ -96,6 +102,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.send_unicast(npdu, mac).await,
             Self::Loopback(t) => t.send_unicast(npdu, mac).await,
+            Self::Virtual(t) => t.send_unicast(npdu, mac).await,
         }
     }
 
@@ -133,6 +140,10 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
                 t.send_unicast_with_data_attributes(npdu, mac, data_attributes)
                     .await
             }
+            Self::Virtual(t) => {
+                t.send_unicast_with_data_attributes(npdu, mac, data_attributes)
+                    .await
+            }
         }
     }
 
@@ -147,6 +158,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.send_broadcast(npdu).await,
             Self::Loopback(t) => t.send_broadcast(npdu).await,
+            Self::Virtual(t) => t.send_broadcast(npdu).await,
         }
     }
 
@@ -183,6 +195,10 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
                 t.send_broadcast_with_data_attributes(npdu, data_attributes)
                     .await
             }
+            Self::Virtual(t) => {
+                t.send_broadcast_with_data_attributes(npdu, data_attributes)
+                    .await
+            }
         }
     }
 
@@ -197,6 +213,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.local_mac(),
             Self::Loopback(t) => t.local_mac(),
+            Self::Virtual(t) => t.local_mac(),
         }
     }
 
@@ -211,6 +228,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.max_apdu_length(),
             Self::Loopback(t) => t.max_apdu_length(),
+            Self::Virtual(t) => t.max_apdu_length(),
         }
     }
 
@@ -225,6 +243,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.is_broadcast_mac(mac),
             Self::Loopback(t) => t.is_broadcast_mac(mac),
+            Self::Virtual(t) => t.is_broadcast_mac(mac),
         }
     }
 }
@@ -265,6 +284,12 @@ impl<S: SerialPort> From<ScTransport<TlsWebSocket>> for AnyTransport<S> {
 impl<S: SerialPort> From<LoopbackTransport> for AnyTransport<S> {
     fn from(t: LoopbackTransport) -> Self {
         Self::Loopback(t)
+    }
+}
+
+impl<S: SerialPort> From<VirtualNetwork> for AnyTransport<S> {
+    fn from(t: VirtualNetwork) -> Self {
+        Self::Virtual(t)
     }
 }
 
@@ -323,6 +348,50 @@ mod tests {
         let mstp = MstpTransport::new(serial, MstpConfig::default());
         let any: AnyTransport<LoopbackSerial> = mstp.into();
         assert_eq!(any.max_apdu_length(), 480);
+    }
+
+    #[tokio::test]
+    async fn any_transport_virtual_delegates_current_contract() {
+        let network_name = "any-transport-virtual-current-contract";
+        let mut sender: AnyTransport<LoopbackSerial> =
+            VirtualNetwork::join(network_name, 41).unwrap().into();
+        let mut receiver: AnyTransport<LoopbackSerial> =
+            VirtualNetwork::join(network_name, 42).unwrap().into();
+
+        assert_eq!(sender.local_mac(), &[41]);
+        assert_eq!(sender.max_apdu_length(), 1476);
+        assert!(!sender.is_broadcast_mac(&[0xff]));
+
+        let _sender_rx = sender.start().await.unwrap();
+        let mut receiver_rx = receiver.start().await.unwrap();
+        let attributes = [DataAttribute {
+            option_type: 1,
+            must_understand: false,
+            data: vec![7],
+        }];
+
+        sender
+            .send_unicast_with_data_attributes(b"unicast", &[42], &attributes)
+            .await
+            .unwrap();
+        let received = receiver_rx.recv().await.unwrap();
+        assert_eq!(received.npdu, bytes::Bytes::from_static(b"unicast"));
+        assert!(!received.link_layer_group);
+        assert!(received.data_attributes.is_empty());
+
+        sender
+            .send_broadcast_with_data_attributes(b"broadcast", &attributes)
+            .await
+            .unwrap();
+        let received = receiver_rx.recv().await.unwrap();
+        assert_eq!(received.npdu, bytes::Bytes::from_static(b"broadcast"));
+        assert!(received.link_layer_group);
+        assert!(received.data_attributes.is_empty());
+
+        sender.stop().await.unwrap();
+        receiver.abort();
+        let replacement = VirtualNetwork::join(network_name, 42).unwrap();
+        drop(replacement);
     }
 
     #[cfg(feature = "ipv6")]
