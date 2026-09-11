@@ -67,6 +67,11 @@ CLIENT_KEYWORD_ONLY = ["bbmd_address", "foreign_device_ttl"] + MSTP_KEYWORD_ONLY
     "apdu_observer_capacity",
 ]
 SERVER_KEYWORD_ONLY = ["dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
+    "bbmd", "bbmd_bdt", "bbmd_bdt_persist_path",
+    "bbmd_accept_foreign_devices", "bbmd_max_fdt_entries",
+    "bbmd_management_acl", "bbmd_wire_management_enabled",
+    "bvll_policy", "bvll_policy_timeout_ms", "bvll_policy_queue_capacity",
+    "bvll_policy_failure_threshold", "bvll_policy_cooldown_ms", "reuse_port",
     "max_confirmed_in_flight", "max_unconfirmed_in_flight",
     "max_confirmed_in_flight_per_peer", "max_unconfirmed_in_flight_per_peer",
     "confirmed_recovery_reserve", "max_recovery_in_flight_per_peer",
@@ -80,7 +85,9 @@ SERVER_KEYWORD_ONLY = ["dcc_policy", "dcc_source_restriction", "dcc_disable_rate
     "read_range_max_returned_items", "read_range_max_service_ack_bytes",
     "event_information_max_objects", "event_information_max_returned_summaries",
     "event_information_max_service_ack_bytes",
-    "sc_device_uuid",
+    "vendor_name", "vendor_identifier", "model_name", "description",
+    "firmware_revision", "application_software_version",
+    "sc_device_uuid", "apdu_observer", "apdu_observer_capacity",
 ]
 SUPPORTED_BAUD_RATES = (9_600, 19_200, 38_400, 57_600, 76_800, 115_200)
 SUPPORTED_BAUD_ERROR = (
