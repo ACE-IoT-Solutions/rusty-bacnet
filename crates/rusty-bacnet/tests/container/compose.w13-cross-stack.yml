@@ -1,0 +1,101 @@
+services:
+  rusty_server:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    entrypoint: ["python", "/w13_rust_role.py", "server"]
+    environment:
+      BACNET_INTERFACE: 10.252.130.10
+      BACNET_BROADCAST: 10.252.130.255
+      BACNET_PORT: "47821"
+      W13_ARTIFACTS: /artifacts
+    volumes:
+      - ${W13_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      matrix:
+        ipv4_address: 10.252.130.10
+
+  bacpypes_server:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w13_bacpypes_role.py", "server"]
+    environment:
+      BACNET_LOCAL_ADDRESS: 10.252.130.20/24:47822
+      W13_ARTIFACTS: /artifacts
+    volumes:
+      - ${W13_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      matrix:
+        ipv4_address: 10.252.130.20
+
+  bacpypes_to_bacpypes:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w13_bacpypes_role.py", "client"]
+    environment:
+      W13_LEG: bacpypes_to_bacpypes
+      W13_LEG_ORDINAL: "1"
+      W13_SERVER_STACK: bacpypes3
+      BACNET_LOCAL_ADDRESS: 10.252.130.31/24:47831
+      BACNET_SERVER_ADDRESS: 10.252.130.20:47822
+      W13_ARTIFACTS: /artifacts
+    volumes:
+      - ${W13_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      matrix:
+        ipv4_address: 10.252.130.31
+
+  rusty_to_bacpypes:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    entrypoint: ["python", "/w13_rust_role.py", "client"]
+    environment:
+      W13_LEG: rusty_to_bacpypes
+      W13_LEG_ORDINAL: "2"
+      W13_SERVER_STACK: bacpypes3
+      BACNET_INTERFACE: 10.252.130.32
+      BACNET_BROADCAST: 10.252.130.255
+      BACNET_PORT: "47832"
+      BACNET_SERVER_ADDRESS: 10.252.130.20:47822
+      W13_ARTIFACTS: /artifacts
+    volumes:
+      - ${W13_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      matrix:
+        ipv4_address: 10.252.130.32
+
+  bacpypes_to_rusty:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w13_bacpypes_role.py", "client"]
+    environment:
+      W13_LEG: bacpypes_to_rusty
+      W13_LEG_ORDINAL: "3"
+      W13_SERVER_STACK: rusty
+      BACNET_LOCAL_ADDRESS: 10.252.130.33/24:47833
+      BACNET_SERVER_ADDRESS: 10.252.130.10:47821
+      W13_ARTIFACTS: /artifacts
+    volumes:
+      - ${W13_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      matrix:
+        ipv4_address: 10.252.130.33
+
+  rusty_to_rusty:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    entrypoint: ["python", "/w13_rust_role.py", "client"]
+    environment:
+      W13_LEG: rusty_to_rusty
+      W13_LEG_ORDINAL: "4"
+      W13_SERVER_STACK: rusty
+      BACNET_INTERFACE: 10.252.130.34
+      BACNET_BROADCAST: 10.252.130.255
+      BACNET_PORT: "47834"
+      BACNET_SERVER_ADDRESS: 10.252.130.10:47821
+      W13_ARTIFACTS: /artifacts
+    volumes:
+      - ${W13_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      matrix:
+        ipv4_address: 10.252.130.34
+
+networks:
+  matrix:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.252.130.0/24

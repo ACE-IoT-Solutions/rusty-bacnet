@@ -1,0 +1,37 @@
+services:
+  server:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    entrypoint: ["python", "/w6_cov_server.py"]
+    environment:
+      BACNET_INTERFACE: 10.254.61.10
+      BACNET_BROADCAST: 10.254.61.255
+      BACNET_PORT: "47808"
+      BACNET_DEVICE_INSTANCE: "4160600"
+      W6_COV_COORD: /artifacts
+    volumes:
+      - ${W6_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      cov_lan:
+        ipv4_address: 10.254.61.10
+
+  subscriber:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w6_cov_subscriber.py"]
+    environment:
+      BACNET_LOCAL_ADDRESS: 10.254.61.20/24:47808
+      BACNET_SERVER_ADDRESS: 10.254.61.10:47808
+      W6_COV_COORD: /artifacts
+    volumes:
+      - ${W6_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      cov_lan:
+        ipv4_address: 10.254.61.20
+    depends_on:
+      - server
+
+networks:
+  cov_lan:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.254.61.0/24

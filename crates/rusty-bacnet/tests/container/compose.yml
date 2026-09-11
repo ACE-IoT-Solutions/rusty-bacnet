@@ -1,0 +1,74 @@
+services:
+  server:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    command: ["server"]
+    environment:
+      BACNET_INTERFACE: 172.31.0.10
+      BACNET_BROADCAST: 172.31.0.255
+      BACNET_PORT: "47808"
+      BACNET_DEVICE_INSTANCE: "4194002"
+    networks:
+      discovery:
+        ipv4_address: 172.31.0.10
+
+  client:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    command: ["client"]
+    environment:
+      BACNET_INTERFACE: 172.31.0.20
+      BACNET_BROADCAST: 172.31.0.255
+      BACNET_PORT: "47808"
+      BACNET_DEVICE_INSTANCE: "4194002"
+      BACNET_EXPECTED_MAC_HEX: ac1f000abac0
+    depends_on:
+      - server
+      - router1
+      - router2
+      - bbmd
+    networks:
+      discovery:
+        ipv4_address: 172.31.0.20
+
+  bbmd:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    environment:
+      BACNET_BBMD_PEER: 172.31.0.31/24:47811
+    networks:
+      discovery:
+        ipv4_address: 172.31.0.30
+
+  router1:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    command: ["router"]
+    environment:
+      BACNET_INTERFACE: 172.31.0.11
+      BACNET_BROADCAST: 172.31.0.255
+      BACNET_PORT: "47808"
+      BACNET_DEVICE_INSTANCE: "4194002"
+      BACNET_ROUTER_CLAIMS: "2001,1000;2001,1000,3000"
+      BACNET_ROUTED_SERVER: "172.31.0.10:47808"
+      BACNET_ROUTED_NETWORK: "2001"
+      BACNET_ROUTED_DADR_HEX: "002a"
+    networks:
+      discovery:
+        ipv4_address: 172.31.0.11
+
+  router2:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    command: ["router"]
+    environment:
+      BACNET_INTERFACE: 172.31.0.12
+      BACNET_BROADCAST: 172.31.0.255
+      BACNET_PORT: "47808"
+      BACNET_DEVICE_INSTANCE: "4194002"
+      BACNET_ROUTER_CLAIMS: "5000,4000"
+    networks:
+      discovery:
+        ipv4_address: 172.31.0.12
+
+networks:
+  discovery:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

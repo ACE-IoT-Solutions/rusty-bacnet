@@ -1,0 +1,102 @@
+services:
+  campus_router:
+    image: localhost/rusty-bacnet-w12-campus:dev
+    entrypoint: ["python", "-c", "import asyncio; asyncio.run(asyncio.Event().wait())"]
+    cap_add: [NET_ADMIN]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    networks:
+      client_lan:
+        ipv4_address: 10.254.121.254
+      remote_lan:
+        ipv4_address: 10.254.122.254
+
+  remote_host:
+    image: localhost/rusty-bacnet-w12-campus:dev
+    entrypoint: ["python", "/w12_remote_host.py"]
+    cap_add: [NET_ADMIN]
+    environment:
+      BACNET_INTERFACE: 10.254.122.20
+      BACNET_BROADCAST: 10.254.122.255
+      W12_REMOTE_SUBNET: 10.254.121.0/24
+      W12_GATEWAY: 10.254.122.254
+      W12_COORD_DIR: /coord
+    volumes:
+      - ${W12_ARTIFACT_DIR}:/coord:Z
+    networks:
+      remote_lan:
+        ipv4_address: 10.254.122.20
+    depends_on: [campus_router]
+
+  client:
+    image: localhost/rusty-bacnet-w12-campus:dev
+    entrypoint: ["python", "/w12_client.py"]
+    cap_add: [NET_ADMIN]
+    environment:
+      BACNET_INTERFACE: 10.254.121.20
+      BACNET_BROADCAST: 10.254.121.255
+      BACNET_REMOTE_ROUTER: 10.254.122.20:47808
+      W12_REMOTE_SUBNET: 10.254.122.0/24
+      W12_GATEWAY: 10.254.121.254
+      W12_COORD_DIR: /coord
+    volumes:
+      - ${W12_ARTIFACT_DIR}:/coord:Z
+    networks:
+      client_lan:
+        ipv4_address: 10.254.121.20
+    depends_on: [campus_router, remote_host]
+
+  bbmd_a:
+    image: localhost/rusty-bacnet-w12-campus:dev
+    entrypoint: ["python", "/w12_bbmd.py"]
+    cap_add: [NET_ADMIN]
+    environment:
+      W12_SIDE: A
+      BACNET_INTERFACE: 10.254.121.10
+      BACNET_BROADCAST: 10.254.121.255
+      BACNET_BBMD_PEER: 10.254.122.10
+      W12_REMOTE_SUBNET: 10.254.122.0/24
+      W12_GATEWAY: 10.254.121.254
+      W12_EXPECTED_SENDER: 10.254.121.20:47808
+      W12_COORD_DIR: /coord
+    volumes:
+      - ${W12_ARTIFACT_DIR}:/coord:Z
+    networks:
+      client_lan:
+        ipv4_address: 10.254.121.10
+    depends_on: [campus_router]
+
+  bbmd_b:
+    image: localhost/rusty-bacnet-w12-campus:dev
+    entrypoint: ["python", "/w12_bbmd.py"]
+    cap_add: [NET_ADMIN]
+    environment:
+      W12_SIDE: B
+      BACNET_INTERFACE: 10.254.122.10
+      BACNET_BROADCAST: 10.254.122.255
+      BACNET_BBMD_PEER: 10.254.121.10
+      W12_REMOTE_SUBNET: 10.254.121.0/24
+      W12_GATEWAY: 10.254.122.254
+      W12_EXPECTED_SENDER: 10.254.121.10:47808
+      W12_EXPECTED_ORIGIN: 10.254.121.20:47808
+      W12_COORD_DIR: /coord
+    volumes:
+      - ${W12_ARTIFACT_DIR}:/coord:Z
+    networks:
+      remote_lan:
+        ipv4_address: 10.254.122.10
+    depends_on: [campus_router]
+
+networks:
+  client_lan:
+    internal: true
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.254.121.0/24
+  remote_lan:
+    internal: true
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.254.122.0/24

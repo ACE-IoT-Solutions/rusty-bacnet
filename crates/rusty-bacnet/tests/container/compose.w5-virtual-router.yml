@@ -1,0 +1,39 @@
+services:
+  host:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    entrypoint: ["python", "/w5_virtual_router_host.py"]
+    environment:
+      BACNET_INTERFACE: 10.254.51.10
+      BACNET_BROADCAST: 10.254.51.255
+      BACNET_PORT: "47808"
+      W5_COORD_DIR: /coord
+    volumes:
+      - w5_coord:/coord
+    networks:
+      routed_lan:
+        ipv4_address: 10.254.51.10
+
+  scanner:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w5_bacpypes3_scanner.py"]
+    environment:
+      BACNET_LOCAL_ADDRESS: 10.254.51.20/24:47808
+      BACNET_ROUTER_ADDRESS: 10.254.51.10:47808
+      W5_COORD_DIR: /coord
+    volumes:
+      - w5_coord:/coord
+    networks:
+      routed_lan:
+        ipv4_address: 10.254.51.20
+    depends_on:
+      - host
+
+networks:
+  routed_lan:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.254.51.0/24
+
+volumes:
+  w5_coord:

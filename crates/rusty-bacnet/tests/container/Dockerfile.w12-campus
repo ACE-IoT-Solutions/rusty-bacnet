@@ -1,0 +1,9 @@
+FROM localhost/rusty-bacnet-python-discovery:dev
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY crates/rusty-bacnet/tests/container/w12_bbmd.py /w12_bbmd.py
+COPY crates/rusty-bacnet/tests/container/w12_remote_host.py /w12_remote_host.py
+COPY crates/rusty-bacnet/tests/container/w12_client.py /w12_client.py

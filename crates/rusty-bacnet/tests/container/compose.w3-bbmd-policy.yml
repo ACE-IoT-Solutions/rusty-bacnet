@@ -1,0 +1,77 @@
+services:
+  bbmd_a:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    entrypoint: ["python", "/w3_bbmd_fixture.py"]
+    environment:
+      W3_SIDE: A
+      BACNET_INTERFACE: 10.253.30.10
+      # No normal B/IP nodes exist on the BBMD-side LANs.  An unused carrier
+      # address makes that local fanout observable as a successful UDP send
+      # without feeding the BBMD socket itself; cross-side delivery uses FDT.
+      BACNET_BROADCAST: 10.253.250.10
+      BACNET_PORT: "47808"
+      BACNET_BBMD_PEER: 10.253.31.10
+      BACNET_BBMD_PEER_PORT: "47809"
+    networks:
+      w3_carrier:
+        ipv4_address: 10.253.30.10
+
+  bbmd_b:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    entrypoint: ["python", "/w3_bbmd_fixture.py"]
+    environment:
+      W3_SIDE: B
+      BACNET_INTERFACE: 10.253.31.10
+      BACNET_BROADCAST: 10.253.250.11
+      BACNET_PORT: "47809"
+      BACNET_BBMD_PEER: 10.253.30.10
+      BACNET_BBMD_PEER_PORT: "47808"
+    networks:
+      w3_carrier:
+        ipv4_address: 10.253.31.10
+
+  fd_a:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w3_foreign_device.py"]
+    environment:
+      W3_SIDE: A
+      BACNET_LOCAL_ADDRESS: 10.253.32.20/24:47810
+      BACNET_BBMD_ADDRESS: 10.253.30.10:47808
+      BACNET_FOREIGN_DEVICE_TTL: "1"
+    networks:
+      w3_carrier:
+        ipv4_address: 10.253.32.20
+
+  fd_b:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w3_foreign_device.py"]
+    environment:
+      W3_SIDE: B
+      BACNET_LOCAL_ADDRESS: 10.253.34.20/24:47811
+      BACNET_BBMD_ADDRESS: 10.253.31.10:47809
+      BACNET_FOREIGN_DEVICE_TTL: "1"
+    networks:
+      w3_carrier:
+        ipv4_address: 10.253.34.20
+
+  reject_probe:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w3_foreign_device.py"]
+    environment:
+      W3_SIDE: REJECT
+      W3_EXPECT_REJECT: "1"
+      BACNET_LOCAL_ADDRESS: 10.253.35.20/24:47812
+      BACNET_BBMD_ADDRESS: 10.253.30.10:47808
+      BACNET_FOREIGN_DEVICE_TTL: "13"
+    networks:
+      w3_carrier:
+        ipv4_address: 10.253.35.20
+
+networks:
+  # Rootless Podman routes this /16 carrier without source NAT.  BACnet-side
+  # endpoint masks remain /24, and foreign devices use only their BBMD path.
+  w3_carrier:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.253.0.0/16
