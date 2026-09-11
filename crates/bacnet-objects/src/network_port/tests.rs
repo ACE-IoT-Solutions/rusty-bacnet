@@ -378,6 +378,10 @@ fn property_list_complete() {
     assert!(props.contains(&PropertyIdentifier::IP_DEFAULT_GATEWAY));
     assert!(props.contains(&PropertyIdentifier::IP_SUBNET_MASK));
     assert!(props.contains(&PropertyIdentifier::BACNET_IP_UDP_PORT));
+    assert!(props.contains(&PropertyIdentifier::BACNET_IP_MODE));
+    assert!(props.contains(&PropertyIdentifier::BBMD_ACCEPT_FD_REGISTRATIONS));
+    assert!(props.contains(&PropertyIdentifier::BBMD_BROADCAST_DISTRIBUTION_TABLE));
+    assert!(props.contains(&PropertyIdentifier::BBMD_FOREIGN_DEVICE_TABLE));
 }
 
 #[test]
@@ -487,4 +491,161 @@ fn full_network_config_scenario() {
             .unwrap(),
         PropertyValue::Enumerated(1)
     );
+}
+
+fn live_snapshot() -> NetworkPortLiveSnapshot {
+    NetworkPortLiveSnapshot {
+        network_type: 5,
+        network_number: 42,
+        mac_address: vec![192, 0, 2, 10, 0xBA, 0xC1],
+        max_apdu_length_accepted: 1497,
+        link_speed: 1_000_000_000.0,
+        ip_address: vec![192, 0, 2, 10],
+        ip_default_gateway: vec![192, 0, 2, 1],
+        ip_subnet_mask: vec![255, 255, 255, 0],
+        ip_udp_port: 0xBAC1,
+        bacnet_ip_mode: 2,
+        bbmd_accept_fd_registrations: true,
+        bbmd_broadcast_distribution_table: vec![PropertyValue::OctetString(vec![1, 2, 3])],
+        bbmd_foreign_device_table: vec![PropertyValue::OctetString(vec![4, 5, 6])],
+    }
+}
+
+#[test]
+fn live_snapshot_overrides_transport_owned_properties() {
+    let mut np = NetworkPortObject::new(1, "NP-1", 0).unwrap();
+    let (reader, publisher) = network_port_snapshot_channel();
+    np.bind_live_snapshot_provider(Some(Arc::new(reader)));
+    publisher.publish(live_snapshot());
+
+    for (property, expected) in [
+        (
+            PropertyIdentifier::NETWORK_TYPE,
+            PropertyValue::Enumerated(5),
+        ),
+        (
+            PropertyIdentifier::NETWORK_NUMBER,
+            PropertyValue::Unsigned(42),
+        ),
+        (
+            PropertyIdentifier::MAC_ADDRESS,
+            PropertyValue::OctetString(vec![192, 0, 2, 10, 0xBA, 0xC1]),
+        ),
+        (
+            PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED,
+            PropertyValue::Unsigned(1497),
+        ),
+        (
+            PropertyIdentifier::LINK_SPEED,
+            PropertyValue::Real(1_000_000_000.0),
+        ),
+        (
+            PropertyIdentifier::IP_ADDRESS,
+            PropertyValue::OctetString(vec![192, 0, 2, 10]),
+        ),
+        (
+            PropertyIdentifier::IP_DEFAULT_GATEWAY,
+            PropertyValue::OctetString(vec![192, 0, 2, 1]),
+        ),
+        (
+            PropertyIdentifier::IP_SUBNET_MASK,
+            PropertyValue::OctetString(vec![255, 255, 255, 0]),
+        ),
+        (
+            PropertyIdentifier::BACNET_IP_UDP_PORT,
+            PropertyValue::Unsigned(0xBAC1),
+        ),
+        (
+            PropertyIdentifier::BACNET_IP_MODE,
+            PropertyValue::Enumerated(2),
+        ),
+        (
+            PropertyIdentifier::BBMD_ACCEPT_FD_REGISTRATIONS,
+            PropertyValue::Boolean(true),
+        ),
+        (
+            PropertyIdentifier::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+            PropertyValue::List(vec![PropertyValue::OctetString(vec![1, 2, 3])]),
+        ),
+        (
+            PropertyIdentifier::BBMD_FOREIGN_DEVICE_TABLE,
+            PropertyValue::List(vec![PropertyValue::OctetString(vec![4, 5, 6])]),
+        ),
+    ] {
+        assert_eq!(np.read_property(property, None).unwrap(), expected);
+    }
+}
+
+#[test]
+fn absent_or_cleared_snapshot_uses_object_owned_and_safe_bbmd_defaults() {
+    let mut np = NetworkPortObject::new(1, "NP-1", 0).unwrap();
+    np.set_ip_address(vec![10, 0, 0, 7]);
+    let (reader, publisher) = network_port_snapshot_channel();
+    np.bind_live_snapshot_provider(Some(Arc::new(reader)));
+
+    assert_eq!(
+        np.read_property(PropertyIdentifier::IP_ADDRESS, None)
+            .unwrap(),
+        PropertyValue::OctetString(vec![10, 0, 0, 7])
+    );
+    assert_eq!(
+        np.read_property(PropertyIdentifier::BBMD_ACCEPT_FD_REGISTRATIONS, None)
+            .unwrap(),
+        PropertyValue::Boolean(false)
+    );
+
+    publisher.publish(live_snapshot());
+    publisher.clear();
+    assert_eq!(
+        np.read_property(PropertyIdentifier::IP_ADDRESS, None)
+            .unwrap(),
+        PropertyValue::OctetString(vec![10, 0, 0, 7])
+    );
+}
+
+#[test]
+fn live_snapshot_does_not_turn_property_writes_into_transport_callbacks() {
+    let mut np = NetworkPortObject::new(1, "NP-1", 0).unwrap();
+    let (reader, publisher) = network_port_snapshot_channel();
+    np.bind_live_snapshot_provider(Some(Arc::new(reader)));
+    publisher.publish(live_snapshot());
+
+    np.write_property(
+        PropertyIdentifier::IP_ADDRESS,
+        None,
+        PropertyValue::OctetString(vec![10, 0, 0, 9]),
+        None,
+    )
+    .unwrap();
+
+    // The write is staged by the object and marks Changes_Pending, while the
+    // observed live address stays transport-owned until a controller publishes
+    // a new snapshot outside the database lock.
+    assert_eq!(
+        np.read_property(PropertyIdentifier::CHANGES_PENDING, None)
+            .unwrap(),
+        PropertyValue::Boolean(true)
+    );
+    assert_eq!(
+        np.read_property(PropertyIdentifier::IP_ADDRESS, None)
+            .unwrap(),
+        PropertyValue::OctetString(vec![192, 0, 2, 10])
+    );
+}
+
+#[test]
+fn bbmd_tables_are_lists_and_reject_array_indexes_with_or_without_snapshot() {
+    let mut np = NetworkPortObject::new(1, "NP-1", 0).unwrap();
+    let (reader, publisher) = network_port_snapshot_channel();
+    np.bind_live_snapshot_provider(Some(Arc::new(reader)));
+    publisher.publish(live_snapshot());
+
+    for property in [
+        PropertyIdentifier::BBMD_BROADCAST_DISTRIBUTION_TABLE,
+        PropertyIdentifier::BBMD_FOREIGN_DEVICE_TABLE,
+    ] {
+        let error = np.read_property(property, Some(0)).unwrap_err();
+        assert!(matches!(error, Error::Protocol { code, .. }
+            if code == bacnet_types::enums::ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32));
+    }
 }
