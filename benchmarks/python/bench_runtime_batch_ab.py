@@ -359,7 +359,15 @@ async def submit_cancel_correctness_arm() -> dict[str, Any]:
 
 async def measure_client_arms() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     process_before = resource_snapshot()
-    async with bacnet.BACnetClient(interface=INTERFACE, port=PORT, broadcast_address=BROADCAST, apdu_timeout_ms=1_000) as client:
+    # The direct client does not broadcast. Give it an ephemeral endpoint so
+    # delayed responses from the deliberately cancelled runtime arm cannot be
+    # correlated with a fresh client that reused the runtime's B/IP address.
+    async with bacnet.BACnetClient(
+        interface=INTERFACE,
+        port=0,
+        broadcast_address=BROADCAST,
+        apdu_timeout_ms=1_000,
+    ) as client:
         chatty = await measure(lambda: chatty_workflow(client))
         gathered = await measure(lambda: chatty_workflow(client, True))
     await asyncio.sleep(0.05)
