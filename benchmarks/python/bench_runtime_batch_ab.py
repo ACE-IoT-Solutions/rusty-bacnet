@@ -247,8 +247,23 @@ async def run_server() -> None:
 
 
 async def chatty_workflow(client: bacnet.BACnetClient, gather: bool = False) -> list[object]:
-    calls = [client.read_property(SERVER_ADDRESS, object_id, property_id) for object_id in OBJECTS for property_id in PROPERTIES]
-    results = await asyncio.gather(*calls) if gather else [await call for call in calls]
+    if gather:
+        calls = [
+            client.read_property(SERVER_ADDRESS, object_id, property_id)
+            for object_id in OBJECTS
+            for property_id in PROPERTIES
+        ]
+        results = await asyncio.gather(*calls)
+    else:
+        # PyO3 awaitables begin native work when constructed. Constructing the
+        # complete list first therefore made the nominally chatty arm native-
+        # concurrent even when Python awaited each item in sequence.
+        results = []
+        for object_id in OBJECTS:
+            for property_id in PROPERTIES:
+                results.append(
+                    await client.read_property(SERVER_ADDRESS, object_id, property_id)
+                )
     values = [result.value for result in results]
     assert_values(values)
     return values
