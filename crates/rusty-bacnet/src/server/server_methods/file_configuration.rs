@@ -181,8 +181,16 @@ mod tests {
     fn test_server() -> BACnetServer {
         BACnetServer {
             inner: Arc::new(Mutex::new(None)),
-            device_instance: 1,
-            device_name: "Test Device".into(),
+            device_identity: DeviceIdentityConfig {
+                instance: 1,
+                name: "Test Device".into(),
+                description: String::new(),
+                vendor_name: "Rusty BACnet".into(),
+                vendor_id: 555,
+                model_name: "rusty-bacnet".into(),
+                firmware_revision: "0.1.0".into(),
+                application_software_version: "0.1.0".into(),
+            },
             transport_type: "bip".into(),
             interface: "0.0.0.0".into(),
             port: 0,

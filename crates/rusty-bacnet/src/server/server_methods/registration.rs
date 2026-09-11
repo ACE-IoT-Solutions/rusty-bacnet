@@ -1,5 +1,46 @@
 use super::super::*;
 
+fn invalid_registration_metadata(message: impl Into<String>) -> PyErr {
+    to_py_err(bacnet_types::error::Error::OutOfRange(message.into()))
+}
+
+fn configure_cov_increment(object: &mut dyn BACnetObject, cov_increment: f32) -> PyResult<()> {
+    object
+        .write_property(
+            bacnet_types::enums::PropertyIdentifier::COV_INCREMENT,
+            None,
+            PropertyValue::Real(cov_increment),
+            None,
+        )
+        .map_err(to_py_err)
+}
+
+fn configure_state_text(
+    object: &mut dyn BACnetObject,
+    number_of_states: u32,
+    state_text: Option<Vec<String>>,
+) -> PyResult<()> {
+    let Some(state_text) = state_text else {
+        return Ok(());
+    };
+    if state_text.len() != number_of_states as usize {
+        return Err(invalid_registration_metadata(format!(
+            "state_text must contain exactly {number_of_states} entries"
+        )));
+    }
+    for (offset, text) in state_text.into_iter().enumerate() {
+        object
+            .write_property(
+                bacnet_types::enums::PropertyIdentifier::STATE_TEXT,
+                Some(offset as u32 + 1),
+                PropertyValue::CharacterString(text),
+                None,
+            )
+            .map_err(to_py_err)?;
+    }
+    Ok(())
+}
+
 #[pymethods]
 impl BACnetServer {
     #[new]
@@ -52,6 +93,12 @@ impl BACnetServer {
         event_information_max_objects=4096,
         event_information_max_returned_summaries=256,
         event_information_max_service_ack_bytes=16384,
+        vendor_name="Rusty BACnet",
+        vendor_identifier=555,
+        model_name="rusty-bacnet",
+        description="",
+        firmware_revision="0.1.0",
+        application_software_version="0.1.0",
         sc_device_uuid=None
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -103,6 +150,12 @@ impl BACnetServer {
         event_information_max_objects: usize,
         event_information_max_returned_summaries: usize,
         event_information_max_service_ack_bytes: usize,
+        vendor_name: &str,
+        vendor_identifier: u16,
+        model_name: &str,
+        description: &str,
+        firmware_revision: &str,
+        application_software_version: &str,
         sc_device_uuid: Option<Vec<u8>>,
     ) -> PyResult<Self> {
         let dcc_policy = match dcc_policy {
@@ -219,8 +272,16 @@ impl BACnetServer {
         let sc_device_uuid = crate::sc_identity::device_uuid(transport, sc_device_uuid)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
-            device_instance,
-            device_name: device_name.to_string(),
+            device_identity: DeviceIdentityConfig {
+                instance: device_instance,
+                name: device_name.to_string(),
+                description: description.to_string(),
+                vendor_name: vendor_name.to_string(),
+                vendor_id: vendor_identifier,
+                model_name: model_name.to_string(),
+                firmware_revision: firmware_revision.to_string(),
+                application_software_version: application_software_version.to_string(),
+            },
             transport_type: transport.to_string(),
             interface: interface.to_string(),
             port,
@@ -264,83 +325,190 @@ impl BACnetServer {
     }
 
     /// Add an Analog Input object to the server (before starting).
-    #[pyo3(signature = (instance, name, units=62, present_value=0.0))]
+    #[pyo3(signature = (
+        instance,
+        name,
+        units=62,
+        present_value=0.0,
+        description="",
+        cov_increment=0.0
+    ))]
     fn add_analog_input(
         &self,
         instance: u32,
         name: &str,
         units: u32,
         present_value: f32,
+        description: &str,
+        cov_increment: f32,
     ) -> PyResult<()> {
         let mut ai = AnalogInputObject::new(instance, name, units).map_err(to_py_err)?;
+        if !present_value.is_finite() {
+            return Err(invalid_registration_metadata(
+                "present_value must be finite",
+            ));
+        }
         ai.set_present_value(present_value);
+        ai.set_description(description);
+        configure_cov_increment(&mut ai, cov_increment)?;
         self.push_pending(Box::new(ai))
     }
 
     /// Add a Binary Value object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_binary_value(&self, instance: u32, name: &str) -> PyResult<()> {
-        let bv = BinaryValueObject::new(instance, name).map_err(to_py_err)?;
+    #[pyo3(signature = (instance, name, present_value=false, description=""))]
+    fn add_binary_value(
+        &self,
+        instance: u32,
+        name: &str,
+        present_value: bool,
+        description: &str,
+    ) -> PyResult<()> {
+        let mut bv = BinaryValueObject::new(instance, name).map_err(to_py_err)?;
+        bv.set_relinquish_default(u32::from(present_value))
+            .map_err(to_py_err)?;
+        bv.set_description(description);
         self.push_pending(Box::new(bv))
     }
 
     /// Add an Analog Output object to the server (before starting).
-    #[pyo3(signature = (instance, name, units=62))]
-    fn add_analog_output(&self, instance: u32, name: &str, units: u32) -> PyResult<()> {
-        let ao = AnalogOutputObject::new(instance, name, units).map_err(to_py_err)?;
+    #[pyo3(signature = (
+        instance,
+        name,
+        units=62,
+        present_value=0.0,
+        description="",
+        cov_increment=0.0
+    ))]
+    fn add_analog_output(
+        &self,
+        instance: u32,
+        name: &str,
+        units: u32,
+        present_value: f32,
+        description: &str,
+        cov_increment: f32,
+    ) -> PyResult<()> {
+        let mut ao = AnalogOutputObject::new(instance, name, units).map_err(to_py_err)?;
+        ao.set_relinquish_default(present_value)
+            .map_err(to_py_err)?;
+        ao.set_description(description);
+        configure_cov_increment(&mut ao, cov_increment)?;
         self.push_pending(Box::new(ao))
     }
 
     /// Add a Binary Input object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_binary_input(&self, instance: u32, name: &str) -> PyResult<()> {
-        let bi = BinaryInputObject::new(instance, name).map_err(to_py_err)?;
+    #[pyo3(signature = (instance, name, present_value=false, description=""))]
+    fn add_binary_input(
+        &self,
+        instance: u32,
+        name: &str,
+        present_value: bool,
+        description: &str,
+    ) -> PyResult<()> {
+        let mut bi = BinaryInputObject::new(instance, name).map_err(to_py_err)?;
+        bi.set_present_value(u32::from(present_value));
+        bi.set_description(description);
         self.push_pending(Box::new(bi))
     }
 
     /// Add a Binary Output object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_binary_output(&self, instance: u32, name: &str) -> PyResult<()> {
-        let bo = BinaryOutputObject::new(instance, name).map_err(to_py_err)?;
+    #[pyo3(signature = (instance, name, present_value=false, description=""))]
+    fn add_binary_output(
+        &self,
+        instance: u32,
+        name: &str,
+        present_value: bool,
+        description: &str,
+    ) -> PyResult<()> {
+        let mut bo = BinaryOutputObject::new(instance, name).map_err(to_py_err)?;
+        bo.set_relinquish_default(u32::from(present_value))
+            .map_err(to_py_err)?;
+        bo.set_description(description);
         self.push_pending(Box::new(bo))
     }
 
     /// Add a Multi-State Input object to the server (before starting).
-    #[pyo3(signature = (instance, name, number_of_states))]
+    #[pyo3(signature = (
+        instance,
+        name,
+        number_of_states,
+        state_text=None,
+        present_value=1,
+        description=""
+    ))]
     fn add_multistate_input(
         &self,
         instance: u32,
         name: &str,
         number_of_states: u32,
+        state_text: Option<Vec<String>>,
+        present_value: u32,
+        description: &str,
     ) -> PyResult<()> {
-        let msi =
+        let mut msi =
             MultiStateInputObject::new(instance, name, number_of_states).map_err(to_py_err)?;
+        if !(1..=number_of_states).contains(&present_value) {
+            return Err(invalid_registration_metadata(format!(
+                "present_value must be in 1..={number_of_states}"
+            )));
+        }
+        msi.set_present_value(present_value);
+        msi.set_description(description);
+        configure_state_text(&mut msi, number_of_states, state_text)?;
         self.push_pending(Box::new(msi))
     }
 
     /// Add a Multi-State Output object to the server (before starting).
-    #[pyo3(signature = (instance, name, number_of_states))]
+    #[pyo3(signature = (
+        instance,
+        name,
+        number_of_states,
+        state_text=None,
+        present_value=1,
+        description=""
+    ))]
     fn add_multistate_output(
         &self,
         instance: u32,
         name: &str,
         number_of_states: u32,
+        state_text: Option<Vec<String>>,
+        present_value: u32,
+        description: &str,
     ) -> PyResult<()> {
-        let mso =
+        let mut mso =
             MultiStateOutputObject::new(instance, name, number_of_states).map_err(to_py_err)?;
+        mso.set_relinquish_default(present_value)
+            .map_err(to_py_err)?;
+        mso.set_description(description);
+        configure_state_text(&mut mso, number_of_states, state_text)?;
         self.push_pending(Box::new(mso))
     }
 
     /// Add a Multi-State Value object to the server (before starting).
-    #[pyo3(signature = (instance, name, number_of_states))]
+    #[pyo3(signature = (
+        instance,
+        name,
+        number_of_states,
+        state_text=None,
+        present_value=1,
+        description=""
+    ))]
     fn add_multistate_value(
         &self,
         instance: u32,
         name: &str,
         number_of_states: u32,
+        state_text: Option<Vec<String>>,
+        present_value: u32,
+        description: &str,
     ) -> PyResult<()> {
-        let msv =
+        let mut msv =
             MultiStateValueObject::new(instance, name, number_of_states).map_err(to_py_err)?;
+        msv.set_relinquish_default(present_value)
+            .map_err(to_py_err)?;
+        msv.set_description(description);
+        configure_state_text(&mut msv, number_of_states, state_text)?;
         self.push_pending(Box::new(msv))
     }
 
@@ -411,9 +579,28 @@ impl BACnetServer {
     // -----------------------------------------------------------------------
 
     /// Add an Analog Value object to the server (before starting).
-    #[pyo3(signature = (instance, name, units=62))]
-    fn add_analog_value(&self, instance: u32, name: &str, units: u32) -> PyResult<()> {
-        let obj = AnalogValueObject::new(instance, name, units).map_err(to_py_err)?;
+    #[pyo3(signature = (
+        instance,
+        name,
+        units=62,
+        present_value=0.0,
+        description="",
+        cov_increment=0.0
+    ))]
+    fn add_analog_value(
+        &self,
+        instance: u32,
+        name: &str,
+        units: u32,
+        present_value: f32,
+        description: &str,
+        cov_increment: f32,
+    ) -> PyResult<()> {
+        let mut obj = AnalogValueObject::new(instance, name, units).map_err(to_py_err)?;
+        obj.set_relinquish_default(present_value)
+            .map_err(to_py_err)?;
+        obj.set_description(description);
+        configure_cov_increment(&mut obj, cov_increment)?;
         self.push_pending(Box::new(obj))
     }
 
@@ -603,9 +790,24 @@ impl BACnetServer {
     }
 
     /// Add a Character String Value object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_character_string_value(&self, instance: u32, name: &str) -> PyResult<()> {
-        let obj = CharacterStringValueObject::new(instance, name).map_err(to_py_err)?;
+    #[pyo3(signature = (instance, name, present_value="", description=""))]
+    fn add_character_string_value(
+        &self,
+        instance: u32,
+        name: &str,
+        present_value: &str,
+        description: &str,
+    ) -> PyResult<()> {
+        let mut obj = CharacterStringValueObject::new(instance, name).map_err(to_py_err)?;
+        obj.set_relinquish_default(present_value.to_owned())
+            .map_err(to_py_err)?;
+        obj.write_property(
+            bacnet_types::enums::PropertyIdentifier::DESCRIPTION,
+            None,
+            PropertyValue::CharacterString(description.to_owned()),
+            None,
+        )
+        .map_err(to_py_err)?;
         self.push_pending(Box::new(obj))
     }
 

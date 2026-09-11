@@ -81,8 +81,8 @@ use crate::types::{PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue};
 #[pyclass(name = "BACnetServer")]
 pub struct BACnetServer {
     inner: Arc<Mutex<Option<server::BACnetServer<AnyTransport<crate::mstp_py::PySerial>>>>>,
-    device_instance: u32,
-    device_name: String,
+    /// Identity used for the Device object and discovery advertisements.
+    device_identity: DeviceIdentityConfig,
     transport_type: String,
     // BIP config
     interface: String,
@@ -123,6 +123,24 @@ pub struct BACnetServer {
     started: Arc<AtomicBool>,
     /// Objects to add before starting. Cleared after start.
     pending_objects: std::sync::Mutex<Vec<Box<dyn BACnetObject + Send>>>,
+}
+
+/// Python-owned Device identity configuration.
+///
+/// This mirrors the identity fields supported by upstream `DeviceConfig` while
+/// retaining the Python binding's established vendor identifier default. The
+/// protocol revision remains owned by upstream (`22`) until its validated
+/// configuration model exposes that field.
+#[derive(Clone)]
+struct DeviceIdentityConfig {
+    instance: u32,
+    name: String,
+    description: String,
+    vendor_name: String,
+    vendor_id: u16,
+    model_name: String,
+    firmware_revision: String,
+    application_software_version: String,
 }
 
 impl BACnetServer {

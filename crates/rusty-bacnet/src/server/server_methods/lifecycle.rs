@@ -35,8 +35,7 @@ impl BACnetServer {
 
         let inner = self.inner.clone();
         let started = self.started.clone();
-        let device_instance = self.device_instance;
-        let device_name = self.device_name.clone();
+        let device_identity = self.device_identity.clone();
         let transport_type = self.transport_type.clone();
         let interface_str = self.interface.clone();
         let port = self.port;
@@ -71,13 +70,24 @@ impl BACnetServer {
 
             // Create device object
             let mut device = DeviceObject::new(DeviceConfig {
-                instance: device_instance,
-                name: device_name,
-                vendor_name: "Rusty BACnet".into(),
-                vendor_id: 555,
+                instance: device_identity.instance,
+                name: device_identity.name,
+                vendor_name: device_identity.vendor_name,
+                vendor_id: device_identity.vendor_id,
+                model_name: device_identity.model_name,
+                firmware_revision: device_identity.firmware_revision,
+                application_software_version: device_identity.application_software_version,
                 ..DeviceConfig::default()
             })
             .map_err(to_py_err)?;
+            device
+                .write_property(
+                    bacnet_types::enums::PropertyIdentifier::DESCRIPTION,
+                    None,
+                    PropertyValue::CharacterString(device_identity.description),
+                    None,
+                )
+                .map_err(to_py_err)?;
 
             // Collect object identifiers for device object-list
             let dev_oid = device.object_identifier();
@@ -160,6 +170,7 @@ impl BACnetServer {
 
             let mut builder = server::BACnetServer::generic_builder()
                 .database(db)
+                .vendor_id(device_identity.vendor_id)
                 .request_admission_policy(request_admission_policy)
                 .read_property_multiple_budget(read_property_multiple_budget)
                 .get_alarm_summary_budget(get_alarm_summary_budget)
