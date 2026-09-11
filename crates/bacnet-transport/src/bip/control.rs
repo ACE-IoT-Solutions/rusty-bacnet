@@ -82,6 +82,8 @@ pub(super) struct BbmdControlCore {
     management_limiter: StdMutex<Weak<std::sync::Mutex<ManagementRateLimiter>>>,
     fanout_counters: StdMutex<Weak<AtomicFanoutCounters>>,
     operations: Mutex<()>,
+    #[cfg(test)]
+    persist_hook: StdMutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl BbmdControlCore {
@@ -94,6 +96,8 @@ impl BbmdControlCore {
             management_limiter: StdMutex::new(Weak::new()),
             fanout_counters: StdMutex::new(Weak::new()),
             operations: Mutex::new(()),
+            #[cfg(test)]
+            persist_hook: StdMutex::new(None),
         })
     }
 
@@ -141,6 +145,62 @@ impl BbmdControlCore {
 
     fn advance_revision(&self) -> u64 {
         self.revision.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    async fn replace_bdt_transaction(
+        self: Arc<Self>,
+        entries: Vec<BdtEntry>,
+    ) -> Result<u64, BbmdControlError> {
+        // The spawned transaction, rather than its caller, owns this guard.
+        // Dropping the caller therefore cannot let a later mutation overtake
+        // persistence or prevent the corresponding live-state commit.
+        let _operation = self.operations.lock().await;
+        let state = self.state()?;
+
+        let (desired, persisted_peers) = {
+            let mut state = state.lock().await;
+            let previous = state.bdt().to_vec();
+            state
+                .set_bdt(entries)
+                .map_err(|error| BbmdControlError::Invalid(error.to_string()))?;
+            let desired = state.bdt().to_vec();
+            let persisted_peers = state.bdt_peers_snapshot();
+            state
+                .set_bdt(previous)
+                .expect("previously committed BDT remains valid");
+            (desired, persisted_peers)
+        };
+
+        let persist_path = self
+            .persist_path
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(path) = persist_path {
+            #[cfg(test)]
+            let persist_hook = self
+                .persist_hook
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            tokio::task::spawn_blocking(move || {
+                #[cfg(test)]
+                if let Some(hook) = persist_hook {
+                    hook();
+                }
+                persist_bdt_atomically(&path, &persisted_peers)
+            })
+            .await
+            .map_err(|error| BbmdControlError::Io(error.to_string()))?
+            .map_err(|error| BbmdControlError::Io(error.to_string()))?;
+        }
+
+        state
+            .lock()
+            .await
+            .set_bdt(desired)
+            .expect("validated BDT remains valid");
+        Ok(self.advance_revision())
     }
 }
 
@@ -240,42 +300,10 @@ impl BbmdControl {
         if entries.len() > BbmdState::MAX_BDT_ENTRIES {
             return Err(BbmdControlError::Invalid("BDT exceeds hard cap".into()));
         }
-        let _operation = self.core.operations.lock().await;
-        let state = self.core.state()?;
-
-        let (desired, persisted_peers) = {
-            let mut state = state.lock().await;
-            let previous = state.bdt().to_vec();
-            state
-                .set_bdt(entries)
-                .map_err(|error| BbmdControlError::Invalid(error.to_string()))?;
-            let desired = state.bdt().to_vec();
-            let persisted_peers = state.bdt_peers_snapshot();
-            state
-                .set_bdt(previous)
-                .expect("previously committed BDT remains valid");
-            (desired, persisted_peers)
-        };
-
-        let persist_path = self
-            .core
-            .persist_path
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        if let Some(path) = persist_path {
-            tokio::task::spawn_blocking(move || persist_bdt_atomically(&path, &persisted_peers))
-                .await
-                .map_err(|error| BbmdControlError::Io(error.to_string()))?
-                .map_err(|error| BbmdControlError::Io(error.to_string()))?;
-        }
-
-        state
-            .lock()
+        let core = Arc::clone(&self.core);
+        tokio::spawn(async move { core.replace_bdt_transaction(entries).await })
             .await
-            .set_bdt(desired)
-            .expect("validated BDT remains valid");
-        Ok(self.core.advance_revision())
+            .map_err(|error| BbmdControlError::Io(error.to_string()))?
     }
 
     pub async fn set_accept_foreign_devices(&self, accept: bool) -> Result<u64, BbmdControlError> {
@@ -345,6 +373,9 @@ fn persist_bdt_atomically(path: &Path, entries: &[BdtEntry]) -> std::io::Result<
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::port::TransportPort;
@@ -414,6 +445,79 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(BbmdState::decode_bdt(&bytes).unwrap(), vec![entry(8)]);
         assert!(control.snapshot().await.unwrap().bdt.contains(&entry(8)));
+
+        transport.stop().await.unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn cancelled_persisted_replace_completes_before_later_replace() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "rusty-bacnet-cancelled-control-{}-{suffix}.bdt",
+            std::process::id()
+        ));
+        let mut transport =
+            super::super::BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+        transport.enable_bbmd(Vec::new());
+        transport.set_bdt_persist_path(path.clone());
+        let control = transport.bbmd_control().unwrap();
+        let _rx = transport.start().await.unwrap();
+
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let release_rx = StdMutex::new(release_rx);
+        let first_persist = AtomicBool::new(true);
+        *control
+            .core
+            .persist_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(move || {
+            if first_persist.swap(false, Ordering::AcqRel) {
+                entered_tx.send(()).unwrap();
+                release_rx
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .recv()
+                    .unwrap();
+            }
+        }));
+
+        let cancelled_control = control.clone();
+        let cancelled =
+            tokio::spawn(async move { cancelled_control.replace_bdt(vec![entry(1)]).await });
+        tokio::task::spawn_blocking(move || {
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap()
+        })
+        .await
+        .unwrap();
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+
+        let later_control = control.clone();
+        let mut later =
+            tokio::spawn(async move { later_control.replace_bdt(vec![entry(2)]).await });
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut later)
+            .await
+            .is_err());
+
+        release_tx.send(()).unwrap();
+        let revision = tokio::time::timeout(Duration::from_secs(5), later)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(revision, 2);
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(BbmdState::decode_bdt(&bytes).unwrap(), vec![entry(2)]);
+        let snapshot = control.snapshot().await.unwrap();
+        assert_eq!(snapshot.revision, 2);
+        assert!(snapshot.bdt.contains(&entry(2)));
+        assert!(!snapshot.bdt.contains(&entry(1)));
 
         transport.stop().await.unwrap();
         let _ = std::fs::remove_file(path);
