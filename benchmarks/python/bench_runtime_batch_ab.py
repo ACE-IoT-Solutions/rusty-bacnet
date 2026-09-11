@@ -72,7 +72,8 @@ def assert_values(values: list[object]) -> None:
         raise AssertionError(f"expected six values, got {values!r}")
     for actual, expected in zip(values, EXPECTED):
         if isinstance(expected, float):
-            if abs(float(actual) - expected) > 0.001:
+            actual_number = float(actual)
+            if not math.isfinite(actual_number) or abs(actual_number - expected) > 0.001:
                 raise AssertionError(f"value mismatch: {actual!r} != {expected!r}")
         elif actual != expected:
             raise AssertionError(f"value mismatch: {actual!r} != {expected!r}")
@@ -263,8 +264,7 @@ def runtime_reads() -> list[Any]:
     return reads
 
 
-async def runtime_workflow(runtime: Any) -> list[object]:
-    outcomes = await runtime.read_batch(runtime_reads(), timeout_ms=3_000)
+def assert_runtime_outcomes(outcomes: list[Any]) -> list[object]:
     if [outcome.input_index for outcome in outcomes] != list(range(6)):
         raise AssertionError("runtime reordered outcomes")
     if any(outcome.error_code is not None for outcome in outcomes):
@@ -272,6 +272,11 @@ async def runtime_workflow(runtime: Any) -> list[object]:
     values = [outcome.value.value for outcome in outcomes]
     assert_values(values)
     return values
+
+
+async def runtime_workflow(runtime: Any) -> list[object]:
+    outcomes = await runtime.read_batch(runtime_reads(), timeout_ms=3_000)
+    return assert_runtime_outcomes(outcomes)
 
 
 async def start_discovered_runtime() -> Any:
@@ -313,6 +318,11 @@ async def submit_cancel_correctness_arm() -> dict[str, Any]:
         }
         if sum(terminal_kinds.values()) != CANCEL_OPERATIONS:
             raise AssertionError("not every submitted operation reached a terminal result")
+        for terminal in terminals:
+            if isinstance(terminal, list):
+                assert_runtime_outcomes(terminal)
+            elif getattr(terminal, "code", None) != "Cancelled":
+                raise AssertionError(f"unexpected cancellation terminal: {terminal!r}")
         stable: list[dict[str, Any]] = []
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
