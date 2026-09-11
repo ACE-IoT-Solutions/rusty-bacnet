@@ -208,3 +208,76 @@ installed into the empty environment, and imported from `site-packages` rather
 than the source tree. The complete upstream Python suite passed: 91 tests and
 1,268 subtests in 44.96 seconds. The deterministic upstream API manifest is
 retained under `upstream/python-api.tsv` in this evidence directory.
+
+## Reconciled implementation record
+
+The Phase 0 table above records the decision made before implementation. The
+following table records the resulting upstream-first destinations; none of the
+19 local commits was replayed wholesale.
+
+| Workstream | Resulting commits / retained upstream owner | Final disposition |
+|---|---|---|
+| Python contract and packaging | `5986388`, `1691d8c`, `2405469`, plus compound-value fixes `3d6098e`, `6b162a2`, `a54cbd3` | ported as a reviewed API union |
+| Typed direct/routed operations and errors | `3899a5e`, `e371333`, `64825e4`; upstream endpoint coordinator, routed-path limits, TSM, and segmentation retained | ported extension over upstream ownership |
+| Aggregate runtime | `8c2f076`, `00d6917`, `5207d89`, `b206ffd`, `ddb248a` | ported without a second transaction coordinator |
+| I-Am and foreign-device lifecycle | `cdb3db4`, `b206ffd`, `e6e2c66`, `782626a`, `0c63701` | ported over bounded upstream B/IP admission |
+| Socket isolation, BBMD control, and BVLL policy | `f4c72e7`, `cdb3db4`, `5207d89`, `4bf901b`, `1663788` | ported; policy is narrowing-only |
+| Virtual transport and composable router | `a5470e5`, `3dde5e5`, `f5c08de` | ported as a bounded simulation adapter |
+| Device, NetworkPort, COV metadata, and PICS | `9dc89c2`, `0462dd1`, `9898915`, `6f968b5`, `07534c7`, `e6866f8` | ported onto upstream object/COV ownership |
+| Raw decode, APDU observation, and passive COV | `97018ed`, `67d84ea`, `6cf0023`, `5207d89`, `ddb248a` | ported as passive bounded observation |
+| W1-W13 evidence | `8d749db`, `782626a`, `a5c72ac`, `232b76c`, `38bcdb4`, `aade25c`, `4bf901b`, `54030c5`, `725733b`, `e72828c`, `0c63701` | replaced by current clean-wheel fixtures |
+| Legacy invoke-ID-only routed fallback | upstream canonical peer and generation-qualified coordinator | obsolete; intentionally not restored |
+
+`git diff --diff-filter=D --name-only a62821b5..HEAD` returned no paths during
+the completion audit. Thus no file, workspace member, or test family from the
+pinned upstream tree was removed. The installed API union report contained
+1,283 rows: 1,233 on the integration branch, 1,095 on old local, and 787 on
+upstream. Twelve rows were superseded, 38 removals were intentional and
+reviewed, and zero removals were unexplained.
+
+## Reconciled acceptance evidence
+
+| Boundary | Result | Evidence |
+|---|---|---|
+| Installed Python | CPython 3.13.14 release wheel; 145 tests in 46.725 s, all pass; import performed from `/tmp` outside the checkout | `target/upstream-reconciliation/python-suite-0c63701` |
+| W2 foreign-device lifecycle | Pending, Registered, TTL/2 renewal, broadcast delivery, BBMD service stop, Expired, fresh service reconstruction, recovery, rejection `0x0030`, second expiry/recovery, zero FDT, and clean shutdown | `target/upstream-reconciliation/w2-link-restart-fix` |
+| W13 and component fixtures | all four bacpypes3/rusty client/server legs pass; W1, W3, W5, W6, and W12 modules, semantic comparison, and cleanup pass | `target/upstream-reconciliation/w13-e72828c`; result JSON SHA-256 `f97c56765addb33b66e8e91a8b0514d24715ade40922ea960ed0384a44b363a1` |
+| Server segmentation configuration | all four modes agree across server behavior, I-Am, and Device properties; `NONE` omits conditional fields; W13 exercises segmented Object_List | `e72828c`; `test_server_segmentation_config.py`; W13 artifact above |
+
+The W13 source image was built from one clean exact source archive. The first
+invocation used a relative artifact path that Podman Compose interpreted as a
+named volume and failed before protocol work; the retained result above is the
+complete rerun using an absolute bind path and freshly built images.
+
+## Environment coverage and explicit skips
+
+| Environment | Disposition |
+|---|---|
+| macOS arm64, CPython 3.13.14 | clean wheel and complete installed suite passed |
+| Linux arm64, CPython 3.11 container | W2/W13 and component fixtures passed from built wheels; final SC fixture recorded separately below |
+| Rust 1.97.1 Linux/macOS and MSRV 1.93 | final command results are recorded in the release-gate section below |
+| Windows | unavailable in this workspace; environmental skip, not a pass |
+| CPython 3.11/3.12 complete installed suites | not separately run; Linux fixture coverage is narrower than the complete CPython 3.13 suite |
+| Physical MS/TP hardware | unavailable; unit/simulated transport evidence only |
+| Full legacy Linux/macOS same-port/wildcard/subnet-broadcast matrix | not reproduced; current focused socket tests plus Linux W3 cover the supported opt-in boundary |
+
+## Retained limitations and cutover
+
+- The full client/server TSM transition audit and configurable server segment
+  retry behavior remain open. Python exposes a consistent segmentation mode and
+  the current APDU segment timeout; this does not promote the conformance row.
+- Virtual transport is an in-process simulation and contributes no Standard
+  135 data-link or PICS claim. Await `stop()`: dropping a running server can
+  retain detached task/membership ownership. Generic server restart or a retry
+  after registration draining does not guarantee registered-object retention.
+- BVLL callbacks can only narrow native decisions. Native validation,
+  management, foreign-device, fanout, rate, capacity, and amplification denial
+  always wins.
+- Runtime alias selection is limited to currently observed
+  attachment-qualified paths; it is not durable global identity resolution.
+- The rollback point is
+  `archive/dev-pre-upstream-reconciliation-20260911` at `bf6922d5`. Before
+  advancing `dev`, push/verify that permanent ref, tag the reconciled tip, run
+  G0-G7 on that immutable tip, then fast-forward `dev`. Roll back by restoring
+  `dev` to the archived ref through the repository's protected-branch process;
+  do not delete either provenance ref until post-cutover validation finishes.

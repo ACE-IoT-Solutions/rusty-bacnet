@@ -183,14 +183,14 @@ Purpose: restore persisted direct/routed operations on upstream transaction
 ownership.
 
 - [x] Port `DirectTarget` and `RoutedTarget`, including byte/range validation.
-- [ ] Adapt RP, RPM, WP, WPM, file, device-management, and COV request entry
+- [x] Adapt RP, RPM, WP, WPM, file, device-management, and COV request entry
       points to upstream's canonical logical-peer/transaction model.
-- [ ] Preserve non-default B/IP ports, DNET, multi-byte DADR, array indexes,
+- [x] Preserve non-default B/IP ports, DNET, multi-byte DADR, array indexes,
       write priority, and response order.
 - [x] Port Python timeout, protocol, Reject, Abort, BVLC, network-reject, and
       per-property error projection.
-- [ ] Recreate routed segmentation coverage using upstream state machines.
-- [ ] Explicitly reject any design that matches a routed response by invoke ID
+- [x] Recreate routed segmentation coverage using upstream state machines.
+- [x] Explicitly reject any design that matches a routed response by invoke ID
       alone.
 
 Acceptance:
@@ -238,7 +238,7 @@ transaction ownership.
 - [x] Restore the coarse Python `BACnetRuntime` API and immutable result models.
 - [x] Restore B/IP, MS/TP, and SC attachments using current upstream transport
       constructors and security requirements.
-- [ ] Preserve attachment-scoped device, route, COV, health, and event ownership.
+- [x] Preserve attachment-scoped device, route, COV, health, and event ownership.
 
 Acceptance:
 
@@ -259,7 +259,7 @@ Purpose: restore W1/W2 using upstream B/IP admission and endpoint flow.
       upstream's merged discovery table semantics.
 - [x] Project I-Am observations into runtime events and Python iterators with
       observable lag.
-- [ ] Port managed foreign-device startup, TTL/2 renewal, NAK/expiry/recovery
+- [x] Port managed foreign-device startup, TTL/2 renewal, NAK/expiry/recovery
       state, status handles, runtime health, and Python errors.
 - [x] Use upstream's explicit and bounded BBMD foreign-device admission policy;
       do not restore unbounded FDT behavior.
@@ -281,16 +281,16 @@ Purpose: preserve W3/W11 while treating upstream safety behavior as invariant.
       scoped B/IP socket configuration API.
 - [ ] Revalidate Linux and macOS same-port/wildcard/subnet-broadcast matrices
       against upstream's current UDP metadata and receive path.
-- [ ] Port live BBMD control, BDT replacement/persistence, FDT snapshots,
+- [x] Port live BBMD control, BDT replacement/persistence, FDT snapshots,
       management ACLs, counters, and Python management objects.
-- [ ] Implement the arbitrary BVLL policy hook as an extension before normal
+- [x] Implement the arbitrary BVLL policy hook as an extension before normal
       BBMD processing, while retaining upstream validation, rate limits,
       capacity limits, fanout deduplication, amplification budgets, and
       fail-closed defaults.
-- [ ] Define precedence when the custom policy, management policy, foreign-device
+- [x] Define precedence when the custom policy, management policy, foreign-device
       policy, or fanout policy disagree. Denial must win unless the Standard and
       the conformance ledger justify a narrower rule.
-- [ ] Keep Python policy callbacks bounded by queue capacity, timeout, failure
+- [x] Keep Python policy callbacks bounded by queue capacity, timeout, failure
       threshold, and cooldown; native policy remains the high-rate path.
 
 Acceptance:
@@ -330,13 +330,13 @@ Purpose: restore W4/W6 without replacing upstream server scheduling.
 
 - [x] Port configurable Device identity with current upstream defaults and
       property validation.
-- [ ] Bind NetworkPort objects to live B/IP/BBMD state through a read-only
+- [x] Bind NetworkPort objects to live B/IP/BBMD state through a read-only
       snapshot boundary plus explicit control operations.
 - [x] Port Python object registration metadata: description, units, state text,
       number of states, COV increment, and supported writable present values.
-- [ ] Express COV criteria through upstream object traits and notification
+- [x] Express COV criteria through upstream object traits and notification
       engine; do not restore the local worker implementation.
-- [ ] Reconcile PICS generation with runtime capabilities and upstream's current
+- [x] Reconcile PICS generation with runtime capabilities and upstream's current
       service/object capability derivation.
 
 Acceptance:
@@ -355,11 +355,11 @@ paths stabilize.
 
 - [x] Port public hinted raw-value decoding and structured tag description with
       adversarial bounds and malformed-input tests.
-- [ ] Port the optional APDU observer with bounded queues, decode-failure
+- [x] Port the optional APDU observer with bounded queues, decode-failure
       projection, lag reporting, and clean shutdown.
-- [ ] Restore passive confirmed/unconfirmed COV projection into runtime events
+- [x] Restore passive confirmed/unconfirmed COV projection into runtime events
       with source and attachment provenance.
-- [ ] Ensure observation cannot alter packet admission, transaction correlation,
+- [x] Ensure observation cannot alter packet admission, transaction correlation,
       ACK policy, or forward progress.
 
 Acceptance:
@@ -375,8 +375,8 @@ Acceptance:
 
 Purpose: replace historical evidence with results from the reconciled source.
 
-- [ ] Run W3 BBMD policy, W5 virtual router, W6 COV, and W12 campus fixtures.
-- [ ] Run W13 in all four client/server pairings: bacpypes3/bacpypes3,
+- [x] Run W3 BBMD policy, W5 virtual router, W6 COV, and W12 campus fixtures.
+- [x] Run W13 in all four client/server pairings: bacpypes3/bacpypes3,
       rusty/bacpypes3, bacpypes3/rusty, and rusty/rusty.
 - [ ] Re-run the runtime A/B benchmark with correctness-equivalent workloads and
       record latency, throughput, Python crossing count, memory, task, socket,
@@ -428,9 +428,9 @@ not obscure whether upstream safety behavior was retained.
 
 ### G0 - provenance and inventory
 
-- [ ] Pinned refs and generated manifests exist.
-- [ ] Every local commit and local-only test has a disposition.
-- [ ] Every upstream-only workspace member and test family is accounted for.
+- [x] Pinned refs and generated manifests exist.
+- [x] Every local commit and local-only test has a disposition.
+- [x] Every upstream-only workspace member and test family is accounted for.
 
 ### G1 - upstream baseline
 
@@ -454,10 +454,10 @@ not obscure whether upstream safety behavior was retained.
 
 ### G4 - installed Python contract
 
-- [ ] Clean wheel build and install.
-- [ ] Complete installed-package suite.
-- [ ] Stub/runtime export and signature agreement.
-- [ ] Reviewed union report for local and upstream Python APIs.
+- [x] Clean wheel build and install.
+- [x] Complete installed-package suite.
+- [x] Stub/runtime export and signature agreement.
+- [x] Reviewed union report for local and upstream Python APIs.
 
 ### G5 - transport and interoperability
 

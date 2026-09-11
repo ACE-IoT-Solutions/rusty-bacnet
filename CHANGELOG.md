@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Upstream-first ACE reconciliation:** rebuilt the ACE runtime and Python
+  parity work on the pinned upstream 0.11 development line. The combined API
+  restores typed direct/routed targets, multi-attachment runtime, I-Am and COV
+  provenance, managed foreign-device lifecycle, bounded BBMD control/policy,
+  virtual routing, live NetworkPort state, server metadata, and passive APDU
+  observation while retaining upstream transaction ownership, segmentation,
+  SC identity/TLS, request admission, quotas, and resource limits. Python
+  servers now configure segmentation consistently across runtime behavior,
+  I-Am, and Device properties; W2 and W13 clean-wheel fixtures supply current
+  lifecycle and four-way cross-stack evidence. Virtual transport remains a
+  simulation facility, explicit awaited shutdown is required, and no broader
+  PICS/BIBB/BTL claim is added. The frozen rollback point is
+  `archive/dev-pre-upstream-reconciliation-20260911`.
+
 - **SC rejection-NAK budget and fresh-only recovery (Refs #519):** node control,
   source and unsupported-MU rejection NAKs now use the remaining accepted-activity
   heartbeat budget, without a new timeout setting. Expiry drops the send future,

@@ -1133,6 +1133,36 @@ await client.who_am_i()
 
 ---
 
+## Reconciled targets, observation, and runtime
+
+The installed 0.11 surface includes `DirectTarget` and `RoutedTarget` for
+persisted RP/RPM/WP/WPM, file, device-management, and managed-COV operations.
+Routed targets retain DNET and the complete multi-byte DADR; direct targets
+retain non-default B/IP ports. Protocol failures use the typed
+`BacnetError` hierarchy rather than string matching.
+
+`BACnetClient.i_am_events()` and `apdu_events()` expose bounded iterators with
+lag reporting. I-Am events retain attachment, immediate peer, original
+Forwarded-NPDU source, BVLL function, raw MAC, and routed source provenance.
+The APDU observer is opt-in and passive: decode failures are projected as data,
+and observation cannot change admission, ACK policy, transaction correlation,
+or forwarding. `BbmdControl`, `BbmdSnapshot`, and the BVLL policy models expose
+live BDT/FDT management and counters. Custom BVLL callbacks are narrowing-only:
+a callback can deny traffic, but cannot override native validation, admission,
+capacity, rate, fanout, or amplification denials.
+
+`BACnetRuntime` owns a revisioned set of B/IP, MS/TP, and BACnet/SC
+attachments. It provides discovery, topology, batching, cache/scan,
+reconcile/rollback reports, health, passive COV/I-Am events, cancellation, and
+resource counters while delegating confirmed transactions to the shared client
+stack. Device aliases select only among currently observed attachment-qualified
+paths; they are not durable global identity resolution and can change after
+topology refresh. `BACnetRouter` and named `VirtualNetwork` instances provide
+bounded in-process routing fixtures without creating a physical data-link
+support claim.
+
+---
+
 ## BACnetServer
 
 Async BACnet server that hosts objects and responds to remote requests.
@@ -1146,8 +1176,11 @@ server = BACnetServer(
     interface="0.0.0.0",
     port=47808,
     broadcast_address="255.255.255.255",
-    transport="bip",             # "bip", "ipv6", or "sc"
+    transport="bip",             # "bip", "ipv6", "mstp", "sc", or "virtual"
     # SC options same as BACnetClient
+    segmentation_supported=None, # None means Segmentation.NONE
+    virtual_network=None,         # required with transport="virtual"
+    virtual_mac=None,             # 0..255; required with transport="virtual"
     dcc_password=None,           # password alone does not enable DCC
     dcc_policy="deny_all",       # keyword-only; explicit require_password or INSECURE legacy_permissive
     dcc_source_restriction=None, # optional list[(network_or_None, bytes)]; [] denies all; requires require_password
@@ -1155,6 +1188,24 @@ server = BACnetServer(
     reinit_password=None,        # password for ReinitializeDevice
 )
 ```
+
+`segmentation_supported` is keyword-only and accepts `Segmentation.BOTH`,
+`TRANSMIT`, `RECEIVE`, or `NONE`; `None` preserves the `NONE` default. One
+validated mode configures the server state machine, Device object's
+`Segmentation_Supported`, and I-Am advertisement. When the mode supports either
+direction, the Device object also exposes read-only `APDU_Segment_Timeout`
+(currently 5000 ms) and its mode-derived `Max_Segments_Accepted`; a `NONE`
+server omits those conditional properties. Retry-count configuration and the
+full Clause 5 server TSM audit remain open.
+
+For `transport="virtual"`, `virtual_network` names an in-process network and
+`virtual_mac` selects its one-octet station address. Virtual membership is
+bounded and released by an awaited `stop()`. This simulation transport does not
+add a Standard 135 data-link or PICS claim. Callers must explicitly stop a
+running server: dropping it can leave detached task/membership ownership, and a
+generic server stop/start or retry after registrations have been drained does
+not promise to preserve registered objects. Re-register objects when creating
+a replacement server.
 
 `dcc_disable_rate_limit` is keyword-only and defaults OFF. When configured, one
 global native-server bucket charges only authorized DISABLE_INITIATION requests;
