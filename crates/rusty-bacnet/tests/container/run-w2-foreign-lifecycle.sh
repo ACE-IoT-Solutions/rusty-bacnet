@@ -96,11 +96,13 @@ if [ "$broadcast_exit" -ne 0 ]; then
     exit "$broadcast_exit"
 fi
 
-# Loss beyond the advertised TTL must expire health while the attachment stays live.
-compose stop --timeout 1 bbmd
+# Stop only the BBMD link layer so the container network namespace, IP, and MAC
+# remain unchanged while the foreign-device registration expires.
+signal_command "$bbmd" w2-stop-bbmd
+wait_and_record "$bbmd" "W2_BBMD_STOPPED generation=1" 10
 wait_and_record "$foreign" "W2_FD_EXPIRED reason=bbmd_outage" 14
-compose start bbmd
-wait_and_record "$bbmd" "W2_BBMD_READY" 10
+signal_command "$bbmd" w2-start-bbmd
+wait_and_record "$bbmd" "W2_BBMD_RESTARTED generation=2" 10
 wait_and_record "$foreign" "W2_FD_RECOVERED reason=bbmd_restart" 30
 
 # A live BBMD NAK must be distinct from timeout expiry, then recover when cleared.

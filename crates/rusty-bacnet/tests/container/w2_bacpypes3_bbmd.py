@@ -19,6 +19,8 @@ REJECT_PATH = Path("/tmp/w2-reject")
 ALLOW_PATH = Path("/tmp/w2-allow")
 REPORT_PATH = Path("/tmp/w2-report")
 CLEANUP_PATH = Path("/tmp/w2-arm-shutdown-cleanup")
+STOP_PATH = Path("/tmp/w2-stop-bbmd")
+START_PATH = Path("/tmp/w2-start-bbmd")
 ARTIFACT_PATH = Path(os.environ.get("W2_ARTIFACT_PATH", "/tmp/w2-bbmd-events.jsonl"))
 EXPECTED_TTL = int(os.environ.get("BACNET_FOREIGN_DEVICE_TTL", "4"))
 
@@ -115,17 +117,37 @@ async def run_bbmd() -> None:
     address = IPv4Address(os.environ.get("BACNET_BBMD_ADDRESS", "10.252.10.10/24:47808"))
     ALLOW_PATH.unlink(missing_ok=True)
     REJECT_PATH.unlink(missing_ok=True)
-    bbmd = LifecycleBBMD(address)
+    STOP_PATH.unlink(missing_ok=True)
+    START_PATH.unlink(missing_ok=True)
+    bbmd: LifecycleBBMD | None = LifecycleBBMD(address)
     emit(f"W2_BBMD_READY address={address}")
+
+    def close_bbmd(current: LifecycleBBMD) -> None:
+        current._fdt_clock_handle.cancel()
+        current.close()
+
     try:
         async with asyncio.timeout(120):
             while True:
+                if STOP_PATH.exists():
+                    STOP_PATH.unlink()
+                    if bbmd is not None:
+                        close_bbmd(bbmd)
+                        bbmd = None
+                        append_event("service_stopped", generation=1)
+                        emit("W2_BBMD_STOPPED generation=1")
+                if START_PATH.exists():
+                    START_PATH.unlink()
+                    if bbmd is None:
+                        bbmd = LifecycleBBMD(address)
+                        append_event("service_restarted", generation=2)
+                        emit(f"W2_BBMD_RESTARTED generation=2 address={address}")
                 if ALLOW_PATH.exists():
                     ALLOW_PATH.unlink()
                     REJECT_PATH.unlink(missing_ok=True)
                     append_event("mode", value="allow")
                     emit("W2_BBMD_MODE mode=allow")
-                if REPORT_PATH.exists():
+                if REPORT_PATH.exists() and bbmd is not None:
                     REPORT_PATH.unlink()
                     append_event(
                         "summary",
@@ -137,7 +159,11 @@ async def run_bbmd() -> None:
                         f"W2_BBMD_SUMMARY registrations={bbmd.registration_count} "
                         f"unregisters={bbmd.unregister_count} fdt_entries={len(bbmd.bbmdFDT)}"
                     )
-                if CLEANUP_PATH.exists() and bbmd.cleanup_registration_count is None:
+                if (
+                    CLEANUP_PATH.exists()
+                    and bbmd is not None
+                    and bbmd.cleanup_registration_count is None
+                ):
                     CLEANUP_PATH.unlink()
                     bbmd.cleanup_registration_count = bbmd.registration_count
                     append_event(
@@ -149,7 +175,11 @@ async def run_bbmd() -> None:
                         f"W2_BBMD_SHUTDOWN_CLEANUP_ARMED "
                         f"registrations={bbmd.cleanup_registration_count}"
                     )
-                if bbmd.cleanup_registration_count is not None and not bbmd.bbmdFDT:
+                if (
+                    bbmd is not None
+                    and bbmd.cleanup_registration_count is not None
+                    and not bbmd.bbmdFDT
+                ):
                     if bbmd.registration_count != bbmd.cleanup_registration_count:
                         raise AssertionError(
                             "foreign device renewed after runtime shutdown: "
@@ -168,8 +198,8 @@ async def run_bbmd() -> None:
                     bbmd.cleanup_registration_count = None
                 await asyncio.sleep(0.05)
     finally:
-        bbmd._fdt_clock_handle.cancel()
-        bbmd.close()
+        if bbmd is not None:
+            close_bbmd(bbmd)
 
 
 def run_broadcaster() -> None:
