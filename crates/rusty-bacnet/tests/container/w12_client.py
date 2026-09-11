@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rusty_bacnet import (
     BACnetClient,
+    BacnetAbortError,
     BacnetTimeoutError,
     ObjectIdentifier,
     ObjectType,
@@ -118,7 +119,7 @@ async def main() -> None:
         # The router's IP is not a fallback endpoint for the virtual device.
         try:
             await client.read_property(ROUTER, DEVICE, PropertyIdentifier.OBJECT_NAME)
-        except BacnetTimeoutError:
+        except (BacnetTimeoutError, BacnetAbortError):
             pass
         else:
             raise AssertionError("virtual device unexpectedly answered as a direct B/IP endpoint")

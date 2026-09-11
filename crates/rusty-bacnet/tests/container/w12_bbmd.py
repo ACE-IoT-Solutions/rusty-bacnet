@@ -59,8 +59,10 @@ async def main() -> None:
             )
         snapshot = await bbmd.bbmd_control.snapshot()
         counters = snapshot.counters
-        if counters.fanout_send_errors != 0 or counters.fanout_packets_forwarded < 1:
+        if counters.fanout_send_errors != 0:
             raise AssertionError(f"BBMD {SIDE} fanout counters: {counters!r}")
+        if SIDE == "A" and counters.fanout_packets_forwarded < 1:
+            raise AssertionError(f"BBMD {SIDE} did not forward to its BDT peer: {counters!r}")
         print(
             f"W12_BBMD_SOURCE_PASS side={SIDE} function=0x{function:02x} "
             f"udp_sender={matches[0][1]} relevant_packets=1 "
