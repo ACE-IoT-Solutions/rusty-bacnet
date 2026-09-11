@@ -62,6 +62,7 @@ impl BACnetServer {
         dcc_password=None,
         reinit_password=None,
         *,
+        segmentation_supported=None,
         dcc_policy="deny_all",
         dcc_source_restriction=None,
         dcc_disable_rate_limit=None,
@@ -137,6 +138,7 @@ impl BACnetServer {
         ipv6_interface: Option<String>,
         dcc_password: Option<String>,
         reinit_password: Option<String>,
+        segmentation_supported: Option<PySegmentation>,
         dcc_policy: &str,
         dcc_source_restriction: Option<Vec<(Option<u16>, Vec<u8>)>>,
         dcc_disable_rate_limit: Option<(u32, u64)>,
@@ -309,6 +311,7 @@ impl BACnetServer {
             (None, None, None)
         };
 
+        let segmentation_supported = validate_segmentation_supported(segmentation_supported)?;
         let dcc_policy = match dcc_policy {
             "deny_all" => server::DccPolicy::DenyAll,
             "require_password" => server::DccPolicy::RequirePassword,
@@ -435,6 +438,7 @@ impl BACnetServer {
                 firmware_revision: firmware_revision.to_string(),
                 application_software_version: application_software_version.to_string(),
             },
+            segmentation_supported,
             transport_type: transport.to_string(),
             interface: interface.to_string(),
             port,
@@ -491,6 +495,26 @@ impl BACnetServer {
     #[doc(hidden)]
     fn _pending_registration_count(&self) -> PyResult<usize> {
         Ok(self.lock_pending()?.len())
+    }
+}
+
+fn validate_segmentation_supported(value: Option<PySegmentation>) -> PyResult<Segmentation> {
+    let value = value
+        .map(|value| value.to_rust())
+        .unwrap_or(Segmentation::NONE);
+    if [
+        Segmentation::BOTH,
+        Segmentation::TRANSMIT,
+        Segmentation::RECEIVE,
+        Segmentation::NONE,
+    ]
+    .contains(&value)
+    {
+        Ok(value)
+    } else {
+        Err(pyo3::exceptions::PyValueError::new_err(
+            "segmentation_supported must be Segmentation.BOTH, Segmentation.TRANSMIT, Segmentation.RECEIVE, Segmentation.NONE, or None",
+        ))
     }
 }
 

@@ -62,6 +62,7 @@ impl BACnetServer {
         let inner = self.inner.clone();
         let started = self.started.clone();
         let device_identity = self.device_identity.clone();
+        let segmentation_supported = self.segmentation_supported;
         let transport_type = self.transport_type.clone();
         let interface_str = self.interface.clone();
         let port = self.port;
@@ -116,6 +117,7 @@ impl BACnetServer {
                 model_name: device_identity.model_name,
                 firmware_revision: device_identity.firmware_revision,
                 application_software_version: device_identity.application_software_version,
+                segmentation_supported,
                 ..DeviceConfig::default()
             })
             .map_err(to_py_err)?;
@@ -242,6 +244,7 @@ impl BACnetServer {
             let mut builder = server::BACnetServer::generic_builder()
                 .database(db)
                 .vendor_id(device_identity.vendor_id)
+                .segmentation_supported(segmentation_supported)
                 .runtime_capabilities(runtime_capabilities)
                 .request_admission_policy(request_admission_policy)
                 .read_property_multiple_budget(read_property_multiple_budget)

@@ -53,12 +53,13 @@ use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::virtual_network::VirtualNetwork;
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
+use bacnet_types::enums::Segmentation;
 use bacnet_types::primitives::PropertyValue;
 
 use crate::errors::to_py_err;
 use crate::types::{
     PyApduObserverStartGuard, PyApduObserverState, PyBbmdControl, PyBbmdTransportConfig,
-    PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue,
+    PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue, PySegmentation,
 };
 
 /// Async BACnet server that hosts objects and responds to requests.
@@ -91,6 +92,8 @@ pub struct BACnetServer {
     apdu_observer: Option<Arc<PyApduObserverState>>,
     /// Identity used for the Device object and discovery advertisements.
     device_identity: DeviceIdentityConfig,
+    /// One validated mode shared by runtime segmentation and Device metadata.
+    segmentation_supported: Segmentation,
     transport_type: String,
     // BIP config
     interface: String,

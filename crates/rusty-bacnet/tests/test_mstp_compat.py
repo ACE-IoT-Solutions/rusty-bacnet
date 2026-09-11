@@ -66,7 +66,7 @@ CLIENT_KEYWORD_ONLY = ["bbmd_address", "foreign_device_ttl"] + MSTP_KEYWORD_ONLY
     "apdu_observer",
     "apdu_observer_capacity",
 ]
-SERVER_KEYWORD_ONLY = ["dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
+SERVER_KEYWORD_ONLY = ["segmentation_supported", "dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
     "virtual_network", "virtual_mac",
     "bbmd", "bbmd_bdt", "bbmd_bdt_persist_path",
     "bbmd_accept_foreign_devices", "bbmd_max_fdt_entries",

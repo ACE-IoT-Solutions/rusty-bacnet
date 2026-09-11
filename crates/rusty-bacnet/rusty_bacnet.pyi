@@ -2603,6 +2603,7 @@ class BACnetServer:
         dcc_password: Optional[str] = None,
         reinit_password: Optional[str] = None,
         *,
+        segmentation_supported: Optional[Segmentation] = None,
         dcc_policy: str = "deny_all",
         dcc_source_restriction: list[tuple[int | None, bytes]] | None = None,
         dcc_disable_rate_limit: tuple[int, int] | None = None,

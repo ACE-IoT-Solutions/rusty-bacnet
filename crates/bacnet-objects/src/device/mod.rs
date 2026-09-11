@@ -253,6 +253,11 @@ impl DeviceObject {
 
         // Max_Segments_Accepted — only included when segmentation is supported.
         if config.segmentation_supported != Segmentation::NONE {
+            // Match the server transaction state machine's SegmentACK timeout.
+            properties.insert(
+                PropertyIdentifier::APDU_SEGMENT_TIMEOUT,
+                PropertyValue::Unsigned(5_000),
+            );
             let max_segments_accepted = if config.segmentation_supported == Segmentation::TRANSMIT {
                 1
             } else {

@@ -101,7 +101,7 @@ fn read_max_apdu_length() {
 }
 
 #[test]
-fn mode_derived_max_segments_accepted() {
+fn mode_derived_segmentation_metadata() {
     let cases = [
         ("none", Segmentation::NONE, None),
         ("transmit", Segmentation::TRANSMIT, Some(1)),
@@ -137,21 +137,61 @@ fn mode_derived_max_segments_accepted() {
             expected_max_segments.is_some(),
             "{name} Property_List presence"
         );
+        assert_eq!(
+            property_list.contains(&PropertyValue::Enumerated(
+                PropertyIdentifier::APDU_SEGMENT_TIMEOUT.to_raw(),
+            )),
+            expected_max_segments.is_some(),
+            "{name} APDU_Segment_Timeout Property_List presence"
+        );
 
         let max_segments = dev.read_property(PropertyIdentifier::MAX_SEGMENTS_ACCEPTED, None);
+        let segment_timeout = dev.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None);
         match expected_max_segments {
-            Some(expected) => assert_eq!(
-                max_segments.unwrap(),
-                PropertyValue::Unsigned(expected),
-                "{name} Max_Segments_Accepted"
-            ),
-            None => assert!(matches!(
-                max_segments,
-                Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
-            )),
+            Some(expected) => {
+                assert_eq!(
+                    max_segments.unwrap(),
+                    PropertyValue::Unsigned(expected),
+                    "{name} Max_Segments_Accepted"
+                );
+                assert_eq!(
+                    segment_timeout.unwrap(),
+                    PropertyValue::Unsigned(5_000),
+                    "{name} APDU_Segment_Timeout"
+                );
+            }
+            None => {
+                for result in [max_segments, segment_timeout] {
+                    assert!(matches!(
+                        result,
+                        Err(Error::Protocol { class, code })
+                            if class == ErrorClass::PROPERTY.to_raw() as u32
+                                && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+                    ));
+                }
+            }
         }
+    }
+}
+
+#[test]
+fn segmentation_metadata_is_read_only() {
+    let mut dev = DeviceObject::new(DeviceConfig {
+        segmentation_supported: Segmentation::BOTH,
+        ..DeviceConfig::default()
+    })
+    .unwrap();
+
+    for property in [
+        PropertyIdentifier::APDU_SEGMENT_TIMEOUT,
+        PropertyIdentifier::MAX_SEGMENTS_ACCEPTED,
+    ] {
+        assert!(matches!(
+            dev.write_property(property, None, PropertyValue::Unsigned(1), None),
+            Err(Error::Protocol { class, code })
+                if class == ErrorClass::PROPERTY.to_raw() as u32
+                    && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        ));
     }
 }
 

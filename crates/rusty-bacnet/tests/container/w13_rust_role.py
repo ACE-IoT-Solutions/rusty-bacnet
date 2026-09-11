@@ -21,6 +21,7 @@ from rusty_bacnet import (
     RuntimeAttachment,
     RuntimePersistedDevice,
     RuntimeRead,
+    Segmentation,
 )
 
 
@@ -61,6 +62,7 @@ async def run_server() -> None:
         interface=interface,
         port=port,
         broadcast_address=os.environ["BACNET_BROADCAST"],
+        segmentation_supported=Segmentation.BOTH,
     )
     for instance in range(1, OBJECT_COUNT + 1):
         server.add_analog_value(

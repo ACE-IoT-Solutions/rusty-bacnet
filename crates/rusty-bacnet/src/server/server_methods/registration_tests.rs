@@ -3,6 +3,29 @@ use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
 
 #[test]
+fn segmentation_configuration_defaults_and_rejects_unknown_values() {
+    assert_eq!(
+        validate_segmentation_supported(None).unwrap(),
+        Segmentation::NONE
+    );
+    for value in [
+        Segmentation::BOTH,
+        Segmentation::TRANSMIT,
+        Segmentation::RECEIVE,
+        Segmentation::NONE,
+    ] {
+        assert_eq!(
+            validate_segmentation_supported(Some(PySegmentation { inner: value })).unwrap(),
+            value
+        );
+    }
+    assert!(validate_segmentation_supported(Some(PySegmentation {
+        inner: Segmentation::from_raw(4),
+    }))
+    .is_err());
+}
+
+#[test]
 fn python_staging_boundary_maps_typed_tuples_and_local_references_exactly() {
     let target = ObjectIdentifier::new(ObjectType::BINARY_OUTPUT, 7).unwrap();
     let config = staging_config(
