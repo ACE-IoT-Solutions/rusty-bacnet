@@ -291,11 +291,17 @@ async def start_discovered_runtime() -> Any:
 
 async def stabilize_native_runtime() -> dict[str, Any]:
     before = resource_snapshot()
-    runtime = await bacnet.BACnetRuntime.start([bacnet.RuntimeAttachment(46, "stabilize", INTERFACE, 0, BROADCAST)])
+    # Discovery is also the fixture readiness gate. A bare start/stop can
+    # complete before the independently started server has bound its socket.
+    runtime = await start_discovered_runtime()
     await runtime.stop()
     await asyncio.sleep(0.05)
     after = resource_snapshot()
-    return {"before": before, "after": after, "purpose": "initialize process-global native runtime resources before cleanup baselines"}
+    return {
+        "before": before,
+        "after": after,
+        "purpose": "verify server readiness and initialize process-global native runtime resources before cleanup baselines",
+    }
 
 
 async def submit_cancel_correctness_arm() -> dict[str, Any]:
