@@ -483,9 +483,6 @@ async def run_client() -> None:
     write_result(result)
     try:
         result["correctness"]["native_runtime_stabilization"] = await stabilize_native_runtime()
-        submit_cancel = await submit_cancel_correctness_arm()
-        submit_cancel["cleanup"] = submit_cancel_correctness_arm.cleanup  # type: ignore[attr-defined]
-        result["correctness"]["submit_cancel_stabilization"] = submit_cancel
         write_result(result)
 
         for trial in range(TRIALS):
@@ -507,6 +504,13 @@ async def run_client() -> None:
                 "cleanup": {"client": client_cleanup, "runtime": runtime_cleanup},
             })
             write_result(result)
+
+        # Cancellation deliberately perturbs the server with work that may
+        # already be on the wire. Exercise it only after the timed trials so
+        # server-side cleanup cannot contaminate a later measurement arm.
+        submit_cancel = await submit_cancel_correctness_arm()
+        submit_cancel["cleanup"] = submit_cancel_correctness_arm.cleanup  # type: ignore[attr-defined]
+        result["correctness"]["submit_cancel_stabilization"] = submit_cancel
 
         coarse_rates = [trial["coarse"]["workflows_per_second"] for trial in result["trials"]]
         chatty_rates = [trial["chatty"]["workflows_per_second"] for trial in result["trials"]]
