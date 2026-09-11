@@ -1,0 +1,107 @@
+path	location	statement
+README.md	line:10	- **BACnet/IP implementation** — async client and server paths with 30+ service modules under conformance review
+README.md	line:107	- **[`rusty-bacnet-btl-harness`](https://github.com/jscott3201/rusty-bacnet-btl-harness)** — external BTL Test Plan 26.1 harness project. Formal support status is tracked separately in the conformance ledger.
+README.md	line:11	- **Transport implementations** — BACnet/IP (UDP), BACnet/IPv6 (multicast), BACnet/SC (WebSocket+TLS with hub), MS/TP (serial), Ethernet (BPF); see the conformance ledger for current evidence status
+README.md	line:16	- **Conformance evidence** — draft Standard 135-2020 ledger and support summaries in [`docs/conformance/`](docs/conformance/standard-135-2020-ledger.md)
+README.md	line:161	> [#517 acceptance closeout](docs/conformance/standard-135-2020-ledger.md#device-identity-acceptance-closeout)
+README.md	line:164	> ReadProperty and same-identity replacement paths, not full Annex AB conformance
+README.md	line:176	See the [receive boundary and evidence](docs/conformance/standard-135-2020-ledger.md#received-peer-uuid-admission).
+README.md	line:184	this is not a universal minimum-capacity conformance claim. Defaults and outgoing
+README.md	line:185	budgets are unchanged. See the [bounded evidence and exclusions](docs/conformance/standard-135-2020-ledger.md#received-zero-capacity-admission).
+README.md	line:262	VMAC/Device UUID; credential hardening is not full Annex AB profile conformance.
+README.md	line:342	## Supported Services
+README.md	line:379	The table below lists implemented transport code paths. Clause-level support evidence is tracked in the draft [conformance ledger](docs/conformance/standard-135-2020-ledger.md).
+README.md	line:390	Annex J NAT traversal and IPv4 BACnet/IP multicast (B/IP-M) are not claimed by the current BACnet/IP transport; their support direction is tracked in the conformance ledger.
+README.md	line:431	- [Conformance Ledger](docs/conformance/standard-135-2020-ledger.md) — draft Standard 135-2020 evidence map
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-ALERT-ENROLLMENT-TABLE-12-61	CHANGELOG.md Unreleased Alert Enrollment migration note
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-ALERT-ENROLLMENT-TABLE-12-61	crates/rusty-bacnet/rusty_bacnet.pyi add_alert_enrollment
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-ALERT-ENROLLMENT-TABLE-12-61	docs/python-api.md add_alert_enrollment constructor migration
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-ALERT-ENROLLMENT-TABLE-12-61	docs/rust-api.md AlertEnrollmentObject constructor migration
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-EVENT-PARAMETERS-FRAMING	README BACnet object implementations feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-OBJECT-MODEL	README Python server object methods
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-OBJECT-MODEL	README object model feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-OBJECT-MODEL	docs/rust-api.md object model
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-PROPERTY-METADATA-CORE	CHANGELOG Unreleased property-metadata core
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-RECIPIENT-LIST-FRAMING	README BACnet object implementations feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-13-LIFE-SAFETY-OPERATION	README supported services (qualified authorized Life Safety operations and modeled exact COV)
+docs/conformance/bacnet-135-2020.json	row:BACNET-20-ENCODING	README services
+docs/conformance/bacnet-135-2020.json	row:BACNET-20-ENCODING	docs/python-api.md property value APIs
+docs/conformance/bacnet-135-2020.json	row:BACNET-21-FORMAL-APDUS	README supported services
+docs/conformance/bacnet-135-2020.json	row:BACNET-21-FORMAL-APDUS	docs/python-api.md service APIs
+docs/conformance/bacnet-135-2020.json	row:BACNET-21-TIMESTAMP-CHOICE	README supported services table (AcknowledgeAlarm, GetEventInformation)
+docs/conformance/bacnet-135-2020.json	row:BACNET-4-ARCHITECTURE	README workspace structure
+docs/conformance/bacnet-135-2020.json	row:BACNET-4-ARCHITECTURE	docs/architecture.md crate graph
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-ROUTED-PATH-LIMIT	docs/rust-api.md routed confirmed-request limits
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-SEGMENTATION-WINDOW	docs/python-api.md segmentation support
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-TSM-CLIENT	README supported services
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-TSM-CLIENT	docs/python-api.md transport examples
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-TSM-SERVER	README supported services
+docs/conformance/bacnet-135-2020.json	row:BACNET-6-NPDU-CONTROL	docs/architecture.md packet flow
+docs/conformance/bacnet-135-2020.json	row:BACNET-6-ROUTER-MESSAGES	docs/architecture.md router model
+docs/conformance/bacnet-135-2020.json	row:BACNET-7-ETHERNET-LLC	README transports table: Ethernet
+docs/conformance/bacnet-135-2020.json	row:BACNET-7-ETHERNET-LLC	docs/rust-api.md ethernet feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-9-MSTP-FRAMES	README transports table: MS/TP
+docs/conformance/bacnet-135-2020.json	row:BACNET-9-MSTP-FRAMES	docs/rust-api.md MS/TP
+docs/conformance/bacnet-135-2020.json	row:BACNET-A-PICS	README BTL harness link
+docs/conformance/bacnet-135-2020.json	row:BACNET-A-PICS	docs/architecture.md BTL harness link
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-BVLC-RESULT	README BACnet/SC transport
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-CONNECTION-STATE	README BACnet/SC transport
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-FRAME	README BACnet/SC transport
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-HEARTBEAT	docs/python-api.md sc_heartbeat_interval_ms
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-HEARTBEAT	docs/rust-api.md with_heartbeat_interval_ms
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-HUB-CONNECTOR	README BACnet/SC Hub
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-HUB-CONNECTOR	docs/python-api.md ScHub
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-WEBSOCKET-TLS	README BACnet/SC WebSocket+TLS
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-WEBSOCKET-TLS	docs/python-api.md BACnet/SC
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BBMD-BDT	README CLI BBMD commands
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BBMD-BDT	docs/CLI.md BBMD commands
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BBMD-BDT	docs/rust-api.md BBMD example
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BVLC-FUNCTION-CODES	README BACnet/IP feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BVLC-FUNCTION-CODES	README transports table: BACnet/IP
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-FOREIGN-DEVICE-FDT	docs/CLI.md foreign device commands
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-FORWARDED-NPDU	README BACnet/IP feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-FORWARDED-NPDU	docs/CLI.md BBMD commands
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-ORIGINAL-BROADCAST-NPDU	README BACnet/IP feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-ORIGINAL-UNICAST-NPDU	README BACnet/IP feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-U-IPV6-BVLL	README transports table: BACnet/IPv6
+docs/conformance/bacnet-135-2020.json	row:BACNET-U-IPV6-BVLL	docs/python-api.md BACnet/IPv6
+docs/conformance/support-summary.md	line:1	# BACnet Standard 135-2020 Support Summary
+docs/conformance/support-summary.md	line:100	| `BACNET-13-ACKED-TRANSITIONS-NETWORK-OWNERSHIP` | Clause 12.1.2; Acked_Transitions property paragraphs and Tables 12-2 (Analog Input), 12-3 (Analog Output), 12-4 (Analog Value), 12-6 (Binary Input), 12-8 (Binary Output), 12-10 (Binary Value), 12-14 (Event Enrollment), 12-21 (Multi-state Input), 12-22 (Multi-state Output), 12-23 (Multi-state Value), and 12-61 (Alert Enrollment); Clauses 13.2.3, 13.2.5, and 13.5; Clauses 15.9 and 15.10; Annex K Table K-17 footnote 1 | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:101	| `BACNET-13-EVENT-ENROLLMENT-NOTIFICATION-LIFECYCLE` | Event Enrollment object and event-reporting lifecycle requirements for configured event type, transition enablement, Notification Class policy, committed acknowledgment/timestamp/message history, same-state indication, distribution gating, and committed notification fields | P1 | implementation-present-needs-conformance-tests | 0 |
+docs/conformance/support-summary.md	line:102	| `BACNET-13-LIFE-SAFETY-OPERATION` | Clauses 13.13-13.15; Tables 13-1 and 13-1a; Clauses 12.15 and 12.16 Present_Value, Status_Flags, Tracking_Value, Silenced, and Operation_Expected properties; Clause 18 errors | P0 | implementation-present-needs-conformance-tests | 1 |
+docs/conformance/support-summary.md	line:103	| `BACNET-14-FILE-ACCESS-METHOD` | Clause 12.13 (Table 12-16 File_Access_Method), Clauses 14.1 and 14.2 (Incorrect File access method), Clauses 14.1.4.1 and 14.2.4.1 (non-File Object Identifier), Clause 14.2.4.1 (Write to a read-only File), Clause 18 (INVALID_FILE_ACCESS_METHOD, FILE_ACCESS_DENIED, and INCONSISTENT_OBJECT_TYPE), Clause 21 (BACnetFileAccessMethod production; AtomicReadFile/AtomicWriteFile access-method CHOICE) | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:104	| `BACNET-14-FILE-STORAGE` | Clause 12.13 / Table 12-16 and footnotes 1-2 (File object property model; File_Size stream-only conditional writability; Record_Count record-only presence and conditional writability; truncate, clear, local-matter expansion fill; Modification_Date events and Archive reset), Clause 14.1 (AtomicReadFile parameters, End Of File, Service Procedure), Clause 14.2 (AtomicWriteFile parameters, -1 append, Service Procedure, Result(+) position), Clauses 14.1.4.1 and 14.2.4.1 (INVALID_FILE_START_POSITION), Clause 14.2.4.1 (FILE_FULL), Clause 18 (INVALID_FILE_START_POSITION, FILE_FULL, FILE_ACCESS_DENIED), Clause 19.1.3.3 (restore context writes File_Size=0 before rewriting a differently-sized stream configuration file), Clause 21 (Date, Time, and BACnetDateTime), Annex F (AtomicWriteFile append example) | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:108	Rows not marked `supported-with-clause-evidence` are the initial follow-up backlog. Later PRs should split broad family rows into smaller clause-backed rows before strengthening public support claims.
+docs/conformance/support-summary.md	line:20	| Status | implementation-present-needs-conformance-tests | 14 |
+docs/conformance/support-summary.md	line:29	| Status | supported-with-clause-evidence | 19 |
+docs/conformance/support-summary.md	line:3	> DRAFT internal support evidence. Generated from `docs/conformance/bacnet-135-2020.json`; this is not a BTL certification claim or formal PICS/BIBB declaration.
+docs/conformance/support-summary.md	line:41	| `BACNET-5-ROUTED-PATH-LIMIT` | Clauses 5.2.1.2, 6.4.4, and 19.4 | P1 | implementation-present-needs-conformance-tests | 1 |
+docs/conformance/support-summary.md	line:43	| `BACNET-6-ROUTER-MESSAGES` | Clauses 6.4-6.6 | P1 | implementation-present-needs-conformance-tests | 1 |
+docs/conformance/support-summary.md	line:49	| `BACNET-12-OBJECT-MODEL` | Clauses 12-19 | P1 | implementation-present-needs-conformance-tests | 3 |
+docs/conformance/support-summary.md	line:54	| `BACNET-12-ESCALATOR-STATUS-WRITABILITY` | Clause 12 general property conformance rules; Clause 12.60 Table 12-78 and Out_Of_Service; Clause 15.9.1.3; Clause 21 BACnetEscalatorMode, BACnetEscalatorOperationDirection, and BACnetEscalatorFault; Clause 23.1 | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:55	| `BACNET-12-DEVICE-MAX-SEGMENTS` | Clause 12.11, Table 12-13 | P1 | implementation-present-needs-conformance-tests | 0 |
+docs/conformance/support-summary.md	line:60	| `BACNET-12-RECIPIENT-LIST-FRAMING` | Clause 12.21, Clause 21 | P1 | supported-with-clause-evidence | 1 |
+docs/conformance/support-summary.md	line:61	| `BACNET-12-EVENT-PARAMETERS-FRAMING` | Clause 12.12, Clause 21 | P1 | supported-with-clause-evidence | 1 |
+docs/conformance/support-summary.md	line:62	| `BACNET-12-OOS-RELIABILITY-WRITABILITY` | Clause 12.17 Table 12-20 footnote 7 (Loop); Clause 12 Out_Of_Service property texts (12.2/12.3/12.4/12.6/12.7/12.8/12.19/12.21/12.22 families); Clause 12.24 Schedule Reliability_Evaluation_Inhibit text; Clause 12.25 Table 12-29 and Clause 12.30 Table 12-35 (Trend Log / Trend Log Multiple); Clause 21 BACnetReliability | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:63	| `BACNET-12-RELINQUISH-DEFAULT-WRITABILITY` | Clause 12.3 Table 12-3 (Analog Output), Clause 12.7 Table 12-8 (Binary Output), Clause 12.8 Table 12-10 (Binary Value), Clause 12.19 Table 12-22 (Multi-state Output), Clause 12.20 Table 12-23 (Multi-state Value), Clause 12.26 Table 12-30 (Access Door), Clause 12.54 Table 12-64 (Lighting Output), Clause 12.55 Table 12-69 (Binary Lighting Output), Clause 12 value object tables; Clause 19 command prioritization | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:64	| `BACNET-12-BINARY-LIGHTING-OPERATIONS` | Clause 12.55 and Table 12-70, including 12.55.4.1 and 12.55.10.1; Clause 19.2 command prioritization; Clause 21 BACnetBinaryLightingPV | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:65	| `BACNET-12-REFERENCE-PROPERTY-WRITABILITY` | Clause 12.17 with Table 12-20 (Loop), Clause 12.23 with Table 12-27 (Pulse Converter Input_Reference), Clause 12.5 Table 12-5 (Averaging Object_Property_Reference - BACnetDeviceObjectPropertyReference), Clause 21 BACnetObjectPropertyReference / BACnetSetpointReference productions | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:66	| `BACNET-12-ALERT-ENROLLMENT-TABLE-12-61` | Clause 12.52 and Table 12-61; Clause 21 BACnetNotifyType; Clause 15.7 ReadPropertyMultiple | P1 | supported-with-clause-evidence | 4 |
+docs/conformance/support-summary.md	line:68	| `BACNET-12-TIME-DELAY-NORMAL` | Clause 13.3.2 CHANGE_OF_STATE, Clause 13.3.4 COMMAND_FAILURE, Clause 13.3.6 OUT_OF_RANGE (pTimeDelayNormal definitions and condition letters); Clause 12.2 Table 12-2 (Analog Input, O5), 12.3 Table 12-3 (Analog Output, O4), 12.4 Table 12-4 (Analog Value, O6), 12.6 Table 12-6 (Binary Input, O7), 12.7 Table 12-8 (Binary Output, O6), 12.8 Table 12-10 (Binary Value, O8), 12.18 Table 12-21 (Multi-state Input, O5), 12.19 Table 12-22 (Multi-state Output, O3), 12.20 Table 12-23 (Multi-state Value, O6) | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:69	| `BACNET-13-COV-SUBSCRIPTIONS` | Clauses 13.14-13.18 | P1 | implementation-present-needs-conformance-tests | 0 |
+docs/conformance/support-summary.md	line:71	| `BACNET-15-ARRAY-INDEX-GATING` | Clause 15.5.1.3, Clause 15.9.1.3 (with Clause 12.1.5) | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:72	| `BACNET-15-WP-EVENT-FIELD-VALIDATION` | Clause 15.9.1.3 (WriteProperty error table) with Clause 21 BACnetNotifyType / BACnetEventTransitionBits / BACnetLimitEnable productions | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:73	| `BACNET-15-STRUCTURED-WRITE-DECODE` | Clause 15.9 WriteProperty (15.9.1.2 Result(+), 15.9.1.3 Result(-)), Clause 15.10 WritePropertyMultiple, Clause 20.2.1 (concatenated elements) | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:74	| `BACNET-15-WPM-ORDERED-PREFIX-ERROR` | Clause 15.10 and 15.10.1.3 (WritePropertyMultiple service procedure and Result(-)); Clause 18.9 (Reject reasons); Clause 21 (Error and BACnetObjectPropertyReference productions) | P1 | supported-with-clause-evidence | 0 |
+docs/conformance/support-summary.md	line:76	| `BACNET-21-FORMAL-APDUS` | Clause 21 | P1 | implementation-present-needs-conformance-tests | 2 |
+docs/conformance/support-summary.md	line:77	| `BACNET-21-TIMESTAMP-CHOICE` | Clause 21 (BACnetTimeStamp), Clause 20.2.1.5 | P1 | supported-with-clause-evidence | 1 |
+docs/conformance/support-summary.md	line:78	| `BACNET-A-PICS` | Annex A | P1 | in-progress | 2 |
+docs/conformance/support-summary.md	line:79	| `BACNET-J-BVLC-FUNCTION-CODES` | Annex J.2 | P0 | implementation-present-needs-conformance-tests | 2 |
+docs/conformance/support-summary.md	line:8	- Scope: PR-0808 Alert Enrollment Table 12-61 property-model correction (#291): Present_Value is the explicit ObjectIdentifier of the last alert source; Notify_Type is implemented with configurable ALARM/EVENT values; metadata, Property_List, RPM selectors, PICS, Rust/Python APIs, and migration docs share the exact required-row projection; and the non-table Status_Flags, Out_Of_Service, and Reliability compatibility routes are removed. Existing Event_Detection_Enable reset/history, acknowledgement, and generic event-summary consumers remain intact. Fences: no Alert evaluator, source discovery, transition generation, notification sending, acknowledgement-flow implementation, or optional Alert Enrollment property expansion.
+docs/conformance/support-summary.md	line:83	| `BACNET-J-BBMD-BDT` | Annex J.4/J.5 | P0 | implementation-present-needs-conformance-tests | 3 |
+docs/conformance/support-summary.md	line:84	| `BACNET-J-FOREIGN-DEVICE-FDT` | Annex J.5 | P0 | implementation-present-needs-conformance-tests | 1 |
+docs/conformance/support-summary.md	line:90	| `BACNET-U-IPV6-BVLL` | Annex U | P2 | implementation-present-needs-conformance-tests | 2 |
+docs/conformance/support-summary.md	line:92	| `BACNET-AB-SC-BVLC-RESULT` | Annex AB.2.4 | P0 | implementation-present-needs-conformance-tests | 1 |
+docs/conformance/support-summary.md	line:93	| `BACNET-AB-SC-DATA-ATTRIBUTES` | Annex AB.3.4 | P0 | implementation-present-needs-conformance-tests | 0 |
+docs/conformance/support-summary.md	line:95	| `BACNET-AB-SC-HUB-CONNECTOR` | Annex AB.5 | P0 | supported-with-clause-evidence | 2 |
+docs/conformance/support-summary.md	line:99	| `BACNET-13-EVENT-ENROLLMENT-EVALUATOR` | Clause 12.12 with Table 12-14 (Event Enrollment Object Type; configured Event_Type excludes CHANGE_OF_RELIABILITY; Time_Delay_Normal Unsigned, conformance O, extract 16444-16446, property text 16887-16889); Clause 12.12 Table 12-15 (Time_Delay -> pTimeDelay mapping for every evaluated algorithm); Clause 13.2.2.1 (changed nonzero Reliability while FAULT is a To-Fault re-entry); Clause 13.2.2.1.4 (transition actions incl. the same-state rule); Clause 13.2.3 (Acked_Transitions on a received transition); Clause 13.2.5.2 Table 13-3 and Clause 13.2.5.3 (CHANGE_OF_RELIABILITY whenever From or To is FAULT); Clause 13.3 common introduction and 13.3.1/13.3.2/13.3.3/13.3.5/13.3.6 direction rules with the pTimeDelayNormal fallback; Figure 13-10 | P1 | supported-with-clause-evidence | 0 |

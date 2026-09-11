@@ -1,0 +1,71 @@
+path	location	statement
+README.md	line:10	- **BACnet/IP implementation** — async client and server paths with 30+ service modules under conformance review
+README.md	line:109	- **[`rusty-bacnet-btl-harness`](https://github.com/jscott3201/rusty-bacnet-btl-harness)** — external BTL Test Plan 26.1 harness project. Formal support status is tracked separately in the conformance ledger.
+README.md	line:11	- **Transport implementations** — BACnet/IP (UDP), BACnet/IPv6 (multicast), BACnet/SC (WebSocket+TLS with hub), MS/TP (serial), Ethernet (BPF); see the conformance ledger for current evidence status
+README.md	line:18	- **Conformance evidence** — draft Standard 135-2020 ledger and support summaries in [`docs/conformance/`](docs/conformance/standard-135-2020-ledger.md)
+README.md	line:196	claimed as BACnet/SC mTLS conformance evidence.
+README.md	line:276	## Supported Services
+README.md	line:313	The table below lists implemented transport code paths. Clause-level support evidence is tracked in the draft [conformance ledger](docs/conformance/standard-135-2020-ledger.md).
+README.md	line:324	Annex J NAT traversal and IPv4 BACnet/IP multicast (B/IP-M) are not claimed by the current BACnet/IP transport; their support direction is tracked in the conformance ledger.
+README.md	line:373	- [Conformance Ledger](docs/conformance/standard-135-2020-ledger.md) — draft Standard 135-2020 evidence map
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-OBJECT-MODEL	README Python server object methods
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-OBJECT-MODEL	README object model feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-12-OBJECT-MODEL	docs/rust-api.md object model
+docs/conformance/bacnet-135-2020.json	row:BACNET-20-ENCODING	README services
+docs/conformance/bacnet-135-2020.json	row:BACNET-20-ENCODING	docs/python-api.md property value APIs
+docs/conformance/bacnet-135-2020.json	row:BACNET-21-FORMAL-APDUS	README supported services
+docs/conformance/bacnet-135-2020.json	row:BACNET-21-FORMAL-APDUS	docs/python-api.md service APIs
+docs/conformance/bacnet-135-2020.json	row:BACNET-4-ARCHITECTURE	README workspace structure
+docs/conformance/bacnet-135-2020.json	row:BACNET-4-ARCHITECTURE	docs/architecture.md crate graph
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-SEGMENTATION-WINDOW	docs/python-api.md segmentation support
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-TSM-CLIENT	README supported services
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-TSM-CLIENT	docs/python-api.md transport examples
+docs/conformance/bacnet-135-2020.json	row:BACNET-5-TSM-SERVER	README supported services
+docs/conformance/bacnet-135-2020.json	row:BACNET-6-NPDU-CONTROL	docs/architecture.md packet flow
+docs/conformance/bacnet-135-2020.json	row:BACNET-6-ROUTER-MESSAGES	docs/architecture.md router model
+docs/conformance/bacnet-135-2020.json	row:BACNET-7-ETHERNET-LLC	README transports table: Ethernet
+docs/conformance/bacnet-135-2020.json	row:BACNET-7-ETHERNET-LLC	docs/rust-api.md ethernet feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-9-MSTP-FRAMES	README transports table: MS/TP
+docs/conformance/bacnet-135-2020.json	row:BACNET-9-MSTP-FRAMES	docs/rust-api.md MS/TP
+docs/conformance/bacnet-135-2020.json	row:BACNET-A-PICS	README BTL harness link
+docs/conformance/bacnet-135-2020.json	row:BACNET-A-PICS	docs/architecture.md BTL harness link
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-BVLC-RESULT	README BACnet/SC transport
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-CONNECTION-STATE	README BACnet/SC transport
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-FRAME	README BACnet/SC transport
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-HEARTBEAT	docs/python-api.md sc_heartbeat_interval_ms
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-HEARTBEAT	docs/rust-api.md with_heartbeat_interval_ms
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-HUB-CONNECTOR	README BACnet/SC Hub
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-HUB-CONNECTOR	docs/python-api.md ScHub
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-WEBSOCKET-TLS	README BACnet/SC WebSocket+TLS
+docs/conformance/bacnet-135-2020.json	row:BACNET-AB-SC-WEBSOCKET-TLS	docs/python-api.md BACnet/SC
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BBMD-BDT	README CLI BBMD commands
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BBMD-BDT	docs/CLI.md BBMD commands
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BBMD-BDT	docs/rust-api.md BBMD example
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BVLC-FUNCTION-CODES	README BACnet/IP feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-BVLC-FUNCTION-CODES	README transports table: BACnet/IP
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-FOREIGN-DEVICE-FDT	docs/CLI.md foreign device commands
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-FORWARDED-NPDU	README BACnet/IP feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-FORWARDED-NPDU	docs/CLI.md BBMD commands
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-ORIGINAL-BROADCAST-NPDU	README BACnet/IP feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-J-ORIGINAL-UNICAST-NPDU	README BACnet/IP feature
+docs/conformance/bacnet-135-2020.json	row:BACNET-U-IPV6-BVLL	README transports table: BACnet/IPv6
+docs/conformance/bacnet-135-2020.json	row:BACNET-U-IPV6-BVLL	docs/python-api.md BACnet/IPv6
+docs/conformance/support-summary.md	line:1	# BACnet Standard 135-2020 Support Summary
+docs/conformance/support-summary.md	line:20	| Status | implementation-present-needs-conformance-tests | 10 |
+docs/conformance/support-summary.md	line:29	| Status | supported-with-clause-evidence | 1 |
+docs/conformance/support-summary.md	line:3	> DRAFT internal support evidence. Generated from `docs/conformance/bacnet-135-2020.json`; this is not a BTL certification claim or formal PICS/BIBB declaration.
+docs/conformance/support-summary.md	line:41	| `BACNET-6-ROUTER-MESSAGES` | Clauses 6.4-6.6 | P1 | implementation-present-needs-conformance-tests | 1 |
+docs/conformance/support-summary.md	line:47	| `BACNET-12-OBJECT-MODEL` | Clauses 12-19 | P1 | implementation-present-needs-conformance-tests | 3 |
+docs/conformance/support-summary.md	line:48	| `BACNET-13-COV-SUBSCRIPTIONS` | Clauses 13.14-13.18 | P1 | implementation-present-needs-conformance-tests | 0 |
+docs/conformance/support-summary.md	line:50	| `BACNET-21-FORMAL-APDUS` | Clause 21 | P1 | implementation-present-needs-conformance-tests | 2 |
+docs/conformance/support-summary.md	line:51	| `BACNET-A-PICS` | Annex A | P1 | in-progress | 2 |
+docs/conformance/support-summary.md	line:52	| `BACNET-J-BVLC-FUNCTION-CODES` | Annex J.2 | P0 | implementation-present-needs-conformance-tests | 2 |
+docs/conformance/support-summary.md	line:56	| `BACNET-J-BBMD-BDT` | Annex J.4/J.5 | P0 | implementation-present-needs-conformance-tests | 3 |
+docs/conformance/support-summary.md	line:57	| `BACNET-J-FOREIGN-DEVICE-FDT` | Annex J.5 | P0 | implementation-present-needs-conformance-tests | 1 |
+docs/conformance/support-summary.md	line:63	| `BACNET-U-IPV6-BVLL` | Annex U | P2 | implementation-present-needs-conformance-tests | 2 |
+docs/conformance/support-summary.md	line:65	| `BACNET-AB-SC-BVLC-RESULT` | Annex AB.2.4 | P0 | implementation-present-needs-conformance-tests | 1 |
+docs/conformance/support-summary.md	line:66	| `BACNET-AB-SC-DATA-ATTRIBUTES` | Annex AB.3.4 | P0 | implementation-present-needs-conformance-tests | 0 |
+docs/conformance/support-summary.md	line:68	| `BACNET-AB-SC-HUB-CONNECTOR` | Annex AB.5 | P0 | supported-with-clause-evidence | 2 |
+docs/conformance/support-summary.md	line:74	Rows not marked `supported-with-clause-evidence` are the initial follow-up backlog. Later PRs should split broad family rows into smaller clause-backed rows before strengthening public support claims.
+docs/conformance/support-summary.md	line:8	- Scope: Clause 5 server segmented ComplexAck send-side SegmentACK behavior, covering client-direction SegmentACK validation, current-window positive and negative SegmentACK handling, final SegmentACK validation, timeout retransmission before idle cleanup, client Abort routing, routed NPDU source matching, segmented-response NPDU expecting-reply, nonblocking full-queue dispatch, same-peer sender replacement cleanup, and root conformance artifact relocation from `conformance/` to `docs/conformance/`.
+docs/conformance/support-summary.md	line:9	- Addenda/errata: Local source `_spec/2020_ASHRAE_Standard-135-BACnet-Data-Communication-Protocol.pdf` was reviewed for Clause 5 segmented APDU transfer and SegmentACK behavior. No external addenda/errata check was performed for this tranche, so the affected Clause 5 rows remain in gap statuses rather than `supported-with-clause-evidence`.

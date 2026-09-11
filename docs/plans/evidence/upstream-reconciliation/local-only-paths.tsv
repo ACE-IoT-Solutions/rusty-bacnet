@@ -1,0 +1,188 @@
+path	disposition	reason
+benchmarks/python/Dockerfile.runtime-ab	port	unique local path; preserve behavior unless tranche review proves otherwise
+benchmarks/python/bench_runtime_batch_ab.py	port	unique local path; preserve behavior unless tranche review proves otherwise
+benchmarks/python/compose.runtime-ab.yml	port	unique local path; preserve behavior unless tranche review proves otherwise
+benchmarks/python/run-runtime-ab.sh	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-cli/src/commands/router.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-client/src/client/cov.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-client/src/client/cov_notification_tests.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-client/src/client/cov_renewal.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-client/src/client/cov_tests.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-client/src/client/iam_events_tests.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-client/src/client/property.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-client/src/client/router_discovery.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-client/src/client/tests/confirmed.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-client/src/client/tests/lifecycle.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-client/src/client/tests/routed.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-network/src/layer/tests.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-network/src/lib.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-network/src/observer.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-network/src/router/control_messages.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-network/src/router/forwarding.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-network/src/router/runtime.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-network/src/router/tests.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-network/src/router/tests/control.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-network/src/router/tests/lifecycle.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-network/src/router/tests/lifecycle/failures.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-objects/src/multistate/tests/objects.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-objects/src/multistate/tests/objects/basic.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-objects/src/multistate/tests/objects/priority_factory.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-objects/src/network_port/tests.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-runtime/Cargo.toml	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/batch.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/cache.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/capability.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/catalog.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/config.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/device.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/device_scan.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/discovery.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/error.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/event.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/executor.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/health.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/lib.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/observation.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/planner.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/registry.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/runtime.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/runtime/batch.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/runtime/helpers.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/runtime/lifecycle.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/runtime/observation.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/runtime/scan.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/runtime/tests.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/runtime/tests/group_1.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-runtime/src/runtime/tests/group_2.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-runtime/src/runtime/tests/group_3.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-runtime/src/runtime/tests/group_4.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-runtime/src/runtime/tests/group_5.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-runtime/src/runtime/tests/group_6.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-runtime/src/runtime/tests/group_7.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-runtime/src/scan.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/scheduler.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/supervisor.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/topology.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/transport.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/transport/configuration.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/transport/discovery.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-runtime/src/transport/io.rs	port	repository-owned aggregate runtime is absent upstream
+crates/bacnet-server/src/cov_tests.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-server/src/handlers/tests/cov_limits.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-server/src/handlers/tests/write_cov_who/cov.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-server/src/handlers/tests/write_cov_who/who_delete.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-server/src/pics/tests/generation.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-server/src/pics/tests/runtime_contract.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-server/src/server/cov_lifecycle_tests.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-server/src/server/cov_notifications_reservation_tests.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-server/src/server/cov_notifications_single.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/bacnet-server/src/server/network_port_runtime.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/control.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/control/actor.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/control/persistence.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/control/tests.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/policy.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/policy_tests.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/port_impl.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/requests.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/socket.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/src/bip/tests/foreign_device.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-transport/src/bip/tests/management.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-transport/src/bip/tests/responses.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-transport/src/bip/tests/socket.rs	port	capability acceptance evidence must move with its behavior
+crates/bacnet-transport/src/virtual_network.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/bacnet-transport/tests/container/Dockerfile.mstp-pty	port	capability acceptance evidence must move with its behavior
+crates/bacnet-transport/tests/container/run-mstp-pty-in-container.sh	port	capability acceptance evidence must move with its behavior
+crates/bacnet-transport/tests/container/run-mstp-pty.sh	port	capability acceptance evidence must move with its behavior
+crates/bacnet-transport/tests/mstp_pty.rs	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/pyproject.toml	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/client/client_methods/cov_discovery.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/rusty-bacnet/src/client/client_methods/lifecycle_state.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/client/client_methods/management.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/client/client_methods/read_write.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/errors.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/router.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime/attachments.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime/conversions.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime/core.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime/helpers.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime/io.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime/lifecycle.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime/models.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/runtime/operations.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/server/server_methods/object_registration.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/types/apdu_observer.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/types/bbmd.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/rusty-bacnet/src/types/bvll_policy.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/types/cov.rs	needs-design	port contract onto upstream ownership and safety invariants
+crates/rusty-bacnet/src/types/foreign_device.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/types/iam.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/types/raw_value.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/types/router.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/src/types/rpm_wpm.rs	port	unique local path; preserve behavior unless tranche review proves otherwise
+crates/rusty-bacnet/tests/README.md	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/Dockerfile	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/Dockerfile.bacpypes3	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/Dockerfile.discovery-fast	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/Dockerfile.heterogeneous-runtime	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/Dockerfile.sc-runtime	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/Dockerfile.w12-campus	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/README.md	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/bacpypes3_bbmd.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/compose.foreign-device.yml	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/compose.w12-campus.yml	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/compose.w13-cross-stack.yml	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/compose.w3-bbmd-policy.yml	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/compose.w5-virtual-router.yml	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/compose.w6-cov.yml	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/compose.yml	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/discovery_fixture.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/foreign_device_fixture.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/heterogeneous_runtime_fixture.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-discovery.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-foreign-device.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-heterogeneous-runtime-in-container.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-heterogeneous-runtime.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-sc-runtime-in-container.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-sc-runtime.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-w12-campus.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-w13-cross-stack.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-w3-bbmd-policy.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-w5-virtual-router.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/run-w6-cov.sh	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/sc_runtime_fixture.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w12_bbmd.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w12_client.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w12_remote_host.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w13_bacpypes_role.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w13_compare.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w13_rust_role.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w3_bbmd_fixture.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w3_foreign_device.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w5_bacpypes3_scanner.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w5_virtual_router_host.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w6_cov_server.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/container/w6_cov_subscriber.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_apdu_observer.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_api_contract.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_bbmd_server.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_bip_loopback.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_bvll_management.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_bvll_policy.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_device_identity.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_error_taxonomy.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_foreign_device.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_object_metadata.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_raw_decode.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_server_object_retention.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/tests/test_virtual_router.py	port	capability acceptance evidence must move with its behavior
+crates/rusty-bacnet/uv.lock	port	unique local path; preserve behavior unless tranche review proves otherwise
+docs/plans/ace-ng-edge-python-parity-plan.md	evidence-only	historical planning/evidence; retain without treating as product behavior
+docs/plans/bacpypes3-feature-parity-workplan.md	evidence-only	historical planning/evidence; retain without treating as product behavior
+docs/plans/evidence/bacpypes3-feature-parity-evidence.md	evidence-only	historical planning/evidence; retain without treating as product behavior
+docs/plans/evidence/runtime-batch-ab-2026-07-15.md	evidence-only	historical planning/evidence; retain without treating as product behavior
+docs/plans/evidence/rust-native-runtime-verification-2026-07-15.md	evidence-only	historical planning/evidence; retain without treating as product behavior
+docs/plans/evidence/rust-native-source-manifest-2026-07-16.sha256	evidence-only	historical planning/evidence; retain without treating as product behavior
+rusty-bacnet-streaming-iam-proposal.md	evidence-only	review claim-by-claim after implementation
+tests/test_campus_routing.py	port	capability acceptance evidence must move with its behavior
