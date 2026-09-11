@@ -1,0 +1,5 @@
+ARG RUNTIME_BASE_IMAGE=localhost/rusty-bacnet-sc-runtime:dev
+FROM ${RUNTIME_BASE_IMAGE}
+
+COPY bench_runtime_batch_ab.py /benchmark.py
+ENTRYPOINT ["python", "/benchmark.py"]

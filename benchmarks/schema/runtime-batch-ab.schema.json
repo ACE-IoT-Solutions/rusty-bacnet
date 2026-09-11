@@ -1,0 +1,363 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jscott3201/rusty-bacnet/benchmarks/schema/runtime-batch-ab.schema.json",
+  "title": "Clean-wheel Python runtime A/B raw evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "suite",
+    "scenario",
+    "status",
+    "identities",
+    "environment",
+    "configuration",
+    "correctness",
+    "trials",
+    "process_before_stabilization"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "suite": { "const": "python-runtime-ab" },
+    "scenario": { "const": "direct-bip-six-property-read-v2" },
+    "status": {
+      "enum": ["running", "complete", "inconclusive-variance", "failed-correctness-or-cleanup"]
+    },
+    "identities": { "$ref": "#/$defs/identities" },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python", "python_executable", "rusty_bacnet_module", "platform", "machine", "cpu_count"],
+      "properties": {
+        "python": { "type": "string", "minLength": 1 },
+        "python_executable": { "type": "string", "minLength": 1 },
+        "rusty_bacnet_module": { "type": "string", "minLength": 1 },
+        "platform": { "type": "string", "minLength": 1 },
+        "machine": { "type": "string", "minLength": 1 },
+        "cpu_count": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interface", "broadcast", "port", "device_instance", "server_address", "warmups", "samples", "trials", "cancel_operations", "rss_sample_interval_ms", "alternating_trial_design"],
+      "properties": {
+        "interface": { "type": "string", "minLength": 1 },
+        "broadcast": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "device_instance": { "type": "integer", "minimum": 0, "maximum": 4194303 },
+        "server_address": { "type": "string", "minLength": 1 },
+        "warmups": { "type": "integer", "minimum": 1 },
+        "samples": { "type": "integer", "minimum": 1 },
+        "trials": { "type": "integer", "minimum": 1 },
+        "cancel_operations": { "type": "integer", "minimum": 1 },
+        "rss_sample_interval_ms": { "type": "integer", "minimum": 1 },
+        "alternating_trial_design": { "const": true }
+      }
+    },
+    "correctness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_values_checked_per_workflow"],
+      "properties": {
+        "fixture_values_checked_per_workflow": { "const": true },
+        "native_runtime_stabilization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["before", "after", "purpose"],
+          "properties": {
+            "before": { "$ref": "#/$defs/resourceSnapshot" },
+            "after": { "$ref": "#/$defs/resourceSnapshot" },
+            "purpose": { "type": "string", "minLength": 1 }
+          }
+        },
+        "submit_cancel_stabilization": { "$ref": "#/$defs/cancelArm" }
+      }
+    },
+    "trials": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/trial" }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coarse_throughput_cv", "chatty_throughput_cv", "median_coarse_workflows_per_second", "median_chatty_workflows_per_second", "median_speedup"],
+      "properties": {
+        "coarse_throughput_cv": { "type": "number", "minimum": 0 },
+        "chatty_throughput_cv": { "type": "number", "minimum": 0 },
+        "median_coarse_workflows_per_second": { "type": "number", "exclusiveMinimum": 0 },
+        "median_chatty_workflows_per_second": { "type": "number", "exclusiveMinimum": 0 },
+        "median_speedup": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "process_before_stabilization": { "$ref": "#/$defs/resourceSnapshot" },
+    "process_after_trials": { "$ref": "#/$defs/resourceSnapshot" },
+    "process_at_failure": { "$ref": "#/$defs/resourceSnapshot" },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message"],
+      "properties": {
+        "type": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["complete", "inconclusive-variance"] } } },
+      "then": { "required": ["aggregate", "process_after_trials"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "failed-correctness-or-cleanup" } } },
+      "then": { "required": ["failure", "process_at_failure"] }
+    }
+  ],
+  "$defs": {
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "wheel", "harness", "images", "build_environment"],
+      "properties": {
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["context", "sha", "ref", "dirty", "archive_sha256"],
+          "properties": {
+            "context": { "type": "string", "minLength": 1 },
+            "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+            "ref": { "type": "string", "minLength": 1 },
+            "dirty": { "type": "boolean" },
+            "archive_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "wheel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["filename", "sha256"],
+          "properties": {
+            "filename": { "type": "string", "pattern": "\\.whl$" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "harness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["base", "benchmark"],
+          "properties": {
+            "base": { "type": "string", "minLength": 1 },
+            "benchmark": { "type": "string", "minLength": 1 }
+          }
+        },
+        "build_environment": {
+          "type": "object",
+          "required": ["source_sha", "source_ref", "source_archive_sha256", "source_dirty", "rustc", "cargo", "builder_python", "maturin"],
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "fdSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "total", "classes", "entries"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "total": { "type": ["integer", "null"], "minimum": 0 },
+        "classes": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["fd", "class", "target"],
+            "properties": {
+              "fd": { "type": "string" },
+              "class": { "enum": ["socket", "pipe", "anon_inode", "file", "other"] },
+              "target": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "resourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["monotonic_ns", "cpu_seconds", "voluntary_context_switches", "involuntary_context_switches", "rss_bytes", "peak_rss_bytes", "file_descriptors"],
+      "properties": {
+        "monotonic_ns": { "type": "integer", "minimum": 0 },
+        "cpu_seconds": { "type": "number", "minimum": 0 },
+        "voluntary_context_switches": { "type": "integer", "minimum": 0 },
+        "involuntary_context_switches": { "type": "integer", "minimum": 0 },
+        "rss_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "peak_rss_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "file_descriptors": { "$ref": "#/$defs/fdSnapshot" }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "accepting_commands", "task_count", "supervisor_task_count", "attachment_task_count", "event_queue_depth", "event_lag_count", "cov_notification_lag_count", "i_am_observation_lag_count", "device_count", "device_observation_count", "capability_count", "cached_value_count", "observation_count", "attachment_ids", "attachment_states", "attachment_error_codes"],
+      "properties": {
+        "generation": { "type": "integer", "minimum": 0 },
+        "accepting_commands": { "type": "boolean" },
+        "task_count": { "type": "integer", "minimum": 0 },
+        "supervisor_task_count": { "type": "integer", "minimum": 0 },
+        "attachment_task_count": { "type": "integer", "minimum": 0 },
+        "event_queue_depth": { "type": "integer", "minimum": 0 },
+        "event_lag_count": { "type": "integer", "minimum": 0 },
+        "cov_notification_lag_count": { "type": "integer", "minimum": 0 },
+        "i_am_observation_lag_count": { "type": "integer", "minimum": 0 },
+        "device_count": { "type": "integer", "minimum": 0 },
+        "device_observation_count": { "type": "integer", "minimum": 0 },
+        "capability_count": { "type": "integer", "minimum": 0 },
+        "cached_value_count": { "type": "integer", "minimum": 0 },
+        "observation_count": { "type": "integer", "minimum": 0 },
+        "attachment_ids": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "attachment_states": { "type": "array", "items": { "type": "string" } },
+        "attachment_error_codes": { "type": "array", "items": { "type": ["string", "null"] } }
+      }
+    },
+    "resourceDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_seconds", "voluntary_context_switches", "involuntary_context_switches", "rss_bytes", "file_descriptors", "sockets"],
+      "properties": {
+        "cpu_seconds": { "type": "number", "minimum": 0 },
+        "voluntary_context_switches": { "type": "integer", "minimum": 0 },
+        "involuntary_context_switches": { "type": "integer", "minimum": 0 },
+        "rss_bytes": { "type": ["integer", "null"] },
+        "file_descriptors": { "type": ["integer", "null"] },
+        "sockets": { "type": "integer" }
+      }
+    },
+    "cleanupEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "passed", "before", "after"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "passed": { "const": true },
+        "before": { "$ref": "#/$defs/fdSnapshot" },
+        "after": { "$ref": "#/$defs/fdSnapshot" }
+      }
+    },
+    "arm": {
+      "type": "object",
+      "required": ["samples_ns", "rss_samples", "resources_before", "resources_after", "resource_delta", "p50_ns", "p95_ns", "p99_ns", "max_ns", "workflows_per_second", "properties_per_second", "python_calls_per_workflow"],
+      "additionalProperties": false,
+      "properties": {
+        "samples_ns": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } },
+        "rss_samples": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["monotonic_ns", "rss_bytes"],
+            "properties": {
+              "monotonic_ns": { "type": "integer", "minimum": 0 },
+              "rss_bytes": { "type": ["integer", "null"], "minimum": 0 }
+            }
+          }
+        },
+        "resources_before": { "$ref": "#/$defs/resourceSnapshot" },
+        "resources_after": { "$ref": "#/$defs/resourceSnapshot" },
+        "resource_delta": { "$ref": "#/$defs/resourceDelta" },
+        "p50_ns": { "type": "integer", "minimum": 0 },
+        "p95_ns": { "type": "integer", "minimum": 0 },
+        "p99_ns": { "type": "integer", "minimum": 0 },
+        "max_ns": { "type": "integer", "minimum": 0 },
+        "workflows_per_second": { "type": "number", "exclusiveMinimum": 0 },
+        "properties_per_second": { "type": "number", "exclusiveMinimum": 0 },
+        "python_calls_per_workflow": { "enum": [1, 6] }
+      }
+    },
+    "cancelArm": {
+      "type": "object",
+      "required": ["included_in_performance_comparison", "submitted", "cancel_found", "cancel_queued", "cancel_in_flight", "terminal_kinds", "health_before", "health_stabilization_samples", "cleanup"],
+      "additionalProperties": false,
+      "properties": {
+        "included_in_performance_comparison": { "const": false },
+        "submitted": { "type": "integer", "minimum": 1 },
+        "cancel_found": { "type": "integer", "minimum": 1 },
+        "cancel_queued": { "type": "integer", "minimum": 0 },
+        "cancel_in_flight": { "type": "integer", "minimum": 0 },
+        "terminal_kinds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outcomes", "exceptions"],
+          "properties": {
+            "outcomes": { "type": "integer", "minimum": 0 },
+            "exceptions": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "health_before": { "$ref": "#/$defs/health" },
+        "health_stabilization_samples": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/health" } },
+        "cleanup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stopped_health", "process"],
+          "properties": {
+            "stopped_health": { "$ref": "#/$defs/health" },
+            "process": { "$ref": "#/$defs/cleanupEvidence" }
+          }
+        }
+      }
+    },
+    "trial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trial", "arm_order", "chatty", "gathered", "coarse", "crossings", "cleanup"],
+      "properties": {
+        "trial": { "type": "integer", "minimum": 0 },
+        "arm_order": {
+          "oneOf": [
+            { "const": ["chatty", "gathered", "coarse"] },
+            { "const": ["coarse", "chatty", "gathered"] }
+          ]
+        },
+        "chatty": { "$ref": "#/$defs/arm" },
+        "gathered": { "$ref": "#/$defs/arm" },
+        "coarse": { "$ref": "#/$defs/arm" },
+        "crossings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["calls", "input_items", "output_items"],
+          "properties": {
+            "calls": { "type": "integer", "minimum": 1 },
+            "input_items": { "type": "integer", "minimum": 1 },
+            "output_items": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "cleanup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["client", "runtime"],
+          "properties": {
+            "client": { "$ref": "#/$defs/cleanupEvidence" },
+            "runtime": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["health_before", "health_after", "stopped_health", "process"],
+              "properties": {
+                "health_before": { "$ref": "#/$defs/health" },
+                "health_after": { "$ref": "#/$defs/health" },
+                "stopped_health": { "$ref": "#/$defs/health" },
+                "process": { "$ref": "#/$defs/cleanupEvidence" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

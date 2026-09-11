@@ -1,0 +1,49 @@
+services:
+  server:
+    image: ${BACNET_BENCH_IMAGE_NAME:-localhost/rusty-bacnet-runtime-ab:dev}
+    command: ["server"]
+    environment:
+      BACNET_INTERFACE: 172.32.0.10
+      BACNET_BROADCAST: 172.32.0.255
+      BACNET_PORT: "47808"
+      BACNET_DEVICE_INSTANCE: "4106"
+    networks:
+      benchmark:
+        ipv4_address: 172.32.0.10
+
+  client:
+    image: ${BACNET_BENCH_IMAGE_NAME:-localhost/rusty-bacnet-runtime-ab:dev}
+    command: ["client"]
+    environment:
+      BACNET_INTERFACE: 172.32.0.20
+      BACNET_BROADCAST: 172.32.0.255
+      BACNET_PORT: "47808"
+      BACNET_DEVICE_INSTANCE: "4106"
+      BACNET_SERVER_ADDRESS: 172.32.0.10:47808
+      BACNET_BENCH_OUTPUT: /results/runtime-batch-ab.json
+      BACNET_BENCH_WARMUPS: ${BACNET_BENCH_WARMUPS:-20}
+      BACNET_BENCH_SAMPLES: ${BACNET_BENCH_SAMPLES:-200}
+      BACNET_BENCH_TRIALS: ${BACNET_BENCH_TRIALS:-5}
+      BACNET_BENCH_CANCEL_OPERATIONS: ${BACNET_BENCH_CANCEL_OPERATIONS:-64}
+      BACNET_BENCH_RSS_INTERVAL_MS: ${BACNET_BENCH_RSS_INTERVAL_MS:-10}
+      BACNET_BENCH_BASE_IMAGE_ID: ${BACNET_BENCH_BASE_IMAGE_ID}
+      BACNET_BENCH_IMAGE_ID: ${BACNET_BENCH_IMAGE_ID}
+      BACNET_BENCH_SOURCE_CONTEXT: ${BACNET_BENCH_SOURCE_CONTEXT}
+      BACNET_BENCH_SOURCE_SHA: ${BACNET_BENCH_SOURCE_SHA}
+      BACNET_BENCH_SOURCE_REF: ${BACNET_BENCH_SOURCE_REF}
+      BACNET_BENCH_SOURCE_DIRTY: ${BACNET_BENCH_SOURCE_DIRTY}
+      BACNET_BENCH_SOURCE_ARCHIVE_SHA256: ${BACNET_BENCH_SOURCE_ARCHIVE_SHA256}
+    volumes:
+      - ${BACNET_BENCH_RESULT_DIR:-./results}:/results
+    depends_on:
+      - server
+    networks:
+      benchmark:
+        ipv4_address: 172.32.0.20
+
+networks:
+  benchmark:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.32.0.0/24
