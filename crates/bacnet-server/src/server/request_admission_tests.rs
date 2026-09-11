@@ -64,6 +64,7 @@ async fn dispatch(
             link_layer_group: false,
             is_group: false,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx,
         },
     )

@@ -6,10 +6,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bacnet_encoding::npdu::NpduAddress;
+use bacnet_encoding::primitives::encode_property_value;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
 use bacnet_types::error::Error;
-use bacnet_types::primitives::ObjectIdentifier;
+use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
+use bytes::BytesMut;
 
 mod policy;
 pub use policy::*;
@@ -32,8 +34,11 @@ pub struct CovSubscription {
     pub issue_confirmed_notifications: bool,
     /// When this subscription expires (None = infinite lifetime).
     pub expires_at: Option<Instant>,
-    /// Last present_value for which a COV notification was sent.
-    /// Used with COV_Increment to decide whether to fire again.
+    /// Legacy Real baseline retained for source compatibility.
+    ///
+    /// Detection uses the bounded generic snapshot owned by
+    /// [`CovSubscriptionTable`], so non-Real values and Status_Flags are also
+    /// compared without growing each public subscription value.
     pub last_notified_value: Option<f32>,
     /// Property-level filter (SubscribeCOVProperty only).
     pub monitored_property: Option<PropertyIdentifier>,
@@ -75,10 +80,76 @@ type SubKey = (
     Option<PropertyIdentifier>,
 );
 
+/// Maximum encoded size retained for one COV comparison component.
+///
+/// Values larger than this are deliberately not retained: they remain
+/// eligible for notification, but cannot grow the subscription table without
+/// bound.
+const MAX_COV_SNAPSHOT_COMPONENT_BYTES: usize = 4096;
+
+/// Bounded comparison state for the values covered by one subscription.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CovValueSnapshot {
+    primary: SnapshotValue,
+    status_flags: Option<Box<[u8]>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SnapshotValue {
+    Analog(f32),
+    Exact(Box<[u8]>),
+}
+
+impl CovValueSnapshot {
+    /// Snapshot a monitored value and, for whole-object subscriptions, the
+    /// Status_Flags value that participates in COV detection.
+    pub(crate) fn new(value: &PropertyValue, status_flags: Option<&PropertyValue>) -> Option<Self> {
+        let primary = match value {
+            PropertyValue::Real(value) => SnapshotValue::Analog(*value),
+            value => SnapshotValue::Exact(Self::encode_bounded(value)?),
+        };
+        let status_flags = match status_flags {
+            Some(value) => Some(Self::encode_bounded(value)?),
+            None => None,
+        };
+        Some(Self {
+            primary,
+            status_flags,
+        })
+    }
+
+    fn encode_bounded(value: &PropertyValue) -> Option<Box<[u8]>> {
+        let mut encoded = BytesMut::new();
+        encode_property_value(&mut encoded, value).ok()?;
+        (encoded.len() <= MAX_COV_SNAPSHOT_COMPONENT_BYTES)
+            .then(|| encoded.to_vec().into_boxed_slice())
+    }
+
+    fn changed_from(&self, baseline: &Self, cov_increment: Option<f32>) -> bool {
+        if self.status_flags != baseline.status_flags {
+            return true;
+        }
+
+        match (&self.primary, &baseline.primary) {
+            (SnapshotValue::Analog(current), SnapshotValue::Analog(last)) => {
+                if current == last {
+                    return false;
+                }
+                match cov_increment {
+                    Some(increment) if increment > 0.0 => (current - last).abs() >= increment,
+                    _ => true,
+                }
+            }
+            (current, last) => current != last,
+        }
+    }
+}
+
 /// Table of active COV subscriptions.
 #[derive(Debug)]
 pub struct CovSubscriptionTable {
     subs: HashMap<SubKey, CovSubscription>,
+    baselines: HashMap<SubKey, CovValueSnapshot>,
     peer_counts: HashMap<CovPeerKey, usize>,
     peer_indefinite_counts: HashMap<CovPeerKey, usize>,
     policy: CovPolicy,
@@ -103,6 +174,7 @@ impl CovSubscriptionTable {
     pub fn with_policy(policy: CovPolicy, counters: Arc<AtomicCovCounters>) -> Self {
         Self {
             subs: HashMap::new(),
+            baselines: HashMap::new(),
             peer_counts: HashMap::new(),
             peer_indefinite_counts: HashMap::new(),
             policy: policy.sanitized(),
@@ -155,6 +227,7 @@ impl CovSubscriptionTable {
         );
         let peer = sub.peer_key();
         let new_indefinite = sub.expires_at.is_none();
+        self.baselines.remove(&key);
         if let Some(old) = self.subs.insert(key, sub) {
             let old_indefinite = old.expires_at.is_none();
             if old_indefinite != new_indefinite {
@@ -220,6 +293,7 @@ impl CovSubscriptionTable {
 
     fn remove_internal(&mut self, key: &SubKey, was_cancelled: bool) -> bool {
         if let Some(sub) = self.subs.remove(key) {
+            self.baselines.remove(key);
             let peer = sub.peer_key();
             if let Some(count) = self.peer_counts.get_mut(&peer) {
                 *count = count.saturating_sub(1);
@@ -430,6 +504,7 @@ impl CovSubscriptionTable {
         }
         for key in to_remove {
             if let Some(sub) = self.subs.remove(&key) {
+                self.baselines.remove(&key);
                 let peer = sub.peer_key();
                 if let Some(count) = self.peer_counts.get_mut(&peer) {
                     *count = count.saturating_sub(1);
@@ -570,15 +645,15 @@ impl CovSubscriptionTable {
         Ok(())
     }
 
-    /// Update the last-notified value for a subscription.
-    pub fn set_last_notified_value(
+    /// Advance the last-notified snapshot for a subscription.
+    pub(crate) fn set_last_notified_snapshot(
         &mut self,
         mac: &[u8],
         network: Option<&NpduAddress>,
         process_id: u32,
         monitored_object: ObjectIdentifier,
         monitored_property: Option<PropertyIdentifier>,
-        value: f32,
+        snapshot: CovValueSnapshot,
     ) {
         let key = (
             MacAddr::from_slice(mac),
@@ -587,32 +662,37 @@ impl CovSubscriptionTable {
             monitored_object,
             monitored_property,
         );
-        if let Some(sub) = self.subs.get_mut(&key) {
-            sub.last_notified_value = Some(value);
+        if self.subs.contains_key(&key) {
+            self.baselines.insert(key, snapshot);
         }
     }
 
-    /// Check if a COV notification should fire for a subscription given
-    /// the current present_value and the object's COV_Increment.
+    /// Check if a COV notification should fire for a subscription given a
+    /// bounded snapshot and the effective COV_Increment.
     ///
     /// Returns `true` if:
-    /// - No COV_Increment (binary/multi-state objects — always notify)
-    /// - No previous notified value (first notification)
-    /// - `|current - last_notified| >= cov_increment`
-    pub fn should_notify(
+    /// - No previous snapshot (first notification)
+    /// - An analog delta is at least COV_Increment
+    /// - Any exact-value or Status_Flags component changed
+    pub(crate) fn should_notify(
+        &self,
         sub: &CovSubscription,
-        current_value: Option<f32>,
+        current: Option<&CovValueSnapshot>,
         cov_increment: Option<f32>,
     ) -> bool {
-        match (cov_increment, current_value) {
-            (Some(increment), Some(current)) => {
-                match sub.last_notified_value {
-                    None => true, // First notification — always fire
-                    Some(last) => (current - last).abs() >= increment,
-                }
-            }
-            _ => true, // No increment or no numeric value — always notify
-        }
+        let Some(current) = current else {
+            return true;
+        };
+        let key = (
+            sub.subscriber_mac.clone(),
+            sub.subscriber_network.clone(),
+            sub.subscriber_process_identifier,
+            sub.monitored_object_identifier,
+            sub.monitored_property,
+        );
+        self.baselines
+            .get(&key)
+            .is_none_or(|baseline| current.changed_from(baseline, cov_increment))
     }
 
     /// Number of active subscriptions.

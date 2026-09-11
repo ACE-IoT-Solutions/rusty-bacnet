@@ -36,6 +36,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             None,
             subscriptions,
             None,
+            false,
             &mut budget,
         )
         .await;
@@ -55,6 +56,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         changed_oid: Option<&ObjectIdentifier>,
         subscriptions: &[CovSubscription],
         snapshot: Option<&dyn bacnet_objects::traits::BACnetObject>,
+        pre_admitted: bool,
         budget: &mut EventBudget,
     ) {
         if comm_state.load(Ordering::Acquire) >= 1 || subscriptions.is_empty() {
@@ -68,28 +70,35 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let mut grouped: HashMap<(TsmPeer, u32, bool), Vec<CovSubscription>> = HashMap::new();
 
         if let Some(oid) = changed_oid {
-            let (current_pv, cov_increment) = {
+            let eligible = {
                 let db = db.read().await;
                 let object = match snapshot.or_else(|| db.get(oid)) {
                     Some(object) => object,
                     None => return,
                 };
-
-                let current_pv = match object.read_property(PropertyIdentifier::PRESENT_VALUE, None)
-                {
-                    Ok(PropertyValue::Real(value)) => Some(value),
-                    _ => None,
-                };
-
-                (current_pv, object.cov_increment())
+                let cov_increment = object.cov_increment();
+                let table = cov_table.read().await;
+                subscriptions
+                    .iter()
+                    .map(|sub| {
+                        let current = sub.monitored_property.and_then(|property| {
+                            object
+                                .read_property(property, sub.monitored_property_array_index)
+                                .ok()
+                                .and_then(|value| CovValueSnapshot::new(&value, None))
+                        });
+                        pre_admitted
+                            || table.should_notify(
+                                sub,
+                                current.as_ref(),
+                                sub.cov_increment.or(cov_increment),
+                            )
+                    })
+                    .collect::<Vec<_>>()
             };
 
-            for sub in subscriptions {
-                if CovSubscriptionTable::should_notify(
-                    sub,
-                    current_pv,
-                    sub.cov_increment.or(cov_increment),
-                ) {
+            for (sub, eligible) in subscriptions.iter().zip(eligible) {
+                if eligible {
                     grouped
                         .entry((
                             Self::cov_peer(sub),
@@ -212,16 +221,14 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     continue;
                 }
 
-                if let Ok(PropertyValue::Real(pv)) =
-                    object.read_property(PropertyIdentifier::PRESENT_VALUE, None)
-                {
+                if let Some(current_snapshot) = CovValueSnapshot::new(&property_value, None) {
                     last_notified.push((
                         sub.subscriber_mac.clone(),
                         sub.subscriber_network.clone(),
                         sub.subscriber_process_identifier,
                         sub.monitored_object_identifier,
                         sub.monitored_property,
-                        pv,
+                        current_snapshot,
                     ));
                 }
 
@@ -329,14 +336,14 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
             {
                 let mut table = cov_table.write().await;
-                for (mac, network, process_id, object_id, property_id, pv) in &last_notified {
-                    table.set_last_notified_value(
+                for (mac, network, process_id, object_id, property_id, snapshot) in &last_notified {
+                    table.set_last_notified_snapshot(
                         mac,
                         network.as_ref(),
                         *process_id,
                         *object_id,
                         *property_id,
-                        *pv,
+                        snapshot.clone(),
                     );
                 }
             }
@@ -416,14 +423,14 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 warn!(error = %e, "Failed to send COVNotificationMultiple");
             } else {
                 let mut table = cov_table.write().await;
-                for (mac, network, process_id, object_id, property_id, pv) in &last_notified {
-                    table.set_last_notified_value(
+                for (mac, network, process_id, object_id, property_id, snapshot) in &last_notified {
+                    table.set_last_notified_snapshot(
                         mac,
                         network.as_ref(),
                         *process_id,
                         *object_id,
                         *property_id,
-                        *pv,
+                        snapshot.clone(),
                     );
                 }
             }

@@ -55,6 +55,7 @@ async fn responder_moves_reply_sender_once_and_preserves_routed_destination() {
         link_layer_group: false,
         is_group: false,
         data_attributes: Vec::new(),
+        transport_meta: None,
         reply_tx: Some(reply_tx),
     };
 
@@ -88,6 +89,7 @@ async fn responder_moves_reply_sender_once_and_preserves_routed_destination() {
                 link_layer_group: false,
                 is_group: false,
                 data_attributes: Vec::new(),
+                transport_meta: None,
                 reply_tx: None,
             })
             .await,
@@ -122,6 +124,7 @@ async fn responder_routes_reply_to_original_source_via_immediate_router() {
             link_layer_group: false,
             is_group: false,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: None,
         })
         .await

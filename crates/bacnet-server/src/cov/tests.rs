@@ -63,80 +63,154 @@ fn multiple_subscribers_same_object() {
     assert_eq!(table.subscriptions_for(&ai1()).len(), 2);
 }
 
-#[test]
-fn should_notify_no_increment_always_fires() {
+fn snapshot(value: PropertyValue) -> CovValueSnapshot {
+    CovValueSnapshot::new(&value, None).unwrap()
+}
+
+fn table_with_baseline(value: PropertyValue) -> (CovSubscriptionTable, CovSubscription) {
     let sub = make_sub(&[1, 2, 3], 1, ai1());
-    // Binary/multi-state objects have no COV_Increment
-    assert!(CovSubscriptionTable::should_notify(&sub, Some(1.0), None));
+    let mut table = CovSubscriptionTable::new();
+    table.subscribe(sub.clone());
+    table.set_last_notified_snapshot(&[1, 2, 3], None, 1, ai1(), None, snapshot(value));
+    (table, sub)
 }
 
 #[test]
 fn should_notify_first_notification_always_fires() {
     let sub = make_sub(&[1, 2, 3], 1, ai1());
-    // First notification (last_notified_value = None)
-    assert!(CovSubscriptionTable::should_notify(
-        &sub,
-        Some(72.5),
-        Some(1.0)
-    ));
+    let table = CovSubscriptionTable::new();
+    let current = snapshot(PropertyValue::Real(72.5));
+    assert!(table.should_notify(&sub, Some(&current), Some(1.0)));
 }
 
 #[test]
-fn should_notify_change_exceeds_increment() {
-    let mut sub = make_sub(&[1, 2, 3], 1, ai1());
-    sub.last_notified_value = Some(70.0);
-    // Change of 2.5 >= increment of 1.0
-    assert!(CovSubscriptionTable::should_notify(
-        &sub,
-        Some(72.5),
-        Some(1.0)
-    ));
+fn analog_snapshot_applies_increment_and_requires_a_change() {
+    let (table, sub) = table_with_baseline(PropertyValue::Real(72.0));
+    let below = snapshot(PropertyValue::Real(72.3));
+    let exact = snapshot(PropertyValue::Real(73.0));
+    let unchanged = snapshot(PropertyValue::Real(72.0));
+
+    assert!(!table.should_notify(&sub, Some(&below), Some(1.0)));
+    assert!(table.should_notify(&sub, Some(&exact), Some(1.0)));
+    assert!(!table.should_notify(&sub, Some(&unchanged), Some(0.0)));
+    assert!(table.should_notify(&sub, Some(&below), Some(0.0)));
 }
 
 #[test]
-fn should_notify_change_below_increment() {
-    let mut sub = make_sub(&[1, 2, 3], 1, ai1());
-    sub.last_notified_value = Some(72.0);
-    // Change of 0.3 < increment of 1.0
-    assert!(!CovSubscriptionTable::should_notify(
-        &sub,
-        Some(72.3),
-        Some(1.0)
-    ));
+fn exact_snapshots_only_notify_on_binary_multistate_or_string_change() {
+    for (baseline, unchanged, changed) in [
+        (
+            PropertyValue::Enumerated(0),
+            PropertyValue::Enumerated(0),
+            PropertyValue::Enumerated(1),
+        ),
+        (
+            PropertyValue::Unsigned(2),
+            PropertyValue::Unsigned(2),
+            PropertyValue::Unsigned(3),
+        ),
+        (
+            PropertyValue::CharacterString("idle".into()),
+            PropertyValue::CharacterString("idle".into()),
+            PropertyValue::CharacterString("active".into()),
+        ),
+    ] {
+        let (table, sub) = table_with_baseline(baseline);
+        let unchanged = snapshot(unchanged);
+        let changed = snapshot(changed);
+        assert!(!table.should_notify(&sub, Some(&unchanged), None));
+        assert!(table.should_notify(&sub, Some(&changed), None));
+    }
 }
 
 #[test]
-fn should_notify_exact_increment() {
-    let mut sub = make_sub(&[1, 2, 3], 1, ai1());
-    sub.last_notified_value = Some(70.0);
-    // Change of exactly 1.0 == increment of 1.0 → fires
-    assert!(CovSubscriptionTable::should_notify(
-        &sub,
-        Some(71.0),
-        Some(1.0)
-    ));
-}
-
-#[test]
-fn should_notify_zero_increment_always_fires() {
-    let mut sub = make_sub(&[1, 2, 3], 1, ai1());
-    sub.last_notified_value = Some(72.0);
-    // COV_Increment = 0.0 means any change fires
-    assert!(CovSubscriptionTable::should_notify(
-        &sub,
-        Some(72.001),
-        Some(0.0)
-    ));
-}
-
-#[test]
-fn set_last_notified_value_updates() {
+fn whole_object_status_flags_change_bypasses_analog_increment() {
+    let sub = make_sub(&[1, 2, 3], 1, ai1());
     let mut table = CovSubscriptionTable::new();
-    table.subscribe(make_sub(&[1, 2, 3], 1, ai1()));
-    table.set_last_notified_value(&[1, 2, 3], None, 1, ai1(), None, 72.5);
+    table.subscribe(sub.clone());
+    let baseline = CovValueSnapshot::new(
+        &PropertyValue::Real(72.0),
+        Some(&PropertyValue::BitString {
+            unused_bits: 4,
+            data: vec![0],
+        }),
+    )
+    .unwrap();
+    table.set_last_notified_snapshot(&[1, 2, 3], None, 1, ai1(), None, baseline);
+    let current = CovValueSnapshot::new(
+        &PropertyValue::Real(72.1),
+        Some(&PropertyValue::BitString {
+            unused_bits: 4,
+            data: vec![0x80],
+        }),
+    )
+    .unwrap();
+    assert!(table.should_notify(&sub, Some(&current), Some(10.0)));
+}
 
-    let subs = table.subscriptions_for(&ai1());
-    assert_eq!(subs[0].last_notified_value, Some(72.5));
+#[test]
+fn oversized_exact_snapshot_is_not_retained() {
+    let oversized = PropertyValue::OctetString(vec![0; MAX_COV_SNAPSHOT_COMPONENT_BYTES + 1]);
+    assert!(CovValueSnapshot::new(&oversized, None).is_none());
+}
+
+#[test]
+fn deterministic_thousand_update_fixture_applies_analog_and_exact_criteria() {
+    fn notifications_for(
+        initial: PropertyValue,
+        updates: impl Iterator<Item = PropertyValue>,
+        increment: Option<f32>,
+    ) -> usize {
+        let sub = make_sub(&[1, 2, 3], 1, ai1());
+        let mut table = CovSubscriptionTable::new();
+        table.subscribe(sub.clone());
+        table.set_last_notified_snapshot(&[1, 2, 3], None, 1, ai1(), None, snapshot(initial));
+
+        let mut notifications = 0;
+        for value in updates {
+            let current = snapshot(value);
+            if table.should_notify(&sub, Some(&current), increment) {
+                notifications += 1;
+                table.set_last_notified_snapshot(&[1, 2, 3], None, 1, ai1(), None, current);
+            }
+        }
+        notifications
+    }
+
+    assert_eq!(
+        notifications_for(
+            PropertyValue::Real(0.0),
+            (1..=1_000).map(|value| PropertyValue::Real(value as f32)),
+            Some(10.0),
+        ),
+        100
+    );
+    assert_eq!(
+        notifications_for(
+            PropertyValue::Enumerated(0),
+            (1..=1_000).map(|value| PropertyValue::Enumerated(value % 2)),
+            None,
+        ),
+        1_000
+    );
+    assert_eq!(
+        notifications_for(
+            PropertyValue::Unsigned(1),
+            (1..=1_000).map(|value| PropertyValue::Unsigned((value % 3 + 1) as u64)),
+            None,
+        ),
+        1_000
+    );
+    assert_eq!(
+        notifications_for(
+            PropertyValue::CharacterString("a".into()),
+            (1..=1_000).map(|value| {
+                PropertyValue::CharacterString(if value % 2 == 0 { "a" } else { "b" }.into())
+            }),
+            None,
+        ),
+        1_000
+    );
 }
 
 #[test]

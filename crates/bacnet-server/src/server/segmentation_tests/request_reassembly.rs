@@ -115,6 +115,7 @@ async fn inject_routed_apdu(
             source_mac: router_mac.clone(),
             link_layer_group: false,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: None,
         })
         .await

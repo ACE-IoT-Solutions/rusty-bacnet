@@ -95,6 +95,7 @@ async fn request_payload_detachment_first_and_later_real_inputs_release_while_in
                 source_mac: router.clone(),
                 link_layer_group: false,
                 data_attributes: Vec::new(),
+                transport_meta: None,
                 reply_tx: None,
             })
             .await

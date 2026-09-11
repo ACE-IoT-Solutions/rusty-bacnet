@@ -111,6 +111,7 @@ fn wrap_apdu(apdu: Bytes, source_mac: &[u8], routed: Option<(u16, &[u8])>) -> Re
         source_mac: MacAddr::from_slice(source_mac),
         link_layer_group: false,
         data_attributes: Vec::new(),
+        transport_meta: None,
         reply_tx: None,
     }
 }
@@ -444,6 +445,7 @@ async fn test_confirmed_traffic_latency_bounded_during_discovery_flood() {
         source_mac: MacAddr::from_slice(client_mac),
         link_layer_group: false,
         data_attributes: Vec::new(),
+        transport_meta: None,
         reply_tx: None,
     })
     .await
@@ -645,6 +647,7 @@ fn mock_received(
         link_layer_group: false,
         is_group: false,
         data_attributes: Vec::new(),
+        transport_meta: None,
         reply_tx: None,
     }
 }

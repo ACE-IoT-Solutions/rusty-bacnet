@@ -305,6 +305,7 @@ async fn dispatch_test_apdu_from_network<T: TransportPort + 'static>(
             link_layer_group: false,
             is_group: false,
             data_attributes: Vec::new(),
+            transport_meta: None,
             reply_tx: None,
         },
     )
