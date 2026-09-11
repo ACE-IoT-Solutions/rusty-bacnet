@@ -303,11 +303,18 @@ async def submit_cancel_correctness_arm() -> dict[str, Any]:
     runtime = await start_discovered_runtime()
     health_before = health_snapshot(await runtime.health())
     try:
-        operations = await asyncio.gather(*[
-            runtime.submit_read_batch(runtime_reads(), timeout_ms=3_000, priority="background")
-            for _ in range(CANCEL_OPERATIONS)
-        ])
-        reports = await asyncio.gather(*[runtime.cancel(operation.operation_id) for operation in reversed(operations)])
+        operations = []
+        reports = []
+        # Cancel each operation immediately after submission. Submitting the
+        # entire set before cancelling made this guard depend on server speed:
+        # a fast local server could finish all batches before cancellation was
+        # attempted, even though cancellation itself remained correct.
+        for _ in range(CANCEL_OPERATIONS):
+            operation = await runtime.submit_read_batch(
+                runtime_reads(), timeout_ms=3_000, priority="background"
+            )
+            operations.append(operation)
+            reports.append(await runtime.cancel(operation.operation_id))
         terminals = await asyncio.gather(*[operation.result() for operation in operations], return_exceptions=True)
         found = sum(report.found for report in reports)
         if found == 0:
