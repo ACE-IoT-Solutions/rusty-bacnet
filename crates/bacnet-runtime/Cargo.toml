@@ -12,7 +12,7 @@ categories = ["network-programming"]
 [features]
 default = []
 mstp = ["bacnet-transport/serial"]
-sc = ["bacnet-transport/sc-tls", "dep:tokio-rustls"]
+sc = ["bacnet-client/sc-tls", "bacnet-transport/sc-tls", "dep:tokio-rustls"]
 
 [dependencies]
 bacnet-client.workspace = true
