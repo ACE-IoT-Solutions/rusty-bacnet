@@ -409,7 +409,11 @@ mod tests {
     #[tokio::test]
     async fn bacpypes_result_wire_from_cross_address_completes_and_renews_at_ttl_half() {
         let bbmd_ip = Ipv4Addr::new(127, 0, 0, 2);
-        let foreign_ip = Ipv4Addr::new(127, 0, 0, 3);
+        // Linux routes traffic to 127.0.0.2 through 127.0.0.1. Configuring an
+        // unassigned address such as 127.0.0.3 would still bind via INADDR_ANY,
+        // but the kernel would select 127.0.0.1 as the wire source and the BBMD
+        // response would correctly be addressed there.
+        let foreign_ip = Ipv4Addr::LOCALHOST;
         let bbmd = UdpSocket::bind(SocketAddrV4::new(bbmd_ip, 0))
             .await
             .unwrap();
@@ -420,6 +424,7 @@ mod tests {
             for _ in 0..2 {
                 let (length, sender) = bbmd.recv_from(&mut frame).await.unwrap();
                 assert_eq!(&frame[..length], &[0x81, 0x05, 0x00, 0x06, 0x00, 0x04]);
+                assert_eq!(sender.ip(), std::net::IpAddr::V4(foreign_ip));
                 arrivals.push(Instant::now());
                 // Exact Result encoding emitted by bacpypes3 0.0.102.
                 bbmd.send_to(&[0x81, 0x00, 0x00, 0x06, 0x00, 0x00], sender)
