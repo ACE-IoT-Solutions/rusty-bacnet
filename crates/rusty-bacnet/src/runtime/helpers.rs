@@ -95,13 +95,21 @@ pub(super) fn write_batch_request(
     }
 }
 
-pub(super) fn read_outcome_to_py(outcome: bacnet_runtime::ReadOutcome) -> PyRuntimeBatchOutcome {
+pub(super) fn read_outcome_to_py_with_shape(
+    outcome: bacnet_runtime::ReadOutcome,
+    shape: Option<(u32, Option<u32>)>,
+) -> PyRuntimeBatchOutcome {
     let error_code = outcome
         .error
         .as_ref()
         .map(|error| format!("{:?}", error.code));
     let retryable = outcome.error.as_ref().is_some_and(|error| error.retryable);
-    let value = decode_raw_value(outcome.raw_value.as_deref());
+    let value = match shape {
+        Some((property_id, array_index)) => {
+            decode_runtime_read_value(outcome.raw_value.as_deref(), property_id, array_index)
+        }
+        None => decode_raw_value(outcome.raw_value.as_deref()),
+    };
     PyRuntimeBatchOutcome {
         input_index: outcome.input_index,
         attachment_id: attachment_u128(outcome.device.attachment_id),
@@ -116,6 +124,29 @@ pub(super) fn read_outcome_to_py(outcome: bacnet_runtime::ReadOutcome) -> PyRunt
         error_code,
         retryable,
     }
+}
+
+pub(super) fn read_value_shapes(reads: &[PyRuntimeRead]) -> HashMap<usize, (u32, Option<u32>)> {
+    reads
+        .iter()
+        .map(|read| (read.input_index, (read.property_id, read.array_index)))
+        .collect()
+}
+
+fn decode_runtime_read_value(
+    raw: Option<&[u8]>,
+    property_id: u32,
+    array_index: Option<u32>,
+) -> Option<PyPropertyValue> {
+    raw.and_then(|raw| {
+        crate::types::decode_complete_property_value(
+            bacnet_types::enums::PropertyIdentifier::from_raw(property_id),
+            array_index,
+            raw,
+        )
+        .ok()
+        .map(PyPropertyValue::from_rust)
+    })
 }
 
 pub(super) fn write_outcome_to_py(outcome: bacnet_runtime::WriteOutcome) -> PyRuntimeBatchOutcome {
@@ -141,4 +172,68 @@ pub(super) fn write_outcome_to_py(outcome: bacnet_runtime::WriteOutcome) -> PyRu
 
 pub(super) fn decode_raw_value(raw: Option<&[u8]>) -> Option<PyPropertyValue> {
     raw.and_then(|raw| crate::types::decode_raw_value(raw, "").ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+    use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
+
+    fn encoded(values: &[PropertyValue]) -> Vec<u8> {
+        let mut bytes = BytesMut::new();
+        for value in values {
+            encode_property_value(&mut bytes, value).unwrap();
+        }
+        bytes.to_vec()
+    }
+
+    #[test]
+    fn runtime_whole_object_list_preserves_zero_one_and_multiple_members() {
+        let first = PropertyValue::ObjectIdentifier(
+            ObjectIdentifier::new(ObjectType::DEVICE, 123).unwrap(),
+        );
+        let second = PropertyValue::ObjectIdentifier(
+            ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+        );
+
+        for members in [vec![], vec![first.clone()], vec![first, second]] {
+            let decoded = decode_runtime_read_value(
+                Some(&encoded(&members)),
+                PropertyIdentifier::OBJECT_LIST.to_raw(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(decoded.inner, PropertyValue::List(members));
+        }
+    }
+
+    #[test]
+    fn runtime_scalar_and_indexed_results_remain_scalar() {
+        let scalar = PropertyValue::Unsigned(7);
+        assert_eq!(
+            decode_runtime_read_value(
+                Some(&encoded(std::slice::from_ref(&scalar))),
+                PropertyIdentifier::PRESENT_VALUE.to_raw(),
+                None,
+            )
+            .unwrap()
+            .inner,
+            scalar
+        );
+
+        let member = PropertyValue::ObjectIdentifier(
+            ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+        );
+        assert_eq!(
+            decode_runtime_read_value(
+                Some(&encoded(std::slice::from_ref(&member))),
+                PropertyIdentifier::OBJECT_LIST.to_raw(),
+                Some(1),
+            )
+            .unwrap()
+            .inner,
+            member
+        );
+    }
 }

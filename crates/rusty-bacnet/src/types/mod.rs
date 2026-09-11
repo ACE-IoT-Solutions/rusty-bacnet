@@ -63,7 +63,9 @@ pub use object_identifier::PyObjectIdentifier;
 pub use property_value::PyPropertyValue;
 pub use raw_value::{decode_raw_value, describe_tags, PyRawTag};
 pub use router_info::PyRouterInfo;
-pub(crate) use rpm_wpm::{py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py};
+pub(crate) use rpm_wpm::{
+    decode_complete_property_value, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
+};
 pub use timestamp::PyBACnetTimeStamp;
 
 // Module registration

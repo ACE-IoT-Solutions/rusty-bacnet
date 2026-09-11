@@ -12,6 +12,7 @@ impl PyBACnetRuntime {
         priority: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let priority = parse_priority(priority)?;
+        let value_shapes = read_value_shapes(&reads);
         let runtime = self.inner.clone();
         let crossings = Arc::clone(&self.crossings);
         crossings
@@ -50,7 +51,10 @@ impl PyBACnetRuntime {
                 .fetch_add(outcomes.len() as u64, Ordering::Relaxed);
             Ok(outcomes
                 .into_iter()
-                .map(read_outcome_to_py)
+                .map(|outcome| {
+                    let shape = value_shapes.get(&outcome.input_index).copied();
+                    read_outcome_to_py_with_shape(outcome, shape)
+                })
                 .collect::<Vec<_>>())
         })
     }
@@ -65,6 +69,7 @@ impl PyBACnetRuntime {
         priority: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let priority = parse_priority(priority)?;
+        let value_shapes = Arc::new(read_value_shapes(&reads));
         let runtime = self.inner.clone();
         let crossings = Arc::clone(&self.crossings);
         crossings
@@ -80,6 +85,7 @@ impl PyBACnetRuntime {
                 operation_id: operation.id.0,
                 inner: Arc::new(tokio::sync::Mutex::new(Some(operation))),
                 crossings,
+                value_shapes,
             })
         })
     }

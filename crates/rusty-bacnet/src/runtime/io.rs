@@ -164,6 +164,7 @@ pub struct PyRuntimeReadOperation {
     pub(super) operation_id: u64,
     pub(super) inner: Arc<tokio::sync::Mutex<Option<ReadBatchOperation>>>,
     pub(super) crossings: Arc<CrossingCounters>,
+    pub(super) value_shapes: Arc<HashMap<usize, (u32, Option<u32>)>>,
 }
 
 #[pymethods]
@@ -171,6 +172,7 @@ impl PyRuntimeReadOperation {
     fn result<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         let crossings = Arc::clone(&self.crossings);
+        let value_shapes = Arc::clone(&self.value_shapes);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let operation = inner
                 .lock()
@@ -183,7 +185,10 @@ impl PyRuntimeReadOperation {
                 .fetch_add(outcomes.len() as u64, Ordering::Relaxed);
             Ok(outcomes
                 .into_iter()
-                .map(read_outcome_to_py)
+                .map(|outcome| {
+                    let shape = value_shapes.get(&outcome.input_index).copied();
+                    read_outcome_to_py_with_shape(outcome, shape)
+                })
                 .collect::<Vec<_>>())
         })
     }

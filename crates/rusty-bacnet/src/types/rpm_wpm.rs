@@ -9,7 +9,7 @@ use super::*;
 /// A whole-array read can contain zero or more adjacent application values.
 /// Keep ordinary and indexed one-value results scalar for API compatibility,
 /// but retain the list shape for properties whose whole value is a flat list.
-fn decode_rpm_property_value(
+pub(crate) fn decode_complete_property_value(
     property: bacnet_enums::PropertyIdentifier,
     array_index: Option<u32>,
     encoded: &[u8],
@@ -74,7 +74,7 @@ pub(crate) fn rpm_ack_to_py(py: Python<'_>, ack: ReadPropertyMultipleACK) -> PyR
             )?;
             elem_dict.set_item("array_index", elem.property_array_index)?;
             if let Some(value_bytes) = &elem.property_value {
-                match decode_rpm_property_value(
+                match decode_complete_property_value(
                     elem.property_identifier,
                     elem.property_array_index,
                     value_bytes,
@@ -167,7 +167,8 @@ mod tests {
         );
 
         for members in [vec![], vec![first.clone()], vec![first, second]] {
-            let decoded = decode_rpm_property_value(object_list, None, &encoded(&members)).unwrap();
+            let decoded =
+                decode_complete_property_value(object_list, None, &encoded(&members)).unwrap();
             assert_eq!(decoded, PropertyValue::List(members));
         }
     }
@@ -176,7 +177,7 @@ mod tests {
     fn rpm_scalar_and_indexed_results_remain_scalar() {
         let scalar = PropertyValue::Unsigned(7);
         assert_eq!(
-            decode_rpm_property_value(
+            decode_complete_property_value(
                 bacnet_enums::PropertyIdentifier::PRESENT_VALUE,
                 None,
                 &encoded(std::slice::from_ref(&scalar)),
@@ -189,7 +190,7 @@ mod tests {
             ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
         );
         assert_eq!(
-            decode_rpm_property_value(
+            decode_complete_property_value(
                 bacnet_enums::PropertyIdentifier::OBJECT_LIST,
                 Some(1),
                 &encoded(std::slice::from_ref(&member)),
