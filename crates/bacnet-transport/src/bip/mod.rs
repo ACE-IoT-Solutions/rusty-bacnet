@@ -348,6 +348,15 @@ fn bvlc_result_error(msg: &BvllMessage) -> Error {
     }
 }
 
+fn recoverable_udp_receive_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+    )
+}
+
 /// Configuration for foreign device registration.
 #[derive(Debug, Clone)]
 pub struct ForeignDeviceConfig {
@@ -1180,6 +1189,14 @@ impl TransportPort for BipTransport {
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                         debug!(error = %e, "Dropping UDP datagram with invalid destination metadata");
+                    }
+                    Err(e) if recoverable_udp_receive_error(&e) => {
+                        // An unconnected UDP socket can surface an asynchronous
+                        // ICMP error from one unreachable peer through recvmsg.
+                        // It describes one datagram, not the local socket's
+                        // lifecycle; keep receiving so managed foreign-device
+                        // registration can recover when its BBMD restarts.
+                        debug!(error = %e, "Ignoring recoverable UDP peer receive error");
                     }
                     Err(e) => {
                         warn!(error = %e, "UDP recv error");

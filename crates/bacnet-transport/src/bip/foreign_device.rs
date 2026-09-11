@@ -270,9 +270,23 @@ impl RegistrationWorker {
 mod tests {
     use super::*;
     use crate::bbmd::ForeignDevicePolicy;
-    use crate::bip::{BipTransport, ForeignDeviceConfig};
+    use crate::bip::{recoverable_udp_receive_error, BipTransport, ForeignDeviceConfig};
     use crate::port::TransportPort;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn udp_peer_icmp_errors_do_not_end_the_shared_receive_loop() {
+        for kind in [
+            std::io::ErrorKind::ConnectionRefused,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+        ] {
+            assert!(recoverable_udp_receive_error(&std::io::Error::from(kind)));
+        }
+        assert!(!recoverable_udp_receive_error(&std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe,
+        )));
+    }
 
     #[test]
     fn transitions_reject_expire_and_recover_without_losing_result() {
@@ -387,5 +401,53 @@ mod tests {
         assert!(transport.start().await.is_err());
         assert!(transport.socket.is_none());
         assert!(transport.registration_task.is_none());
+    }
+
+    // Linux treats the complete 127/8 block as loopback, which lets this test
+    // exercise distinct wire source/destination addresses without host setup.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn bacpypes_result_wire_from_cross_address_completes_and_renews_at_ttl_half() {
+        let bbmd_ip = Ipv4Addr::new(127, 0, 0, 2);
+        let foreign_ip = Ipv4Addr::new(127, 0, 0, 3);
+        let bbmd = UdpSocket::bind(SocketAddrV4::new(bbmd_ip, 0))
+            .await
+            .unwrap();
+        let bbmd_port = bbmd.local_addr().unwrap().port();
+        let responder = tokio::spawn(async move {
+            let mut frame = [0_u8; 64];
+            let mut arrivals = Vec::new();
+            for _ in 0..2 {
+                let (length, sender) = bbmd.recv_from(&mut frame).await.unwrap();
+                assert_eq!(&frame[..length], &[0x81, 0x05, 0x00, 0x06, 0x00, 0x04]);
+                arrivals.push(Instant::now());
+                // Exact Result encoding emitted by bacpypes3 0.0.102.
+                bbmd.send_to(&[0x81, 0x00, 0x00, 0x06, 0x00, 0x00], sender)
+                    .await
+                    .unwrap();
+            }
+            arrivals
+        });
+
+        let mut foreign = BipTransport::new(foreign_ip, 0, Ipv4Addr::new(127, 255, 255, 255));
+        foreign.register_as_foreign_device(ForeignDeviceConfig {
+            bbmd_ip,
+            bbmd_port,
+            ttl: 4,
+        });
+        let handle = foreign.foreign_device_registration().unwrap();
+        let _rx = foreign.start().await.unwrap();
+        wait_for_state(&handle, ForeignDeviceRegistrationState::Registered).await;
+
+        let arrivals = tokio::time::timeout(Duration::from_secs(5), responder)
+            .await
+            .unwrap()
+            .unwrap();
+        let renewal = arrivals[1].duration_since(arrivals[0]);
+        assert!(
+            Duration::from_millis(1_700) <= renewal && renewal <= Duration::from_millis(2_300),
+            "renewal {renewal:?} was not near TTL/2"
+        );
+        foreign.stop().await.unwrap();
     }
 }
