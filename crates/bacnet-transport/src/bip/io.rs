@@ -57,25 +57,6 @@ pub(super) fn original_destination_matches(
     }
 }
 
-/// Send a Register-Foreign-Device message to a BBMD.
-pub(super) async fn send_register_foreign_device(
-    socket: &UdpSocket,
-    bbmd_addr: SocketAddrV4,
-    ttl: u16,
-) {
-    let payload = ttl.to_be_bytes().to_vec();
-    let mut buf = BytesMut::with_capacity(6);
-    if let Err(e) = encode_bvll(&mut buf, BvlcFunction::REGISTER_FOREIGN_DEVICE, &payload) {
-        warn!(error = %e, "Failed to encode Register-Foreign-Device");
-        return;
-    }
-    if let Err(e) = socket.send_to(&buf, bbmd_addr).await {
-        warn!(error = %e, "Failed to send Register-Foreign-Device");
-    } else {
-        debug!(bbmd = %bbmd_addr, ttl = ttl, "Sent Register-Foreign-Device");
-    }
-}
-
 /// Context for the BIP receive loop — holds all shared state needed to
 /// process incoming BVLL messages.
 pub(super) struct RecvContext {

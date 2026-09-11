@@ -27,15 +27,17 @@ use bacnet_types::error::Error;
 
 mod control;
 mod fanout;
+mod foreign_device;
 mod io;
 mod policy_bridge;
 mod rate_limit;
 pub use control::{BbmdControl, BbmdControlError, BbmdLifecycle, BbmdSnapshot};
 pub use fanout::{FanoutCounters, FanoutPolicy};
-use io::{
-    handle_bvll_message, original_destination_matches, resolve_local_ip,
-    send_register_foreign_device, RecvContext,
+pub use foreign_device::{
+    ForeignDeviceRegistrationHandle, ForeignDeviceRegistrationState,
+    ForeignDeviceRegistrationStatus,
 };
+use io::{handle_bvll_message, original_destination_matches, resolve_local_ip, RecvContext};
 pub use policy_bridge::{
     evaluate_narrowing_policy, BvllPolicy, BvllPolicyContext, BvllPolicyVerdict,
     EvaluatedBvllPolicy,
@@ -421,6 +423,8 @@ pub struct BipTransport {
     bbmd_fdt_purge_task: Option<JoinHandle<()>>,
     /// Foreign device config (when registered as a foreign device).
     foreign_device: Option<ForeignDeviceConfig>,
+    /// Read-only live registration telemetry capability.
+    foreign_device_registration: Option<ForeignDeviceRegistrationHandle>,
     /// Re-registration timer task.
     registration_task: Option<JoinHandle<()>>,
     /// Pending BVLC management response, including the expected sender and response kind.
@@ -476,6 +480,7 @@ impl BipTransport {
             bbmd_control_core: None,
             bbmd_fdt_purge_task: None,
             foreign_device: None,
+            foreign_device_registration: None,
             registration_task: None,
             pending_bvlc_response: Arc::new(StdMutex::new(None)),
             bvlc_request_lock: Arc::new(Mutex::new(())),
@@ -603,7 +608,13 @@ impl BipTransport {
     /// Configure this transport as a foreign device.
     /// Must be called before `start()`.
     pub fn register_as_foreign_device(&mut self, config: ForeignDeviceConfig) {
+        self.foreign_device_registration = Some(ForeignDeviceRegistrationHandle::new(config.ttl));
         self.foreign_device = Some(config);
+    }
+
+    /// Return a cloneable live status capability for managed registration.
+    pub fn foreign_device_registration(&self) -> Option<ForeignDeviceRegistrationHandle> {
+        self.foreign_device_registration.clone()
     }
 
     /// Get the BBMD state (if BBMD mode is enabled).
@@ -917,6 +928,15 @@ impl TransportPort for BipTransport {
                 "BIP transport already started",
             )));
         }
+        if self
+            .foreign_device
+            .as_ref()
+            .is_some_and(|configuration| configuration.ttl == 0)
+        {
+            return Err(Error::Encoding(
+                "foreign-device registration TTL must be non-zero".into(),
+            ));
+        }
 
         let socket2 = socket2::Socket::new(
             socket2::Domain::IPV4,
@@ -1179,19 +1199,24 @@ impl TransportPort for BipTransport {
             let bbmd_addr = SocketAddrV4::new(fd.bbmd_ip, fd.bbmd_port);
             let ttl = fd.ttl;
             let sock = self.socket.as_ref().unwrap().clone();
-
-            send_register_foreign_device(&sock, bbmd_addr, ttl).await;
-
-            // Re-register at TTL/2 interval
-            let interval = std::time::Duration::from_secs(((ttl as u64) / 2).max(30));
-            let reg_task = tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(interval);
-                ticker.tick().await; // Skip the first immediate tick
-                loop {
-                    ticker.tick().await;
-                    send_register_foreign_device(&sock, bbmd_addr, ttl).await;
+            let handle = self
+                .foreign_device_registration
+                .clone()
+                .expect("foreign-device configuration initializes telemetry");
+            let reg_task = tokio::spawn(
+                foreign_device::RegistrationWorker {
+                    socket: sock,
+                    bbmd_addr,
+                    ttl,
+                    handle,
+                    pending: Arc::clone(&self.pending_bvlc_response),
+                    request_lock: Arc::clone(&self.bvlc_request_lock),
+                    next_request_id: Arc::clone(&self.next_bvlc_request_id),
+                    quarantine: Arc::clone(&self.bvlc_result_quarantine),
+                    response_timeout: Self::BVLC_RESPONSE_TIMEOUT,
                 }
-            });
+                .run(),
+            );
             self.registration_task = Some(reg_task);
         }
 
