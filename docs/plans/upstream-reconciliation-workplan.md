@@ -147,7 +147,7 @@ Purpose: prove the upstream target before adding local behavior.
       in a documentation-only commit.
 - [ ] Run upstream's formatter, workspace checks, tests, Clippy, security, and
       feature-matrix commands unchanged.
-- [ ] Build and install the unmodified upstream wheel in a clean environment;
+- [x] Build and install the unmodified upstream wheel in a clean environment;
       record its API manifest and Python test result.
 - [ ] Record platform or environmental skips separately from failures.
 
@@ -182,12 +182,12 @@ Acceptance:
 Purpose: restore persisted direct/routed operations on upstream transaction
 ownership.
 
-- [ ] Port `DirectTarget` and `RoutedTarget`, including byte/range validation.
+- [x] Port `DirectTarget` and `RoutedTarget`, including byte/range validation.
 - [ ] Adapt RP, RPM, WP, WPM, file, device-management, and COV request entry
       points to upstream's canonical logical-peer/transaction model.
 - [ ] Preserve non-default B/IP ports, DNET, multi-byte DADR, array indexes,
       write priority, and response order.
-- [ ] Port Python timeout, protocol, Reject, Abort, BVLC, network-reject, and
+- [x] Port Python timeout, protocol, Reject, Abort, BVLC, network-reject, and
       per-property error projection.
 - [ ] Recreate routed segmentation coverage using upstream state machines.
 - [ ] Explicitly reject any design that matches a routed response by invoke ID
@@ -206,13 +206,13 @@ Acceptance:
 
 Purpose: restore the remainder of the original P0 Python parity boundary.
 
-- [ ] Port scoped/unscoped Who-Is-Router-To-Network collection and immutable
+- [x] Port scoped/unscoped Who-Is-Router-To-Network collection and immutable
       `RouterInfo` snapshots.
-- [ ] Port ephemeral-socket Python Read-BDT/Read-FDT with typed BVLC errors,
+- [x] Port ephemeral-socket Python Read-BDT/Read-FDT with typed BVLC errors,
       cancellation cleanup, and exact IP/port/mask/TTL projection.
-- [ ] Port managed direct/routed COV subscription renewal, cancellation, lag
+- [x] Port managed direct/routed COV subscription renewal, cancellation, lag
       reporting, and event iteration.
-- [ ] Preserve upstream's existing unsolicited COV ACK policy and routed ACK
+- [x] Preserve upstream's existing unsolicited COV ACK policy and routed ACK
       behavior.
 
 Acceptance:
@@ -228,15 +228,15 @@ Acceptance:
 Purpose: reintroduce the unique aggregate runtime without duplicating upstream
 transaction ownership.
 
-- [ ] Add `bacnet-runtime` as a workspace member alongside, not instead of,
+- [x] Add `bacnet-runtime` as a workspace member alongside, not instead of,
       `bacnet-endpoint-core`.
-- [ ] Port attachment configuration, registry, reconcile/rollback, supervisor,
+- [x] Port attachment configuration, registry, reconcile/rollback, supervisor,
       scheduler, batching, cache, scan, catalog, topology, health, and resource
       accounting modules.
-- [ ] Refactor runtime request dispatch to call upstream endpoint/client seams.
+- [x] Refactor runtime request dispatch to call upstream endpoint/client seams.
       Do not retain a second transaction coordinator.
-- [ ] Restore the coarse Python `BACnetRuntime` API and immutable result models.
-- [ ] Restore B/IP, MS/TP, and SC attachments using current upstream transport
+- [x] Restore the coarse Python `BACnetRuntime` API and immutable result models.
+- [x] Restore B/IP, MS/TP, and SC attachments using current upstream transport
       constructors and security requirements.
 - [ ] Preserve attachment-scoped device, route, COV, health, and event ownership.
 
@@ -253,15 +253,15 @@ Acceptance:
 
 Purpose: restore W1/W2 using upstream B/IP admission and endpoint flow.
 
-- [ ] Carry BVLC function, immediate UDP peer, Forwarded-NPDU originator, raw
+- [x] Carry BVLC function, immediate UDP peer, Forwarded-NPDU originator, raw
       MAC, SNET/SADR, and attachment identity through receive metadata.
-- [ ] Add the duplicate-preserving bounded `IAmEvent` stream without changing
+- [x] Add the duplicate-preserving bounded `IAmEvent` stream without changing
       upstream's merged discovery table semantics.
-- [ ] Project I-Am observations into runtime events and Python iterators with
+- [x] Project I-Am observations into runtime events and Python iterators with
       observable lag.
 - [ ] Port managed foreign-device startup, TTL/2 renewal, NAK/expiry/recovery
       state, status handles, runtime health, and Python errors.
-- [ ] Use upstream's explicit and bounded BBMD foreign-device admission policy;
+- [x] Use upstream's explicit and bounded BBMD foreign-device admission policy;
       do not restore unbounded FDT behavior.
 
 Acceptance:
@@ -277,7 +277,7 @@ Acceptance:
 
 Purpose: preserve W3/W11 while treating upstream safety behavior as invariant.
 
-- [ ] Reintroduce opt-in SO_REUSEPORT and interface isolation behind a narrowly
+- [x] Reintroduce opt-in SO_REUSEPORT and interface isolation behind a narrowly
       scoped B/IP socket configuration API.
 - [ ] Revalidate Linux and macOS same-port/wildcard/subnet-broadcast matrices
       against upstream's current UDP metadata and receive path.
@@ -306,14 +306,14 @@ Acceptance:
 
 Purpose: restore W5 on current router and endpoint boundaries.
 
-- [ ] Port the named N-node `VirtualNetwork` transport with explicit membership
+- [x] Port the named N-node `VirtualNetwork` transport with explicit membership
       ownership and bounded delivery.
-- [ ] Adapt `BACnetRouter` composition to upstream router control and forwarding
+- [x] Adapt `BACnetRouter` composition to upstream router control and forwarding
       types.
-- [ ] Preserve duplicate-network rejection, route learning, IARTN behavior,
+- [x] Preserve duplicate-network rejection, route learning, IARTN behavior,
       hop-count handling, and per-port counters.
-- [ ] Restore Python virtual server attachment and router lifecycle APIs.
-- [ ] Decide whether upstream endpoint-core can own each virtual endpoint
+- [x] Restore Python virtual server attachment and router lifecycle APIs.
+- [x] Decide whether upstream endpoint-core can own each virtual endpoint
       directly; document any remaining adapter layer.
 
 Acceptance:
@@ -328,11 +328,11 @@ Acceptance:
 
 Purpose: restore W4/W6 without replacing upstream server scheduling.
 
-- [ ] Port configurable Device identity with current upstream defaults and
+- [x] Port configurable Device identity with current upstream defaults and
       property validation.
 - [ ] Bind NetworkPort objects to live B/IP/BBMD state through a read-only
       snapshot boundary plus explicit control operations.
-- [ ] Port Python object registration metadata: description, units, state text,
+- [x] Port Python object registration metadata: description, units, state text,
       number of states, COV increment, and supported writable present values.
 - [ ] Express COV criteria through upstream object traits and notification
       engine; do not restore the local worker implementation.
@@ -353,7 +353,7 @@ Acceptance:
 Purpose: restore the low-coupling W7/W9/W10 surfaces after receive and runtime
 paths stabilize.
 
-- [ ] Port public hinted raw-value decoding and structured tag description with
+- [x] Port public hinted raw-value decoding and structured tag description with
       adversarial bounds and malformed-input tests.
 - [ ] Port the optional APDU observer with bounded queues, decode-failure
       projection, lag reporting, and clean shutdown.
@@ -563,3 +563,8 @@ scripts so their source commit and environment are explicit.
   ownership for endpoint/TSM/segmentation, BBMD safety, COV scheduling, and SC;
   retained local ownership for the aggregate runtime and differentiated Python,
   topology, control, observation, and cross-stack surfaces.
+- 2026-09-11: Confirmed that `bacnet-endpoint-core` owns canonical peer and
+  transaction coordination but its production adapters remain limited to a
+  direct, unsegmented ReadProperty seam. The aggregate runtime therefore
+  composes the full upstream `BACnetClient` per attachment and does not add a
+  parallel transaction coordinator.

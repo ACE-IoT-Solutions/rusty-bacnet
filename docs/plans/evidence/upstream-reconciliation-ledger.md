@@ -180,3 +180,31 @@ git diff --check -- docs/plans/evidence/upstream-reconciliation-ledger.md docs/p
 The two `archive/*` refs pre-existed this evidence generation and were verified
 before reading them. Creating or moving refs, deleting branches, and pushing
 were intentionally outside the generator.
+
+## Pinned upstream baseline verification
+
+The exact upstream target was checked in an isolated detached worktree before
+local product code was added. The temporary worktree was clean and removed
+afterward.
+
+| Command | Result | Duration |
+|---|---:|---:|
+| `cargo fmt --all -- --check` | pass | 1.03 s |
+| `cargo check --workspace --locked` | pass | 19.02 s |
+| `cargo test --workspace --exclude rusty-bacnet --locked --no-fail-fast` | pass | 101.92 s |
+| `cargo check -p rusty-bacnet --tests --locked` | pass | 6.69 s |
+
+The host used Rust/Cargo 1.96.0 and Python 3.14.6, while upstream pins Rust
+1.97.1 and advertises Python 3.11-3.13 for wheels. Two environment-dependent
+Rust integration tests and one doctest were ignored. Clippy, audit, deny,
+MSRV, the full feature matrix, and cross-platform jobs remain open gates; the
+table records a locally applicable baseline, not complete G1.
+
+The exact pinned target was subsequently rebuilt in another isolated detached
+worktree using `uvx maturin`, a fresh uv-managed CPython 3.13.14 environment,
+and the unmodified upstream `pyproject.toml`. The release wheel
+`rusty_bacnet-0.11.0-cp313-cp313-macosx_11_0_arm64.whl` built successfully,
+installed into the empty environment, and imported from `site-packages` rather
+than the source tree. The complete upstream Python suite passed: 91 tests and
+1,268 subtests in 44.96 seconds. The deterministic upstream API manifest is
+retained under `upstream/python-api.tsv` in this evidence directory.
