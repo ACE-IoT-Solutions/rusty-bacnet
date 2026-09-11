@@ -29,6 +29,7 @@ use bacnet_encoding::segmentation::{
     duplicate_in_window, max_segment_payload, split_payload, SegmentReceiver, SegmentedPduType,
 };
 use bacnet_network::layer::NetworkLayer;
+use bacnet_network::observer::ApduObserver;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::notification_class::{
     lookup_notification_recipients, resolve_transition_priority_ack,
@@ -512,9 +513,16 @@ pub struct ServerBuilder<T: TransportPort> {
     db: ObjectDatabase,
     transport: Option<T>,
     configured_device_bindings: Vec<DeviceBinding>,
+    apdu_observer: Option<ApduObserver>,
 }
 
 impl<T: TransportPort + 'static> ServerBuilder<T> {
+    /// Attach a bounded, passive network-layer APDU observer.
+    pub fn apdu_observer(mut self, observer: ApduObserver) -> Self {
+        self.apdu_observer = Some(observer);
+        self
+    }
+
     /// Declare the capabilities implemented by this caller-provided transport.
     /// Generic transports make no PICS transport claims unless this is set.
     pub fn runtime_capabilities(mut self, capabilities: crate::pics::RuntimeCapabilities) -> Self {
@@ -644,6 +652,7 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
             transport,
             Some(ClockConfig::default()),
             self.configured_device_bindings,
+            self.apdu_observer,
         )
         .await
     }
@@ -654,9 +663,16 @@ pub struct BipServerBuilder {
     config: ServerConfig,
     db: ObjectDatabase,
     configured_device_bindings: Vec<DeviceBinding>,
+    apdu_observer: Option<ApduObserver>,
 }
 
 impl BipServerBuilder {
+    /// Attach a bounded, passive network-layer APDU observer.
+    pub fn apdu_observer(mut self, observer: ApduObserver) -> Self {
+        self.apdu_observer = Some(observer);
+        self
+    }
+
     /// Set the local interface IP.
     pub fn interface(mut self, ip: Ipv4Addr) -> Self {
         self.config.interface = ip;
@@ -793,6 +809,7 @@ impl BipServerBuilder {
             transport,
             Some(ClockConfig::default()),
             self.configured_device_bindings,
+            self.apdu_observer,
         )
         .await
     }
@@ -801,6 +818,7 @@ impl BipServerBuilder {
 /// BACnet server with APDU dispatch and service handling.
 pub struct BACnetServer<T: TransportPort> {
     config: ServerConfig,
+    apdu_observer: Option<ApduObserver>,
     discovery_limiter: Arc<DiscoveryLimiter>,
     /// Server-owned clock controller; absent in explicit clockless mode.
     _clock: Option<Arc<ServerClock>>,
@@ -880,6 +898,7 @@ impl BACnetServer<BipTransport> {
             config,
             db: ObjectDatabase::new(),
             configured_device_bindings: Vec::new(),
+            apdu_observer: None,
         }
     }
 
@@ -967,6 +986,8 @@ mod shutdown;
 #[cfg(test)]
 mod acknowledge_alarm_tests;
 #[cfg(test)]
+mod apdu_observer_tests;
+#[cfg(test)]
 mod audit_log_query_tests;
 #[cfg(test)]
 mod binary_lighting_task_tests;
@@ -1016,6 +1037,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             db: ObjectDatabase::new(),
             transport: None,
             configured_device_bindings: Vec::new(),
+            apdu_observer: None,
         }
     }
 

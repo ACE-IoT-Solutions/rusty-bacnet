@@ -12,6 +12,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         transport: T,
         clock_config: Option<ClockConfig>,
         configured_device_bindings: Vec<DeviceBinding>,
+        apdu_observer: Option<ApduObserver>,
     ) -> Result<Self, Error> {
         // Validate every configured route against the concrete transport before
         // mutating the database or starting network work.
@@ -50,7 +51,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // actual link address (including a requested ephemeral B/IP port).
         let mut network_port_live =
             super::network_port_live::NetworkPortLiveController::bind(&mut db, &transport);
-        let mut network = NetworkLayer::new(transport);
+        let mut network = match apdu_observer.clone() {
+            Some(observer) => NetworkLayer::with_observer(transport, observer),
+            None => NetworkLayer::new(transport),
+        };
         let mut apdu_rx = network.start().await?;
         let local_mac = MacAddr::from_slice(network.local_mac());
         network_port_live
@@ -742,6 +746,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
         let server = Self {
             config,
+            apdu_observer,
             discovery_limiter,
             _clock: clock,
             network,

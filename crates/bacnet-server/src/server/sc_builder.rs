@@ -20,6 +20,7 @@ impl BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
             heartbeat_interval_ms: 30_000,
             heartbeat_timeout_ms: 60_000,
             reconnect: None,
+            apdu_observer: None,
         }
     }
 }
@@ -40,9 +41,16 @@ pub struct ScServerBuilder {
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
     reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
+    apdu_observer: Option<ApduObserver>,
 }
 
 impl ScServerBuilder {
+    /// Attach a bounded, passive network-layer APDU observer.
+    pub fn apdu_observer(mut self, observer: ApduObserver) -> Self {
+        self.apdu_observer = Some(observer);
+        self
+    }
+
     /// Set the hub WebSocket URL (e.g. `wss://hub.example.com/bacnet`).
     pub fn hub_url(mut self, url: &str) -> Self {
         self.hub_url = url.to_string();
@@ -288,6 +296,7 @@ impl ScServerBuilder {
             transport,
             Some(ClockConfig::default()),
             self.configured_device_bindings,
+            self.apdu_observer,
         )
         .await
     }

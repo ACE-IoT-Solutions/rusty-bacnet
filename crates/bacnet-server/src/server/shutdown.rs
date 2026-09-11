@@ -52,6 +52,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         while let Some(result) = self.notification_transactions.join_next().await {
             NotificationTransactions::observe(Some(result));
         }
+        if let Some(observer) = self.apdu_observer.as_ref() {
+            observer.close();
+        }
         Ok(())
     }
 }
@@ -59,5 +62,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 impl<T: TransportPort> Drop for BACnetServer<T> {
     fn drop(&mut self) {
         self.notification_transactions.close();
+        if let Some(observer) = self.apdu_observer.as_ref() {
+            observer.close();
+        }
     }
 }
