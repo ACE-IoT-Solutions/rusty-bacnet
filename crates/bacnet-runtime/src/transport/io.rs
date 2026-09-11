@@ -17,7 +17,7 @@ impl RuntimeTransport {
             #[cfg(feature = "mstp")]
             Self::Mstp(_) => None,
             #[cfg(feature = "sc")]
-            Self::Sc(client) => (client.sc_connection_state()
+            Self::Sc(client) => (*client.connection_state.borrow()
                 != bacnet_transport::sc::ScConnectionState::Connected)
                 .then_some(crate::ErrorCode::ScDisconnected),
         }

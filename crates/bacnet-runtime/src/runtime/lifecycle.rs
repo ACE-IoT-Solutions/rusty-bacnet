@@ -1,4 +1,11 @@
 use super::*;
+use crate::{AttachmentHealth, AttachmentState};
+
+fn synchronize_selection_health(index: &mut DeviceIndex, health: &[AttachmentHealth]) {
+    for attachment in health {
+        index.set_attachment_health(attachment.id, attachment.state == AttachmentState::Running);
+    }
+}
 
 impl BacnetRuntime {
     /// Validates configuration and starts an independently supervised runtime.
@@ -138,11 +145,20 @@ impl BacnetRuntime {
         }
 
         let generation = self.inner.generation.load(Ordering::Acquire);
-        let attachment_results = self.inner.registry.read().await.discover(&request).await;
+        // Sample dynamic transport health under the registry guard, then drop
+        // that guard before updating the device index. In particular, a
+        // disconnected SC attachment must not retain preferred selection over
+        // a healthy observation on another attachment.
+        let (attachment_results, attachment_health) = {
+            let registry = self.inner.registry.read().await;
+            let results = registry.discover(&request).await;
+            (results, registry.health())
+        };
         let mut observed_instances = std::collections::BTreeSet::new();
         let mut routers = Vec::new();
         let mut errors = Vec::new();
         let mut index = self.inner.device_index.write().await;
+        synchronize_selection_health(&mut index, &attachment_health);
         for (attachment_id, result) in attachment_results {
             for device in result.devices {
                 let observation = device_observation(attachment_id, device);
@@ -467,5 +483,59 @@ impl BacnetRuntime {
             tasks_aborted,
             remaining_attachments,
         })
+    }
+}
+
+#[cfg(test)]
+mod selection_health_tests {
+    use super::synchronize_selection_health;
+    use crate::{
+        AttachmentHealth, AttachmentId, AttachmentState, DeviceIndex, DeviceKey, DeviceObservation,
+        DevicePath,
+    };
+
+    fn observation(attachment_id: AttachmentId) -> DeviceObservation {
+        DeviceObservation {
+            key: DeviceKey {
+                attachment_id,
+                device_instance: 42,
+            },
+            path: DevicePath::Direct { mac: vec![1] },
+            vendor_id: 1,
+            max_apdu_length: 1476,
+            revision: 0,
+        }
+    }
+
+    fn health(id: AttachmentId, state: AttachmentState) -> AttachmentHealth {
+        AttachmentHealth {
+            id,
+            label: "SC attachment".to_owned(),
+            state,
+            last_error: None,
+            foreign_device_registration: None,
+        }
+    }
+
+    #[test]
+    fn failed_preferred_attachment_yields_to_healthy_alternative() {
+        let failed_sc = AttachmentId::from(1);
+        let healthy = AttachmentId::from(2);
+        let mut index = DeviceIndex::new(vec![failed_sc, healthy]);
+        index.upsert(observation(failed_sc));
+        index.upsert(observation(healthy));
+        index.set_preferred(42, Some(failed_sc));
+
+        synchronize_selection_health(
+            &mut index,
+            &[
+                health(failed_sc, AttachmentState::Failed),
+                health(healthy, AttachmentState::Running),
+            ],
+        );
+
+        let selection = index.selection(42);
+        assert_eq!(selection.selected.unwrap().key.attachment_id, healthy);
+        assert_eq!(selection.alternates[0].key.attachment_id, failed_sc);
     }
 }

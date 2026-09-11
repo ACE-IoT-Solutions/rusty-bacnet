@@ -13,12 +13,14 @@ use bacnet_transport::mstp::{MstpConfig as TransportMstpConfig, MstpTransport};
 #[cfg(feature = "mstp")]
 use bacnet_transport::mstp_serial::{SerialConfig, TokioSerialPort};
 #[cfg(feature = "sc")]
-use bacnet_transport::sc::{ScReconnectConfig, ScTransport};
+use bacnet_transport::sc::{ScReconnectConfig, ScTransport, WebSocketPort};
 #[cfg(feature = "sc")]
 use bacnet_transport::sc_tls::{ScNodeTlsConfig, TlsWebSocket};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use tokio::sync::broadcast;
+#[cfg(feature = "sc")]
+use tokio::sync::watch;
 
 use crate::discovery::router_observation;
 use crate::{AttachmentConfig, DevicePath, PropertyRead, RpmBatch, RuntimeError, TransportConfig};
@@ -51,7 +53,62 @@ pub enum RuntimeTransport {
     Mstp(BACnetClient<MstpTransport<TokioSerialPort>>),
     /// BACnet Secure Connect client and production TLS WebSocket transport.
     #[cfg(feature = "sc")]
-    Sc(BACnetClient<ScTransport<TlsWebSocket>>),
+    Sc(RuntimeScClient),
+}
+
+#[cfg(feature = "sc")]
+#[doc(hidden)]
+pub struct RuntimeScClient {
+    client: BACnetClient<ScTransport<InitialScWebSocket<TlsWebSocket>>>,
+    connection_state: watch::Receiver<bacnet_transport::sc::ScConnectionState>,
+}
+
+#[cfg(feature = "sc")]
+impl std::ops::Deref for RuntimeScClient {
+    type Target = BACnetClient<ScTransport<InitialScWebSocket<TlsWebSocket>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
+}
+
+#[cfg(feature = "sc")]
+impl std::ops::DerefMut for RuntimeScClient {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.client
+    }
+}
+
+/// Preserves the primary/failover roles when the primary TCP/TLS dial fails
+/// before [`ScTransport`] can run its normal initial failover handshake.
+#[cfg(feature = "sc")]
+#[doc(hidden)]
+pub enum InitialScWebSocket<W> {
+    /// A successfully established TLS WebSocket.
+    Connected(W),
+    /// A failed initial primary dial retained for transport-level failover.
+    Unavailable(std::sync::Arc<str>),
+}
+
+#[cfg(feature = "sc")]
+impl<W: WebSocketPort> WebSocketPort for InitialScWebSocket<W> {
+    async fn send(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
+        match self {
+            Self::Connected(ws) => ws.send(data).await,
+            Self::Unavailable(reason) => Err(bacnet_types::error::Error::Encoding(format!(
+                "initial BACnet/SC primary connection unavailable: {reason}"
+            ))),
+        }
+    }
+
+    async fn recv(&self) -> Result<Vec<u8>, bacnet_types::error::Error> {
+        match self {
+            Self::Connected(ws) => ws.recv().await,
+            Self::Unavailable(reason) => Err(bacnet_types::error::Error::Encoding(format!(
+                "initial BACnet/SC primary connection unavailable: {reason}"
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +189,20 @@ mod tests {
     };
 
     use super::RuntimeTransport;
+
+    #[cfg(feature = "sc")]
+    struct TestScWebSocket;
+
+    #[cfg(feature = "sc")]
+    impl bacnet_transport::sc::WebSocketPort for TestScWebSocket {
+        async fn send(&self, _data: &[u8]) -> Result<(), bacnet_types::error::Error> {
+            Ok(())
+        }
+
+        async fn recv(&self) -> Result<Vec<u8>, bacnet_types::error::Error> {
+            Ok(Vec::new())
+        }
+    }
 
     fn bip(interface: &str) -> AttachmentConfig {
         AttachmentConfig {
@@ -343,5 +414,28 @@ mod tests {
                 .unwrap_err();
         assert_eq!(error.code, ErrorCode::UnsupportedTransport);
         assert_eq!(error.attachment_id, Some(config.id));
+    }
+
+    #[cfg(feature = "sc")]
+    #[tokio::test]
+    async fn dead_primary_is_deferred_to_transport_only_when_failover_is_configured() {
+        use bacnet_transport::sc::WebSocketPort;
+        use bacnet_types::error::Error;
+
+        let selected = super::configuration::select_initial_sc_websocket::<TestScWebSocket>(
+            Err(Error::Encoding("primary TLS dial failed".to_owned())),
+            true,
+        )
+        .unwrap();
+        let error = selected.send(&[]).await.unwrap_err();
+        assert!(error.to_string().contains("primary TLS dial failed"));
+
+        let error = super::configuration::select_initial_sc_websocket::<TestScWebSocket>(
+            Err(Error::Encoding("primary TLS dial failed".to_owned())),
+            false,
+        )
+        .err()
+        .expect("a failed primary without failover must fail closed");
+        assert!(error.to_string().contains("primary TLS dial failed"));
     }
 }
