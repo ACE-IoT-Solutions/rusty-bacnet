@@ -14,6 +14,7 @@ use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipien
 use bacnet_types::enums::{EventState, EventType};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, Time};
 use bytes::Bytes;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use tokio::sync::mpsc;
 
@@ -23,10 +24,25 @@ const CONFIRMED_RECIPIENT: &[u8] = &[10, 0, 0, 3, 0xba, 0xc0];
 type RecordedFrames = StdArc<StdMutex<Vec<(Vec<u8>, Bytes)>>>;
 type FailedPeers = StdArc<StdMutex<Vec<Vec<u8>>>>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RecordingTransport {
     sends: RecordedFrames,
     failures: FailedPeers,
+    hold_notifications: StdArc<AtomicBool>,
+    notification_sends_started: StdArc<AtomicUsize>,
+    notification_release: StdArc<Semaphore>,
+}
+
+impl Default for RecordingTransport {
+    fn default() -> Self {
+        Self {
+            sends: Default::default(),
+            failures: Default::default(),
+            hold_notifications: Default::default(),
+            notification_sends_started: Default::default(),
+            notification_release: StdArc::new(Semaphore::new(0)),
+        }
+    }
 }
 
 impl TransportPort for RecordingTransport {
@@ -46,6 +62,15 @@ impl TransportPort for RecordingTransport {
             .lock()
             .unwrap()
             .push((mac.to_vec(), Bytes::copy_from_slice(npdu)));
+        if mac != REQUESTER && self.hold_notifications.load(Ordering::Acquire) {
+            self.notification_sends_started
+                .fetch_add(1, Ordering::AcqRel);
+            self.notification_release
+                .acquire()
+                .await
+                .expect("test notification semaphore must stay open")
+                .forget();
+        }
         if self.failures.lock().unwrap().iter().any(|item| item == mac) {
             Err(Error::Transport(std::io::Error::other(
                 "injected send failure",
@@ -138,6 +163,9 @@ struct Harness {
     config: ServerConfig,
     sends: RecordedFrames,
     failures: FailedPeers,
+    hold_notifications: StdArc<AtomicBool>,
+    notification_sends_started: StdArc<AtomicUsize>,
+    notification_release: StdArc<Semaphore>,
     oid: ObjectIdentifier,
     acknowledged_state: EventState,
 }
@@ -147,6 +175,9 @@ impl Harness {
         let transport = RecordingTransport::default();
         let sends = StdArc::clone(&transport.sends);
         let failures = StdArc::clone(&transport.failures);
+        let hold_notifications = StdArc::clone(&transport.hold_notifications);
+        let notification_sends_started = StdArc::clone(&transport.notification_sends_started);
+        let notification_release = StdArc::clone(&transport.notification_release);
         let mut db = ObjectDatabase::new();
         db.set_clock_reader(Some(StdArc::new(FixedClock)));
 
@@ -222,6 +253,9 @@ impl Harness {
             },
             sends,
             failures,
+            hold_notifications,
+            notification_sends_started,
+            notification_release,
             oid,
             acknowledged_state: EventState::HIGH_LIMIT,
         }
@@ -306,6 +340,16 @@ impl Harness {
     }
 }
 
+async fn wait_for_notification_sends(harness: &Harness, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while harness.notification_sends_started.load(Ordering::Acquire) < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("notification send did not reach its held boundary");
+}
+
 fn assert_ack(apdu: Apdu, invoke_id: u8) {
     let Apdu::SimpleAck(ack) = apdu else {
         panic!("expected requester SimpleACK");
@@ -384,6 +428,46 @@ async fn simple_ack_precedes_fresh_exact_unconfirmed_ack_notification() {
     assert_eq!(notification.to_state, EventState::HIGH_LIMIT.to_raw());
     assert!(notification.event_values.is_none());
     assert!(harness.acknowledged().await);
+}
+
+#[tokio::test]
+async fn completed_request_is_reusable_while_post_response_notification_is_held() {
+    let harness = StdArc::new(Harness::new(
+        vec![local_recipient(UNCONFIRMED_RECIPIENT, 101, false)],
+        0x07,
+        1_000,
+    ));
+    harness.hold_notifications.store(true, Ordering::Release);
+
+    let (first_tx, first_rx) = oneshot::channel();
+    let first_harness = StdArc::clone(&harness);
+    let first = tokio::spawn(async move {
+        first_harness.dispatch(0x31, Some(first_tx)).await;
+    });
+    assert_ack(
+        decode_apdu(decode_npdu(first_rx.await.unwrap()).unwrap().payload).unwrap(),
+        0x31,
+    );
+    wait_for_notification_sends(&harness, 1).await;
+
+    let (reuse_tx, reuse_rx) = oneshot::channel();
+    let reuse_harness = StdArc::clone(&harness);
+    let reuse = tokio::spawn(async move {
+        reuse_harness.dispatch(0x31, Some(reuse_tx)).await;
+    });
+    let reused_response = tokio::time::timeout(Duration::from_secs(2), reuse_rx)
+        .await
+        .expect("completed Invoke ID remained blocked by post-response work")
+        .expect("completed Invoke ID reuse was rejected");
+    assert_ack(
+        decode_apdu(decode_npdu(reused_response).unwrap().payload).unwrap(),
+        0x31,
+    );
+    wait_for_notification_sends(&harness, 2).await;
+
+    harness.notification_release.add_permits(2);
+    first.await.unwrap();
+    reuse.await.unwrap();
 }
 
 #[tokio::test]

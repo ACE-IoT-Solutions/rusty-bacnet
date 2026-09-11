@@ -572,6 +572,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     {
                         warn!(error = %e, "Failed to send Abort for segmentation-not-supported");
                     }
+                    if let Some(pending) = pending_request.take() {
+                        pending.complete();
+                    }
                 } else {
                     Self::spawn_segmented_complex_ack(
                         network,
@@ -657,6 +660,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         )
         .await;
 
+        if let Some(pending) = pending_request.take() {
+            pending.complete();
+        }
+
         if let Some(accepted) = accepted_acknowledgment {
             Self::send_acknowledgment_notification_with_bindings(
                 db,
@@ -727,10 +734,6 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     .await;
                 }
             }
-        }
-
-        if let Some(pending) = pending_request {
-            pending.complete();
         }
     }
 }
