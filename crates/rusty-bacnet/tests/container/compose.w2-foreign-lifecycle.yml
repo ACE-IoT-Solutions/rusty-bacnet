@@ -20,7 +20,9 @@ services:
     image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
     entrypoint: ["python", "/w2_bacpypes3_bbmd.py", "bbmd"]
     environment:
-      BACNET_BBMD_ADDRESS: 10.252.10.10/24:47808
+      # bacpypes3 applies its interface prefix to outbound unicast admission;
+      # use the carrier /16 so Result responses can reach the foreign /24.
+      BACNET_BBMD_ADDRESS: 10.252.10.10/16:47808
       BACNET_FOREIGN_DEVICE_TTL: "4"
       W2_ARTIFACT_PATH: /artifacts/w2-bbmd-events.jsonl
     volumes:
@@ -35,7 +37,7 @@ services:
     entrypoint: ["python", "/w2_bacpypes3_bbmd.py", "broadcaster"]
     environment:
       BACNET_INTERFACE: 10.252.10.20
-      BACNET_BROADCAST: 10.252.10.255
+      BACNET_BROADCAST: 10.252.255.255
       BACNET_PORT: "47808"
       BACNET_DEVICE_INSTANCE: "4190202"
     volumes:

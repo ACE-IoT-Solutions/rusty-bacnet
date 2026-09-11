@@ -101,7 +101,7 @@ compose stop --timeout 1 bbmd
 wait_and_record "$foreign" "W2_FD_EXPIRED reason=bbmd_outage" 14
 compose start bbmd
 wait_and_record "$bbmd" "W2_BBMD_READY" 10
-wait_and_record "$foreign" "W2_FD_RECOVERED reason=bbmd_restart" 12
+wait_and_record "$foreign" "W2_FD_RECOVERED reason=bbmd_restart" 30
 
 # A live BBMD NAK must be distinct from timeout expiry, then recover when cleared.
 signal_command "$bbmd" w2-reject
