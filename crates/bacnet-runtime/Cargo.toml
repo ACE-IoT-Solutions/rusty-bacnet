@@ -1,0 +1,37 @@
+[package]
+name = "bacnet-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Supervised multi-transport BACnet runtime"
+keywords = ["bacnet", "building-automation", "runtime", "async"]
+categories = ["network-programming"]
+
+[features]
+default = []
+mstp = ["bacnet-transport/serial"]
+sc = ["bacnet-transport/sc-tls", "dep:tokio-rustls"]
+
+[dependencies]
+bacnet-client.workspace = true
+bacnet-encoding.workspace = true
+bacnet-services.workspace = true
+bacnet-transport.workspace = true
+bacnet-types.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio-rustls = { workspace = true, optional = true }
+
+[dev-dependencies]
+bacnet-network.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true
