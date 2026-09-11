@@ -1,0 +1,54 @@
+services:
+  foreign:
+    image: localhost/rusty-bacnet-python-discovery:dev
+    entrypoint: ["python", "/w2_rust_foreign.py"]
+    environment:
+      BACNET_INTERFACE: 10.252.20.20
+      BACNET_BROADCAST: 10.252.20.255
+      BACNET_PORT: "47810"
+      BACNET_BBMD_ADDRESS: 10.252.10.10:47808
+      BACNET_FOREIGN_DEVICE_TTL: "4"
+      W2_ARTIFACT_PATH: /artifacts/w2-foreign-transitions.json
+    volumes:
+      - ./w2_rust_foreign.py:/w2_rust_foreign.py:ro
+      - ${W2_ARTIFACT_DIR}:/artifacts
+    networks:
+      w2_carrier:
+        ipv4_address: 10.252.20.20
+
+  bbmd:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w2_bacpypes3_bbmd.py", "bbmd"]
+    environment:
+      BACNET_BBMD_ADDRESS: 10.252.10.10/24:47808
+      BACNET_FOREIGN_DEVICE_TTL: "4"
+      W2_ARTIFACT_PATH: /artifacts/w2-bbmd-events.jsonl
+    volumes:
+      - ./w2_bacpypes3_bbmd.py:/w2_bacpypes3_bbmd.py:ro
+      - ${W2_ARTIFACT_DIR}:/artifacts
+    networks:
+      w2_carrier:
+        ipv4_address: 10.252.10.10
+
+  broadcaster:
+    image: localhost/rusty-bacnet-bacpypes3-bbmd:dev
+    entrypoint: ["python", "/w2_bacpypes3_bbmd.py", "broadcaster"]
+    environment:
+      BACNET_INTERFACE: 10.252.10.20
+      BACNET_BROADCAST: 10.252.10.255
+      BACNET_PORT: "47808"
+      BACNET_DEVICE_INSTANCE: "4190202"
+    volumes:
+      - ./w2_bacpypes3_bbmd.py:/w2_bacpypes3_bbmd.py:ro
+    networks:
+      w2_carrier:
+        ipv4_address: 10.252.10.20
+
+networks:
+  # Rootless Podman routes the carrier without source NAT.  The BBMD and
+  # broadcaster share one logical /24; the Rust foreign device uses another.
+  w2_carrier:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.252.0.0/16

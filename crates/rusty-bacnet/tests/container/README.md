@@ -3,6 +3,21 @@
 These are explicit, non-CI Podman acceptance fixtures. Each runner builds and
 installs a wheel before exercising it.
 
+Run the W2 managed foreign-device lifecycle fixture with:
+
+```sh
+crates/rusty-bacnet/tests/container/run-w2-foreign-lifecycle.sh
+```
+
+The runner starts an installed-wheel Rust runtime before a pinned-bacpypes3
+BBMD, then verifies pending registration, startup success, TTL/2 renewal,
+broadcast forwarding, rejection and expiry telemetry, BBMD-restart recovery,
+recovery after the rejection clears, and shutdown cancellation followed by
+bounded BBMD FDT expiry. It retains a transition JSON document, BBMD event JSON
+Lines, resolved compose
+configuration, runner transcript, and service logs in `W2_ARTIFACT_DIR`. The
+fixture removes its scoped containers and network and is not wired into CI.
+
 Run the W13/M7 four-way cross-stack acceptance harness with:
 
 ```sh
