@@ -97,6 +97,10 @@ class LifecycleBBMD(BBMDLinkLayer):
                     f"W2_BBMD_TTL_HALF_RENEWAL interval={interval:.3f} "
                     f"ttl={EXPECTED_TTL}"
                 )
+        else:
+            # A rejection breaks the consecutive-success series.  Recovery
+            # starts a new series rather than comparing across rejected cycles.
+            self.success_times.clear()
         return result
 
     def delete_foreign_device_table_entry(self, addr: IPv4Address) -> int:
