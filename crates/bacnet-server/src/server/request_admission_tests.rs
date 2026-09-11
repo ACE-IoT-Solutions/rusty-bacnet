@@ -226,7 +226,7 @@ async fn admission_independent_handlers_and_eight_owned_abort_workers_never_queu
 }
 
 #[tokio::test]
-async fn admission_pending_and_completed_duplicates_at_capacity_have_no_abort() {
+async fn admission_suppresses_pending_duplicate_but_admits_exact_request_after_completion() {
     let (mut server, _tx, mut started) = small_fixture().await;
     dispatch(&server, request(1), None, None).await;
     let original = observed(&mut started).await;
@@ -240,11 +240,19 @@ async fn admission_pending_and_completed_duplicates_at_capacity_have_no_abort() 
     );
     server.network.transport().release.notify_one();
     original.await.unwrap();
-    wait_reaped(&server).await;
-    dispatch(&server, request(2), None, None).await;
-    observed(&mut started).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while server.request_admission_counters().confirmed_active != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completed request did not release its admission");
+    // Once the first response has completed, the same peer may legally reuse
+    // the same Invoke ID for a byte-identical subsequent transaction.
     dispatch(&server, request(1), None, None).await;
-    dispatch(&server, request(2), None, None).await;
+    let reused = observed(&mut started).await;
+    // It is still suppressed while that new transaction is active.
+    dispatch(&server, request(1), None, None).await;
     assert_eq!(
         server.request_admission_counters().confirmed_admitted_total,
         2
@@ -257,6 +265,67 @@ async fn admission_pending_and_completed_duplicates_at_capacity_have_no_abort() 
     );
     assert_eq!(server.request_admission_counters().abort_admitted_total, 0);
     assert_eq!(server.network.transport().frames.lock().unwrap().len(), 2);
+    server.network.transport().release.notify_one();
+    reused.await.unwrap();
+    server.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn bip_read_property_survives_two_invoke_id_wraps_and_returns_changed_value() {
+    use bacnet_client::client::BACnetClient;
+    use bacnet_encoding::primitives::encode_property_value;
+    use bacnet_objects::analog::AnalogInputObject;
+
+    let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
+    let mut database = ObjectDatabase::new();
+    database
+        .add(Box::new(
+            AnalogInputObject::new(1, "invoke-wrap", 62).unwrap(),
+        ))
+        .unwrap();
+    let mut server = BACnetServer::bip_builder()
+        .interface(Ipv4Addr::LOCALHOST)
+        .port(0)
+        .database(database)
+        .build()
+        .await
+        .unwrap();
+    let mut client = BACnetClient::bip_builder()
+        .interface(Ipv4Addr::LOCALHOST)
+        .port(0)
+        .build()
+        .await
+        .unwrap();
+
+    for _ in 0..512 {
+        client
+            .read_property(
+                server.local_mac(),
+                oid,
+                PropertyIdentifier::PRESENT_VALUE,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    server
+        .set_present_value_local(&oid, PropertyValue::Real(42.0))
+        .await
+        .unwrap();
+    let wrapped = client
+        .read_property(
+            server.local_mac(),
+            oid,
+            PropertyIdentifier::PRESENT_VALUE,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut expected = bytes::BytesMut::new();
+    encode_property_value(&mut expected, &PropertyValue::Real(42.0)).unwrap();
+    assert_eq!(wrapped.property_value, expected);
+
+    client.stop().await.unwrap();
     server.stop().await.unwrap();
 }
 

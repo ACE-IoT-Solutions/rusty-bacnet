@@ -1,20 +1,18 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use super::request_peer::{canonical_requester, CanonicalRequester};
 use bacnet_encoding::apdu::ConfirmedRequest;
 use bacnet_encoding::npdu::NpduAddress;
 
-/// Local retention and resource policy for exact confirmed-request detection.
+/// Local resource policy for exact in-flight confirmed-request detection.
 ///
 /// Clause 5.3.5.3 requires a server to discard a duplicate when it can detect
-/// one, but does not mandate these bounds or exact-request discrimination. An
-/// identical legal Invoke ID reuse inside this window is necessarily
-/// indistinguishable and may therefore be discarded. No response is retained
-/// or replayed; expiry or server restart clears this guard, though a service-
-/// specific durable idempotency policy may still apply.
-const COMPLETED_RETENTION: Duration = Duration::from_secs(60);
+/// one, but does not mandate these bounds or exact-request discrimination. The
+/// generic tracker only suppresses an exact request while its handler is
+/// active. Completion releases the Invoke ID immediately so a client can reuse
+/// it for a later transaction; service-specific durable idempotency policies
+/// remain responsible for their own replay semantics.
 const MAX_ENTRIES: usize = 256;
 const MAX_TRACKED_SERVICE_REQUEST_BYTES: usize = 64 * 1024;
 
@@ -23,7 +21,6 @@ struct Entry {
     requester: CanonicalRequester,
     invoke_id: u8,
     request: ConfirmedRequest,
-    completed_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -61,16 +58,6 @@ impl ConfirmedRequestTracker {
         source_network: Option<&NpduAddress>,
         request: ConfirmedRequest,
     ) -> ConfirmedRequestAdmission {
-        self.begin_at(source_mac, source_network, request, Instant::now())
-    }
-
-    fn begin_at(
-        self: &Arc<Self>,
-        source_mac: &[u8],
-        source_network: Option<&NpduAddress>,
-        request: ConfirmedRequest,
-        now: Instant,
-    ) -> ConfirmedRequestAdmission {
         if request.service_request.len() > MAX_TRACKED_SERVICE_REQUEST_BYTES {
             return ConfirmedRequestAdmission::New(PendingConfirmedRequest::untracked(self));
         }
@@ -81,10 +68,6 @@ impl ConfirmedRequestTracker {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.entries.retain(|entry| match entry.completed_at {
-            None => true,
-            Some(completed_at) => completed_at + COMPLETED_RETENTION > now,
-        });
         if state.entries.iter().any(|entry| {
             entry.requester == requester && entry.invoke_id == invoke_id && entry.request == request
         }) {
@@ -92,22 +75,9 @@ impl ConfirmedRequestTracker {
         }
 
         if state.entries.len() >= MAX_ENTRIES {
-            let oldest_completed = state
-                .entries
-                .iter()
-                .enumerate()
-                .filter_map(|(index, entry)| {
-                    entry.completed_at.map(|completed_at| (index, completed_at))
-                })
-                .min_by_key(|(_, completed_at)| *completed_at)
-                .map(|(index, _)| index);
-            if let Some(index) = oldest_completed {
-                state.entries.remove(index);
-            } else {
-                // Every bounded slot is still executing. Detection is not safe
-                // here, so Clause 5.3.5.3 permits normal untracked service.
-                return ConfirmedRequestAdmission::New(PendingConfirmedRequest::untracked(self));
-            }
+            // Every bounded slot is still executing. Detection is not safe
+            // here, so Clause 5.3.5.3 permits normal untracked service.
+            return ConfirmedRequestAdmission::New(PendingConfirmedRequest::untracked(self));
         }
 
         let id = state.next_id;
@@ -117,7 +87,6 @@ impl ConfirmedRequestTracker {
             requester,
             invoke_id,
             request,
-            completed_at: None,
         });
         ConfirmedRequestAdmission::New(PendingConfirmedRequest {
             tracker: Arc::clone(self),
@@ -137,21 +106,16 @@ impl PendingConfirmedRequest {
     }
 
     pub(super) fn complete(self) {
-        self.complete_at(Instant::now());
-    }
-
-    fn complete_at(mut self, now: Instant) {
-        if let Some(id) = self.id {
-            let mut state = self
+        let mut this = self;
+        if let Some(id) = this.id {
+            let mut state = this
                 .tracker
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == id) {
-                entry.completed_at = Some(now);
-            }
+            state.entries.retain(|entry| entry.id != id);
         }
-        self.completed = true;
+        this.completed = true;
     }
 }
 
@@ -212,59 +176,37 @@ mod tests {
     }
 
     #[test]
-    fn exact_request_moves_from_pending_to_completed_until_window_boundary() {
+    fn exact_request_is_duplicate_only_while_pending() {
         let tracker = Arc::new(ConfirmedRequestTracker::default());
-        let started_at = Instant::now();
         let req = request(1, Bytes::from_static(b"request"));
-        let pending = expect_new(tracker.begin_at(b"peer", None, req.clone(), started_at));
+        let pending = expect_new(tracker.begin(b"peer", None, req.clone()));
         assert!(matches!(
-            tracker.begin_at(b"peer", None, req.clone(), started_at),
+            tracker.begin(b"peer", None, req.clone()),
             ConfirmedRequestAdmission::Duplicate
         ));
 
-        let completed_at = started_at + COMPLETED_RETENTION + Duration::from_secs(30);
+        pending.complete();
+        let reused = expect_new(tracker.begin(b"peer", None, req.clone()));
         assert!(matches!(
-            tracker.begin_at(b"peer", None, req.clone(), completed_at),
+            tracker.begin(b"peer", None, req),
             ConfirmedRequestAdmission::Duplicate
         ));
-        pending.complete_at(completed_at);
-        assert!(matches!(
-            tracker.begin_at(
-                b"peer",
-                None,
-                req.clone(),
-                completed_at + COMPLETED_RETENTION - Duration::from_millis(1)
-            ),
-            ConfirmedRequestAdmission::Duplicate
-        ));
-        assert!(matches!(
-            tracker.begin_at(b"peer", None, req, completed_at + COMPLETED_RETENTION),
-            ConfirmedRequestAdmission::New(_)
-        ));
+        reused.complete();
     }
 
     #[test]
-    fn complete_request_discrimination_allows_changed_invoke_reuse() {
+    fn completion_allows_exact_and_changed_invoke_reuse() {
         let tracker = Arc::new(ConfirmedRequestTracker::default());
-        let now = Instant::now();
         let first = request(7, Bytes::from_static(b"one"));
-        expect_new(tracker.begin_at(b"peer", None, first.clone(), now)).complete_at(now);
+        expect_new(tracker.begin(b"peer", None, first.clone())).complete();
 
-        assert!(matches!(
-            tracker.begin_at(b"peer", None, first, now),
-            ConfirmedRequestAdmission::Duplicate
-        ));
-        let changed_body = expect_new(tracker.begin_at(
-            b"peer",
-            None,
-            request(7, Bytes::from_static(b"two")),
-            now,
-        ));
-        drop(changed_body);
+        expect_new(tracker.begin(b"peer", None, first)).complete();
+        expect_new(tracker.begin(b"peer", None, request(7, Bytes::from_static(b"two"))))
+            .complete();
         let mut changed_service = request(7, Bytes::from_static(b"one"));
         changed_service.service_choice = ConfirmedServiceChoice::DELETE_OBJECT;
         assert!(matches!(
-            tracker.begin_at(b"peer", None, changed_service, now),
+            tracker.begin(b"peer", None, changed_service),
             ConfirmedRequestAdmission::New(_)
         ));
     }
@@ -272,110 +214,88 @@ mod tests {
     #[test]
     fn canonical_routed_origin_ignores_router_and_peers_remain_independent() {
         let tracker = Arc::new(ConfirmedRequestTracker::default());
-        let now = Instant::now();
         let req = request(2, Bytes::from_static(b"same"));
         let origin = routed(5, b"origin");
-        expect_new(tracker.begin_at(b"router-a", Some(&origin), req.clone(), now)).complete_at(now);
+        let pending = expect_new(tracker.begin(b"router-a", Some(&origin), req.clone()));
         assert!(matches!(
-            tracker.begin_at(b"router-b", Some(&origin), req.clone(), now),
+            tracker.begin(b"router-b", Some(&origin), req.clone()),
             ConfirmedRequestAdmission::Duplicate
         ));
         assert!(matches!(
-            tracker.begin_at(b"router-b", Some(&routed(6, b"origin")), req.clone(), now),
+            tracker.begin(b"router-b", Some(&routed(6, b"origin")), req.clone()),
             ConfirmedRequestAdmission::New(_)
         ));
         assert!(matches!(
-            tracker.begin_at(b"direct-a", None, req.clone(), now),
+            tracker.begin(b"direct-a", None, req.clone()),
             ConfirmedRequestAdmission::New(_)
         ));
         assert!(matches!(
-            tracker.begin_at(b"direct-b", None, req.clone(), now),
+            tracker.begin(b"direct-b", None, req.clone()),
             ConfirmedRequestAdmission::New(_)
         ));
+        pending.complete();
 
         let invalid = routed(0, b"claimed-origin");
-        let invalid_pending =
-            expect_new(tracker.begin_at(b"router-c", Some(&invalid), req.clone(), now));
-        invalid_pending.complete_at(now);
+        let invalid_pending = expect_new(tracker.begin(b"router-c", Some(&invalid), req.clone()));
         assert!(matches!(
-            tracker.begin_at(b"router-d", Some(&invalid), req, now),
+            tracker.begin(b"router-d", Some(&invalid), req),
             ConfirmedRequestAdmission::New(_)
         ));
+        invalid_pending.complete();
     }
 
     #[test]
-    fn completed_capacity_evicts_oldest_completion() {
+    fn sequential_completion_reclaims_capacity_across_invoke_id_wrap() {
         let tracker = Arc::new(ConfirmedRequestTracker::default());
-        let now = Instant::now();
-        for index in 0..MAX_ENTRIES {
-            let req = request(3, Bytes::from(vec![index as u8, (index >> 8) as u8]));
-            expect_new(tracker.begin_at(b"peer", None, req, now))
-                .complete_at(now + Duration::from_millis(index as u64));
+        for index in 0..512usize {
+            let invoke_id = index as u8;
+            let body = Bytes::from(vec![(index & 0xff) as u8, (index >> 8) as u8]);
+            expect_new(tracker.begin(b"peer", None, request(invoke_id, body))).complete();
+            assert!(tracker.state.lock().unwrap().entries.is_empty());
         }
 
-        expect_new(tracker.begin_at(
-            b"peer",
-            None,
-            request(3, Bytes::from_static(b"newest")),
-            now + Duration::from_millis(MAX_ENTRIES as u64),
-        ))
-        .complete_at(now + Duration::from_millis(MAX_ENTRIES as u64));
-        assert_eq!(tracker.state.lock().unwrap().entries.len(), MAX_ENTRIES);
-        assert!(matches!(
-            tracker.begin_at(b"peer", None, request(3, Bytes::from_static(&[1, 0])), now),
-            ConfirmedRequestAdmission::Duplicate
-        ));
-        assert!(matches!(
-            tracker.begin_at(b"peer", None, request(3, Bytes::from_static(&[0, 0])), now),
-            ConfirmedRequestAdmission::New(_)
-        ));
+        // The 513th request is byte-for-byte identical to the first request,
+        // including its legally reused Invoke ID, and must still be admitted.
+        expect_new(tracker.begin(b"peer", None, request(0, Bytes::from_static(&[0, 0]))))
+            .complete();
     }
 
     #[test]
     fn all_pending_capacity_and_oversize_requests_fall_back_untracked() {
         let tracker = Arc::new(ConfirmedRequestTracker::default());
-        let now = Instant::now();
         let mut pending = Vec::new();
         for index in 0..MAX_ENTRIES {
-            pending.push(expect_new(tracker.begin_at(
+            pending.push(expect_new(tracker.begin(
                 b"peer",
                 None,
                 request(4, Bytes::from(vec![index as u8, (index >> 8) as u8])),
-                now,
             )));
         }
         assert!(matches!(
-            tracker.begin_at(b"peer", None, request(4, Bytes::from_static(&[0, 0])), now),
+            tracker.begin(b"peer", None, request(4, Bytes::from_static(&[0, 0]))),
             ConfirmedRequestAdmission::Duplicate
         ));
-        let fallback = expect_new(tracker.begin_at(
+        let fallback = expect_new(tracker.begin(
             b"peer",
             None,
             request(4, Bytes::from_static(b"fallback")),
-            now,
         ));
         assert!(fallback.id.is_none());
         assert_eq!(tracker.state.lock().unwrap().entries.len(), MAX_ENTRIES);
         drop(fallback);
         assert!(matches!(
-            tracker.begin_at(
-                b"peer",
-                None,
-                request(4, Bytes::from_static(b"fallback")),
-                now
-            ),
+            tracker.begin(b"peer", None, request(4, Bytes::from_static(b"fallback"))),
             ConfirmedRequestAdmission::New(_)
         ));
         drop(pending);
 
-        let oversized = expect_new(tracker.begin_at(
+        let oversized = expect_new(tracker.begin(
             b"peer",
             None,
             request(
                 5,
                 Bytes::from(vec![0; MAX_TRACKED_SERVICE_REQUEST_BYTES + 1]),
             ),
-            now,
         ));
         assert!(oversized.id.is_none());
     }
@@ -383,18 +303,17 @@ mod tests {
     #[test]
     fn raii_drop_reclaims_cancelled_pending_and_restart_allows_service_again() {
         let tracker = Arc::new(ConfirmedRequestTracker::default());
-        let now = Instant::now();
         let req = request(6, Bytes::from_static(b"cancelled"));
-        let pending = expect_new(tracker.begin_at(b"peer", None, req.clone(), now));
+        let pending = expect_new(tracker.begin(b"peer", None, req.clone()));
         drop(pending);
         assert!(matches!(
-            tracker.begin_at(b"peer", None, req.clone(), now),
+            tracker.begin(b"peer", None, req.clone()),
             ConfirmedRequestAdmission::New(_)
         ));
 
         let restarted = Arc::new(ConfirmedRequestTracker::default());
         assert!(matches!(
-            restarted.begin_at(b"peer", None, req, now),
+            restarted.begin(b"peer", None, req),
             ConfirmedRequestAdmission::New(_)
         ));
     }
