@@ -1,5 +1,28 @@
 use super::super::*;
 
+fn runtime_capabilities_for(
+    transport_type: &str,
+    bbmd_configured: bool,
+) -> bacnet_server::pics::RuntimeCapabilities {
+    use bacnet_server::pics::{DataLinkSupport, NetworkLayerSupport, RuntimeCapabilities};
+
+    let data_link_layers = match transport_type {
+        "bip" => vec![DataLinkSupport::BipV4],
+        "ipv6" => vec![DataLinkSupport::BipV6],
+        "sc" => vec![DataLinkSupport::BacnetSc],
+        "mstp" => vec![DataLinkSupport::Mstp],
+        _ => Vec::new(),
+    };
+    RuntimeCapabilities {
+        data_link_layers,
+        network_layer: NetworkLayerSupport {
+            router: false,
+            bbmd: transport_type == "bip" && bbmd_configured,
+            foreign_device: false,
+        },
+    }
+}
+
 #[pymethods]
 impl BACnetServer {
     /// Start the server. It will begin responding to BACnet requests.
@@ -71,6 +94,12 @@ impl BACnetServer {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut db = ObjectDatabase::new();
+
+            // Derive PICS transport claims from the transport this startup will
+            // actually construct. Optional roles remain fail-closed unless the
+            // matching runtime component is enabled.
+            let runtime_capabilities =
+                runtime_capabilities_for(&transport_type, bbmd_transport_config.is_some());
 
             // Create device object
             let mut device = DeviceObject::new(DeviceConfig {
@@ -197,6 +226,7 @@ impl BACnetServer {
             let mut builder = server::BACnetServer::generic_builder()
                 .database(db)
                 .vendor_id(device_identity.vendor_id)
+                .runtime_capabilities(runtime_capabilities)
                 .request_admission_policy(request_admission_policy)
                 .read_property_multiple_budget(read_property_multiple_budget)
                 .get_alarm_summary_budget(get_alarm_summary_budget)
@@ -420,5 +450,38 @@ impl BACnetServer {
                 .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
             Ok(srv.comm_state())
         })
+    }
+}
+
+#[cfg(test)]
+mod runtime_capability_tests {
+    use super::runtime_capabilities_for;
+    use bacnet_server::pics::DataLinkSupport;
+
+    #[test]
+    fn transport_capabilities_match_the_configured_python_server_mode() {
+        for (mode, expected) in [
+            ("bip", DataLinkSupport::BipV4),
+            ("ipv6", DataLinkSupport::BipV6),
+            ("sc", DataLinkSupport::BacnetSc),
+            ("mstp", DataLinkSupport::Mstp),
+        ] {
+            let capabilities = runtime_capabilities_for(mode, false);
+            assert_eq!(capabilities.data_link_layers, vec![expected]);
+            assert!(!capabilities.network_layer.router);
+            assert!(!capabilities.network_layer.bbmd);
+            assert!(!capabilities.network_layer.foreign_device);
+        }
+    }
+
+    #[test]
+    fn bbmd_claim_requires_an_active_bip_bbmd_configuration() {
+        assert!(runtime_capabilities_for("bip", true).network_layer.bbmd);
+        for mode in ["ipv6", "sc", "mstp", "unknown"] {
+            assert!(!runtime_capabilities_for(mode, true).network_layer.bbmd);
+        }
+        assert!(runtime_capabilities_for("unknown", false)
+            .data_link_layers
+            .is_empty());
     }
 }
