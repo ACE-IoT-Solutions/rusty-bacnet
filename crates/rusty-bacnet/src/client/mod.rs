@@ -72,6 +72,7 @@ use crate::types::{
 #[pyclass(name = "BACnetClient")]
 pub struct BACnetClient {
     inner: ClientInner,
+    managed_cov: client_methods::managed_cov::ManagedCOVRegistry,
     transport_type: String,
     // BIP config
     interface: String,
@@ -102,8 +103,11 @@ mod client_methods {
     mod enrollment_alarm_covmulti_who_writegroup;
     mod file_list_private_text_life;
     mod lifecycle;
+    pub(super) mod managed_cov;
+    mod management;
     mod object_device_alarm;
     mod read_write;
+    mod router_discovery;
     mod vt_audit_time_directed;
 }
 

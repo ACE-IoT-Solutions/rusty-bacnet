@@ -423,6 +423,9 @@ pub struct BACnetClient<T: TransportPort> {
     network: Arc<NetworkLayer<T>>,
     tsm: Arc<Mutex<Tsm>>,
     device_table: Arc<Mutex<DeviceTable>>,
+    network_control_tx: broadcast::Sender<bacnet_network::layer::ReceivedNetworkControl>,
+    router_snapshot: Arc<Mutex<Vec<RouterInfo>>>,
+    router_discovery_lock: Arc<Mutex<()>>,
     cov_tx: broadcast::Sender<ReceivedCOVNotification>,
     device_tx: broadcast::Sender<DeviceEvent>,
     device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
@@ -826,6 +829,7 @@ mod property;
 mod requests;
 mod response_admission;
 mod routed_path_limits;
+mod router_discovery;
 mod segmentation;
 mod segmented_request;
 mod transaction_cleanup;
@@ -840,6 +844,7 @@ pub use cov_notifications::{
 pub use cov_renewal::{
     ManagedCOVSubscription, ManagedCOVSubscriptionEvent, ManagedCOVSubscriptionOptions,
 };
+pub use router_discovery::RouterInfo;
 
 #[cfg(test)]
 mod acknowledge_alarm_tests;

@@ -58,6 +58,7 @@ impl BACnetClient {
         let sc_device_uuid = crate::sc_identity::device_uuid(transport, sc_device_uuid)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
+            managed_cov: Arc::new(std::sync::Mutex::new(Vec::new())),
             transport_type: transport.to_string(),
             interface: interface.to_string(),
             port,
@@ -192,7 +193,9 @@ impl BACnetClient {
         _exc_tb: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let managed_cov = Arc::clone(&self.managed_cov);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            super::managed_cov::stop_managed_cov_subscriptions(&managed_cov).await;
             let arc = {
                 let mut guard = inner.lock().await;
                 guard.take()
@@ -217,7 +220,9 @@ impl BACnetClient {
     /// Explicitly stop the client.
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let managed_cov = Arc::clone(&self.managed_cov);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            super::managed_cov::stop_managed_cov_subscriptions(&managed_cov).await;
             let arc = {
                 let mut guard = inner.lock().await;
                 guard.take()

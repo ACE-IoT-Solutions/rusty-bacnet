@@ -43,6 +43,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 
         let mut network = NetworkLayer::new(transport);
         let mut network_control_rx = network.enable_network_control_receiver()?;
+        let (network_control_tx, _) =
+            broadcast::channel::<bacnet_network::layer::ReceivedNetworkControl>(256);
+        let network_control_tx_dispatch = network_control_tx.clone();
         let mut apdu_rx = network.start().await?;
         config.max_apdu_length = cap_max_apdu_to_transport(
             config.max_apdu_length,
@@ -56,6 +59,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let tsm = Arc::new(Mutex::new(new_coordinated_tsm(&config, coordinator)));
         let tsm_dispatch = Arc::clone(&tsm);
         let device_table = Arc::new(Mutex::new(DeviceTable::new()));
+        let router_snapshot = Arc::new(Mutex::new(Vec::new()));
+        let router_discovery_lock = Arc::new(Mutex::new(()));
         let device_table_dispatch = Arc::clone(&device_table);
         let network_dispatch = Arc::clone(&network);
         let (cov_tx, _) =
@@ -94,6 +99,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     control = network_control_rx.recv(), if network_control_open => {
                         match control {
                             Some(control) => {
+                                let _ = network_control_tx_dispatch.send(control.clone());
                                 routed_path_limits_dispatch
                                     .handle_network_control(&tsm_dispatch, control)
                                     .await;
@@ -185,6 +191,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             network,
             tsm,
             device_table,
+            network_control_tx,
+            router_snapshot,
+            router_discovery_lock,
             cov_tx,
             device_tx,
             device_collision_tx,

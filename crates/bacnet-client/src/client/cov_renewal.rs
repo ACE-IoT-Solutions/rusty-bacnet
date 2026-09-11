@@ -92,6 +92,21 @@ pub enum ManagedCOVSubscriptionEvent {
         /// Display form of the protocol, reject, abort, transport, or timeout error.
         error: String,
     },
+    /// Matching notification observations were lost to channel backpressure.
+    NotificationLagged {
+        /// Number of notifications skipped before the receiver recovered.
+        skipped: u64,
+    },
+}
+
+#[derive(Clone)]
+enum ManagedCOVTarget {
+    Direct(MacAddr),
+    Routed {
+        router_mac: MacAddr,
+        dest_network: u16,
+        dest_mac: MacAddr,
+    },
 }
 
 /// Handle for a managed finite COV subscription renewal task.
@@ -162,6 +177,54 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         lifetime: u32,
         options: ManagedCOVSubscriptionOptions,
     ) -> Result<ManagedCOVSubscription, Error> {
+        self.manage_cov_subscription_target(
+            ManagedCOVTarget::Direct(MacAddr::from_slice(destination_mac)),
+            subscriber_process_identifier,
+            monitored_object_identifier,
+            confirmed,
+            lifetime,
+            options,
+        )
+        .await
+    }
+
+    /// Start a managed finite SubscribeCOV renewal task through an explicit route.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn manage_cov_subscription_routed(
+        self: Arc<Self>,
+        router_mac: &[u8],
+        dest_network: u16,
+        dest_mac: &[u8],
+        subscriber_process_identifier: u32,
+        monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
+        confirmed: bool,
+        lifetime: u32,
+        options: ManagedCOVSubscriptionOptions,
+    ) -> Result<ManagedCOVSubscription, Error> {
+        self.manage_cov_subscription_target(
+            ManagedCOVTarget::Routed {
+                router_mac: MacAddr::from_slice(router_mac),
+                dest_network,
+                dest_mac: MacAddr::from_slice(dest_mac),
+            },
+            subscriber_process_identifier,
+            monitored_object_identifier,
+            confirmed,
+            lifetime,
+            options,
+        )
+        .await
+    }
+
+    async fn manage_cov_subscription_target(
+        self: Arc<Self>,
+        target: ManagedCOVTarget,
+        subscriber_process_identifier: u32,
+        monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
+        confirmed: bool,
+        lifetime: u32,
+        options: ManagedCOVSubscriptionOptions,
+    ) -> Result<ManagedCOVSubscription, Error> {
         if lifetime == 0 {
             return Err(Error::Encoding(
                 "managed COV subscriptions require a finite non-zero lifetime".into(),
@@ -169,11 +232,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
         options.validate(lifetime)?;
 
-        let destination_mac = MacAddr::from_slice(destination_mac);
         let mut notifications = self.cov_notifications();
 
-        self.subscribe_cov(
-            &destination_mac,
+        subscribe_managed_target(
+            &self,
+            &target,
             subscriber_process_identifier,
             monitored_object_identifier,
             confirmed,
@@ -187,6 +250,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let last_event_for_task = Arc::clone(&last_event);
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let client = Arc::clone(&self);
+        let renewal_target = target.clone();
         let mut renew_at = TokioInstant::now() + options.renewal_delay(lifetime);
 
         let task = tokio::spawn(async move {
@@ -196,8 +260,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 tokio::select! {
                     _ = &mut stop_rx => break,
                     _ = &mut renew_sleep => {
-                        let renewal = client.subscribe_cov(
-                            &destination_mac,
+                        let renewal = subscribe_managed_target(
+                            &client,
+                            &renewal_target,
                             subscriber_process_identifier,
                             monitored_object_identifier,
                             confirmed,
@@ -235,12 +300,19 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     received = notifications.recv() => {
                         let received = match received {
                             Ok(received) => received,
-                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                publish_managed_cov_event(
+                                    &events_tx_for_task,
+                                    &last_event_for_task,
+                                    ManagedCOVSubscriptionEvent::NotificationLagged { skipped },
+                                );
+                                continue;
+                            }
                             Err(broadcast::error::RecvError::Closed) => break,
                         };
                         if !matches_managed_cov_notification(
                             &received,
-                            &destination_mac,
+                            &renewal_target,
                             subscriber_process_identifier,
                             monitored_object_identifier,
                         ) {
@@ -298,13 +370,74 @@ fn publish_managed_cov_event(
 
 fn matches_managed_cov_notification(
     received: &ReceivedCOVNotification,
-    destination_mac: &[u8],
+    target: &ManagedCOVTarget,
     subscriber_process_identifier: u32,
     monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
 ) -> bool {
-    received.notification.subscriber_process_identifier == subscriber_process_identifier
-        && received.notification.monitored_object_identifier == monitored_object_identifier
-        && received.source_network.is_none()
-        && received.source_address.is_none()
-        && &received.source_mac[..] == destination_mac
+    if received.notification.subscriber_process_identifier != subscriber_process_identifier {
+        return false;
+    }
+    if received.notification.monitored_object_identifier != monitored_object_identifier {
+        return false;
+    }
+    match target {
+        ManagedCOVTarget::Direct(destination_mac) => {
+            received.source_network.is_none()
+                && received.source_address.is_none()
+                && received.source_mac == *destination_mac
+        }
+        ManagedCOVTarget::Routed {
+            router_mac,
+            dest_network,
+            dest_mac,
+        } => {
+            received.source_mac == *router_mac
+                && received.source_network == Some(*dest_network)
+                && received.source_address.as_ref() == Some(dest_mac)
+        }
+    }
 }
+
+async fn subscribe_managed_target<T: TransportPort + 'static>(
+    client: &BACnetClient<T>,
+    target: &ManagedCOVTarget,
+    subscriber_process_identifier: u32,
+    monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
+    confirmed: bool,
+    lifetime: Option<u32>,
+) -> Result<(), Error> {
+    match target {
+        ManagedCOVTarget::Direct(destination_mac) => {
+            client
+                .subscribe_cov(
+                    destination_mac,
+                    subscriber_process_identifier,
+                    monitored_object_identifier,
+                    confirmed,
+                    lifetime,
+                )
+                .await
+        }
+        ManagedCOVTarget::Routed {
+            router_mac,
+            dest_network,
+            dest_mac,
+        } => {
+            client
+                .subscribe_cov_routed(
+                    router_mac,
+                    *dest_network,
+                    dest_mac,
+                    subscriber_process_identifier,
+                    monitored_object_identifier,
+                    confirmed,
+                    lifetime,
+                )
+                .await
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "cov_renewal_routed_tests.rs"]
+mod routed_tests;
