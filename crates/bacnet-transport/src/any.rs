@@ -217,6 +217,13 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
+    fn bip_network_port_observation(&self) -> Option<crate::port::BipNetworkPortObservation> {
+        match self {
+            Self::Bip(transport) => transport.bip_network_port_observation(),
+            _ => None,
+        }
+    }
+
     fn max_apdu_length(&self) -> u16 {
         match self {
             Self::Bip(t) => t.max_apdu_length(),
@@ -314,6 +321,27 @@ mod tests {
     }
 
     #[test]
+    fn any_transport_delegates_read_only_bip_network_port_observation() {
+        let plain: AnyTransport<LoopbackSerial> = AnyTransport::Bip(BipTransport::new(
+            Ipv4Addr::LOCALHOST,
+            47808,
+            Ipv4Addr::BROADCAST,
+        ));
+        assert!(plain.bip_network_port_observation().is_some());
+        assert!(plain
+            .bip_network_port_observation()
+            .unwrap()
+            .bbmd()
+            .is_none());
+
+        let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::BROADCAST);
+        bbmd.enable_bbmd(Vec::new());
+        let any: AnyTransport<LoopbackSerial> = AnyTransport::Bip(bbmd);
+        let reader = any.bip_network_port_observation().unwrap().bbmd().unwrap();
+        assert_eq!(reader.lifecycle(), crate::bip::BbmdLifecycle::NotStarted);
+    }
+
+    #[test]
     fn any_transport_mstp_local_mac() {
         let (serial, _) = LoopbackSerial::pair();
         let config = MstpConfig {
@@ -333,6 +361,7 @@ mod tests {
         let mstp = MstpTransport::new(serial, MstpConfig::default());
         let any: AnyTransport<LoopbackSerial> = AnyTransport::Mstp(mstp);
         assert_eq!(any.max_apdu_length(), 480);
+        assert!(any.bip_network_port_observation().is_none());
     }
 
     #[test]

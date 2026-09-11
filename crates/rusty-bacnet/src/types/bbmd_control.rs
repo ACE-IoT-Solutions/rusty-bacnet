@@ -190,7 +190,6 @@ impl PyBbmdControl {
     ) -> Self {
         Self { inner, policy }
     }
-
 }
 
 #[pymethods]

@@ -165,6 +165,18 @@ pub trait BACnetObject: Send + Sync {
     #[doc(hidden)]
     fn bind_monotonic_clock_internal(&mut self, _clock: Option<Arc<MonotonicClock>>) {}
 
+    /// Bind the read-only live observation source for a NetworkPort object.
+    ///
+    /// The default is a no-op so downstream object implementations remain
+    /// source-compatible. The bundled NetworkPort overrides this hook; the
+    /// server invokes it before sharing the object database.
+    #[doc(hidden)]
+    fn bind_network_port_snapshot_internal(
+        &mut self,
+        _provider: Option<Arc<dyn crate::network_port::NetworkPortSnapshotProvider>>,
+    ) {
+    }
+
     /// Advance operations to an absolute process-local monotonic instant.
     #[doc(hidden)]
     fn advance_monotonic_time_internal(&mut self, _now: Duration) -> bool {

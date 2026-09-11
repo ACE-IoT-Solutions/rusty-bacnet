@@ -849,6 +849,8 @@ pub struct BACnetServer<T: TransportPort> {
     intrinsic_reporting_task: Option<JoinHandle<()>>,
     /// Monotonic Binary Lighting Output WARN_OFF/WARN_RELINQUISH task.
     binary_lighting_operation_task: Option<JoinHandle<()>>,
+    /// Publishes transport-owned observations to bound NetworkPort objects.
+    network_port_live: network_port_live::NetworkPortLiveController,
     local_mac: MacAddr,
 }
 
@@ -918,6 +920,7 @@ mod event_recipient_route;
 pub(crate) mod event_timestamp;
 mod lifecycle;
 mod local_writes;
+mod network_port_live;
 mod notification_transactions;
 mod requests;
 #[cfg(feature = "sc-tls")]
@@ -997,6 +1000,8 @@ mod event_recipient_routing_tests;
 mod life_safety_cov_tests;
 #[cfg(test)]
 mod life_safety_operation_tests;
+#[cfg(test)]
+mod network_port_live_tests;
 #[cfg(test)]
 mod notification_transactions_tests;
 #[cfg(test)]

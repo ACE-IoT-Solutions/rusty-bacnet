@@ -45,9 +45,17 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         });
         db.set_monotonic_clock_internal(Some(monotonic_clock));
 
+        // Bind read-only NetworkPort readers while the database still has one
+        // owner. Publication starts only after the transport has resolved its
+        // actual link address (including a requested ephemeral B/IP port).
+        let mut network_port_live =
+            super::network_port_live::NetworkPortLiveController::bind(&mut db, &transport);
         let mut network = NetworkLayer::new(transport);
         let mut apdu_rx = network.start().await?;
         let local_mac = MacAddr::from_slice(network.local_mac());
+        network_port_live
+            .activate(network.local_mac(), config.max_apdu_length)
+            .await;
 
         let network = Arc::new(network);
         let device_instance = db
@@ -759,6 +767,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             schedule_tick_task,
             intrinsic_reporting_task,
             binary_lighting_operation_task,
+            network_port_live,
             local_mac,
         };
         let staging_oids = {

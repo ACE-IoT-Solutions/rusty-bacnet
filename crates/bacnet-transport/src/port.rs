@@ -10,6 +10,24 @@ use bacnet_types::MacAddr;
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 
+/// Read-only capability describing a BACnet/IP port to a NetworkPort
+/// observation publisher. Non-B/IP transports return no capability.
+#[derive(Clone)]
+pub struct BipNetworkPortObservation {
+    bbmd: Option<crate::bip::BbmdSnapshotReader>,
+}
+
+impl BipNetworkPortObservation {
+    pub(crate) fn new(bbmd: Option<crate::bip::BbmdSnapshotReader>) -> Self {
+        Self { bbmd }
+    }
+
+    /// Return the optional read-only BBMD observation capability.
+    pub fn bbmd(&self) -> Option<crate::bip::BbmdSnapshotReader> {
+        self.bbmd.clone()
+    }
+}
+
 /// Data-link attributes that accompany an NPDU.
 ///
 /// BACnet/SC maps these to Annex AB Data Options. Transports that cannot
@@ -154,6 +172,14 @@ pub trait TransportPort: Send + Sync {
 
     /// This transport's local MAC address.
     fn local_mac(&self) -> &[u8];
+
+    /// Return a read-only NetworkPort observation capability for B/IP.
+    ///
+    /// The default is fail-closed so other transports are never inferred from
+    /// MAC shape or implementation details.
+    fn bip_network_port_observation(&self) -> Option<BipNetworkPortObservation> {
+        None
+    }
 
     /// Maximum APDU length this transport supports.
     /// BIP/SC: 1476 (default), MS/TP: 480.

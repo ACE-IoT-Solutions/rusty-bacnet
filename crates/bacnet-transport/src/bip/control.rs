@@ -150,6 +150,24 @@ pub struct BbmdControl {
     core: Arc<BbmdControlCore>,
 }
 
+/// Cloneable capability that can observe, but cannot mutate, live BBMD state.
+#[derive(Clone)]
+pub struct BbmdSnapshotReader {
+    control: BbmdControl,
+}
+
+impl BbmdSnapshotReader {
+    /// Return the current controller lifecycle.
+    pub fn lifecycle(&self) -> BbmdLifecycle {
+        self.control.lifecycle()
+    }
+
+    /// Capture one point-in-time live BBMD observation.
+    pub async fn snapshot(&self) -> Result<BbmdSnapshot, BbmdControlError> {
+        self.control.snapshot().await
+    }
+}
+
 impl BbmdControl {
     pub(super) fn new(core: &Arc<BbmdControlCore>) -> Self {
         Self {
@@ -162,6 +180,13 @@ impl BbmdControl {
             NOT_STARTED => BbmdLifecycle::NotStarted,
             RUNNING => BbmdLifecycle::Running,
             _ => BbmdLifecycle::Stopped,
+        }
+    }
+
+    /// Derive a read-only observation capability.
+    pub fn snapshot_reader(&self) -> BbmdSnapshotReader {
+        BbmdSnapshotReader {
+            control: self.clone(),
         }
     }
 

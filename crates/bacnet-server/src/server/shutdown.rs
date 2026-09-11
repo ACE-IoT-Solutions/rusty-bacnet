@@ -32,6 +32,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             let _ = task.await;
         }
         self.dispatch_task = None;
+        self.network_port_live.stop().await;
         while let Some(result) = self.request_tasks.join_next().await {
             super::request_tasks::RequestTasks::observe(Some(result));
         }

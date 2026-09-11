@@ -31,7 +31,7 @@ mod foreign_device;
 mod io;
 mod policy_bridge;
 mod rate_limit;
-pub use control::{BbmdControl, BbmdControlError, BbmdLifecycle, BbmdSnapshot};
+pub use control::{BbmdControl, BbmdControlError, BbmdLifecycle, BbmdSnapshot, BbmdSnapshotReader};
 pub use fanout::{FanoutCounters, FanoutPolicy};
 pub use foreign_device::{
     ForeignDeviceRegistrationHandle, ForeignDeviceRegistrationState,
@@ -1285,6 +1285,12 @@ impl TransportPort for BipTransport {
 
     fn local_mac(&self) -> &[u8] {
         &self.local_mac
+    }
+
+    fn bip_network_port_observation(&self) -> Option<crate::port::BipNetworkPortObservation> {
+        Some(crate::port::BipNetworkPortObservation::new(
+            self.bbmd_control().map(|control| control.snapshot_reader()),
+        ))
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {

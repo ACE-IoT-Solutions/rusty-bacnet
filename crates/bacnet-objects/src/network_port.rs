@@ -261,6 +261,13 @@ impl BACnetObject for NetworkPortObject {
         &self.name
     }
 
+    fn bind_network_port_snapshot_internal(
+        &mut self,
+        provider: Option<Arc<dyn NetworkPortSnapshotProvider>>,
+    ) {
+        self.bind_live_snapshot_provider(provider);
+    }
+
     fn read_property(
         &self,
         property: PropertyIdentifier,
