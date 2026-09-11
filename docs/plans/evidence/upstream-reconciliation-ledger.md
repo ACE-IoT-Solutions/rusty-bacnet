@@ -243,6 +243,29 @@ reviewed, and zero removals were unexplained.
 | W2 foreign-device lifecycle | Pending, Registered, TTL/2 renewal, broadcast delivery, BBMD service stop, Expired, fresh service reconstruction, recovery, rejection `0x0030`, second expiry/recovery, zero FDT, and clean shutdown | `target/upstream-reconciliation/w2-link-restart-fix` |
 | W13 and component fixtures | all four bacpypes3/rusty client/server legs pass; W1, W3, W5, W6, and W12 modules, semantic comparison, and cleanup pass | `target/upstream-reconciliation/w13-e72828c`; result JSON SHA-256 `f97c56765addb33b66e8e91a8b0514d24715ade40922ea960ed0384a44b363a1` |
 | Server segmentation configuration | all four modes agree across server behavior, I-Am, and Device properties; `NONE` omits conditional fields; W13 exercises segmented Object_List | `e72828c`; `test_server_segmentation_config.py`; W13 artifact above |
+| Confirmed-request Invoke-ID reuse | 512 sequential byte-identical real B/IP reads pass; after changing the object value, wrapped request 513 returns the new value. Active duplicate suppression, cancellation cleanup, and the 256-active-request cap remain covered | `b6953b3`; `confirmed_request_tracker.rs`; `crates/bacnet-server/src/server/request_admission_tests.rs` |
+| BACnet/SC runtime | generated certificates reject the rogue client; primary Device 4200 reads successfully; runtime fails over and reads independent Device 4201; stopping both hubs reports `ScDisconnected`; awaited shutdown completes | `target/upstream-reconciliation/sc-runtime-239a24a/README.md`; exact-source image `localhost/rusty-bacnet-sc-runtime:candidate-239a24a`, image ID `840e0659e99fafc2cf15ee4d9c2deb51b235d07b85134c851b3568b4dbb5b465`; source `239a24a78a18c22b1d93f7e437df0091443f8a8d`; archive SHA-256 `f506ba4484e02f8333f8eb772b3fb0c5f94995b85dab0b94928fb0b20e16f12f` |
+| Runtime A/B | matched seven-trial Linux arm64 runs validate schema and correctness. Candidate medians: 1,175.233 sequential, 2,478.487 gathered, and 5,631.925 coarse workflows/s, 4.806x speedup; all CVs are below 1.86%. Baseline medians: 1,219.832, 2,583.034, and 5,928.317, 4.828x; all CVs are below 2.73%. Candidate deltas are -3.66%, -4.05%, -5.00%, and -0.46% relative speedup; no broad improvement claim | candidate `target/upstream-reconciliation/runtime-ab/final-candidate-7d9432b-rerun2/runtime-batch-ab.json`, SHA-256 `b0f6635ca932d4711bfa4bfd67ff234ff322667311691cb889f2abda46fd8784`; baseline `target/upstream-reconciliation/runtime-ab/final-baseline-bf6922d-h7d9432b/runtime-batch-ab.json`, SHA-256 `be9c4a0d17e72258df05b16479acfeb39f524f004888acd2c220f0683379071a`; identical harness SHA-256 `9fbf934bc081b951dffefdc65b4d881e5ea6554a62c9f529af7d83a9bb7a5e82` |
+
+Both runtime A/B rows use identical configuration and harness bytes. Every
+workflow validates the six expected values. The cancellation arm found and
+cancelled 56 in-flight candidate operations and 52 baseline operations, with
+none left queued; cleanup returned both processes to nine descriptors with two
+sockets. Candidate source `7d9432b` includes the server-side Invoke-ID reuse
+correction and precedes only documentation, SC health/feature wiring, and the
+SC container toolchain fix, none of which executes in the timed B/IP runtime path.
+The raw candidate and baseline JSON documents validate against
+`benchmarks/schema/runtime-batch-ab.schema.json`.
+
+The short benchmark ends with the bounded runtime event queue at its 1,024
+entry cap and 1,078 lagged events in every coarse trial. It proves capped
+overflow behavior, not lossless observation. RSS rises during both roughly
+25-second processes (candidate stabilized/final 33.8/51.9 MB; baseline
+32.9/49.1 MB), so the artifacts do not establish a long-run memory plateau.
+The retained JSON embeds configuration, image, source/archive, wheel, and
+harness identities, but the artifact directories lack the originally promised
+resolved Compose file and command transcript; this is a reproducibility
+limitation, not a basis for a broader claim.
 
 The W13 source image was built from one clean exact source archive. The first
 invocation used a relative artifact path that Podman Compose interpreted as a
@@ -278,6 +301,11 @@ complete rerun using an absolute bind path and freshly built images.
 - The rollback point is
   `archive/dev-pre-upstream-reconciliation-20260911` at `bf6922d5`. Before
   advancing `dev`, push/verify that permanent ref, tag the reconciled tip, run
-  G0-G7 on that immutable tip, then fast-forward `dev`. Roll back by restoring
-  `dev` to the archived ref through the repository's protected-branch process;
-  do not delete either provenance ref until post-cutover validation finishes.
+  G0-G7 on that immutable tip, then use the repository's protected-branch
+  review to create an ancestry-preserving merge whose tree exactly matches the
+  validated reconciliation tree. An ordinary fast-forward is impossible
+  because old `dev` and this upstream-first line diverged after `6b9ac4f`.
+  A non-fast-forward branch replacement is an alternative only with separate
+  explicit authorization. Roll back by restoring `dev` to the archived ref
+  through the same protected-branch process; do not delete either provenance
+  ref until post-cutover validation finishes.

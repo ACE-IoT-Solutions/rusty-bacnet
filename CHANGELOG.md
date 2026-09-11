@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PICS/BIBB/BTL claim is added. The frozen rollback point is
   `archive/dev-pre-upstream-reconciliation-20260911`.
 
+- **Reconciliation regression fixes and evidence:** generic server duplicate
+  suppression now spans the full active transaction, including segmented reply
+  completion, but ends when that transaction terminates so a fresh byte-identical
+  request after Invoke-ID wrap is serviced. Runtime fixes bound completed-task
+  retention, remove cache/registry lock cycles, correlate managed COV by the full
+  direct or routed sender path, and serialize cancellation-safe persisted BDT
+  updates. BACnet/SC health again reflects live connection state, cold-start
+  failover reaches a healthy configured hub, failed paths yield to healthy
+  observations, and isolated `sc` builds enable the matching client feature.
+  Exact-source SC acceptance covers mTLS rejection, primary operation, failover,
+  total hub loss, and cleanup. Matched runtime A/B artifacts preserve the roughly
+  4.8x coarse Python-boundary advantage but do not support a general performance
+  improvement claim.
+
 - **SC rejection-NAK budget and fresh-only recovery (Refs #519):** node control,
   source and unsupported-MU rejection NAKs now use the remaining accepted-activity
   heartbeat budget, without a new timeout setting. Expiry drops the send future,

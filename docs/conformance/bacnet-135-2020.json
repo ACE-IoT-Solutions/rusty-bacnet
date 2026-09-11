@@ -1,10 +1,10 @@
 {
  "standard": "ANSI/ASHRAE Standard 135-2020",
- "reviewed_at": "2026-08-13",
- "repo_sha": "f485021f5cd7058ac406d57d3d317936cbe7b361",
+ "reviewed_at": "2026-09-11",
+ "repo_sha": "2b7c588e6d316bfbaaca4700c754d6692bb6e736",
  "row_evidence_policy": "repo_sha identifies the last repository-wide review; individual rows may cite later PR reviews for narrower evidence updates",
- "review_scope": "PR-0808 Alert Enrollment Table 12-61 property-model correction (#291): Present_Value is the explicit ObjectIdentifier of the last alert source; Notify_Type is implemented with configurable ALARM/EVENT values; metadata, Property_List, RPM selectors, PICS, Rust/Python APIs, and migration docs share the exact required-row projection; and the non-table Status_Flags, Out_Of_Service, and Reliability compatibility routes are removed. Existing Event_Detection_Enable reset/history, acknowledgement, and generic event-summary consumers remain intact. Fences: no Alert evaluator, source discovery, transition generation, notification sending, acknowledgement-flow implementation, or optional Alert Enrollment property expansion.",
- "addenda_errata_status": "No external addenda/errata check was performed for this tranche. The local Standard 135-2020 source contract was reviewed for Clause 12.52 and Table 12-61, Clause 21 BACnetNotifyType, and Clause 15.7 RPM selector exclusions. The Alert Enrollment claim remains bounded to the served property model and does not claim active alert evaluation or notification generation.",
+ "review_scope": "Upstream-first reconciliation of the ACE runtime, Python surface, BBMD lifecycle/control, virtual routing, observation, server segmentation configuration, confirmed-request reuse, SC runtime health, installed-wheel interoperability, and matched runtime A/B evidence. Existing row statuses remain bounded; this review adds evidence and limitations rather than broader PICS, BIBB, BTL, or full-profile claims.",
+ "addenda_errata_status": "No new external addenda/errata check was performed for the reconciliation tranche. Protocol decisions retain the pinned upstream Standard 135-2020 clause/addenda evidence and the local 135-2020 source contract. The reconciliation does not promote any conformance row solely from cross-stack, runtime, or performance evidence.",
  "status_taxonomy": [
   "in-progress",
   "implementation-present-needs-conformance-tests",
@@ -92,6 +92,8 @@
     "crates/bacnet-server/src/server/dispatch.rs",
     "crates/bacnet-server/src/server/responses.rs",
     "crates/bacnet-server/src/server/segmentation.rs",
+    "crates/bacnet-server/src/server/confirmed_request_tracker.rs",
+    "crates/bacnet-server/src/server/request_admission_tests.rs",
     "crates/bacnet-objects/src/device/mod.rs",
     "crates/rusty-bacnet/src/server/server_methods/lifecycle.rs",
     "crates/bacnet-server/src/server/segmentation_tests/request_reassembly.rs",
@@ -110,7 +112,9 @@
     "crates/bacnet-server/src/server/segmentation_tests/ack_window.rs::segmented_complex_ack_retransmits_after_segment_ack_timeout_then_goes_idle",
     "crates/bacnet-server/src/server/segmentation_tests/ack_window.rs::segmented_complex_ack_sets_npdu_expecting_reply_for_segments",
     "crates/rusty-bacnet/tests/test_server_segmentation_config.py",
-    "crates/rusty-bacnet/tests/container/run-w13-cross-stack.sh"
+    "crates/rusty-bacnet/tests/container/run-w13-cross-stack.sh",
+    "crates/bacnet-server/src/server/request_admission_tests.rs::admission_suppresses_pending_duplicate_but_admits_exact_request_after_completion",
+    "crates/bacnet-server/src/server/request_admission_tests.rs::bip_read_property_survives_two_invoke_id_wraps_and_returns_changed_value"
    ],
    "negative_tests": [
     "crates/bacnet-server/src/server/segmentation_tests/request_reassembly.rs::routed_peer_abort_through_new_router_removes_existing_reassembly_session",
@@ -132,7 +136,7 @@
    "public_claims": [
     "README supported services"
    ],
-   "notes": "Server segmented transaction identity follows Clauses 5.3.5.3 and 6.2: valid routed SNET/SADR plus Invoke ID is stable across immediate routers, while local transactions use immediate MAC plus Invoke ID. Invalid routed metadata retains the immediate MAC and supplied metadata defensively. ConfirmedRequest reassembly, peer Abort removal, SegmentACK/Abort dispatch, and segmented ComplexACK sender registration use the same private key helper. Reply frames continue to use the current or captured immediate router MAC with NPDU DNET/DADR; the canonical empty-MAC sentinel is never a physical destination. Focused tests cover the identity matrix, routed request continuation and reply routing across routers, immediate peer-Abort cleanup, matching and mismatched routed sender events, and canonical sender replacement without stale cleanup. Existing send-side evidence remains: SegmentACKs with the server bit set are ignored; either ACK flavor naming the current segment advances; only a negative ACK naming the immediately preceding segment retransmits the current segment; stale and out-of-range ACKs are ignored; timeout, capacity, nonblocking dispatch, cancellation, and cleanup behavior remain covered. The Python server now accepts one validated segmentation mode and applies it consistently to the server state machine, I-Am, and Device object; supported modes conditionally advertise the current 5000 ms APDU_Segment_Timeout and mode-derived Max_Segments_Accepted. Installed tests cover all four modes and omission under NONE, and W13 proves a segmented oversized Object_List response in all four cross-stack pairings. The row remains below supported status pending a fuller server TSM transition audit, configurable retry behavior, and broader Reject/Error failure mapping coverage."
+   "notes": "Server segmented transaction identity follows Clauses 5.3.5.3 and 6.2: valid routed SNET/SADR plus Invoke ID is stable across immediate routers, while local transactions use immediate MAC plus Invoke ID. Invalid routed metadata retains the immediate MAC and supplied metadata defensively. ConfirmedRequest reassembly, peer Abort removal, SegmentACK/Abort dispatch, and segmented ComplexACK sender registration use the same private key helper. Reply frames continue to use the current or captured immediate router MAC with NPDU DNET/DADR; the canonical empty-MAC sentinel is never a physical destination. Focused tests cover the identity matrix, routed request continuation and reply routing across routers, immediate peer-Abort cleanup, matching and mismatched routed sender events, and canonical replacement without stale cleanup. Generic exact-request duplicate suppression applies for the full active transaction: nonsegmented completion releases the Invoke ID immediately, while a segmented ComplexACK retains admission through SegmentACK success, peer Abort, timeout, cancellation, or shutdown. A later legal byte-identical transaction is serviced after termination, and service-specific durable idempotency remains separate. Real B/IP coverage executes 512 identical sequential reads, changes the object value, and verifies the wrapped 513th request returns the new value. Existing send-side evidence remains: SegmentACKs with the server bit set are ignored; either ACK flavor naming the current segment advances; only a negative ACK naming the immediately preceding segment retransmits the current segment; stale and out-of-range ACKs are ignored; timeout, capacity, nonblocking dispatch, cancellation, and cleanup behavior remain covered. The Python server now accepts one validated segmentation mode and applies it consistently to the server state machine, I-Am, and Device object; supported modes conditionally advertise the current 5000 ms APDU_Segment_Timeout and mode-derived Max_Segments_Accepted. Installed tests cover all four modes and omission under NONE, and W13 proves a segmented oversized Object_List response in all four cross-stack pairings. The row remains below supported status pending a fuller server TSM transition audit, configurable retry behavior, and broader Reject/Error failure mapping coverage."
   },
   {
    "id": "BACNET-5-SEGMENTATION-WINDOW",

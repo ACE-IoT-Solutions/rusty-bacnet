@@ -17,8 +17,8 @@ fn mu_liveness_evidence_preserves_scope_and_blocked_write_limitation() {
             .count(),
         19
     );
-    assert_eq!(data["reviewed_at"], "2026-08-13");
-    assert_eq!(data["repo_sha"], "f485021f5cd7058ac406d57d3d317936cbe7b361");
+    assert_eq!(data["reviewed_at"], "2026-09-11");
+    assert_eq!(data["repo_sha"], "2b7c588e6d316bfbaaca4700c754d6692bb6e736");
     for (field, anchors) in [
         ("positive_tests", &[
             "crates/bacnet-transport/src/sc/mu_liveness_tests.rs::mu_liveness_valid_npdu_data_options_and_heartbeat_request_restore_activity",

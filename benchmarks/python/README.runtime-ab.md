@@ -19,9 +19,10 @@ ref, archive digest, wheel digest, image IDs, tool versions, harness digest,
 resolved Compose file, raw latency samples, RSS samples, runtime health, FD
 classification, and cleanup assertions.
 
-Before timed trials, a separate correctness-only arm exercises native submit,
-cancel, terminal result delivery, health stabilization, and shutdown. Every
-timed workflow checks exact values and ordering. Trials alternate arm order;
+Outside the timed samples, a separate correctness-only arm exercises native
+submit, cancel, terminal result delivery, health stabilization, and shutdown
+after the timed trials. Every timed workflow checks exact values and ordering.
+Trials alternate arm order;
 throughput coefficients of variation above 5% mark the result inconclusive.
 
 The raw result is written incrementally to

@@ -17,8 +17,8 @@ fn hub_response_silence_has_scoped_policy_and_executable_anchors() {
             .count(),
         19
     );
-    assert_eq!(data["reviewed_at"], "2026-08-13");
-    assert_eq!(data["repo_sha"], "f485021f5cd7058ac406d57d3d317936cbe7b361");
+    assert_eq!(data["reviewed_at"], "2026-09-11");
+    assert_eq!(data["repo_sha"], "2b7c588e6d316bfbaaca4700c754d6692bb6e736");
     for file in [
         "crates/bacnet-transport/src/sc_hub/handler.rs",
         "crates/bacnet-transport/src/sc_hub/response_silence_tests.rs",

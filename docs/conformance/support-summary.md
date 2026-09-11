@@ -3,10 +3,10 @@
 > DRAFT internal support evidence. Generated from `docs/conformance/bacnet-135-2020.json`; this is not a BTL certification claim or formal PICS/BIBB declaration.
 
 - Standard: ANSI/ASHRAE Standard 135-2020
-- Reviewed at: 2026-08-13
-- Implementation evidence SHA reviewed: `f485021f5cd7058ac406d57d3d317936cbe7b361`
-- Scope: PR-0808 Alert Enrollment Table 12-61 property-model correction (#291): Present_Value is the explicit ObjectIdentifier of the last alert source; Notify_Type is implemented with configurable ALARM/EVENT values; metadata, Property_List, RPM selectors, PICS, Rust/Python APIs, and migration docs share the exact required-row projection; and the non-table Status_Flags, Out_Of_Service, and Reliability compatibility routes are removed. Existing Event_Detection_Enable reset/history, acknowledgement, and generic event-summary consumers remain intact. Fences: no Alert evaluator, source discovery, transition generation, notification sending, acknowledgement-flow implementation, or optional Alert Enrollment property expansion.
-- Addenda/errata: No external addenda/errata check was performed for this tranche. The local Standard 135-2020 source contract was reviewed for Clause 12.52 and Table 12-61, Clause 21 BACnetNotifyType, and Clause 15.7 RPM selector exclusions. The Alert Enrollment claim remains bounded to the served property model and does not claim active alert evaluation or notification generation.
+- Reviewed at: 2026-09-11
+- Implementation evidence SHA reviewed: `2b7c588e6d316bfbaaca4700c754d6692bb6e736`
+- Scope: Upstream-first reconciliation of the ACE runtime, Python surface, BBMD lifecycle/control, virtual routing, observation, server segmentation configuration, confirmed-request reuse, SC runtime health, installed-wheel interoperability, and matched runtime A/B evidence. Existing row statuses remain bounded; this review adds evidence and limitations rather than broader PICS, BIBB, BTL, or full-profile claims.
+- Addenda/errata: No new external addenda/errata check was performed for the reconciliation tranche. Protocol decisions retain the pinned upstream Standard 135-2020 clause/addenda evidence and the local 135-2020 source contract. The reconciliation does not promote any conformance row solely from cross-stack, runtime, or performance evidence.
 
 ## Counts
 

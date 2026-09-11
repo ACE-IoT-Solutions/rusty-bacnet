@@ -1161,6 +1161,23 @@ topology refresh. `BACnetRouter` and named `VirtualNetwork` instances provide
 bounded in-process routing fixtures without creating a physical data-link
 support claim.
 
+Runtime SC health is derived from the transport's latest connection state.
+After all configured hubs are unavailable, the attachment reports `Failed`
+with `ScDisconnected`; successful failover remains `Running`. Health is a
+point-in-time signal, so rapid intermediate state transitions may coalesce.
+Cold start tries a configured failover when the primary cannot be reached, and
+device selection refreshes attachment health so a failed preferred path yields
+to an observed healthy alternative.
+
+The reconciliation runtime benchmark compares six sequential Python client
+reads with one six-property runtime batch using the same installed-wheel
+fixture. On the retained matched Linux arm64 runs, the old-local baseline and
+reconciled candidate both show about a 4.8x coarse-boundary advantage. Absolute
+candidate throughput was 3.66% lower for sequential reads and 5.00% lower for
+the coarse batch, so this is not a broad performance-improvement claim. Raw
+artifacts, provenance, variance, cancellation, and resource observations are
+recorded in the upstream reconciliation evidence ledger.
+
 ---
 
 ## BACnetServer
