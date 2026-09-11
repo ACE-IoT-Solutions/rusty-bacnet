@@ -841,8 +841,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
     /// Generate a PICS document from the current object database and server configuration.
     ///
-    /// The caller must supply a [`PicsConfig`] for fields not available from the server
-    /// (vendor name, model, firmware revision, etc.).
+    /// Readable Device identity properties and the server's runtime capability
+    /// model are authoritative. The caller-supplied [`PicsConfig`] provides
+    /// identity fallbacks and document-only metadata such as character sets.
     pub async fn generate_pics(&self, pics_config: &crate::pics::PicsConfig) -> crate::pics::Pics {
         let db = self.db.read().await;
         crate::pics::PicsGenerator::new(&db, &self.config, pics_config).generate()

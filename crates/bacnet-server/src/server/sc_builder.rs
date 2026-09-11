@@ -7,8 +7,10 @@ mod dcc_mtls_tests;
 impl BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>> {
     /// Create an SC-specific builder that connects to a BACnet/SC hub.
     pub fn sc_builder() -> ScServerBuilder {
+        let mut config = ServerConfig::default();
+        config.runtime_capabilities = crate::pics::RuntimeCapabilities::bacnet_sc();
         ScServerBuilder {
-            config: ServerConfig::default(),
+            config,
             db: ObjectDatabase::new(),
             configured_device_bindings: Vec::new(),
             hub_url: String::new(),

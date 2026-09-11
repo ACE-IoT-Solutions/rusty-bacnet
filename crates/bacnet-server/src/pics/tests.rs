@@ -201,6 +201,7 @@ fn generate_pics_basic() {
     let db = make_test_db();
     let server_config = ServerConfig {
         vendor_id: 999,
+        runtime_capabilities: RuntimeCapabilities::bip_v4(),
         ..ServerConfig::default()
     };
     let pics_config = make_pics_config();
@@ -211,6 +212,73 @@ fn generate_pics_basic() {
     assert_eq!(pics.device_profile, DeviceProfile::BAsc);
     assert_eq!(pics.character_sets, vec![CharacterSet::Utf8]);
     assert_eq!(pics.data_link_layers, vec![DataLinkSupport::BipV4]);
+}
+
+#[test]
+fn vendor_info_prefers_readable_live_device_properties() {
+    use bacnet_objects::device::{DeviceConfig, DeviceObject};
+
+    let mut db = ObjectDatabase::new();
+    db.add(Box::new(
+        DeviceObject::new(DeviceConfig {
+            instance: 42,
+            name: "Live Device".into(),
+            vendor_name: "Live Vendor".into(),
+            vendor_id: 321,
+            model_name: "Live Model".into(),
+            firmware_revision: "fw-live".into(),
+            application_software_version: "app-live".into(),
+            ..DeviceConfig::default()
+        })
+        .unwrap(),
+    ))
+    .unwrap();
+    let config = ServerConfig {
+        vendor_id: 999,
+        ..ServerConfig::default()
+    };
+    let pics = generate_pics(&db, &config, &make_pics_config());
+
+    assert_eq!(pics.vendor_info.vendor_id, 321);
+    assert_eq!(pics.vendor_info.vendor_name, "Live Vendor");
+    assert_eq!(pics.vendor_info.model_name, "Live Model");
+    assert_eq!(pics.vendor_info.firmware_revision, "fw-live");
+    assert_eq!(pics.vendor_info.application_software_version, "app-live");
+    assert_eq!(pics.vendor_info.protocol_version, 1);
+    assert_eq!(pics.vendor_info.protocol_revision, 22);
+}
+
+#[test]
+fn runtime_capabilities_are_authoritative_over_requested_pics_claims() {
+    let db = make_test_db();
+    let requested = make_pics_config();
+
+    let generic = generate_pics(&db, &ServerConfig::default(), &requested);
+    assert!(generic.data_link_layers.is_empty());
+    assert_eq!(generic.network_layer, NetworkLayerSupport::default());
+
+    let capabilities = RuntimeCapabilities {
+        data_link_layers: vec![DataLinkSupport::BacnetSc],
+        network_layer: NetworkLayerSupport {
+            router: true,
+            bbmd: false,
+            foreign_device: false,
+        },
+    };
+    let configured = ServerConfig {
+        runtime_capabilities: capabilities.clone(),
+        ..ServerConfig::default()
+    };
+    let pics = generate_pics(&db, &configured, &requested);
+    assert_eq!(pics.data_link_layers, capabilities.data_link_layers);
+    assert_eq!(pics.network_layer, capabilities.network_layer);
+
+    let mut router_requested = requested;
+    router_requested.device_profile = DeviceProfile::BRouter;
+    let generic = generate_pics(&db, &ServerConfig::default(), &router_requested);
+    assert_ne!(generic.device_profile, DeviceProfile::BRouter);
+    let routed = generate_pics(&db, &configured, &router_requested);
+    assert_eq!(routed.device_profile, DeviceProfile::BRouter);
 }
 
 #[test]
@@ -364,6 +432,7 @@ fn text_output_contains_key_sections() {
     let db = make_test_db();
     let server_config = ServerConfig {
         vendor_id: 42,
+        runtime_capabilities: RuntimeCapabilities::bip_v4(),
         ..ServerConfig::default()
     };
     let pics_config = make_pics_config();

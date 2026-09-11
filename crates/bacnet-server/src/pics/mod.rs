@@ -145,11 +145,60 @@ impl fmt::Display for DataLinkSupport {
 }
 
 /// Network layer capabilities.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkLayerSupport {
     pub router: bool,
     pub bbmd: bool,
     pub foreign_device: bool,
+}
+
+/// Transport and network features active in this server process.
+///
+/// This is deliberately separate from [`PicsConfig`]: a desired/documented
+/// capability must not become a conformance claim unless the running server
+/// was constructed with that capability. Generic transports default to an
+/// empty model and must opt in explicitly.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RuntimeCapabilities {
+    pub data_link_layers: Vec<DataLinkSupport>,
+    pub network_layer: NetworkLayerSupport,
+}
+
+impl RuntimeCapabilities {
+    /// Capabilities for the built-in BACnet/IPv4 transport without optional
+    /// BBMD, foreign-device, or router roles.
+    pub fn bip_v4() -> Self {
+        Self {
+            data_link_layers: vec![DataLinkSupport::BipV4],
+            network_layer: NetworkLayerSupport::default(),
+        }
+    }
+
+    /// Capabilities for the built-in BACnet/SC transport.
+    pub fn bacnet_sc() -> Self {
+        Self {
+            data_link_layers: vec![DataLinkSupport::BacnetSc],
+            network_layer: NetworkLayerSupport::default(),
+        }
+    }
+
+    /// Capabilities for a caller-provided MS/TP transport.
+    pub fn mstp() -> Self {
+        Self {
+            data_link_layers: vec![DataLinkSupport::Mstp],
+            network_layer: NetworkLayerSupport::default(),
+        }
+    }
+}
+
+impl Default for NetworkLayerSupport {
+    fn default() -> Self {
+        Self {
+            router: false,
+            bbmd: false,
+            foreign_device: false,
+        }
+    }
 }
 
 /// Character set support.
@@ -178,7 +227,12 @@ impl fmt::Display for CharacterSet {
 
 // ────────────────────────────── Configuration ──────────────────────────────
 
-/// Configuration for PICS generation that cannot be inferred from the database.
+/// Configuration for PICS generation that cannot be inferred from live state.
+///
+/// Identity fields are fallbacks when the Device object does not expose a
+/// readable, correctly typed property. `data_link_layers` and `network_layer`
+/// remain for source compatibility, but generated transport/network claims
+/// come exclusively from [`ServerConfig::runtime_capabilities`].
 #[derive(Debug, Clone)]
 pub struct PicsConfig {
     pub vendor_name: String,
@@ -205,11 +259,7 @@ impl Default for PicsConfig {
             protocol_revision: 24,
             device_profile: DeviceProfile::BAsc,
             data_link_layers: vec![DataLinkSupport::BipV4],
-            network_layer: NetworkLayerSupport {
-                router: false,
-                bbmd: false,
-                foreign_device: false,
-            },
+            network_layer: NetworkLayerSupport::default(),
             character_sets: vec![CharacterSet::Utf8],
             special_functionality: Vec::new(),
         }
@@ -242,25 +292,89 @@ impl<'a> PicsGenerator<'a> {
     pub fn generate(&self) -> Pics {
         Pics {
             vendor_info: self.build_vendor_info(),
-            device_profile: self.pics_config.device_profile.clone(),
+            device_profile: self.build_device_profile(),
             supported_object_types: self.build_object_types(),
             supported_services: self.build_services(),
-            data_link_layers: self.pics_config.data_link_layers.clone(),
-            network_layer: self.pics_config.network_layer.clone(),
+            data_link_layers: self
+                .server_config
+                .runtime_capabilities
+                .data_link_layers
+                .clone(),
+            network_layer: self
+                .server_config
+                .runtime_capabilities
+                .network_layer
+                .clone(),
             character_sets: self.pics_config.character_sets.clone(),
             special_functionality: self.pics_config.special_functionality.clone(),
         }
     }
 
+    fn build_device_profile(&self) -> DeviceProfile {
+        if self.pics_config.device_profile == DeviceProfile::BRouter
+            && !self.server_config.runtime_capabilities.network_layer.router
+        {
+            DeviceProfile::Custom("Unspecified (runtime router disabled)".into())
+        } else {
+            self.pics_config.device_profile.clone()
+        }
+    }
+
     fn build_vendor_info(&self) -> VendorInfo {
+        let device = self
+            .db
+            .iter_objects()
+            .find(|(oid, _)| oid.object_type() == ObjectType::DEVICE)
+            .map(|(_, object)| object);
+        let string_property = |property, fallback: &str| {
+            device
+                .filter(|object| object.property_list().contains(&property))
+                .and_then(|object| object.read_property(property, None).ok())
+                .and_then(|value| match value {
+                    PropertyValue::CharacterString(value) => Some(value),
+                    _ => None,
+                })
+                .unwrap_or_else(|| fallback.to_owned())
+        };
+        let unsigned_property = |property, fallback: u16| {
+            device
+                .filter(|object| object.property_list().contains(&property))
+                .and_then(|object| object.read_property(property, None).ok())
+                .and_then(|value| match value {
+                    PropertyValue::Unsigned(value) => u16::try_from(value).ok(),
+                    _ => None,
+                })
+                .unwrap_or(fallback)
+        };
         VendorInfo {
-            vendor_id: self.server_config.vendor_id,
-            vendor_name: self.pics_config.vendor_name.clone(),
-            model_name: self.pics_config.model_name.clone(),
-            firmware_revision: self.pics_config.firmware_revision.clone(),
-            application_software_version: self.pics_config.application_software_version.clone(),
-            protocol_version: self.pics_config.protocol_version,
-            protocol_revision: self.pics_config.protocol_revision,
+            vendor_id: unsigned_property(
+                PropertyIdentifier::VENDOR_IDENTIFIER,
+                self.server_config.vendor_id,
+            ),
+            vendor_name: string_property(
+                PropertyIdentifier::VENDOR_NAME,
+                &self.pics_config.vendor_name,
+            ),
+            model_name: string_property(
+                PropertyIdentifier::MODEL_NAME,
+                &self.pics_config.model_name,
+            ),
+            firmware_revision: string_property(
+                PropertyIdentifier::FIRMWARE_REVISION,
+                &self.pics_config.firmware_revision,
+            ),
+            application_software_version: string_property(
+                PropertyIdentifier::APPLICATION_SOFTWARE_VERSION,
+                &self.pics_config.application_software_version,
+            ),
+            protocol_version: unsigned_property(
+                PropertyIdentifier::PROTOCOL_VERSION,
+                self.pics_config.protocol_version,
+            ),
+            protocol_revision: unsigned_property(
+                PropertyIdentifier::PROTOCOL_REVISION,
+                self.pics_config.protocol_revision,
+            ),
         }
     }
 

@@ -13,6 +13,40 @@ fn server_config_time_sync_callback_default_is_none() {
     assert!(config.life_safety_operation_authorizer.is_none());
 }
 
+#[test]
+fn builders_record_runtime_transport_capabilities() {
+    use crate::pics::{DataLinkSupport, RuntimeCapabilities};
+
+    assert!(ServerConfig::default()
+        .runtime_capabilities
+        .data_link_layers
+        .is_empty());
+    assert_eq!(
+        BACnetServer::bip_builder()
+            .config
+            .runtime_capabilities
+            .data_link_layers,
+        vec![DataLinkSupport::BipV4]
+    );
+    assert_eq!(
+        BACnetServer::<BipTransport>::generic_builder()
+            .runtime_capabilities(RuntimeCapabilities::mstp())
+            .config
+            .runtime_capabilities
+            .data_link_layers,
+        vec![DataLinkSupport::Mstp]
+    );
+
+    #[cfg(feature = "sc-tls")]
+    assert_eq!(
+        BACnetServer::sc_builder()
+            .config
+            .runtime_capabilities
+            .data_link_layers,
+        vec![DataLinkSupport::BacnetSc]
+    );
+}
+
 #[tokio::test]
 async fn default_and_clockless_start_bind_truthful_device_clock() {
     use bacnet_objects::device::{DeviceConfig, DeviceObject};

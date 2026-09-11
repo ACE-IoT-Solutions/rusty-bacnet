@@ -272,6 +272,9 @@ pub struct TimeSyncData {
 /// Server configuration.
 #[derive(Clone)]
 pub struct ServerConfig {
+    /// Transport and network roles active in this server process, used as the
+    /// authoritative source for PICS data-link and network-layer claims.
+    pub runtime_capabilities: crate::pics::RuntimeCapabilities,
     /// Per-service GetAlarmSummary database scan and encoded response limits.
     pub get_alarm_summary_budget: GetAlarmSummaryBudget,
     /// Local complete-response limits for GetEnrollmentSummary.
@@ -394,6 +397,7 @@ pub struct ServerConfig {
 impl std::fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerConfig")
+            .field("runtime_capabilities", &self.runtime_capabilities)
             .field("get_alarm_summary_budget", &self.get_alarm_summary_budget)
             .field(
                 "get_enrollment_summary_budget",
@@ -467,6 +471,7 @@ impl std::fmt::Debug for ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            runtime_capabilities: crate::pics::RuntimeCapabilities::default(),
             interface: Ipv4Addr::UNSPECIFIED,
             read_property_multiple_budget: ReadPropertyMultipleBudget::default(),
             get_alarm_summary_budget: GetAlarmSummaryBudget::default(),
@@ -510,6 +515,13 @@ pub struct ServerBuilder<T: TransportPort> {
 }
 
 impl<T: TransportPort + 'static> ServerBuilder<T> {
+    /// Declare the capabilities implemented by this caller-provided transport.
+    /// Generic transports make no PICS transport claims unless this is set.
+    pub fn runtime_capabilities(mut self, capabilities: crate::pics::RuntimeCapabilities) -> Self {
+        self.config.runtime_capabilities = capabilities;
+        self
+    }
+
     /// Set the object database (transfers ownership).
     pub fn database(mut self, db: ObjectDatabase) -> Self {
         self.db = db;
@@ -860,8 +872,10 @@ impl<T: TransportPort> Clone for IAmBroadcaster<T> {
 impl BACnetServer<BipTransport> {
     /// Create a BIP-specific builder with interface/port/broadcast fields.
     pub fn bip_builder() -> BipServerBuilder {
+        let mut config = ServerConfig::default();
+        config.runtime_capabilities = crate::pics::RuntimeCapabilities::bip_v4();
         BipServerBuilder {
-            config: ServerConfig::default(),
+            config,
             db: ObjectDatabase::new(),
             configured_device_bindings: Vec::new(),
         }
