@@ -1,9 +1,9 @@
 use std::future::Future;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinSet;
 
 struct LiveTaskGuard(Arc<AtomicUsize>);
