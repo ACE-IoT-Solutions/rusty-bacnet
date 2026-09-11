@@ -1,9 +1,9 @@
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinSet;
 
 struct LiveTaskGuard(Arc<AtomicUsize>);
@@ -39,6 +39,7 @@ impl Supervisor {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let mut tasks = self.tasks.lock().await;
+        while tasks.try_join_next().is_some() {}
         if !self.accepting.load(Ordering::Acquire) {
             return false;
         }
@@ -116,5 +117,23 @@ mod tests {
             assert_eq!(supervisor.task_count(), 0);
             assert!(!supervisor.spawn(|_| async {}).await);
         }
+    }
+
+    #[tokio::test]
+    async fn completed_short_lived_tasks_are_reaped_before_the_next_spawn() {
+        let supervisor = Supervisor::new();
+        for _ in 0..10_000 {
+            assert!(supervisor.spawn(|_| async {}).await);
+            tokio::task::yield_now().await;
+        }
+
+        while supervisor.task_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+        assert!(supervisor.tasks.lock().await.len() <= 1);
+
+        let (joined, aborted) = supervisor.stop(Duration::from_secs(1)).await;
+        assert!(joined <= 1);
+        assert_eq!(aborted, 0);
     }
 }
