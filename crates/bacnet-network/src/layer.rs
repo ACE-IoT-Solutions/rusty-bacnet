@@ -5,6 +5,7 @@
 //! it does not forward messages between networks, but it can address remote
 //! devices through local routers via NPDU destination fields (DNET/DADR).
 
+use crate::observer::{decode_npdu_event, ApduDirection, ApduObserver};
 use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::enums::NetworkPriority;
@@ -110,6 +111,7 @@ pub struct NetworkLayer<T: TransportPort> {
     dispatch_task: Option<JoinHandle<()>>,
     network_control_tx: Option<mpsc::Sender<ReceivedNetworkControl>>,
     network_control_ingress_sequence: Arc<AtomicU64>,
+    observer: Option<ApduObserver>,
 }
 
 impl<T: TransportPort + 'static> NetworkLayer<T> {
@@ -120,7 +122,15 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
             dispatch_task: None,
             network_control_tx: None,
             network_control_ingress_sequence: Arc::new(AtomicU64::new(0)),
+            observer: None,
         }
+    }
+
+    /// Create a network layer with bounded, passive APDU diagnostics enabled.
+    pub fn with_observer(transport: T, observer: ApduObserver) -> Self {
+        let mut layer = Self::new(transport);
+        layer.observer = Some(observer);
+        layer
     }
 
     /// Enable the one-consumer decoded network-control stream.
@@ -154,11 +164,28 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         let mut npdu_rx = self.transport.start().await?;
         let mut network_control_tx = self.network_control_tx.take();
         let network_control_ingress_sequence = Arc::clone(&self.network_control_ingress_sequence);
+        let observer = self.observer.clone();
 
         let (apdu_tx, apdu_rx) = mpsc::channel(256);
 
         let dispatch_task = tokio::spawn(async move {
             while let Some(received) = npdu_rx.recv().await {
+                if let Some(observer) = observer.as_ref() {
+                    // Network messages are not APDUs. Malformed NPDUs remain
+                    // observable, but observer decoding never participates in
+                    // the admission decision below.
+                    let is_apdu_or_malformed = decode_npdu(received.npdu.clone())
+                        .map(|npdu| !npdu.is_network_message)
+                        .unwrap_or(true);
+                    if is_apdu_or_malformed {
+                        observer.publish(decode_npdu_event(
+                            ApduDirection::Inbound,
+                            received.source_mac.clone(),
+                            None,
+                            received.npdu.clone(),
+                        ));
+                    }
+                }
                 match decode_npdu(received.npdu.clone()) {
                     Ok(npdu) => {
                         if npdu.is_network_message {
@@ -261,6 +288,8 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         let mut buf = BytesMut::with_capacity(2 + apdu.len());
         encode_npdu(&mut buf, &npdu)?;
 
+        self.observe_outbound(&buf, destination_mac);
+
         self.transport
             .send_unicast_with_data_attributes(&buf, destination_mac, data_attributes)
             .await
@@ -297,6 +326,8 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
 
         let mut buf = BytesMut::with_capacity(2 + apdu.len());
         encode_npdu(&mut buf, &npdu)?;
+
+        self.observe_outbound(&buf, &[]);
 
         self.transport
             .send_broadcast_with_data_attributes(&buf, data_attributes)
@@ -341,6 +372,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
 
         let mut buf = BytesMut::with_capacity(8 + apdu.len());
         encode_npdu(&mut buf, &npdu)?;
+        self.observe_outbound(&buf, &[]);
         self.transport
             .send_broadcast_with_data_attributes(&buf, data_attributes)
             .await
@@ -397,6 +429,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
 
         let mut buf = BytesMut::with_capacity(8 + apdu.len());
         encode_npdu(&mut buf, &npdu)?;
+        self.observe_outbound(&buf, &[]);
         self.transport
             .send_broadcast_with_data_attributes(&buf, data_attributes)
             .await
@@ -441,6 +474,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     ) -> Result<(), Error> {
         let buf =
             Self::encode_routed_npdu_buf(apdu, dest_network, dest_mac, expecting_reply, priority)?;
+        self.observe_outbound(&buf, router_mac);
         self.transport
             .send_unicast_with_data_attributes(&buf, router_mac, data_attributes)
             .await
@@ -487,6 +521,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     ) -> Result<(), Error> {
         let buf =
             Self::encode_routed_npdu_buf(apdu, dest_network, dest_mac, expecting_reply, priority)?;
+        self.observe_outbound(&buf, &[]);
         self.transport
             .send_broadcast_with_data_attributes(&buf, data_attributes)
             .await
@@ -546,7 +581,42 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         if let Some(task) = self.abort_dispatch_task() {
             let _ = task.await;
         }
-        self.transport.stop().await
+        let result = self.transport.stop().await;
+        if let Some(observer) = self.observer.as_ref() {
+            observer.close();
+        }
+        result
+    }
+
+    /// Record an already encoded outbound NPDU, such as an MS/TP reply.
+    pub fn observe_outbound_npdu(&self, npdu: Bytes, immediate_peer: &[u8]) {
+        if let Some(observer) = self.observer.as_ref() {
+            observer.publish(decode_npdu_event(
+                ApduDirection::Outbound,
+                MacAddr::from_slice(immediate_peer),
+                None,
+                npdu,
+            ));
+        }
+    }
+
+    fn observe_outbound(&self, npdu: &[u8], immediate_peer: &[u8]) {
+        self.observe_outbound_with(immediate_peer, || Bytes::copy_from_slice(npdu));
+    }
+
+    fn observe_outbound_with<F>(&self, immediate_peer: &[u8], make_npdu: F)
+    where
+        F: FnOnce() -> Bytes,
+    {
+        let Some(observer) = self.observer.as_ref() else {
+            return;
+        };
+        observer.publish(decode_npdu_event(
+            ApduDirection::Outbound,
+            MacAddr::from_slice(immediate_peer),
+            None,
+            make_npdu(),
+        ));
     }
 }
 
@@ -571,6 +641,9 @@ impl<T: TransportPort> Drop for NetworkLayer<T> {
     fn drop(&mut self) {
         let _ = self.abort_dispatch_task();
         self.transport.abort();
+        if let Some(observer) = self.observer.as_ref() {
+            observer.close();
+        }
     }
 }
 
@@ -578,12 +651,51 @@ impl<T: TransportPort> Drop for NetworkLayer<T> {
 mod tests {
     use super::*;
     use bacnet_transport::bip::BipTransport;
+    use bacnet_transport::port::ReceivedNpdu;
     use bacnet_transport::sc::{LoopbackWebSocket, ScTransport, WebSocketPort};
     use bacnet_transport::sc_frame::{
         decode_sc_message, encode_sc_message, ScFunction, ScMessage, Vmac,
     };
     use std::net::Ipv4Addr;
     use tokio::time::{timeout, Duration};
+
+    struct ObserverTransport {
+        rx: Option<mpsc::Receiver<ReceivedNpdu>>,
+    }
+
+    impl TransportPort for ObserverTransport {
+        async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
+            self.rx
+                .take()
+                .ok_or_else(|| Error::Encoding("transport already started".into()))
+        }
+
+        async fn stop(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn send_unicast(&self, _npdu: &[u8], _mac: &[u8]) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn send_broadcast(&self, _npdu: &[u8]) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn local_mac(&self) -> &[u8] {
+            &[0x01]
+        }
+    }
+
+    fn received_npdu(npdu: Bytes, source_mac: &[u8]) -> ReceivedNpdu {
+        ReceivedNpdu {
+            npdu,
+            source_mac: MacAddr::from_slice(source_mac),
+            link_layer_group: false,
+            data_attributes: Vec::new(),
+            reply_tx: None,
+        }
+    }
 
     async fn sc_hub_accept(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
         let data = ws_hub.recv().await.unwrap();
@@ -644,6 +756,146 @@ mod tests {
             ws_hub.send(&buf).await.is_err(),
             "{context} must reject post-drop Heartbeat-Request on the closed socket"
         );
+    }
+
+    #[tokio::test]
+    async fn observer_reports_decode_failures_without_changing_apdu_delivery() {
+        use crate::observer::{ApduDecode, ApduDirection, DecodeStage};
+
+        let (transport_tx, transport_rx) = mpsc::channel(2);
+        let (observer, mut events) = ApduObserver::new(4);
+        let mut layer = NetworkLayer::with_observer(
+            ObserverTransport {
+                rx: Some(transport_rx),
+            },
+            observer,
+        );
+        let mut apdus = layer.start().await.unwrap();
+
+        transport_tx
+            .send(received_npdu(Bytes::from_static(&[0xff]), &[7]))
+            .await
+            .unwrap();
+
+        let mut valid_npdu = BytesMut::new();
+        encode_npdu(
+            &mut valid_npdu,
+            &Npdu {
+                payload: Bytes::from_static(&[0x10, 0x08]),
+                ..Npdu::default()
+            },
+        )
+        .unwrap();
+        transport_tx
+            .send(received_npdu(valid_npdu.freeze(), &[8]))
+            .await
+            .unwrap();
+
+        let malformed = events.recv().await.unwrap();
+        assert_eq!(malformed.direction, ApduDirection::Inbound);
+        assert_eq!(malformed.immediate_peer.as_slice(), &[7]);
+        assert!(matches!(
+            malformed.decode,
+            ApduDecode::Error(ref error) if error.stage == DecodeStage::Npdu
+        ));
+
+        let decoded = events.recv().await.unwrap();
+        assert!(matches!(decoded.decode, ApduDecode::Decoded(_)));
+        assert_eq!(
+            apdus.recv().await.unwrap().apdu,
+            Bytes::from_static(&[0x10, 0x08])
+        );
+
+        layer.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn observer_excludes_valid_network_control_messages() {
+        let (transport_tx, transport_rx) = mpsc::channel(1);
+        let (observer, mut events) = ApduObserver::new(2);
+        let mut layer = NetworkLayer::with_observer(
+            ObserverTransport {
+                rx: Some(transport_rx),
+            },
+            observer,
+        );
+        let mut controls = layer.enable_network_control_receiver().unwrap();
+        let _apdus = layer.start().await.unwrap();
+
+        let mut encoded = BytesMut::new();
+        encode_npdu(
+            &mut encoded,
+            &Npdu {
+                is_network_message: true,
+                message_type: Some(0),
+                ..Npdu::default()
+            },
+        )
+        .unwrap();
+        transport_tx
+            .send(received_npdu(encoded.freeze(), &[7]))
+            .await
+            .unwrap();
+
+        timeout(Duration::from_secs(1), controls.recv())
+            .await
+            .expect("network control delivery timed out")
+            .expect("network control receiver closed");
+        assert!(timeout(Duration::from_millis(20), events.recv())
+            .await
+            .is_err());
+
+        layer.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn observer_reports_routed_outbound_and_stop_closes_receiver() {
+        use crate::observer::{ApduDecode, ApduDirection};
+
+        let (_transport_tx, transport_rx) = mpsc::channel(1);
+        let (observer, mut events) = ApduObserver::new(2);
+        let mut layer = NetworkLayer::with_observer(
+            ObserverTransport {
+                rx: Some(transport_rx),
+            },
+            observer,
+        );
+
+        layer
+            .send_apdu_routed(
+                &[0x10, 0x08],
+                42,
+                &[1, 2],
+                &[9],
+                false,
+                NetworkPriority::NORMAL,
+            )
+            .await
+            .unwrap();
+
+        let outbound = events.recv().await.unwrap();
+        assert_eq!(outbound.direction, ApduDirection::Outbound);
+        assert_eq!(outbound.immediate_peer.as_slice(), &[9]);
+        assert_eq!(outbound.routed_address.unwrap().network, 42);
+        assert!(matches!(outbound.decode, ApduDecode::Decoded(_)));
+
+        layer.stop().await.unwrap();
+        assert_eq!(
+            events.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Closed)
+        );
+    }
+
+    #[test]
+    fn disabled_observer_does_not_materialize_an_event_copy() {
+        let (_transport_tx, transport_rx) = mpsc::channel(1);
+        let layer = NetworkLayer::new(ObserverTransport {
+            rx: Some(transport_rx),
+        });
+
+        layer.observe_outbound_with(&[9], || {
+            panic!("disabled observer must not allocate or copy NPDU bytes")
+        });
     }
 
     #[tokio::test]
