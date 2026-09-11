@@ -70,6 +70,8 @@ impl BACnetServer {
         mstp_mac=1,
         mstp_max_master=127,
         mstp_max_info_frames=1,
+        virtual_network=None,
+        virtual_mac=None,
         bbmd=false,
         bbmd_bdt=None,
         bbmd_bdt_persist_path=None,
@@ -143,6 +145,8 @@ impl BACnetServer {
         mstp_mac: u8,
         mstp_max_master: u8,
         mstp_max_info_frames: u8,
+        virtual_network: Option<String>,
+        virtual_mac: Option<u8>,
         bbmd: bool,
         bbmd_bdt: Option<Vec<(String, u16, String)>>,
         bbmd_bdt_persist_path: Option<String>,
@@ -198,6 +202,29 @@ impl BACnetServer {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "reuse_port=True requires transport='bip'",
             ));
+        }
+        match transport {
+            "virtual" => {
+                if virtual_network
+                    .as_deref()
+                    .is_none_or(|name| name.trim().is_empty())
+                {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "virtual_network must be a non-blank string for virtual transport",
+                    ));
+                }
+                if virtual_mac.is_none() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "virtual_mac is required for virtual transport",
+                    ));
+                }
+            }
+            _ if virtual_network.is_some() || virtual_mac.is_some() => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "virtual_network and virtual_mac require transport='virtual'",
+                ));
+            }
+            _ => {}
         }
         if bbmd_wire_management_enabled {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -430,6 +457,8 @@ impl BACnetServer {
             mstp_mac,
             mstp_max_master,
             mstp_max_info_frames,
+            virtual_network,
+            virtual_mac,
             dcc_password,
             dcc_policy,
             dcc_source_restriction,

@@ -11,6 +11,9 @@ fn runtime_capabilities_for(
         "ipv6" => vec![DataLinkSupport::BipV6],
         "sc" => vec![DataLinkSupport::BacnetSc],
         "mstp" => vec![DataLinkSupport::Mstp],
+        // Named virtual networks are an in-process integration transport, not
+        // a Standard 135 data-link capability advertised by the Device PICS.
+        "virtual" => Vec::new(),
         _ => Vec::new(),
     };
     RuntimeCapabilities {
@@ -73,6 +76,8 @@ impl BACnetServer {
         let sc_heartbeat_interval_ms = self.sc_heartbeat_interval_ms;
         let sc_heartbeat_timeout_ms = self.sc_heartbeat_timeout_ms;
         let ipv6_interface = self.ipv6_interface.clone();
+        let virtual_network = self.virtual_network.clone();
+        let virtual_mac = self.virtual_mac;
         let dcc_password = self.dcc_password.clone();
         let dcc_policy = self.dcc_policy;
         let dcc_source_restriction = self.dcc_source_restriction.clone();
@@ -217,9 +222,18 @@ impl BACnetServer {
                 "mstp" => mstp_transport
                     .take()
                     .ok_or_else(|| PyRuntimeError::new_err("MS/TP transport was not prepared"))?,
+                "virtual" => {
+                    let network = virtual_network.ok_or_else(|| {
+                        PyRuntimeError::new_err("virtual_network is required for virtual transport")
+                    })?;
+                    let mac = virtual_mac.ok_or_else(|| {
+                        PyRuntimeError::new_err("virtual_mac is required for virtual transport")
+                    })?;
+                    AnyTransport::Virtual(VirtualNetwork::join(network, mac).map_err(to_py_err)?)
+                }
                 other => {
                     return Err(PyRuntimeError::new_err(format!(
-                        "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', or 'mstp'"
+                        "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', 'mstp', or 'virtual'"
                     )));
                 }
             };
@@ -285,7 +299,8 @@ impl BACnetServer {
 
     /// Get the server's local address as a string.
     ///
-    /// For BIP: "ip:port", for IPv6: "[ip]:port", for SC: hex-encoded VMAC.
+    /// For BIP: "ip:port", for IPv6: "[ip]:port", for MS/TP: decimal MAC,
+    /// and for SC or virtual transports: hex-encoded MAC.
     fn local_address<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let transport_type = self.transport_type.clone();

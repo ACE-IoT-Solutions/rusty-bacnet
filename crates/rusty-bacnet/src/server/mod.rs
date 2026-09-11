@@ -51,6 +51,7 @@ use bacnet_server::server;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
+use bacnet_transport::virtual_network::VirtualNetwork;
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
 use bacnet_types::primitives::PropertyValue;
 
@@ -77,6 +78,8 @@ use crate::types::{
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
+/// - `"virtual"`: named in-process virtual network (requires
+///   `virtual_network` and one-byte `virtual_mac`)
 ///
 /// SC credential paths must be nonempty at construction (ValueError otherwise).
 /// start() loads the files before dialing or draining registrations; local TLS
@@ -114,6 +117,9 @@ pub struct BACnetServer {
     mstp_mac: u8,
     mstp_max_master: u8,
     mstp_max_info_frames: u8,
+    // In-process virtual network config
+    virtual_network: Option<String>,
+    virtual_mac: Option<u8>,
     // Passwords
     dcc_password: Option<String>,
     dcc_policy: server::DccPolicy,

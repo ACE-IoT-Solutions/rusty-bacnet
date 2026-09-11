@@ -2611,6 +2611,8 @@ class BACnetServer:
         mstp_mac: int = 1,
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
+        virtual_network: Optional[str] = None,
+        virtual_mac: Optional[int] = None,
         bbmd: bool = False,
         bbmd_bdt: Optional[list[tuple[str, int, str]]] = None,
         bbmd_bdt_persist_path: Optional[str] = None,
