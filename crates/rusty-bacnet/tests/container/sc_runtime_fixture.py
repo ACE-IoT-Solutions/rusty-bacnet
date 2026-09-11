@@ -3,6 +3,10 @@ import sys
 
 import rusty_bacnet as bacnet
 
+PRIMARY_HUB_UUID = bytes.fromhex("10000000000000000000000000000001")
+FAILOVER_HUB_UUID = bytes.fromhex("20000000000000000000000000000001")
+SERVER_UUID = bytes.fromhex("42000000000000000000000000000001")
+
 
 async def wait_for(predicate, message: str, timeout: float = 3.0) -> None:
     async with asyncio.timeout(timeout):
@@ -27,6 +31,7 @@ async def main(
         server_key,
         b"\x10\x00\x00\x00\x00\x01",
         ca_cert=ca_cert,
+        device_uuid=PRIMARY_HUB_UUID,
     )
     failover = bacnet.ScHub(
         "127.0.0.1:0",
@@ -34,6 +39,7 @@ async def main(
         server_key,
         b"\x20\x00\x00\x00\x00\x01",
         ca_cert=ca_cert,
+        device_uuid=FAILOVER_HUB_UUID,
     )
     await primary.start()
     await failover.start()
@@ -46,6 +52,7 @@ async def main(
         sc_ca_cert=ca_cert,
         sc_client_cert=client_cert,
         sc_client_key=client_key,
+        sc_device_uuid=SERVER_UUID,
     )
     primary_server.add_analog_input(1, "Primary temperature", present_value=31.5)
     await primary_server.start()
@@ -58,6 +65,7 @@ async def main(
         sc_ca_cert=ca_cert,
         sc_client_cert=client_cert,
         sc_client_key=client_key,
+        sc_device_uuid=SERVER_UUID,
     )
     failover_server.add_analog_input(1, "Failover temperature", present_value=32.5)
     await failover_server.start()
