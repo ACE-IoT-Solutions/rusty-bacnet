@@ -7,7 +7,9 @@ pub(super) fn select_initial_sc_websocket<W>(
 ) -> Result<InitialScWebSocket<W>, bacnet_types::error::Error> {
     match primary {
         Ok(ws) => Ok(InitialScWebSocket::Connected(ws)),
-        Err(error) if has_failover => Ok(InitialScWebSocket::Unavailable(error.to_string().into())),
+        Err(error) if has_failover => Ok(InitialScWebSocket::Unavailable(std::sync::Mutex::new(
+            Some(error),
+        ))),
         Err(error) => Err(error),
     }
 }

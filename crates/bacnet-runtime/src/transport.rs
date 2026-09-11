@@ -87,7 +87,7 @@ pub enum InitialScWebSocket<W> {
     /// A successfully established TLS WebSocket.
     Connected(W),
     /// A failed initial primary dial retained for transport-level failover.
-    Unavailable(std::sync::Arc<str>),
+    Unavailable(std::sync::Mutex<Option<bacnet_types::error::Error>>),
 }
 
 #[cfg(feature = "sc")]
@@ -95,18 +95,30 @@ impl<W: WebSocketPort> WebSocketPort for InitialScWebSocket<W> {
     async fn send(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
         match self {
             Self::Connected(ws) => ws.send(data).await,
-            Self::Unavailable(reason) => Err(bacnet_types::error::Error::Encoding(format!(
-                "initial BACnet/SC primary connection unavailable: {reason}"
-            ))),
+            Self::Unavailable(error) => Err(error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .unwrap_or_else(|| {
+                    bacnet_types::error::Error::Encoding(
+                        "initial BACnet/SC primary connection error was already consumed".into(),
+                    )
+                })),
         }
     }
 
     async fn recv(&self) -> Result<Vec<u8>, bacnet_types::error::Error> {
         match self {
             Self::Connected(ws) => ws.recv().await,
-            Self::Unavailable(reason) => Err(bacnet_types::error::Error::Encoding(format!(
-                "initial BACnet/SC primary connection unavailable: {reason}"
-            ))),
+            Self::Unavailable(error) => Err(error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .unwrap_or_else(|| {
+                    bacnet_types::error::Error::Encoding(
+                        "initial BACnet/SC primary connection error was already consumed".into(),
+                    )
+                })),
         }
     }
 }
@@ -423,19 +435,69 @@ mod tests {
         use bacnet_types::error::Error;
 
         let selected = super::configuration::select_initial_sc_websocket::<TestScWebSocket>(
-            Err(Error::Encoding("primary TLS dial failed".to_owned())),
+            Err(Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "primary TCP port closed",
+            ))),
             true,
         )
         .unwrap();
         let error = selected.send(&[]).await.unwrap_err();
-        assert!(error.to_string().contains("primary TLS dial failed"));
+        let runtime_error = crate::RuntimeError::sc_connect(AttachmentId::from(10), error);
+        assert_eq!(runtime_error.code, ErrorCode::ScDisconnected);
+        assert!(runtime_error.retryable);
+        assert!(runtime_error.message.contains("primary TCP port closed"));
 
         let error = super::configuration::select_initial_sc_websocket::<TestScWebSocket>(
-            Err(Error::Encoding("primary TLS dial failed".to_owned())),
+            Err(Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "primary TCP port closed",
+            ))),
             false,
         )
         .err()
         .expect("a failed primary without failover must fail closed");
-        assert!(error.to_string().contains("primary TLS dial failed"));
+        let runtime_error = crate::RuntimeError::sc_connect(AttachmentId::from(10), error);
+        assert_eq!(runtime_error.code, ErrorCode::ScDisconnected);
+        assert!(runtime_error.retryable);
+    }
+
+    #[cfg(feature = "sc")]
+    #[tokio::test]
+    async fn failed_primary_and_failover_preserve_disconnect_without_reclassifying_tls_auth() {
+        use bacnet_transport::sc::WebSocketPort;
+        use bacnet_types::error::Error;
+
+        // ScTransport returns its primary handshake error if the configured
+        // failover dial also fails. The placeholder must therefore yield the
+        // original Transport error, not turn it into an Encoding/TLS error.
+        let both_ports_closed =
+            super::configuration::select_initial_sc_websocket::<TestScWebSocket>(
+                Err(Error::Transport(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "primary TCP port closed",
+                ))),
+                true,
+            )
+            .unwrap()
+            .send(&[])
+            .await
+            .unwrap_err();
+        let runtime_error =
+            crate::RuntimeError::sc_connect(AttachmentId::from(10), both_ports_closed);
+        assert_eq!(runtime_error.code, ErrorCode::ScDisconnected);
+        assert!(runtime_error.retryable);
+
+        let tls_auth = super::configuration::select_initial_sc_websocket::<TestScWebSocket>(
+            Err(Error::Encoding("primary certificate rejected".to_owned())),
+            true,
+        )
+        .unwrap()
+        .send(&[])
+        .await
+        .unwrap_err();
+        let runtime_error = crate::RuntimeError::sc_connect(AttachmentId::from(10), tls_auth);
+        assert_eq!(runtime_error.code, ErrorCode::TlsAuth);
+        assert!(!runtime_error.retryable);
     }
 }
