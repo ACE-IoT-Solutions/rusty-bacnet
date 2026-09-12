@@ -1162,12 +1162,99 @@ bounded in-process routing fixtures without creating a physical data-link
 support claim.
 
 Runtime SC health is derived from the transport's latest connection state.
+`RuntimeScAttachment` requires a keyword-only `device_uuid` containing exactly
+16 nonzero bytes. This identity is caller-provisioned and must be persisted for
+the node's lifetime; it is independent from `attachment_id` and is validated
+before any hub dial.
 After all configured hubs are unavailable, the attachment reports `Failed`
 with `ScDisconnected`; successful failover remains `Running`. Health is a
 point-in-time signal, so rapid intermediate state transitions may coalesce.
 Cold start tries a configured failover when the primary cannot be reached, and
 device selection refreshes attachment health so a failed preferred path yields
 to an observed healthy alternative.
+
+### Mixed-transport `BACnetRouter`
+
+`BACnetRouter.from_ports()` accepts at least two frozen typed port
+configurations. The names below are provisional because the router team's
+referenced section 5.1 was not available in this repository:
+
+```python
+from rusty_bacnet import BACnetRouter, RouterBipPort, RouterScPort
+
+router = BACnetRouter.from_ports([
+    RouterBipPort(
+        1001,
+        interface="127.0.0.1",
+        port=47808,
+        broadcast_address="127.0.0.1",
+    ),
+    RouterScPort(
+        2001,
+        primary_hub="wss://hub.example:47808",
+        local_vmac=b"\x02\x00\x00\x00\x00\x02",
+        device_uuid=persisted_device_uuid,  # exactly 16 bytes and not all zero
+        ca_cert="site-ca.pem",
+        client_cert="router.pem",
+        client_key="router.key",
+        failover_hub="wss://failover.example:47808",
+        reconnect_forever=True,
+    ),
+])
+
+await router.start()
+health = await router.port_health()
+routes = await router.routing_table()
+await router.stop()
+```
+
+`RouterBipPort(network_number, interface="0.0.0.0", port=0xBAC0,
+broadcast_address="255.255.255.255", reuse_port=False)` validates both IPv4
+addresses. `RouterVirtualPort(network_number, name, mac)` joins a named
+in-process network. Network numbers `0` and `65535`, duplicate network numbers,
+duplicate B/IP `(interface, port)` endpoints, duplicate virtual-network names,
+and a port list shorter than two are rejected.
+
+`RouterScPort` requires a `wss://` primary hub, a non-reserved six-byte VMAC, a
+nonzero 16-byte device UUID, and nonempty CA/certificate/key paths. Its remaining
+keywords are `failover_hub=None`, `heartbeat_interval_ms=30000`,
+`heartbeat_timeout_ms=60000`, `reconnect_initial_delay_ms=10000`,
+`reconnect_max_delay_ms=600000`, `reconnect_max_retries=10`, and
+`reconnect_forever=False`. With `reconnect_forever=True`, the SC transport alternates
+eligible primary/failover attempts with exponential backoff capped by
+`reconnect_max_delay_ms`; a hub result that forbids retry still terminates
+recovery. A zero `reconnect_max_retries` retains its existing bounded meaning
+unless `reconnect_forever` is true.
+
+`port_health()` returns immutable entries in configuration order. Each entry
+has `config_index`, `network_number`, `transport_kind`, `identity`, `state`,
+`detail`, `active_hub`, `last_error`, `attempt`, and `since`. States are
+`"Down"`, `"Connecting"`, `"Reconnecting"`, `"Up"`, and `"Failed"`;
+`since` is elapsed seconds for the current operational connection. B/IP and
+virtual transports report static `Up`; SC health follows its connection and
+recovery tasks, including terminal failure.
+
+`routing_table()` returns immutable entries sorted by `network_number`, detached
+from the native table. Fields are `network_number`, `port_index`,
+`directly_connected`, `next_hop_mac`, `reachability` (`"Reachable"`, `"Busy"`,
+or `"Unreachable"`), `last_seen_age_s`, `busy_remaining_s`, `flap_count`, and
+`last_port_change_age_s`. Health and route methods preserve their final snapshot
+after `stop()`; before a successful start they return an empty list.
+
+The existing `BACnetRouter(bip_network, virtual_ports, ...)` constructor remains
+supported and delegates to the same internal typed port model. Periodic and
+recovery-triggered announcements are not implemented, so `from_ports` does not
+expose an announcement-interval keyword yet. Oversize-NPDU rejection and an
+`oversize_drops` counter are also not part of this surface.
+
+BACnet/SC Data Options are carried on SC-capable sends. At an SC-to-B/IP router
+boundary they are intentionally ignored by the B/IP egress transport because
+Annex J framing has no equivalent field; the NPDU itself is still forwarded.
+The current Rust mixed-transport tests do not turn that boundary behavior into
+a broader Data Options conformance claim. Installed-wheel coverage in
+`crates/rusty-bacnet/tests/test_sc_ip_router.py` exercises the routed read and
+hub-restart recovery path; W14 repeats that test from an installed Linux arm64
+wheel.
 
 The reconciliation runtime benchmark compares six sequential Python client
 reads with one six-property runtime batch using the same installed-wheel

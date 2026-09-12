@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Blocking SC-to-IP router surface (R1-R4):** Python now has provisional
+  frozen `RouterBipPort`, `RouterScPort`, and `RouterVirtualPort` configuration
+  classes plus `BACnetRouter.from_ports(...)`, per-port health, and detached
+  routing-table snapshots. The legacy B/IP-plus-virtual constructor remains
+  available. Rust transports expose defaulted identity and health hooks; SC
+  publishes `Down`, `Connecting`, `Reconnecting`, `Up`, and terminal `Failed`
+  states, and `ScReconnectConfig::unbounded(...)` enables capped-backoff retry
+  without a count limit while still honoring retry-forbidden hub responses.
+  Adding the public `retry_forever` field is source-incompatible for Rust callers
+  that construct `ScReconnectConfig` with a complete struct literal; add
+  `retry_forever: false`, use `..Default::default()`, or use `unbounded(...)`.
+  Runtime callers that construct `ScConfig` literals must likewise add
+  an explicit nonzero `device_uuid` plus `reconnect_forever: false` (or `true`
+  for the new unbounded policy). `RuntimeScAttachment` now requires the same
+  caller-provisioned identity as a keyword-only argument instead of deriving
+  it from `attachment_id`. Router
+  SC ports use the same `reconnect_forever` Python keyword; the previously
+  provisional `retry_forever` spelling was removed before release. The
+  deferred announcement interval is likewise not exposed until it works.
+  Router
+  counter identities remain post-start local MACs; `transport_kind` now uses
+  stable short names such as `bip` and `sc`, while health identities use the
+  separate topology identity.
+  Rust mixed-transport evidence covers B/IP/SC unicast and broadcast forwarding
+  and a routed ReadProperty through a mutual-TLS hub. SC Data Options remain
+  available on SC-capable legs but are intentionally ignored at a B/IP egress
+  boundary, whose framing cannot carry them. The router-team section 5.1 naming
+  reference was unavailable, so the Python class names remain provisional.
+  Oversize-NPDU rejection/counters (R7), periodic/recovery announcements (R8),
+  fork wheel publication (R9), and multi-arch images (R10) are not included in
+  this slice. Installed-wheel SC routing, hub-restart recovery, and the Linux
+  arm64 W14 scenario are exercised by the retained acceptance sources. This is
+  implementation evidence, not a new BACnet conformance or support-status claim.
+
 - **Upstream-first ACE reconciliation:** rebuilt the ACE runtime and Python
   parity work on the pinned upstream 0.11 development line. The combined API
   restores typed direct/routed targets, multi-attachment runtime, I-Am and COV

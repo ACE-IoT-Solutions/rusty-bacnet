@@ -368,7 +368,7 @@ not the current issue disposition.
 | Row ID | Anchor | Priority | Status | Evidence |
 |---|---|---|---|---|
 | `BACNET-6-NPDU-CONTROL` | Clause 6.2 | P1 | `implementation-present-needs-negative-tests` | NPDU codec and network layer paths exist. |
-| `BACNET-6-ROUTER-MESSAGES` | Clauses 6.4-6.6 | P1 | `implementation-present-needs-conformance-tests` | Router code and stress benchmark paths exist. |
+| `BACNET-6-ROUTER-MESSAGES` | Clauses 6.4-6.6 | P1 | `implementation-present-needs-conformance-tests` | Router code and stress benchmark paths exist. New implementation evidence adds duplicate topology rejection, ordered port-health snapshots, detached direct/learned routing-table snapshots, B/IP-to-SC and SC-to-B/IP unicast forwarding, B/IP-originated global broadcast forwarding, and a routed ReadProperty from a real B/IP client to an SC server through the mutual-TLS Rust hub (`crates/bacnet-network/src/router/tests/snapshots.rs`, `crates/bacnet-network/src/router/tests/mixed_bip_sc.rs`, and `crates/bacnet-integration-tests/tests/sc_ip_router.rs`). The installed-wheel Python suite and W14 Linux arm64 scenario exercise the same routed read plus hub-restart recovery (`crates/rusty-bacnet/tests/test_sc_ip_router.py` and `crates/rusty-bacnet/tests/container/run-w14-sc-ip-router.sh`). The mixed unit test checks source insertion and broadcast hop decrement; it does not constitute the full Clause 6 transition/negative matrix. Data Attributes map to Data Options only on SC-capable egress and are ignored at the B/IP boundary. Oversize rejection and periodic/recovery announcements remain open. Status is unchanged and no broader conformance claim is made. |
 
 ## Clauses 7-11 Data Links
 

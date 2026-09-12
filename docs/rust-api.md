@@ -311,6 +311,33 @@ let transport = ScTransport::new(ws, vmac)
     .with_heartbeat_timeout_ms(60_000);
 ```
 
+Reconnect policy is configured with `ScReconnectConfig`. Bounded configuration
+retains its existing semantics: `max_retries == 0` means no counted reconnect
+attempts. Use `ScReconnectConfig::unbounded(initial_delay_ms, max_delay_ms)` (or
+set `retry_forever: true`) for capped exponential backoff without a count limit.
+Unbounded recovery alternates eligible primary and failover targets; protocol
+results that clear retry eligibility still stop recovery.
+
+`retry_forever` is a new public field. Although its default is `false`, adding it
+is source-incompatible for downstream code that uses a complete
+`ScReconnectConfig { ... }` literal. Such callers must add
+`retry_forever: false`, use struct update syntax with `Default`, or migrate to
+`ScReconnectConfig::unbounded(...)`.
+
+`bacnet_runtime::ScConfig` also gains the required `reconnect_forever` field.
+Complete downstream struct literals must add `reconnect_forever: false` to
+retain bounded behavior, or set it to `true` to allow a zero retry budget and
+unbounded capped-backoff recovery.
+
+All `TransportPort` implementations now expose a stable `transport_kind()`, an
+optional `topology_id()`, a point-in-time `health()`, and an optional
+`health_changes()` watch receiver. Default implementations preserve custom
+transport implementors. `TransportHealth` contains `state`, `detail`,
+`active_hub`, `last_error`, reconnect `attempt`, and the `since` instant for an
+operational connection. Its states are `Down`, `Connecting`, `Reconnecting`,
+`Up`, and `Failed`. SC reports its normalized primary/failover hub topology and
+live health; stateless transports use the default `Up` snapshot.
+
 Production BACnet/SC transports validate heartbeat settings at `start()`: the interval must be
 `3_000..=300_000` ms, and the disconnect timeout must be greater than the interval.
 
@@ -603,8 +630,50 @@ Network layer routing, router tables, and the multi-port router.
 
 ```rust
 use bacnet_network::network_layer::NetworkLayer;
-use bacnet_network::router::BACnetRouter;
+use bacnet_network::router::{BACnetRouter, RouterPort};
+use bacnet_transport::any::AnyTransport;
+use bacnet_transport::mstp::NoSerial;
+
+let ports: Vec<RouterPort<AnyTransport<NoSerial>>> = vec![
+    RouterPort { transport: bip_port.into(), network_number: 1001 },
+    RouterPort { transport: sc_port.into(), network_number: 2001 },
+];
+let (mut router, local_rx) = BACnetRouter::start(ports).await?;
+
+let health = router.port_health();       // configuration order
+let routes = router.routing_table().await; // sorted, detached snapshots
 ```
+
+Router startup rejects duplicate network numbers and duplicate nonempty
+`(transport_kind, topology_id)` identities before starting a port. Startup
+errors retain the underlying transport error category while adding the port's
+configuration index, kind, and identity.
+
+`RouterPortCounters::transport_kind` now contains stable short values such as
+`"bip"` and `"sc"`. Its `identity` remains the post-start local MAC encoded as
+hexadecimal octets, preserving its use for a wildcard B/IP port's resolved
+endpoint. `RouterPortHealth::identity` is the separate stable topology identity.
+
+`RouterPortHealth` combines stable router metadata with the latest
+`TransportHealth`. `RouteSnapshot` contains the network number, egress port,
+direct/learned flag, next-hop MAC, effective reachability, relative learned and
+busy ages, and route-flap observations. Snapshots do not expose the router's
+live `Arc<Mutex<RouterTable>>` and remain unchanged if the live route is later
+removed.
+
+Forwarding retains generic `DataAttribute` values between transports. BACnet/SC
+maps them to Annex AB Data Options; transports without an equivalent, including
+B/IP, use the default send methods that ignore the attributes and forward the
+NPDU normally. Thus an SC-to-B/IP boundary drops SC-only Data Options by design.
+
+Focused Rust evidence is in
+`crates/bacnet-network/src/router/tests/mixed_bip_sc.rs` (B/IP/SC unicast in both
+directions plus B/IP-originated global broadcast),
+`crates/bacnet-network/src/router/tests/snapshots.rs` (topology rejection, health, and
+detached routes), and `crates/bacnet-integration-tests/tests/sc_ip_router.rs` (a routed
+ReadProperty through a mutual-TLS SC hub). These are implementation tests, not
+a full Clause 6 or Annex AB conformance suite. Oversize egress rejection and
+re-announcement behavior are not implemented in this slice.
 
 ---
 
