@@ -332,8 +332,10 @@ dependencies = [
  "bacnet-transport",
  "bacnet-types",
  "bytes",
+ "rcgen",
  "serde_json",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

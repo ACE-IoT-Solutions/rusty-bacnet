@@ -10,14 +10,16 @@ publish = false
 bacnet-types.workspace = true
 bacnet-encoding.workspace = true
 bacnet-services.workspace = true
-bacnet-transport.workspace = true
+bacnet-transport = { workspace = true, features = ["sc-tls"] }
 bacnet-network.workspace = true
 bacnet-objects.workspace = true
 bacnet-client.workspace = true
-bacnet-server.workspace = true
+bacnet-server = { workspace = true, features = ["sc-tls"] }
 bytes.workspace = true
+rcgen.workspace = true
 serde_json = "1"
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "macros", "time", "test-util"] }
+tokio-rustls.workspace = true
 
 [lints]
 workspace = true

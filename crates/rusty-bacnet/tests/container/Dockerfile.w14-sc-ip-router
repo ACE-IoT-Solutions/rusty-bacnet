@@ -1,0 +1,9 @@
+ARG WHEEL_IMAGE=localhost/rusty-bacnet-w14-wheel:dev
+FROM ${WHEEL_IMAGE}
+
+WORKDIR /tests
+COPY crates/rusty-bacnet/tests/test_sc_hub_mtls.py /tests/test_sc_hub_mtls.py
+COPY crates/rusty-bacnet/tests/test_sc_ip_router.py /tests/test_sc_ip_router.py
+COPY crates/rusty-bacnet/tests/container/w14_sc_ip_router.py /tests/w14_sc_ip_router.py
+
+ENTRYPOINT ["python", "/tests/w14_sc_ip_router.py"]
