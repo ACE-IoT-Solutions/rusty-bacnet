@@ -1838,6 +1838,89 @@ class _DeviceWriteBatchResult(TypedDict):
     error: BacnetError | None
 
 
+class RouterBipPort:
+    def __init__(
+        self,
+        network_number: int,
+        interface: str = "0.0.0.0",
+        port: int = 0xBAC0,
+        broadcast_address: str = "255.255.255.255",
+        reuse_port: bool = False,
+    ) -> None: ...
+    network_number: int
+    interface: str
+    port: int
+    broadcast_address: str
+    reuse_port: bool
+
+class RouterScPort:
+    def __init__(
+        self,
+        network_number: int,
+        primary_hub: str,
+        local_vmac: bytes,
+        device_uuid: bytes,
+        ca_cert: str,
+        client_cert: str,
+        client_key: str,
+        failover_hub: Optional[str] = None,
+        heartbeat_interval_ms: int = 30000,
+        heartbeat_timeout_ms: int = 60000,
+        reconnect_initial_delay_ms: int = 10000,
+        reconnect_max_delay_ms: int = 600000,
+        reconnect_max_retries: int = 10,
+        reconnect_forever: bool = False,
+    ) -> None: ...
+    network_number: int
+    primary_hub: str
+    local_vmac: bytes
+    device_uuid: bytes
+    ca_cert: str
+    client_cert: str
+    client_key: str
+    failover_hub: Optional[str]
+    heartbeat_interval_ms: int
+    heartbeat_timeout_ms: int
+    reconnect_initial_delay_ms: int
+    reconnect_max_delay_ms: int
+    reconnect_max_retries: int
+    reconnect_forever: bool
+
+class RouterPortHealth:
+    config_index: int
+    network_number: int
+    transport_kind: str
+    identity: str
+    state: str
+    detail: Optional[str]
+    active_hub: Optional[str]
+    last_error: Optional[str]
+    attempt: int
+    since: Optional[float]
+
+class RouterRouteEntry:
+    network_number: int
+    port_index: int
+    directly_connected: bool
+    next_hop_mac: bytes
+    reachability: str
+    last_seen_age_s: Optional[float]
+    busy_remaining_s: Optional[float]
+    flap_count: int
+    last_port_change_age_s: Optional[float]
+
+class BACnetRouter:
+    @classmethod
+    def from_ports(
+        cls,
+        ports: list[Union[RouterBipPort, RouterScPort]],
+    ) -> BACnetRouter: ...
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    async def local_address(self) -> str: ...
+    async def port_health(self) -> list[RouterPortHealth]: ...
+    async def routing_table(self) -> list[RouterRouteEntry]: ...
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 

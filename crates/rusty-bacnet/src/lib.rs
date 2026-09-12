@@ -19,6 +19,7 @@ mod mstp_py;
 mod object_audit_policy;
 mod py_async;
 mod read_range;
+mod router;
 mod sc_identity;
 mod server;
 mod tls;
@@ -49,6 +50,11 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register client and server classes
     m.add_class::<client::BACnetClient>()?;
     m.add_class::<server::BACnetServer>()?;
+    m.add_class::<router::PyBACnetRouter>()?;
+    m.add_class::<router::PyRouterBipPort>()?;
+    m.add_class::<router::PyRouterScPort>()?;
+    m.add_class::<router::PyRouterPortHealth>()?;
+    m.add_class::<router::PyRouterRouteEntry>()?;
     m.add_class::<hub::PyScHub>()?;
     m.add_class::<hub_bindings::PyScHubCertificateBinding>()?;
     endpoint::register(m)?;

@@ -45,8 +45,15 @@ pub(crate) fn disable_nagle(stream: &TcpStream) {
 pub struct TlsWebSocket {
     pub(crate) verified_leaf: [u8; 32],
     pub(crate) peer_address: std::net::SocketAddr,
-    write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
-    read: Mutex<futures_util::stream::SplitStream<WsStream>>,
+    inner: TlsWebSocketInner,
+}
+
+enum TlsWebSocketInner {
+    Connected {
+        write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
+        read: Mutex<futures_util::stream::SplitStream<WsStream>>,
+    },
+    Unavailable(Mutex<Option<Error>>),
 }
 
 impl TlsWebSocket {
@@ -55,7 +62,12 @@ impl TlsWebSocket {
     pub(crate) async fn direct_frame(
         &self,
     ) -> Result<crate::sc::direct_socket::DirectFrame, Error> {
-        direct_frame(&mut *self.read.lock().await).await
+        match &self.inner {
+            TlsWebSocketInner::Connected { read, .. } => {
+                direct_frame(&mut *read.lock().await).await
+            }
+            TlsWebSocketInner::Unavailable(error) => Err(Self::unavailable_error(error).await),
+        }
     }
 
     /// Connect to a WebSocket endpoint with TLS.
@@ -161,8 +173,25 @@ impl TlsWebSocket {
         Ok(Self {
             verified_leaf,
             peer_address,
-            write: Mutex::new(write),
-            read: Mutex::new(read),
+            inner: TlsWebSocketInner::Connected {
+                write: Mutex::new(write),
+                read: Mutex::new(read),
+            },
+        })
+    }
+
+    /// Preserve an initial dial failure so SC startup can try its failover path.
+    pub fn from_initial_error(error: Error) -> Self {
+        Self {
+            verified_leaf: [0; 32],
+            peer_address: "0.0.0.0:0".parse().expect("valid unspecified socket"),
+            inner: TlsWebSocketInner::Unavailable(Mutex::new(Some(error))),
+        }
+    }
+
+    async fn unavailable_error(error: &Mutex<Option<Error>>) -> Error {
+        error.lock().await.take().unwrap_or_else(|| {
+            Error::Encoding("initial BACnet/SC WebSocket remains unavailable".into())
         })
     }
 }
@@ -347,7 +376,13 @@ fn verify_selected_subprotocol(
 
 impl WebSocketPort for TlsWebSocket {
     async fn send(&self, data: &[u8]) -> Result<(), Error> {
-        let mut write = self.write.lock().await;
+        let write = match &self.inner {
+            TlsWebSocketInner::Connected { write, .. } => write,
+            TlsWebSocketInner::Unavailable(error) => {
+                return Err(Self::unavailable_error(error).await)
+            }
+        };
+        let mut write = write.lock().await;
         write
             .send(Message::Binary(data.to_vec().into()))
             .await
@@ -361,11 +396,17 @@ impl WebSocketPort for TlsWebSocket {
     }
 
     async fn recv(&self) -> Result<Vec<u8>, Error> {
+        let (read, write) = match &self.inner {
+            TlsWebSocketInner::Connected { read, write } => (read, write),
+            TlsWebSocketInner::Unavailable(error) => {
+                return Err(Self::unavailable_error(error).await)
+            }
+        };
         loop {
             // Read one message under the read lock, then drop it before
             // acquiring write (avoids read→write lock ordering deadlock).
             let msg = {
-                let mut read = self.read.lock().await;
+                let mut read = read.lock().await;
                 read.next().await
             };
             match msg {
@@ -382,7 +423,7 @@ impl WebSocketPort for TlsWebSocket {
                 }
                 Some(Ok(_)) => {
                     // Non-binary data frames: close with 1003
-                    let mut w = self.write.lock().await;
+                    let mut w = write.lock().await;
                     let _ = w
                         .send(Message::Close(Some(
                             tokio_tungstenite::tungstenite::protocol::CloseFrame {
