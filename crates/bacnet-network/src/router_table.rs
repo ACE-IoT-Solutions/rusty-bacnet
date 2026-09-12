@@ -73,6 +73,29 @@ pub enum ReachabilityStatus {
     Unreachable,
 }
 
+/// Detached, observation-safe copy of one routing-table entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteSnapshot {
+    /// BACnet network reached by this route.
+    pub network_number: u16,
+    /// Zero-based index of the configured egress port.
+    pub port_index: usize,
+    /// Whether this network is attached directly to the egress port.
+    pub directly_connected: bool,
+    /// Transport-native MAC of the next-hop router; empty for direct routes.
+    pub next_hop_mac: Vec<u8>,
+    /// Effective reachability when the snapshot was created.
+    pub reachability: ReachabilityStatus,
+    /// Time since a learned route was last confirmed.
+    pub last_seen_age: Option<Duration>,
+    /// Remaining busy interval, when currently busy.
+    pub busy_remaining: Option<Duration>,
+    /// Number of recent port changes observed by flap detection.
+    pub flap_count: u8,
+    /// Time since the route last changed ports.
+    pub last_port_change_age: Option<Duration>,
+}
+
 /// A route entry in the router table.
 ///
 /// Freshness is split (RB-06): `last_seen` is control-plane confirmation
@@ -713,6 +736,48 @@ impl RouterTable {
     /// List all known network numbers.
     pub fn networks(&self) -> Vec<u16> {
         self.routes.keys().copied().collect()
+    }
+
+    /// Copy all entries into snapshots sorted by network number.
+    pub fn snapshots(&self) -> Vec<RouteSnapshot> {
+        let now = Instant::now();
+        let mut snapshots: Vec<_> = self
+            .routes
+            .iter()
+            .map(|(&network_number, entry)| {
+                let busy_remaining = if entry.reachability == ReachabilityStatus::Busy {
+                    entry
+                        .busy_until
+                        .and_then(|deadline| deadline.checked_duration_since(now))
+                } else {
+                    None
+                };
+                let reachability = if entry.reachability == ReachabilityStatus::Busy
+                    && entry.busy_until.is_some_and(|deadline| now >= deadline)
+                {
+                    ReachabilityStatus::Reachable
+                } else {
+                    entry.reachability
+                };
+                RouteSnapshot {
+                    network_number,
+                    port_index: entry.port_index,
+                    directly_connected: entry.directly_connected,
+                    next_hop_mac: entry.next_hop_mac.as_slice().to_vec(),
+                    reachability,
+                    last_seen_age: entry
+                        .last_seen
+                        .map(|last_seen| now.saturating_duration_since(last_seen)),
+                    busy_remaining,
+                    flap_count: entry.flap_count,
+                    last_port_change_age: entry
+                        .last_port_change
+                        .map(|changed| now.saturating_duration_since(changed)),
+                }
+            })
+            .collect();
+        snapshots.sort_unstable_by_key(|snapshot| snapshot.network_number);
+        snapshots
     }
 
     /// List networks reachable via ports OTHER than `exclude_port`.

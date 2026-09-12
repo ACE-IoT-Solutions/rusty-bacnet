@@ -63,12 +63,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
-use bacnet_transport::port::{DataAttribute, TransportPort};
+use bacnet_transport::port::{DataAttribute, TransportHealth, TransportPort};
 use bacnet_types::enums::NetworkMessageType;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::{BufMut, Bytes, BytesMut};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -85,12 +85,86 @@ mod local_control;
 mod options;
 mod reject;
 
+pub use crate::router_table::RouteSnapshot;
 pub use control_policy::{ControlAuthContext, ControlAuthorizer, ControlClass};
 pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
 pub use control_policy::{ControlServiceCounters, ControlTrust};
 use dispatch::PortDispatch;
 use local_control::{LocalControl, OwnAddresses};
 pub use options::{LocalApduReceiver, NetworkControlReceiver, RouterOptions, StartedRouter};
+
+fn format_local_mac<T: TransportPort>(transport: &T) -> String {
+    transport
+        .local_mac()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn format_transport_identity<T: TransportPort>(transport: &T) -> String {
+    transport.topology_id().unwrap_or_else(|| {
+        let identity = format_local_mac(transport);
+        if identity.is_empty() {
+            "<unavailable>".to_owned()
+        } else {
+            identity
+        }
+    })
+}
+
+fn contextualize_port_start_error(
+    error: Error,
+    config_index: usize,
+    transport_kind: &str,
+    identity: &str,
+) -> Error {
+    let context = format!(
+        "router port {config_index} ({transport_kind}, identity {identity:?}) failed to start"
+    );
+    match error {
+        Error::Transport(source) => Error::Transport(std::io::Error::new(
+            source.kind(),
+            format!("{context}: {source}"),
+        )),
+        source => Error::Encoding(format!("{context}: {source}")),
+    }
+}
+
+/// Current health of one configured router port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterPortHealth {
+    /// Zero-based position in the original router configuration.
+    pub config_index: usize,
+    /// Configured BACnet network number.
+    pub network_number: u16,
+    /// Transport implementation used by this port.
+    pub transport_kind: String,
+    /// Stable topology identity, or the post-start local MAC when unavailable.
+    pub identity: String,
+    /// Latest transport-provided health snapshot.
+    pub health: TransportHealth,
+}
+
+struct PortHealthEntry {
+    config_index: usize,
+    network_number: u16,
+    transport_kind: String,
+    identity: String,
+    health: watch::Receiver<TransportHealth>,
+}
+
+impl PortHealthEntry {
+    fn snapshot(&self) -> RouterPortHealth {
+        RouterPortHealth {
+            config_index: self.config_index,
+            network_number: self.network_number,
+            transport_kind: self.transport_kind.clone(),
+            identity: self.identity.clone(),
+            health: self.health.borrow().clone(),
+        }
+    }
+}
 
 /// A send request to be forwarded on a port.
 #[derive(Debug)]
@@ -321,6 +395,8 @@ pub struct BACnetRouter {
     group_dadr_drops: Arc<AtomicU64>,
     /// Last sequence given to a control for the router's own consumer.
     network_control_ingress_sequence: Arc<AtomicU64>,
+    /// Stable metadata and live health receivers for configured ports.
+    port_health: Vec<PortHealthEntry>,
 }
 
 impl BACnetRouter {
@@ -438,15 +514,25 @@ impl BACnetRouter {
     ) -> Result<(Self, mpsc::Receiver<ReceivedApdu>, QueueAdmissionCounters), Error> {
         let mut table = RouterTable::new();
 
-        // Reject duplicate network numbers
+        // Reject duplicate network numbers and duplicate data-link topologies.
         {
             let mut seen = std::collections::HashSet::new();
+            let mut topologies = std::collections::HashSet::new();
             for port in &ports {
                 if !seen.insert(port.network_number) {
                     return Err(Error::Encoding(format!(
                         "Duplicate network number {} in router ports",
                         port.network_number
                     )));
+                }
+                if let Some(topology_id) = port.transport.topology_id() {
+                    let topology = (port.transport.transport_kind(), topology_id.clone());
+                    if !topologies.insert(topology) {
+                        return Err(Error::Encoding(format!(
+                            "Duplicate {} topology {topology_id:?} in router ports",
+                            port.transport.transport_kind()
+                        )));
+                    }
                 }
             }
         }
@@ -468,14 +554,33 @@ impl BACnetRouter {
         let mut port_local_macs = Vec::new();
         let mut port_groups = Vec::new();
 
-        for port in &mut ports {
-            let rx = port.transport.start().await?;
+        for (port_idx, port) in ports.iter_mut().enumerate() {
+            let transport_kind = port.transport.transport_kind();
+            let identity = format_transport_identity(&port.transport);
+            let rx = port.transport.start().await.map_err(|error| {
+                contextualize_port_start_error(error, port_idx, transport_kind, &identity)
+            })?;
             port_receivers.push(rx);
             port_networks.push(port.network_number);
             port_local_macs.push(MacAddr::from_slice(port.transport.local_mac()));
             port_groups.push(port.transport.group_destinations());
         }
         let port_groups = Arc::new(port_groups);
+
+        let port_health = ports
+            .iter()
+            .enumerate()
+            .map(|(config_index, port)| PortHealthEntry {
+                config_index,
+                network_number: port.network_number,
+                transport_kind: port.transport.transport_kind().to_owned(),
+                identity: format_transport_identity(&port.transport),
+                health: port.transport.health_changes().unwrap_or_else(|| {
+                    let (_tx, rx) = watch::channel(port.transport.health());
+                    rx
+                }),
+            })
+            .collect();
 
         // Move transports into sender tasks
         for port in ports {
@@ -638,6 +743,7 @@ impl BACnetRouter {
                 broadcast_pdu_type_drops,
                 group_dadr_drops,
                 network_control_ingress_sequence,
+                port_health,
             },
             local_rx,
             counters,
@@ -647,6 +753,19 @@ impl BACnetRouter {
     /// Get a reference to the routing table.
     pub fn table(&self) -> &Arc<Mutex<RouterTable>> {
         &self.table
+    }
+
+    /// Return one current health snapshot per port, in configuration order.
+    pub fn port_health(&self) -> Vec<RouterPortHealth> {
+        self.port_health
+            .iter()
+            .map(PortHealthEntry::snapshot)
+            .collect()
+    }
+
+    /// Return a detached routing-table snapshot sorted by network number.
+    pub async fn routing_table(&self) -> Vec<RouteSnapshot> {
+        self.table.lock().await.snapshots()
     }
 
     /// Stop the router.
