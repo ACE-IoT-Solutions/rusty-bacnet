@@ -35,20 +35,23 @@ Final local verification on macOS arm64:
   target evidence rather than a claim about CI cache state.
 - Fresh-target `cargo clippy --workspace --exclude rusty-bacnet --all-targets
   --locked`: passed with the repository's pre-existing warning set.
-- CPython 3.13 installed-wheel suite, invoked outside the checkout: 152 tests
-  and 1,872 subtests passed.
+- Final CPython 3.13 installed-wheel suite, invoked outside the checkout: 150
+  tests passed. The wheel was built from clean commit `af3c993` and has
+  SHA-256 digest
+  `0ec8d08c5cc52c627892d81ba972985a70ede86b3db305c32c990c660c811d11`.
 - W5 virtual-router container scenario: acceptance and restart passed; retained
   runner artifact directory was
   `/var/folders/pw/ms0yjfhd5ns58xt3d9fk_67r0000gn/T/rusty-bacnet-w5-router.WzPpSA`.
 - `python3 scripts/generate-conformance-docs.py --check` and `git diff --check`:
   passed.
 
-The passing W14 Linux arm64 artifact bundle is retained locally at
-`target/w14-sc-ip-router-artifacts/`. Both the host source snapshot and the
-wheel build record the matching SHA-256 digest
-`dc25644ce1694f6c87f4a207fa10101fe522285c96e1d788adcabc6b7a2c46a2`.
+The passing post-feedback W14 Linux arm64 artifact bundle is retained locally
+at `target/w14-sc-ip-router-feedback-artifacts/`. Both the host source snapshot
+and the wheel build record clean commit `af3c993` and the matching source
+archive SHA-256 digest
+`b5f9a32619eaa7cfeb0447e9db6cf1896ea663f87df479352be6c63450ae5008`.
 The installed Linux arm64 wheel digest is
-`a0922f20dfad1558fb52c034bce1bb7aee2fae3404140ad2ef654fc8d190b956`.
+`3f912652066b9441f57f4a68b9891e5841251bdb23525306edc149a37c466d58`.
 The runner recorded zero failures, zero errors, zero skips, a successful routed
 read after the SC hub restart, and `W14_CLEANUP_OK`. Passing project-plan
 acceptance tests does not by itself establish BACnet conformance.

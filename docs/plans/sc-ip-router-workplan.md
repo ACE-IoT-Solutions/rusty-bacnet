@@ -524,15 +524,18 @@ R8, R9, R10.
       keyword-only, nonzero 16-byte `device_uuid`, threads it through
       `ScConfig`, and no longer derives it from `attachment_id`. The shared
       dial helper remains a separate Phase 5 maintainability item.
-- [ ] **A6 - Rebase PR 2 against upstream's new SC redial work.** The refreshed
+- [x] **A6 - Rebase PR 2 against upstream's new SC redial work.** The refreshed
       pin is `0376fa3`, 14 commits after `b4c67ec`. Those commits add address
       resolution and direct dial/listener behavior and overlap `sc/mod.rs`,
       but do not change `sc/recovery.rs` or `sc/reconnect.rs`. A disposable
       cherry-pick of `715332d` onto `0376fa3` confirmed conflicts in
       `any.rs`, `port.rs`, and `sc/mod.rs`, plus modify/delete conflicts for
       the moved B/IP and virtual transports. Resolve those architecture moves
-      on a dedicated upstream proposal branch; do not merge the upstream tree
-      wholesale into this fork delivery stack.
+      on dedicated branch `proposal/sc-router-transport-health-retry`. Commit
+      `e6e94d8` is based directly on `0376fa3`, preserves upstream direct SC
+      discovery/listener behavior, and passes the full `bacnet-transport`
+      `sc-tls` suite plus a workspace all-target check. The upstream proposal
+      stays separate from this fork delivery stack.
 - [x] **A7 - Ledger status is unchanged by design; say so to the router
       team.** `BACNET-6-ROUTER-MESSAGES` gained an evidence note but remains
       `implementation-present-needs-conformance-tests`, and
@@ -542,11 +545,12 @@ R8, R9, R10.
       the distinction is stated here, in the changelog, and in the evidence
       README: this is implementation/interoperability evidence only, not a
       conformance or public support-status change.
-- [ ] **A8 - Rebuild the wheel before any Python acceptance claim.** The
+- [x] **A8 - Rebuild the wheel before any Python acceptance claim.** The
       wheel in `target/wheels/` predated the source edits by eleven hours and
-      lacked the new classes. Evidence entries must name the wheel digest and
-      the source SHA it was built from, as the W14 artifact bundle already
-      does.
+      lacked the new classes. The final macOS arm64 wheel and Linux arm64 W14
+      wheel are both rebuilt from clean commit `af3c993`; their exact wheel
+      and source/archive digests are recorded in the evidence README. The
+      installed macOS suite and W14 acceptance both pass without skips.
 
 ### Recommended order
 
