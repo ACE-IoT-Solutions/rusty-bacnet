@@ -110,6 +110,7 @@ async fn sc_max_apdu_length_updates_after_failover_handshake() {
             initial_delay_ms: 25,
             max_delay_ms: 25,
             max_retries: 1,
+            retry_forever: false,
         })
         .with_failover(failover_client);
 

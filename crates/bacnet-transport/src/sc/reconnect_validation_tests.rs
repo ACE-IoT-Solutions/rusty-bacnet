@@ -83,6 +83,7 @@ async fn check_invalid_start_and_repair(heartbeat_mode: &str) {
                 initial_delay_ms,
                 max_delay_ms,
                 max_retries,
+                retry_forever: false,
             });
             for _ in 0..2 {
                 let error = transport.start().await.unwrap_err();
@@ -115,6 +116,7 @@ async fn check_invalid_start_and_repair(heartbeat_mode: &str) {
             initial_delay_ms: 1,
             max_delay_ms: 1,
             max_retries: 0,
+            retry_forever: false,
         })
         .with_heartbeat_interval_ms(30_000)
         .with_heartbeat_timeout_ms(60_000);
@@ -160,6 +162,44 @@ async fn hub_accept(hub: &LoopbackWebSocket, vmac: Vmac) {
 }
 
 #[tokio::test(start_paused = true)]
+async fn bounded_recovery_reuses_live_socket_after_first_handshake_timeout() {
+    let (client, hub) = LoopbackWebSocket::pair();
+    let mut transport = ScTransport::new(client, [0x22; 6])
+        .with_device_uuid([1; 16])
+        .with_connect_timeout_ms(20)
+        .with_test_heartbeat_timing_ms(5_000, 10_000)
+        .with_reconnect(ScReconnectConfig {
+            initial_delay_ms: 10,
+            max_delay_ms: 10,
+            max_retries: 2,
+            retry_forever: false,
+        });
+    let (started, ()) = tokio::join!(transport.start(), hub_accept(&hub, [0x10; 6]));
+    let _rx = started.unwrap();
+    let health = transport.transport_health_changes();
+
+    hub.send(&[8, 0, 0x12, 0x34]).await.unwrap();
+    assert_eq!(hub.recv().await.unwrap(), [9, 0, 0x12, 0x34]);
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let first = decode_sc_message(&hub.recv().await.unwrap()).unwrap();
+    assert_eq!(first.function, ScFunction::ConnectRequest);
+
+    tokio::time::advance(Duration::from_millis(20)).await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(10)).await;
+    hub_accept(&hub, [0x20; 6]).await;
+    for _ in 0..100 {
+        if health.borrow().state == crate::port::TransportHealthState::Up {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(health.borrow().state, crate::port::TransportHealthState::Up);
+    assert_eq!(health.borrow().attempt, 2);
+    transport.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn zero_retries_skips_active_hub_retry_but_allows_initial_failover_and_restoration() {
     let (primary, primary_hub) = LoopbackWebSocket::pair();
     let (failover, failover_hub) = LoopbackWebSocket::pair();
@@ -173,6 +213,7 @@ async fn zero_retries_skips_active_hub_retry_but_allows_initial_failover_and_res
             initial_delay_ms: 1_000,
             max_delay_ms: 1_000,
             max_retries: 0,
+            retry_forever: false,
         })
         .with_connector({
             let dials = dials.clone();
@@ -281,6 +322,7 @@ async fn check_invalid_accept_failover_and_primary_probe(field: std::ops::Range<
             initial_delay_ms: 1000,
             max_delay_ms: 1000,
             max_retries: 0,
+            retry_forever: false,
         })
         .with_connector(move || {
             let (client, hub) = LoopbackWebSocket::pair();
@@ -420,6 +462,7 @@ async fn check_invalid_accept_reconnect_probe(field: std::ops::Range<usize>) {
             initial_delay_ms: 1000,
             max_delay_ms: 1000,
             max_retries: 2,
+            retry_forever: false,
         })
         .with_connector(move || {
             let (client, hub) = LoopbackWebSocket::pair();

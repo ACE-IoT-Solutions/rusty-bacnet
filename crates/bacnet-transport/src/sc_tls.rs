@@ -27,8 +27,15 @@ type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// Created via [`TlsWebSocket::connect`], which performs the TLS handshake and
 /// WebSocket upgrade in one step.
 pub struct TlsWebSocket {
-    write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
-    read: Mutex<futures_util::stream::SplitStream<WsStream>>,
+    inner: TlsWebSocketInner,
+}
+
+enum TlsWebSocketInner {
+    Connected {
+        write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
+        read: Mutex<futures_util::stream::SplitStream<WsStream>>,
+    },
+    Unavailable(Mutex<Option<Error>>),
 }
 
 impl TlsWebSocket {
@@ -93,8 +100,24 @@ impl TlsWebSocket {
 
         let (write, read) = ws_stream.split();
         Ok(Self {
-            write: Mutex::new(write),
-            read: Mutex::new(read),
+            inner: TlsWebSocketInner::Connected {
+                write: Mutex::new(write),
+                read: Mutex::new(read),
+            },
+        })
+    }
+
+    /// Preserve an initial dial failure as a transport value so SC startup can
+    /// execute its normal, policy-aware failover handshake path.
+    pub fn from_initial_error(error: Error) -> Self {
+        Self {
+            inner: TlsWebSocketInner::Unavailable(Mutex::new(Some(error))),
+        }
+    }
+
+    async fn unavailable_error(error: &Mutex<Option<Error>>) -> Error {
+        error.lock().await.take().unwrap_or_else(|| {
+            Error::Encoding("initial BACnet/SC WebSocket remains unavailable".into())
         })
     }
 }
@@ -230,7 +253,13 @@ fn verify_hub_subprotocol(
 
 impl WebSocketPort for TlsWebSocket {
     async fn send(&self, data: &[u8]) -> Result<(), Error> {
-        let mut write = self.write.lock().await;
+        let write = match &self.inner {
+            TlsWebSocketInner::Connected { write, .. } => write,
+            TlsWebSocketInner::Unavailable(error) => {
+                return Err(Self::unavailable_error(error).await)
+            }
+        };
+        let mut write = write.lock().await;
         write
             .send(Message::Binary(data.to_vec().into()))
             .await
@@ -244,11 +273,17 @@ impl WebSocketPort for TlsWebSocket {
     }
 
     async fn recv(&self) -> Result<Vec<u8>, Error> {
+        let (read, write) = match &self.inner {
+            TlsWebSocketInner::Connected { read, write } => (read, write),
+            TlsWebSocketInner::Unavailable(error) => {
+                return Err(Self::unavailable_error(error).await)
+            }
+        };
         loop {
             // Read one message under the read lock, then drop it before
             // acquiring write (avoids read→write lock ordering deadlock).
             let msg = {
-                let mut read = self.read.lock().await;
+                let mut read = read.lock().await;
                 read.next().await
             };
             match msg {
@@ -265,7 +300,7 @@ impl WebSocketPort for TlsWebSocket {
                 }
                 Some(Ok(_)) => {
                     // Non-binary data frames: close with 1003
-                    let mut w = self.write.lock().await;
+                    let mut w = write.lock().await;
                     let _ = w
                         .send(Message::Close(Some(
                             tokio_tungstenite::tungstenite::protocol::CloseFrame {
@@ -311,6 +346,23 @@ mod tests {
     use tokio_rustls::rustls::pki_types::pem::PemObject;
     use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
     use tokio_rustls::TlsAcceptor;
+
+    #[tokio::test]
+    async fn unavailable_websocket_returns_initial_error_once_then_stable_error() {
+        let ws = TlsWebSocket::from_initial_error(Error::Encoding("primary dial failed".into()));
+        assert!(ws
+            .recv()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("primary dial failed"));
+        assert!(ws
+            .send(b"ignored")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("remains unavailable"));
+    }
 
     #[test]
     fn parse_wss_uri_accepts_secure_websocket_scheme() {

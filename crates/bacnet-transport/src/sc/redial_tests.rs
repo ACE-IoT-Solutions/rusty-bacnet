@@ -232,6 +232,7 @@ async fn sc_reconnect_redials_fresh_websocket_after_socket_teardown() {
             initial_delay_ms: 10,
             max_delay_ms: 10,
             max_retries: 3,
+            retry_forever: false,
         });
 
     let primary_task = tokio::spawn(async move {
@@ -350,6 +351,7 @@ async fn sc_primary_restore_connector_redials_primary_socket() {
             initial_delay_ms: 25,
             max_delay_ms: 25,
             max_retries: 1,
+            retry_forever: false,
         })
         .with_failover(failover_client);
 
@@ -437,6 +439,7 @@ async fn sc_reconnect_connector_timeout_counts_as_failed_attempt() {
             initial_delay_ms: 10,
             max_delay_ms: 10,
             max_retries: 1,
+            retry_forever: false,
         });
 
     let primary_task = tokio::spawn(async move {
@@ -483,6 +486,7 @@ async fn sc_primary_restore_connector_timeout_leaves_failover_send_path_active()
             initial_delay_ms: 10,
             max_delay_ms: 10,
             max_retries: 1,
+            retry_forever: false,
         })
         .with_failover(failover_client);
 
@@ -538,6 +542,7 @@ async fn sc_failover_reconnect_exhaustion_does_not_redial_failover_again() {
             initial_delay_ms: 10,
             max_delay_ms: 10,
             max_retries: 1,
+            retry_forever: false,
         });
 
     let failover_task = tokio::spawn(async move {
@@ -601,6 +606,7 @@ async fn sc_primary_restore_publishes_before_hung_failover_disconnect_send() {
             initial_delay_ms: 10,
             max_delay_ms: 10,
             max_retries: 1,
+            retry_forever: false,
         })
         .with_failover(failover_client);
 
@@ -672,6 +678,7 @@ async fn sc_drop_aborts_hung_primary_restore_failover_disconnect() {
             initial_delay_ms: 10,
             max_delay_ms: 10,
             max_retries: 1,
+            retry_forever: false,
         })
         .with_failover(failover_client);
 

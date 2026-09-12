@@ -425,6 +425,7 @@ mod tests {
                         initial_delay_ms,
                         max_delay_ms,
                         max_retries,
+                        retry_forever: false,
                     });
                     if broadcast_binding {
                         let device = ObjectIdentifier::new(ObjectType::DEVICE, 46).unwrap();
@@ -458,11 +459,13 @@ mod tests {
                 initial_delay_ms: 1,
                 max_delay_ms: 1,
                 max_retries: 0,
+                retry_forever: false,
             }),
             Some(ScReconnectConfig {
                 initial_delay_ms: 1,
                 max_delay_ms: 2,
                 max_retries: u32::MAX,
+                retry_forever: false,
             }),
         ] {
             let mut builder = BACnetServer::sc_builder().device_uuid(TEST_DEVICE_UUID);
