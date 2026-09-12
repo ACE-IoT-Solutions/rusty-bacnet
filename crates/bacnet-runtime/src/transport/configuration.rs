@@ -194,11 +194,11 @@ impl RuntimeTransport {
                 }
                 if sc.reconnect_initial_delay_ms == 0
                     || sc.reconnect_max_delay_ms < sc.reconnect_initial_delay_ms
-                    || sc.reconnect_max_retries == 0
+                    || (sc.reconnect_max_retries == 0 && !sc.reconnect_forever)
                 {
                     return Err(RuntimeError::invalid_attachment_config(
                         config.id,
-                        "BACnet/SC reconnect delays and retries must be non-zero with initial <= maximum",
+                        "BACnet/SC reconnect delays must be non-zero with initial <= maximum; zero retries requires reconnect_forever",
                     ));
                 }
             }
@@ -318,13 +318,15 @@ impl RuntimeTransport {
                 let reconnect_primary_url = primary_url.clone();
                 let reconnect_primary_tls = tls.clone();
                 let mut transport = ScTransport::new(ws, sc.local_vmac)
-                    .with_device_uuid(*config.id.as_bytes())
+                    .with_hub_urls(&primary_url, sc.failover_hubs.first())
+                    .with_device_uuid(sc.device_uuid)
                     .with_heartbeat_interval_ms(sc.heartbeat_interval_ms)
                     .with_heartbeat_timeout_ms(sc.heartbeat_timeout_ms)
                     .with_reconnect(ScReconnectConfig {
                         initial_delay_ms: sc.reconnect_initial_delay_ms,
                         max_delay_ms: sc.reconnect_max_delay_ms,
                         max_retries: sc.reconnect_max_retries,
+                        retry_forever: sc.reconnect_forever,
                     })
                     .with_connector(move || {
                         let url = reconnect_primary_url.clone();

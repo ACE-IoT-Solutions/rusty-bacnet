@@ -8,6 +8,8 @@ import rusty_bacnet as bacnet
 
 
 class RuntimeBindingContractTests(unittest.TestCase):
+    SC_DEVICE_UUID = bytes.fromhex("5a000000000000000000000000000001")
+
     def test_runtime_surface_is_coarse_and_results_are_immutable(self) -> None:
         for method in (
             "start",
@@ -57,6 +59,8 @@ class RuntimeBindingContractTests(unittest.TestCase):
         self.assertIn("ca_cert", parameters)
         self.assertIn("client_cert", parameters)
         self.assertIn("client_key", parameters)
+        self.assertIn("device_uuid", parameters)
+        self.assertEqual(parameters["device_uuid"].kind, inspect.Parameter.KEYWORD_ONLY)
 
         with self.assertRaises(TypeError):
             bacnet.RuntimeScAttachment(
@@ -66,6 +70,36 @@ class RuntimeBindingContractTests(unittest.TestCase):
                 b"\x01\x02\x03\x04\x05\x06",
             )
 
+        with self.assertRaises(TypeError):
+            bacnet.RuntimeScAttachment(
+                10,
+                "missing-identity",
+                "wss://localhost:47808",
+                b"\x01\x02\x03\x04\x05\x06",
+                "ca.pem",
+                "client.pem",
+                "client.key",
+            )
+
+        for device_uuid, message in (
+            (b"", "exactly 16 bytes"),
+            (b"\x01" * 15, "exactly 16 bytes"),
+            (b"\x01" * 17, "exactly 16 bytes"),
+            (bytes(16), "must not be all zero"),
+        ):
+            with self.subTest(device_uuid=device_uuid):
+                with self.assertRaisesRegex(ValueError, message):
+                    bacnet.RuntimeScAttachment(
+                        10,
+                        "invalid-identity",
+                        "wss://localhost:47808",
+                        b"\x01\x02\x03\x04\x05\x06",
+                        "ca.pem",
+                        "client.pem",
+                        "client.key",
+                        device_uuid=device_uuid,
+                    )
+
         attachment = bacnet.RuntimeScAttachment(
             10,
             "empty-credentials",
@@ -74,7 +108,9 @@ class RuntimeBindingContractTests(unittest.TestCase):
             "",
             "",
             "",
+            device_uuid=self.SC_DEVICE_UUID,
         )
+        self.assertEqual(attachment.device_uuid, self.SC_DEVICE_UUID)
 
         async def check() -> None:
             with self.assertRaises(RuntimeError) as raised:

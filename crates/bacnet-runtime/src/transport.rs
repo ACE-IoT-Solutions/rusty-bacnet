@@ -252,6 +252,7 @@ mod tests {
                 primary_hub: "wss://primary.example.test".to_owned(),
                 failover_hubs: vec!["wss://failover.example.test".to_owned()],
                 local_vmac: [1, 2, 3, 4, 5, 6],
+                device_uuid: [0x5a; 16],
                 ca_cert: Some("/missing/test-ca.pem".to_owned()),
                 client_cert: Some("/missing/test-client.pem".to_owned()),
                 client_key: Some("/missing/test-client.key".to_owned()),
@@ -260,8 +261,20 @@ mod tests {
                 reconnect_initial_delay_ms: 100,
                 reconnect_max_delay_ms: 1_000,
                 reconnect_max_retries: 3,
+                reconnect_forever: false,
             }),
         }
+    }
+
+    #[test]
+    fn sc_device_uuid_is_independent_from_attachment_id() {
+        let config = sc();
+        let TransportConfig::Sc(sc) = config.transport else {
+            panic!("expected SC transport configuration");
+        };
+
+        assert_eq!(sc.device_uuid, [0x5a; 16]);
+        assert_ne!(sc.device_uuid, *config.id.as_bytes());
     }
 
     #[tokio::test]
@@ -414,6 +427,17 @@ mod tests {
             assert_eq!(error.code, ErrorCode::InvalidConfig);
             assert_eq!(error.attachment_id, Some(config.id));
         }
+    }
+
+    #[test]
+    fn sc_config_accepts_zero_retry_budget_when_reconnect_is_unbounded() {
+        let mut config = sc();
+        let TransportConfig::Sc(value) = &mut config.transport else {
+            unreachable!()
+        };
+        value.reconnect_max_retries = 0;
+        value.reconnect_forever = true;
+        RuntimeTransport::validate_config(&config).unwrap();
     }
 
     #[cfg(not(feature = "sc"))]

@@ -7,6 +7,8 @@ PRIMARY_HUB_UUID = bytes.fromhex("10000000000000000000000000000001")
 FAILOVER_HUB_UUID = bytes.fromhex("20000000000000000000000000000001")
 SERVER_UUID = bytes.fromhex("42000000000000000000000000000001")
 FAILOVER_SERVER_UUID = bytes.fromhex("42000000000000000000000000000002")
+UNTRUSTED_RUNTIME_UUID = bytes.fromhex("43000000000000000000000000000001")
+RUNTIME_UUID = bytes.fromhex("43000000000000000000000000000002")
 
 
 async def wait_for(predicate, message: str, timeout: float = 3.0) -> None:
@@ -83,6 +85,7 @@ async def main(
                         ca_cert=ca_cert,
                         client_cert=rogue_cert,
                         client_key=rogue_key,
+                        device_uuid=UNTRUSTED_RUNTIME_UUID,
                         heartbeat_interval_ms=3000,
                         heartbeat_timeout_ms=4000,
                         reconnect_initial_delay_ms=20,
@@ -107,6 +110,7 @@ async def main(
                     ca_cert=ca_cert,
                     client_cert=client_cert,
                     client_key=client_key,
+                    device_uuid=RUNTIME_UUID,
                     heartbeat_interval_ms=3000,
                     heartbeat_timeout_ms=4000,
                     reconnect_initial_delay_ms=50,

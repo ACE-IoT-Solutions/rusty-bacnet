@@ -105,6 +105,8 @@ pub struct PyRuntimeScAttachment {
     #[pyo3(get)]
     pub(super) local_vmac: Vec<u8>,
     #[pyo3(get)]
+    pub(super) device_uuid: Vec<u8>,
+    #[pyo3(get)]
     pub(super) ca_cert: Option<String>,
     #[pyo3(get)]
     pub(super) client_cert: Option<String>,
@@ -120,12 +122,14 @@ pub struct PyRuntimeScAttachment {
     pub(super) reconnect_max_delay_ms: u64,
     #[pyo3(get)]
     pub(super) reconnect_max_retries: u32,
+    #[pyo3(get)]
+    pub(super) reconnect_forever: bool,
 }
 
 #[pymethods]
 impl PyRuntimeScAttachment {
     #[new]
-    #[pyo3(signature = (attachment_id, label, primary_hub, local_vmac, ca_cert, client_cert, client_key, failover_hub=None, heartbeat_interval_ms=30000, heartbeat_timeout_ms=60000, reconnect_initial_delay_ms=10000, reconnect_max_delay_ms=600000, reconnect_max_retries=10))]
+    #[pyo3(signature = (attachment_id, label, primary_hub, local_vmac, ca_cert, client_cert, client_key, *, device_uuid, failover_hub=None, heartbeat_interval_ms=30000, heartbeat_timeout_ms=60000, reconnect_initial_delay_ms=10000, reconnect_max_delay_ms=600000, reconnect_max_retries=10, reconnect_forever=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         attachment_id: u128,
@@ -135,15 +139,40 @@ impl PyRuntimeScAttachment {
         ca_cert: String,
         client_cert: String,
         client_key: String,
+        device_uuid: Vec<u8>,
         failover_hub: Option<String>,
         heartbeat_interval_ms: u64,
         heartbeat_timeout_ms: u64,
         reconnect_initial_delay_ms: u64,
         reconnect_max_delay_ms: u64,
         reconnect_max_retries: u32,
+        reconnect_forever: bool,
     ) -> PyResult<Self> {
         if local_vmac.len() != 6 {
             return Err(PyValueError::new_err("local_vmac must be exactly 6 bytes"));
+        }
+        if device_uuid.len() != 16 {
+            return Err(PyValueError::new_err(
+                "device_uuid must be exactly 16 bytes",
+            ));
+        }
+        if device_uuid.iter().all(|byte| *byte == 0) {
+            return Err(PyValueError::new_err("device_uuid must not be all zero"));
+        }
+        if reconnect_initial_delay_ms == 0 {
+            return Err(PyValueError::new_err(
+                "reconnect_initial_delay_ms must be greater than zero",
+            ));
+        }
+        if reconnect_max_delay_ms < reconnect_initial_delay_ms {
+            return Err(PyValueError::new_err(
+                "reconnect_max_delay_ms must be at least reconnect_initial_delay_ms",
+            ));
+        }
+        if reconnect_max_retries == 0 && !reconnect_forever {
+            return Err(PyValueError::new_err(
+                "reconnect_max_retries must be greater than zero unless reconnect_forever is true",
+            ));
         }
         Ok(Self {
             attachment_id,
@@ -151,6 +180,7 @@ impl PyRuntimeScAttachment {
             primary_hub,
             failover_hub,
             local_vmac,
+            device_uuid,
             ca_cert: Some(ca_cert),
             client_cert: Some(client_cert),
             client_key: Some(client_key),
@@ -159,6 +189,7 @@ impl PyRuntimeScAttachment {
             reconnect_initial_delay_ms,
             reconnect_max_delay_ms,
             reconnect_max_retries,
+            reconnect_forever,
         })
     }
 }
@@ -198,6 +229,8 @@ impl PyRuntimeAttachmentConfig {
             Self::Sc(attachment) => {
                 let mut local_vmac = [0; 6];
                 local_vmac.copy_from_slice(&attachment.local_vmac);
+                let mut device_uuid = [0; 16];
+                device_uuid.copy_from_slice(&attachment.device_uuid);
                 AttachmentConfig {
                     id: AttachmentId::from(attachment.attachment_id),
                     label: attachment.label,
@@ -205,6 +238,7 @@ impl PyRuntimeAttachmentConfig {
                         primary_hub: attachment.primary_hub,
                         failover_hubs: attachment.failover_hub.into_iter().collect(),
                         local_vmac,
+                        device_uuid,
                         ca_cert: attachment.ca_cert,
                         client_cert: attachment.client_cert,
                         client_key: attachment.client_key,
@@ -213,6 +247,7 @@ impl PyRuntimeAttachmentConfig {
                         reconnect_initial_delay_ms: attachment.reconnect_initial_delay_ms,
                         reconnect_max_delay_ms: attachment.reconnect_max_delay_ms,
                         reconnect_max_retries: attachment.reconnect_max_retries,
+                        reconnect_forever: attachment.reconnect_forever,
                     }),
                 }
             }
