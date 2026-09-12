@@ -527,8 +527,12 @@ R8, R9, R10.
 - [ ] **A6 - Rebase PR 2 against upstream's new SC redial work.** The refreshed
       pin is `0376fa3`, 14 commits after `b4c67ec`. Those commits add address
       resolution and direct dial/listener behavior and overlap `sc/mod.rs`,
-      but do not change `sc/recovery.rs` or `sc/reconnect.rs`. Record this pin
-      and reconcile the `sc/mod.rs` overlap on the upstream proposal branch.
+      but do not change `sc/recovery.rs` or `sc/reconnect.rs`. A disposable
+      cherry-pick of `715332d` onto `0376fa3` confirmed conflicts in
+      `any.rs`, `port.rs`, and `sc/mod.rs`, plus modify/delete conflicts for
+      the moved B/IP and virtual transports. Resolve those architecture moves
+      on a dedicated upstream proposal branch; do not merge the upstream tree
+      wholesale into this fork delivery stack.
 - [x] **A7 - Ledger status is unchanged by design; say so to the router
       team.** `BACNET-6-ROUTER-MESSAGES` gained an evidence note but remains
       `implementation-present-needs-conformance-tests`, and
