@@ -205,6 +205,14 @@ impl TransportPort for Bip6Transport {
         true
     }
 
+    fn transport_kind(&self) -> &'static str {
+        "bip6"
+    }
+
+    fn topology_id(&self) -> Option<String> {
+        (self.port != 0).then(|| format!("[{}]:{}", self.interface, self.port))
+    }
+
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         if self.recv_task.is_some() {
             return Err(Error::Transport(std::io::Error::new(

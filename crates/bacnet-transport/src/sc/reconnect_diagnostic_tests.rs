@@ -88,6 +88,7 @@ fn config(max_retries: u32) -> ScReconnectConfig {
         initial_delay_ms: 1,
         max_delay_ms: 1,
         max_retries,
+        retry_forever: false,
     }
 }
 
@@ -345,6 +346,7 @@ async fn skipped_retries_are_gated_but_disconnect_and_exhaustion_always_emit() {
             conn.lock().await.connect_retry_allowed = eligible;
             let active_ws = Arc::new(Mutex::new(ws.clone()));
             let (state_tx, _) = watch::channel(ScConnectionState::Disconnected);
+            let (health_tx, _) = watch::channel(TransportHealth::default());
             let mut throttle = diagnostic_throttle::DiagnosticThrottle::new();
             if already_emitted {
                 assert!(throttle.should_emit(tokio::time::Instant::now().into_std()));
@@ -361,6 +363,7 @@ async fn skipped_retries_are_gated_but_disconnect_and_exhaustion_always_emit() {
                 conn: &conn,
                 active_ws: &active_ws,
                 state_tx: &state_tx,
+                health_tx: &health_tx,
                 connect_timeout_ms: 10,
                 effective_max_apdu_length: &maximum,
             };

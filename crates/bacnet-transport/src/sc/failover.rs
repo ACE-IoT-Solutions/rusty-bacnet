@@ -20,9 +20,21 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ActiveHub {
+/// Hub role currently carrying BACnet/SC traffic.
+pub enum ActiveHub {
+    /// Configured primary hub.
     Primary,
+    /// Configured failover hub.
     Failover,
+}
+
+impl ActiveHub {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Failover => "failover",
+        }
+    }
 }
 
 /// The cadence of primary-restore attempts while the failover hub is active,

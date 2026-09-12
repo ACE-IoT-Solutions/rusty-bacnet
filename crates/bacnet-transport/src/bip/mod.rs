@@ -557,6 +557,14 @@ impl BipTransport {
 }
 
 impl TransportPort for BipTransport {
+    fn transport_kind(&self) -> &'static str {
+        "bip"
+    }
+
+    fn topology_id(&self) -> Option<String> {
+        (self.port != 0).then(|| format!("{}:{}", self.interface, self.port))
+    }
+
     fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
         if self.registration_closed
             || self.socket.is_some()

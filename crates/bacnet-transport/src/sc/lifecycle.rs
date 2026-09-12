@@ -10,7 +10,8 @@ use tokio::task::JoinHandle;
 use crate::port::TransportPort;
 
 use super::{
-    advertisement, ScConnectionState, ScTransport, WebSocketPort, DEFAULT_MAX_APDU_LENGTH,
+    advertisement, ScConnectionState, ScTransport, TransportHealthState, WebSocketPort,
+    DEFAULT_MAX_APDU_LENGTH,
 };
 use crate::sc_frame::encode_sc_message;
 use bacnet_types::error::Error;
@@ -92,6 +93,13 @@ impl<W: WebSocketPort> ScTransport<W> {
         self.effective_max_apdu_length
             .store(DEFAULT_MAX_APDU_LENGTH, Ordering::Relaxed);
         self.state_tx.send_replace(ScConnectionState::Disconnected);
+        self.health_tx.send_modify(|health| {
+            health.state = TransportHealthState::Down;
+            health.detail = Some("stopped".into());
+            health.active_hub = None;
+            health.attempt = 0;
+            health.since = None;
+        });
         self.ws_shared = None;
         self.connection = None;
         self.ws = None;

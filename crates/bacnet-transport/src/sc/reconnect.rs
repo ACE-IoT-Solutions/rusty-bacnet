@@ -25,6 +25,8 @@ pub struct ScReconnectConfig {
     /// Zero skips these retries, not the initial connection, eligible failover,
     /// or primary restoration while connected to failover.
     pub max_retries: u32,
+    /// Retry without a count limit. Retry-forbidden protocol outcomes still stop.
+    pub retry_forever: bool,
 }
 
 impl Default for ScReconnectConfig {
@@ -33,11 +35,22 @@ impl Default for ScReconnectConfig {
             initial_delay_ms: 10_000,
             max_delay_ms: 600_000,
             max_retries: 10,
+            retry_forever: false,
         }
     }
 }
 
 impl ScReconnectConfig {
+    /// Construct an unbounded reconnect policy with capped exponential backoff.
+    pub fn unbounded(initial_delay_ms: u64, max_delay_ms: u64) -> Self {
+        Self {
+            initial_delay_ms,
+            max_delay_ms,
+            max_retries: 0,
+            retry_forever: true,
+        }
+    }
+
     /// Check that delays are nonzero, the initial delay does not exceed the
     /// maximum, and `max_delay_ms` is at most 86_400_000 (24 hours).
     ///
@@ -98,6 +111,7 @@ mod tests {
                     initial_delay_ms,
                     max_delay_ms,
                     max_retries,
+                    retry_forever: false,
                 };
                 assert!(
                     matches!(config.validate(), Err(Error::OutOfRange(message))
@@ -117,6 +131,7 @@ mod tests {
                         initial_delay_ms,
                         max_delay_ms,
                         max_retries,
+                        retry_forever: false,
                     };
                     match config.validate() {
                         Err(Error::OutOfRange(message)) => assert_eq!(
@@ -156,6 +171,7 @@ mod tests {
                     initial_delay_ms,
                     max_delay_ms,
                     max_retries,
+                    retry_forever: false,
                 }
                 .validate()
                 .unwrap();

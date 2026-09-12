@@ -568,6 +568,14 @@ mod transport {
             true
         }
 
+        fn transport_kind(&self) -> &'static str {
+            "ethernet"
+        }
+
+        fn topology_id(&self) -> Option<String> {
+            Some(self.interface_name.clone())
+        }
+
         fn abort(&mut self) {
             if let Some(task) = &self.recv_task {
                 task.abort();

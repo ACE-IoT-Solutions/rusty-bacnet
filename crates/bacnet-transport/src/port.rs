@@ -10,7 +10,8 @@ use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use std::time::Instant;
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// An owned copy of a link's group-destination rule
 /// ([`TransportPort::is_group_destination`]), for a sender that checks a
@@ -18,6 +19,51 @@ use tokio::sync::{mpsc, oneshot};
 /// any state for the send (#1479). Clones share one rule.
 #[derive(Clone, Default)]
 pub struct GroupDestinations(Option<Arc<GroupRule>>);
+/// Coarse transport lifecycle state for operational monitoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransportHealthState {
+    /// The transport is not currently carrying traffic.
+    #[default]
+    Down,
+    /// A connection attempt is in progress.
+    Connecting,
+    /// A previously active transport is attempting recovery.
+    Reconnecting,
+    /// The transport is operational.
+    Up,
+    /// Background processing terminated and requires operator attention.
+    Failed,
+}
+
+/// Current operational health of a transport port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportHealth {
+    /// Coarse lifecycle state.
+    pub state: TransportHealthState,
+    /// Human-readable current activity.
+    pub detail: Option<String>,
+    /// Active endpoint role for failover-capable transports.
+    pub active_hub: Option<String>,
+    /// Most recent operational error.
+    pub last_error: Option<String>,
+    /// Current reconnect attempt number, or zero outside recovery.
+    pub attempt: u64,
+    /// Instant at which the current operational connection became active.
+    pub since: Option<Instant>,
+}
+
+impl Default for TransportHealth {
+    fn default() -> Self {
+        Self {
+            state: TransportHealthState::Down,
+            detail: None,
+            active_hub: None,
+            last_error: None,
+            attempt: 0,
+            since: None,
+        }
+    }
+}
 
 /// The predicate inside a [`GroupDestinations`].
 type GroupRule = dyn Fn(&[u8]) -> bool + Send + Sync;
@@ -376,6 +422,29 @@ pub struct BipPort {
 /// Implementations handle the data-link framing (e.g., BVLL for BACnet/IP)
 /// and expose a simple send/receive interface for NPDU bytes.
 pub trait TransportPort: Send + Sync {
+    /// Stable, human-readable transport kind.
+    fn transport_kind(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
+    /// Optional identity of the data-link segment attached to this port.
+    fn topology_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Current health snapshot. Stateless transports are considered up.
+    fn health(&self) -> TransportHealth {
+        TransportHealth {
+            state: TransportHealthState::Up,
+            ..TransportHealth::default()
+        }
+    }
+
+    /// Subscribe to health changes when the transport maintains a live signal.
+    fn health_changes(&self) -> Option<watch::Receiver<TransportHealth>> {
+        None
+    }
+
     /// Configured broadcast endpoint when this link uses IPv4 BACnet/IP.
     /// `None` means the link does not expose that capability. Wrappers must
     /// forward the underlying value. After `start`, the port is the actual

@@ -12,7 +12,7 @@ use crate::bip::{AsBip, BipTransport};
 use crate::bip6::Bip6Transport;
 use crate::loopback::LoopbackTransport;
 use crate::mstp::{MstpTransport, SerialPort};
-use crate::port::{DataAttribute, ReceivedNpdu, TransportPort};
+use crate::port::{DataAttribute, ReceivedNpdu, TransportHealth, TransportPort};
 
 #[cfg(all(feature = "ethernet", target_os = "linux"))]
 use crate::ethernet::EthernetTransport;
@@ -45,6 +45,62 @@ pub enum AnyTransport<S: SerialPort + 'static> {
 }
 
 impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
+    fn transport_kind(&self) -> &'static str {
+        match self {
+            Self::Bip(t) => t.transport_kind(),
+            Self::Mstp(t) => t.transport_kind(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.transport_kind(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.transport_kind(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.transport_kind(),
+            Self::Loopback(t) => t.transport_kind(),
+        }
+    }
+
+    fn topology_id(&self) -> Option<String> {
+        match self {
+            Self::Bip(t) => t.topology_id(),
+            Self::Mstp(t) => t.topology_id(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.topology_id(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.topology_id(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.topology_id(),
+            Self::Loopback(t) => t.topology_id(),
+        }
+    }
+
+    fn health(&self) -> TransportHealth {
+        match self {
+            Self::Bip(t) => t.health(),
+            Self::Mstp(t) => t.health(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.health(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.health(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.health(),
+            Self::Loopback(t) => t.health(),
+        }
+    }
+
+    fn health_changes(&self) -> Option<tokio::sync::watch::Receiver<TransportHealth>> {
+        match self {
+            Self::Bip(t) => t.health_changes(),
+            Self::Mstp(t) => t.health_changes(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.health_changes(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.health_changes(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.health_changes(),
+            Self::Loopback(t) => t.health_changes(),
+        }
+    }
+
     fn supports_local_nonrouter_number_controls(&self) -> bool {
         match self {
             Self::Bip(t) => t.supports_local_nonrouter_number_controls(),
@@ -394,6 +450,8 @@ mod tests {
         let any: AnyTransport<LoopbackSerial> = AnyTransport::Bip(Box::new(bip));
         assert_eq!(any.local_mac().len(), 6);
         assert!(any.supports_local_nonrouter_number_controls());
+        assert_eq!(any.transport_kind(), "bip");
+        assert_eq!(any.topology_id().as_deref(), Some("127.0.0.1:47808"));
     }
 
     #[test]
@@ -418,6 +476,8 @@ mod tests {
         assert_eq!(any.local_mac(), &[42]);
         assert!(any.supports_local_nonrouter_number_controls());
         assert!(any.bip_port().is_none());
+        assert_eq!(any.transport_kind(), "mstp");
+        assert!(any.topology_id().is_none());
     }
 
     #[test]
