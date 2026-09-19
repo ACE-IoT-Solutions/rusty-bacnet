@@ -7,6 +7,7 @@ import socket
 
 from rusty_bacnet import (
     BACnetClient,
+    BacnetError,
     BACnetRouter,
     BACnetServer,
     ObjectIdentifier,
@@ -15,6 +16,7 @@ from rusty_bacnet import (
     RoutedTarget,
     RouterBipPort,
     RouterScPort,
+    RouterVirtualPort,
 )
 
 from test_sc_hub_mtls import MtlsFixture, SERVER_UUID
@@ -41,6 +43,29 @@ async def wait_for_sc_state(router: BACnetRouter, state: str, timeout: float = 8
 
 
 class ScIpRouterTests(MtlsFixture):
+    async def test_bip_start_error_keeps_bacnet_error_taxonomy(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reservation:
+            # BipTransport binds INADDR_ANY so reserve the wildcard endpoint;
+            # a loopback-only reservation may coexist with that bind on macOS.
+            reservation.bind(("0.0.0.0", 0))
+            unavailable_port = reservation.getsockname()[1]
+            router = BACnetRouter.from_ports(
+                [
+                    RouterBipPort(
+                        303, interface="127.0.0.1", port=unavailable_port
+                    ),
+                    RouterVirtualPort(304, "sc-router-bip-start-error", 1),
+                ]
+            )
+            with self.assertRaises(BacnetError) as raised:
+                await asyncio.wait_for(router.start(), 5)
+        self.assertIs(type(raised.exception), BacnetError)
+        message = str(raised.exception)
+        self.assertIn("router port 0", message)
+        self.assertIn("bip", message)
+        await asyncio.wait_for(router.start(), 5)
+        await asyncio.wait_for(router.stop(), 5)
+
     async def test_start_error_names_sc_port_and_hub(self) -> None:
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
@@ -62,8 +87,10 @@ class ScIpRouterTests(MtlsFixture):
         )
         with self.assertRaises(RuntimeError) as raised:
             await asyncio.wait_for(router.start(), 5)
+        self.assertIs(type(raised.exception), RuntimeError)
         message = str(raised.exception)
         self.assertIn("router port 1", message)
+        self.assertIn("SC", message)
         self.assertIn(url, message)
 
     async def test_routed_read_health_routes_and_hub_recovery(self) -> None:

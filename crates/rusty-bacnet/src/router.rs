@@ -341,11 +341,20 @@ impl PyBACnetRouter {
                 ));
             }
             let result: PyResult<()> = async {
+                let sc_port_indices: Vec<_> = configured_ports
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, configured)| {
+                        matches!(configured, PyRouterPortConfig::Sc(_)).then_some(index)
+                    })
+                    .collect();
                 let mut ports = Vec::with_capacity(configured_ports.len());
                 for (config_index, configured) in configured_ports.into_iter().enumerate() {
                     ports.push(build_router_port(config_index, configured).await?);
                 }
-                let (router, _local_rx) = NativeRouter::start(ports).await.map_err(to_py_err)?;
+                let (router, _local_rx) = NativeRouter::start(ports)
+                    .await
+                    .map_err(|error| router_start_to_py_err(error, &sc_port_indices))?;
                 *inner.lock().await = Some(router);
                 Ok(())
             }
@@ -528,6 +537,28 @@ impl PyBACnetRouter {
     }
 }
 
+fn router_start_to_py_err(error: bacnet_types::error::Error, sc_port_indices: &[usize]) -> PyErr {
+    let start_detail = match &error {
+        bacnet_types::error::Error::Transport(source) => Some(source.to_string()),
+        bacnet_types::error::Error::Encoding(message) => Some(message.clone()),
+        _ => None,
+    };
+    let is_sc_port_start_failure = start_detail.as_deref().is_some_and(|detail| {
+        sc_port_indices.iter().any(|index| {
+            detail.starts_with(&format!("router port {index} (sc, "))
+                && detail.contains(" failed to start:")
+        })
+    });
+    if is_sc_port_start_failure {
+        // SC startup was historically performed while composing the Python
+        // port and therefore raised RuntimeError. Keep that public contract
+        // after deferring the dial into NativeRouter::start.
+        PyRuntimeError::new_err(error.to_string())
+    } else {
+        to_py_err(error)
+    }
+}
+
 async fn build_router_port(
     config_index: usize,
     configured: PyRouterPortConfig,
@@ -636,4 +667,38 @@ fn bip_identity_to_address(identity: &str) -> Option<String> {
         let port = u16::from_be_bytes([octets[4], octets[5]]);
         format!("{ip}:{port}")
     })
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+    use crate::errors::BacnetError;
+
+    #[test]
+    fn native_sc_port_start_error_keeps_python_runtime_error_contract() {
+        Python::initialize();
+        let error = bacnet_types::error::Error::Transport(std::io::Error::other(
+            "router port 1 (sc, identity \"wss://hub.example\") failed to start: dial failed",
+        ));
+
+        Python::attach(|py| {
+            let mapped = router_start_to_py_err(error, &[1]);
+            assert!(mapped.value(py).is_instance_of::<PyRuntimeError>());
+            assert!(mapped.to_string().contains("wss://hub.example"));
+        });
+    }
+
+    #[test]
+    fn non_sc_native_start_error_keeps_bacnet_error_taxonomy() {
+        Python::initialize();
+        let error = bacnet_types::error::Error::Transport(std::io::Error::other(
+            "router port 0 (bip, identity \"127.0.0.1:47808\") failed to start: in use",
+        ));
+
+        Python::attach(|py| {
+            let mapped = router_start_to_py_err(error, &[1]);
+            assert!(mapped.value(py).is_instance_of::<BacnetError>());
+            assert!(!mapped.value(py).is_instance_of::<PyRuntimeError>());
+        });
+    }
 }
