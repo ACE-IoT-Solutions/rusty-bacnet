@@ -423,6 +423,40 @@ async fn sc_failover_connector_timeout_does_not_hang_start() {
 }
 
 #[tokio::test]
+async fn sc_failed_failover_connector_uses_predialed_fallback() {
+    let (primary_client, primary_hub) = LoopbackWebSocket::pair();
+    drop(primary_hub);
+    let (failover_client, failover_hub) = LoopbackWebSocket::pair();
+    let failover_dial_count = Arc::new(AtomicUsize::new(0));
+
+    let mut transport = ScTransport::new(primary_client, [0x01; 6])
+        .with_device_uuid([1; 16])
+        .with_connect_timeout_ms(100)
+        .with_failover(failover_client)
+        .with_failover_connector({
+            let failover_dial_count = failover_dial_count.clone();
+            move || {
+                failover_dial_count.fetch_add(1, Ordering::SeqCst);
+                async { Err(Error::Encoding("scripted failover dial failure".into())) }
+            }
+        });
+
+    let (started, ()) = tokio::join!(transport.start(), hub_accept(&failover_hub, [0x20; 6]));
+    let _rx = started.expect("pre-dialed failover should complete the handshake");
+
+    assert_eq!(failover_dial_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        transport
+            .transport_health_changes()
+            .borrow()
+            .active_hub
+            .as_deref(),
+        Some("failover")
+    );
+    transport.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn sc_reconnect_connector_timeout_counts_as_failed_attempt() {
     let (primary_client, primary_hub) = LoopbackWebSocket::pair();
     let redial_count = Arc::new(AtomicUsize::new(0));

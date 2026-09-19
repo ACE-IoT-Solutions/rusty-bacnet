@@ -40,6 +40,7 @@ mod recovery;
 mod rejection;
 mod send;
 mod source_admission;
+mod transport_state;
 pub use connection::{ScConnection, ScConnectionState};
 use connector::{dial_failover_ws, WebSocketConnector};
 pub use errors::{ScConnectError, ScWebSocketErrorKind};
@@ -51,10 +52,13 @@ pub use random48::generate_random48_vmac;
 #[cfg(test)]
 pub(crate) use random48::set_test_random48_vmac_generator;
 pub use reconnect::ScReconnectConfig;
+use transport_state::abort_background_task_and_drop_sockets;
+pub(super) use transport_state::{
+    absorb_failed_connect_probe, connect_probe_from, publish_connected_ws,
+    publish_effective_max_apdu_length,
+};
 
 const DEFAULT_MAX_APDU_LENGTH: u16 = 1476;
-const BACNET_NPDU_BASE_HEADER_LEN: u16 = 2;
-const SC_ENCAPSULATED_NPDU_BASE_HEADER_LEN: u16 = 10;
 
 // ---------------------------------------------------------------------------
 // WebSocket abstraction
@@ -96,6 +100,7 @@ pub struct ScTransport<W: WebSocketPort> {
     state_tx: watch::Sender<ScConnectionState>,
     health_tx: watch::Sender<TransportHealth>,
     topology_id: Option<String>,
+    topology_collision_ids: Vec<String>,
     recv_task: Option<JoinHandle<()>>,
     connect_timeout_ms: u64,
     heartbeat_interval_ms: u64,
@@ -126,6 +131,7 @@ impl<W: WebSocketPort> ScTransport<W> {
             state_tx,
             health_tx,
             topology_id: None,
+            topology_collision_ids: Vec::new(),
             recv_task: None,
             connect_timeout_ms: 10_000,
             heartbeat_interval_ms: heartbeat::DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -219,134 +225,11 @@ impl<W: WebSocketPort> ScTransport<W> {
         self
     }
 
-    /// Attach stable hub URLs used to identify this SC topology.
-    pub fn with_hub_urls(
-        mut self,
-        primary_hub_url: impl AsRef<str>,
-        failover_hub_url: Option<impl AsRef<str>>,
-    ) -> Self {
-        fn normalize(value: &str) -> String {
-            let value = value.trim().trim_end_matches('/');
-            let Some((scheme, remainder)) = value.split_once("://") else {
-                return value.to_owned();
-            };
-            let authority_end = remainder.find('/').unwrap_or(remainder.len());
-            let (authority, path) = remainder.split_at(authority_end);
-            format!(
-                "{}://{}{}",
-                scheme.to_ascii_lowercase(),
-                authority.to_ascii_lowercase(),
-                path
-            )
-        }
-        let primary = normalize(primary_hub_url.as_ref());
-        let failover = failover_hub_url.map(|url| normalize(url.as_ref()));
-        self.topology_id = Some(match failover {
-            Some(url) => format!("{primary}|{url}"),
-            None => primary,
-        });
-        self
-    }
-
-    /// Get the connection state (for testing/inspection).
-    ///
-    /// This exposes mutable connection fields, including identity. Startup
-    /// validation does not protect against later application mutation here.
-    pub fn connection(&self) -> Option<&Arc<Mutex<ScConnection>>> {
-        self.connection.as_ref()
-    }
-
-    /// Subscribe to BACnet/SC connection state changes.
-    ///
-    /// The returned watch receiver yields the latest known state immediately and
-    /// change notifications for subsequent state updates observed by the
-    /// transport. Rapid updates can coalesce under Tokio watch semantics, so use
-    /// this as a current-state signal rather than a durable transition log.
-    pub fn connection_state_changes(&self) -> watch::Receiver<ScConnectionState> {
-        self.state_tx.subscribe()
-    }
-
-    /// Subscribe to the current operational SC health snapshot.
-    pub fn transport_health_changes(&self) -> watch::Receiver<TransportHealth> {
-        self.health_tx.subscribe()
-    }
-
     fn abort_background_task_and_drop_sockets(
         &mut self,
     ) -> (Option<JoinHandle<()>>, Option<JoinHandle<()>>) {
-        let task = self.recv_task.take();
-        if let Some(task) = &task {
-            task.abort();
-        }
-        let restore_task = self
-            .restore_disconnect_task
-            .lock()
-            .ok()
-            .and_then(|mut task| task.take());
-        if let Some(task) = &restore_task {
-            task.abort();
-        }
-        if let Some(conn) = &self.connection {
-            if let Ok(mut c) = conn.try_lock() {
-                c.state = ScConnectionState::Disconnected;
-            }
-        }
-        self.effective_max_apdu_length
-            .store(DEFAULT_MAX_APDU_LENGTH, Ordering::Relaxed);
-        self.state_tx.send_replace(ScConnectionState::Disconnected);
-        self.health_tx.send_modify(|health| {
-            health.state = TransportHealthState::Down;
-            health.active_hub = None;
-            health.since = None;
-        });
-        self.ws_shared = None;
-        self.connection = None;
-        self.ws = None;
-        self.failover_ws = None;
-        (task, restore_task)
+        abort_background_task_and_drop_sockets(self)
     }
-}
-
-fn effective_max_apdu_length(conn: &ScConnection) -> u16 {
-    let bvlc_npdu_budget = conn
-        .hub_max_bvlc_length
-        .saturating_sub(SC_ENCAPSULATED_NPDU_BASE_HEADER_LEN);
-    let effective_npdu = conn.hub_max_apdu_length.min(bvlc_npdu_budget);
-    effective_npdu.saturating_sub(BACNET_NPDU_BASE_HEADER_LEN)
-}
-
-fn publish_effective_max_apdu_length(store: &AtomicU16, conn: &ScConnection) {
-    store.store(effective_max_apdu_length(conn), Ordering::Relaxed);
-}
-
-async fn connect_probe_from(conn: &Arc<Mutex<ScConnection>>) -> Arc<Mutex<ScConnection>> {
-    Arc::new(Mutex::new(conn.lock().await.connect_probe()))
-}
-
-async fn absorb_failed_connect_probe(
-    conn: &Arc<Mutex<ScConnection>>,
-    probe_conn: &Arc<Mutex<ScConnection>>,
-) {
-    let probe = probe_conn.lock().await;
-    let mut c = conn.lock().await;
-    c.absorb_failed_probe(&probe);
-}
-
-async fn publish_connected_ws<W: WebSocketPort>(
-    conn: &Arc<Mutex<ScConnection>>,
-    active_ws: &Arc<Mutex<Arc<W>>>,
-    ws: &Arc<W>,
-    probe_conn: &Arc<Mutex<ScConnection>>,
-    state_tx: &watch::Sender<ScConnectionState>,
-    effective_max_apdu_length: &AtomicU16,
-) {
-    let restored = probe_conn.lock().await.clone();
-    let mut current = active_ws.lock().await;
-    let mut c = conn.lock().await;
-    *c = restored;
-    *current = ws.clone();
-    publish_effective_max_apdu_length(effective_max_apdu_length, &c);
-    state_tx.send_replace(c.state);
 }
 
 impl<W: WebSocketPort> TransportPort for ScTransport<W> {
@@ -356,6 +239,10 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
 
     fn topology_id(&self) -> Option<String> {
         self.topology_id.clone()
+    }
+
+    fn topology_collision_ids(&self) -> Vec<String> {
+        self.topology_collision_ids.clone()
     }
 
     fn health(&self) -> TransportHealth {

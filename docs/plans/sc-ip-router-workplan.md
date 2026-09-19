@@ -1,15 +1,17 @@
 # SC-to-IP router work plan
 
 Status: blocking scope R1-R4 implemented and independently re-verified on
-2026-09-12; review findings A1-A8 below are open
+2026-09-12; review findings A1-A8 and B1-B7 below are closed
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
-Kickoff pin (2026-09-11): `main` `9eed26a`; latest fetched
-`upstream/dev` `0376fa3` (2026-09-12). The 14 commits after the kickoff pin
-`b4c67ec` add SC address resolution, direct dial-out/listener behavior, and
-diagnostic controls. They do not supersede R1-R6; they do overlap `sc/mod.rs`
-and must be reconciled when the SC retry commit is proposed upstream.
+Kickoff pin (2026-09-11): `main` `9eed26a`. The proposal branch was last
+reconciled to `upstream/dev` `0376fa3` (2026-09-12); the latest fetched
+`upstream/dev` is `744cc2d` (2026-09-19), another 112 commits later. Those
+commits include further SC reconnect, recovery, port, and NPDU-admission work,
+so the proposal branch must be re-audited before it is offered upstream.
+Supersession by those newer commits remains unassessed; the fork's delivered
+R1-R6 surface and the review fixes below are the current local baseline.
 Feedback baseline: fork `dev` at `bf6922d` (workspace version 0.10.1)
 Related plans: `docs/plans/upstream-reconciliation-workplan.md`,
 `docs/plans/bacpypes3-feature-parity-workplan.md`
@@ -560,6 +562,52 @@ R8, R9, R10.
 3. Phase 5 (A5), then the Phase 3 and 4 remainder for R7 and R8.
 4. Phase 8 using the decided `ace-rusty-bacnet` distribution name, with A7
    and A8 reflected in the release notes and evidence.
+
+## Review 2026-09-19 - combined branch closeout
+
+This follow-up review covered the committed router stack from `9eed26a` through
+`74cdb28` and the retained W14 evidence. The fixes remain within the delivered
+R1-R6 scope; R7-R10 and the conformance-status caveat remain unchanged.
+
+- [x] **B1 - Restore the strict source-file size gate.** SC transport state,
+      topology, lifecycle reset, and reconnect-probe helpers now live in the
+      focused `sc/transport_state.rs` module. `sc/mod.rs` is below the 700-line
+      cap with headroom, and the strict CI script passes.
+- [x] **B2 - Reject stale retained W14 wheels.** The runner extracts the wheel
+      build metadata from the retained fixture image and compares its source
+      archive digest with the current build-context snapshot before starting
+      acceptance, including when `W14_SKIP_BUILD=1`.
+- [x] **B3 - Enforce and prove the runtime SC UUID boundary.** Rust runtime
+      configuration rejects an all-zero device UUID before certificate reads or
+      network I/O. A loopback wire test starts the production configuration path
+      and verifies the configured UUID bytes in the Connect-Request.
+- [x] **B4 - Make W14 polling fail closed.** Marker waits now preserve failures
+      instead of piping them through `tee`, the final container-exit wait is
+      bounded, and the cleanup trap covers the temporary metadata container.
+- [x] **B5 - Preserve the pre-dialed failover compatibility path.** A failed
+      failover connector now falls back to an available preconfigured socket;
+      a loopback test proves the fallback completes the SC handshake.
+- [x] **B6 - Dial each Python router SC port at native port startup.** An
+      additive deferred TLS WebSocket validates configuration immediately but
+      performs its bounded dial on first I/O, so sequential native port startup
+      can send each Connect-Request before the next SC port is opened. A
+      two-listener regression proves construction dials neither endpoint and
+      first I/O reaches the listeners strictly in port order.
+- [x] **B7 - Reject overlapping SC endpoints.** Router collision checks compare
+      normalized primary and failover endpoints independently, while preserving
+      the combined display topology identity. Tests cover same-primary/different-
+      failover and primary-to-failover overlap.
+
+Current-tree verification: the full `bacnet-transport` SC/TLS suite, the
+`bacnet-network` suite, runtime SC transport tests, router library build/tests,
+formatting, diff checks, shell syntax/static checks, and the strict file-size
+gate pass. W14 rebuilt the Linux arm64 wheel from the exact dirty-tree build
+context digest `af6a1bf2432e3d59cda6cd45070045def1cb02c83273153edd0783eed354f20f`;
+the retained metadata matches that digest, the post-hub-restart routing and
+acceptance markers passed, exit status was zero, and cleanup passed. The wheel
+digest is `45072672115d9475746d1f1b79c4dbb2ae6c0347c56d1dc8926ed0871ec95897`.
+The installed macOS Python suite was not rebuilt for this remediation and
+remains a publication gate.
 
 ## Out of scope
 

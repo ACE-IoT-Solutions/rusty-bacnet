@@ -1,7 +1,6 @@
 //! Python-composable BACnet router over one B/IP and named virtual ports.
 
 use std::collections::HashSet;
-use std::future::Future;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -563,22 +562,15 @@ async fn build_router_port(
                 ))
             })?;
             let primary_url = config.primary_hub.clone();
-            let initial_dial = sc_dial_with_timeout(
-                SC_CONNECT_TIMEOUT,
-                TlsWebSocket::connect(&primary_url, tls.clone()),
-            )
-            .await;
-            let ws = match initial_dial {
-                Ok(ws) => ws,
-                Err(error) if config.failover_hub.is_some() => {
-                    TlsWebSocket::from_initial_error(error)
-                }
-                Err(error) => {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "router port {config_index} SC hub {primary_url} connection failed: {error}"
-                    )))
-                }
-            };
+            // NativeRouter starts ports sequentially. Keep this socket unopened
+            // until this transport can immediately send its Connect-Request, so
+            // a later slow SC dial cannot consume an earlier hub's handshake window.
+            let ws = TlsWebSocket::deferred(&primary_url, tls.clone(), SC_CONNECT_TIMEOUT)
+                .map_err(|error| {
+                    PyRuntimeError::new_err(format!(
+                        "router port {config_index} SC hub {primary_url} configuration failed: {error}"
+                    ))
+                })?;
             let mut vmac = [0; 6];
             vmac.copy_from_slice(&config.local_vmac);
             let mut device_uuid = [0; 16];
@@ -589,6 +581,7 @@ async fn build_router_port(
             let mut transport = ScTransport::new(ws, vmac)
                 .with_device_uuid(device_uuid)
                 .with_hub_urls(&primary_url, topology_failover_url.as_deref())
+                .with_connect_timeout_ms(SC_CONNECT_TIMEOUT.as_millis() as u64)
                 .with_heartbeat_interval_ms(config.heartbeat_interval_ms)
                 .with_heartbeat_timeout_ms(config.heartbeat_timeout_ms)
                 .with_reconnect(ScReconnectConfig {
@@ -619,18 +612,6 @@ async fn build_router_port(
     })
 }
 
-async fn sc_dial_with_timeout<T, F>(
-    timeout: Duration,
-    dial: F,
-) -> Result<T, bacnet_types::error::Error>
-where
-    F: Future<Output = Result<T, bacnet_types::error::Error>>,
-{
-    tokio::time::timeout(timeout, dial)
-        .await
-        .unwrap_or_else(|_| Err(bacnet_types::error::Error::Timeout(timeout)))
-}
-
 fn validate_network_number(network: u16) -> PyResult<()> {
     if network == 0 || network == u16::MAX {
         Err(PyValueError::new_err(format!(
@@ -655,18 +636,4 @@ fn bip_identity_to_address(identity: &str) -> Option<String> {
         let port = u16::from_be_bytes([octets[4], octets[5]]);
         format!("{ip}:{port}")
     })
-}
-
-#[cfg(test)]
-mod unit_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn stalled_initial_sc_dial_is_bounded() {
-        let timeout = Duration::from_millis(25);
-        let result = sc_dial_with_timeout::<(), _>(timeout, std::future::pending()).await;
-        assert!(
-            matches!(result, Err(bacnet_types::error::Error::Timeout(value)) if value == timeout)
-        );
-    }
 }

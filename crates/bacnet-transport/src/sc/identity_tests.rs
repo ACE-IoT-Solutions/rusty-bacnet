@@ -12,6 +12,13 @@ fn sc_identity_normalizes_authority_without_changing_case_sensitive_path() {
         transport.topology_id().as_deref(),
         Some("wss://primary.example/HubPath|wss://failover.example/OtherPath")
     );
+    assert_eq!(
+        transport.topology_collision_ids(),
+        [
+            "wss://primary.example/HubPath",
+            "wss://failover.example/OtherPath"
+        ]
+    );
 }
 use std::sync::atomic::AtomicUsize;
 

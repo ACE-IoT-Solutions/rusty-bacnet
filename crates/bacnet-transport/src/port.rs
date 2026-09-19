@@ -172,6 +172,16 @@ pub trait TransportPort: Send + Sync {
         None
     }
 
+    /// Data-link endpoint identities which must not overlap within one port or
+    /// across router ports of the same transport kind.
+    ///
+    /// Most transports attach to one segment and therefore use their display
+    /// topology identity as the sole collision key. Multi-endpoint transports
+    /// may override this to expose each endpoint independently.
+    fn topology_collision_ids(&self) -> Vec<String> {
+        self.topology_id().into_iter().collect()
+    }
+
     /// Current health snapshot. Stateless transports are considered up.
     fn health(&self) -> TransportHealth {
         TransportHealth {

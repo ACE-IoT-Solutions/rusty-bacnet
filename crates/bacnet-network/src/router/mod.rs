@@ -299,11 +299,11 @@ impl BACnetRouter {
                         port.network_number
                     )));
                 }
-                if let Some(topology_id) = port.transport.topology_id() {
+                for topology_id in port.transport.topology_collision_ids() {
                     let topology = (port.transport.transport_kind(), topology_id.clone());
                     if !topologies.insert(topology) {
                         return Err(Error::Encoding(format!(
-                            "Duplicate {} topology {topology_id:?} in router ports",
+                            "Duplicate {} topology endpoint {topology_id:?} in router configuration",
                             port.transport.transport_kind()
                         )));
                     }

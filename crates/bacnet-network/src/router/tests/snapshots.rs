@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_transport::port::{ReceivedNpdu, TransportHealthState};
+use bacnet_transport::sc::{LoopbackWebSocket, ScTransport};
 
 struct HealthTestTransport {
     receive: Option<mpsc::Receiver<ReceivedNpdu>>,
@@ -115,6 +116,134 @@ async fn duplicate_transport_topology_is_rejected_before_start() {
 
     let error = result.err().expect("duplicate topology must be rejected");
     assert!(error.to_string().contains("Duplicate health-test topology"));
+}
+
+fn sc_transport(primary: &str, failover: Option<&str>, vmac: u8) -> ScTransport<LoopbackWebSocket> {
+    let (client, _hub) = LoopbackWebSocket::pair();
+    ScTransport::new(client, [0, 0, 0, 0, 0, vmac]).with_hub_urls(primary, failover)
+}
+
+#[tokio::test]
+async fn sc_topology_rejects_same_primary_with_different_failovers() {
+    let first = sc_transport(
+        "wss://primary.example/hub",
+        Some("wss://failover-a.example/hub"),
+        1,
+    );
+    let second = sc_transport(
+        "WSS://PRIMARY.EXAMPLE/hub/",
+        Some("wss://failover-b.example/hub"),
+        2,
+    );
+
+    let error = BACnetRouter::start(vec![
+        RouterPort {
+            transport: first,
+            network_number: 100,
+        },
+        RouterPort {
+            transport: second,
+            network_number: 200,
+        },
+    ])
+    .await
+    .err()
+    .expect("overlapping SC primary hubs must be rejected");
+
+    assert!(error
+        .to_string()
+        .contains("Duplicate sc topology endpoint \"wss://primary.example/hub\""));
+}
+
+#[tokio::test]
+async fn sc_topology_rejects_primary_failover_overlap() {
+    let first = sc_transport(
+        "wss://primary-a.example/hub",
+        Some("wss://shared.example/hub"),
+        1,
+    );
+    let second = sc_transport("wss://shared.example/hub", None, 2);
+
+    let error = BACnetRouter::start(vec![
+        RouterPort {
+            transport: first,
+            network_number: 100,
+        },
+        RouterPort {
+            transport: second,
+            network_number: 200,
+        },
+    ])
+    .await
+    .err()
+    .expect("SC primary/failover overlap must be rejected");
+
+    assert!(error
+        .to_string()
+        .contains("Duplicate sc topology endpoint \"wss://shared.example/hub\""));
+}
+
+#[tokio::test]
+async fn sc_topology_rejects_identical_primary_and_failover_on_one_port() {
+    let transport = sc_transport("wss://same.example/hub", Some("WSS://SAME.EXAMPLE/hub/"), 1);
+
+    let error = BACnetRouter::start(vec![RouterPort {
+        transport,
+        network_number: 100,
+    }])
+    .await
+    .err()
+    .expect("one SC port must not reuse an endpoint as primary and failover");
+
+    assert!(error
+        .to_string()
+        .contains("Duplicate sc topology endpoint \"wss://same.example/hub\""));
+}
+
+#[tokio::test]
+async fn sc_topology_rejects_implicit_and_explicit_default_wss_port() {
+    for (implicit, explicit, expected) in [
+        (
+            "wss://shared.example/hub",
+            "wss://shared.example:443/hub",
+            "wss://shared.example/hub",
+        ),
+        (
+            "wss://shared.example?Profile=Primary",
+            "wss://shared.example:0443/?Profile=Primary",
+            "wss://shared.example/?Profile=Primary",
+        ),
+        (
+            "wss://[::1]/hub",
+            "wss://[0:0:0:0:0:0:0:1]:443/hub",
+            "wss://[::1]/hub",
+        ),
+        (
+            "wss://shared.example/hub#primary",
+            "wss://shared.example:443/hub#secondary",
+            "wss://shared.example/hub",
+        ),
+    ] {
+        let first = sc_transport(implicit, None, 1);
+        let second = sc_transport(explicit, None, 2);
+        let error = BACnetRouter::start(vec![
+            RouterPort {
+                transport: first,
+                network_number: 100,
+            },
+            RouterPort {
+                transport: second,
+                network_number: 200,
+            },
+        ])
+        .await
+        .err()
+        .expect("equivalent WSS authorities must identify the same endpoint");
+
+        assert!(error
+            .to_string()
+            .contains(&format!("Duplicate sc topology endpoint {expected:?}")));
+    }
 }
 
 #[tokio::test]

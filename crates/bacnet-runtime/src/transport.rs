@@ -278,6 +278,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sc_factory_rejects_zero_device_uuid_before_tls_or_dial() {
+        let mut config = sc();
+        let TransportConfig::Sc(value) = &mut config.transport else {
+            unreachable!()
+        };
+        value.device_uuid = [0; 16];
+
+        let error =
+            RuntimeTransport::start(&config, bacnet_client::client::DEFAULT_COV_CHANNEL_CAPACITY)
+                .await
+                .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidConfig);
+        assert_eq!(error.attachment_id, Some(config.id));
+        assert!(error.message.contains("device UUID"));
+    }
+
+    #[cfg(feature = "sc")]
+    #[tokio::test]
+    async fn runtime_sc_constructor_sends_configured_uuid_in_connect_request() {
+        use bacnet_transport::port::TransportPort;
+        use bacnet_transport::sc::{LoopbackWebSocket, WebSocketPort};
+        use bacnet_transport::sc_frame::{
+            decode_sc_message, encode_sc_message, ScFunction, ScMessage,
+        };
+        use bytes::{Bytes, BytesMut};
+
+        let config = sc();
+        let TransportConfig::Sc(sc) = &config.transport else {
+            unreachable!()
+        };
+        let (client, hub) = LoopbackWebSocket::pair();
+        let mut transport = super::configuration::configure_sc_transport(
+            super::InitialScWebSocket::Connected(client),
+            sc,
+        );
+        let expected_uuid = sc.device_uuid;
+
+        let hub_task = tokio::spawn(async move {
+            let data = hub.recv().await.unwrap();
+            let request = decode_sc_message(&data).unwrap();
+            assert_eq!(request.function, ScFunction::ConnectRequest);
+            assert_eq!(&request.payload[6..22], &expected_uuid);
+
+            let mut payload = Vec::with_capacity(26);
+            payload.extend_from_slice(&[0x10; 6]);
+            payload.extend_from_slice(&[0x33; 16]);
+            payload.extend_from_slice(&1476u16.to_be_bytes());
+            payload.extend_from_slice(&1476u16.to_be_bytes());
+            let accept = ScMessage {
+                function: ScFunction::ConnectAccept,
+                message_id: request.message_id,
+                originating_vmac: None,
+                destination_vmac: None,
+                dest_options: Vec::new(),
+                data_options: Vec::new(),
+                payload: Bytes::from(payload),
+            };
+            let mut encoded = BytesMut::new();
+            encode_sc_message(&mut encoded, &accept);
+            hub.send(&encoded).await.unwrap();
+        });
+
+        transport.start().await.unwrap();
+        hub_task.await.unwrap();
+        transport.abort();
+    }
+
+    #[tokio::test]
     async fn bip_factory_preserves_mac_bytes_and_releases_socket_on_stop() {
         let mut transport = RuntimeTransport::start(
             &bip("127.0.0.1"),
@@ -408,6 +476,7 @@ mod tests {
             Box::new(|value| value.failover_hubs[0] = "https://wrong.example.test".to_owned()),
             Box::new(|value| value.local_vmac = [0; 6]),
             Box::new(|value| value.local_vmac = [0xff; 6]),
+            Box::new(|value| value.device_uuid = [0; 16]),
             Box::new(|value| value.ca_cert = None),
             Box::new(|value| value.client_key = None),
             Box::new(|value| value.heartbeat_interval_ms = 2_999),

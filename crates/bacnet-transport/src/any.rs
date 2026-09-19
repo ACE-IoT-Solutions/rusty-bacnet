@@ -76,6 +76,21 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
+    fn topology_collision_ids(&self) -> Vec<String> {
+        match self {
+            Self::Bip(t) => t.topology_collision_ids(),
+            Self::Mstp(t) => t.topology_collision_ids(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.topology_collision_ids(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.topology_collision_ids(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.topology_collision_ids(),
+            Self::Loopback(t) => t.topology_collision_ids(),
+            Self::Virtual(t) => t.topology_collision_ids(),
+        }
+    }
+
     fn health(&self) -> TransportHealth {
         match self {
             Self::Bip(t) => t.health(),

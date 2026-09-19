@@ -324,10 +324,11 @@ is source-incompatible for downstream code that uses a complete
 `retry_forever: false`, use struct update syntax with `Default`, or migrate to
 `ScReconnectConfig::unbounded(...)`.
 
-`bacnet_runtime::ScConfig` also gains the required `reconnect_forever` field.
-Complete downstream struct literals must add `reconnect_forever: false` to
-retain bounded behavior, or set it to `true` to allow a zero retry budget and
-unbounded capped-backoff recovery.
+`bacnet_runtime::ScConfig` also gains required `device_uuid` and
+`reconnect_forever` fields. Complete downstream struct literals must supply a
+caller-provisioned, durable, nonzero `[u8; 16]` as `device_uuid`, and add
+`reconnect_forever: false` to retain bounded behavior (or set it to `true` to
+allow a zero retry budget and unbounded capped-backoff recovery).
 
 All `TransportPort` implementations now expose a stable `transport_kind()`, an
 optional `topology_id()`, a point-in-time `health()`, and an optional

@@ -7,9 +7,11 @@
 mod tls_config;
 pub use tls_config::ScNodeTlsConfig;
 
+use std::time::Duration;
+
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
@@ -35,10 +37,38 @@ enum TlsWebSocketInner {
         write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
         read: Mutex<futures_util::stream::SplitStream<WsStream>>,
     },
+    Deferred {
+        url: String,
+        tls_config: ScNodeTlsConfig,
+        connect_timeout: Duration,
+        connected: OnceCell<std::sync::Arc<TlsWebSocket>>,
+    },
     Unavailable(Mutex<Option<Error>>),
 }
 
 impl TlsWebSocket {
+    /// Create a WebSocket whose network connection is established on first I/O.
+    ///
+    /// The URL is validated immediately, and the deferred connection is bounded by
+    /// `connect_timeout`. Deferring only the network operation lets callers assemble
+    /// several BACnet/SC transports without opening an earlier hub connection before
+    /// that transport can send its Connect-Request.
+    pub fn deferred(
+        url: &str,
+        tls_config: ScNodeTlsConfig,
+        connect_timeout: Duration,
+    ) -> Result<Self, Error> {
+        parse_wss_uri(url)?;
+        Ok(Self {
+            inner: TlsWebSocketInner::Deferred {
+                url: url.to_owned(),
+                tls_config,
+                connect_timeout,
+                connected: OnceCell::new(),
+            },
+        })
+    }
+
     /// Connect to a WebSocket endpoint with TLS.
     ///
     /// `url` must be a `wss://` URL. The validated local policy supplies explicit
@@ -119,6 +149,78 @@ impl TlsWebSocket {
         error.lock().await.take().unwrap_or_else(|| {
             Error::Encoding("initial BACnet/SC WebSocket remains unavailable".into())
         })
+    }
+
+    async fn send_connected(&self, data: &[u8]) -> Result<(), Error> {
+        let TlsWebSocketInner::Connected { write, .. } = &self.inner else {
+            unreachable!("deferred WebSocket resolved to a connected WebSocket")
+        };
+        let mut write = write.lock().await;
+        write
+            .send(Message::Binary(data.to_vec().into()))
+            .await
+            .map_err(|e| {
+                ScConnectError::WebSocket {
+                    kind: ScWebSocketErrorKind::Send,
+                    message: format!("WebSocket send failed: {e}"),
+                }
+                .into_bacnet_error()
+            })
+    }
+
+    async fn recv_connected(&self) -> Result<Vec<u8>, Error> {
+        let TlsWebSocketInner::Connected { read, write } = &self.inner else {
+            unreachable!("deferred WebSocket resolved to a connected WebSocket")
+        };
+        loop {
+            // Read one message under the read lock, then drop it before
+            // acquiring write (avoids read→write lock ordering deadlock).
+            let msg = {
+                let mut read = read.lock().await;
+                read.next().await
+            };
+            match msg {
+                Some(Ok(Message::Binary(data))) => return Ok(data.to_vec()),
+                Some(Ok(Message::Close(_))) => {
+                    return Err(ScConnectError::WebSocket {
+                        kind: ScWebSocketErrorKind::Closed,
+                        message: "WebSocket closed".into(),
+                    }
+                    .into_bacnet_error());
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                Some(Ok(_)) => {
+                    let mut write = write.lock().await;
+                    let _ = write
+                        .send(Message::Close(Some(
+                            tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Unsupported,
+                                reason: "BACnet/SC requires binary frames".into(),
+                            },
+                        )))
+                        .await;
+                    return Err(ScConnectError::WebSocket {
+                        kind: ScWebSocketErrorKind::NonBinaryFrame,
+                        message: "non-binary WebSocket frame received".into(),
+                    }
+                    .into_bacnet_error());
+                }
+                Some(Err(e)) => {
+                    return Err(ScConnectError::WebSocket {
+                        kind: ScWebSocketErrorKind::Receive,
+                        message: format!("WebSocket recv error: {e}"),
+                    }
+                    .into_bacnet_error());
+                }
+                None => {
+                    return Err(ScConnectError::WebSocket {
+                        kind: ScWebSocketErrorKind::StreamEnded,
+                        message: "WebSocket stream ended".into(),
+                    }
+                    .into_bacnet_error());
+                }
+            }
+        }
     }
 }
 
@@ -253,83 +355,54 @@ fn verify_hub_subprotocol(
 
 impl WebSocketPort for TlsWebSocket {
     async fn send(&self, data: &[u8]) -> Result<(), Error> {
-        let write = match &self.inner {
-            TlsWebSocketInner::Connected { write, .. } => write,
-            TlsWebSocketInner::Unavailable(error) => {
-                return Err(Self::unavailable_error(error).await)
+        match &self.inner {
+            TlsWebSocketInner::Connected { .. } => self.send_connected(data).await,
+            TlsWebSocketInner::Deferred {
+                url,
+                tls_config,
+                connect_timeout,
+                connected,
+            } => {
+                let websocket = connected
+                    .get_or_try_init(|| async {
+                        tokio::time::timeout(
+                            *connect_timeout,
+                            TlsWebSocket::connect(url, tls_config.clone()),
+                        )
+                        .await
+                        .unwrap_or_else(|_| Err(Error::Timeout(*connect_timeout)))
+                        .map(std::sync::Arc::new)
+                    })
+                    .await?;
+                websocket.send_connected(data).await
             }
-        };
-        let mut write = write.lock().await;
-        write
-            .send(Message::Binary(data.to_vec().into()))
-            .await
-            .map_err(|e| {
-                ScConnectError::WebSocket {
-                    kind: ScWebSocketErrorKind::Send,
-                    message: format!("WebSocket send failed: {e}"),
-                }
-                .into_bacnet_error()
-            })
+            TlsWebSocketInner::Unavailable(error) => Err(Self::unavailable_error(error).await),
+        }
     }
 
     async fn recv(&self) -> Result<Vec<u8>, Error> {
-        let (read, write) = match &self.inner {
-            TlsWebSocketInner::Connected { read, write } => (read, write),
-            TlsWebSocketInner::Unavailable(error) => {
-                return Err(Self::unavailable_error(error).await)
+        match &self.inner {
+            TlsWebSocketInner::Connected { .. } => self.recv_connected().await,
+            TlsWebSocketInner::Deferred {
+                url,
+                tls_config,
+                connect_timeout,
+                connected,
+            } => {
+                let websocket = connected
+                    .get_or_try_init(|| async {
+                        tokio::time::timeout(
+                            *connect_timeout,
+                            TlsWebSocket::connect(url, tls_config.clone()),
+                        )
+                        .await
+                        .unwrap_or_else(|_| Err(Error::Timeout(*connect_timeout)))
+                        .map(std::sync::Arc::new)
+                    })
+                    .await?;
+                websocket.recv_connected().await
             }
-        };
-        loop {
-            // Read one message under the read lock, then drop it before
-            // acquiring write (avoids read→write lock ordering deadlock).
-            let msg = {
-                let mut read = read.lock().await;
-                read.next().await
-            };
-            match msg {
-                Some(Ok(Message::Binary(data))) => return Ok(data.to_vec()),
-                Some(Ok(Message::Close(_))) => {
-                    return Err(ScConnectError::WebSocket {
-                        kind: ScWebSocketErrorKind::Closed,
-                        message: "WebSocket closed".into(),
-                    }
-                    .into_bacnet_error());
-                }
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
-                    continue;
-                }
-                Some(Ok(_)) => {
-                    // Non-binary data frames: close with 1003
-                    let mut w = write.lock().await;
-                    let _ = w
-                        .send(Message::Close(Some(
-                            tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Unsupported,
-                                reason: "BACnet/SC requires binary frames".into(),
-                            },
-                        )))
-                        .await;
-                    return Err(ScConnectError::WebSocket {
-                        kind: ScWebSocketErrorKind::NonBinaryFrame,
-                        message: "non-binary WebSocket frame received".into(),
-                    }
-                    .into_bacnet_error());
-                }
-                Some(Err(e)) => {
-                    return Err(ScConnectError::WebSocket {
-                        kind: ScWebSocketErrorKind::Receive,
-                        message: format!("WebSocket recv error: {e}"),
-                    }
-                    .into_bacnet_error());
-                }
-                None => {
-                    return Err(ScConnectError::WebSocket {
-                        kind: ScWebSocketErrorKind::StreamEnded,
-                        message: "WebSocket stream ended".into(),
-                    }
-                    .into_bacnet_error());
-                }
-            }
+            TlsWebSocketInner::Unavailable(error) => Err(Self::unavailable_error(error).await),
         }
     }
 }
@@ -342,6 +415,7 @@ mod node_tls_tests;
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::rustls::pki_types::pem::PemObject;
     use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -362,6 +436,82 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("remains unavailable"));
+    }
+
+    #[tokio::test]
+    async fn deferred_websockets_dial_in_first_io_order() {
+        let first_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let first = Arc::new(
+            TlsWebSocket::deferred(
+                &format!("wss://{}", first_listener.local_addr().unwrap()),
+                test_tls_config(),
+                Duration::from_secs(1),
+            )
+            .unwrap(),
+        );
+        let second = Arc::new(
+            TlsWebSocket::deferred(
+                &format!("wss://{}", second_listener.local_addr().unwrap()),
+                test_tls_config(),
+                Duration::from_secs(1),
+            )
+            .unwrap(),
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), first_listener.accept())
+                .await
+                .is_err()
+        );
+
+        let first_send = tokio::spawn({
+            let first = Arc::clone(&first);
+            async move { first.send(b"first connect request").await }
+        });
+        let (socket, _) = tokio::time::timeout(Duration::from_secs(1), first_listener.accept())
+            .await
+            .expect("first I/O should initiate the TCP dial")
+            .unwrap();
+        drop(socket);
+        assert!(first_send.await.unwrap().is_err());
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), second_listener.accept())
+                .await
+                .is_err()
+        );
+        let second_send = tokio::spawn({
+            let second = Arc::clone(&second);
+            async move { second.send(b"second connect request").await }
+        });
+        let (socket, _) = tokio::time::timeout(Duration::from_secs(1), second_listener.accept())
+            .await
+            .expect("second I/O should initiate its TCP dial")
+            .unwrap();
+        drop(socket);
+        assert!(second_send.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn deferred_websocket_bounds_a_stalled_tls_handshake() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let connect_timeout = Duration::from_millis(25);
+        let websocket = TlsWebSocket::deferred(
+            &format!("wss://{}", listener.local_addr().unwrap()),
+            test_tls_config(),
+            connect_timeout,
+        )
+        .unwrap();
+        let stalled_peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            drop(socket);
+        });
+
+        let error = websocket.send(b"connect request").await.unwrap_err();
+        assert!(matches!(error, Error::Timeout(value) if value == connect_timeout));
+        stalled_peer.abort();
     }
 
     #[test]

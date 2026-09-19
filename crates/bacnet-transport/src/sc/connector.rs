@@ -83,9 +83,16 @@ pub(super) async fn dial_failover_ws_result<W: WebSocketPort>(
     timeout_ms: u64,
 ) -> Result<Option<Arc<W>>, Error> {
     if let Some(connector) = failover_connector {
-        return dial_connector(connector, timeout_ms)
-            .await
-            .map(|ws| Some(Arc::new(ws)));
+        match dial_connector(connector, timeout_ms).await {
+            Ok(ws) => return Ok(Some(Arc::new(ws))),
+            Err(e) if failover_ws.is_some() => {
+                warn!(
+                    %e,
+                    "BACnet/SC failover WebSocket redial failed; using preconfigured failover socket"
+                );
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     Ok(failover_ws.take())

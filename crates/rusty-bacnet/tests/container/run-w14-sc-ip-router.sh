@@ -6,12 +6,13 @@ podman compose version >/dev/null 2>&1 || { echo "podman compose is required" >&
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 127; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 127; }
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_root=$(CDPATH= cd -- "$script_dir/../../../.." && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/../../../.." && pwd)
 compose_file="$script_dir/compose.w14-sc-ip-router.yml"
 project_name="rusty-bacnet-w14-sc-ip-router-$$"
 wheel_image="localhost/rusty-bacnet-w14-wheel:dev"
 fixture_image="localhost/rusty-bacnet-w14-sc-ip-router:dev"
+metadata_container="${project_name}_metadata"
 W14_ARTIFACT_DIR=${W14_ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/rusty-bacnet-w14-sc-ip-router.XXXXXX")}
 export W14_ARTIFACT_DIR
 
@@ -29,11 +30,31 @@ capture_logs() {
 
 cleanup() {
     capture_logs
+    podman rm --force "$metadata_container" >/dev/null 2>&1 || true
     if podman container exists "$(container_id sc_ip_router)"; then
         podman inspect "$(container_id sc_ip_router)" \
             >"$W14_ARTIFACT_DIR/container-inspect.json" 2>/dev/null || true
     fi
     compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+}
+
+wait_for_container_exit() {
+    container=$1 attempts=$2 count=0
+    while [ "$count" -lt "$attempts" ]; do
+        if ! podman container exists "$container"; then
+            echo "container disappeared before its exit status was recorded: $container" >&2
+            return 1
+        fi
+        running=$(podman inspect --format '{{.State.Running}}' "$container")
+        if [ "$running" != "true" ]; then
+            podman inspect --format '{{.State.ExitCode}}' "$container"
+            return 0
+        fi
+        sleep 1
+        count=$((count + 1))
+    done
+    echo "timed out waiting for container to exit: $container" >&2
+    return 1
 }
 trap cleanup EXIT INT TERM
 
@@ -151,14 +172,34 @@ fi
 
 podman image inspect "$wheel_image" >"$W14_ARTIFACT_DIR/wheel-image-inspect.json"
 podman image inspect "$fixture_image" >"$W14_ARTIFACT_DIR/fixture-image-inspect.json"
+podman create --name "$metadata_container" "$fixture_image" >/dev/null
+podman cp \
+    "$metadata_container:/usr/local/share/rusty-bacnet/build-environment.txt" \
+    "$W14_ARTIFACT_DIR/build-environment.txt"
+podman rm "$metadata_container" >/dev/null
+retained_source_archive_sha256=$(sed -n 's/^source_archive_sha256=//p' \
+    "$W14_ARTIFACT_DIR/build-environment.txt")
+if [ -z "$retained_source_archive_sha256" ] || \
+    [ "$retained_source_archive_sha256" != "$source_archive_sha256" ]; then
+    echo "retained wheel source archive does not match the current build context" >&2
+    echo "current_source_build_context_sha256=$source_archive_sha256" >&2
+    echo "retained_source_archive_sha256=${retained_source_archive_sha256:-missing}" >&2
+    exit 1
+fi
 compose config >"$W14_ARTIFACT_DIR/compose-config.yml"
 compose up --detach --no-deps sc_ip_router
 fixture=$(container_id sc_ip_router)
-wait_for_log "$fixture" W14_POST_HUB_RESTART_ROUTED_READ_PASS 120 \
-    | tee -a "$W14_ARTIFACT_DIR/runner-transcript.log"
-wait_for_log "$fixture" W14_SC_IP_ROUTER_ACCEPTANCE_PASS 2 \
-    | tee -a "$W14_ARTIFACT_DIR/runner-transcript.log"
-exit_code=$(podman wait "$fixture")
+if ! marker=$(wait_for_log "$fixture" W14_POST_HUB_RESTART_ROUTED_READ_PASS 120); then
+    exit 1
+fi
+printf '%s\n' "$marker" | tee -a "$W14_ARTIFACT_DIR/runner-transcript.log"
+if ! marker=$(wait_for_log "$fixture" W14_SC_IP_ROUTER_ACCEPTANCE_PASS 2); then
+    exit 1
+fi
+printf '%s\n' "$marker" | tee -a "$W14_ARTIFACT_DIR/runner-transcript.log"
+if ! exit_code=$(wait_for_container_exit "$fixture" 30); then
+    exit 1
+fi
 podman inspect "$fixture" >"$W14_ARTIFACT_DIR/container-inspect.json"
 capture_logs
 python3 - "$W14_ARTIFACT_DIR" "$project_name" "$exit_code" <<'PY'
