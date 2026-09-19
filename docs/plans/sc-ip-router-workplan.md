@@ -1,17 +1,18 @@
 # SC-to-IP router work plan
 
-Status: blocking scope R1-R4 implemented and independently re-verified on
-2026-09-12; review findings A1-A8 and B1-B7 below are closed
+Status: blocking scope R1-R4 implemented; review findings A1-A8, B1-B7, and
+C1-C5 are closed on `fix/sc-router-review-closeout`
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
 Kickoff pin (2026-09-11): `main` `9eed26a`. The proposal branch was last
 reconciled to `upstream/dev` `0376fa3` (2026-09-12); the latest fetched
-`upstream/dev` is `744cc2d` (2026-09-19), another 112 commits later. Those
-commits include further SC reconnect, recovery, port, and NPDU-admission work,
-so the proposal branch must be re-audited before it is offered upstream.
-Supersession by those newer commits remains unassessed; the fork's delivered
-R1-R6 surface and the review fixes below are the current local baseline.
+`upstream/dev` is `3364a8d` (2026-09-19), another 119 commits later. Those
+commits include further SC reconnect, recovery, port, and NPDU-admission work.
+The C4 audit below confirms that R1-R6's health, topology, unbounded-retry,
+runtime, and Python surfaces remain unique, while a replacement proposal must
+selectively adopt newer upstream safety and admission work. The old proposal
+is retained as evidence and is not submission ready.
 Feedback baseline: fork `dev` at `bf6922d` (workspace version 0.10.1)
 Related plans: `docs/plans/upstream-reconciliation-workplan.md`,
 `docs/plans/bacpypes3-feature-parity-workplan.md`
@@ -137,6 +138,9 @@ row for transport identity. R6 is therefore a restore-and-extend, not new work.
   (re-announce) and any raised size limits default to today's behavior unless
   the standard fixes the value.
 - Python acceptance runs against an installed wheel built with `maturin`.
+  Any finding that changes `crates/rusty-bacnet` or Python-visible behavior is
+  closed only after the full Python suite passes in a fresh isolated
+  environment against that wheel with checkout imports disabled.
 - Update `rusty_bacnet.pyi`, `docs/python-api.md`, `docs/rust-api.md`, and
   `CHANGELOG.md` in the same PR as the API.
 - Ledger status changes require a test that actually exercises the clause.
@@ -608,6 +612,92 @@ acceptance markers passed, exit status was zero, and cleanup passed. The wheel
 digest is `45072672115d9475746d1f1b79c4dbb2ae6c0347c56d1dc8926ed0871ec95897`.
 The installed macOS Python suite was not rebuilt for this remediation and
 remains a publication gate.
+
+## Review 2026-09-19 - independent verification of `fd9d5cc`
+
+Reviewer verification of the B1-B7 closeout commit, run on macOS arm64 from a
+cleaned target directory and a freshly built wheel.
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace --exclude rusty-bacnet --locked --features bacnet-types/serde,bacnet-transport/ipv6,bacnet-transport/sc-tls --no-fail-fast` | 48 suites, 4724 passed, 0 failed |
+| `bash .github/scripts/check-file-size.sh` | pass |
+| `cargo fmt --all -- --check`, `git diff --check` | clean |
+| `bash -n` and `shellcheck -S warning` on `run-w14-sc-ip-router.sh` | clean |
+| Fresh `maturin build` wheel, full Python suite from the checkout | 151 passed, 1 failed |
+| Fresh final remediation wheel in an isolated CPython 3.13 environment with `PYTHONPATH` cleared | 153 passed, 1,877 subtests passed |
+
+B1, B2, B3, B4, B5, and B7 are confirmed as described. B6 is correct in Rust
+but changed a public Python contract; see C1.
+
+### Findings
+
+- [x] **C1 - `BACnetRouter.start()` SC dial failures now raise `BacnetError`,
+      not `RuntimeError`.** B6 moved the SC dial from the binding into the
+      native port start. A refused hub connection now surfaces through
+      `to_py_err` as `rusty_bacnet.BacnetError` (base `Exception`) with the
+      message `router port 1 (sc, identity "wss://...") failed to start: ...`.
+      `test_sc_ip_router.py::test_start_error_names_sc_port_and_hub` asserts
+      `RuntimeError` and fails against a fresh wheel. The message still names
+      the port index and hub URL. Recommendation: map SC port start failures in
+      `crates/rusty-bacnet/src/router.rs` back to `RuntimeError`, matching the
+      documented client and server TLS/dial contract, and keep the test as-is.
+      The B6 closeout text admitted the macOS Python suite was not rerun; the
+      W14 scenario only runs `test_routed_read_health_routes_and_hub_recovery`,
+      so this path had no coverage. The binding now maps native SC-port startup
+      failures back to built-in `RuntimeError` while preserving native port,
+      SC topology, and cause text; B/IP and other native startup failures retain
+      the `BacnetError` taxonomy. The regressions assert both exact exception
+      types, contextual details, and successful B/IP retry after bind release.
+- [x] **C2 - Rerun the installed-wheel Python suite before closing any
+      finding that touches `crates/rusty-bacnet`.** Add it to the closeout
+      checklist alongside the Rust gates. A retained Linux W14 run is not a
+      substitute because it executes one test. A fresh CPython 3.13 macOS arm64
+      wheel was built from this branch, installed with `pytest` into a new
+      temporary virtual environment with `PYTHONPATH` cleared, and the full
+      `crates/rusty-bacnet/tests` suite passed: 153 tests and 1,877 subtests.
+      The final wheel SHA-256 is
+      `d2508d23b27fa634abc16c6bf40076584391a58e3d496ecc95e617723739b338`.
+- [x] **C3 - Stop committing directly to `main`.** `fd9d5cc` is a single
+      commit mixing transport, network, runtime, Python, and container
+      changes, and nine commits now sit unpushed ahead of `origin/main`. The
+      plan's PR queue and the per-layer rule in Working rules have not been
+      followed for either slice. Existing local `main` history through
+      `fd9d5cc` is retained as an integration baseline so reviewed source and
+      artifact references remain stable. The mixed-layer commits are explicit
+      historical exceptions, not upstream-ready PR units. All subsequent
+      corrections are on `fix/sc-router-review-closeout`; upstream submissions
+      will be extracted into separately validated, layer-specific branches.
+      Neither local `main` nor remote history was rewritten or pushed.
+- [x] **C4 - Re-audit the proposal branch against current `upstream/dev`.**
+      The prior header recorded 112 upstream commits past the `0376fa3` pin with
+      supersession unassessed. That audit gates PR 1 and blocks PRs 2 and 3
+      from being rebased at all. The audit is now pinned to `3364a8d`, 119
+      commits after the proposal base. Health watches/snapshots, topology
+      collision identity, unbounded retry with hub alternation, router
+      health/counters, detached route snapshots, runtime integration, typed
+      Python ports, and W14 acceptance remain unique. Address resolution and
+      direct-discovery foundations are upstream-owned. A replacement proposal
+      must selectively preserve upstream reconnect jitter (`b0813a6`), the
+      24-hour delay cap and persistent diagnostic throttle (`70dfcf4`),
+      transport/origin provenance (`0645563`, `01c2d26`), NPDU admission
+      (`7b20d3a`), and newer router admission/control/convergence behavior.
+      The old `e6e94d8` proposal is retained as evidence but is not submission
+      ready: it also lacks the corrected connector-to-preconfigured-failover
+      fallback from `fd9d5cc`. Any replacement starts from the audited upstream
+      tip on a fresh branch and is validated as layer-specific extracted work.
+- [x] **C5 - Reconcile the file-size cap.** The CI script enforces 700
+      non-empty, non-comment lines; the `aceiot-projects` guidance says 500.
+      Repository-specific `AGENTS.md` now explicitly adopts the enforced
+      700-line Rust cap, recommends comfortable headroom and cohesive splits,
+      and clarifies that sibling projects' approximate 500-line convention is
+      not this repository's gate. The strict CI script remains authoritative.
+
+### Unchanged scope
+
+R7 oversize handling, R8 re-announce, the Phase 5 shared dial helper, and all
+of Phase 8 release engineering remain open. The conformance-status caveat from
+A7 still applies.
 
 ## Out of scope
 
