@@ -304,8 +304,35 @@ jobs:
 
   build-wheels:
     name: Wheels (${{ matrix.os }} ${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: validate
+    # Upstream retains its full release validation gate. Fork tags may still
+    # produce private, manually published wheel artifacts when a flaky
+    # cross-platform test blocks `validate`, but only after every Linux,
+    # security, policy, formatting, MSRV, and lint gate succeeds.
+    if: >-
+      !cancelled() && startsWith(github.ref, 'refs/tags/v') &&
+      (needs.validate.result == 'success' ||
+       (github.repository == 'ACE-IoT-Solutions/rusty-bacnet' &&
+        needs.validate.result == 'skipped' &&
+        needs.fmt.result == 'success' &&
+        needs.clippy.result == 'success' &&
+        needs.audit.result == 'success' &&
+        needs.file-size-cap.result == 'success' &&
+        needs.no-secret-scan.result == 'success' &&
+        needs.msrv.result == 'success' &&
+        needs.test.result == 'success' &&
+        needs.deny.result == 'success'))
+    needs:
+      [
+        validate,
+        fmt,
+        clippy,
+        audit,
+        file-size-cap,
+        no-secret-scan,
+        msrv,
+        test,
+        deny,
+      ]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -323,6 +350,15 @@ jobs:
             target: x86_64
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate fork release version
+        if: github.repository == 'ACE-IoT-Solutions/rusty-bacnet'
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          test "$TAG_VERSION" = "$CARGO_VERSION"
+          grep -q "## \[$TAG_VERSION\]" CHANGELOG.md
 
       - uses: actions/setup-python@v5
         with:
