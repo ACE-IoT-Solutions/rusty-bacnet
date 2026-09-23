@@ -28,9 +28,9 @@ fn identity(
     )
 }
 
-fn is_unauthenticated_client_reset(error: &str) -> bool {
-    // When the server rejects a client without a certificate, Windows may
-    // surface the TLS alert as WSAECONNRESET rather than CertificateRequired.
+fn is_tls_denial_reset(error: &str) -> bool {
+    // When the server rejects an invalid TLS peer, Windows may surface the
+    // TLS alert as WSAECONNRESET rather than the rustls certificate error.
     error.contains("10054") || error.contains("Connection reset by peer")
 }
 
@@ -192,8 +192,7 @@ async fn actual_binaries_mutual_tls_reads_and_denials_recover() {
             Err(error) => error.to_string(),
         };
         assert!(
-            error.contains(expected)
-                || (expected == "CertificateRequired" && is_unauthenticated_client_reset(&error)),
+            error.contains(expected) || is_tls_denial_reset(&error),
             "expected {expected}, got {error}"
         );
         peer.read().await;

@@ -2,6 +2,7 @@
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
@@ -15,6 +16,15 @@ use crate::bbmd::{BdtEntry, ForeignDevicePolicy};
 use crate::bvll::{decode_bip_mac, decode_bvll, encode_bvll, BvllMessage};
 use crate::port::TransportPort;
 use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
+
+static FANOUT_NETWORK_TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+async fn fanout_network_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    FANOUT_NETWORK_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
 
 async fn recv_bvll(socket: &UdpSocket) -> BvllMessage {
     let mut recv_buf = [0u8; 2048];
@@ -84,6 +94,7 @@ fn fanout_rate_limiter_budgets_and_throttles() {
 
 #[tokio::test]
 async fn duplicate_bdt_and_fdt_entries_yield_exactly_one_send_per_destination() {
+    let _test_guard = fanout_network_test_guard().await;
     let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     let sink_socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
@@ -158,6 +169,7 @@ async fn duplicate_bdt_and_fdt_entries_yield_exactly_one_send_per_destination() 
 
 #[tokio::test]
 async fn sustained_broadcast_input_does_not_starve_concurrent_unicast() {
+    let _test_guard = fanout_network_test_guard().await;
     let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     let mut bdt = Vec::new();
     for i in 1..=8 {
@@ -284,6 +296,7 @@ async fn sustained_broadcast_input_does_not_starve_concurrent_unicast() {
 
 #[tokio::test]
 async fn fanout_semantics_for_original_forwarded_and_dbtn() {
+    let _test_guard = fanout_network_test_guard().await;
     let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     let peer_bdt = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
@@ -363,6 +376,7 @@ async fn fanout_semantics_for_original_forwarded_and_dbtn() {
 
 #[tokio::test]
 async fn fanout_counters_accurately_track_all_metrics() {
+    let _test_guard = fanout_network_test_guard().await;
     let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     let sink_a = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
@@ -424,6 +438,7 @@ async fn fanout_counters_accurately_track_all_metrics() {
 
 #[tokio::test]
 async fn dbtn_delivers_local_subnet_broadcast_under_tight_fanout_budget() {
+    let _test_guard = fanout_network_test_guard().await;
     let bbmd_socket = Arc::new(
         UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
             .await
@@ -539,6 +554,7 @@ async fn dbtn_delivers_local_subnet_broadcast_under_tight_fanout_budget() {
 
 #[tokio::test]
 async fn fanout_policy_zero_queue_capacity_does_not_panic() {
+    let _test_guard = fanout_network_test_guard().await;
     let policy = FanoutPolicy {
         queue_capacity: 0,
         ..FanoutPolicy::default()
