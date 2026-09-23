@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reduced-workspace source archive lockfile, then proves a locked offline
   build before publishing. Release publication can also aggregate validated
   manylinux wheels built from that same prepared source tree.
+- **TLS dependency:** update the locked `rustls` dependency to `0.23.45` to
+  address RUSTSEC-2026-0285 before producing the release artifacts.
 
 ### Changed
 
