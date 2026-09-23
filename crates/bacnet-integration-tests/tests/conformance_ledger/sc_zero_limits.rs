@@ -72,7 +72,8 @@ fn zero_limit_policy_has_wire_lifecycle_and_native_evidence_without_promotion() 
 
 #[test]
 fn zero_limit_docs_keep_capacity_policy_separate_from_immutable_identity_closeout() {
-    let section = STANDARD_LEDGER
+    let standard_ledger = normalize_line_endings(STANDARD_LEDGER);
+    let section = standard_ledger
         .split_once("## Received zero-capacity admission\n")
         .unwrap()
         .1

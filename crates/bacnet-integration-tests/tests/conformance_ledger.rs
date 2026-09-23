@@ -1,16 +1,9 @@
 //! Conformance ledger schema and public-claim guard tests.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::{fs, process::Command};
+use std::process::Command;
 
 use serde_json::{json, Value};
-
-const LEDGER_JSON: &str = include_str!("../../../docs/conformance/bacnet-135-2020.json");
-const SUPPORT_SUMMARY: &str = include_str!("../../../docs/conformance/support-summary.md");
-const PICS_DRAFT: &str = include_str!("../../../docs/conformance/pics-draft.md");
-const BIBBS_DRAFT: &str = include_str!("../../../docs/conformance/bibbs-draft.md");
-const STANDARD_LEDGER: &str = include_str!("../../../docs/conformance/standard-135-2020-ledger.md");
 
 #[path = "conformance_ledger/sc_hub_response_silence.rs"]
 mod sc_hub_response_silence;
@@ -18,6 +11,13 @@ mod sc_hub_response_silence;
 mod sc_mu_liveness;
 #[path = "conformance_ledger/sc_zero_limits.rs"]
 mod sc_zero_limits;
+#[path = "conformance_ledger/text.rs"]
+mod text;
+
+use text::{
+    normalize_line_endings, read_repo_file, repo_path, repo_root, standard_ledger, BIBBS_DRAFT,
+    LEDGER_JSON, PICS_DRAFT, STANDARD_LEDGER, SUPPORT_SUMMARY,
+};
 
 const REQUIRED_IDS: &[&str] = &[
     "BACNET-J-BVLC-FUNCTION-CODES",
@@ -174,18 +174,6 @@ fn assert_array_field(row: &Value, field: &str) {
         "{} must have array field {field}",
         row["id"]
     );
-}
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn repo_path(path: &str) -> PathBuf {
-    repo_root().join(path)
-}
-
-fn read_repo_file(path: &str) -> String {
-    fs::read_to_string(repo_path(path)).expect("repo file should be readable")
 }
 
 #[test]
@@ -361,7 +349,9 @@ fn sc_identity_evidence_keeps_caller_storage_and_raw_transport_limits_explicit()
     }
     // The machine-readable tranche notes retain their slice-time issue status.
     assert!(row["notes"].as_str().unwrap().contains("#517 remains open"));
-    for body in [row["notes"].as_str().unwrap(), STANDARD_LEDGER] {
+    let notes = normalize_line_endings(row["notes"].as_str().unwrap());
+    let standard_ledger = standard_ledger();
+    for body in [&notes, &standard_ledger] {
         assert!(body.contains("changed UUIDs cannot be detected without application history"));
         assert!(body.contains("before transport-owned I/O or startup state changes"));
         assert!(body.contains("same owned WebSocket"));
@@ -493,7 +483,7 @@ fn sc_peer_uuid_evidence_retains_silent_accept_policy_without_status_promotion()
         "not a pre-dial check",
     ] {
         assert!(
-            STANDARD_LEDGER.contains(phrase),
+            standard_ledger().contains(phrase),
             "missing boundary: {phrase}"
         );
     }
@@ -528,10 +518,11 @@ fn public_claim_guard_rejects_unknown_status_for_public_claim() {
         .any(|e| e.contains("unknown-pending-source-review")));
 }
 
-fn sc_identity_closeout() -> &'static str {
+fn sc_identity_closeout() -> String {
     let heading = "### Device identity acceptance closeout\n";
-    let section = STANDARD_LEDGER.split_once(heading).unwrap();
-    section.1.split("\n## ").next().unwrap()
+    let ledger = standard_ledger();
+    let section = ledger.split_once(heading).unwrap();
+    section.1.split("\n## ").next().unwrap().to_owned()
 }
 
 #[test]
@@ -594,9 +585,8 @@ fn sc_identity_closeout_links_and_symbol_anchors_resolve_offline() {
         let link = format!("]({prefix}{target})");
         assert!(read_repo_file(doc).contains(&link), "{doc}");
     }
-    let links = sc_identity_closeout()
-        .split('[')
-        .filter_map(|s| s.split_once("]("));
+    let closeout = sc_identity_closeout();
+    let links = closeout.split('[').filter_map(|s| s.split_once("]("));
     for (label, link) in links {
         let target = link.split(')').next().unwrap();
         if target.starts_with("https://") {
@@ -645,24 +635,29 @@ fn generated_support_docs_are_current_with_ledger() {
     let repo_sha = data["repo_sha"]
         .as_str()
         .expect("repo_sha should be a string");
-    for doc in [SUPPORT_SUMMARY, PICS_DRAFT, BIBBS_DRAFT] {
+    let docs = [
+        normalize_line_endings(SUPPORT_SUMMARY),
+        normalize_line_endings(PICS_DRAFT),
+        normalize_line_endings(BIBBS_DRAFT),
+    ];
+    for doc in &docs {
         assert!(doc.contains("DRAFT internal support evidence"));
         assert!(doc.contains("docs/conformance/bacnet-135-2020.json"));
     }
     assert!(
-        STANDARD_LEDGER.contains(&format!(
+        standard_ledger().contains(&format!(
             "Implementation evidence SHA reviewed: `{repo_sha}`"
         )),
         "standard ledger evidence SHA differs from the machine-readable ledger"
     );
-    assert!(STANDARD_LEDGER.contains("## Clause 4 Architecture"));
-    assert!(STANDARD_LEDGER.contains("## Annex AB BACnet/SC"));
+    assert!(standard_ledger().contains("## Clause 4 Architecture"));
+    assert!(standard_ledger().contains("## Annex AB BACnet/SC"));
     for id in REQUIRED_IDS {
-        assert!(SUPPORT_SUMMARY.contains(id), "support summary missing {id}");
+        assert!(docs[0].contains(id), "support summary missing {id}");
     }
-    assert!(PICS_DRAFT.contains("BACNET-A-PICS"));
-    assert!(PICS_DRAFT.contains("BACNET-L-PROFILES"));
-    assert!(BIBBS_DRAFT.contains("BACNET-K-BIBBS"));
+    assert!(docs[1].contains("BACNET-A-PICS"));
+    assert!(docs[1].contains("BACNET-L-PROFILES"));
+    assert!(docs[2].contains("BACNET-K-BIBBS"));
     assert_eq!(
         rows_by_id(&data).len(),
         data["rows"].as_array().unwrap().len()

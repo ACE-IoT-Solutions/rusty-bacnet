@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use tokio::net::UdpSocket;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use super::fanout::{FanoutPolicy, FanoutRateLimiter};
@@ -17,7 +18,7 @@ use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
 
 async fn recv_bvll(socket: &UdpSocket) -> BvllMessage {
     let mut recv_buf = [0u8; 2048];
-    let (len, _addr) = timeout(Duration::from_secs(2), socket.recv_from(&mut recv_buf))
+    let (len, _addr) = timeout(Duration::from_secs(5), socket.recv_from(&mut recv_buf))
         .await
         .expect("timed out waiting for BVLL frame")
         .expect("recv_from error");
@@ -188,6 +189,7 @@ async fn sustained_broadcast_input_does_not_starve_concurrent_unicast() {
     );
     let stop_flood = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_flood_clone = Arc::clone(&stop_flood);
+    let (flood_ready_tx, flood_ready_rx) = oneshot::channel();
     let flood_handle = tokio::spawn(async move {
         let mut buf = BytesMut::new();
         encode_bvll(
@@ -197,14 +199,23 @@ async fn sustained_broadcast_input_does_not_starve_concurrent_unicast() {
         )
         .unwrap();
         let frame = buf.freeze();
+        let mut flood_ready_tx = Some(flood_ready_tx);
         while !stop_flood_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            let _ = flood_sock.send_to(&frame, bbmd_dest).await;
+            if flood_sock.send_to(&frame, bbmd_dest).await.is_ok() {
+                if let Some(ready_tx) = flood_ready_tx.take() {
+                    let _ = ready_tx.send(());
+                }
+            }
             tokio::task::yield_now().await;
         }
     });
 
-    // Let flood start sending frames
-    tokio::time::sleep(Duration::from_millis(15)).await;
+    // Synchronize with an actual send instead of assuming a short sleep is
+    // enough for the flood task to be scheduled on every CI runner.
+    timeout(Duration::from_secs(2), flood_ready_rx)
+        .await
+        .expect("flood task did not send its first frame in time")
+        .expect("flood task stopped before sending its first frame");
 
     // Send concurrent unicast NPDU and ensure it is received promptly
     let unicast_sock = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
@@ -232,6 +243,22 @@ async fn sustained_broadcast_input_does_not_starve_concurrent_unicast() {
             }
         }
     }
+    let unicast_latency = start_time.elapsed();
+
+    // Wait until the receive loop has observed enough flood traffic to prove
+    // that the bounded fanout path was exercised. This avoids sampling the
+    // counters before the asynchronously queued jobs have been processed.
+    let counters = timeout(Duration::from_secs(2), async {
+        loop {
+            let counters = bbmd.fanout_counters();
+            if counters.queue_overflow_drops > 0 || counters.packets_throttled > 0 {
+                break counters;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("flood did not exercise fanout queue overflow or throttling in time");
 
     stop_flood.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = flood_handle.await;
@@ -241,13 +268,12 @@ async fn sustained_broadcast_input_does_not_starve_concurrent_unicast() {
         "concurrent unicast NPDU was starved or lost during sustained broadcast flood"
     );
     assert!(
-        start_time.elapsed() < Duration::from_millis(500),
+        unicast_latency < Duration::from_millis(500),
         "concurrent unicast NPDU took too long: {:?}",
-        start_time.elapsed()
+        unicast_latency
     );
 
     // Queue overflow drops occurred during flood
-    let counters = bbmd.fanout_counters();
     assert!(
         counters.queue_overflow_drops > 0 || counters.packets_throttled > 0,
         "flood must trigger fanout queue overflow or throttling: {counters:?}"
@@ -258,7 +284,7 @@ async fn sustained_broadcast_input_does_not_starve_concurrent_unicast() {
 
 #[tokio::test]
 async fn fanout_semantics_for_original_forwarded_and_dbtn() {
-    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     let peer_bdt = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
@@ -378,9 +404,17 @@ async fn fanout_counters_accurately_track_all_metrics() {
 
     // Send 3rd broadcast: throttled (origin quota exceeded)
     client.send_to(&frame, bbmd_dest).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let counters = bbmd.fanout_counters();
+    let counters = timeout(Duration::from_secs(2), async {
+        loop {
+            let counters = bbmd.fanout_counters();
+            if counters.packets_forwarded >= 2 && counters.packets_throttled >= 1 {
+                break counters;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fanout counters were not updated in time");
     assert_eq!(counters.packets_forwarded, 2);
     assert!(counters.bytes_forwarded > 0);
     assert_eq!(counters.packets_throttled, 1);

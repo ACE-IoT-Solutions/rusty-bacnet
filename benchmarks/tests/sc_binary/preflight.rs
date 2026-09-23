@@ -11,8 +11,18 @@ async fn failure(cmd: &mut Command, files: &Files, expected: &str) {
     assert!(!process.wait().await.success());
     let (stdout, stderr) = process.output();
     assert!(stdout.is_empty(), "diagnostics must use stderr: {stdout}");
-    assert!(stderr.contains(expected), "expected {expected}: {stderr}");
-    if expected != "Address already in use" {
+    let bind_conflict = stderr.contains("Address already in use")
+        // Windows reports WSAEADDRINUSE using its localized message and
+        // numeric error code instead of the Unix wording.
+        || stderr.contains("10048")
+        || stderr.contains("Only one usage of each socket address");
+    let expected_match = if expected == "Address already in use" {
+        bind_conflict
+    } else {
+        stderr.contains(expected)
+    };
+    assert!(expected_match, "unexpected diagnostic: {stderr}");
+    if !bind_conflict {
         assert!(
             !stderr.contains("Hub bind failed"),
             "preflight reached bind: {stderr}"
