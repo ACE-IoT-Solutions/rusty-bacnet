@@ -122,6 +122,26 @@ async fn ipv6_does_not_require_sc_files() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Windows does not expose the Unix interface-index lookup used by BIP6,
+    // so the transport may emit a warning before the JSON result. Keep the
+    // assertion focused on the command's semantic result rather than making
+    // that platform diagnostic corrupt the test's JSON decode.
+    let json_start = output
+        .stdout
+        .iter()
+        .rposition(|byte| *byte == b'[')
+        .unwrap_or_else(|| {
+            panic!(
+                "IPv6 devices command emitted no JSON result: {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout[json_start..])
+        .unwrap_or_else(|error| {
+            panic!(
+                "IPv6 devices command emitted invalid JSON: {error}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
     assert_eq!(value, serde_json::json!([]));
 }

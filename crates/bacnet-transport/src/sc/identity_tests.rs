@@ -1,4 +1,25 @@
 use super::*;
+
+#[test]
+fn sc_identity_normalizes_authority_without_changing_case_sensitive_path() {
+    let (client, _hub) = LoopbackWebSocket::pair();
+    let transport = ScTransport::new(client, [1; 6]).with_hub_urls(
+        " WSS://PRIMARY.Example/HubPath/ ",
+        Some("wss://FAILOVER.example/OtherPath/"),
+    );
+    assert_eq!(transport.transport_kind(), "sc");
+    assert_eq!(
+        transport.topology_id().as_deref(),
+        Some("wss://primary.example/HubPath|wss://failover.example/OtherPath")
+    );
+    assert_eq!(
+        transport.topology_collision_ids(),
+        [
+            "wss://primary.example/HubPath",
+            "wss://failover.example/OtherPath"
+        ]
+    );
+}
 use std::sync::atomic::AtomicUsize;
 
 // Deliberately sparse/non-RFC-shaped TEST identity and non-Random-48 VMAC.
@@ -195,6 +216,7 @@ async fn reconnect_then_heartbeat_then_identity_error_precedence() {
             initial_delay_ms: 0,
             max_delay_ms: 1,
             max_retries: 1,
+            retry_forever: false,
         });
     let states = transport.connection_state_changes();
     let error = transport.start().await.unwrap_err();

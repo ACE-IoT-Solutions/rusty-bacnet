@@ -18,7 +18,7 @@ A BACnet protocol stack (ASHRAE 135-2020) written in Rust, with Python bindings.
 ## Quick Start (Python)
 
 ```bash
-pip install rusty-bacnet
+pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ ace-rusty-bacnet
 ```
 
 ```python

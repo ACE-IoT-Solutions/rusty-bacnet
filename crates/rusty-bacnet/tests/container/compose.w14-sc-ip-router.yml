@@ -1,0 +1,17 @@
+services:
+  sc_ip_router:
+    image: localhost/rusty-bacnet-w14-sc-ip-router:dev
+    environment:
+      W14_ARTIFACTS: /artifacts
+    volumes:
+      - ${W14_ARTIFACT_DIR}:/artifacts:Z
+    networks:
+      sc_ip_router:
+        ipv4_address: 10.252.140.10
+
+networks:
+  sc_ip_router:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.252.140.0/24

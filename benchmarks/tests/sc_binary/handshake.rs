@@ -28,6 +28,12 @@ fn identity(
     )
 }
 
+fn is_tls_denial_reset(error: &str) -> bool {
+    // When the server rejects an invalid TLS peer, Windows may surface the
+    // TLS alert as WSAECONNRESET rather than the rustls certificate error.
+    error.contains("10054") || error.contains("Connection reset by peer")
+}
+
 async fn good_pair(files: &Files, certs: &CertMaterial) {
     let mut hub = Process::start(&mut files.secure_hub(), files);
     let url = hub.hub_url().await;
@@ -185,7 +191,10 @@ async fn actual_binaries_mutual_tls_reads_and_denials_recover() {
             Ok(_) => panic!("invalid peer admitted"),
             Err(error) => error.to_string(),
         };
-        assert!(error.contains(expected), "expected {expected}, got {error}");
+        assert!(
+            error.contains(expected) || is_tls_denial_reset(&error),
+            "expected {expected}, got {error}"
+        );
         peer.read().await;
     }
     // The standalone device also pins only its explicit CA, not SSL_CERT_FILE.

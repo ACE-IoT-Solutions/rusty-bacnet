@@ -51,6 +51,10 @@ impl LoopbackTransport {
 }
 
 impl TransportPort for LoopbackTransport {
+    fn transport_kind(&self) -> &'static str {
+        "loopback"
+    }
+
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         self.self_rx
             .take()

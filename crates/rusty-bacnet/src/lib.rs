@@ -26,7 +26,12 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::BACnetClient>()?;
     m.add_class::<server::BACnetServer>()?;
     m.add_class::<router::PyBACnetRouter>()?;
+    m.add_class::<router::PyRouterBipPort>()?;
+    m.add_class::<router::PyRouterScPort>()?;
+    m.add_class::<router::PyRouterVirtualPort>()?;
     m.add_class::<router::PyRouterPortCounters>()?;
+    m.add_class::<router::PyRouterPortHealth>()?;
+    m.add_class::<router::PyRouterRouteEntry>()?;
     m.add_class::<hub::PyScHub>()?;
     m.add_class::<runtime::PyBACnetRuntime>()?;
     m.add_class::<runtime::PyRuntimeAttachment>()?;

@@ -20,6 +20,33 @@ pub enum ReachabilityStatus {
     Unreachable,
 }
 
+/// Detached, observation-safe copy of one routing-table entry.
+///
+/// Absolute [`Instant`] values are intentionally converted to relative
+/// durations so this value can cross API boundaries without retaining access
+/// to the live routing table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteSnapshot {
+    /// BACnet network reached by this route.
+    pub network_number: u16,
+    /// Zero-based index of the configured egress port.
+    pub port_index: usize,
+    /// Whether this network is attached directly to the egress port.
+    pub directly_connected: bool,
+    /// Transport-native MAC of the next-hop router; empty for direct routes.
+    pub next_hop_mac: Vec<u8>,
+    /// Effective reachability at the instant the snapshot was created.
+    pub reachability: ReachabilityStatus,
+    /// Time since a learned route was last confirmed; absent for direct routes.
+    pub last_seen_age: Option<Duration>,
+    /// Remaining busy interval, when the route is currently busy.
+    pub busy_remaining: Option<Duration>,
+    /// Number of recent port changes observed by flap detection.
+    pub flap_count: u8,
+    /// Time since the route last changed ports.
+    pub last_port_change_age: Option<Duration>,
+}
+
 /// A route entry in the router table.
 #[derive(Debug, Clone)]
 pub struct RouteEntry {
@@ -235,6 +262,49 @@ impl RouterTable {
         self.routes.keys().copied().collect()
     }
 
+    /// Copy all entries into snapshots sorted by network number.
+    pub fn snapshots(&self) -> Vec<RouteSnapshot> {
+        let now = Instant::now();
+        let mut snapshots: Vec<_> = self
+            .routes
+            .iter()
+            .map(|(&network_number, entry)| {
+                let busy_remaining = if entry.reachability == ReachabilityStatus::Busy {
+                    entry
+                        .busy_until
+                        .and_then(|deadline| deadline.checked_duration_since(now))
+                } else {
+                    None
+                };
+                let reachability = if entry.reachability == ReachabilityStatus::Busy
+                    && entry.busy_until.is_some_and(|deadline| now >= deadline)
+                {
+                    ReachabilityStatus::Reachable
+                } else {
+                    entry.reachability
+                };
+
+                RouteSnapshot {
+                    network_number,
+                    port_index: entry.port_index,
+                    directly_connected: entry.directly_connected,
+                    next_hop_mac: entry.next_hop_mac.as_slice().to_vec(),
+                    reachability,
+                    last_seen_age: entry
+                        .last_seen
+                        .map(|last_seen| now.saturating_duration_since(last_seen)),
+                    busy_remaining,
+                    flap_count: entry.flap_count,
+                    last_port_change_age: entry
+                        .last_port_change
+                        .map(|changed| now.saturating_duration_since(changed)),
+                }
+            })
+            .collect();
+        snapshots.sort_unstable_by_key(|snapshot| snapshot.network_number);
+        snapshots
+    }
+
     /// List networks reachable via ports OTHER than `exclude_port`.
     pub fn networks_not_on_port(&self, exclude_port: usize) -> Vec<u16> {
         self.routes
@@ -374,6 +444,42 @@ mod tests {
 
         let nets = table.networks();
         assert_eq!(nets.len(), 3);
+    }
+
+    #[test]
+    fn snapshots_are_sorted_and_detached() {
+        let mut table = RouterTable::new();
+        table.add_direct(300, 2);
+        table.add_direct(100, 0);
+        table.add_learned(200, 1, MacAddr::from_slice(&[1, 2, 3]));
+
+        let snapshots = table.snapshots();
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|snapshot| snapshot.network_number)
+                .collect::<Vec<_>>(),
+            vec![100, 200, 300]
+        );
+        assert!(snapshots[0].directly_connected);
+        assert_eq!(snapshots[1].port_index, 1);
+        assert_eq!(snapshots[1].next_hop_mac, vec![1, 2, 3]);
+        assert!(snapshots[1].last_seen_age.is_some());
+
+        table.remove(200);
+        assert_eq!(snapshots[1].network_number, 200);
+        assert_eq!(snapshots[1].next_hop_mac, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn snapshot_uses_effective_reachability_and_safe_busy_duration() {
+        let mut table = RouterTable::new();
+        table.add_learned(200, 1, MacAddr::from_slice(&[1, 2, 3]));
+        table.mark_busy(200, Instant::now() - Duration::from_secs(1));
+
+        let snapshot = table.snapshots().pop().unwrap();
+        assert_eq!(snapshot.reachability, ReachabilityStatus::Reachable);
+        assert!(snapshot.busy_remaining.is_none());
     }
 
     #[test]

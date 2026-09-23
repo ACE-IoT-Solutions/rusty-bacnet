@@ -8,7 +8,55 @@
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
+use std::time::Instant;
+use tokio::sync::watch;
 use tokio::sync::{mpsc, oneshot};
+
+/// Coarse transport lifecycle state for operational monitoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransportHealthState {
+    /// The transport is not currently carrying traffic.
+    #[default]
+    Down,
+    /// A connection attempt is in progress.
+    Connecting,
+    /// A previously active transport is attempting recovery.
+    Reconnecting,
+    /// The transport is operational.
+    Up,
+    /// Background processing terminated and requires operator attention.
+    Failed,
+}
+
+/// Current operational health of a transport port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportHealth {
+    /// Coarse lifecycle state.
+    pub state: TransportHealthState,
+    /// Human-readable current activity.
+    pub detail: Option<String>,
+    /// Active endpoint role for failover-capable transports.
+    pub active_hub: Option<String>,
+    /// Most recent operational error.
+    pub last_error: Option<String>,
+    /// Current reconnect attempt number, or zero outside recovery.
+    pub attempt: u64,
+    /// Instant at which the current operational connection became active.
+    pub since: Option<Instant>,
+}
+
+impl Default for TransportHealth {
+    fn default() -> Self {
+        Self {
+            state: TransportHealthState::Down,
+            detail: None,
+            active_hub: None,
+            last_error: None,
+            attempt: 0,
+            since: None,
+        }
+    }
+}
 
 /// Read-only capability describing a BACnet/IP port to a NetworkPort
 /// observation publisher. Non-B/IP transports return no capability.
@@ -114,6 +162,38 @@ impl std::fmt::Debug for ReceivedNpdu {
 /// Implementations handle the data-link framing (e.g., BVLL for BACnet/IP)
 /// and expose a simple send/receive interface for NPDU bytes.
 pub trait TransportPort: Send + Sync {
+    /// Stable, human-readable transport kind.
+    fn transport_kind(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
+    /// Optional identity of the data-link segment attached to this port.
+    fn topology_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Data-link endpoint identities which must not overlap within one port or
+    /// across router ports of the same transport kind.
+    ///
+    /// Most transports attach to one segment and therefore use their display
+    /// topology identity as the sole collision key. Multi-endpoint transports
+    /// may override this to expose each endpoint independently.
+    fn topology_collision_ids(&self) -> Vec<String> {
+        self.topology_id().into_iter().collect()
+    }
+
+    /// Current health snapshot. Stateless transports are considered up.
+    fn health(&self) -> TransportHealth {
+        TransportHealth {
+            state: TransportHealthState::Up,
+            ..TransportHealth::default()
+        }
+    }
+
+    /// Subscribe to health changes when the transport maintains a live signal.
+    fn health_changes(&self) -> Option<watch::Receiver<TransportHealth>> {
+        None
+    }
     /// Start the transport. Returns a receiver for incoming NPDUs.
     ///
     /// The transport spawns a background receive task that decodes incoming

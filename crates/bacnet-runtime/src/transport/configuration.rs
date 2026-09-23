@@ -15,6 +15,24 @@ pub(super) fn select_initial_sc_websocket<W>(
 }
 
 #[cfg(feature = "sc")]
+pub(super) fn configure_sc_transport<W: WebSocketPort>(
+    ws: InitialScWebSocket<W>,
+    sc: &crate::ScConfig,
+) -> ScTransport<InitialScWebSocket<W>> {
+    ScTransport::new(ws, sc.local_vmac)
+        .with_hub_urls(&sc.primary_hub, sc.failover_hubs.first())
+        .with_device_uuid(sc.device_uuid)
+        .with_heartbeat_interval_ms(sc.heartbeat_interval_ms)
+        .with_heartbeat_timeout_ms(sc.heartbeat_timeout_ms)
+        .with_reconnect(ScReconnectConfig {
+            initial_delay_ms: sc.reconnect_initial_delay_ms,
+            max_delay_ms: sc.reconnect_max_delay_ms,
+            max_retries: sc.reconnect_max_retries,
+            retry_forever: sc.reconnect_forever,
+        })
+}
+
+#[cfg(feature = "sc")]
 fn build_sc_tls_config(
     ca_path: Option<&str>,
     cert_path: Option<&str>,
@@ -171,6 +189,12 @@ impl RuntimeTransport {
                         "BACnet/SC local VMAC must not be all-zero or broadcast",
                     ));
                 }
+                if sc.device_uuid == [0; 16] {
+                    return Err(RuntimeError::invalid_attachment_config(
+                        config.id,
+                        "BACnet/SC device UUID must not be all-zero",
+                    ));
+                }
                 if [
                     sc.ca_cert.as_deref(),
                     sc.client_cert.as_deref(),
@@ -194,11 +218,11 @@ impl RuntimeTransport {
                 }
                 if sc.reconnect_initial_delay_ms == 0
                     || sc.reconnect_max_delay_ms < sc.reconnect_initial_delay_ms
-                    || sc.reconnect_max_retries == 0
+                    || (sc.reconnect_max_retries == 0 && !sc.reconnect_forever)
                 {
                     return Err(RuntimeError::invalid_attachment_config(
                         config.id,
-                        "BACnet/SC reconnect delays and retries must be non-zero with initial <= maximum",
+                        "BACnet/SC reconnect delays must be non-zero with initial <= maximum; zero retries requires reconnect_forever",
                     ));
                 }
             }
@@ -317,24 +341,15 @@ impl RuntimeTransport {
                 .map_err(|error| RuntimeError::sc_connect(config.id, error))?;
                 let reconnect_primary_url = primary_url.clone();
                 let reconnect_primary_tls = tls.clone();
-                let mut transport = ScTransport::new(ws, sc.local_vmac)
-                    .with_device_uuid(*config.id.as_bytes())
-                    .with_heartbeat_interval_ms(sc.heartbeat_interval_ms)
-                    .with_heartbeat_timeout_ms(sc.heartbeat_timeout_ms)
-                    .with_reconnect(ScReconnectConfig {
-                        initial_delay_ms: sc.reconnect_initial_delay_ms,
-                        max_delay_ms: sc.reconnect_max_delay_ms,
-                        max_retries: sc.reconnect_max_retries,
-                    })
-                    .with_connector(move || {
-                        let url = reconnect_primary_url.clone();
-                        let tls = reconnect_primary_tls.clone();
-                        async move {
-                            TlsWebSocket::connect(&url, tls)
-                                .await
-                                .map(InitialScWebSocket::Connected)
-                        }
-                    });
+                let mut transport = configure_sc_transport(ws, sc).with_connector(move || {
+                    let url = reconnect_primary_url.clone();
+                    let tls = reconnect_primary_tls.clone();
+                    async move {
+                        TlsWebSocket::connect(&url, tls)
+                            .await
+                            .map(InitialScWebSocket::Connected)
+                    }
+                });
                 if let Some(failover_url) = sc.failover_hubs.first().cloned() {
                     let failover_tls = tls.clone();
                     transport = transport.with_failover_connector(move || {

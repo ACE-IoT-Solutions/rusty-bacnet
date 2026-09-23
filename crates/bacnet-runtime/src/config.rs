@@ -82,6 +82,8 @@ pub struct ScConfig {
     pub failover_hubs: Vec<String>,
     /// Stable six-byte virtual MAC for this node.
     pub local_vmac: [u8; 6],
+    /// Stable, nonzero sixteen-byte device UUID for this node.
+    pub device_uuid: [u8; 16],
     /// Optional PEM CA bundle path; native roots are used when absent.
     pub ca_cert: Option<String>,
     /// Optional PEM client certificate chain path for mutual TLS.
@@ -98,6 +100,8 @@ pub struct ScConfig {
     pub reconnect_max_delay_ms: u64,
     /// Reconnect attempts before switching hubs.
     pub reconnect_max_retries: u32,
+    /// Retry reconnection indefinitely (retry-forbidden hub responses still stop).
+    pub reconnect_forever: bool,
 }
 
 /// Transport-specific configuration for one attachment.

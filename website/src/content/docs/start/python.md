@@ -3,7 +3,7 @@ title: "Read with Python"
 description: "Use the asynchronous Python client for a small, read-only integration."
 ---
 
-Install `rusty-bacnet==0.11.0` in a virtual environment first. The distribution name uses a hyphen; the import name uses an underscore.
+Install `ace-rusty-bacnet==0.11.1` from the private ACE index in a virtual environment first. The distribution name uses hyphens; the import name remains `rusty_bacnet`.
 
 For a self-contained first run with no external target, use the [local client/server lab](/rusty-bacnet/start/local-lab/). Continue here when you have a known device address and object.
 

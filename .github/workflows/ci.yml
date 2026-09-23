@@ -236,7 +236,8 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Fork tags are used to build private Python release artifacts only.
+    if: github.repository == 'jscott3201/rusty-bacnet' && startsWith(github.ref, 'refs/tags/v')
     needs: validate
     runs-on: ubuntu-latest
     environment: release
@@ -303,8 +304,35 @@ jobs:
 
   build-wheels:
     name: Wheels (${{ matrix.os }} ${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: validate
+    # Upstream retains its full release validation gate. Fork tags may still
+    # produce private, manually published wheel artifacts when a flaky
+    # cross-platform test blocks `validate`, but only after every Linux,
+    # security, policy, formatting, MSRV, and lint gate succeeds.
+    if: >-
+      !cancelled() && startsWith(github.ref, 'refs/tags/v') &&
+      (needs.validate.result == 'success' ||
+       (github.repository == 'ACE-IoT-Solutions/rusty-bacnet' &&
+        needs.validate.result == 'skipped' &&
+        needs.fmt.result == 'success' &&
+        needs.clippy.result == 'success' &&
+        needs.audit.result == 'success' &&
+        needs.file-size-cap.result == 'success' &&
+        needs.no-secret-scan.result == 'success' &&
+        needs.msrv.result == 'success' &&
+        needs.test.result == 'success' &&
+        needs.deny.result == 'success'))
+    needs:
+      [
+        validate,
+        fmt,
+        clippy,
+        audit,
+        file-size-cap,
+        no-secret-scan,
+        msrv,
+        test,
+        deny,
+      ]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -322,6 +350,15 @@ jobs:
             target: x86_64
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate fork release version
+        if: github.repository == 'ACE-IoT-Solutions/rusty-bacnet'
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          test "$TAG_VERSION" = "$CARGO_VERSION"
+          grep -q "## \[$TAG_VERSION\]" CHANGELOG.md
 
       - uses: actions/setup-python@v5
         with:
@@ -349,7 +386,10 @@ jobs:
 
   build-sdist:
     name: Build sdist
-    if: startsWith(github.ref, 'refs/tags/v')
+    # The fork's private release script repairs Maturin's reduced-workspace
+    # lockfile before publishing its sdist. Do not emit a known-broken raw
+    # Maturin sdist from fork tags.
+    if: github.repository == 'jscott3201/rusty-bacnet' && startsWith(github.ref, 'refs/tags/v')
     needs: validate
     runs-on: ubuntu-latest
     steps:
@@ -366,9 +406,202 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  publish-private-pypi:
+    name: Publish to ACE PyPI
+    if: >-
+      !cancelled() &&
+      github.repository == 'ACE-IoT-Solutions/rusty-bacnet' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.validate.result == 'success' &&
+      needs.build-wheels.result == 'success'
+    needs: [validate, build-wheels]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    env:
+      PRIVATE_INDEX_URL: https://ace-pypi.tail8c70f.ts.net/simple/
+      PRIVATE_PUBLISH_URL: https://ace-pypi.tail8c70f.ts.net/
+      TAILSCALE_ACL_TAG: ${{ vars.TAILSCALE_ACL_TAG }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.15"
+          enable-cache: true
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake libudev-dev perl pkg-config
+
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/ci-wheels
+
+      - name: Select CPython 3.13 release wheels
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#v}
+          cargo_version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [[ $version != "$cargo_version" ]]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
+          grep -q "## \[$version\]" CHANGELOG.md
+          if [[ -z ${TAILSCALE_ACL_TAG:-} ]]; then
+            echo "repository variable TAILSCALE_ACL_TAG is required" >&2
+            exit 1
+          fi
+
+          mkdir -p dist/release-wheels
+          while IFS= read -r wheel; do
+            cp "$wheel" dist/release-wheels/
+          done < <(find dist/ci-wheels -type f \
+            -name "ace_rusty_bacnet-${version}-cp313-cp313-*.whl" -print)
+
+          shopt -s nullglob
+          wheels=(dist/release-wheels/*.whl)
+          if [[ ${#wheels[@]} -ne 5 ]]; then
+            echo "expected five CPython 3.13 wheels, found ${#wheels[@]}" >&2
+            printf '%s\n' "${wheels[@]}" >&2
+            exit 1
+          fi
+          for pattern in \
+            '*manylinux*x86_64.whl' \
+            '*manylinux*aarch64.whl' \
+            '*macosx*x86_64.whl' \
+            '*macosx*arm64.whl' \
+            '*win_amd64.whl'; do
+            matches=$(find dist/release-wheels -maxdepth 1 -type f -name "$pattern" | wc -l)
+            if [[ $matches -ne 1 ]]; then
+              echo "expected one release wheel matching $pattern, found $matches" >&2
+              exit 1
+            fi
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build and validate repaired source distribution
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: scripts/publish-python-release.sh "$VERSION" --build-only --wheel-dir dist/release-wheels
+
+      - name: Smoke-test manylinux x86_64 wheel
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/release-wheels/ace_rusty_bacnet-"$VERSION"-cp313-cp313-manylinux*_x86_64.whl)
+          if [[ ${#wheels[@]} -ne 1 ]]; then
+            echo "expected one CPython 3.13 manylinux x86_64 wheel" >&2
+            exit 1
+          fi
+          uv venv --python python3.13 dist/registry-smoke
+          uv pip install --python dist/registry-smoke/bin/python --no-deps "${wheels[0]}"
+          (
+            cd dist
+            PYTHONPATH='' registry-smoke/bin/python -I -c \
+              'import importlib.metadata as m, os, rusty_bacnet; assert m.version("ace-rusty-bacnet") == os.environ["VERSION"]'
+          )
+
+      - name: Connect to the ACE tailnet
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:${{ vars.TAILSCALE_ACL_TAG }}
+          ping: ace-pypi.tail8c70f.ts.net
+
+      - name: Verify private registry access
+        run: |
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 5 \
+            --retry-all-errors \
+            "$PRIVATE_INDEX_URL" \
+            >/dev/null
+
+      - name: Publish private Python release
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          UV_PUBLISH_USERNAME: tailscale
+          UV_PUBLISH_PASSWORD: tailscale
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          sdists=(dist/python/"$VERSION"/ace_rusty_bacnet-"$VERSION".tar.gz)
+          wheels=(dist/release-wheels/ace_rusty_bacnet-"$VERSION"-cp313-cp313-*.whl)
+          if [[ ${#sdists[@]} -ne 1 || ${#wheels[@]} -ne 5 ]]; then
+            echo "release artifact set changed after validation" >&2
+            exit 1
+          fi
+          uv publish \
+            --publish-url "$PRIVATE_PUBLISH_URL" \
+            --check-url "$PRIVATE_INDEX_URL" \
+            --trusted-publishing never \
+            --no-attestations \
+            "${sdists[0]}" "${wheels[@]}"
+
+      - name: Verify published release
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_index="${PRIVATE_INDEX_URL}ace-rusty-bacnet/"
+          page=$(curl --fail --silent --show-error --retry 5 --retry-all-errors "$project_index")
+          for artifact in \
+            dist/python/"$VERSION"/ace_rusty_bacnet-"$VERSION".tar.gz \
+            dist/release-wheels/*.whl; do
+            name=$(basename "$artifact")
+            grep -Fq "$name" <<<"$page"
+          done
+
+          uv venv --python python3.13 dist/published-smoke
+          uv pip install \
+            --python dist/published-smoke/bin/python \
+            --no-cache \
+            --no-deps \
+            --index-url "$PRIVATE_INDEX_URL" \
+            --only-binary=:all: \
+            "ace-rusty-bacnet==$VERSION"
+          (
+            cd dist
+            PYTHONPATH='' published-smoke/bin/python -I -c \
+              'import importlib.metadata as m, os, rusty_bacnet; assert m.version("ace-rusty-bacnet") == os.environ["VERSION"]'
+          )
+
   publish-pypi:
     name: Publish to PyPI
-    if: startsWith(github.ref, 'refs/tags/v')
+    # The fork publishes only through its private release script. Keep the
+    # inherited public-PyPI job scoped to the upstream repository.
+    if: github.repository == 'jscott3201/rusty-bacnet' && startsWith(github.ref, 'refs/tags/v')
     needs: [build-wheels, build-sdist]
     runs-on: ubuntu-latest
     environment: release

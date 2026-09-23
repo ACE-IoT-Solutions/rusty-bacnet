@@ -261,6 +261,14 @@ impl Drop for VirtualNetwork {
 }
 
 impl TransportPort for VirtualNetwork {
+    fn transport_kind(&self) -> &'static str {
+        "virtual"
+    }
+
+    fn topology_id(&self) -> Option<String> {
+        Some(self.network_name.clone())
+    }
+
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         self.state
             .compare_exchange(

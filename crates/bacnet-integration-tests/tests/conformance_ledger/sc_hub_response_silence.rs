@@ -69,7 +69,8 @@ fn hub_response_silence_has_scoped_policy_and_executable_anchors() {
     ] {
         assert!(policy.contains(phrase), "{phrase}");
     }
-    let section = STANDARD_LEDGER
+    let standard_ledger = normalize_line_endings(STANDARD_LEDGER);
+    let section = standard_ledger
         .split_once("## Accepting hub unsolicited-response silence\n")
         .unwrap()
         .1

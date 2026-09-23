@@ -55,7 +55,8 @@ fn mu_liveness_evidence_preserves_scope_and_blocked_write_limitation() {
     ] {
         assert!(policy.contains(phrase), "{phrase}");
     }
-    let section = STANDARD_LEDGER
+    let standard_ledger = normalize_line_endings(STANDARD_LEDGER);
+    let section = standard_ledger
         .split_once("## MU-rejection liveness accounting\n")
         .unwrap()
         .1
@@ -136,7 +137,8 @@ fn rejection_nak_budget_evidence_preserves_freshness_and_cancellation_limits() {
             .iter()
             .any(|anchor| anchor == path));
     }
-    let section = STANDARD_LEDGER
+    let standard_ledger = normalize_line_endings(STANDARD_LEDGER);
+    let section = standard_ledger
         .split_once("## Rejection NAK budget and fresh-only recovery\n")
         .unwrap()
         .1

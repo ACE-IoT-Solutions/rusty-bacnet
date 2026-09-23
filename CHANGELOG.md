@@ -7,7 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-09-23
+
+### Fixed
+
+- **Windows release validation:** send Original-Broadcast-NPDU test traffic to
+  an actual broadcast destination on Windows, matching the delivery metadata
+  exposed by `WSARecvMsg`, and poll the live BBMD snapshot until the FDT
+  countdown advances instead of relying on fixed scheduler timing.
+
+## [0.11.3] - 2026-09-23
+
+### Fixed
+
+- **Windows release validation:** accept the connection-reset form Windows
+  uses for rejected TLS certificates and make B/IP fanout assertions
+  deterministic during concurrent workspace tests.
+
+## [0.11.2] - 2026-09-23
+
+### Added
+
+- **Automated private Python releases:** ACE repository release tags now
+  publish the repaired source distribution and CPython 3.13 wheels for Linux
+  x86_64/aarch64, macOS x86_64/arm64, and Windows x86_64 to the private
+  `ace-pypi` registry through Tailscale after the full validation gate passes.
+  The release job verifies registry contents and a fresh wheel installation
+  before completing.
+
+### Fixed
+
+- **Cross-platform release validation:** normalize CRLF documentation fixtures,
+  accept equivalent Windows socket/TLS diagnostics, preserve JSON parsing when
+  BIP6 emits a platform warning, and synchronize asynchronous B/IP fanout tests
+  across macOS and Windows runners.
+
+## [0.11.1] - 2026-09-23
+
+### Fixed
+
+- **Buildable source release:** the release script now reconciles Maturin's
+  reduced-workspace source archive lockfile, then proves a locked offline
+  build before publishing. Release publication can also aggregate validated
+  manylinux wheels built from that same prepared source tree.
+- **TLS dependency:** update the locked `rustls` dependency to `0.23.45` to
+  address RUSTSEC-2026-0285 before producing the release artifacts.
+
 ### Changed
+
+- **Fork Python distribution:** Python release artifacts are now named
+  `ace-rusty-bacnet` to avoid conflicting with upstream while preserving the
+  `rusty_bacnet` import. `scripts/publish-python-release.sh` builds, validates,
+  smoke-installs, and publishes an explicitly versioned wheel and source
+  distribution to the private ACE package index.
+
+- **Blocking SC-to-IP router surface (R1-R4):** Python now has provisional
+  frozen `RouterBipPort`, `RouterScPort`, and `RouterVirtualPort` configuration
+  classes plus `BACnetRouter.from_ports(...)`, per-port health, and detached
+  routing-table snapshots. The legacy B/IP-plus-virtual constructor remains
+  available. Rust transports expose defaulted identity and health hooks; SC
+  publishes `Down`, `Connecting`, `Reconnecting`, `Up`, and terminal `Failed`
+  states, and `ScReconnectConfig::unbounded(...)` enables capped-backoff retry
+  without a count limit while still honoring retry-forbidden hub responses.
+  Adding the public `retry_forever` field is source-incompatible for Rust callers
+  that construct `ScReconnectConfig` with a complete struct literal; add
+  `retry_forever: false`, use `..Default::default()`, or use `unbounded(...)`.
+  Runtime callers that construct `ScConfig` literals must likewise add
+  an explicit nonzero `device_uuid` plus `reconnect_forever: false` (or `true`
+  for the new unbounded policy). `RuntimeScAttachment` now requires the same
+  caller-provisioned identity as a keyword-only argument instead of deriving
+  it from `attachment_id`. Router
+  SC ports use the same `reconnect_forever` Python keyword; the previously
+  provisional `retry_forever` spelling was removed before release. The
+  deferred announcement interval is likewise not exposed until it works.
+  Router
+  counter identities remain post-start local MACs; `transport_kind` now uses
+  stable short names such as `bip` and `sc`, while health identities use the
+  separate topology identity.
+  Rust mixed-transport evidence covers B/IP/SC unicast and broadcast forwarding
+  and a routed ReadProperty through a mutual-TLS hub. SC Data Options remain
+  available on SC-capable legs but are intentionally ignored at a B/IP egress
+  boundary, whose framing cannot carry them. The router-team section 5.1 naming
+  reference was unavailable, so the Python class names remain provisional.
+  Oversize-NPDU rejection/counters (R7), periodic/recovery announcements (R8),
+  fork wheel publication (R9), and multi-arch images (R10) are not included in
+  this slice. Installed-wheel SC routing, hub-restart recovery, and the Linux
+  arm64 W14 scenario are exercised by the retained acceptance sources. This is
+  implementation evidence, not a new BACnet conformance or support-status claim.
 
 - **Upstream-first ACE reconciliation:** rebuilt the ACE runtime and Python
   parity work on the pinned upstream 0.11 development line. The combined API

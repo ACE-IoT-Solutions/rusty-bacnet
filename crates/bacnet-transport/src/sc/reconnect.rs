@@ -11,6 +11,8 @@ pub struct ScReconnectConfig {
     /// Zero skips these retries, not the initial connection, eligible failover,
     /// or primary restoration while connected to failover.
     pub max_retries: u32,
+    /// Retry without a count limit. Retry-forbidden protocol outcomes still stop.
+    pub retry_forever: bool,
 }
 
 impl Default for ScReconnectConfig {
@@ -19,11 +21,21 @@ impl Default for ScReconnectConfig {
             initial_delay_ms: 10_000,
             max_delay_ms: 600_000,
             max_retries: 10,
+            retry_forever: false,
         }
     }
 }
 
 impl ScReconnectConfig {
+    /// Construct an unbounded reconnect policy with capped exponential backoff.
+    pub fn unbounded(initial_delay_ms: u64, max_delay_ms: u64) -> Self {
+        Self {
+            initial_delay_ms,
+            max_delay_ms,
+            max_retries: 0,
+            retry_forever: true,
+        }
+    }
     /// Check that delays are nonzero and the initial delay does not exceed the maximum.
     ///
     /// This defensive guard applies even when `max_retries` is zero. It does not
@@ -76,6 +88,7 @@ mod tests {
                     initial_delay_ms,
                     max_delay_ms,
                     max_retries,
+                    retry_forever: false,
                 };
                 assert!(
                     matches!(config.validate(), Err(Error::OutOfRange(message))
@@ -92,6 +105,7 @@ mod tests {
         assert_eq!(default.initial_delay_ms, 10_000);
         assert_eq!(default.max_delay_ms, 600_000);
         assert_eq!(default.max_retries, 10);
+        assert!(!default.retry_forever);
         default.validate().unwrap();
 
         // Validate only: accepted extreme values are not safe timer/deployment promises.
@@ -109,10 +123,25 @@ mod tests {
                     initial_delay_ms,
                     max_delay_ms,
                     max_retries,
+                    retry_forever: false,
                 }
                 .validate()
                 .unwrap();
             }
         }
+    }
+
+    #[test]
+    fn unbounded_helper_preserves_zero_as_a_bounded_only_semantic() {
+        let config = ScReconnectConfig::unbounded(25, 1_000);
+        assert!(config.retry_forever);
+        assert_eq!(config.max_retries, 0);
+        config.validate().unwrap();
+
+        let bounded = ScReconnectConfig {
+            max_retries: 0,
+            ..ScReconnectConfig::default()
+        };
+        assert!(!bounded.retry_forever);
     }
 }

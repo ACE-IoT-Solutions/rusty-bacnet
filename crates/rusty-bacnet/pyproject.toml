@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "rusty-bacnet"
+name = "ace-rusty-bacnet"
 dynamic = ["version"]
 description = "Python bindings for the Rusty BACnet protocol stack (ASHRAE 135-2020)"
 requires-python = ">=3.11"
@@ -23,13 +23,19 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jscott3201/rusty-bacnet"
-Repository = "https://github.com/jscott3201/rusty-bacnet"
-Documentation = "https://github.com/jscott3201/rusty-bacnet/blob/main/docs/python-api.md"
-Changelog = "https://github.com/jscott3201/rusty-bacnet/blob/main/CHANGELOG.md"
-"Bug Tracker" = "https://github.com/jscott3201/rusty-bacnet/issues"
+Homepage = "https://github.com/ACE-IoT-Solutions/rusty-bacnet"
+Repository = "https://github.com/ACE-IoT-Solutions/rusty-bacnet"
+Documentation = "https://github.com/ACE-IoT-Solutions/rusty-bacnet/blob/main/docs/python-api.md"
+Changelog = "https://github.com/ACE-IoT-Solutions/rusty-bacnet/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/ACE-IoT-Solutions/rusty-bacnet/issues"
+
+[[tool.uv.index]]
+name = "ace-pypi"
+url = "https://ace-pypi.tail8c70f.ts.net/simple/"
+publish-url = "https://ace-pypi.tail8c70f.ts.net/"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+locked = true
 # Include type stubs for IDE autocomplete and type checking
 include = ["rusty_bacnet.pyi", "py.typed"]

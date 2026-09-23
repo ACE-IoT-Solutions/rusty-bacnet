@@ -4,10 +4,13 @@ use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use bacnet_network::router::{BACnetRouter as NativeRouter, RouterPort, RouterPortCounters};
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
+use bacnet_transport::sc::{ScReconnectConfig, ScTransport};
+use bacnet_transport::sc_tls::TlsWebSocket;
 use bacnet_transport::virtual_network::VirtualNetwork;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -15,7 +18,15 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::errors::to_py_err;
 
+mod config;
+mod snapshots;
+
+use config::{validate_ports, PyRouterPortConfig};
+pub use config::{PyRouterBipPort, PyRouterScPort, PyRouterVirtualPort};
+pub use snapshots::{PyRouterPortHealth, PyRouterRouteEntry};
+
 type MixedTransport = AnyTransport<crate::mstp_py::PySerial>;
+const SC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct StartReservation {
     started: Arc<AtomicBool>,
@@ -122,12 +133,8 @@ impl From<RouterPortCounters> for PyRouterPortCounters {
 #[pyclass(name = "BACnetRouter")]
 pub struct PyBACnetRouter {
     inner: Arc<Mutex<Option<NativeRouter>>>,
-    bip_network: u16,
-    virtual_ports: Vec<(u16, String, u8)>,
-    interface: Ipv4Addr,
-    port: u16,
-    broadcast_address: Ipv4Addr,
-    reuse_port: bool,
+    configured_ports: Vec<PyRouterPortConfig>,
+    bip_config_index: Option<usize>,
     started: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     stopping: Arc<AtomicBool>,
@@ -135,6 +142,8 @@ pub struct PyBACnetRouter {
     stop_notify: Arc<Notify>,
     lifecycle: Arc<Mutex<()>>,
     last_counters: Arc<StdMutex<Vec<PyRouterPortCounters>>>,
+    last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
+    last_routes: Arc<StdMutex<Vec<PyRouterRouteEntry>>>,
 }
 
 #[pymethods]
@@ -182,20 +191,35 @@ impl PyBACnetRouter {
                 )));
             }
         }
-        let interface = interface.parse().map_err(|error| {
+        let interface: Ipv4Addr = interface.parse().map_err(|error| {
             PyValueError::new_err(format!("invalid interface IPv4 address: {error}"))
         })?;
-        let broadcast_address = broadcast_address.parse().map_err(|error| {
+        let broadcast_address: Ipv4Addr = broadcast_address.parse().map_err(|error| {
             PyValueError::new_err(format!("invalid broadcast IPv4 address: {error}"))
         })?;
+        let configured_ports = std::iter::once(PyRouterPortConfig::Bip(PyRouterBipPort {
+            network_number: bip_network,
+            interface: interface.to_string(),
+            port,
+            broadcast_address: broadcast_address.to_string(),
+            reuse_port,
+        }))
+        .chain(
+            virtual_ports
+                .into_iter()
+                .map(|(network_number, name, mac)| {
+                    PyRouterPortConfig::Virtual(PyRouterVirtualPort {
+                        network_number,
+                        name,
+                        mac,
+                    })
+                }),
+        )
+        .collect();
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
-            bip_network,
-            virtual_ports,
-            interface,
-            port,
-            broadcast_address,
-            reuse_port,
+            configured_ports,
+            bip_config_index: Some(0),
             started: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
             stopping: Arc::new(AtomicBool::new(false)),
@@ -203,6 +227,35 @@ impl PyBACnetRouter {
             stop_notify: Arc::new(Notify::new()),
             lifecycle: Arc::new(Mutex::new(())),
             last_counters: Arc::new(StdMutex::new(Vec::new())),
+            last_health: Arc::new(StdMutex::new(Vec::new())),
+            last_routes: Arc::new(StdMutex::new(Vec::new())),
+        })
+    }
+
+    /// Build a mixed-transport router from typed port configurations.
+    #[classmethod]
+    #[pyo3(signature = (ports))]
+    fn from_ports(
+        _class: &Bound<'_, pyo3::types::PyType>,
+        ports: Vec<PyRouterPortConfig>,
+    ) -> PyResult<Self> {
+        validate_ports(&ports)?;
+        let bip_config_index = ports
+            .iter()
+            .position(|port| matches!(port, PyRouterPortConfig::Bip(_)));
+        Ok(Self {
+            inner: Arc::new(Mutex::new(None)),
+            configured_ports: ports,
+            bip_config_index,
+            started: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
+            stopping: Arc::new(AtomicBool::new(false)),
+            restart_reserved: Arc::new(AtomicBool::new(false)),
+            stop_notify: Arc::new(Notify::new()),
+            lifecycle: Arc::new(Mutex::new(())),
+            last_counters: Arc::new(StdMutex::new(Vec::new())),
+            last_health: Arc::new(StdMutex::new(Vec::new())),
+            last_routes: Arc::new(StdMutex::new(Vec::new())),
         })
     }
 
@@ -237,12 +290,7 @@ impl PyBACnetRouter {
         let stopping = Arc::clone(&self.stopping);
         let restart_reserved = Arc::clone(&self.restart_reserved);
         let stop_notify = Arc::clone(&self.stop_notify);
-        let bip_network = self.bip_network;
-        let virtual_ports = self.virtual_ports.clone();
-        let interface = self.interface;
-        let port = self.port;
-        let broadcast_address = self.broadcast_address;
-        let reuse_port = self.reuse_port;
+        let configured_ports = self.configured_ports.clone();
         let initial_start_reservation = (!waiting_for_stop).then(|| {
             let token = generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
             StartReservation {
@@ -293,22 +341,20 @@ impl PyBACnetRouter {
                 ));
             }
             let result: PyResult<()> = async {
-                let mut bip = BipTransport::new(interface, port, broadcast_address);
-                bip.set_reuse_port(reuse_port).map_err(to_py_err)?;
-                let mut ports = Vec::with_capacity(virtual_ports.len() + 1);
-                ports.push(RouterPort {
-                    transport: MixedTransport::Bip(bip),
-                    network_number: bip_network,
-                });
-                for (network_number, name, mac) in virtual_ports {
-                    ports.push(RouterPort {
-                        transport: MixedTransport::Virtual(
-                            VirtualNetwork::join(&name, mac).map_err(to_py_err)?,
-                        ),
-                        network_number,
-                    });
+                let sc_port_indices: Vec<_> = configured_ports
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, configured)| {
+                        matches!(configured, PyRouterPortConfig::Sc(_)).then_some(index)
+                    })
+                    .collect();
+                let mut ports = Vec::with_capacity(configured_ports.len());
+                for (config_index, configured) in configured_ports.into_iter().enumerate() {
+                    ports.push(build_router_port(config_index, configured).await?);
                 }
-                let (router, _local_rx) = NativeRouter::start(ports).await.map_err(to_py_err)?;
+                let (router, _local_rx) = NativeRouter::start(ports)
+                    .await
+                    .map_err(|error| router_start_to_py_err(error, &sc_port_indices))?;
                 *inner.lock().await = Some(router);
                 Ok(())
             }
@@ -336,6 +382,8 @@ impl PyBACnetRouter {
         let stopping = Arc::clone(&self.stopping);
         let stop_notify = Arc::clone(&self.stop_notify);
         let last_counters = Arc::clone(&self.last_counters);
+        let last_health = Arc::clone(&self.last_health);
+        let last_routes = Arc::clone(&self.last_routes);
         if stopping.swap(true, Ordering::AcqRel) {
             return pyo3_async_runtimes::tokio::future_into_py(py, async move {
                 while stopping.load(Ordering::Acquire) {
@@ -364,11 +412,26 @@ impl PyBACnetRouter {
             let mut guard = inner.lock().await;
             if let Some(mut router) = guard.take() {
                 drop(guard);
+                let health_snapshot = router.port_health().into_iter().map(Into::into).collect();
+                let route_snapshot = router
+                    .routing_table()
+                    .await
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
                 router.stop().await;
                 let snapshot = router.port_counters().into_iter().map(Into::into).collect();
                 *last_counters
                     .lock()
                     .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))? = snapshot;
+                *last_health
+                    .lock()
+                    .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))? =
+                    health_snapshot;
+                *last_routes
+                    .lock()
+                    .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))? =
+                    route_snapshot;
             } else if started.load(Ordering::Acquire) {
                 generation.store(stop_token.wrapping_add(1), Ordering::Release);
                 started.store(false, Ordering::Release);
@@ -384,6 +447,7 @@ impl PyBACnetRouter {
 
     fn local_address<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let bip_config_index = self.bip_config_index;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let guard = inner.lock().await;
             let router = guard
@@ -392,7 +456,7 @@ impl PyBACnetRouter {
             router
                 .port_counters()
                 .into_iter()
-                .find(|counter| counter.config_index == 0)
+                .find(|counter| Some(counter.config_index) == bip_config_index)
                 .and_then(|counter| bip_identity_to_address(&counter.identity))
                 .ok_or_else(|| PyRuntimeError::new_err("router B/IP port is unavailable"))
         })
@@ -420,6 +484,163 @@ impl PyBACnetRouter {
                 .clone())
         })
     }
+
+    fn port_health<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let stopping = Arc::clone(&self.stopping);
+        let stop_notify = Arc::clone(&self.stop_notify);
+        let last_health = Arc::clone(&self.last_health);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(router) = inner.lock().await.as_ref() {
+                return Ok(router.port_health().into_iter().map(Into::into).collect());
+            }
+            while stopping.load(Ordering::Acquire) {
+                let notified = stop_notify.notified();
+                if !stopping.load(Ordering::Acquire) {
+                    break;
+                }
+                notified.await;
+            }
+            Ok(last_health
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))?
+                .clone())
+        })
+    }
+
+    fn routing_table<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let stopping = Arc::clone(&self.stopping);
+        let stop_notify = Arc::clone(&self.stop_notify);
+        let last_routes = Arc::clone(&self.last_routes);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(router) = inner.lock().await.as_ref() {
+                return Ok(router
+                    .routing_table()
+                    .await
+                    .into_iter()
+                    .map(Into::into)
+                    .collect());
+            }
+            while stopping.load(Ordering::Acquire) {
+                let notified = stop_notify.notified();
+                if !stopping.load(Ordering::Acquire) {
+                    break;
+                }
+                notified.await;
+            }
+            Ok(last_routes
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))?
+                .clone())
+        })
+    }
+}
+
+fn router_start_to_py_err(error: bacnet_types::error::Error, sc_port_indices: &[usize]) -> PyErr {
+    let start_detail = match &error {
+        bacnet_types::error::Error::Transport(source) => Some(source.to_string()),
+        bacnet_types::error::Error::Encoding(message) => Some(message.clone()),
+        _ => None,
+    };
+    let is_sc_port_start_failure = start_detail.as_deref().is_some_and(|detail| {
+        sc_port_indices.iter().any(|index| {
+            detail.starts_with(&format!("router port {index} (sc, "))
+                && detail.contains(" failed to start:")
+        })
+    });
+    if is_sc_port_start_failure {
+        // SC startup was historically performed while composing the Python
+        // port and therefore raised RuntimeError. Keep that public contract
+        // after deferring the dial into NativeRouter::start.
+        PyRuntimeError::new_err(error.to_string())
+    } else {
+        to_py_err(error)
+    }
+}
+
+async fn build_router_port(
+    config_index: usize,
+    configured: PyRouterPortConfig,
+) -> PyResult<RouterPort<MixedTransport>> {
+    let network_number = configured.network_number();
+    let transport = match configured {
+        PyRouterPortConfig::Bip(config) => {
+            let interface = config.interface.parse().expect("validated B/IP interface");
+            let broadcast = config
+                .broadcast_address
+                .parse()
+                .expect("validated B/IP broadcast address");
+            let mut transport = BipTransport::new(interface, config.port, broadcast);
+            transport
+                .set_reuse_port(config.reuse_port)
+                .map_err(to_py_err)?;
+            MixedTransport::Bip(transport)
+        }
+        PyRouterPortConfig::Virtual(config) => MixedTransport::Virtual(
+            VirtualNetwork::join(&config.name, config.mac).map_err(to_py_err)?,
+        ),
+        PyRouterPortConfig::Sc(config) => {
+            let tls = crate::tls::build_client_tls_config(
+                Some(&config.ca_cert),
+                Some(&config.client_cert),
+                Some(&config.client_key),
+            )
+            .map_err(|error| {
+                PyRuntimeError::new_err(format!(
+                    "router port {config_index} SC TLS configuration for {} failed: {error}",
+                    config.primary_hub
+                ))
+            })?;
+            let primary_url = config.primary_hub.clone();
+            // NativeRouter starts ports sequentially. Keep this socket unopened
+            // until this transport can immediately send its Connect-Request, so
+            // a later slow SC dial cannot consume an earlier hub's handshake window.
+            let ws = TlsWebSocket::deferred(&primary_url, tls.clone(), SC_CONNECT_TIMEOUT)
+                .map_err(|error| {
+                    PyRuntimeError::new_err(format!(
+                        "router port {config_index} SC hub {primary_url} configuration failed: {error}"
+                    ))
+                })?;
+            let mut vmac = [0; 6];
+            vmac.copy_from_slice(&config.local_vmac);
+            let mut device_uuid = [0; 16];
+            device_uuid.copy_from_slice(&config.device_uuid);
+            let reconnect_url = primary_url.clone();
+            let reconnect_tls = tls.clone();
+            let topology_failover_url = config.failover_hub.clone();
+            let mut transport = ScTransport::new(ws, vmac)
+                .with_device_uuid(device_uuid)
+                .with_hub_urls(&primary_url, topology_failover_url.as_deref())
+                .with_connect_timeout_ms(SC_CONNECT_TIMEOUT.as_millis() as u64)
+                .with_heartbeat_interval_ms(config.heartbeat_interval_ms)
+                .with_heartbeat_timeout_ms(config.heartbeat_timeout_ms)
+                .with_reconnect(ScReconnectConfig {
+                    initial_delay_ms: config.reconnect_initial_delay_ms,
+                    max_delay_ms: config.reconnect_max_delay_ms,
+                    max_retries: config.reconnect_max_retries,
+                    retry_forever: config.reconnect_forever,
+                })
+                .with_connector(move || {
+                    let url = reconnect_url.clone();
+                    let tls = reconnect_tls.clone();
+                    async move { TlsWebSocket::connect(&url, tls).await }
+                });
+            if let Some(failover_url) = config.failover_hub {
+                let failover_tls = tls;
+                transport = transport.with_failover_connector(move || {
+                    let url = failover_url.clone();
+                    let tls = failover_tls.clone();
+                    async move { TlsWebSocket::connect(&url, tls).await }
+                });
+            }
+            MixedTransport::Sc(Box::new(transport))
+        }
+    };
+    Ok(RouterPort {
+        transport,
+        network_number,
+    })
 }
 
 fn validate_network_number(network: u16) -> PyResult<()> {
@@ -433,6 +654,9 @@ fn validate_network_number(network: u16) -> PyResult<()> {
 }
 
 fn bip_identity_to_address(identity: &str) -> Option<String> {
+    if let Ok(address) = identity.parse::<std::net::SocketAddrV4>() {
+        return Some(address.to_string());
+    }
     let octets = identity
         .split(':')
         .map(|part| u8::from_str_radix(part, 16))
@@ -443,4 +667,38 @@ fn bip_identity_to_address(identity: &str) -> Option<String> {
         let port = u16::from_be_bytes([octets[4], octets[5]]);
         format!("{ip}:{port}")
     })
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+    use crate::errors::BacnetError;
+
+    #[test]
+    fn native_sc_port_start_error_keeps_python_runtime_error_contract() {
+        Python::initialize();
+        let error = bacnet_types::error::Error::Transport(std::io::Error::other(
+            "router port 1 (sc, identity \"wss://hub.example\") failed to start: dial failed",
+        ));
+
+        Python::attach(|py| {
+            let mapped = router_start_to_py_err(error, &[1]);
+            assert!(mapped.value(py).is_instance_of::<PyRuntimeError>());
+            assert!(mapped.to_string().contains("wss://hub.example"));
+        });
+    }
+
+    #[test]
+    fn non_sc_native_start_error_keeps_bacnet_error_taxonomy() {
+        Python::initialize();
+        let error = bacnet_types::error::Error::Transport(std::io::Error::other(
+            "router port 0 (bip, identity \"127.0.0.1:47808\") failed to start: in use",
+        ));
+
+        Python::attach(|py| {
+            let mapped = router_start_to_py_err(error, &[1]);
+            assert!(mapped.value(py).is_instance_of::<BacnetError>());
+            assert!(!mapped.value(py).is_instance_of::<PyRuntimeError>());
+        });
+    }
 }

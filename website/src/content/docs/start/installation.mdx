@@ -92,7 +92,7 @@ cargo install bacnet-cli --version 0.11.0 --locked --features sc-tls
 
 ## Install the Python package
 
-The package is named `rusty-bacnet`; the import is `rusty_bacnet`. It does **not** install the documented `bacnet` CLI executable.
+The ACE package is named `ace-rusty-bacnet`; the import is `rusty_bacnet`. It does **not** install the documented `bacnet` CLI executable.
 
 The package minimum is Python 3.11. The reviewed release workflow builds ordinary CPython **3.11, 3.12, and 3.13** wheels. Start with one of those interpreters; newer or free-threaded Python builds are not implied by that minimum. These are build targets, not a promise that every machine has a compatible downloadable wheel.
 
@@ -106,13 +106,13 @@ Check that `python3` is an appropriate interpreter, then create a local environm
 ```sh
 python3 --version
 python3 -m venv .venv
-.venv/bin/python -m pip install --only-binary=:all: rusty-bacnet==0.11.0
+.venv/bin/python -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --only-binary=:all: ace-rusty-bacnet==0.11.1
 ```
 
 Verify that the native module loads, not just that package metadata exists:
 
 ```sh
-.venv/bin/python -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('rusty-bacnet'))"
+.venv/bin/python -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('ace-rusty-bacnet'))"
 ```
 
 </TabItem>
@@ -124,11 +124,11 @@ This example explicitly selects Python 3.13. Use an installed, supported interpr
 
 ```powershell
 py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --only-binary=:all: rusty-bacnet==0.11.0
+.\.venv\Scripts\python.exe -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --only-binary=:all: ace-rusty-bacnet==0.11.1
 ```
 
 ```powershell
-.\.venv\Scripts\python.exe -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('rusty-bacnet'))"
+.\.venv\Scripts\python.exe -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('ace-rusty-bacnet'))"
 ```
 
 Using the environment's interpreter directly avoids a separate activation step or an execution-policy change.
@@ -138,7 +138,7 @@ Using the environment's interpreter directly avoids a separate activation step o
 
 <Checkpoint title="Check the import">
 
-The command prints `0.11.0` without an import or shared-library error. Use this **same environment's interpreter** for the next script.
+The command prints `0.11.1` without an import or shared-library error. Use this **same environment's interpreter** for the next script.
 
 </Checkpoint>
 

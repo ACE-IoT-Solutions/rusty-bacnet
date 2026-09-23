@@ -520,6 +520,14 @@ mod transport {
     }
 
     impl TransportPort for EthernetTransport {
+        fn transport_kind(&self) -> &'static str {
+            "ethernet"
+        }
+
+        fn topology_id(&self) -> Option<String> {
+            Some(self.interface_name.clone())
+        }
+
         #[allow(unsafe_code)]
         async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
             if self.recv_task.is_some() {
