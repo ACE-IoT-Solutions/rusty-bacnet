@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-09-23
+
+### Added
+
+- **Automated private Python releases:** ACE repository release tags now
+  publish the repaired source distribution and CPython 3.13 wheels for Linux
+  x86_64/aarch64, macOS x86_64/arm64, and Windows x86_64 to the private
+  `ace-pypi` registry through Tailscale after the full validation gate passes.
+  The release job verifies registry contents and a fresh wheel installation
+  before completing.
+
+### Fixed
+
+- **Cross-platform release validation:** normalize CRLF documentation fixtures,
+  accept equivalent Windows socket/TLS diagnostics, preserve JSON parsing when
+  BIP6 emits a platform warning, and synchronize asynchronous B/IP fanout tests
+  across macOS and Windows runners.
+
 ## [0.11.1] - 2026-09-23
 
 ### Fixed
