@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-09-23
+
+### Fixed
+
+- **Windows release validation:** send Original-Broadcast-NPDU test traffic to
+  an actual broadcast destination on Windows, matching the delivery metadata
+  exposed by `WSARecvMsg`, and poll the live BBMD snapshot until the FDT
+  countdown advances instead of relying on fixed scheduler timing.
+
 ## [0.11.3] - 2026-09-23
 
 ### Fixed
