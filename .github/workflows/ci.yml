@@ -236,7 +236,8 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Fork tags are used to build private Python release artifacts only.
+    if: github.repository == 'jscott3201/rusty-bacnet' && startsWith(github.ref, 'refs/tags/v')
     needs: validate
     runs-on: ubuntu-latest
     environment: release
@@ -349,7 +350,10 @@ jobs:
 
   build-sdist:
     name: Build sdist
-    if: startsWith(github.ref, 'refs/tags/v')
+    # The fork's private release script repairs Maturin's reduced-workspace
+    # lockfile before publishing its sdist. Do not emit a known-broken raw
+    # Maturin sdist from fork tags.
+    if: github.repository == 'jscott3201/rusty-bacnet' && startsWith(github.ref, 'refs/tags/v')
     needs: validate
     runs-on: ubuntu-latest
     steps:

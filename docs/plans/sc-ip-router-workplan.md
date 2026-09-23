@@ -481,7 +481,7 @@ remediation and commit partitioning; unresolved items remain unchecked.
 | 5 shared dial helper and runtime UUID | 2 of 4 | shared helper/consolidation deferred |
 | 6 Python typed ports | 5 of 6 | Phase 5 consolidation |
 | 7 mixed-transport evidence | 5 of 5 | none |
-| 8 release engineering | 0 of 5 | not started |
+| 8 release engineering | 1 of 5 | distribution rename complete; tag automation remains open |
 
 Delivered against the router team's asks: R1, R2, R3, R4, R5, R6. Open: R7,
 R8, R9, R10.

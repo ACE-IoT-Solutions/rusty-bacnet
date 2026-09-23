@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-23
+
+### Fixed
+
+- **Buildable source release:** the release script now reconciles Maturin's
+  reduced-workspace source archive lockfile, then proves a locked offline
+  build before publishing. Release publication can also aggregate validated
+  manylinux wheels built from that same prepared source tree.
+
 ### Changed
 
 - **Fork Python distribution:** Python release artifacts are now named
