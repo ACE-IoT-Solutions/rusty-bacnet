@@ -22,7 +22,7 @@ RUN python3 -m venv /build-venv \
         --manifest-path crates/rusty-bacnet/Cargo.toml \
         --interpreter /build-venv/bin/python \
         --out /dist \
-    && sha256sum /dist/rusty_bacnet-*.whl > /dist/wheel.sha256 \
+    && sha256sum /dist/ace_rusty_bacnet-*.whl > /dist/wheel.sha256 \
     && { \
         printf 'source_sha=%s\n' "$SOURCE_SHA"; \
         printf 'source_ref=%s\n' "$SOURCE_REF"; \
@@ -39,11 +39,11 @@ FROM ${PYTHON_IMAGE} AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openssl \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /dist/rusty_bacnet-*.whl /tmp/
+COPY --from=builder /dist/ace_rusty_bacnet-*.whl /tmp/
 COPY --from=builder /dist/wheel.sha256 /usr/local/share/rusty-bacnet/wheel.sha256
 COPY --from=builder /dist/build-environment.txt /usr/local/share/rusty-bacnet/build-environment.txt
-RUN python -m pip install --no-cache-dir /tmp/rusty_bacnet-*.whl \
-    && rm /tmp/rusty_bacnet-*.whl
+RUN python -m pip install --no-cache-dir /tmp/ace_rusty_bacnet-*.whl \
+    && rm /tmp/ace_rusty_bacnet-*.whl
 COPY crates/rusty-bacnet/tests/container/sc_runtime_fixture.py /fixture.py
 COPY crates/rusty-bacnet/tests/container/run-sc-runtime-in-container.sh /run-fixture.sh
 

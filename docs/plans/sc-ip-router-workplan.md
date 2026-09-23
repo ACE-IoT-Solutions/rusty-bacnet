@@ -358,14 +358,15 @@ Acceptance: all three tests green in CI; ledger row cites them.
 
 ## Phase 8 - release engineering (R9, R10)
 
-- [ ] Rename the distribution to `ace-rusty-bacnet` in
+- [x] Rename the distribution to `ace-rusty-bacnet` in
       `crates/rusty-bacnet/pyproject.toml` (project name, URLs pointing at the
       fork) while keeping the `rusty_bacnet` import name; confirm `maturin`
       emits `ace_rusty_bacnet-*.whl` containing the `rusty_bacnet` module and
       that `test_api_contract_manifest.py` still resolves the stub.
 - [ ] Define the fork tag scheme (recommendation: `v0.11.x-ace.N`) and make
-      release jobs trigger only on fork tags; upstream `v*` tags fetched into
-      the fork must not build or publish.
+      public release jobs trigger only on fork tags; production wheels must be
+      built from those tags, and upstream `v*` tags fetched into the fork must
+      not build or publish.
 - [ ] Extend `ci.yml` so fork tags build manylinux `x86_64` and `aarch64`
       wheels plus macOS wheels with `maturin-action` and attach them to a
       GitHub Release; gate `publish-pypi` on a repository variable so it
@@ -416,7 +417,7 @@ cargo test --workspace --all-features
 
 ```
 cd crates/rusty-bacnet && uv run maturin build --release
-uv pip install target/wheels/rusty_bacnet-*.whl
+uv pip install target/wheels/ace_rusty_bacnet-*.whl
 uv run pytest crates/rusty-bacnet/tests -q
 ```
 

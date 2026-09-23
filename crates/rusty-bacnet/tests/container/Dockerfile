@@ -23,9 +23,9 @@ RUN python3 -m venv /build-venv \
 
 FROM python:3.11-slim-bookworm AS runtime
 
-COPY --from=builder /dist/rusty_bacnet-*.whl /tmp/
-RUN python -m pip install --no-cache-dir /tmp/rusty_bacnet-*.whl \
-    && rm /tmp/rusty_bacnet-*.whl
+COPY --from=builder /dist/ace_rusty_bacnet-*.whl /tmp/
+RUN python -m pip install --no-cache-dir /tmp/ace_rusty_bacnet-*.whl \
+    && rm /tmp/ace_rusty_bacnet-*.whl
 
 COPY crates/rusty-bacnet/tests/container/discovery_fixture.py /fixture.py
 COPY crates/rusty-bacnet/tests/container/w3_bbmd_fixture.py /w3_bbmd_fixture.py

@@ -5,7 +5,7 @@ These examples demonstrate using `rusty_bacnet` from Python.
 ## Prerequisites
 
 ```bash
-pip install rusty-bacnet
+pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ ace-rusty-bacnet
 ```
 
 The MS/TP example requires a serial-enabled package, an RS-485 adapter that

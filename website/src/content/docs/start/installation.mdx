@@ -106,13 +106,13 @@ Check that `python3` is an appropriate interpreter, then create a local environm
 ```sh
 python3 --version
 python3 -m venv .venv
-.venv/bin/python -m pip install --only-binary=:all: rusty-bacnet==0.11.0
+.venv/bin/python -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --only-binary=:all: ace-rusty-bacnet==0.11.0
 ```
 
 Verify that the native module loads, not just that package metadata exists:
 
 ```sh
-.venv/bin/python -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('rusty-bacnet'))"
+.venv/bin/python -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('ace-rusty-bacnet'))"
 ```
 
 </TabItem>
@@ -124,11 +124,11 @@ This example explicitly selects Python 3.13. Use an installed, supported interpr
 
 ```powershell
 py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --only-binary=:all: rusty-bacnet==0.11.0
+.\.venv\Scripts\python.exe -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --only-binary=:all: ace-rusty-bacnet==0.11.0
 ```
 
 ```powershell
-.\.venv\Scripts\python.exe -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('rusty-bacnet'))"
+.\.venv\Scripts\python.exe -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('ace-rusty-bacnet'))"
 ```
 
 Using the environment's interpreter directly avoids a separate activation step or an execution-policy change.

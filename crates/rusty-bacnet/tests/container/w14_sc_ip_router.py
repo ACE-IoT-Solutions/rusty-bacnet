@@ -44,8 +44,8 @@ def main() -> int:
         "finished_unix_s": time.time(),
         "python": sys.version,
         "platform": platform.platform(),
-        "distribution": "rusty-bacnet",
-        "distribution_version": importlib.metadata.version("rusty-bacnet"),
+        "distribution": "ace-rusty-bacnet",
+        "distribution_version": importlib.metadata.version("ace-rusty-bacnet"),
     }
     (artifacts / "w14-sc-ip-router-results.json").write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n"

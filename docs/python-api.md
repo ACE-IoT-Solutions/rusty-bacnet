@@ -7,7 +7,7 @@
 ## Installation
 
 ```bash
-pip install rusty-bacnet
+pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ ace-rusty-bacnet
 ```
 
 The package includes a `.pyi` type stub file for IDE autocompletion and type checking. Most editors (VS Code, PyCharm) will pick it up automatically from the installed package.

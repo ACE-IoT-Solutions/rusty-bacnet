@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Fork Python distribution:** Python release artifacts are now named
+  `ace-rusty-bacnet` to avoid conflicting with upstream while preserving the
+  `rusty_bacnet` import. `scripts/publish-python-release.sh` builds, validates,
+  smoke-installs, and publishes an explicitly versioned wheel and source
+  distribution to the private ACE package index.
+
 - **Blocking SC-to-IP router surface (R1-R4):** Python now has provisional
   frozen `RouterBipPort`, `RouterScPort`, and `RouterVirtualPort` configuration
   classes plus `BACnetRouter.from_ports(...)`, per-port health, and detached
