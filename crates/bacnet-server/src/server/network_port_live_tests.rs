@@ -145,7 +145,30 @@ async fn bbmd_network_port_refreshes_live_tables_acceptance_and_fdt_countdown() 
     let first_remaining = u16::from_be_bytes([first_row[8], first_row[9]]);
 
     control.set_accept_foreign_devices(false).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let second_remaining = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let accepted = read(
+                &server,
+                oid,
+                PropertyIdentifier::BBMD_ACCEPT_FD_REGISTRATIONS,
+            );
+            let PropertyValue::List(second_fdt) =
+                read(&server, oid, PropertyIdentifier::BBMD_FOREIGN_DEVICE_TABLE)
+            else {
+                panic!("expected FDT list");
+            };
+            let PropertyValue::OctetString(second_row) = &second_fdt[0] else {
+                panic!("expected encoded FDT entry");
+            };
+            let second_remaining = u16::from_be_bytes([second_row[8], second_row[9]]);
+            if accepted == PropertyValue::Boolean(false) && second_remaining < first_remaining {
+                break second_remaining;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("live BBMD snapshot did not publish acceptance and countdown changes");
     assert_eq!(
         read(
             &server,
@@ -154,15 +177,6 @@ async fn bbmd_network_port_refreshes_live_tables_acceptance_and_fdt_countdown() 
         ),
         PropertyValue::Boolean(false)
     );
-    let PropertyValue::List(second_fdt) =
-        read(&server, oid, PropertyIdentifier::BBMD_FOREIGN_DEVICE_TABLE)
-    else {
-        panic!("expected FDT list");
-    };
-    let PropertyValue::OctetString(second_row) = &second_fdt[0] else {
-        panic!("expected encoded FDT entry");
-    };
-    let second_remaining = u16::from_be_bytes([second_row[8], second_row[9]]);
     assert!(second_remaining < first_remaining);
 
     server.stop().await.unwrap();
