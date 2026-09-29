@@ -56,6 +56,15 @@ impl DeviceAuthority<'_> {
     pub fn set_system_status(&mut self, status: DeviceStatus) {
         self.0.set_system_status(status);
     }
+    pub fn set_backup_and_restore_state(&mut self, state: BackupAndRestoreState) {
+        self.0.set_backup_and_restore_state(state);
+    }
+    pub fn set_last_restore_time(&mut self, time: BACnetTimeStamp) {
+        self.0.set_last_restore_time(time);
+    }
+    pub fn set_configuration_files(&mut self, files: Vec<ObjectIdentifier>) {
+        self.0.set_configuration_files(files);
+    }
     pub fn write_property(
         &mut self,
         property: PropertyIdentifier,
