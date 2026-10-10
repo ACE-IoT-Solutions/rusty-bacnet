@@ -1,6 +1,7 @@
 //! SubscribeCOVPropertyMultiple and COVNotificationMultiple services
 //! per ASHRAE 135-2020 Clauses 13.16–13.18.
 
+use crate::{format, Vec};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::{PropertyIdentifier, RejectReason};

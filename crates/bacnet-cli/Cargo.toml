@@ -14,9 +14,9 @@ name = "bacnet"
 path = "src/main.rs"
 
 [dependencies]
-bacnet-types.workspace = true
-bacnet-encoding.workspace = true
-bacnet-services.workspace = true
+bacnet-types = { workspace = true, features = ["std"] }
+bacnet-encoding = { workspace = true, features = ["std"] }
+bacnet-services = { workspace = true, features = ["std"] }
 bacnet-transport = { workspace = true, features = ["ipv6"] }
 bacnet-network.workspace = true
 bacnet-client = { workspace = true, features = ["ipv6"] }

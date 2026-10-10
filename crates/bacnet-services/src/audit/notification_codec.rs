@@ -1,5 +1,6 @@
 use super::AuditNotificationRequest;
 use crate::common::MAX_DECODED_ITEMS;
+use crate::{format, Vec};
 use bacnet_encoding::constructed::{decode_audit_notification_at, encode_audit_notification};
 use bacnet_encoding::tags;
 use bacnet_types::error::Error;

@@ -10,8 +10,8 @@ keywords = ["bacnet", "building-automation", "transport", "bip", "mstp"]
 categories = ["network-programming"]
 
 [dependencies]
-bacnet-types.workspace = true
-bacnet-encoding.workspace = true
+bacnet-types = { workspace = true, features = ["std"] }
+bacnet-encoding = { workspace = true, features = ["std"] }
 bytes.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }

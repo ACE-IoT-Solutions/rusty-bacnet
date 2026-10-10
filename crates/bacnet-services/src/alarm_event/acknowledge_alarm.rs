@@ -1,4 +1,5 @@
 use super::*;
+use crate::String;
 
 use crate::common::{decode_context, decode_context_u32};
 

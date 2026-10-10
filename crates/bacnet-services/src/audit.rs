@@ -6,6 +6,7 @@
 //! sequence and a three-state success filter. This model intentionally uses
 //! Clause 21's `Unsigned32` and strict mandatory Boolean forms.
 
+use crate::{format, Vec};
 pub use bacnet_types::constructed::{
     AuditPropertyReference, BACnetAuditLogDatum, BACnetAuditLogQueryParameters,
     BACnetAuditLogRecord, BACnetAuditLogRecordResult, BACnetAuditNotification,

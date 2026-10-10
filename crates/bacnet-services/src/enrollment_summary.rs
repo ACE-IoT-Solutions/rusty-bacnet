@@ -1,5 +1,6 @@
 //! GetEnrollmentSummary service per ASHRAE 135-2020 Clause 13.11.
 
+use crate::Vec;
 use bacnet_encoding::constructed::{decode_recipient, encode_recipient};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;

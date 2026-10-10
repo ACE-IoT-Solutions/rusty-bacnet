@@ -1,5 +1,6 @@
 //! Clause 21 codecs used by the Staging object.
 
+use alloc::vec::Vec;
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};

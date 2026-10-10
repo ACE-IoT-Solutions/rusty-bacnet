@@ -1,5 +1,6 @@
 //! Who-Is and I-Am services per ASHRAE 135-2020 Clause 16.10.
 
+use crate::format;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags::{self};
 use bacnet_types::enums::Segmentation;
@@ -88,6 +89,7 @@ impl WhoIsRequest {
 
         // Both present or both absent
         if low_limit.is_some() != high_limit.is_some() {
+            #[cfg(feature = "std")]
             tracing::warn!("WhoIs: only one of low/high limit present — treating as unbounded per lenient decode policy");
             return Ok(Self::all());
         }

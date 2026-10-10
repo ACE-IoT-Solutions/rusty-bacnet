@@ -52,15 +52,63 @@ default feature and makes both commands CI gates. The GitHub runner does not
 need the local `RUSTC` workaround because the rustup toolchain action controls
 its `PATH`.
 
+## Phase 1 local acceptance
+
+Both alloc-backed codec crates passed the following checks on 2026-10-10. The
+bare-target commands used the pinned Rust 1.97.1 `rustc`; doctests also used
+the matching `rustdoc`.
+
+```text
+cargo test -p bacnet-encoding -p bacnet-services --lib --locked --offline
+280 encoding tests and 531 service tests passed
+
+cargo test -p bacnet-encoding -p bacnet-services --lib \
+  --no-default-features --features alloc --locked --offline
+280 encoding tests and 531 service tests passed
+
+cargo test -p bacnet-encoding -p bacnet-services --doc \
+  --no-default-features --features alloc --locked --offline
+one doctest per crate passed
+
+cargo check -p bacnet-encoding -p bacnet-services \
+  --no-default-features --features alloc \
+  --target thumbv7em-none-eabi --locked --offline
+passed
+
+cargo check -p bacnet-encoding -p bacnet-services \
+  --no-default-features --features alloc \
+  --target riscv32imac-unknown-none-elf --locked --offline
+passed
+
+cargo check -p bacnet-objects -p bacnet-network --locked --offline
+passed
+
+bash .github/scripts/check-embedded-deps.sh <target>
+passed for both bare targets; no std or tracing activation
+
+cargo test --workspace --exclude rusty-bacnet --locked --offline
+passed after rerunning one timing-sensitive runtime overflow test in isolation
+
+cargo fmt --all -- --check
+bash .github/scripts/check-file-size.sh
+bash .github/scripts/check-no-secrets.sh
+actionlint .github/workflows/ci.yml
+git diff --check
+all passed
+```
+
+The source diff changes no public item signatures. The only collection-type
+change is the private segmentation buffer from `HashMap` to `BTreeMap`.
+
 ## Current acceptance matrix
 
 | Evidence | State |
 |---|---|
 | Codec regression floor | 47/47 passing |
 | Master/host-adapter regression floor | 62/62 passing |
-| Bare Cortex-M `bacnet-types` | Phase 0 gate added |
-| Bare RISC-V `bacnet-types` | Phase 0 gate added |
-| `bacnet-encoding` and `bacnet-services` bare builds | Phase 1 |
+| Bare Cortex-M `bacnet-types` | `v0.11.5` CI passed |
+| Bare RISC-V `bacnet-types` | `v0.11.5` CI passed |
+| `bacnet-encoding` and `bacnet-services` bare builds | Phase 1 local acceptance passed; CI pending |
 | Standalone codec dependency gate | Phase 2 |
 | Portable core dependency gate | Phase 3 |
 | Installed-wheel and W5 regression | Phase 4/5 |

@@ -8,8 +8,8 @@ repository.workspace = true
 description = "Shared BACnet endpoint ownership and transaction coordination"
 
 [dependencies]
-bacnet-types.workspace = true
-bacnet-encoding.workspace = true
+bacnet-types = { workspace = true, features = ["std"] }
+bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-transport.workspace = true
 bacnet-network.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }

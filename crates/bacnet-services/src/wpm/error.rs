@@ -1,5 +1,6 @@
 //! Formal WritePropertyMultiple Error service body (Clause 21).
 
+use crate::format;
 use bacnet_encoding::apdu::ErrorPdu;
 use bacnet_encoding::constructed::{
     decode_object_property_reference, encode_object_property_reference,
@@ -8,7 +9,9 @@ use bacnet_encoding::{primitives, tags};
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{ConfirmedServiceChoice, ErrorClass, ErrorCode};
 use bacnet_types::error::Error;
-use bytes::{Bytes, BytesMut};
+#[cfg(test)]
+use bytes::Bytes;
+use bytes::BytesMut;
 
 /// Formal service-16 Result(-) body with the first failed write coordinate.
 #[derive(Debug, Clone, PartialEq, Eq)]

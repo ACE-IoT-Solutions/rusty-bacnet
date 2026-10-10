@@ -37,6 +37,7 @@
 //! preserved byte-for-byte through [`BACnetEventParameter::Opaque`]. The
 //! omitted/deprecated/reserved slots 6, 7, 12 and 19 are rejected on decode.
 
+use alloc::{string::ToString, vec::Vec};
 use bacnet_types::constructed::{BACnetEventParameter, ChangeOfValueCriteria};
 use bacnet_types::error::Error;
 use bytes::BytesMut;

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Embedded codec foundation:** `bacnet-encoding` and `bacnet-services` now
+  support `no_std + alloc` builds on bare ARM Cortex-M and RISC-V targets,
+  while retaining their existing `std` behavior by default. Embedded CI also
+  rejects accidental standard-library or tracing dependencies in those
+  configurations.
+
 ## [0.11.5] - 2026-10-10
 
 ### Changed

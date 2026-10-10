@@ -1,5 +1,9 @@
 use super::{decode_recipient, encode_recipient, validate_tlv_sequence};
 use crate::{primitives, tags};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use bacnet_types::constructed::{AuditPropertyReference, BACnetAuditNotification};
 use bacnet_types::enums::{AuditOperation, ErrorClass, ErrorCode};
 use bacnet_types::error::Error;

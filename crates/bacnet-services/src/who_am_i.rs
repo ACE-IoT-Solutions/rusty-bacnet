@@ -1,5 +1,6 @@
 //! Who-Am-I and You-Are services per ASHRAE 135-2020 Clause 16.10.9 / 16.10.10.
 
+use crate::{String, Vec};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::error::Error;

@@ -1,6 +1,7 @@
 use super::decode_helpers::{decode_context_status_flags, finish_variant};
 use super::*;
 use crate::common::{decode_context, decode_context_u32};
+use crate::{format, Vec};
 use bacnet_encoding::constructed::validate_tlv_sequence;
 
 pub(super) fn validate_authentication_factor(data: &[u8]) -> Result<(), Error> {

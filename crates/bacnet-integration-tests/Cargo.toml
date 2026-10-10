@@ -7,9 +7,9 @@ license.workspace = true
 publish = false
 
 [dev-dependencies]
-bacnet-types.workspace = true
-bacnet-encoding.workspace = true
-bacnet-services.workspace = true
+bacnet-types = { workspace = true, features = ["std"] }
+bacnet-encoding = { workspace = true, features = ["std"] }
+bacnet-services = { workspace = true, features = ["std"] }
 bacnet-transport = { workspace = true, features = ["sc-tls"] }
 bacnet-network.workspace = true
 bacnet-objects.workspace = true

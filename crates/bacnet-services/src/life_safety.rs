@@ -1,5 +1,6 @@
 //! LifeSafetyOperation service per ASHRAE 135-2020 Clause 13.13.
 
+use crate::String;
 use bacnet_encoding::primitives;
 use bacnet_types::enums::LifeSafetyOperation;
 use bacnet_types::error::Error;

@@ -24,6 +24,7 @@
 //! stores `f64`, so encode always selects the `Double` alternative; decode
 //! accepts all four.
 
+use alloc::{string::ToString, vec::Vec};
 use bacnet_types::constructed::FaultParameters;
 use bacnet_types::error::Error;
 use bytes::BytesMut;

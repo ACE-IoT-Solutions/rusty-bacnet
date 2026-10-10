@@ -1,5 +1,6 @@
 //! WriteProperty service per ASHRAE 135-2020 Clause 15.9.
 
+use crate::{format, Vec};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags::{self, TagClass};
 use bacnet_types::enums::PropertyIdentifier;

@@ -1,5 +1,6 @@
 //! Detailed confirmed-COV decoding and Reject classification.
 
+use crate::{format, Vec};
 use bacnet_encoding::{primitives, tags};
 use bacnet_types::enums::RejectReason;
 use bacnet_types::error::Error;

@@ -21,6 +21,7 @@
 //!   primitives; inner `SEQUENCE OF` / embedded `SEQUENCE` members are
 //!   constructed opening/closing pairs holding application-tagged elements.
 
+use alloc::{string::String, vec::Vec};
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetExtendedPropertyState, BACnetPropertyStates,
     BACnetProprietaryPropertyState,

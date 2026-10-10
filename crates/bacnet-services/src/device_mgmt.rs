@@ -5,6 +5,7 @@
 //! - TimeSynchronization (§16.7)
 //! - UTCTimeSynchronization (§16.8)
 
+use crate::{format, String};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::{EnableDisable, ReinitializedState};

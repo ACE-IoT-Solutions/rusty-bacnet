@@ -1,15 +1,19 @@
 //! COV (Change of Value) services per ASHRAE 135-2020 Clause 13 & 16.
 
+use crate::Vec;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
-use bacnet_types::enums::{PropertyIdentifier, RejectReason};
+use bacnet_types::enums::PropertyIdentifier;
+#[cfg(test)]
+use bacnet_types::enums::RejectReason;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
 
+#[cfg(test)]
+use crate::common::MAX_DECODED_ITEMS;
 use crate::common::{
-    decode_context, decode_context_bool, decode_context_u32, BACnetPropertyValue,
-    PropertyReference, MAX_DECODED_ITEMS,
+    decode_context, decode_context_bool, decode_context_u32, BACnetPropertyValue, PropertyReference,
 };
 
 pub use crate::cov_decode::COVNotificationDecodeError;

@@ -1,5 +1,6 @@
 //! Who-Has and I-Have services per ASHRAE 135-2020 Clause 16.9.
 
+use crate::{format, String};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::error::Error;

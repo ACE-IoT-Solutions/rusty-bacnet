@@ -1,6 +1,7 @@
 //! ConfirmedPrivateTransfer / UnconfirmedPrivateTransfer services
 //! per ASHRAE 135-2020 Clauses 15.19 and 16.10.6.
 
+use crate::{format, Vec};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::error::Error;

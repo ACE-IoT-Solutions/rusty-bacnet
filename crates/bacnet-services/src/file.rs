@@ -1,5 +1,6 @@
 //! AtomicReadFile / AtomicWriteFile services per ASHRAE 135-2020 Clauses 15.1–15.2.
 
+use crate::{format, Vec};
 use bacnet_encoding::{primitives, tags};
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::{enums::RejectReason, error::Error};

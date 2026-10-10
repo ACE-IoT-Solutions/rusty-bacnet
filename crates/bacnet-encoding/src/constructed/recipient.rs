@@ -27,6 +27,7 @@
 //! `BACnetAddress` is constructed, so `address [1]` is an opening tag 1 /
 //! application-tagged Unsigned16 + OCTET STRING / closing tag 1.
 
+use alloc::vec::Vec;
 use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, Time};

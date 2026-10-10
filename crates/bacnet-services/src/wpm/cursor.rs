@@ -1,5 +1,6 @@
 //! Incremental WritePropertyMultiple request grammar.
 
+use crate::{String, ToString, Vec};
 use bacnet_encoding::tags::{self, TagClass};
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::RejectReason;

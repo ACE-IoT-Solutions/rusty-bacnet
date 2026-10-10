@@ -1,5 +1,6 @@
 use super::*;
 use crate::common::decode_context;
+use crate::format;
 
 pub(super) fn finish_variant(
     value: NotificationParameters,

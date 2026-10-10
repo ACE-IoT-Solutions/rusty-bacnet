@@ -10,9 +10,9 @@ keywords = ["bacnet", "building-automation", "client", "async"]
 categories = ["network-programming"]
 
 [dependencies]
-bacnet-types.workspace = true
-bacnet-encoding.workspace = true
-bacnet-services.workspace = true
+bacnet-types = { workspace = true, features = ["std"] }
+bacnet-encoding = { workspace = true, features = ["std"] }
+bacnet-services = { workspace = true, features = ["std"] }
 bacnet-transport.workspace = true
 bacnet-network.workspace = true
 bacnet-endpoint-core.workspace = true

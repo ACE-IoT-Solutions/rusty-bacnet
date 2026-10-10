@@ -16,10 +16,10 @@ sc = ["bacnet-client/sc-tls", "bacnet-transport/sc-tls", "dep:tokio-rustls"]
 
 [dependencies]
 bacnet-client.workspace = true
-bacnet-encoding.workspace = true
-bacnet-services.workspace = true
+bacnet-encoding = { workspace = true, features = ["std"] }
+bacnet-services = { workspace = true, features = ["std"] }
 bacnet-transport.workspace = true
-bacnet-types.workspace = true
+bacnet-types = { workspace = true, features = ["std"] }
 bytes.workspace = true
 futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }

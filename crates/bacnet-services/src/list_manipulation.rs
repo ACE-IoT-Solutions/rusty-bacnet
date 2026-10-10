@@ -1,5 +1,6 @@
 //! AddListElement / RemoveListElement services per ASHRAE 135-2020 Clause 15.3.
 
+use crate::Vec;
 use bacnet_encoding::{primitives, tags};
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;

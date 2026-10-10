@@ -3,6 +3,7 @@
 //! - CreateObject (Clause 15.3)
 //! - DeleteObject (Clause 15.4)
 
+use crate::Vec;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::ObjectType;

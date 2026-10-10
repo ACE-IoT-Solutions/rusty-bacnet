@@ -1,6 +1,7 @@
 //! ConfirmedTextMessage / UnconfirmedTextMessage services
 //! per ASHRAE 135-2020 Clauses 16.5 and 16.6.
 
+use crate::String;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::MessagePriority;

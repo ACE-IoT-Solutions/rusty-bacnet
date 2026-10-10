@@ -1,5 +1,6 @@
 //! GetAlarmSummary service per ASHRAE 135-2020 Clause 13.10 (deprecated).
 
+use crate::Vec;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_encoding::tags::{app_tag, TagClass};

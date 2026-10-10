@@ -1,10 +1,10 @@
 # Embedded MS/TP work plan
 
-Status: active; decisions 1-4 ratified and Phase 0 started 2026-10-10
+Status: active; decisions 1-4 ratified and Phases 0-1 implemented 2026-10-10
 Created: 2026-10-10
-Target line: `fix/sc-router-review-closeout` at `9f5e019` (workspace version
-0.11.4, the commit vendored by the firmware); rebase onto `main` once PR #4
-merges
+Target line: `fix/sc-router-review-closeout`; Phase 0 released at `7f7acfac`
+(`v0.11.5`). The firmware still vendors the `9f5e019`/0.11.4 starting point;
+rebase onto `main` once PR #4 merges.
 Request sources: `ace-router-debug/firmware/rust-espidf/upstream-requests/`
 `0001-no-std-wire-codecs.md` and `0002-portable-mstp-core.md`
 Downstream consumer: `ace-router-debug/firmware/rust-espidf`, which vendors
@@ -157,9 +157,12 @@ The two requests are tracked here as K1-K5 (codecs) and M1-M8 (master core):
 
 - [x] Record `main` or the closeout branch SHA this plan starts from, and the
       firmware's `PROVENANCE.json` commit, in this header.
-- [ ] File the two upstream issues using the request texts verbatim, and
-      record the issue numbers here. Ask upstream whether they prefer new
-      crates or feature-isolated modules before Phase 2 starts.
+- [x] File the two upstream issues using the request texts verbatim, and ask
+      upstream whether they prefer new crates or feature-isolated modules
+      before Phase 2 starts: codec request
+      [#1604](https://github.com/jscott3201/rusty-bacnet/issues/1604) and
+      portable-core request
+      [#1605](https://github.com/jscott3201/rusty-bacnet/issues/1605).
 - [x] Repair `bacnet-types`' existing `no_std` feature wiring by disabling
       `thiserror` default features; prove the fix on both real bare targets.
 - [x] Add `thumbv7em-none-eabi` and `riscv32imac-unknown-none-elf` to the
@@ -171,27 +174,29 @@ The two requests are tracked here as K1-K5 (codecs) and M1-M8 (master core):
       0.11.x line; a 0.12 reconciliation is not a prerequisite.
 
 Acceptance: issues filed, embedded CI job green on `bacnet-types`, baseline
-recorded.
+recorded. Satisfied by `v0.11.5` CI run
+[`38064050799`](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/38064050799).
 
 ## Phase 1 - `no_std + alloc` for encoding and services (K1)
 
 Crates: `bacnet-encoding`, `bacnet-services`.
 
-- [ ] `bacnet-encoding`: add `std` default feature and `alloc` plumbing;
+- [x] `bacnet-encoding`: add `std` default feature and `alloc` plumbing;
       replace the `HashMap` in `segmentation.rs` with `BTreeMap`; gate
       `tracing` behind `std`; `bytes` with `default-features = false`.
-- [ ] `bacnet-services`: same feature shape; replace `std` prelude imports
+- [x] `bacnet-services`: same feature shape; replace `std` prelude imports
       with `alloc` equivalents.
-- [ ] Add both crates to the `embedded-check` job with
+- [x] Add both crates to the `embedded-check` job with
       `--no-default-features --features alloc`.
-- [ ] Confirm `bacnet-objects` and `bacnet-network` still build with default
+- [x] Confirm `bacnet-objects` and `bacnet-network` still build with default
       features and that no public type changed.
 
 Tests: existing suites unchanged; a doc test per crate showing the `no_std`
 import path.
 
 Acceptance: both crates cross-compile for both embedded targets; workspace
-suite unchanged.
+suite unchanged. Local acceptance passed on 2026-10-10; branch CI remains the
+remote gate before Phase 2 starts.
 
 ## Phase 2 - `bacnet-mstp-codec` (K2, K3, K4)
 

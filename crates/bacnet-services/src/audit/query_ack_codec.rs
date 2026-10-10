@@ -1,5 +1,6 @@
 use super::AuditLogQueryAck;
 use crate::common::{decode_context, decode_context_bool, MAX_DECODED_ITEMS};
+use crate::{format, Vec};
 use bacnet_encoding::constructed::{
     decode_audit_log_record_result_at, encode_audit_log_record_result,
 };

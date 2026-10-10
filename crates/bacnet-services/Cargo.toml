@@ -9,11 +9,26 @@ description = "BACnet service request/response encode/decode per ASHRAE 135-2020
 keywords = ["bacnet", "building-automation", "ashrae", "services", "protocol"]
 categories = ["network-programming"]
 
+[features]
+# Keep the host-facing API unchanged by default while allowing the complete
+# service codec to be built on targets that provide `alloc` but not `std`.
+default = ["std"]
+alloc = ["bacnet-encoding/alloc"]
+std = [
+    "alloc",
+    "bacnet-types/std",
+    "bacnet-encoding/std",
+    "bytes/std",
+    "dep:tracing",
+    "tracing/std",
+    "tracing/attributes",
+]
+
 [dependencies]
-bacnet-types = { workspace = true }
-bacnet-encoding = { workspace = true }
-bytes = { workspace = true }
-tracing = { workspace = true }
+bacnet-types = { workspace = true, default-features = false }
+bacnet-encoding = { workspace = true, default-features = false }
+bytes = { workspace = true, default-features = false }
+tracing = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -1,5 +1,6 @@
 //! WriteGroup service per ASHRAE 135-2020 Clause 15.11.
 
+use crate::{format, Vec};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::error::Error;

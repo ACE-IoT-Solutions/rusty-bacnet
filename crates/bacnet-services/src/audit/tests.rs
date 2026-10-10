@@ -1,3 +1,4 @@
+use crate::Vec;
 use bacnet_encoding::{primitives, tags};
 use bacnet_types::bitstring::AuditOperationFlags;
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};

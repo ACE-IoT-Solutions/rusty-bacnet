@@ -6,6 +6,7 @@ use super::decode_timer::{decode_change_of_discrete_value, decode_change_of_time
 use super::structured::{decode_access_event, decode_complex_event_type};
 use super::*;
 use crate::common::{decode_context, decode_context_u32};
+use crate::format;
 use bacnet_encoding::constructed::validate_tlv_sequence;
 
 impl NotificationParameters {

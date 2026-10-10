@@ -2,6 +2,7 @@ use super::property_states::{
     decode_device_obj_prop_ref, decode_property_states, encode_property_states, extract_raw_context,
 };
 use super::*;
+use crate::{String, Vec};
 
 mod decode;
 mod decode_helpers;

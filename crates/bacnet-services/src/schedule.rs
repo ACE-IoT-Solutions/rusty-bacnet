@@ -23,6 +23,7 @@
 //! [`PropertyValue`]: bacnet_types::primitives::PropertyValue
 //! [`decode_application_value`]: bacnet_encoding::primitives::decode_application_value
 
+use crate::{format, Vec};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::constructed::{

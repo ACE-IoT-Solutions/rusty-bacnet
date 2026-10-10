@@ -1,5 +1,6 @@
 use super::*;
 use crate::common::{decode_context, decode_context_bool, decode_context_u32};
+use crate::{format, Vec};
 
 fn decode_event_transition_bits(
     data: &[u8],

@@ -3,6 +3,7 @@
 //! Legacy services needed for full spec coverage. All fields use APPLICATION
 //! tags (not context-specific) unless noted.
 
+use crate::{format, Vec};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::error::Error;
