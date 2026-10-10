@@ -248,6 +248,57 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         Ok(())
     }
 
+    /// Queue the direction change and its frame as one atomic operation.
+    ///
+    /// A transmit must never be left in the queue without its preceding
+    /// `Transmit` direction action.  The method therefore checks for two
+    /// control slots before changing either ring entry; on failure it leaves
+    /// the scheduler and its sequence counter untouched.
+    pub(crate) fn enqueue_transmission(
+        &mut self,
+        id: TransmitId,
+        frame: &[u8],
+    ) -> Result<(), ActionEnqueueError> {
+        if frame.len() > MAX_STANDARD_FRAME_LENGTH {
+            return Err(ActionEnqueueError::FrameOversize {
+                length: frame.len(),
+                maximum: MAX_STANDARD_FRAME_LENGTH,
+            });
+        }
+        let mut free = [0usize; 2];
+        let mut count = 0;
+        for (index, slot) in self.controls.iter().enumerate() {
+            if slot.is_none() {
+                free[count] = index;
+                count += 1;
+                if count == free.len() {
+                    break;
+                }
+            }
+        }
+        if count != free.len() {
+            return Err(ActionEnqueueError::ControlFull);
+        }
+
+        let direction_sequence = self.reserve_sequence();
+        let transmit_sequence = self.reserve_sequence();
+        let mut owned = [0; MAX_STANDARD_FRAME_LENGTH];
+        owned[..frame.len()].copy_from_slice(frame);
+        self.controls[free[0]] = Some(ControlSlot {
+            sequence: direction_sequence,
+            kind: ControlKind::Direction(Direction::Transmit),
+        });
+        self.controls[free[1]] = Some(ControlSlot {
+            sequence: transmit_sequence,
+            kind: ControlKind::Transmit {
+                id,
+                length: frame.len(),
+                frame: owned,
+            },
+        });
+        Ok(())
+    }
+
     /// Queue an NPDU delivery, copying the bytes into owned storage.
     pub(crate) fn enqueue_delivery(
         &mut self,
@@ -298,6 +349,15 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         self.enqueue_transmit(id, frame)
     }
 
+    /// Compatibility spelling for [`Self::enqueue_transmission`].
+    pub(crate) fn push_transmission(
+        &mut self,
+        id: TransmitId,
+        frame: &[u8],
+    ) -> Result<(), ActionEnqueueError> {
+        self.enqueue_transmission(id, frame)
+    }
+
     /// Compatibility spelling for [`Self::enqueue_delivery`].
     pub(crate) fn push_delivery(
         &mut self,
@@ -309,24 +369,23 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         self.enqueue_delivery(source, destination, npdu, request_id)
     }
 
-    /// Remove the oldest action and borrow its payload from the scheduler's
+    /// Remove the next action and borrow its payload from the scheduler's
     /// scratch storage.
     ///
     /// Removing the slot before constructing the returned action means a
     /// caller may enqueue more work after the returned borrow ends.  The
     /// scratch buffers are overwritten only by a subsequent poll, so no
     /// action contains a self-reference or an external borrowed payload.
+    ///
+    /// Protocol-control actions always preempt queued deliveries.  This is
+    /// intentional: a full application ring must not delay restoring receive
+    /// direction or sending the next token.
     pub(crate) fn poll_action(&mut self) -> Option<Action<'_>> {
-        let control = self.oldest_control();
-        let delivery = self.oldest_delivery();
-        match (control, delivery) {
-            (None, None) => None,
-            (Some((control_index, control_sequence)), Some((_delivery_index, delivery_sequence)))
-                if sequence_before(control_sequence, delivery_sequence) => {
-                self.poll_control(control_index)
-            }
-            (Some((control_index, _)), _) => self.poll_control(control_index),
-            (None, Some((delivery_index, _))) => self.poll_delivery(delivery_index),
+        if let Some((control_index, _)) = self.oldest_control() {
+            self.poll_control(control_index)
+        } else {
+            self.oldest_delivery()
+                .and_then(|(delivery_index, _)| self.poll_delivery(delivery_index))
         }
     }
 
@@ -420,22 +479,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preserves_global_enqueue_order_across_rings() {
+    fn controls_preempt_deliveries_and_delivery_order_is_stable() {
         let mut actions = ActionRing::<2, 2>::new();
         actions.enqueue_delivery(1, 2, &[1], None).unwrap();
         actions.enqueue_direction(Direction::Transmit).unwrap();
         actions.enqueue_transmit(TransmitId::new(9), &[0x55, 0xFF]).unwrap();
         actions.enqueue_delivery(3, 4, &[2], Some(RequestId::new(7))).unwrap();
 
-        assert_eq!(
-            actions.poll_action(),
-            Some(Action::DeliverNpdu {
-                source: 1,
-                destination: 2,
-                npdu: &[1],
-                request_id: None,
-            })
-        );
         assert_eq!(
             actions.poll_action(),
             Some(Action::SetDirection(Direction::Transmit))
@@ -445,6 +495,15 @@ mod tests {
             Some(Action::Transmit {
                 id: TransmitId::new(9),
                 frame: &[0x55, 0xFF],
+            })
+        );
+        assert_eq!(
+            actions.poll_action(),
+            Some(Action::DeliverNpdu {
+                source: 1,
+                destination: 2,
+                npdu: &[1],
+                request_id: None,
             })
         );
         assert_eq!(
@@ -471,6 +530,34 @@ mod tests {
         actions.enqueue_direction(Direction::Receive).unwrap();
         assert_eq!(actions.control_len(), 2);
         assert_eq!(actions.delivery_len(), 1);
+    }
+
+    #[test]
+    fn transmission_reserves_direction_atomically() {
+        let mut actions = ActionRing::<1, 1>::new();
+        assert_eq!(
+            actions.enqueue_transmission(TransmitId::new(4), &[0x55]),
+            Err(ActionEnqueueError::ControlFull)
+        );
+        assert_eq!(actions.control_len(), 0);
+        actions.enqueue_direction(Direction::Receive).unwrap();
+
+        let mut actions = ActionRing::<2, 1>::new();
+        actions
+            .enqueue_transmission(TransmitId::new(4), &[0x55])
+            .unwrap();
+        assert_eq!(actions.control_len(), 2);
+        assert_eq!(
+            actions.poll_action(),
+            Some(Action::SetDirection(Direction::Transmit))
+        );
+        assert_eq!(
+            actions.poll_action(),
+            Some(Action::Transmit {
+                id: TransmitId::new(4),
+                frame: &[0x55],
+            })
+        );
     }
 
     #[test]
