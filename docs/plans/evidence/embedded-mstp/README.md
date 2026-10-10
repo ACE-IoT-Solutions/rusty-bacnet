@@ -260,7 +260,9 @@ vendor checksum and exact file inventory: valid
 ```
 
 The ESP32-S3 build retained DIO, 16 MB flash, OPI PSRAM, 1 kHz FreeRTOS ticks,
-and `CONFIG_UART_ISR_IN_IRAM=y`. Artifact SHA-256 values are:
+and `CONFIG_UART_ISR_IN_IRAM=y`. An independent `esptool image-info` check of
+the merged passive image identified ESP32-S3, DIO, 16 MB flash, 80 MHz flash,
+and valid image checksum and validation hash. Artifact SHA-256 values are:
 
 | Artifact | SHA-256 |
 |---|---|
