@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-10-10
+
 ### Added
 
 - **Embedded codec foundation:** `bacnet-encoding` and `bacnet-services` now
@@ -14,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while retaining their existing `std` behavior by default. Embedded CI also
   rejects accidental standard-library or tracing dependencies in those
   configurations.
+- **Standalone MS/TP codec:** add the allocation-free `bacnet-mstp-codec`
+  crate with borrowed frames, caller-owned slice encoding, incremental stream
+  decoding, typed errors, and optional `alloc`, `heapless`, and `std` sinks.
+  The existing `bacnet-transport::mstp_frame` API now delegates to this codec
+  while preserving its owned `Bytes` interface and wire/error behavior.
+
+### Changed
+
+- **Embedded validation:** exercise the standalone codec on bare Cortex-M and
+  RISC-V targets and reject host-only dependencies across every supported
+  codec feature combination.
 
 ## [0.11.5] - 2026-10-10
 

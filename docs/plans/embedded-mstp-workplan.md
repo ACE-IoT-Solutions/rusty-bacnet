@@ -163,6 +163,9 @@ The two requests are tracked here as K1-K5 (codecs) and M1-M8 (master core):
       [#1604](https://github.com/jscott3201/rusty-bacnet/issues/1604) and
       portable-core request
       [#1605](https://github.com/jscott3201/rusty-bacnet/issues/1605).
+      Upstream endorsed the new-crate boundary in the
+      [#1604 maintainer response](https://github.com/jscott3201/rusty-bacnet/issues/1604#issuecomment-6099513881)
+      and applied that answer to #1605.
 - [x] Repair `bacnet-types`' existing `no_std` feature wiring by disabling
       `thiserror` default features; prove the fix on both real bare targets.
 - [x] Add `thumbv7em-none-eabi` and `riscv32imac-unknown-none-elf` to the
@@ -195,41 +198,45 @@ Tests: existing suites unchanged; a doc test per crate showing the `no_std`
 import path.
 
 Acceptance: both crates cross-compile for both embedded targets; workspace
-suite unchanged. Local acceptance passed on 2026-10-10; branch CI remains the
-remote gate before Phase 2 starts.
+suite unchanged. Local acceptance passed on 2026-10-10; remote acceptance is
+recorded by CI run
+[`38067493332`](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/38067493332)
+and docs run
+[`38067493341`](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/38067493341).
 
 ## Phase 2 - `bacnet-mstp-codec` (K2, K3, K4)
 
 Crates: new `crates/bacnet-mstp-codec`; adapter changes in `bacnet-transport`.
 
-- [ ] Create the crate with `#![no_std]`, depending only on `bacnet-types`
+- [x] Create the crate with `#![no_std]`, depending only on `bacnet-types`
       with `default-features = false`; features `alloc`, `std`, and
       `heapless`. Do not expose `cobs` until it is implemented.
-- [ ] Move `FrameType`, `MstpFrame` header type, constants, CRC-8 and CRC-16
+- [x] Move `FrameType`, `MstpFrame` header type, constants, CRC-8 and CRC-16
       with their tables, and validation from `mstp_frame.rs`; keep the
       numeric values and residual constants byte-for-byte.
-- [ ] Add `encode_into(&mut [u8]) -> Result<usize, FrameError>` and the
+- [x] Add `encode_into(&mut [u8]) -> Result<usize, FrameError>` and the
       `FrameSink` trait; add `StreamDecoder` with `push` and `push_slice`
       and a bounded caller buffer; keep `decode_frame(&[u8])` for one-shot
       use.
-- [ ] `FrameError` without payload strings; `From<FrameError>` into
+- [x] `FrameError` without payload strings; `From<FrameError>` into
       `bacnet_types::Error` under `alloc` producing the current message text.
-- [ ] COBS: explicit rejection for every raw type in 32..=127 and for data
+- [x] COBS: explicit rejection for every raw type in 32..=127 and for data
       CRC-32K framing. Keep the unsupported behavior feature-independent.
-- [ ] `bacnet-transport::mstp_frame` becomes re-exports plus `Bytes`-based
+- [x] `bacnet-transport::mstp_frame` becomes re-exports plus `Bytes`-based
       wrappers (`encode_frame`, `decode_frame_stream`,
       `retain_lone_preamble_byte`) so current callers compile unchanged.
-- [ ] Tests: port the 47 codec tests; add a differential test feeding the
+- [x] Tests: port the 47 codec tests; add a differential test feeding the
       same corpus to the old `mstp_frame` (kept under `#[cfg(test)]` until
       Phase 5) and the new codec; `proptest` cases for truncation, oversize
       length, header and data CRC corruption, preamble resync, and sink
       exhaustion; `fuzz/fuzz_targets/mstp_decode.rs`.
-- [ ] Dependency-tree script passes for the codec with every feature
+- [x] Dependency-tree script passes for the codec with every feature
       combination.
 
 Acceptance: codec cross-compiles for both embedded targets with no features;
 differential test shows identical accept and reject decisions and identical
-bytes for every golden frame; host transport tests unchanged.
+bytes for every golden frame; host transport tests unchanged. Local acceptance
+passed on 2026-10-10; the `v0.11.6` tag run is the remote release gate.
 
 ## Phase 3 - `bacnet-mstp-core` (M1 to M6, M8)
 

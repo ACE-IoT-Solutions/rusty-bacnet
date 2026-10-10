@@ -10,6 +10,7 @@ keywords = ["bacnet", "building-automation", "transport", "bip", "mstp"]
 categories = ["network-programming"]
 
 [dependencies]
+bacnet-mstp-codec = { workspace = true, features = ["std"] }
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bytes.workspace = true

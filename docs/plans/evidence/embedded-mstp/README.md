@@ -100,6 +100,37 @@ all passed
 The source diff changes no public item signatures. The only collection-type
 change is the private segmentation buffer from `HashMap` to `BTreeMap`.
 
+## Phase 2 local acceptance
+
+The standalone MS/TP codec and compatibility adapter passed the following
+checks on 2026-10-10 with pinned Rust and Rustdoc 1.97.1:
+
+```text
+cargo test -p bacnet-mstp-codec --all-features --locked --offline
+19 codec unit/property tests passed; doctests passed
+
+cargo test -p bacnet-transport --lib --locked --offline mstp_frame
+52 tests passed, including the 47-test legacy floor and four differential tests
+
+cargo test -p bacnet-transport --lib --locked --offline mstp
+115 tests passed, including the 62-test master/adapter floor
+
+cargo check -p bacnet-mstp-codec --no-default-features --locked --offline \
+  --target <target>
+passed for thumbv7em-none-eabi and riscv32imac-unknown-none-elf
+
+bash .github/scripts/check-embedded-deps.sh <target>
+passed for both bare targets and the no-feature, alloc, heapless,
+alloc+heapless, std, and std+heapless feature combinations
+```
+
+The compatibility review additionally linked a real bare-metal executable
+using `Frame::encode_into` without a global allocator. Differential coverage
+preserves legacy wire bytes, exact errors and offsets, stream discard choices,
+single-byte CRC behavior, and error precedence. Property tests cover
+truncation, corruption, oversized wire lengths, preamble resynchronization,
+byte-at-a-time input, and sink exhaustion/recovery.
+
 ## Current acceptance matrix
 
 | Evidence | State |
@@ -108,8 +139,8 @@ change is the private segmentation buffer from `HashMap` to `BTreeMap`.
 | Master/host-adapter regression floor | 62/62 passing |
 | Bare Cortex-M `bacnet-types` | `v0.11.5` CI passed |
 | Bare RISC-V `bacnet-types` | `v0.11.5` CI passed |
-| `bacnet-encoding` and `bacnet-services` bare builds | Phase 1 local acceptance passed; CI pending |
-| Standalone codec dependency gate | Phase 2 |
+| `bacnet-encoding` and `bacnet-services` bare builds | CI run `38067493332` passed both targets |
+| Standalone codec dependency gate | Phase 2 local acceptance passed both targets and all feature combinations; `v0.11.6` CI pending |
 | Portable core dependency gate | Phase 3 |
 | Installed-wheel and W5 regression | Phase 4/5 |
 | Node F and P4 hardware evidence | Phase 6, downstream |

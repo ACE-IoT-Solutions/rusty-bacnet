@@ -126,6 +126,8 @@ jobs:
         run: cargo check -p bacnet-encoding --no-default-features --features alloc --target ${{ matrix.target }} --locked
       - name: Check no_std services
         run: cargo check -p bacnet-services --no-default-features --features alloc --target ${{ matrix.target }} --locked
+      - name: Check standalone MS/TP codec
+        run: cargo check -p bacnet-mstp-codec --no-default-features --target ${{ matrix.target }} --locked
       - name: Check embedded dependency trees
         run: bash .github/scripts/check-embedded-deps.sh ${{ matrix.target }}
 
