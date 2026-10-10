@@ -396,7 +396,15 @@ MS/TP traffic. The run was cancelled, the active image was not flashed, and the
 C factory image was restored; its health endpoint and MS/TP counters recovered.
 The incomplete capture is intentionally `invalid`, not a pass. The next passive
 attempt must resolve the ESP-IDF UART receive path and add independent DE and
-heap measurements before the hardware checklist can advance.
+heap measurements before the hardware checklist can advance. A follow-up
+passive diagnostic used ESP-IDF native RS-485 half-duplex mode with RTS on GPIO
+21, but it also received zero UART bytes over 15 seconds. That diagnostic was
+reverted; the canonical images rebuilt to their recorded hashes, and the known
+C image was flash-verified again. After 78 seconds F was healthy with
+`rx_bytes=1928` and `tx_bytes=15879`, while observer C was healthy and its last
+valid frame came from MAC 30. The next attempt therefore requires physical or
+logic-analyzer inspection of F's receive path and the current lab wiring rather
+than another blind firmware flash.
 
 ## Proposed PR queue
 
