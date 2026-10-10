@@ -440,9 +440,11 @@ and merged DIO factory image
 `8f784ce3c5c284532655649c0d64a8e61c94a5db9341378df29f8c057d323519`.
 The generated configuration retains 16 MB flash, OPI PSRAM, 1 kHz FreeRTOS
 ticks, and the UART ISR-in-IRAM setting. It has not been flashed: the ARM HIL
-host went offline before its rollback asset and current node state could be
-re-verified. Active testing remains prohibited until this image receives and
-decodes valid passive frames.
+host went offline before its rollback asset, serial path, and observer C could
+be re-verified. Node F itself remains reachable on its management interface:
+`/healthz` returned `ok`, and its restored C firmware reported 212763 receive
+bytes, 70 token events, and stable PSRAM. Active testing remains prohibited
+until the Rust image receives and decodes valid passive frames.
 
 ## Proposed PR queue
 

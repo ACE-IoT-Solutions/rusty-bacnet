@@ -270,6 +270,9 @@ and `CONFIG_UART_ISR_IN_IRAM=y`. Artifact SHA-256 values are:
 | Active factory image | `1d8cf79c5d4cf1eb0611984d79929d043f16434c9d746eaf737ddbfb7012cc9c` |
 
 The ARM HIL host became unreachable before the new passive image could be
-staged and its rollback preflight repeated. Therefore no new hardware verdict
-is recorded, both Phase 6 hardware checklist items remain open, and the active
-image must not be flashed until passive reception and decoding pass.
+staged and its rollback/serial preflight repeated, and observer C is not
+reachable from the workstation. Node F's direct management path does confirm
+that the restored C firmware remains healthy: `/healthz` returned `ok`, with
+212763 receive bytes, 70 token events, and stable PSRAM. No new Rust hardware
+verdict is recorded, both Phase 6 hardware checklist items remain open, and the
+active image must not be flashed until passive reception and decoding pass.
