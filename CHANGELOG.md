@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-10-10
+
+### Changed
+
+- **Embedded foundation:** disable the `thiserror` standard-library feature at
+  the workspace boundary and validate `bacnet-types` with no default features
+  on ARM Cortex-M and RISC-V bare-metal targets in release CI.
+
 ## [0.11.4] - 2026-09-23
 
 ### Fixed

@@ -101,6 +101,28 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash .github/scripts/check-no-secrets.sh
 
+  embedded-check:
+    name: Embedded check (${{ matrix.target }})
+    if: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - thumbv7em-none-eabi
+          - riscv32imac-unknown-none-elf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: embedded-${{ matrix.target }}
+      - name: Check no_std foundation
+        run: cargo check -p bacnet-types --no-default-features --target ${{ matrix.target }} --locked
+
   msrv:
     name: MSRV (1.93)
     if: ${{ github.event_name == 'push' || github.base_ref == 'main' }}
@@ -204,6 +226,7 @@ jobs:
         audit,
         file-size-cap,
         no-secret-scan,
+        embedded-check,
         msrv,
         test,
         test-cross,

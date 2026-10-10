@@ -1,7 +1,8 @@
 # SC-to-IP router work plan
 
-Status: blocking scope R1-R4 implemented; review findings A1-A8, B1-B7, and
-C1-C5 are closed on `fix/sc-router-review-closeout`
+Status: R1-R6 and R9 delivered on `fix/sc-router-review-closeout` `9f5e019`
+(PR #4, open); A1-A8, B1-B7, C1-C5 closed; D1 closed as moot; D2-D6 and
+E1-E4 below are open; R7, R8, R10 not started. Last verified 2026-10-10.
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
@@ -363,11 +364,13 @@ Acceptance: all three tests green in CI; ledger row cites them.
       fork) while keeping the `rusty_bacnet` import name; confirm `maturin`
       emits `ace_rusty_bacnet-*.whl` containing the `rusty_bacnet` module and
       that `test_api_contract_manifest.py` still resolves the stub.
-- [ ] Define the fork tag scheme (recommendation: `v0.11.x-ace.N`) and make
+- [x] (2026-10-10: plain `vN` tags adopted, enforced by the fork release
+      validation step; acceptable now that D1 is moot.) Define the fork tag scheme (recommendation: `v0.11.x-ace.N`) and make
       public release jobs trigger only on fork tags; production wheels must be
       built from those tags, and upstream `v*` tags fetched into the fork must
       not build or publish.
-- [ ] Extend `ci.yml` so fork tags build manylinux `x86_64` and `aarch64`
+- [x] (2026-10-10: verified; v0.11.4 run built Linux x86_64/aarch64, macOS
+      x86_64/arm64, Windows x86_64 and published to `ace-pypi`.) Extend `ci.yml` so fork tags build manylinux `x86_64` and `aarch64`
       wheels plus macOS wheels with `maturin-action` and attach them to a
       GitHub Release; gate `publish-pypi` on a repository variable so it
       cannot fire from the fork by accident.
@@ -375,7 +378,8 @@ Acceptance: all three tests green in CI; ledger row cites them.
       (`linux/amd64`, `linux/arm64`) for a router image built from the wheel,
       pushed to the fork's GHCR namespace on tags; local builds use
       `podman build --platform`.
-- [ ] Tag the first release once Phases 1-7 land.
+- [x] Tag the first release once Phases 1-7 land. (2026-10-10: `v0.11.1`
+      through `v0.11.4` tagged; `v0.11.4` is the first fully green release run.)
 
 Acceptance: a tag produces downloadable wheels for both Linux architectures
 and a multi-arch image manifest; `pip install` of the wheel passes
@@ -699,6 +703,145 @@ but changed a public Python contract; see C1.
 R7 oversize handling, R8 re-announce, the Phase 5 shared dial helper, and all
 of Phase 8 release engineering remain open. The conformance-status caveat from
 A7 still applies.
+
+## Review 2026-09-23 - closeout branch verification
+
+Reviewer verification of `fix/sc-router-review-closeout` at `ab8e558` (six
+commits over `main` `fd9d5cc`, pushed to `origin`), run on macOS arm64 from a
+cleaned target directory and a freshly built wheel.
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace --exclude rusty-bacnet --locked --features bacnet-types/serde,bacnet-transport/ipv6,bacnet-transport/sc-tls --no-fail-fast` | 48 suites, 4724 passed, 0 failed |
+| `bash .github/scripts/check-file-size.sh`, `cargo fmt --check`, `git diff --check main..HEAD` | clean |
+| `shellcheck -S warning scripts/publish-python-release.sh` | clean |
+| Fresh `ace_rusty_bacnet-0.11.1-cp313` wheel in a new venv with `PYTHONPATH` cleared, full Python suite | 153 passed, 1877 subtests, 0 failed |
+| `rustls` in `Cargo.lock` | 0.23.45 as the changelog states |
+
+C1 through C5 are confirmed closed. `test_start_error_names_sc_port_and_hub`
+passes again, and the new B/IP taxonomy test passes alongside it. The
+findings below concern the four release-engineering commits that rode along
+on the same branch (`3c51b34`, `cb59f81`, `2788042`, `ab8e558`).
+
+### Findings
+
+- [x] **D1 - Git tag namespace overlap with upstream (closed 2026-10-10: upstream
+      went straight to `v0.12.0` and never tagged a `v0.11.x`, so no clash exists).**
+      The `ace-rusty-bacnet` distribution rename already prevents the artifact
+      collision that open decision 2 was written to avoid: the private index
+      holds only fork wheels, `publish-crates` and `publish-pypi` stay scoped to
+      the upstream repository, and Rust consumers of the fork pull by git
+      source, not by crates.io version. Plain `0.11.1` crate versions are
+      therefore acceptable. What remains is that the `v0.11.1` tag lives in the
+      same `refs/tags/` namespace upstream uses. Both remotes are on default
+      auto-following tag fetch, so once upstream tags its own `v0.11.1`, any
+      clone with both remotes fails `git fetch upstream` with a would-clobber
+      error, and the CHANGELOG `[0.11.1]` heading will collide at the next
+      reconciliation. Cheapest fix: set
+      `git config remote.upstream.tagOpt --no-tags` in the documented setup and
+      keep pinning upstream by SHA as the plans already do; optionally prefix
+      fork tags (`ace-v0.11.1`) and adjust the one `refs/tags/v` prefix strip
+      in the fork release step. Not a release blocker.
+- [ ] **D2 - The fork wheel job can run with `validate` skipped.** `ab8e558`
+      lets the release wheel job proceed on the fork when the cross-platform
+      `validate` gate is skipped, provided the Linux, lint, audit, MSRV, and
+      policy gates pass. This is a deliberate weakening of the inherited
+      release gate, justified in a comment as tolerance for a flaky test. It
+      should be recorded as an accepted risk in Open decisions with an owner
+      and an expiry, or the flaky test should be fixed and the bypass removed.
+- [ ] **D3 - The C1 fix keys off error text.** `router_start_to_py_err`
+      classifies an SC start failure by matching the string prefix
+      `router port {index} (sc, ` and the phrase `failed to start:` that
+      `bacnet-network` formats at `router/mod.rs:71`. A wording change in the
+      network crate silently reverts SC failures to `BacnetError`. The result
+      is also a split taxonomy: SC port start failures raise `RuntimeError`
+      while B/IP bind failures raise `BacnetError`, both now locked in by
+      tests. Recommendation: have the native router return a structured start
+      error carrying the port index and transport kind, map on that, and
+      document the taxonomy in `rusty_bacnet.pyi` so callers know to catch
+      both.
+- [ ] **D4 - `pyproject.toml` hardcodes the private index.** `3c51b34` adds a
+      `[[tool.uv.index]]` block pointing at a Tailscale hostname with
+      `locked = true`. Anyone running `uv` inside `crates/rusty-bacnet` off
+      the tailnet now resolves through an unreachable index, and the hostname
+      ships in the sdist metadata. Move the index to a `uv.toml` or CI
+      environment configuration and keep the publish URL in the release
+      script only.
+- [ ] **D5 - Phase 8 bookkeeping lags the commits.** `CHANGELOG.md` has a
+      released `[0.11.1] - 2026-09-23` section and a tag exists, yet Phase 8
+      still shows only the rename ticked. `ab8e558` also adds fork wheel
+      building, which is most of the third item. Tick what is done, and note
+      that the multi-arch image job at `ci.yml:475-480` is still a TODO.
+- [ ] **D6 - Branch state.** The closeout branch is pushed, but `main` still
+      carries nine unpushed commits and the branch is not merged. Open the PR
+      from `fix/sc-router-review-closeout` to `main`, and decide whether the
+      first fork release should be cut from `main` after merge rather than
+      from an unmerged branch.
+
+### Unchanged scope
+
+R7 oversize handling, R8 re-announce, the Phase 5 shared dial helper, and the
+multi-arch image job remain open. The conformance-status caveat from A7 still
+applies.
+
+## Review 2026-10-10 - release delivery and drift
+
+Reviewer verification of `fix/sc-router-review-closeout` at `9f5e019` (seven
+commits past `ab8e558`, all dated 2026-09-23: the private PyPI publish job,
+cross-platform and Windows test fixes, and releases 0.11.2 through 0.11.4).
+No commits on any branch since 2026-09-23.
+
+| Check | Result |
+|---|---|
+| Workspace suite, CI feature set, cleaned crates | 48 suites, 4719 passed, 5 failed |
+| The 5 failures (`cli_discovery`) rerun alone | 5 passed in 0.63s |
+| `cargo fmt --check`, file-size gate, `git diff --check` | clean |
+| GitHub run for tag `v0.11.4` | all gates green including `Validate Release` and `Publish to ACE PyPI`; no bypass path used |
+| Private index `ace-pypi` | serves 0.11.4 wheels for Linux x86_64 and aarch64, macOS x86_64 and arm64, Windows x86_64 |
+| `ace-rusty-bacnet==0.11.4` installed from the index into a clean venv, full Python suite | 153 passed, 1877 subtests, 0 failed |
+| PR #4 to `main` | open, 22 commits, 87 files, 33 checks green, no review recorded |
+
+The five workspace failures are all five tests in `crates/bacnet-cli/tests/
+cli_discovery.rs` hitting the shared 10-second deadline in
+`tests/support/mod.rs:17` at the same moment under parallel load. They pass
+alone and on the macOS CI runner. This is the same flake class as the
+runtime COV test noted on 2026-09-12, not a regression.
+
+R9 is delivered. Phase 8 is complete except the multi-arch image job (R10).
+
+### Findings
+
+- [ ] **E1 - Merge PR #4.** `main` is still at `fd9d5cc` locally, nine
+      commits ahead of `origin/main`, and its own CI run from 2026-09-12 is
+      red on the macOS and Windows test jobs. The branch's cross-platform
+      fixes are what turned those green on the tag runs, so merging is also
+      the path to a green `main`. This supersedes D6.
+- [ ] **E2 - Remove the `validate`-skipped bypass now that it is unneeded.**
+      The condition at `ci.yml:315` still allows fork wheels when the
+      cross-platform gate is skipped. The flaky tests it was written around
+      were fixed in `6b6e08ad`, `ceb9392b`, and `153dac52`, and `v0.11.4`
+      passed the full gate. Delete the bypass and close D2.
+- [ ] **E3 - Upstream has moved a full minor.** `upstream/dev` is at
+      `74fca30`, 1590 commits past the C4 audit pin, and upstream has tagged
+      `v0.12.0`. The C4 audit and the upstream PR queue (PRs 1-3) are stale.
+      Decide whether to keep offering R1-R6 upstream against 0.12, or to
+      treat them as fork-only and open a new reconciliation plan for 0.12 in
+      `docs/plans/`. Either way, stop citing the `0376fa3` proposal as current.
+- [ ] **E4 - Pre-existing timing flakes under parallel load.** Two
+      independent test groups now show the same pattern: the runtime COV
+      observation test and the five CLI discovery tests. Both use fixed
+      10-second deadlines. Worth a small ticket to make the deadlines
+      load-tolerant or serialise those binaries, since they will keep costing
+      reviewer time.
+
+D3 (string-matched SC start error), D4 (private index in `pyproject.toml`),
+and D5 (Phase 8 bookkeeping, now partly reconciled above) remain open.
+
+### Unchanged scope
+
+R7 oversize handling, R8 re-announce, the Phase 5 shared dial helper, and the
+R10 multi-arch image job have not been touched since 2026-09-19. The
+conformance-status caveat from A7 still applies.
 
 ## Out of scope
 
