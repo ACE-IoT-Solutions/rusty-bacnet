@@ -334,6 +334,14 @@ artifacts through ACE PyPI. A separate clean Python 3.13 environment installed
 `ace-rusty-bacnet==0.11.7` from the private index and imported
 `rusty_bacnet` successfully.
 
+Follow-up release evidence (2026-10-10): tag `v0.11.8` points to `aa72df40`.
+GitHub Actions run
+[38081262565](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/38081262565)
+passed and published a repaired source distribution plus CPython 3.13
+manylinux x86_64/aarch64, macOS x86_64/arm64, and Windows x86_64 wheels. A
+clean macOS arm64 environment installed `ace-rusty-bacnet==0.11.8` from ACE
+PyPI and imported `rusty_bacnet` successfully.
+
 Upstream handoff evidence (2026-10-10): issue
 [#1604](https://github.com/jscott3201/rusty-bacnet/issues/1604) links the
 focused allocator-free codec
@@ -405,6 +413,36 @@ C image was flash-verified again. After 78 seconds F was healthy with
 valid frame came from MAC 30. The next attempt therefore requires physical or
 logic-analyzer inspection of F's receive path and the current lab wiring rather
 than another blind firmware flash.
+
+Subsequent passive diagnostics (2026-10-10) isolated the zero-byte result
+further. Run `20261010T193126Z-7c97b89d` used a QIO image incompatible with
+the node's 16 MB flash/OPI PSRAM configuration and boot-looped. Run
+`20261010T193322Z-3eb60e56` restored DIO and the aligned memory configuration,
+but a normal UART timeout was logged continuously and starved the observation
+loop. Run `20261010T193533Z-9b7a618c` fixed that timeout classification and
+booted the passive factory image
+`865b89c04eef72119246560c50e68126f3f222525170a59f8f4fa8ea56d30dd0`.
+It held `DE=0` with stable heap (`free_heap=8716772`, minimum `8716244`) but
+still reported zero bytes and zero read calls. Over the same interval observer
+C advanced by 1044 bytes and 115 valid, CRC-valid frames with no header CRC,
+data CRC, or UART errors, proving that the live bus was active. The known C
+factory image was restored and both F and C recovered. These runs rule out
+flash/PSRAM mismatch, timeout log starvation, timeout misclassification, and
+observer inactivity; they do not satisfy passive acceptance.
+
+The next passive image now replaces the high-level `esp-idf-hal` UART driver
+with a narrow owner-backed adapter using the same ESP-IDF UART1 initialization
+and read calls as the known-working C node. Both downstream feature-mode test
+suites pass seven tests, all 35 evaluator/dashboard Python tests pass, and the
+vendored inventory is exact. The target build produced passive ELF
+`6e0c3d2b206c47c0e865c5e77142a3648735f294ca22db36f53300bc8137b12c`
+and merged DIO factory image
+`8f784ce3c5c284532655649c0d64a8e61c94a5db9341378df29f8c057d323519`.
+The generated configuration retains 16 MB flash, OPI PSRAM, 1 kHz FreeRTOS
+ticks, and the UART ISR-in-IRAM setting. It has not been flashed: the ARM HIL
+host went offline before its rollback asset and current node state could be
+re-verified. Active testing remains prohibited until this image receives and
+decodes valid passive frames.
 
 ## Proposed PR queue
 

@@ -220,3 +220,56 @@ remain.
 | Installed-wheel regression | CPython 3.13 wheel build/import and `test_mstp_compat.py` passed locally |
 | W5 virtual-router regression | Phase 5 release gate |
 | Node F and P4 hardware evidence | Phase 6, downstream |
+
+## Phase 6 downstream diagnostics (2026-10-10)
+
+The downstream ESP32-S3 workspace remains outside Git, so this section records
+build identities and outcomes without claiming a firmware commit. The first
+passive run and native RS-485-mode follow-up both received zero UART bytes; the
+known C image was restored and recovered normal MS/TP traffic.
+
+Three later diagnostic runs narrowed the fault:
+
+- `20261010T193126Z-7c97b89d`: QIO/flash configuration mismatch; boot loop.
+- `20261010T193322Z-3eb60e56`: correct DIO/16 MB/OPI PSRAM boot; normal UART
+  timeouts were misclassified and logged continuously.
+- `20261010T193533Z-9b7a618c`: timeout handling corrected; passive image
+  `865b89c04eef72119246560c50e68126f3f222525170a59f8f4fa8ea56d30dd0`
+  held DE low and stable heap but received zero bytes. Observer C concurrently
+  advanced 1044 bytes and 115 valid, CRC-valid frames with zero UART or CRC
+  errors. The C rollback image was restored and health recovered.
+
+The next diagnostic reproduces the known-working C UART1 calls through a
+minimal Rust owner-backed adapter, bypassing the extra UART mode/interrupt
+configuration performed by `esp-idf-hal`. Local gates passed:
+
+```text
+cargo test -p ace-router-rust-f --target aarch64-apple-darwin --locked --offline
+cargo test -p ace-router-rust-f --features active-mstp \
+  --target aarch64-apple-darwin --locked --offline
+7 tests passed in each mode
+
+python3 -m unittest discover -s tests -p 'test_*.py'
+29 tests passed
+
+python3 -m unittest discover -s tools/hil_dashboard -p 'test_*.py'
+6 tests passed
+
+scripts/check-vendor.sh
+vendor checksum and exact file inventory: valid
+```
+
+The ESP32-S3 build retained DIO, 16 MB flash, OPI PSRAM, 1 kHz FreeRTOS ticks,
+and `CONFIG_UART_ISR_IN_IRAM=y`. Artifact SHA-256 values are:
+
+| Artifact | SHA-256 |
+|---|---|
+| Passive ELF | `6e0c3d2b206c47c0e865c5e77142a3648735f294ca22db36f53300bc8137b12c` |
+| Active ELF | `1b53a45d72522a2e4850739dc498b1e636d77406252095b7e8e5d75efc97492b` |
+| Passive factory image | `8f784ce3c5c284532655649c0d64a8e61c94a5db9341378df29f8c057d323519` |
+| Active factory image | `1d8cf79c5d4cf1eb0611984d79929d043f16434c9d746eaf737ddbfb7012cc9c` |
+
+The ARM HIL host became unreachable before the new passive image could be
+staged and its rollback preflight repeated. Therefore no new hardware verdict
+is recorded, both Phase 6 hardware checklist items remain open, and the active
+image must not be flashed until passive reception and decoding pass.
