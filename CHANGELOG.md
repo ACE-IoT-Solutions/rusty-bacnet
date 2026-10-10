@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.8] - 2026-10-10
+
+### Changed
+
+- Rebuild the ACE private Python distribution from the latest reviewed branch
+  to exercise the hardened tagged-release workflow, including multi-platform
+  CPython 3.13 wheels, the repaired source distribution, Tailscale publishing,
+  and post-publish installation from the private index. This release does not
+  change the public API from 0.11.7.
+
 ## [0.11.7] - 2026-10-10
 
 ### Added
