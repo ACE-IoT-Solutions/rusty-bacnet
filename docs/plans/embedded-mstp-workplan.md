@@ -1,10 +1,10 @@
 # Embedded MS/TP work plan
 
-Status: active; decisions 1-4 ratified and Phases 0-4 implemented 2026-10-10
+Status: active; decisions 1-4 ratified and Phases 0-5 implemented 2026-10-10
 Created: 2026-10-10
-Target line: `fix/sc-router-review-closeout`; Phase 0 released at `7f7acfac`
-(`v0.11.5`). The firmware still vendors the `9f5e019`/0.11.4 starting point;
-rebase onto `main` once PR #4 merges.
+Target line: `fix/sc-router-review-closeout`; embedded MS/TP released at
+`55233111` (`v0.11.7`). The firmware still vendors the `9f5e019`/0.11.4
+starting point; rebase onto `main` once PR #4 merges.
 Request sources: `ace-router-debug/firmware/rust-espidf/upstream-requests/`
 `0001-no-std-wire-codecs.md` and `0002-portable-mstp-core.md`
 Downstream consumer: `ace-router-debug/firmware/rust-espidf`, which vendors
@@ -318,12 +318,21 @@ Acceptance: host behavior unchanged; workspace suite and Python suite green.
       for both new crates and runs in the fast gate.
 - [x] `docs/rust-api.md`: new "Embedded MS/TP" section with a bare-metal
       codec example, a core driving loop example, and the counters table.
-- [ ] `CHANGELOG.md` entries; version bump per the Phase 0 decision; fork
+- [x] `CHANGELOG.md` entries; version bump per the Phase 0 decision; fork
       release through the existing `ace-pypi` path so the Python wheel picks
       up the adapter.
 - [ ] Update the two upstream issues with the PR links.
 
 Acceptance: CI green with the new job; release tagged; docs published.
+
+Release evidence (2026-10-10): tag `v0.11.7` points to `55233111`. GitHub
+Actions run [38075269965](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/38075269965)
+passed the complete validation matrix, built CPython 3.13 manylinux wheels for
+x86_64 and aarch64, macOS wheels for x86_64 and arm64, a Windows x86_64 wheel,
+and the repaired source distribution, then published and verified all six
+artifacts through ACE PyPI. A separate clean Python 3.13 environment installed
+`ace-rusty-bacnet==0.11.7` from the private index and imported
+`rusty_bacnet` successfully.
 
 ## Phase 6 - downstream handoff
 
