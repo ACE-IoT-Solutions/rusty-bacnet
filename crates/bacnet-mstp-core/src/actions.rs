@@ -173,8 +173,7 @@ pub(crate) struct ActionRing<const CONTROL: usize, const DELIVERY: usize> {
 }
 
 /// The standard scheduler capacity used by [`crate::MasterCore`].
-pub(crate) type ActionQueue =
-    ActionRing<DEFAULT_CONTROL_CAPACITY, DEFAULT_DELIVERY_CAPACITY>;
+pub(crate) type ActionQueue = ActionRing<DEFAULT_CONTROL_CAPACITY, DEFAULT_DELIVERY_CAPACITY>;
 
 impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> {
     /// Construct an empty scheduler.
@@ -189,11 +188,13 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
     }
 
     /// Number of queued protocol-control actions.
+    #[cfg(test)]
     pub(crate) fn control_len(&self) -> usize {
         self.controls.iter().filter(|slot| slot.is_some()).count()
     }
 
     /// Number of queued application-delivery actions.
+    #[cfg(test)]
     pub(crate) fn delivery_len(&self) -> usize {
         self.deliveries.iter().filter(|slot| slot.is_some()).count()
     }
@@ -218,6 +219,7 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
 
     /// Queue an encoded frame for transmission, copying its bytes into owned
     /// storage.
+    #[cfg(test)]
     pub(crate) fn enqueue_transmit(
         &mut self,
         id: TransmitId,
@@ -332,43 +334,6 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         Ok(())
     }
 
-    /// Compatibility spelling for [`Self::enqueue_direction`].
-    pub(crate) fn push_direction(
-        &mut self,
-        direction: Direction,
-    ) -> Result<(), ActionEnqueueError> {
-        self.enqueue_direction(direction)
-    }
-
-    /// Compatibility spelling for [`Self::enqueue_transmit`].
-    pub(crate) fn push_transmit(
-        &mut self,
-        id: TransmitId,
-        frame: &[u8],
-    ) -> Result<(), ActionEnqueueError> {
-        self.enqueue_transmit(id, frame)
-    }
-
-    /// Compatibility spelling for [`Self::enqueue_transmission`].
-    pub(crate) fn push_transmission(
-        &mut self,
-        id: TransmitId,
-        frame: &[u8],
-    ) -> Result<(), ActionEnqueueError> {
-        self.enqueue_transmission(id, frame)
-    }
-
-    /// Compatibility spelling for [`Self::enqueue_delivery`].
-    pub(crate) fn push_delivery(
-        &mut self,
-        source: u8,
-        destination: u8,
-        npdu: &[u8],
-        request_id: Option<RequestId>,
-    ) -> Result<(), ActionEnqueueError> {
-        self.enqueue_delivery(source, destination, npdu, request_id)
-    }
-
     /// Remove the next action and borrow its payload from the scheduler's
     /// scratch storage.
     ///
@@ -431,11 +396,7 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         let slot = self.controls[index].take()?;
         match slot.kind {
             ControlKind::Direction(direction) => Some(Action::SetDirection(direction)),
-            ControlKind::Transmit {
-                id,
-                length,
-                frame,
-            } => {
+            ControlKind::Transmit { id, length, frame } => {
                 self.scratch_frame[..length].copy_from_slice(&frame[..length]);
                 Some(Action::Transmit {
                     id,
@@ -457,9 +418,7 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
     }
 }
 
-impl<const CONTROL: usize, const DELIVERY: usize> Default
-    for ActionRing<CONTROL, DELIVERY>
-{
+impl<const CONTROL: usize, const DELIVERY: usize> Default for ActionRing<CONTROL, DELIVERY> {
     fn default() -> Self {
         Self::new()
     }
@@ -483,8 +442,12 @@ mod tests {
         let mut actions = ActionRing::<2, 2>::new();
         actions.enqueue_delivery(1, 2, &[1], None).unwrap();
         actions.enqueue_direction(Direction::Transmit).unwrap();
-        actions.enqueue_transmit(TransmitId::new(9), &[0x55, 0xFF]).unwrap();
-        actions.enqueue_delivery(3, 4, &[2], Some(RequestId::new(7))).unwrap();
+        actions
+            .enqueue_transmit(TransmitId::new(9), &[0x55, 0xFF])
+            .unwrap();
+        actions
+            .enqueue_delivery(3, 4, &[2], Some(RequestId::new(7)))
+            .unwrap();
 
         assert_eq!(
             actions.poll_action(),

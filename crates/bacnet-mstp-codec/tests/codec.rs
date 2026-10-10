@@ -1,7 +1,7 @@
 use bacnet_mstp_codec::{
     crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid, decode_frame,
     encode_into, DecodeEvent, Frame, FrameError, FrameHeader, FrameSink, FrameType, StreamDecoder,
-    DATA_CRC_RESIDUAL, HEADER_CRC_RESIDUAL, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    StreamPhase, DATA_CRC_RESIDUAL, HEADER_CRC_RESIDUAL, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 use proptest::prelude::*;
 
@@ -114,7 +114,10 @@ fn stream_resync_and_bad_data_crc_discard() {
     let mut decoder = StreamDecoder::new(&mut storage);
     assert_eq!(
         decoder.push_slice(&wire[..used]),
-        DecodeEvent::Invalid { discard: used }
+        DecodeEvent::Malformed {
+            discard: used,
+            error: FrameError::DataCrcMismatch { data_length: 2 },
+        }
     );
     let mut valid = [0u8; 511];
     let valid_len = frame.encode_into(&mut valid).unwrap();
@@ -127,6 +130,33 @@ fn stream_resync_and_bad_data_crc_discard() {
         DecodeEvent::Frame { .. }
     ));
     assert_eq!(decoder.buffered_len(), valid_len);
+}
+
+#[test]
+fn stream_phase_excludes_retained_resynchronization_noise() {
+    let mut storage = [0; 64];
+    let mut decoder = StreamDecoder::new(&mut storage);
+    assert_eq!(decoder.phase(), StreamPhase::Sync);
+    assert_eq!(decoder.push(PREAMBLE[0]), DecodeEvent::NeedMore);
+    assert_eq!(decoder.phase(), StreamPhase::Preamble);
+    assert_eq!(decoder.push(PREAMBLE[1]), DecodeEvent::NeedMore);
+    assert_eq!(decoder.phase(), StreamPhase::Header);
+
+    let mut encoded = [0; 64];
+    let length = Frame::new(FrameType::BACnetDataNotExpectingReply, 1, 2, &[9])
+        .encode_into(&mut encoded)
+        .unwrap();
+    decoder.reset();
+    assert_eq!(decoder.push_slice(&encoded[..8]), DecodeEvent::NeedMore);
+    assert_eq!(decoder.phase(), StreamPhase::Data);
+
+    decoder.reset();
+    encoded[7] ^= 0x01;
+    assert!(matches!(
+        decoder.push_slice(&encoded[..length]),
+        DecodeEvent::Malformed { .. }
+    ));
+    assert_eq!(decoder.phase(), StreamPhase::Sync);
 }
 
 #[test]

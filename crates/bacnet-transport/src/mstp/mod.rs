@@ -18,15 +18,52 @@ use crate::mstp_frame::{
 };
 use crate::port::ReceivedNpdu;
 
+/// Convert the historical transport configuration into the platform-neutral
+/// MS/TP core configuration.
+impl MstpConfig {
+    pub(crate) fn to_core_config(&self) -> Result<bacnet_mstp_core::MstpCoreConfig, Error> {
+        let mut config =
+            bacnet_mstp_core::MstpCoreConfig::for_baud_rate(self.baud_rate).map_err(|error| {
+                Error::Encoding(format!("invalid MS/TP core configuration: {error:?}"))
+            })?;
+        config.station = self.this_station;
+        config.max_master = self.max_master;
+        config.max_info_frames = self.max_info_frames;
+        config.validate().map_err(|error| {
+            Error::Encoding(format!("invalid MS/TP core configuration: {error:?}"))
+        })?;
+        Ok(config)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Serial port abstraction
 // ---------------------------------------------------------------------------
+
+/// Requested RS-485 transceiver direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerialDirection {
+    /// Disable the driver and listen on the bus.
+    Receive,
+    /// Enable the driver for transmission.
+    Transmit,
+}
 
 /// Abstraction over an RS-485 serial port.
 ///
 /// Implementations wrap the platform serial driver (e.g. `tokio-serial`).
 /// A loopback implementation is provided for testing.
 pub trait SerialPort: Send + Sync + 'static {
+    /// Set the external RS-485 transceiver direction.
+    ///
+    /// Auto-direction and kernel-managed adapters may keep this default.
+    fn set_direction(
+        &self,
+        _direction: SerialDirection,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
+    }
+
     /// Write bytes to the serial port.
     fn write(&self, data: &[u8]) -> impl std::future::Future<Output = Result<(), Error>> + Send;
     /// Read available bytes into `buf`. Returns the number of bytes read.
@@ -35,6 +72,24 @@ pub trait SerialPort: Send + Sync + 'static {
         &self,
         buf: &mut [u8],
     ) -> impl std::future::Future<Output = Result<usize, Error>> + Send;
+
+    /// Wait until the final stop bit of the last write has left the UART.
+    ///
+    /// Drivers that already make [`Self::write`] physically drained may keep
+    /// this default. Hardware-backed drivers must override it when their write
+    /// future only means that bytes were accepted by a driver buffer.
+    fn drain(&self) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Explicit physical-drain hook for userspace direction wrappers.
+    ///
+    /// Implementations without a distinct hardware queue may keep this
+    /// default. UART adapters should fail closed if they cannot prove that the
+    /// final stop bit has left the transmitter.
+    fn drain_physical(&self) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        self.drain()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +181,9 @@ impl Default for MstpConfig {
 }
 
 /// Internal state for the master node state machine.
+#[deprecated(
+    note = "MasterNode is a compatibility adapter; new code should use bacnet_mstp_core::MasterCore"
+)]
 pub struct MasterNode {
     pub config: MstpConfig,
     pub state: MasterState,
@@ -652,6 +710,7 @@ fn next_addr(current: u8, max_master: u8) -> u8 {
     }
 }
 
+mod core_adapter;
 mod port;
 pub use port::{LoopbackSerial, MstpTransport, NoSerial};
 

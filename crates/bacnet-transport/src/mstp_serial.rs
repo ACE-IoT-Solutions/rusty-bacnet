@@ -18,10 +18,12 @@
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
-use tokio_serial::SerialStream;
+use tokio_serial::{SerialPort as TokioSerialPortTrait, SerialStream};
 
 use bacnet_types::error::Error;
 
+#[cfg(feature = "serial-gpio")]
+use crate::mstp::SerialDirection;
 use crate::mstp::SerialPort;
 
 #[cfg(any(target_os = "linux", test))]
@@ -57,6 +59,9 @@ pub struct TokioSerialPort {
 impl TokioSerialPort {
     /// Open a serial port with the given configuration.
     pub fn open(config: &SerialConfig) -> Result<Self, Error> {
+        if config.baud_rate == 0 {
+            return Err(Error::Encoding("Serial baud rate must be nonzero".into()));
+        }
         let builder = tokio_serial::new(&config.port_name, config.baud_rate);
         let stream = SerialStream::open(&builder)
             .map_err(|e| Error::Encoding(format!("Serial open failed: {e}")))?;
@@ -151,6 +156,75 @@ impl SerialPort for TokioSerialPort {
             .await
             .map_err(|e| Error::Encoding(format!("Serial read failed: {e}")))
     }
+
+    #[allow(unsafe_code)]
+    async fn drain(&self) -> Result<(), Error> {
+        loop {
+            let pending = {
+                let stream = self.inner.lock().await;
+                TokioSerialPortTrait::bytes_to_write(&*stream)
+                    .map_err(|e| Error::Encoding(format!("Serial drain query failed: {e}")))?
+            };
+            if pending == 0 {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_micros(100)).await;
+        }
+
+        #[cfg(target_os = "linux")]
+        loop {
+            let transmitter_empty = {
+                use std::os::fd::AsRawFd;
+
+                let stream = self.inner.lock().await;
+                let mut status: libc::c_int = 0;
+                // SAFETY: `status` is writable for the duration of this
+                // nonblocking ioctl and the mutex guard keeps the fd alive.
+                let result = unsafe {
+                    libc::ioctl(
+                        stream.as_raw_fd(),
+                        libc::TIOCSERGETLSR,
+                        &mut status as *mut libc::c_int,
+                    )
+                };
+                if result == 0 {
+                    Some(status & 1 != 0) // Linux UAPI TIOCSER_TEMT
+                } else {
+                    let error = std::io::Error::last_os_error();
+                    match error.raw_os_error() {
+                        Some(libc::ENOTTY | libc::EINVAL | libc::ENOSYS) => None,
+                        _ => {
+                            return Err(Error::Encoding(format!(
+                                "Serial transmitter status failed: {error}"
+                            )))
+                        }
+                    }
+                }
+            };
+            match transmitter_empty {
+                Some(true) => return Ok(()),
+                Some(false) => {
+                    tokio::time::sleep(tokio::time::Duration::from_micros(100)).await;
+                }
+                None => {
+                    return Err(Error::Encoding(
+                        "Serial driver cannot report physical transmitter-empty state".into(),
+                    ));
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(Error::Encoding(
+                "Physical transmitter-empty query is unsupported on this platform".into(),
+            ))
+        }
+    }
+
+    async fn drain_physical(&self) -> Result<(), Error> {
+        self.drain().await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -176,8 +250,8 @@ impl SerialPort for TokioSerialPort {
 /// let port = GpioDirectionPort::new(serial, "/dev/gpiochip0", 18, true).unwrap();
 /// ```
 ///
-/// The pin is set to receive mode (DE deasserted) on creation and after
-/// each write. This ensures the bus defaults to listening.
+/// The pin is set to receive mode (DE deasserted) on creation. The MS/TP
+/// adapter then applies the core's explicit direction actions around writes.
 #[cfg(feature = "serial-gpio")]
 pub struct GpioDirectionPort<S: SerialPort> {
     inner: S,
@@ -187,6 +261,7 @@ pub struct GpioDirectionPort<S: SerialPort> {
     /// Baud-rate-dependent delay after flush to ensure the last byte
     /// has left the UART shift register before switching to RX mode.
     post_tx_delay_us: u64,
+    explicit_tx: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "serial-gpio")]
@@ -205,7 +280,7 @@ impl<S: SerialPort> GpioDirectionPort<S> {
 
     /// Create with an explicit post-TX delay in microseconds.
     ///
-    /// After flushing the serial port, the wrapper waits this long before
+    /// After physically draining the serial port, the wrapper waits this long before
     /// switching back to receive mode. This covers the time for the last
     /// byte to leave the UART's shift register. At 76800 baud, one byte
     /// takes ~130us. A delay of 200-500us is typically safe.
@@ -250,6 +325,7 @@ impl<S: SerialPort> GpioDirectionPort<S> {
             line,
             active_high,
             post_tx_delay_us,
+            explicit_tx: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -286,25 +362,56 @@ impl<S: SerialPort> GpioDirectionPort<S> {
 
 #[cfg(feature = "serial-gpio")]
 impl<S: SerialPort> SerialPort for GpioDirectionPort<S> {
+    async fn set_direction(&self, direction: SerialDirection) -> Result<(), Error> {
+        match direction {
+            SerialDirection::Receive => {
+                self.explicit_tx
+                    .store(false, std::sync::atomic::Ordering::Release);
+                self.set_rx_mode()
+            }
+            SerialDirection::Transmit => {
+                self.set_tx_mode()?;
+                self.explicit_tx
+                    .store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            }
+        }
+    }
+
     async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        // Switch to TX mode before writing.
-        self.set_tx_mode()?;
-
-        let result = self.inner.write(data).await;
-
-        // Post-TX delay to let the last byte leave the shift register.
-        if self.post_tx_delay_us > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_micros(self.post_tx_delay_us)).await;
+        if self.explicit_tx.load(std::sync::atomic::Ordering::Acquire) {
+            return self.inner.write(data).await;
         }
 
-        // Always switch back to RX mode, even on write error.
-        self.set_rx_mode()?;
-
-        result
+        self.set_tx_mode()?;
+        let result = async {
+            self.inner.write(data).await?;
+            self.drain().await
+        }
+        .await;
+        let receive_result = self.set_rx_mode();
+        result.and(receive_result)
     }
 
     async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
         // Already in RX mode — just delegate.
         self.inner.read(buf).await
+    }
+
+    async fn drain(&self) -> Result<(), Error> {
+        self.inner.drain_physical().await?;
+        if self.post_tx_delay_us > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_micros(self.post_tx_delay_us)).await;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "serial-gpio")]
+impl<S: SerialPort> Drop for GpioDirectionPort<S> {
+    fn drop(&mut self) {
+        if let Err(error) = self.set_rx_mode() {
+            tracing::warn!("GPIO direction cleanup failed: {error}");
+        }
     }
 }

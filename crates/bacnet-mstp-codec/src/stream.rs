@@ -9,10 +9,28 @@ pub enum DecodeEvent<'a> {
     NeedMore,
     /// A validated frame is available. It remains borrowed until the next push.
     Frame { frame: Frame<'a>, consumed: usize },
-    /// Invalid input was discarded while looking for the next frame.
+    /// Non-frame input was discarded while looking for the next preamble.
+    ///
+    /// This is synchronization noise, not a received-invalid-frame event in
+    /// the Clause 9 receive state machine.
     Invalid { discard: usize },
+    /// A candidate frame was malformed and discarded.
+    Malformed { discard: usize, error: FrameError },
     /// The caller-owned receive buffer could not accept another octet.
     Error(FrameError),
+}
+
+/// Receive phase represented by the decoder's retained bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPhase {
+    /// Searching for the first preamble octet; retained bytes are only noise.
+    Sync,
+    /// The first preamble octet has been recognized.
+    Preamble,
+    /// Both preamble octets are present and the fixed header is incomplete.
+    Header,
+    /// A valid fixed header is present and frame data remains incomplete.
+    Data,
 }
 
 /// Incremental decoder backed by a caller-owned receive buffer.
@@ -27,6 +45,7 @@ enum InternalEvent {
     NeedMore,
     Frame { consumed: usize },
     Invalid { discard: usize },
+    Malformed { discard: usize, error: FrameError },
 }
 
 impl<'a> StreamDecoder<'a> {
@@ -47,6 +66,24 @@ impl<'a> StreamDecoder<'a> {
     /// Capacity of the caller-owned receive buffer.
     pub const fn capacity(&self) -> usize {
         self.storage.len()
+    }
+
+    /// Return the semantic receive phase, excluding retained resync noise.
+    pub fn phase(&self) -> StreamPhase {
+        if self.pending != 0 || self.length == 0 || self.storage[0] != PREAMBLE[0] {
+            return StreamPhase::Sync;
+        }
+        if self.length == 1 {
+            return StreamPhase::Preamble;
+        }
+        if self.storage[1] != PREAMBLE[1] {
+            return StreamPhase::Sync;
+        }
+        if self.length < 8 {
+            StreamPhase::Header
+        } else {
+            StreamPhase::Data
+        }
     }
 
     /// Clear all buffered input and pending frame state.
@@ -76,6 +113,9 @@ impl<'a> StreamDecoder<'a> {
             InternalEvent::NeedMore => DecodeEvent::NeedMore,
             InternalEvent::Frame { consumed } => self.frame_event(consumed),
             InternalEvent::Invalid { discard } => DecodeEvent::Invalid { discard },
+            InternalEvent::Malformed { discard, error } => {
+                DecodeEvent::Malformed { discard, error }
+            }
         }
     }
 
@@ -120,19 +160,18 @@ impl<'a> StreamDecoder<'a> {
             Err(FrameError::TooShort { .. } | FrameError::Truncated { .. }) => {
                 InternalEvent::NeedMore
             }
-            Err(FrameError::DataCrcMismatch { data_length }) => {
+            Err(error @ FrameError::DataCrcMismatch { data_length }) => {
                 let discard = if self.length >= 8 {
                     8 + data_length + 2
                 } else {
                     1
                 };
                 self.discard(discard.min(self.length));
-                InternalEvent::Invalid { discard }
+                InternalEvent::Malformed { discard, error }
             }
             Err(error) => {
                 self.discard(1);
-                let _ = error;
-                InternalEvent::Invalid { discard: 1 }
+                InternalEvent::Malformed { discard: 1, error }
             }
         }
     }

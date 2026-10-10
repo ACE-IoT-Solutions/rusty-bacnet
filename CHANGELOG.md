@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.7] - 2026-10-10
+
+### Added
+
+- **Embedded MS/TP master core:** add the allocation-free `bacnet-mstp-core`
+  state machine, bounded unicast/broadcast NPDU queues, action scheduler,
+  Clause 9 timing validation, generation-bound request/transmit lifecycles,
+  and observable protocol/queue counters. The core is platform-neutral:
+  adapters provide monotonic timestamps and execute explicit direction,
+  transmit, and delivery actions. See [the Rust API reference](docs/rust-api.md#embedded-mstp).
+
+- **Embedded MS/TP documentation:** document bare-metal codec use, the
+  `MasterCore` driving loop, validated-frame versus wire-octet ingress, local
+  scheduling ratios, and the diagnostic counter surface.
+
+### Changed
+
+- **Host MS/TP adapter:** drive the existing Tokio transport from the portable
+  core while preserving the public `MstpTransport`, `MstpConfig`,
+  `SerialPort`, and deprecated `MasterNode` compatibility surface. Serial
+  direction actions now bracket physically drained writes, and host chunk
+  activity maintains Clause 9 silence timing without pretending to provide
+  per-octet timestamps.
+- **Serial completion contract:** hardware-backed MS/TP now requires a
+  cancellable physical transmitter-empty indication. Linux UART drivers use
+  `TIOCSERGETLSR`; drivers and platforms that cannot report this state fail
+  closed instead of starting protocol timers before the final stop bit.
+
+### Fixed
+
+- Bound direction and write/drain operations by the transmit watchdog, retain
+  the peer-safe 250 ms reply expiry across asynchronous direction changes,
+  restore receive direction on failure and shutdown, bound application reply
+  tasks by their request lifetime, and prevent the deprecated queue mirror
+  from rejecting core-admitted work.
+- Pin every third-party action in the private tagged-release path to an
+  immutable commit before it receives built artifacts or tailnet access.
+
 ## [0.11.6] - 2026-10-10
 
 ### Added

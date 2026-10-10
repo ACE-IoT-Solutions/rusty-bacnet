@@ -1,6 +1,6 @@
 # Embedded MS/TP work plan
 
-Status: active; decisions 1-4 ratified and Phases 0-1 implemented 2026-10-10
+Status: active; decisions 1-4 ratified and Phases 0-4 implemented 2026-10-10
 Created: 2026-10-10
 Target line: `fix/sc-router-review-closeout`; Phase 0 released at `7f7acfac`
 (`v0.11.5`). The firmware still vendors the `9f5e019`/0.11.4 starting point;
@@ -140,15 +140,15 @@ The two requests are tracked here as K1-K5 (codecs) and M1-M8 (master core):
 |---|---|---|
 | Crate layout | Two new crates: `bacnet-mstp-codec` (K2-K4) and `bacnet-mstp-core` (M1-M8); both `no_std` by default, features `alloc`, `std`, `heapless` | Codec is useful alone to the P4 observer; core depends on codec; neither depends on transport |
 | Codec storage (K3) | Encode into caller `&mut [u8]` returning the written length; decode from `&[u8]`; a small `FrameSink` trait with impls for `&mut [u8]`, `heapless::Vec<u8, N>` (feature), and `BytesMut` (std) | Covers the three storage styles the request names without a generic explosion |
-| Incremental decode (K2) | `StreamDecoder` with fixed internal state and a caller-owned data buffer; `push(byte) -> Event` and `push_slice` | Byte-at-a-time matches UART ISR delivery; slice form matches DMA chunks |
+| Incremental decode (K2) | `StreamDecoder` with fixed internal state and a caller-owned data buffer; `push(byte) -> Event` and `push_slice`; synchronization noise is distinct from a classified malformed-frame event | Byte-at-a-time matches UART ISR delivery; slice form matches DMA chunks; the distinction is required by the Clause 9 receive FSM |
 | Codec errors | `FrameError` enum with no payload strings; `From<FrameError> for bacnet_types::Error` under `alloc` | Removes `format!` from the hot path and keeps host error text identical through the adapter |
 | COBS (K4) | `FrameType::is_cobs()` and `FrameError::UnsupportedCobsFrame` with exhaustive tests for every type in 32..=127; do not publish a Cargo `cobs` feature until support exists | Explicit rejection today without making `--all-features` intentionally uncompilable |
-| Core API (M1-M3) | `MasterCore<Q: QueueStorage>` with `on_octet(byte, now)`, `on_silence(now)`, `on_deadline(now)`, `on_transmit_complete(now)`, `enqueue_npdu(dest, npdu, class, now)`, `poll_action()`, `next_deadline()`; `Action::{SetDirection(Level), Transmit(&[u8]), DeliverNpdu{..}, Idle}` | The platform copies a borrowed transmit slice into UART/DMA storage before releasing the borrow, then reports completion so DE can be lowered; `poll_action` drains a fixed action ring |
+| Core API (M1-M3) | `MasterCore<Q: QueueStorage>` with `on_octet(byte, now)`, `on_receive_error(kind, now)`, `on_silence(now)`, `on_deadline(now)`, request-bound `complete_request(id, decision, now)`, generation-bound `on_transmit_complete(id, now)` / `on_transmit_aborted(id, reason, now)`, `enqueue_npdu(dest, npdu, priority, now)`, `poll_action()`, `next_deadline()`; `Action::{SetDirection(Direction), Transmit{id, bytes}, DeliverNpdu{request_id, ..}, Idle}` | `Transmit` bytes remain borrowed only until the next poll. Completion means the final stop bit has physically left the UART, not merely that DMA or an OS buffer accepted it. A separate bounded delivery ring cannot consume the control capacity needed to restore receive direction or pass the token. |
 | Clock (M2) | `Instant` and `Duration` from a caller-supplied `Monotonic` trait with microsecond resolution; the core stores absolute deadlines | Avoids `std::time`, lets ESP timers and simulated time share one path |
 | Queues (M4) | `QueueStorage` trait with two impls: `HeaplessQueues<const U: usize, const B: usize, const N: usize>` and `AllocQueues` (`alloc` feature); per-queue depth, high-water, drop counters by reason `{Full, Oversize, Expired, Starved}`; broadcast-to-unicast ratio and max-age in config | Bounded by construction on embedded, unchanged depth on host |
 | Configuration (M5) | `MstpCoreConfig` with every Clause 9 timer, `N_retry_token`, `N_min_octets`, `N_poll`, `Max_Master`, `Max_Info_Frames`, multiple-frame ratio, baud; `validate()` enforces standard bounds and returns a typed reason | Replaces the `const` timers at `mstp/mod.rs:45-64` |
 | Counters (M6) | `MstpCounters` plain struct of `u32` fields, `Copy`, read by `counters()`; DE assertion duration accumulated from `SetDirection` pairs using the injected clock | No atomics or locks inside the core (M8) |
-| Host adapter (M7, K5) | `bacnet-transport::mstp` becomes a Tokio driver over `MasterCore<AllocQueues>`: the read loop feeds `on_octet`/`push_slice`, `sleep_until(next_deadline)` feeds `on_deadline`, actions map to serial writes and the existing DE/RE modes | Keeps `MstpTransport<S>` and the 58 host tests as the regression floor |
+| Host adapter (M7, K5) | `bacnet-transport::mstp` becomes a Tokio driver over `MasterCore<AllocQueues>`: embedded/wire-timestamped input feeds `on_octet`; the host keeps its chunk-tolerant assembler and feeds a validated-frame ingress; `sleep_until(next_deadline)` feeds `on_deadline`; actions map to serial writes and the existing DE/RE modes | Keeps `MstpTransport<S>` and the 62 host tests as the regression floor without pretending USB chunk-arrival times are wire inter-octet timestamps |
 | `bacnet-encoding` and `bacnet-services` (K1) | Add default `std` feature, `#![cfg_attr(not(feature = "std"), no_std)]`, `extern crate alloc`; `bytes` with `default-features = false`; `tracing` gated behind `std` with no-op macros otherwise; `segmentation` uses `alloc::collections::BTreeMap` | Smallest diff that satisfies the request |
 | Embedded CI | New `embedded-check` job: `thumbv7em-none-eabi` (bare Cortex-M, no `std`) and `riscv32imac-unknown-none-elf` (closest tier-2 target to the P4) for `bacnet-types`, `bacnet-encoding`, `bacnet-services`, `bacnet-mstp-codec`, `bacnet-mstp-core`; a script asserts no `tokio`, `socket2`, `libc`, `tokio-serial`, or `tracing` in `cargo tree -e normal` for the two new crates | Proves the acceptance items the request lists |
 | Property testing | `proptest` as a dev-dependency of the two new crates; `cargo-fuzz` targets under `fuzz/` are added but not run in CI | Deterministic in CI, deeper locally |
@@ -242,26 +242,37 @@ passed on 2026-10-10; the `v0.11.6` tag run is the remote release gate.
 
 Crates: new `crates/bacnet-mstp-core`.
 
-- [ ] `MstpCoreConfig` with every Clause 9 parameter and `validate()`; port
+- [x] `MstpCoreConfig` with every Clause 9 parameter and `validate()`; port
       the existing `MasterNode::new` checks and add the standard ranges.
-- [ ] `Monotonic` trait, `Instant`, `Duration`; a `SimClock` test helper.
-- [ ] `MasterCore` state machine ported from `mstp/mod.rs`, keeping the
+- [x] `Monotonic` trait, `Instant`, `Duration`; a `SimClock` test helper.
+- [x] `MasterCore` state machine ported from both `mstp/mod.rs` and the
+      timer/driver transitions in `mstp/port.rs`, keeping the
       `MasterState` names and Clause 9.5.6 transitions; `on_octet` runs the
       codec `StreamDecoder` and models `T_frame_abort` exactly.
-- [ ] `QueueStorage` with heapless and alloc impls; class, priority,
+- [x] `QueueStorage` with heapless and alloc impls; class, priority,
       starvation limit, expiry, and typed rejection reasons.
-- [ ] `Action` ring and `poll_action`; `SetDirection` emitted before every
-      transmit and after the last octet is accepted by the platform.
-- [ ] `MstpCounters` with the fields the request names.
-- [ ] Split modules so no file exceeds the cap: `config`, `clock`, `queue`,
+- [x] Separate fixed control and delivery action rings and `poll_action`;
+      `SetDirection` emitted before every transmit and receive direction is
+      restored only after the matching generation's last stop bit has left
+      the UART. Add explicit transmit abort/reset handling.
+- [x] Request-bound application completion: `DeliverNpdu` carries an opaque
+      `RequestId`; data, ReplyPostponed, cancellation, expiry, duplicates, and
+      stale replies cannot complete a newer request from the same source.
+- [x] Receive-error input and classified parser outcomes distinguish ordinary
+      synchronization noise from invalid frames, CRC failures, unsupported
+      COBS framing, and caller-buffer exhaustion.
+- [x] `MstpCounters` with the fields the request names.
+- [x] Split modules so no file exceeds the cap: `config`, `clock`, `queue`,
       `state`, `actions`, `counters`.
-- [ ] Tests: deterministic simulated-time tests for every master state and
+- [x] Tests: deterministic simulated-time tests for every master state and
       every deadline edge, ported from `clause956_tests.rs` and `tests.rs`;
       queue overflow proves token passing continues; `proptest` on random
       event interleavings asserting no panic, no allocation after `new`
-      (checked with a counting allocator under `alloc`), and monotone
-      deadlines.
-- [ ] Dependency-tree script passes; `#![forbid(unsafe_code)]`; no `std`,
+      (checked with a counting allocator under `alloc`), monotonic event
+      timestamps, state-appropriate causal deadlines, stale timer rejection,
+      and bounded progress after a due deadline. Deadlines are not globally
+      monotone because a receive event can install an earlier reply deadline.
+- [x] Dependency-tree script passes; `#![forbid(unsafe_code)]`; no `std`,
       no `tokio`, no locks.
 
 Acceptance: core cross-compiles for both embedded targets with `heapless`
@@ -271,23 +282,27 @@ only; all simulated-time tests green; counters observable in every test.
 
 Crates: `bacnet-transport`.
 
-- [ ] Rewrite `mstp/port.rs` to drive `MasterCore<AllocQueues>`: serial reads
-      feed `push_slice` with timestamps, `tokio::time::sleep_until` feeds
-      `on_deadline`, `poll_action` maps to serial writes and to the existing
-      DE/RE modes in `mstp_serial.rs`.
-- [ ] Keep `MstpTransport<S>`, `MstpConfig` (now converting into
+- [x] Rewrite `mstp/port.rs` to drive `MasterCore<AllocQueues>`: the host's
+      bounded, chunk-tolerant assembler feeds validated frames (wire-timestamped
+      platforms use `on_octet`), `tokio::time::sleep_until` feeds
+      `on_deadline`, and `poll_action` maps to drained serial writes and to the
+      existing DE/RE modes in `mstp_serial.rs`.
+- [x] Keep `MstpTransport<S>`, `MstpConfig` (now converting into
       `MstpCoreConfig`), `SerialPort`, `LoopbackSerial`, `NoSerial`,
       the existing `node_state() -> Option<&Arc<Mutex<MasterNode>>>` contract,
       and `AnyTransport::Mstp` source-compatible. Retain `MasterNode` as a
       deprecated adapter wrapper and add a separately named snapshot API;
       changing `node_state()` itself would break current callers and tests.
-- [ ] Expose `counters()` on `MstpTransport` and through
-      `RouterPortCounters` where it fits.
-- [ ] Python: `mstp_py.rs` and the client, server, and router lifecycles
+- [x] Expose `counters()` on `MstpTransport`. `RouterPortCounters` remains a
+      transport-neutral forwarding snapshot; coupling its synchronous atomic
+      surface to the adapter's async MS/TP mutex did not fit that abstraction.
+- [x] Python: `mstp_py.rs` and the client, server, and router lifecycles
       compile unchanged; add `counters` to the Python MS/TP surface only if
       the stub change is trivial, otherwise defer.
-- [ ] Delete the old `MasterNode` implementation internals and differential
-      scaffolding while retaining the deprecated compatibility wrapper.
+- [x] Delete the codec differential scaffolding after cutover. The host runtime
+      no longer invokes the old state-machine methods; their deprecated public
+      fields and methods remain solely because deleting them conflicts with
+      this plan's explicit source-compatibility requirement for `MasterNode`.
 
 Tests: the 62 host master/adapter tests pass unchanged; `test_mstp_compat.py` passes
 on an installed wheel; a new adapter test proves a `SetDirection` pair
@@ -297,11 +312,11 @@ Acceptance: host behavior unchanged; workspace suite and Python suite green.
 
 ## Phase 5 - feature matrix, docs, and release
 
-- [ ] `embedded-check` covers both targets and the feature matrix: `no_std`,
+- [x] `embedded-check` covers both targets and the feature matrix: `no_std`,
       `no_std + alloc`, `no_std + heapless`, `std`, and the Tokio adapter.
-- [ ] `.github/scripts/check-embedded-deps.sh` asserts the dependency tree
+- [x] `.github/scripts/check-embedded-deps.sh` asserts the dependency tree
       for both new crates and runs in the fast gate.
-- [ ] `docs/rust-api.md`: new "Embedded MS/TP" section with a bare-metal
+- [x] `docs/rust-api.md`: new "Embedded MS/TP" section with a bare-metal
       codec example, a core driving loop example, and the counters table.
 - [ ] `CHANGELOG.md` entries; version bump per the Phase 0 decision; fork
       release through the existing `ace-pypi` path so the Python wheel picks
@@ -408,9 +423,10 @@ ACE's node F and P4 observer runs per Phase 6, outside this repository.
   configuration, queues, and counters. Mitigation: the module split in Phase
   3 is part of the design, not cleanup.
 - Behavior drift between host and core when `T_frame_abort` becomes exact.
-  Mitigation: the host adapter keeps its documented approximation by
-  feeding `on_silence` from read timeouts; the differential tests assert
-  the host path, not the exact path.
+  Mitigation: wire-timestamped platforms use `on_octet`; the host adapter
+  retains its documented chunk-tolerant assembly and uses the core's
+  validated-frame ingress. Differential tests cover the host path separately
+  from exact embedded inter-octet tests.
 - Upstream shape disagreement after code exists. Mitigation: Phase 0 files
   the issues first; the new crates are additive and survive a rejection as
   fork-only crates.

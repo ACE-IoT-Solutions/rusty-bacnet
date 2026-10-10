@@ -554,9 +554,12 @@ let port = GpioDirectionPort::with_post_tx_delay(
 
 The `GpioDirectionPort` wrapper:
 - Sets GPIO to receive mode (DE deasserted) on creation
-- Switches to TX mode before each `write()`
-- Waits for optional post-TX delay after write completes
-- Switches back to RX mode after each `write()`
+- Executes explicit `set_direction(TX)`, `write()`, `drain()`, and
+  `set_direction(RX)` actions when driven by `MstpTransport`
+- Preserves direct-call compatibility by bracketing a standalone `write()`
+  with TX/RX transitions and a physical drain
+- Waits for the optional post-TX delay after the UART drain completes
+- Best-effort deasserts the driver again when the wrapper is dropped
 - Uses the Linux GPIO character device (`/dev/gpiochipN`) via `gpiocdev` — not deprecated sysfs
 
 #### SerialPort Trait
@@ -565,10 +568,20 @@ The MS/TP state machine is hardware-agnostic. Custom serial implementations (e.g
 
 ```rust
 pub trait SerialPort: Send + Sync + 'static {
+    fn set_direction(&self, direction: SerialDirection)
+        -> impl Future<Output = Result<(), Error>> + Send;
     fn write(&self, data: &[u8]) -> impl Future<Output = Result<(), Error>> + Send;
     fn read(&self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Error>> + Send;
+    fn drain(&self) -> impl Future<Output = Result<(), Error>> + Send;
+    fn drain_physical(&self) -> impl Future<Output = Result<(), Error>> + Send;
 }
 ```
+
+`drain()` must remain asynchronously cancellable and prove that the final stop
+bit has left the UART or fail closed. Manual direction wrappers call the
+explicit `drain_physical()` hook, whose default delegates to `drain()`. The
+transport bounds both operations with its transmit watchdog before returning
+the transceiver to receive mode.
 
 ### Loopback Transport
 
@@ -1514,6 +1527,203 @@ let mut client = BACnetClient::sc_builder()
 client.stop().await?;
 hub.stop().await;
 ```
+
+## Embedded MS/TP
+
+The embedded MS/TP implementation is split into two allocation-free layers:
+
+- `bacnet-mstp-codec` owns the wire format. It encodes into caller-provided
+  storage and incrementally decodes from a caller-provided receive buffer.
+- `bacnet-mstp-core` owns Clause 9.5.6 master behavior. It has no clock,
+  executor, UART, GPIO, lock, or allocator; the platform supplies timestamped
+  events and executes the actions returned by the core.
+
+Both crates are `no_std`. The core's `heapless` feature provides fixed-capacity
+NPDU queues; its `alloc` feature provides an owned, pre-sized queue backend for
+systems that already use an allocator. Neither feature allocates while the
+core is running.
+
+### Bare-metal codec
+
+`Frame::encode_into` does not require a global allocator. The output and input
+storage can be placed in static memory, a stack-owned buffer, or a DMA buffer
+owned by the serial driver.
+
+```rust
+use bacnet_mstp_codec::{Frame, FrameError, FrameType, MAX_STANDARD_FRAME_LENGTH};
+
+fn encode_token(
+    destination: u8,
+    source: u8,
+    wire: &mut [u8; MAX_STANDARD_FRAME_LENGTH],
+) -> Result<usize, FrameError> {
+    Frame::new(FrameType::Token, destination, source, &[]).encode_into(wire)
+}
+
+fn send_one_token(uart: &mut impl Uart, destination: u8, source: u8)
+    -> Result<(), FrameError>
+{
+    let mut wire = [0; MAX_STANDARD_FRAME_LENGTH];
+    let length = encode_token(destination, source, &mut wire)?;
+    uart.write(&wire[..length]);
+    Ok(())
+}
+
+trait Uart {
+    fn write(&mut self, bytes: &[u8]);
+}
+```
+
+For receive, create `StreamDecoder` over storage owned by the caller and pass
+each received byte to `push`. `DecodeEvent::Invalid` means synchronization
+noise and may be discarded; `DecodeEvent::Malformed` means a frame candidate
+failed validation and should be counted as a parser/frame error. A completed
+`Frame` borrows the decoder storage, so copy or deliver it before reusing that
+storage.
+
+### Driving `MasterCore`
+
+The core is event-driven. A platform normally does the following on each loop:
+
+1. Read the monotonic timestamp and call `on_octet` for each wire-timestamped
+   byte. If a host assembler has already validated a complete frame, call
+   `on_validated_frame` instead. Do not submit the same frame through both
+   ingress paths.
+2. Report UART errors with `on_receive_error`, and call `on_silence` when the
+   serial receiver observes a silence interval.
+3. Arm a timer for `next_deadline()` and call `on_deadline` when it expires.
+4. Drain `poll_action()` and perform the returned hardware or application
+   operation.
+
+The transmit lifecycle is explicit. `SetDirection(Transmit)` is the request to
+assert driver-enable, followed by `Transmit { id, frame }`. The adapter must
+call `on_transmit_started(id, now)` when the UART/DMA transfer actually starts,
+then `on_transmit_complete(id, now)` only after the final stop bit has left the
+wire. On an I/O failure, early abort, or watchdog expiry it must call
+`on_transmit_aborted`; the core then emits `SetDirection(Receive)` and returns
+to a safe logical receive state.
+
+```rust
+use bacnet_mstp_codec::Frame;
+use bacnet_mstp_core::{
+    Action, CoreError, Direction, HeaplessQueues, Instant, MasterCore,
+};
+
+type Queues = HeaplessQueues<8, 8>;
+
+fn service_actions(
+    core: &mut MasterCore<'_, Queues>,
+    uart: &mut impl Port,
+) -> Result<(), CoreError> {
+    loop {
+        // A transmit action borrows the core only until write_frame returns;
+        // the port must copy the bytes into its own UART/DMA storage.
+        let transmit = match core.poll_action() {
+            Action::SetDirection(direction) => {
+                uart.set_direction(direction);
+                None
+            }
+            Action::Transmit { id, frame } => {
+                uart.write_frame(frame);
+                Some((id, uart.now()))
+            }
+            Action::DeliverNpdu {
+                source,
+                destination,
+                npdu,
+                request_id,
+            } => {
+                // Copy `npdu` before polling another action. If request_id is
+                // Some, complete it with Data, Postponed, or Cancelled.
+                application_delivery(source, destination, npdu, request_id);
+                None
+            }
+            Action::Idle => break,
+        };
+
+        if let Some((id, started_at)) = transmit {
+            core.on_transmit_started(id, started_at)?;
+            uart.wait_until_drained();
+            core.on_transmit_complete(id, uart.now())?;
+        }
+    }
+    Ok(())
+}
+
+trait Port {
+    fn set_direction(&mut self, direction: Direction);
+    fn write_frame(&mut self, frame: &[u8]);
+    fn wait_until_drained(&mut self);
+    fn now(&self) -> Instant;
+}
+
+fn application_delivery(
+    _source: u8,
+    _destination: u8,
+    _npdu: &[u8],
+    _request_id: Option<bacnet_mstp_core::RequestId>,
+) {
+    // Forward a copy to the application/network layer.
+}
+
+fn feed_validated_frame(
+    core: &mut MasterCore<'_, Queues>,
+    frame: Frame<'_>,
+    now: Instant,
+) -> Result<(), CoreError> {
+    core.on_validated_frame(frame, now)
+}
+```
+
+The `on_validated_frame` boundary is intended for a host-side assembler that
+handles chunking and timeout policy itself. A bare-metal UART path should use
+`on_octet` so the core can apply exact inter-octet timing and distinguish sync
+noise from a malformed frame candidate.
+
+### Configuration policy
+
+`MstpCoreConfig` validates the Clause 9 timing and addressing parameters, then
+adds bounded local scheduling policy:
+
+- `max_info_frames` is the Clause 9 limit for one token use.
+- `multiple_frame_ratio` is a percentage of `max_info_frames`, not an
+  additional frame count. The effective frame limit is rounded up and clamped
+  to at least one and at most `max_info_frames`; `100` preserves the full
+  Clause 9 limit.
+- `broadcast_unicast_ratio` is the number of broadcast frames scheduled per
+  unicast frame while both queues are eligible. It is a service ratio, not a
+  BACnet network-priority value. `NetworkPriority` still orders traffic within
+  each bounded queue.
+- `starvation_limit` promotes an item that has waited through the configured
+  number of service opportunities. `queue_max_age` is an inclusive expiry
+  boundary.
+- `transmit_watchdog` bounds a platform transfer and guarantees that a lost
+  UART completion cannot leave the logical transceiver in transmit mode.
+
+### Observable counters
+
+`MasterCore::counters()` returns a copy that is safe to expose to a diagnostic
+task or telemetry path without borrowing the core. Counters saturate instead
+of wrapping.
+
+| Counter | Meaning |
+| --- | --- |
+| `state_transitions` | Clause 9 state changes |
+| `deadline_misses` | Deadlines serviced after their scheduled instant |
+| `token_rotations` | Token passes completed to a successor |
+| `token_regenerations` | Lost-token regeneration attempts |
+| `token_retries` | Token-pass retries |
+| `parser_errors` | Malformed candidate or receive-validation errors |
+| `frame_aborts` | Partial candidates abandoned after `T_frame_abort` |
+| `frames_received` | Valid MS/TP frames received |
+| `npdus_delivered` | NPDUs placed in the application-delivery ring |
+| `frames_transmitted` | Frames whose final stop bit was reported complete |
+| `action_drops` | Bounded action-ring capacity failures |
+| `de_assertion_us` | Cumulative driver-enable assertion duration |
+| `unicast`, `broadcast` | Per-queue depth, high-water, enqueue/dequeue, expiry, oversize, full, and starvation counters |
+
+The counters describe local implementation behavior and diagnostics; they do
+not by themselves establish a BACnet conformance or interoperability claim.
 
 ### MS/TP with USB Adapter
 

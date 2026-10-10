@@ -23,7 +23,7 @@ pub use frame::{
     retain_lone_preamble_byte, Frame, FrameHeader, FrameType,
 };
 pub use sink::{encode_to_sink, FrameSink};
-pub use stream::{DecodeEvent, StreamDecoder};
+pub use stream::{DecodeEvent, StreamDecoder, StreamPhase};
 
 /// Compatibility alias for callers that name stream outcomes `StreamEvent`.
 pub type StreamEvent<'a> = DecodeEvent<'a>;

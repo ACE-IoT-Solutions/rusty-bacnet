@@ -113,13 +113,5 @@ fn owned_frame(frame: codec::Frame<'_>) -> MstpFrame {
 }
 
 #[cfg(test)]
-#[path = "mstp_frame_legacy.rs"]
-mod legacy;
-
-#[cfg(test)]
 #[path = "mstp_frame_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "mstp_frame_differential_tests.rs"]
-mod differential_tests;

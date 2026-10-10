@@ -131,16 +131,92 @@ single-byte CRC behavior, and error precedence. Property tests cover
 truncation, corruption, oversized wire lengths, preamble resynchronization,
 byte-at-a-time input, and sink exhaustion/recovery.
 
+## Phase 3 portable-core acceptance (2026-10-10)
+
+The first portable-core implementation passed its host feature-matrix checks
+with the bounded heapless backend enabled:
+
+```text
+cargo check -p bacnet-mstp-core --all-features --locked
+passed
+
+cargo test -p bacnet-mstp-core --all-features --locked --offline
+20 unit tests, 11 Clause 9 regression tests, and 11 public-core/property tests
+passed; 0 failed; doctests passed
+
+RUSTC=/Users/acedrew/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc \
+  rustup run 1.97.1 cargo check -p bacnet-mstp-core \
+  --no-default-features --target thumbv7em-none-eabi --locked --offline
+passed
+
+RUSTC=/Users/acedrew/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc \
+  rustup run 1.97.1 cargo check -p bacnet-mstp-core \
+  --no-default-features --features heapless \
+  --target thumbv7em-none-eabi --locked --offline
+passed
+
+RUSTC=/Users/acedrew/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc \
+  rustup run 1.97.1 cargo check -p bacnet-mstp-core \
+  --no-default-features --target riscv32imac-unknown-none-elf --locked --offline
+passed
+
+RUSTC=/Users/acedrew/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustc \
+  rustup run 1.97.1 cargo check -p bacnet-mstp-core \
+  --no-default-features --features heapless \
+  --target riscv32imac-unknown-none-elf --locked --offline
+passed
+
+bash .github/scripts/check-embedded-deps.sh thumbv7em-none-eabi
+bash .github/scripts/check-embedded-deps.sh riscv32imac-unknown-none-elf
+both passed; embedded dependency trees contain no host-only dependencies
+```
+
+The core checks include generation-bound request and transmit completion,
+explicit receive-error and malformed-frame handling, strict `T_frame_abort`
+and `Nmin_octets` boundaries, station-slot token regeneration, `Tusage_timeout`
+polling, failed-successor wrap, broadcast delivery, bounded action priority,
+queue overflow/expiry, allocation-free operation after construction, and a
+monotone randomized event sequence. These are implementation and regression
+evidence; hardware timing and Node F/P4 interoperability remain Phase 6 work.
+
+## Phase 4 host-adapter acceptance (2026-10-10)
+
+The Tokio adapter now drives the portable core and passed the expanded host
+regression floor:
+
+```text
+cargo test -p bacnet-transport --locked 'mstp::'
+69 tests passed; 0 failed
+
+scripts/publish-python-release.sh 0.11.7 --build-only --allow-dirty
+repaired sdist built with --locked; CPython 3.13 macOS arm64 wheel built,
+installed in an isolated environment, and import-smoked
+
+python -I -m pytest crates/rusty-bacnet/tests/test_mstp_compat.py -q
+11 tests and 42 subtests passed against the installed wheel
+```
+
+The added adapter regressions cover a scheduling wake at 226 ms while the
+250 ms peer-safe reply bound remains intact, host chunk activity across
+`Tusage_timeout`, bounded write/drain and direction futures, delayed direction
+crossing reply expiry, explicit `TX -> write -> drain -> RX` ordering, and
+non-FIFO compatibility-queue mirroring. Shutdown restoration and transient
+receive-direction recovery are also covered. The Phase 2 differential
+scaffold was removed after the adapter cutover; the 47 original codec cases
+remain.
+
 ## Current acceptance matrix
 
 | Evidence | State |
 |---|---|
 | Codec regression floor | 47/47 passing |
-| Master/host-adapter regression floor | 62/62 passing |
+| Master/host-adapter regression floor | 62/62 original tests plus seven adapter regressions passing (69 total) |
 | Bare Cortex-M `bacnet-types` | `v0.11.5` CI passed |
 | Bare RISC-V `bacnet-types` | `v0.11.5` CI passed |
 | `bacnet-encoding` and `bacnet-services` bare builds | CI run `38067493332` passed both targets |
 | Standalone codec dependency gate | Phase 2 local acceptance passed both targets and all feature combinations; `v0.11.6` CI pending |
-| Portable core dependency gate | Phase 3 |
-| Installed-wheel and W5 regression | Phase 4/5 |
+| Portable core host tests | 42 tests passed locally; no-default and heapless bare-target checks passed on both targets |
+| Portable core dependency gate | `check-embedded-deps.sh` passed for both targets locally; release CI pending |
+| Installed-wheel regression | CPython 3.13 wheel build/import and `test_mstp_compat.py` passed locally |
+| W5 virtual-router regression | Phase 5 release gate |
 | Node F and P4 hardware evidence | Phase 6, downstream |
