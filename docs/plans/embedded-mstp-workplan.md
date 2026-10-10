@@ -370,22 +370,33 @@ Downstream implementation evidence (2026-10-10):
   refresh and inventory-check scripts reject both modified and extra files.
 - The node F workspace builds separate passive and `active-mstp` ESP32-S3
   release images from the vendored codec and core. Their recorded ELF SHA-256
-  values are `1cbbcc3cf77a8d1c8730697edee121f11f835dce380f810a821c720e8f5d6ae5`
-  and `1c007b8b4a13d5157a45e00d2237b7198dd72e44866b52503dc71da74af48edc`.
-- Four platform-contract tests pass in both feature modes, including physical
-  transmit completion before receive restore and fail-closed recovery after
-  write or drain failure. The target dependency tree contains the codec,
-  core, and ESP-IDF platform crates but no Tokio, `socket2`, or
-  `bacnet-transport` host runtime.
+  values are `e7eb2ec5ff1c1bbc83a59f7692f077403d2a9421d9ca4a6d844ba07f96280446`
+  and `295c40a91ef4de18fe60697e3a54582dae5caf172039533dad96929ce168015c`.
+- Seven tests pass in both feature modes, including physical transmit
+  completion before receive restore, fail-closed recovery after write or drain
+  failure, Who-Is/I-Am, ReadProperty, and WriteProperty/read-back for the
+  deterministic node-F model. The target dependency tree contains the codec,
+  core, alloc-backed encoding/services, and ESP-IDF platform crates but no
+  Tokio, `socket2`, or `bacnet-transport` host runtime.
 - The evidence evaluator is fail-closed: missing captures or measurements are
   `invalid`, completed failed assertions are `fail`, and only complete
   passive/active manifests can become `pass`. The downstream Python suites
   pass 29 repository tests and four dashboard tests.
-- Hardware acceptance is not yet claimed. No node F/P4 capture has been
-  recorded, the active image still needs Who-Is/I-Am and property-service
-  handling, and the downstream workspace has no Git metadata from which to
-  record the required firmware commit. These keep the two hardware checklist
-  items and Phase 6 acceptance open.
+- Hardware acceptance is not yet claimed. No complete passing node F/P4
+  capture has been recorded, and the downstream workspace has no Git metadata
+  from which to record the required firmware commit. These keep the two
+  hardware checklist items and Phase 6 acceptance open.
+
+First hardware attempt (2026-10-10): the passive ELF was converted to merged
+factory image `b52684b20d39a37958144228bfd1c89f9ff0e7f9d4a5cbd9e46cf64903e875da`
+and flashed to node F after staging the verified rollback image on the ARM HIL
+host. The Rust image booted and held `DE=0`, but eleven consecutive reports
+over 55 seconds showed `rx_bytes=0` while observer C continued receiving valid
+MS/TP traffic. The run was cancelled, the active image was not flashed, and the
+C factory image was restored; its health endpoint and MS/TP counters recovered.
+The incomplete capture is intentionally `invalid`, not a pass. The next passive
+attempt must resolve the ESP-IDF UART receive path and add independent DE and
+heap measurements before the hardware checklist can advance.
 
 ## Proposed PR queue
 
