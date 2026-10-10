@@ -321,7 +321,7 @@ Acceptance: host behavior unchanged; workspace suite and Python suite green.
 - [x] `CHANGELOG.md` entries; version bump per the Phase 0 decision; fork
       release through the existing `ace-pypi` path so the Python wheel picks
       up the adapter.
-- [ ] Update the two upstream issues with the PR links.
+- [x] Update the two upstream issues with the PR links.
 
 Acceptance: CI green with the new job; release tagged; docs published.
 
@@ -334,13 +334,23 @@ artifacts through ACE PyPI. A separate clean Python 3.13 environment installed
 `ace-rusty-bacnet==0.11.7` from the private index and imported
 `rusty_bacnet` successfully.
 
+Upstream handoff evidence (2026-10-10): issue
+[#1604](https://github.com/jscott3201/rusty-bacnet/issues/1604) links the
+focused allocator-free codec
+[PR #1606](https://github.com/jscott3201/rusty-bacnet/pull/1606), and issue
+[#1605](https://github.com/jscott3201/rusty-bacnet/issues/1605) links the
+stacked portable master-core
+[PR #1607](https://github.com/jscott3201/rusty-bacnet/pull/1607). The latter
+is intentionally stacked on the codec PR and narrows to its core commit after
+the codec merges.
+
 ## Phase 6 - downstream handoff
 
 Tracked here, executed in `ace-router-debug`.
 
-- [ ] Refresh `vendor/rusty-bacnet` to the released commit via the
+- [x] Refresh `vendor/rusty-bacnet` to the released commit via the
       documented explicit operation; `PROVENANCE.json` updated.
-- [ ] Add `bacnet-mstp-codec` and `bacnet-mstp-core` to the firmware build
+- [x] Add `bacnet-mstp-codec` and `bacnet-mstp-core` to the firmware build
       graph; remove any application adapter the requests said would become
       redundant.
 - [ ] Node F receive-only run with the codec and P4 observer; then MAC 30
@@ -352,6 +362,30 @@ Tracked here, executed in `ace-router-debug`.
 
 Acceptance: ACE sign-off recorded with the firmware commit and the vendored
 release.
+
+Downstream implementation evidence (2026-10-10):
+
+- `ace-router-debug/firmware/rust-espidf/vendor/rusty-bacnet` is an exact,
+  checksum-verified export of release `0.11.7` at commit `55233111`; its
+  refresh and inventory-check scripts reject both modified and extra files.
+- The node F workspace builds separate passive and `active-mstp` ESP32-S3
+  release images from the vendored codec and core. Their recorded ELF SHA-256
+  values are `1cbbcc3cf77a8d1c8730697edee121f11f835dce380f810a821c720e8f5d6ae5`
+  and `1c007b8b4a13d5157a45e00d2237b7198dd72e44866b52503dc71da74af48edc`.
+- Four platform-contract tests pass in both feature modes, including physical
+  transmit completion before receive restore and fail-closed recovery after
+  write or drain failure. The target dependency tree contains the codec,
+  core, and ESP-IDF platform crates but no Tokio, `socket2`, or
+  `bacnet-transport` host runtime.
+- The evidence evaluator is fail-closed: missing captures or measurements are
+  `invalid`, completed failed assertions are `fail`, and only complete
+  passive/active manifests can become `pass`. The downstream Python suites
+  pass 29 repository tests and four dashboard tests.
+- Hardware acceptance is not yet claimed. No node F/P4 capture has been
+  recorded, the active image still needs Who-Is/I-Am and property-service
+  handling, and the downstream workspace has no Git metadata from which to
+  record the required firmware commit. These keep the two hardware checklist
+  items and Phase 6 acceptance open.
 
 ## Proposed PR queue
 
