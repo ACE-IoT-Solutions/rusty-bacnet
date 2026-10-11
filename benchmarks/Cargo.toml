@@ -10,6 +10,9 @@ bacnet-encoding = { path = "../crates/bacnet-encoding" }
 bacnet-services = { path = "../crates/bacnet-services" }
 bacnet-transport = { path = "../crates/bacnet-transport", features = ["sc-tls", "ipv6"] }
 bacnet-network = { path = "../crates/bacnet-network" }
+bacnet-router-core = { path = "../crates/bacnet-router-core" }
+bacnet-router-adapters = { path = "../crates/bacnet-router-adapters" }
+bacnet-mstp-core = { path = "../crates/bacnet-mstp-core", features = ["heapless"] }
 bacnet-client = { path = "../crates/bacnet-client", features = ["sc-tls", "ipv6"] }
 bacnet-objects = { path = "../crates/bacnet-objects" }
 bacnet-server = { path = "../crates/bacnet-server", features = ["sc-tls"] }
@@ -59,6 +62,10 @@ path = "src/bin/stress_orchestrator.rs"
 
 [[bench]]
 name = "encoding"
+harness = false
+
+[[bench]]
+name = "embedded_router"
 harness = false
 
 [[bench]]
