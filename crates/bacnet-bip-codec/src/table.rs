@@ -4,7 +4,9 @@ use core::fmt;
 use core::iter::FusedIterator;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
-use crate::{BvllError, BvllSink, BDT_ENTRY_LENGTH, BIP_ADDRESS_LENGTH, FDT_ENTRY_LENGTH};
+use crate::{
+    BvllError, BvllSink, SinkFull, BDT_ENTRY_LENGTH, BIP_ADDRESS_LENGTH, FDT_ENTRY_LENGTH,
+};
 
 /// Octets in one table entry: both tables use the same size (Annex J.2.2.1,
 /// J.2.8.1), so one table type serves both.
@@ -245,7 +247,7 @@ impl<'a, T: TableEntry> Entries<'a, T> {
     }
 
     /// Write the table's octets to `sink`.
-    pub(crate) fn write_to<S: BvllSink + ?Sized>(&self, sink: &mut S) -> Result<(), BvllError> {
+    pub(crate) fn write_to<S: BvllSink + ?Sized>(&self, sink: &mut S) -> Result<(), SinkFull> {
         match self.repr {
             Repr::Wire(entries) => sink.write(entries.as_flattened()),
             Repr::Typed(entries) => entries

@@ -1,10 +1,14 @@
-//! An allocation-free codec for BACnet/IP BVLL messages on IPv4 (Annex J).
+//! An allocation-free codec for BACnet/IP BVLL messages, on IPv4 (Annex J)
+//! at the crate root and on IPv6 (Annex U) in [`ipv6`].
 //!
-//! The crate covers the wire format and nothing above it: the 4-octet BVLL
-//! header, the twelve messages Annex J.2 defines, six-octet B/IP addresses
-//! (J.1.2), and the entries of BDTs and FDTs.
-//! Sockets, BBMD forwarding, the foreign-device registration lifecycle and
-//! which device answers what belong to the layer that uses it.
+//! The crate covers the wire format and nothing above it. For B/IP that is
+//! the 4-octet BVLL header, the twelve messages Annex J.2 defines, six-octet
+//! B/IP addresses (J.1.2), and the entries of BDTs and FDTs; [`ipv6`] does
+//! the same for the twelve messages of Annex U.2, with B/IPv6 addresses and
+//! virtual MAC addresses. Sockets, BBMD forwarding, the foreign-device
+//! registration lifecycle and which device answers what belong to the layer
+//! that uses it. Both message families share the [`BvllSink`] trait and the
+//! header constants.
 //!
 //! The default build never allocates. [`Bvll`] borrows its NPDU or table
 //! from the datagram, tables are read through iterators
@@ -33,7 +37,8 @@
 //!
 //! # Features
 //!
-//! No feature needs `std`. Each adds a [`BvllSink`] implementation:
+//! No feature needs `std`. Each adds a [`BvllSink`] implementation, which
+//! both encoders use:
 //!
 //! - `alloc`: for `alloc::vec::Vec<u8>`.
 //! - `bytes`: for `bytes::BytesMut`; implies `alloc`.
@@ -65,6 +70,7 @@ extern crate alloc;
 
 mod error;
 mod function;
+pub mod ipv6;
 mod message;
 mod sink;
 mod table;
@@ -72,7 +78,7 @@ mod table;
 pub use error::BvllError;
 pub use function::{BvlcFunction, BvlcResultCode, PayloadShape};
 pub use message::{decode, Bvll, BvllFrame};
-pub use sink::BvllSink;
+pub use sink::{BvllSink, SinkFull};
 pub use table::{
     address_from_octets, address_from_slice, address_to_octets, BdtEntries, BdtEntry, Entries,
     EntryIter, FdtEntries, FdtEntry, TableEntry,
@@ -80,9 +86,11 @@ pub use table::{
 
 /// The BVLC Type octet of a B/IP message (Annex J.2).
 pub const BVLC_TYPE_BIP: u8 = 0x81;
-/// The BVLL header: type, function and the two Length octets.
+/// The BVLL header: type, function and the two Length octets. B/IP and
+/// B/IPv6 share it (Annex J.2, U.2).
 pub const HEADER_LENGTH: usize = 4;
-/// The largest message the 16-bit Length field can state, header included.
+/// The largest message the 16-bit Length field can state, header included,
+/// in either annex.
 pub const MAX_BVLL_LENGTH: usize = u16::MAX as usize;
 /// Octets in a B/IP address: IPv4 address and UDP port (Annex J.1.2).
 pub const BIP_ADDRESS_LENGTH: usize = 6;
@@ -92,5 +100,6 @@ pub const BDT_ENTRY_LENGTH: usize = 10;
 /// Octets in a foreign device table entry: B/IP address, time-to-live and
 /// seconds remaining (Annex J.2.8.1).
 pub const FDT_ENTRY_LENGTH: usize = 10;
-/// The default B/IP UDP port, 47808 (0xBAC0; Annex J.1.2).
+/// The default UDP port, 47808 (0xBAC0), for B/IP and B/IPv6 alike (Annex
+/// J.1.2, U.1.1.2).
 pub const DEFAULT_PORT: u16 = 0xBAC0;

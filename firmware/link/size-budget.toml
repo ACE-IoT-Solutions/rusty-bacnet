@@ -26,11 +26,15 @@
 # flash / ram:
 #
 #   thumbv7m mstp     18304 / 1004 / 0 / 14504   20332 / 14504
-#   thumbv7m bip       4952 /  392 / 0 /   132    6368 /   132
+#   thumbv7m bip       8936 /  976 / 0 /   132   10936 /   132
 #   thumbv6m mstp     19012 / 1004 / 0 / 14504   20208 / 14504
-#   thumbv6m bip       5740 /  392 / 0 /   132    6324 /   132
+#   thumbv6m bip      10468 /  980 / 0 /   132   11640 /   132
 #   riscv32imc mstp   19704 / 1292 / 0 / 14502   21018 / 14502
-#   riscv32imc bip     6616 /  744 / 0 /   132    7382 /   132
+#   riscv32imc bip    11820 / 1524 / 0 /   132   13366 /   132
+#
+# The bip rows were measured again on 2026-10-11, same toolchain, when the
+# image gained the B/IPv6 codec's scenario (#1621): about 4.6-6.0 KB more
+# flash, the RAM unchanged.
 
 [thumbv7m-none-eabi.mstp]
 text = 20512
@@ -42,11 +46,11 @@ ram = 16256
 fmt_functions = 0
 
 [thumbv7m-none-eabi.bip]
-text = 5552
-rodata = 448
+text = 10016
+rodata = 1104
 data = 64
 bss = 160
-flash = 7136
+flash = 12256
 ram = 160
 fmt_functions = 0
 
@@ -60,11 +64,11 @@ ram = 16256
 fmt_functions = 0
 
 [thumbv6m-none-eabi.bip]
-text = 6432
-rodata = 448
+text = 11728
+rodata = 1104
 data = 64
 bss = 160
-flash = 7088
+flash = 13040
 ram = 160
 fmt_functions = 0
 
@@ -78,10 +82,10 @@ ram = 16256
 fmt_functions = 0
 
 [riscv32imc-unknown-none-elf.bip]
-text = 7424
-rodata = 848
+text = 13248
+rodata = 1712
 data = 64
 bss = 160
-flash = 8272
+flash = 14976
 ram = 160
 fmt_functions = 0

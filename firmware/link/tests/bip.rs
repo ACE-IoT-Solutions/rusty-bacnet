@@ -2,12 +2,15 @@
 //! This is where the scenario's behaviour is verified: the bare-metal build
 //! only links it.
 
-use core::net::{Ipv4Addr, SocketAddrV4};
+use core::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
 
+use bacnet_bip_codec::ipv6::{
+    Bip6Address, Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6, Bvll6Error,
+};
 use bacnet_bip_codec::{
     BdtEntry, BvlcFunction, BvlcResultCode, Bvll, BvllError, FdtEntries, FdtEntry, PayloadShape,
 };
-use firmware_link::bip::{run, Memory, Summary};
+use firmware_link::bip::{ipv6, run, Memory, Summary};
 
 fn address(octets: [u8; 4], port: u16) -> SocketAddrV4 {
     SocketAddrV4::new(Ipv4Addr::from(octets), port)
@@ -17,6 +20,96 @@ fn address(octets: [u8; 4], port: u16) -> SocketAddrV4 {
 /// apart from the codec, from the twelve datagrams written out by hand from
 /// the Annex J.2 layouts (156 octets).
 const ENCODED_FNV: u32 = 0xCDF7_F4BE;
+
+/// The same hash over the B/IPv6 part's encodings, worked out the same way
+/// from its twelve datagrams written out by hand from the Annex U.2 layouts
+/// (189 octets).
+const ENCODED_FNV6: u32 = 0xFBBD_B05C;
+
+const VMAC_1234: Bip6Vmac = Bip6Vmac::new([0x00, 0x04, 0xD2]);
+const VMAC_5678: Bip6Vmac = Bip6Vmac::new([0x00, 0x16, 0x2E]);
+
+/// What the B/IPv6 part reports.
+fn ipv6_summary() -> ipv6::Summary {
+    ipv6::Summary {
+        // One message of each of the twelve variants, through a slice and
+        // through the sink, each decoding back to itself.
+        encoded: 12,
+        // Virtual-Address-Resolution 7; the result and the registration 9;
+        // the three two-VMAC messages 10; the two NPDU carriers with one VMAC
+        // 15 and the unicast 18; the deletion 25, Forwarded-Address-Resolution
+        // 28 and Forwarded-NPDU 33.
+        encoded_octets: 7 + 9 * 2 + 10 * 3 + 15 * 2 + 18 + 25 + 28 + 33,
+        encoded_fnv: ENCODED_FNV6,
+        sink_matches: 12,
+        round_trips: 12,
+        // Function codes 0x00 through 0x0A, and 0x0C.
+        functions: 0x17FF,
+        // Original-Unicast-NPDU and the two ACKs.
+        destinations: 3,
+        // The hand-written datagrams decode to the field values their
+        // comments give.
+        goldens: [
+            Some(Bvll6::RegisterForeignDevice {
+                source: VMAC_1234,
+                ttl: 300,
+            }),
+            Some(Bvll6::ForwardedNpdu {
+                original_source: VMAC_1234,
+                original_address: Bip6Address::new(
+                    Ipv6Addr::new(0x2001, 0xDB8, 0, 0, 0, 0, 0, 0x14),
+                    47809,
+                ),
+                npdu: &[0x01, 0x00],
+            }),
+            Some(Bvll6::AddressResolutionAck {
+                source: VMAC_5678,
+                destination: VMAC_1234,
+            }),
+        ],
+        origin: Some(Bip6Address::new(
+            Ipv6Addr::new(0x2001, 0xDB8, 0, 0, 0, 0, 0, 0x77),
+            47808,
+        )),
+        forwarded_npdu: Some(8),
+        shapes: [
+            Some(PayloadShape::Fixed(3)),
+            Some(PayloadShape::Npdu { prefix: 21 }),
+            Some(PayloadShape::Fixed(21)),
+            None,
+        ],
+        naks: [
+            Some(Bvlc6ResultCode::ADDRESS_RESOLUTION_NAK),
+            Some(Bvlc6ResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK),
+            None,
+        ],
+        rejections: [
+            Some(Bvll6Error::LengthMismatch {
+                declared: 9,
+                received: 10,
+            }),
+            Some(Bvll6Error::NotBip6 { bvlc_type: 0x81 }),
+            Some(Bvll6Error::PayloadLength {
+                function: Bvlc6Function::REGISTER_FOREIGN_DEVICE,
+                length: 4,
+            }),
+            Some(Bvll6Error::UnknownFunction { function: 0x0B }),
+            Some(Bvll6Error::UndefinedResultCode { code: 0x0010 }),
+            Some(Bvll6Error::AddressLength { length: 6 }),
+            // The 33-octet Forwarded-NPDU into 10 octets of slice, and into
+            // the sink with 14 of its 64 octets free.
+            Some(Bvll6Error::BufferExhausted {
+                needed: 33,
+                available: 10,
+            }),
+            Some(Bvll6Error::BufferExhausted {
+                needed: 33,
+                available: 14,
+            }),
+        ],
+        errors: 0,
+    }
+}
 
 /// The one entry of the golden FDT acknowledgement.
 const GOLDEN_FDT: [FdtEntry; 1] = [FdtEntry::new(
@@ -110,6 +203,7 @@ fn scenario_summary() {
             }),
         ],
         errors: 0,
+        ipv6: ipv6_summary(),
     };
     assert_eq!(summary, expected);
 }
