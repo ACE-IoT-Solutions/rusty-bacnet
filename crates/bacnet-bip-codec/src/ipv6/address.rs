@@ -5,6 +5,9 @@ use core::net::{Ipv6Addr, SocketAddrV6};
 
 use super::{Bvll6Error, BIP6_ADDRESS_LENGTH, VMAC_LENGTH};
 
+/// Octets in the IPv6 address at the front of a B/IPv6 address.
+const IPV6_LENGTH: usize = 16;
+
 /// A B/IPv6 address: a 16-octet IPv6 address, then a 2-octet UDP port, both
 /// most significant octet first (Annex U.1.1.2).
 ///
@@ -39,17 +42,20 @@ impl Bip6Address {
 
     /// The address's 18 wire octets: the IPv6 address, then the port.
     pub const fn to_octets(self) -> [u8; BIP6_ADDRESS_LENGTH] {
-        let [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p] = self.ip.octets();
-        let [high, low] = self.port.to_be_bytes();
-        [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, high, low]
+        let mut octets = [0; BIP6_ADDRESS_LENGTH];
+        let (ip, port) = octets.split_at_mut(IPV6_LENGTH);
+        ip.copy_from_slice(&self.ip.octets());
+        port.copy_from_slice(&self.port.to_be_bytes());
+        octets
     }
 
     /// The address 18 wire octets hold.
     pub const fn from_octets(octets: [u8; BIP6_ADDRESS_LENGTH]) -> Self {
-        let [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, high, low] = octets;
+        let mut ip = [0; IPV6_LENGTH];
+        ip.copy_from_slice(octets.split_at(IPV6_LENGTH).0);
         Self {
-            ip: Ipv6Addr::from_octets([a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p]),
-            port: u16::from_be_bytes([high, low]),
+            ip: Ipv6Addr::from_octets(ip),
+            port: u16::from_be_bytes([octets[IPV6_LENGTH], octets[IPV6_LENGTH + 1]]),
         }
     }
 
