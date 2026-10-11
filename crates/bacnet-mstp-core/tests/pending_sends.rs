@@ -571,3 +571,23 @@ fn an_invalid_frame_while_a_poll_waits_only_delays_it() {
     let (_, header) = handed_over(&mut core);
     assert!(is(header, FrameType::PollForMaster, PEER));
 }
+
+/// Row "token-generation poll", its limit at a refused start: a start the
+/// line refuses once the limit has passed drops the poll at once, rather
+/// than leave it waiting on a deadline already due.
+#[test]
+fn a_start_refused_past_the_limit_drops_the_frame_at_once() {
+    let mut rx = [0; 64];
+    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let id = generation_handed_over(&mut core);
+    core.on_octet(0x00, ms(1_008)).unwrap();
+    assert_eq!(
+        core.on_transmit_started(id, ms(1_011)),
+        Err(CoreError::TransmitDeferred)
+    );
+    assert_eq!(core.state(), MasterState::Idle);
+    assert_eq!(core.counters().cancelled_sends, 1);
+    assert_eq!(core.counters().deferred_starts, 1);
+    expect_receive_only(&mut core);
+    assert_eq!(core.next_deadline(), Some(ms(1_508)));
+}

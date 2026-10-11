@@ -238,3 +238,33 @@ fn an_aborted_unstarted_answer_counts_as_expired() {
     assert_eq!(core.counters().cancelled_sends, 0);
     assert_eq!(core.state(), MasterState::Idle);
 }
+
+/// The transmit watchdog aborts a transmit the adapter never completes. One
+/// it never started added no driver-on time and is counted as given up; a
+/// started one adds the time its driver was on.
+#[test]
+fn only_a_started_transmit_adds_driver_on_time() {
+    for started in [false, true] {
+        let mut rx = [0; 64];
+        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        poll_waiting(&mut core);
+        let handed = core.next_deadline().unwrap();
+        core.on_deadline(handed).unwrap();
+        let (id, _) = handed_over(&mut core);
+        if started {
+            core.on_transmit_started(id, handed).unwrap();
+        }
+        let watchdog = handed + core.config().transmit_watchdog;
+        assert_eq!(core.next_deadline(), Some(watchdog));
+        core.on_deadline(watchdog).unwrap();
+        expect_receive_only(&mut core);
+        let on = if started {
+            core.config().transmit_watchdog.as_micros()
+        } else {
+            0
+        };
+        assert_eq!(core.counters().de_assertion_us, on, "started {started}");
+        assert_eq!(core.counters().cancelled_sends, u32::from(!started));
+        assert_eq!(core.state(), MasterState::Idle);
+    }
+}

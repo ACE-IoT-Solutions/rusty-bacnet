@@ -8,8 +8,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Call it after polling [`Action::Transmit`] and before enabling the
     /// line driver, and send only if it returns `Ok`. Until it does, keep the
     /// receiver on and feed the core what it hears: those octets are line
-    /// activity, not echo. After any error for a transmit, or once it is
-    /// aborted, send nothing more for its id.
+    /// activity, not echo. Right before the call, drain the receive FIFO or
+    /// DMA buffer and feed the core every octet and receive error in it; an
+    /// adapter that cannot tell when they arrived may stamp them with the
+    /// drain time, which is safe because a later stamp can only defer the
+    /// start. After any error for a transmit, or once it is aborted, send
+    /// nothing more for its id.
     ///
     /// - If the line was active within T_turnaround of `now` (activity that
     ///   reached the core after the frame was handed over), the start is
@@ -49,8 +53,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             // T_turnaround, so the frame waits again.
             self.withdraw_transmit(id)?;
             self.counters.record_deferred_start();
-            // Waiting on would only set a deadline already due, at which
-            // the frame is dropped anyway; drop it now instead.
+            // Past its limit: drop it now, rather than leave a deadline that
+            // is already due.
             if now >= pending.limit {
                 self.drop_pending(now)?;
             } else {
@@ -61,6 +65,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         if window.is_some_and(|window| now > window.send_by) {
             self.counters.record_late_reply();
         }
+        // A partial frame whose T_frame_abort fell due unserviced is counted
+        // as on_deadline would count it (no invalid-frame event while this
+        // frame waits).
+        let _ = self.abort_partial_if_late(now);
         // The receiver goes off as the driver goes on (Clause 9.5.5.1), so a
         // frame part received now can never complete. Drop it as an abort,
         // not an invalid frame: its T_frame_abort would otherwise fall during
@@ -134,8 +142,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Abort the matching transmit and restore logical receive direction.
     ///
     /// Its actions not yet polled are withdrawn, so the next action is the
-    /// switch back to receive. A frame aborted before its start was
-    /// confirmed never went out, so it is counted as given up: in
+    /// switch back to receive. The core's transmit watchdog uses it too, for
+    /// a transmit the adapter never started or never completed. A frame
+    /// aborted before its start was confirmed never went out, so it adds no
+    /// driver-on time and is counted as given up: in
     /// [`MstpCounters::expired_requests`] for an answer, which leaves its
     /// request unanswered, and in [`MstpCounters::cancelled_sends`] for any
     /// other frame.
@@ -152,8 +162,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .ok_or(CoreError::StaleTransmit)?;
         self.withdraw_transmit(id)?;
         self.forget_pending();
-        self.counters
-            .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
+        if tx.started {
+            self.counters
+                .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
+        }
         self.set_state(MasterState::Idle);
         self.protocol_deadline = Some(now + self.config.t_no_token);
         self.take_pending_token(now)

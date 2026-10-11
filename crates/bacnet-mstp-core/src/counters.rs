@@ -99,14 +99,17 @@ pub struct MstpCounters {
     /// Answers dropped unsent because the asker may already have stopped
     /// waiting: its shortest T_reply_timeout (255 ms), or for a Reply To Poll
     /// For Master its shortest T_usage_timeout (20 ms), less one octet time
-    /// and a 1 ms guard. An answer the adapter aborted before starting it
-    /// counts here too: its request goes unanswered.
+    /// and a 1 ms guard. An answer aborted before it started counts here
+    /// too, whether the adapter aborted it or the core's transmit watchdog
+    /// did because the adapter never started it: its request goes
+    /// unanswered.
     pub expired_requests: u32,
     /// Frames other than answers given up before they went out: line
     /// activity kept them waiting past their limit, or was the evidence
     /// their state watches for (SawTokenUser, SawFrame, a late Reply To Poll
-    /// For Master), or the adapter aborted them before starting them. Line
-    /// activity alone only delays a frame.
+    /// For Master), or they were aborted before they started, by the adapter
+    /// or by the core's transmit watchdog. Line activity alone only delays a
+    /// frame.
     pub cancelled_sends: u32,
     /// Transmit starts refused because the line was active within
     /// T_turnaround of them (Clause 9.5.5.1). Each frame waited for a quiet
@@ -122,7 +125,9 @@ pub struct MstpCounters {
     /// frame of its own, or a Token that arrived while a frame it sends as
     /// token holder waited.
     pub discarded_while_busy: u32,
-    /// Frames abandoned by T_frame_abort.
+    /// Frames abandoned part way through: by T_frame_abort, or when this
+    /// station confirmed a transmit start, since its receiver is off while
+    /// its driver is on.
     pub frame_aborts: u32,
     /// Valid MS/TP frames received.
     pub frames_received: u32,

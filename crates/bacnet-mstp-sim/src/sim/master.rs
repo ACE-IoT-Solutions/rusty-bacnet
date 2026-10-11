@@ -35,7 +35,8 @@ pub(crate) struct MasterNode {
     /// The core counted a token generation; its next frame is that poll.
     pub(super) regenerated: bool,
     /// A frame whose start the core deferred. When the core hands the same
-    /// octets over again, it is the same frame.
+    /// octets over again, before it gives any frame up, it is the same
+    /// frame.
     withdrawn: Option<PendingTx>,
     /// Deadline misses already accounted for.
     misses_seen: u32,
@@ -147,6 +148,11 @@ fn is_answer(octets: &[u8]) -> bool {
     })
 }
 
+/// Frames the core has given up before they went out.
+fn given_up(counters: &MstpCounters) -> u32 {
+    counters.cancelled_sends + counters.expired_requests
+}
+
 /// Poll actions until the core is idle.
 fn drain(core: &mut SimCore) -> Result<Vec<Effect>, usize> {
     let mut effects = Vec::new();
@@ -188,6 +194,7 @@ impl Sim {
         };
         let before = core.state();
         let generations = core.counters().token_regenerations;
+        let gave_up = given_up(&core.counters());
         let result = match &input {
             Input::Octet(byte) => core.on_octet(*byte, now),
             Input::Garbled => core.on_receive_error(ReceiveError::Framing, now),
@@ -210,6 +217,11 @@ impl Sim {
         if rearmed {
             master.deadline = deadline;
             master.fire_at = None;
+        }
+        // The core gave a frame up: a deferred one never comes back, so a
+        // later frame with the same octets is not it.
+        if given_up(&counters) > gave_up {
+            master.withdrawn = None;
         }
         if counters.token_regenerations > generations {
             master.regenerated = true;

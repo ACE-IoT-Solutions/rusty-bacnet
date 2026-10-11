@@ -12,7 +12,7 @@ mod common;
 
 use bacnet_mstp_codec::FrameType;
 use bacnet_mstp_core::{Duration, Instant};
-use bacnet_mstp_sim::{AdapterSpec, Fault, MasterSpec, Sim, SimConfig};
+use bacnet_mstp_sim::{AdapterSpec, Fault, MasterSpec, ScriptSend, Sim, SimConfig};
 
 use common::*;
 
@@ -98,4 +98,35 @@ fn a_frame_that_arrives_before_a_slow_start_is_still_heard() {
     assert_eq!(counters.discarded_while_busy, 3);
     assert_eq!(counters.cancelled_sends, 0);
     assert_eq!(sim.report().refused_starts, 0);
+}
+
+/// A deferred start leaves the adapter expecting the same frame back. If
+/// the core gives that frame up instead, a later frame with the same octets
+/// is a new one. Here a lone master's generating poll is deferred by a noise
+/// octet, then dropped as another station's Token arrives (SawFrame). The
+/// poll station 0 then sends as token holder (NextStationUnknown) is the
+/// same Poll For Master 0->1, and must not pass for a generating one, which
+/// would excuse a collision as a generation race.
+#[test]
+fn a_dropped_deferred_poll_does_not_mark_the_next_one_as_generating() {
+    let mut sim = Sim::new(SimConfig::new(BAUD));
+    let slow = AdapterSpec {
+        start_delay: Duration::from_millis(3),
+        ..AdapterSpec::default()
+    };
+    sim.add_master(MasterSpec::new(0, 3, BAUD).adapter(slow));
+    // Station 0 generates at 500 ms; its adapter would start at 503 ms.
+    sim.inject(us(502_500), Fault::Noise { octets: vec![0x00] });
+    let token = ScriptSend::frame(Duration::ZERO, FrameType::Token, 0, 2, &[]).octets;
+    sim.inject(us(503_100), Fault::Noise { octets: token });
+    sim.run_until(ms(600));
+    let counters = sim.core(0).unwrap().counters();
+    assert_eq!(counters.deferred_starts, 1);
+    assert_eq!(counters.cancelled_sends, 1);
+    let poll = first_after(sim.frames(), us(503_100), |frame| {
+        frame.is(FrameType::PollForMaster, 0, 1)
+    })
+    .expect("station 0's poll as token holder");
+    assert!(!poll.generation, "{poll}");
+    sim.assert_no_violations();
 }

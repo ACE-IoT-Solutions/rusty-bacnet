@@ -230,11 +230,13 @@ struct OwnedFrame {
 /// driver is about to go on, call [`Self::on_transmit_started`] and drive the
 /// line only if it returns `Ok`; at the final stop bit, call
 /// [`Self::on_transmit_complete`]. Until the start is confirmed, keep
-/// receiving and feed the core what arrives: line activity in that time
-/// pushes the frame back (Clause 9.5.5.1), and the core may take the frame
-/// back on its own, queueing [`Direction::Receive`] before the start; drop
-/// the frame then. Octets received after the confirmed start are taken for
-/// the station's own echo and ignored.
+/// receiving and feed the core what arrives, draining the receive FIFO or
+/// DMA buffer right before the start call (octets stamped with the drain
+/// time are safe: a later stamp can only defer the start). Line activity in
+/// that time pushes the frame back (Clause 9.5.5.1), and the core may take
+/// the frame back on its own, queueing [`Direction::Receive`] before the
+/// start; drop the frame then. Octets received after the confirmed start
+/// are taken for the station's own echo and ignored.
 ///
 /// Line activity only delays a frame the core waits to send. A frame is
 /// dropped, and counted, only on the evidence its sending state watches for
@@ -441,8 +443,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// more data than a standard frame carries (501 octets), source 255, or
     /// a COBS-encoded type.
     ///
-    /// How this host path treats the station's own echo, and frames whose
-    /// source is this station, is still open: #1617 settles both.
+    /// How this host path treats the station's own echo, frames whose source
+    /// is this station, and a frame its assembler was part way through when
+    /// a transmit start is confirmed, is still open: #1617 settles them.
     pub fn on_validated_frame(&mut self, frame: Frame<'_>, now: Instant) -> Result<(), CoreError> {
         let header = frame.header;
         if frame.data.len() > MAX_STANDARD_MPDU_DATA {

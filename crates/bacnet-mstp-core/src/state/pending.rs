@@ -31,7 +31,7 @@
 //! | Token, from DONE_WITH_TOKEN or POLL_FOR_MASTER (after a reply, a reply timeout or an invalid reply too; DoneWithPFM's included) | any | as for a data frame | as for a data frame | 9.5.6.4, 9.5.6.5, 9.5.6.8 |
 //! | Poll For Master, from DONE_WITH_TOKEN | any | as for a data frame | as for a data frame | 9.5.6.5 |
 //! | Poll For Master for the next address, from POLL_FOR_MASTER (SendNextPFM) | any | as for a data frame | as for a data frame | 9.5.6.8 |
-//! | the same | a whole Reply To Poll For Master for this station, late from the station polled before | dropped (`cancelled_sends`); the replier becomes the successor and gets the Token (ReceivedReplyToPFM) | none | 9.5.6.8 |
+//! | the same | a whole Reply To Poll For Master for this station, from any station (usually a late answer to the poll before) | dropped (`cancelled_sends`); the replier becomes the successor and gets the Token (ReceivedReplyToPFM) | none | 9.5.6.8 |
 //! | Token retry, from PASS_TOKEN | up to Nmin_octets events, counted from when the retry was made | waits again | T_usage_timeout after the frame was made; `cancelled_sends` | 9.5.6.6 |
 //! | Poll For Master for a new successor, from PASS_TOKEN | up to Nmin_octets events since this station's last Token went out (up to Nmin_octets can carry over) | waits again | as for a retry | 9.5.6.6 |
 //! | either | more than Nmin_octets events, or a whole valid frame: the successor uses the token (SawTokenUser) | dropped (`cancelled_sends`); IDLE takes up what follows | none | 9.5.6.6 |
@@ -51,11 +51,13 @@
 //! T_turnaround of delay, so their time limits bind only for a slow adapter
 //! or, for PASS_TOKEN, a long T_turnaround.
 //!
-//! A frame the adapter aborts before starting it is counted as if dropped:
-//! `expired_requests` for an answer, `cancelled_sends` for any other. The
-//! confirmed start itself drops any frame part received meanwhile, counted in
-//! `frame_aborts`: the receiver is off while the driver is on (Clause
-//! 9.5.5.1), so it can never complete.
+//! A frame aborted before it starts, by the adapter or by the core's
+//! transmit watchdog, is counted as if dropped: `expired_requests` for an
+//! answer, `cancelled_sends` for any other. The confirmed start itself drops
+//! any frame part received meanwhile, counted in `frame_aborts`, a local
+//! extension: the standard turns the receiver off while the driver is on
+//! (Clause 9.5.5.1), so that frame can never complete, but says nothing of
+//! resetting the receive state machine.
 //!
 //! An answer's limit applies to its start as well: one the adapter starts at
 //! or after it is refused with [`CoreError::RequestExpired`], since the asker
@@ -195,9 +197,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             && header.destination == self.config.station;
         match pending.origin {
             Origin::Answer(_) => self.frame_while_busy(frame, true),
-            // The station polled before answered after all: as when the
-            // answer is pending on entry to POLL_FOR_MASTER (ReceivedReplyToPFM,
-            // Clause 9.5.6.8), it becomes the successor, and this poll is moot.
+            // A station answered a poll after all, usually the one polled
+            // before, though any source counts: as when the answer is pending
+            // on entry to POLL_FOR_MASTER (ReceivedReplyToPFM, Clause
+            // 9.5.6.8), it becomes the successor, and this poll is moot.
             Origin::NextPoll if late_poll_reply => {
                 self.discard_pending()?;
                 self.take_successor(header.source, now)?;

@@ -79,3 +79,32 @@ fn a_partial_frame_does_not_end_the_wait_for_a_reply() {
     core.on_deadline(timeout).unwrap();
     assert_ne!(core.state(), MasterState::WaitForReply);
 }
+
+/// A start that comes after a partial frame's T_frame_abort fell due, that
+/// deadline never serviced, counts the frame as servicing it would have:
+/// one abort, and one invalid frame since a header was under way.
+#[test]
+fn an_overdue_abort_counts_alike_at_the_start() {
+    for serviced in [true, false] {
+        let mut rx = [0; 64];
+        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        poll_waiting(&mut core);
+        let last = feed(&mut core, &PARTIAL, ms(11));
+        let due = last + turnaround(&core);
+        core.on_deadline(due).unwrap();
+        let (id, _) = handed_over(&mut core);
+        let abort = last + core.config().t_frame_abort + us(1);
+        if serviced {
+            assert_eq!(core.next_deadline(), Some(abort));
+            core.on_deadline(abort).unwrap();
+        }
+        core.on_transmit_started(id, abort + us(10)).unwrap();
+        let counters = core.counters();
+        assert_eq!(
+            (counters.frame_aborts, counters.parser_errors),
+            (1, 1),
+            "serviced {serviced}"
+        );
+        assert_eq!(core.snapshot().poll_station, PEER);
+    }
+}
