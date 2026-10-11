@@ -26,10 +26,16 @@
 // their own.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
+// bacnet-encoding and bacnet-services pass their feature on to this crate, so
+// with neither on they stop here, before their own check can run.
 #[cfg(not(any(feature = "std", feature = "alloc")))]
-compile_error!("bacnet-types needs the `std` or the `alloc` feature");
+compile_error!(
+    "bacnet-types needs the `std` or the `alloc` feature \
+     (bacnet-encoding and bacnet-services pass theirs on)"
+);
 
-#[cfg(not(feature = "std"))]
+// `format!` and `vec!` without std's prelude.
+#[macro_use]
 extern crate alloc;
 
 #[cfg(feature = "std")]

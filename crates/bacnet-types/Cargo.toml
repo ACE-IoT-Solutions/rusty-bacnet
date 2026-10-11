@@ -14,8 +14,9 @@ categories = ["network-programming", "no-std"]
 [features]
 default = ["std"]
 # Hosted builds: adds what needs std, the transport I/O error and the B/IP
-# port contract (`bip_port`).
-std = ["alloc", "thiserror/std"]
+# port contract (`bip_port`). thiserror needs no std for either: its derive
+# implements core::error::Error.
+std = ["alloc"]
 # no_std with a global allocator.
 alloc = []
 serde = ["alloc", "dep:serde", "serde/alloc"]

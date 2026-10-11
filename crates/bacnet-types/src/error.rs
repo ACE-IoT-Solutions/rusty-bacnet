@@ -5,7 +5,7 @@
 //! and timeouts.
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, format, string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use core::time::Duration;
 
 use crate::constructed::BACnetObjectPropertyReference;
@@ -31,7 +31,15 @@ fn format_protocol_error(class: u32, code: u32) -> String {
 }
 
 /// Top-level error type for the BACnet library.
+///
+/// It is `#[non_exhaustive]`, so a `match` on it outside this crate needs a
+/// wildcard arm. `Error::Transport` exists only with the `std` feature, and
+/// any crate in a build can turn that on, so without the attribute a match
+/// written against the `alloc` build would stop compiling (#1604).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+// Clippy fails if the attribute above goes.
+#[deny(clippy::exhaustive_enums)]
 pub enum Error {
     /// BACnet protocol error response (Clause 20.1.7).
     #[error("{}", format_protocol_error(*.class, *.code))]

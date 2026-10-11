@@ -144,8 +144,10 @@ matching network-layer rejection; it does not claim an exact supported length.
 `Error::RoutedPathCapacityExceeded { capacity }` reports that all bounded path
 state is protected by a held/waiting gate or configured/learned evidence, so a
 new path was rejected before transaction registration or frame emission.
-`Error` is a public enum, so these variants can require new arms in downstream
-exhaustive matches. Matchers with a wildcard arm are unaffected.
+`Error` is `#[non_exhaustive]`, so a `match` on it outside `bacnet-types`
+needs a wildcard arm. `Error::Transport` exists only with the `std` feature,
+and any crate in a build can turn that on, so a match written against the
+`alloc` build could otherwise stop compiling.
 
 ---
 
