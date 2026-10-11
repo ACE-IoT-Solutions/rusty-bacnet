@@ -327,9 +327,72 @@ fn busy_available_and_aging_use_exact_caller_time_and_owner() {
 }
 
 #[test]
+fn empty_busy_and_available_lists_apply_to_every_route_owned_by_peer() {
+    let mut state = RouterControl::<0, 3>::new().with_busy_duration(30);
+    for (network, owner) in [(200, peer(8)), (201, peer(8)), (202, peer(9))] {
+        state.routes_mut().learn(net(network), PortId(2), owner, 1);
+    }
+    let mut networks = [net(999); 1];
+    let mut snapshot: [bacnet_router_core::RouteEntry; 0] = [];
+
+    let busy = handle(
+        &mut state,
+        PortId(2),
+        peer(8),
+        BUSY,
+        &[],
+        10,
+        &mut networks,
+        &mut snapshot,
+    )
+    .unwrap();
+    assert!(matches!(
+        busy.action,
+        RouterControlAction::RebroadcastBusy { .. }
+    ));
+    assert_eq!(
+        state.routes().lookup(net(200)).unwrap().reachability,
+        Reachability::BusyUntil(40)
+    );
+    assert_eq!(
+        state.routes().lookup(net(201)).unwrap().reachability,
+        Reachability::BusyUntil(40)
+    );
+    assert_eq!(
+        state.routes().lookup(net(202)).unwrap().reachability,
+        Reachability::Reachable
+    );
+
+    let available = handle(
+        &mut state,
+        PortId(2),
+        peer(8),
+        AVAILABLE,
+        &[],
+        20,
+        &mut networks,
+        &mut snapshot,
+    )
+    .unwrap();
+    assert!(matches!(
+        available.action,
+        RouterControlAction::RebroadcastAvailable { .. }
+    ));
+    assert_eq!(
+        state.routes().lookup(net(200)).unwrap().reachability,
+        Reachability::Reachable
+    );
+    assert_eq!(
+        state.routes().lookup(net(201)).unwrap().reachability,
+        Reachability::Reachable
+    );
+}
+
+#[test]
 fn query_ack_is_detached_and_unsupported_is_explicit() {
     let mut state = RouterControl::<1, 1>::new();
     state.add_direct(net(100), PortId(1)).unwrap();
+    state.routes_mut().learn(net(200), PortId(2), peer(7), 0);
     let mut networks = [net(999); 1];
     let mut snapshot = [state.routes().entries().next().unwrap(); 2];
     let result = handle(
@@ -347,10 +410,15 @@ fn query_ack_is_detached_and_unsupported_is_explicit() {
         RouterControlAction::SendRoutingTableAck { table, .. } => table,
         other => panic!("unexpected action: {other:?}"),
     };
+    assert_eq!(
+        table.len(),
+        1,
+        "learned routes are not part of the ACK table"
+    );
     assert_eq!(table.as_slice()[0].network, net(100));
     let mut encoded = [0u8; 8];
-    assert_eq!(table.encode(&mut encoded), Ok(6));
-    assert_eq!(&encoded[..6], &[1, 0, 100, 1, 0, 0]);
+    assert_eq!(table.encode(&mut encoded), Ok(5));
+    assert_eq!(&encoded[..5], &[1, 0, 100, 1, 0]);
 
     let unsupported = handle(
         &mut state,

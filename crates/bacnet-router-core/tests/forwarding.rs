@@ -62,7 +62,7 @@ fn capabilities() -> PortCapabilities {
 fn learned_capabilities() -> PortCapabilities {
     PortCapabilities {
         id: PortId(3),
-        network: NetworkNumber::new(300).unwrap(),
+        network: NetworkNumber::new(200).unwrap(),
         kind: PortKind::Bip,
         max_npdu_len: 1476,
     }
@@ -401,7 +401,7 @@ fn direct_rewrite_preserves_existing_source_and_network_message_header() {
 }
 
 #[test]
-fn learned_unicast_replaces_dadr_decrements_hop_and_inserts_source() {
+fn learned_unicast_preserves_final_dadr_decrements_hop_and_uses_router_next_hop() {
     let mut core = learned_core();
     let source = LinkAddress::try_from_slice(&[198, 51, 100, 7, 0xba, 0xc1]).unwrap();
     let input = [
@@ -432,7 +432,7 @@ fn learned_unicast_replaces_dadr_decrements_hop_and_inserts_source() {
         &egress.accepted,
         &[
             0x01, 0x28, // destination + source
-            0x01, 0x2c, 0x06, 192, 0, 2, 1, 0xba, 0xc1, // DNET/next-hop DADR
+            0x01, 0x2c, 0x06, 192, 0, 2, 44, 0xba, 0xc1, // final DNET/DADR
             0x00, 0x64, 0x06, 198, 51, 100, 7, 0xba, 0xc1, // inserted SNET/SADR
             0x00, // 1 -> 0, without underflow
             0x10, 0x22,
@@ -478,8 +478,7 @@ fn learned_unicast_preserves_source_and_proprietary_network_message_bytes() {
         &egress.accepted,
         &[
             0x01, 0xa8, // control preserved
-            0x01, 0x2c, 0x06, 192, 0, 2, 1, 0xba, 0xc1, 0x00, 0xc8, 0x01,
-            0x05, // source preserved
+            0x01, 0x2c, 0x01, 0x09, 0x00, 0xc8, 0x01, 0x05, // source preserved
             0xfe, // 255 -> 254
             0x80, 0x12, 0x34, 0xde, 0xad, // network message/APDU preserved
         ]

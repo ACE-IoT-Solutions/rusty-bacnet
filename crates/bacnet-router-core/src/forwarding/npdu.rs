@@ -181,10 +181,9 @@ impl<'a> ParsedNpdu<'a> {
         &self,
         ingress_network: NetworkNumber,
         ingress_source: LinkAddress,
-        next_hop: LinkAddress,
         output: &mut [u8],
     ) -> Result<usize, ForwardError> {
-        let needed = self.rewritten_learned_len(ingress_source, next_hop)?;
+        let needed = self.rewritten_learned_len(ingress_source)?;
         if output.len() < needed {
             return Err(ForwardError::ScratchTooSmall {
                 needed,
@@ -196,10 +195,10 @@ impl<'a> ParsedNpdu<'a> {
         let mut offset = 2;
         output[offset..offset + 2].copy_from_slice(&self.destination_network.to_be_bytes());
         offset += 2;
-        output[offset] = next_hop.as_slice().len() as u8;
+        output[offset] = self.destination_mac.len() as u8;
         offset += 1;
-        output[offset..offset + next_hop.as_slice().len()].copy_from_slice(next_hop.as_slice());
-        offset += next_hop.as_slice().len();
+        output[offset..offset + self.destination_mac.len()].copy_from_slice(self.destination_mac);
+        offset += self.destination_mac.len();
         if let Some(source_fields) = self.source_fields {
             output[offset..offset + source_fields.len()].copy_from_slice(source_fields);
             offset += source_fields.len();
@@ -221,7 +220,6 @@ impl<'a> ParsedNpdu<'a> {
     pub(super) fn rewritten_learned_len(
         &self,
         ingress_source: LinkAddress,
-        next_hop: LinkAddress,
     ) -> Result<usize, ForwardError> {
         if self.source_fields.is_none() && ingress_source.is_empty() {
             return Err(ForwardError::InvalidSource);
@@ -229,6 +227,6 @@ impl<'a> ParsedNpdu<'a> {
         let source_len = self
             .source_fields
             .map_or(3 + ingress_source.as_slice().len(), <[u8]>::len);
-        Ok(2 + 2 + 1 + next_hop.as_slice().len() + source_len + 1 + self.remainder.len())
+        Ok(2 + 2 + 1 + self.destination_mac.len() + source_len + 1 + self.remainder.len())
     }
 }

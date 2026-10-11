@@ -63,6 +63,14 @@ fn network_lists_are_exact_and_borrowed() {
         decode_control(ROUTER_AVAILABLE_TO_NETWORK, &[0xFF, 0xFF]),
         Err(ControlCodecError::InvalidNetwork(0xFFFF))
     ));
+    assert!(matches!(
+        decode_control(ROUTER_BUSY_TO_NETWORK, &[]),
+        Ok(NetworkControl::RouterBusy { networks }) if networks.is_empty()
+    ));
+    assert!(matches!(
+        decode_control(ROUTER_AVAILABLE_TO_NETWORK, &[]),
+        Ok(NetworkControl::RouterAvailable { networks }) if networks.is_empty()
+    ));
 }
 
 #[test]

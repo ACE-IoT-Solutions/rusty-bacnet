@@ -305,8 +305,8 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
     /// learned next-hop route.
     ///
     /// Direct egress removes the routed destination and hop-count fields.
-    /// Learned egress retains DNET/DADR, replaces DADR with the learned
-    /// router address, and decrements the hop count exactly once. Both paths
+    /// Learned egress retains the final DNET/DADR, uses the learned router as
+    /// the link-layer next hop, and decrements the hop count exactly once. Both paths
     /// use the same validated NPDU view and preserve/inject SNET/SADR.
     pub fn forward_unicast(
         &mut self,
@@ -340,7 +340,8 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
             return Err(ForwardError::RouteLoopsToIngress);
         }
         if route.port != request.egress_capabilities.id
-            || route.network != request.egress_capabilities.network
+            || (route.kind == RouteKind::Direct
+                && route.network != request.egress_capabilities.network)
         {
             self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
             return Err(ForwardError::PortCapabilityMismatch);
@@ -381,15 +382,14 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
                         self.diagnostics.drops_invalid.saturating_add(1);
                     return Err(ForwardError::InvalidEgressAddress);
                 }
-                let final_len =
-                    match parsed.rewritten_learned_len(request.logical_source, route.next_hop) {
-                        Ok(length) => length,
-                        Err(error) => {
-                            self.diagnostics.drops_invalid =
-                                self.diagnostics.drops_invalid.saturating_add(1);
-                            return Err(error);
-                        }
-                    };
+                let final_len = match parsed.rewritten_learned_len(request.logical_source) {
+                    Ok(length) => length,
+                    Err(error) => {
+                        self.diagnostics.drops_invalid =
+                            self.diagnostics.drops_invalid.saturating_add(1);
+                        return Err(error);
+                    }
+                };
                 (EgressDestination::Unicast(route.next_hop), final_len)
             }
         };
@@ -405,12 +405,9 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
             RouteKind::Direct => {
                 parsed.rewrite_direct(request.ingress_network, request.logical_source, scratch)
             }
-            RouteKind::Learned => parsed.rewrite_learned(
-                request.ingress_network,
-                request.logical_source,
-                route.next_hop,
-                scratch,
-            ),
+            RouteKind::Learned => {
+                parsed.rewrite_learned(request.ingress_network, request.logical_source, scratch)
+            }
         };
         if let Err(error) = rewrite_result {
             self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);

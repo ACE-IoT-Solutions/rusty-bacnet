@@ -275,6 +275,30 @@ impl<const DIRECT: usize, const LEARNED: usize> RouteTable<DIRECT, LEARNED> {
         self.learned.iter().flatten().copied()
     }
 
+    /// Mark every learned route owned by one immediate peer as busy.
+    pub fn mark_all_busy_from(&mut self, port: PortId, next_hop: LinkAddress, until: u64) -> usize {
+        let mut changed = 0;
+        for entry in self.learned.iter_mut().flatten() {
+            if entry.port == port && entry.next_hop == next_hop {
+                entry.reachability = Reachability::BusyUntil(until);
+                changed += 1;
+            }
+        }
+        changed
+    }
+
+    /// Mark every learned route owned by one immediate peer as reachable.
+    pub fn mark_all_available_from(&mut self, port: PortId, next_hop: LinkAddress) -> usize {
+        let mut changed = 0;
+        for entry in self.learned.iter_mut().flatten() {
+            if entry.port == port && entry.next_hop == next_hop {
+                entry.reachability = Reachability::Reachable;
+                changed += 1;
+            }
+        }
+        changed
+    }
+
     /// Remove every learned route and return the number removed.
     pub fn clear_learned(&mut self) -> usize {
         let removed = self.learned_len();

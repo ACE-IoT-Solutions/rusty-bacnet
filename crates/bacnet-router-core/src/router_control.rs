@@ -107,7 +107,7 @@ impl<'a> RouteSnapshot<'a> {
         if self.len() > u8::MAX as usize {
             return Err(ControlOutputError::TooManyEntries { count: self.len() });
         }
-        let needed = 1usize.saturating_add(self.len().saturating_mul(5));
+        let needed = 1usize.saturating_add(self.len().saturating_mul(4));
         if out.len() < needed {
             return Err(ControlOutputError::BufferTooSmall {
                 needed,
@@ -116,11 +116,10 @@ impl<'a> RouteSnapshot<'a> {
         }
         out[0] = self.len() as u8;
         for (index, entry) in self.entries.iter().enumerate() {
-            let offset = 1 + index * 5;
+            let offset = 1 + index * 4;
             out[offset..offset + 2].copy_from_slice(&entry.network.get().to_be_bytes());
             out[offset + 2] = entry.port.0;
             out[offset + 3] = 0;
-            out[offset + 4] = 0;
         }
         Ok(needed)
     }
@@ -351,8 +350,10 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
     /// Age learned routes at an exact caller-time boundary.  A route learned
     /// at `t` expires at `t + learned_age` (inclusive).
     pub fn age(&mut self, now: u64) -> usize {
-        self.routes
-            .expire_learned(now.saturating_sub(self.learned_age))
+        let Some(deadline) = now.checked_sub(self.learned_age) else {
+            return 0;
+        };
+        self.routes.expire_learned(deadline)
     }
 
     /// Copy a detached route snapshot into the caller's buffer.
@@ -360,14 +361,14 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
         &self,
         out: &'a mut [RouteEntry],
     ) -> Result<RouteSnapshot<'a>, RouterControlError> {
-        let needed = self.routes.direct_len() + self.routes.learned_len();
+        let needed = self.routes.direct_len();
         if out.len() < needed {
             return Err(RouterControlError::SnapshotBufferTooSmall {
                 needed,
                 capacity: out.len(),
             });
         }
-        for (slot, entry) in out.iter_mut().zip(self.routes.entries()) {
+        for (slot, entry) in out.iter_mut().zip(self.routes.direct_entries()) {
             *slot = entry;
         }
         Ok(RouteSnapshot {
@@ -544,10 +545,15 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             return Err(RouterControlError::MissingPeerAddress);
         }
         let deadline = now.saturating_add(self.busy_duration);
-        let mut changed = false;
-        for network in networks.iter() {
-            changed |= self.routes.mark_busy_from(network, ingress, peer, deadline);
-        }
+        let changed = if networks.is_empty() {
+            self.routes.mark_all_busy_from(ingress, peer, deadline) > 0
+        } else {
+            let mut changed = false;
+            for network in networks.iter() {
+                changed |= self.routes.mark_busy_from(network, ingress, peer, deadline);
+            }
+            changed
+        };
         Ok(RouterControlOutcome {
             action: if changed {
                 RouterControlAction::RebroadcastBusy {
@@ -572,10 +578,15 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
         if peer.is_empty() {
             return Err(RouterControlError::MissingPeerAddress);
         }
-        let mut changed = false;
-        for network in networks.iter() {
-            changed |= self.routes.mark_available_from(network, ingress, peer);
-        }
+        let changed = if networks.is_empty() {
+            self.routes.mark_all_available_from(ingress, peer) > 0
+        } else {
+            let mut changed = false;
+            for network in networks.iter() {
+                changed |= self.routes.mark_available_from(network, ingress, peer);
+            }
+            changed
+        };
         Ok(RouterControlOutcome {
             action: if changed {
                 RouterControlAction::RebroadcastAvailable {

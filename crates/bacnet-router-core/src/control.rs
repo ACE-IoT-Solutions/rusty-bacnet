@@ -311,9 +311,17 @@ pub fn decode_control<'a>(
                 length,
             }),
         },
-        I_AM_ROUTER_TO_NETWORK => Ok(NetworkControl::IAmRouter {
-            networks: parse_network_list(message_type, payload)?,
-        }),
+        I_AM_ROUTER_TO_NETWORK => {
+            if payload.is_empty() {
+                return Err(ControlCodecError::InvalidLength {
+                    message_type,
+                    length: 0,
+                });
+            }
+            Ok(NetworkControl::IAmRouter {
+                networks: parse_network_list(message_type, payload)?,
+            })
+        }
         REJECT_MESSAGE_TO_NETWORK => {
             if payload.len() != 3 {
                 return Err(ControlCodecError::InvalidLength {
@@ -450,7 +458,7 @@ fn parse_network_list<'a>(
     message_type: u8,
     payload: &'a [u8],
 ) -> Result<NetworkList<'a>, ControlCodecError> {
-    if payload.is_empty() || payload.len() & 1 != 0 {
+    if payload.len() & 1 != 0 {
         return Err(ControlCodecError::InvalidLength {
             message_type,
             length: payload.len(),
