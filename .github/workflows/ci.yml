@@ -70,7 +70,7 @@ env:
   # such as bacnet-endpoint/sc-tls and bacnet-cli/{sc-tls,pcap,tui} that nothing
   # else in the workspace turns on (#906). bacnet-benchmarks/console is left
   # out: it needs tokio_unstable.
-  LINUX_FEATURES: bacnet-types/serde,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-transport/serial,bacnet-transport/serial-gpio,bacnet-transport/ethernet,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-integration-tests/ethernet,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
+  LINUX_FEATURES: bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-transport/serial,bacnet-transport/serial-gpio,bacnet-transport/ethernet,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-integration-tests/ethernet,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
 
 jobs:
   lint:
@@ -159,6 +159,8 @@ jobs:
       # Windows and macOS compile different code behind their platform cfgs.
       # In the cache key, so a change restarts the cache with their dependencies.
       DEFAULT_FEATURES_TARGETS: x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin
+      # Bare-metal targets for the no_std check (#1604), in the cache key too.
+      NO_STD_TARGETS: thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf
       # pcap for bacnet-cli, whose build script loads libpcap.
       APT_PACKAGES: libpcap-dev
     steps:
@@ -187,7 +189,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-bin: false
-          env-vars: LINUX_FEATURES DEFAULT_FEATURES_TARGETS
+          env-vars: LINUX_FEATURES DEFAULT_FEATURES_TARGETS NO_STD_TARGETS
           save-if: ${{ github.ref == 'refs/heads/dev' }}
       # Warnings are errors for workspace code only; dependencies are unaffected.
       # The workspace includes the samples in examples/rust/samples (#1450).
@@ -208,6 +210,16 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # one argument per target
           bash scripts/ci/check-default-features.sh $DEFAULT_FEATURES_TARGETS
+      # The no_std crates with each feature set, on targets with no std and no
+      # allocator unless a crate asks for alloc. Only their core and alloc
+      # libraries are needed: clippy doesn't link.
+      - name: Clippy (no_std crates, bare-metal targets)
+        if: ${{ !cancelled() }}
+        run: |
+          # shellcheck disable=SC2086 # one argument per target
+          rustup target add $NO_STD_TARGETS
+          # shellcheck disable=SC2086
+          bash scripts/ci/check-no-std.sh $NO_STD_TARGETS
       # Private and pub(crate) items too, so their intra-doc links can't rot
       # (#1164). This run still flags public docs that link to private items
       # (rustdoc::private_intra_doc_links), so it replaces the public-only run.
