@@ -1,6 +1,6 @@
 # Embedded BACnet/IP↔MS/TP Router Workplan
 
-Status: active; R0 complete, R1 next
+Status: active; R0 complete, R1a/R1b implemented, R1c and R2b next
 
 Last updated: 2026-10-11
 
@@ -46,13 +46,73 @@ its exit criteria pass; compiling a type or codec alone is not completion.
 | Phase | State | Depends on | Capability unlocked |
 |---|---|---|---|
 | R0 Portable boundary/direct forwarding | Complete | — | Bounded direct unicast foundation |
-| R1 Complete unicast routing | Next | R0 | Direct and learned unicast with explicit refusal |
-| R2 Router discovery/table control | Planned | R1 | Dynamic route discovery and management |
-| R3 Routed broadcasts/loop safety | Planned | R1, R2 | Bounded remote/global broadcast forwarding |
-| R4 Adapter composition | Planned | R1–R3 | Library-complete standard-frame B/IP↔MS/TP router |
+| R1 Complete unicast routing | In progress; R1c remains | R0 | Direct and learned unicast with explicit refusal |
+| R2 Router discovery/table control | In progress; R2a landed | R1 | Dynamic route discovery and management |
+| R3 Routed broadcasts/loop safety | In progress; cache primitive landed | R1, R2 | Bounded remote/global broadcast forwarding |
+| R4 Adapter composition | In progress; MS/TP egress slice landed | R1–R3 | Library-complete standard-frame B/IP↔MS/TP router |
 | R5 Diagnostics/control | Planned | R2–R4 | Operationally supportable embedded router |
-| X0–X5 Extended MS/TP | Planned, claim blocker | R0; converge with R4 | Extended DER/DNER transport to 1497-byte NPDU |
+| X0–X5 Extended MS/TP | In progress, claim blocker | R0; converge with R4 | Extended DER/DNER transport to 1497-byte NPDU |
 | R6 Release evidence | Planned | R0–R5; X0–X5 for broad claim | Evidence-backed release/claim decision |
+
+### Delivery snapshot and remaining order
+
+The state labels above describe complete phase outcomes, not merely code that
+exists. In particular, a committed primitive remains "in progress" until it is
+publicly integrated, its phase exit criteria pass and the evidence is recorded.
+
+Implemented foundations as of 2026-10-11:
+
+- R1a/R1b: strict shared NPDU parsing/rewrite and learned-route unicast,
+  including exact next-hop, source and hop-count behavior.
+- R2a: strict network-control codec and negative fixtures are committed; crate
+  export and integrated router-state handling remain.
+- R3b foundation: the bounded caller-time duplicate cache is public and tested;
+  canonical broadcast identity and fanout policy remain.
+- R4b foundation: direct admission into the bounded MS/TP core queue is
+  committed; workspace integration, monotonic-time validation and the reverse
+  delivery path remain.
+- X0: official Addenda 135-2012an and 135-2020ce have been reduced to a source
+  dossier. The configured consolidated Standard is still absent.
+- X1 COBS/XOR-0x55 and CRC-32K primitives are committed and tested. They do not
+  change the current standard-frame support claim by themselves.
+
+Execute the remaining work in this order:
+
+1. Close the active integration slices: export and validate R2a, finish R4b
+   workspace integration, close the remaining X0 vector gap, and split any Rust
+   file approaching the 700-line gate.
+2. Finish R1c rejection actions and source-aware refusal routing.
+3. Implement R2b–R2d discovery, transactional table control, owner-bound route
+   state and caller-time aging.
+4. Implement R3a/R3c broadcast policy, deterministic fanout, duplicate-cache
+   integration and reserved control admission.
+5. Complete R4a/R4c B/IP egress, reverse MS/TP delivery, request binding,
+   composed tests and bare-target checks.
+6. Add R5 operational diagnostics, snapshots, controls and bounded-memory
+   measurements.
+7. Continue X2–X5 in parallel where dependencies permit, converging the
+   extended storage/capability contract with R4 before composition tests.
+8. Run R6 evidence, compliance-ledger, packaging and release-claim review.
+
+Firmware task creation, ESP-IDF socket/UART ownership, flashing and HIL are not
+steps in this plan; the firmware team consumes the bounded library interfaces
+after the applicable R4/R5 gates pass.
+
+Current evidence anchors:
+
+| Slice | Commit or file | Validation state |
+|---|---|---|
+| R0 | `d39425ea` | Router-core foundation tests passed |
+| R1a/R1b | `902a85b2`, `774f7f66` | Focused forwarding tests passed; R1c still gates the phase |
+| R2a | `4a2636a3` | Standalone codec harness passed; crate integration remains |
+| R3b primitive | `a02bde58`, `46308c55` | Six cache tests passed; broadcast integration remains |
+| R4b foundation | `20d48b07` | Code committed; workspace/time-regression validation remains |
+| X0 | `docs/plans/evidence/extended-mstp-source-dossier.md` | Official addenda reviewed; consolidated Standard absent |
+| X1 | `b8f0bb0e` | Codec tests and no-default-features check passed |
+
+When a slice changes, update this table, its phase checkboxes and the relevant
+conformance-ledger row in the same PR. Do not advance a whole phase based only
+on a commit hash.
 
 ### R0 — Portable boundary and direct forwarding (implemented)
 
@@ -76,28 +136,29 @@ without yet learning routes from network-control messages.
 
 Deliverables:
 
-- [ ] Add one validated borrowed NPDU view used by direct and learned routing.
-- [ ] Forward through learned next hops, retaining DNET/DADR and decrementing
+- [x] Add one validated borrowed NPDU view used by direct and learned routing.
+- [x] Forward through learned next hops, retaining DNET/DADR and decrementing
   hop count exactly once.
-- [ ] Preserve or insert SNET/SADR correctly for both direct and learned paths.
-- [ ] Preserve standard and proprietary network-message type/vendor fields
+- [x] Preserve or insert SNET/SADR correctly for both direct and learned paths.
+- [x] Preserve standard and proprietary network-message type/vendor fields
   byte-for-byte.
-- [ ] Reject zero input hop count before admission; allow the defined
+- [x] Reject zero input hop count before admission; allow the defined
   intermediate `1 → 0` transition without underflow.
-- [ ] Reject unavailable/busy routes deterministically and retain the route's
+- [x] Reject unavailable/busy routes deterministically and retain the route's
   owning next-hop identity.
 - [ ] Model Reject-Message-To-Network as a core output, including message-too-
   long for a final rewritten NPDU that exceeds egress capability.
 - [ ] Retain enough ingress context to route a refusal toward the original
   source rather than only the immediate peer.
-- [ ] Keep `Full`, `Oversize`, `PortDown`, malformed input and no-route as
+- [x] Keep `Full`, `Oversize`, `PortDown`, `Expired`, invalid admission,
+  malformed input and no-route as
   distinct observable results.
 
 Suggested PR split:
 
-1. R1a — borrowed NPDU view plus direct/learned rewrite builder;
-2. R1b — learned-route selection, hop behavior and next-hop admission; and
-3. R1c — rejection actions and refusal-path diagnostics.
+1. [x] R1a — borrowed NPDU view plus direct/learned rewrite builder;
+2. [x] R1b — learned-route selection, hop behavior and next-hop admission; and
+3. [ ] R1c — rejection actions and refusal-path diagnostics.
 
 Exit criteria:
 
@@ -136,10 +197,11 @@ Deliverables:
 
 Suggested PR split:
 
-1. R2a — strict control-message codec and truncation matrix;
-2. R2b — Who-Is/I-Am discovery and route learning;
-3. R2c — Initialize-Routing-Table transaction; and
-4. R2d — Busy/Available ownership, aging and snapshots.
+1. [x] R2a — strict control-message codec and truncation matrix (crate export
+   and shared-fixture integration remain verification tasks);
+2. [ ] R2b — Who-Is/I-Am discovery and route learning;
+3. [ ] R2c — Initialize-Routing-Table transaction; and
+4. [ ] R2d — Busy/Available ownership, aging and snapshots.
 
 Exit criteria:
 
@@ -272,16 +334,19 @@ with R4.
 
 ### X0 — Normative source and independent vectors
 
-- [ ] Restore or otherwise obtain the configured Standard 135-2020 reference.
-- [ ] Confirm exact extended Length, maximum-size, CRC residual and type rules.
-- [ ] Check in independently derived COBS/XOR and CRC-32K vectors, including
+- [ ] Restore or otherwise obtain the configured consolidated Standard 135-2020
+  reference before raising conformance status.
+- [x] Confirm exact extended Length, maximum-size, CRC residual and type rules
+  from official ASHRAE Addenda 135-2012an and 135-2020ce; see
+  `docs/plans/evidence/extended-mstp-source-dossier.md`.
+- [ ] Check in official plus independently derived COBS/XOR and CRC-32K vectors, including
   254-byte block boundaries, zero-heavy payloads and embedded `0x55` values.
 
 ### X1 — Portable COBS and CRC-32K primitives
 
-- [ ] Add allocation-free caller-buffered primitives with exact capacity
+- [x] Add allocation-free caller-buffered primitives with exact capacity
   reporting and no partial-success ambiguity.
-- [ ] Reject malformed code octets, bad CRC and output exhaustion.
+- [x] Reject malformed code octets, bad CRC and output exhaustion.
 
 ### X2 — Extended one-shot and streaming codec
 
