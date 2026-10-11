@@ -33,6 +33,7 @@ may advance the Phase 6 checklist.
 
 Captured files in this directory are the timestamped F serial log, preflight,
 candidate and rollback flash logs, before/after peer snapshots, and restored-F
-snapshot. Empty `serial-owner.txt` and `serial-capture.err` files prove that no
-process retained the port after dashboard shutdown and that capture reported no
+snapshot. The exact guarded runner is retained as `run-passive-diagnostic.sh`.
+Empty `serial-owner.txt` and `serial-capture.err` files prove that no process
+retained the port after dashboard shutdown and that capture reported no
 host-side errors.
