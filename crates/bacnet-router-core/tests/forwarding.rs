@@ -57,6 +57,26 @@ fn capabilities() -> PortCapabilities {
     }
 }
 
+fn learned_capabilities() -> PortCapabilities {
+    PortCapabilities {
+        id: PortId(3),
+        network: NetworkNumber::new(300).unwrap(),
+        kind: PortKind::Bip,
+        max_npdu_len: 1476,
+    }
+}
+
+fn learned_core() -> RouterCore<2, 2> {
+    let mut core = RouterCore::new();
+    core.routes_mut().learn(
+        NetworkNumber::new(300).unwrap(),
+        PortId(3),
+        LinkAddress::try_from_slice(&[192, 0, 2, 1, 0xba, 0xc1]).unwrap(),
+        10,
+    );
+    core
+}
+
 #[test]
 fn final_rewritten_npdu_exactly_at_standard_mstp_limit_is_owned() {
     let mut core = configured_core();
@@ -344,6 +364,180 @@ fn direct_rewrite_preserves_existing_source_and_network_message_header() {
         egress.accepted,
         [0x01, 0x88, 0x00, 0x64, 0x06, 192, 0, 2, 10, 0xba, 0xc1, 0x80, 0x12, 0x34, 0xaa,]
     );
+}
+
+#[test]
+fn learned_unicast_replaces_dadr_decrements_hop_and_inserts_source() {
+    let mut core = learned_core();
+    let source = LinkAddress::try_from_slice(&[198, 51, 100, 7, 0xba, 0xc1]).unwrap();
+    let input = [
+        0x01, 0x20, // version, destination present
+        0x01, 0x2c, 0x06, 192, 0, 2, 44, 0xba, 0xc1, // DNET/DADR
+        0x01, // hop count
+        0x10, 0x22, // APDU
+    ];
+    let mut scratch = [0u8; 64];
+    let mut egress = TestEgress::default();
+
+    let outcome = core
+        .forward_unicast(
+            DirectForwardRequest {
+                ingress_network: NetworkNumber::new(100).unwrap(),
+                logical_source: source,
+                npdu: &input,
+                egress_capabilities: learned_capabilities(),
+                now: 11,
+            },
+            &mut scratch,
+            &mut egress,
+        )
+        .unwrap();
+
+    assert_eq!(outcome, ForwardOutcome::Forwarded { final_npdu_len: 23 });
+    assert_eq!(
+        &egress.accepted,
+        &[
+            0x01, 0x28, // destination + source
+            0x01, 0x2c, 0x06, 192, 0, 2, 1, 0xba, 0xc1, // DNET/next-hop DADR
+            0x00, 0x64, 0x06, 198, 51, 100, 7, 0xba, 0xc1, // inserted SNET/SADR
+            0x00, // 1 -> 0, without underflow
+            0x10, 0x22,
+        ]
+    );
+    assert_eq!(
+        egress.destination,
+        Some(EgressDestination::Unicast(
+            LinkAddress::try_from_slice(&[192, 0, 2, 1, 0xba, 0xc1]).unwrap()
+        ))
+    );
+}
+
+#[test]
+fn learned_unicast_preserves_source_and_proprietary_network_message_bytes() {
+    let mut core = learned_core();
+    let source = LinkAddress::try_from_slice(&[198, 51, 100, 7, 0xba, 0xc1]).unwrap();
+    let input = [
+        0x01, 0xa8, // destination + source + network layer message
+        0x01, 0x2c, 0x01, 0x09, // DNET/DADR
+        0x00, 0xc8, 0x01, 0x05, // existing SNET/SADR
+        0xff, // hop count
+        0x80, 0x12, 0x34, // proprietary type + vendor id
+        0xde, 0xad,
+    ];
+    let mut scratch = [0u8; 64];
+    let mut egress = TestEgress::default();
+
+    core.forward_unicast(
+        DirectForwardRequest {
+            ingress_network: NetworkNumber::new(100).unwrap(),
+            logical_source: source,
+            npdu: &input,
+            egress_capabilities: learned_capabilities(),
+            now: 11,
+        },
+        &mut scratch,
+        &mut egress,
+    )
+    .unwrap();
+
+    assert_eq!(
+        &egress.accepted,
+        &[
+            0x01, 0xa8, // control preserved
+            0x01, 0x2c, 0x06, 192, 0, 2, 1, 0xba, 0xc1, 0x00, 0xc8, 0x01,
+            0x05, // source preserved
+            0xfe, // 255 -> 254
+            0x80, 0x12, 0x34, 0xde, 0xad, // network message/APDU preserved
+        ]
+    );
+}
+
+#[test]
+fn learned_unicast_distinguishes_no_route_and_busy_route() {
+    let source = LinkAddress::try_from_slice(&[198, 51, 100, 7, 0xba, 0xc1]).unwrap();
+    let input = [0x01, 0x20, 0x01, 0x90, 0x01, 0x09, 0xff, 0x10];
+    let mut scratch = [0u8; 64];
+    let mut egress = TestEgress::default();
+    let mut core = RouterCore::<2, 2>::new();
+
+    assert_eq!(
+        core.forward_unicast(
+            DirectForwardRequest {
+                ingress_network: NetworkNumber::new(100).unwrap(),
+                logical_source: source,
+                npdu: &input,
+                egress_capabilities: PortCapabilities {
+                    id: PortId(3),
+                    network: NetworkNumber::new(400).unwrap(),
+                    kind: PortKind::Bip,
+                    max_npdu_len: 1476,
+                },
+                now: 0,
+            },
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(ForwardError::NoRoute)
+    );
+
+    let next_hop = LinkAddress::try_from_slice(&[192, 0, 2, 1, 0xba, 0xc1]).unwrap();
+    core.routes_mut()
+        .learn(NetworkNumber::new(400).unwrap(), PortId(3), next_hop, 0);
+    assert!(core
+        .routes_mut()
+        .mark_busy(NetworkNumber::new(400).unwrap(), 5));
+    assert_eq!(
+        core.forward_unicast(
+            DirectForwardRequest {
+                ingress_network: NetworkNumber::new(100).unwrap(),
+                logical_source: source,
+                npdu: &input,
+                egress_capabilities: PortCapabilities {
+                    id: PortId(3),
+                    network: NetworkNumber::new(400).unwrap(),
+                    kind: PortKind::Bip,
+                    max_npdu_len: 1476,
+                },
+                now: 4,
+            },
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(ForwardError::RouteUnavailable)
+    );
+    assert_eq!(
+        core.routes()
+            .lookup(NetworkNumber::new(400).unwrap())
+            .unwrap()
+            .next_hop,
+        next_hop
+    );
+}
+
+#[test]
+fn learned_zero_hop_is_rejected_before_egress() {
+    let mut core = learned_core();
+    let input = [
+        0x01, 0x20, 0x01, 0x2c, 0x06, 192, 0, 2, 44, 0xba, 0xc1, 0x00, 0x10,
+    ];
+    let source = LinkAddress::try_from_slice(&[198, 51, 100, 7, 0xba, 0xc1]).unwrap();
+    let mut scratch = [0u8; 64];
+    let mut egress = TestEgress::default();
+    assert_eq!(
+        core.forward_unicast(
+            DirectForwardRequest {
+                ingress_network: NetworkNumber::new(100).unwrap(),
+                logical_source: source,
+                npdu: &input,
+                egress_capabilities: learned_capabilities(),
+                now: 11,
+            },
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(ForwardError::HopExhausted)
+    );
+    assert!(egress.accepted.is_empty());
 }
 
 #[test]

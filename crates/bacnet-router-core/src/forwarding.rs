@@ -31,6 +31,8 @@ pub enum ForwardError {
     InvalidNetworkMessage,
     /// No direct route exists for the destination network.
     NoDirectRoute,
+    /// No configured or learned route exists for the destination network.
+    NoRoute,
     /// Route is currently busy or unavailable.
     RouteUnavailable,
     /// Caller scratch cannot hold the rewritten NPDU.
@@ -260,6 +262,159 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
             }
         }
     }
+
+    /// Forward a unicast NPDU through either a configured direct route or a
+    /// learned next-hop route.
+    ///
+    /// Direct egress removes the routed destination and hop-count fields.
+    /// Learned egress retains DNET/DADR, replaces DADR with the learned
+    /// router address, and decrements the hop count exactly once. Both paths
+    /// use the same validated NPDU view and preserve/inject SNET/SADR.
+    pub fn forward_unicast(
+        &mut self,
+        request: DirectForwardRequest<'_>,
+        scratch: &mut [u8],
+        egress: &mut impl Egress,
+    ) -> Result<ForwardOutcome, ForwardError> {
+        self.diagnostics.ingress_npdus = self.diagnostics.ingress_npdus.saturating_add(1);
+        let parsed = match ParsedNpdu::decode(request.npdu) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
+                return Err(error);
+            }
+        };
+        let destination_network = match NetworkNumber::new(parsed.destination_network) {
+            Ok(network) => network,
+            Err(_) => {
+                self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
+                return Err(ForwardError::InvalidDestinationNetwork(
+                    parsed.destination_network,
+                ));
+            }
+        };
+        let Some(route) = self.routes.lookup(destination_network) else {
+            self.diagnostics.drops_no_route = self.diagnostics.drops_no_route.saturating_add(1);
+            return Err(ForwardError::NoRoute);
+        };
+        if destination_network == request.ingress_network {
+            self.diagnostics.drops_no_route = self.diagnostics.drops_no_route.saturating_add(1);
+            return Err(ForwardError::RouteLoopsToIngress);
+        }
+        if route.port != request.egress_capabilities.id
+            || route.network != request.egress_capabilities.network
+        {
+            self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
+            return Err(ForwardError::PortCapabilityMismatch);
+        }
+        if route.effective_reachability(request.now) != Reachability::Reachable {
+            self.diagnostics.drops_no_route = self.diagnostics.drops_no_route.saturating_add(1);
+            return Err(ForwardError::RouteUnavailable);
+        }
+
+        let (destination, final_len) = match route.kind {
+            RouteKind::Direct => {
+                let destination = match direct_destination(&parsed, request.egress_capabilities) {
+                    Ok(destination) => destination,
+                    Err(error) => {
+                        self.diagnostics.drops_invalid =
+                            self.diagnostics.drops_invalid.saturating_add(1);
+                        return Err(error);
+                    }
+                };
+                let final_len = match parsed.rewritten_direct_len(request.logical_source) {
+                    Ok(length) => length,
+                    Err(error) => {
+                        self.diagnostics.drops_invalid =
+                            self.diagnostics.drops_invalid.saturating_add(1);
+                        return Err(error);
+                    }
+                };
+                (destination, final_len)
+            }
+            RouteKind::Learned => {
+                if route.next_hop.is_empty()
+                    || !valid_egress_address(
+                        route.next_hop.as_slice(),
+                        request.egress_capabilities.kind,
+                    )
+                {
+                    self.diagnostics.drops_invalid =
+                        self.diagnostics.drops_invalid.saturating_add(1);
+                    return Err(ForwardError::InvalidEgressAddress);
+                }
+                let final_len =
+                    match parsed.rewritten_learned_len(request.logical_source, route.next_hop) {
+                        Ok(length) => length,
+                        Err(error) => {
+                            self.diagnostics.drops_invalid =
+                                self.diagnostics.drops_invalid.saturating_add(1);
+                            return Err(error);
+                        }
+                    };
+                (EgressDestination::Unicast(route.next_hop), final_len)
+            }
+        };
+        let maximum = request.egress_capabilities.effective_max_npdu_len();
+        if final_len > maximum {
+            self.diagnostics.drops_oversize = self.diagnostics.drops_oversize.saturating_add(1);
+            return Ok(ForwardOutcome::Oversize {
+                final_npdu_len: final_len,
+                maximum,
+            });
+        }
+        let rewrite_result = match route.kind {
+            RouteKind::Direct => {
+                parsed.rewrite_direct(request.ingress_network, request.logical_source, scratch)
+            }
+            RouteKind::Learned => parsed.rewrite_learned(
+                request.ingress_network,
+                request.logical_source,
+                route.next_hop,
+                scratch,
+            ),
+        };
+        if let Err(error) = rewrite_result {
+            self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
+            return Err(error);
+        }
+        let class = if parsed.control & NETWORK_MESSAGE_BIT != 0 {
+            TrafficClass::NetworkControl
+        } else {
+            TrafficClass::Data
+        };
+        match egress.try_admit(EgressRequest {
+            port: route.port,
+            destination,
+            class,
+            priority: parsed.control & 0x03,
+            npdu: &scratch[..final_len],
+        }) {
+            AdmissionOutcome::AcceptedOwned => {
+                self.diagnostics.forwarded_npdus =
+                    self.diagnostics.forwarded_npdus.saturating_add(1);
+                Ok(ForwardOutcome::Forwarded {
+                    final_npdu_len: final_len,
+                })
+            }
+            AdmissionOutcome::Full => {
+                self.diagnostics.drops_full = self.diagnostics.drops_full.saturating_add(1);
+                Ok(ForwardOutcome::QueueFull)
+            }
+            AdmissionOutcome::Oversize => {
+                self.diagnostics.drops_oversize = self.diagnostics.drops_oversize.saturating_add(1);
+                Ok(ForwardOutcome::Oversize {
+                    final_npdu_len: final_len,
+                    maximum,
+                })
+            }
+            AdmissionOutcome::PortDown => {
+                self.diagnostics.drops_port_down =
+                    self.diagnostics.drops_port_down.saturating_add(1);
+                Ok(ForwardOutcome::PortDown)
+            }
+        }
+    }
 }
 
 impl<const DIRECT: usize, const LEARNED: usize> Default for RouterCore<DIRECT, LEARNED> {
@@ -273,6 +428,7 @@ struct ParsedNpdu<'a> {
     destination_network: u16,
     destination_mac: &'a [u8],
     source_fields: Option<&'a [u8]>,
+    hop_count: u8,
     remainder: &'a [u8],
 }
 
@@ -331,7 +487,8 @@ impl<'a> ParsedNpdu<'a> {
         };
 
         // Skip Hop Count. The direct egress removes it with DNET/DADR.
-        if data[offset] == 0 {
+        let hop_count = data[offset];
+        if hop_count == 0 {
             return Err(ForwardError::HopExhausted);
         }
         offset += 1;
@@ -348,6 +505,7 @@ impl<'a> ParsedNpdu<'a> {
             destination_network,
             destination_mac,
             source_fields,
+            hop_count,
             remainder: &data[offset..],
         })
     }
@@ -393,4 +551,89 @@ impl<'a> ParsedNpdu<'a> {
             .map_or(3 + ingress_source.as_slice().len(), <[u8]>::len);
         Ok(2 + source_len + self.remainder.len())
     }
+
+    fn rewrite_learned(
+        &self,
+        ingress_network: NetworkNumber,
+        ingress_source: LinkAddress,
+        next_hop: LinkAddress,
+        output: &mut [u8],
+    ) -> Result<usize, ForwardError> {
+        let needed = self.rewritten_learned_len(ingress_source, next_hop)?;
+        if output.len() < needed {
+            return Err(ForwardError::ScratchTooSmall {
+                needed,
+                available: output.len(),
+            });
+        }
+        output[0] = BACNET_PROTOCOL_VERSION;
+        output[1] = self.control | SOURCE_BIT;
+        let mut offset = 2;
+        output[offset..offset + 2].copy_from_slice(&self.destination_network.to_be_bytes());
+        offset += 2;
+        output[offset] = next_hop.as_slice().len() as u8;
+        offset += 1;
+        output[offset..offset + next_hop.as_slice().len()].copy_from_slice(next_hop.as_slice());
+        offset += next_hop.as_slice().len();
+        if let Some(source_fields) = self.source_fields {
+            output[offset..offset + source_fields.len()].copy_from_slice(source_fields);
+            offset += source_fields.len();
+        } else {
+            output[offset..offset + 2].copy_from_slice(&ingress_network.get().to_be_bytes());
+            offset += 2;
+            output[offset] = ingress_source.as_slice().len() as u8;
+            offset += 1;
+            output[offset..offset + ingress_source.as_slice().len()]
+                .copy_from_slice(ingress_source.as_slice());
+            offset += ingress_source.as_slice().len();
+        }
+        output[offset] = self.hop_count() - 1;
+        offset += 1;
+        output[offset..needed].copy_from_slice(self.remainder);
+        Ok(needed)
+    }
+
+    fn rewritten_learned_len(
+        &self,
+        ingress_source: LinkAddress,
+        next_hop: LinkAddress,
+    ) -> Result<usize, ForwardError> {
+        if self.source_fields.is_none() && ingress_source.is_empty() {
+            return Err(ForwardError::InvalidSource);
+        }
+        let source_len = self
+            .source_fields
+            .map_or(3 + ingress_source.as_slice().len(), <[u8]>::len);
+        Ok(2 + 2 + 1 + next_hop.as_slice().len() + source_len + 1 + self.remainder.len())
+    }
+
+    fn hop_count(&self) -> u8 {
+        self.hop_count
+    }
+}
+
+fn valid_egress_address(address: &[u8], kind: PortKind) -> bool {
+    match kind {
+        PortKind::MstpStandard => address.len() == 1,
+        PortKind::Bip => address.len() == 6,
+        PortKind::Other => address.len() <= 6,
+    }
+}
+
+fn direct_destination(
+    parsed: &ParsedNpdu<'_>,
+    capabilities: PortCapabilities,
+) -> Result<EgressDestination, ForwardError> {
+    if parsed.destination_mac.is_empty()
+        || (capabilities.kind == PortKind::MstpStandard && parsed.destination_mac == [0xff])
+    {
+        return Ok(EgressDestination::Broadcast);
+    }
+    if !valid_egress_address(parsed.destination_mac, capabilities.kind) {
+        return Err(ForwardError::InvalidEgressAddress);
+    }
+    Ok(EgressDestination::Unicast(
+        LinkAddress::try_from_slice(parsed.destination_mac)
+            .map_err(|_| ForwardError::AddressTooLong)?,
+    ))
 }
