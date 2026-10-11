@@ -5,6 +5,12 @@ use crate::clock::Duration;
 const MAX_MASTER_ADDRESS: u8 = 127;
 const DEFAULT_BAUD_RATE: u32 = 9_600;
 const MAX_FRAME_ABORT: Duration = Duration::from_millis(100);
+/// The shortest T_reply_timeout a station may use (Clause 9.5.3). No requester
+/// stops waiting for a reply sooner, so it bounds how late a reply may start.
+pub(crate) const MIN_REPLY_TIMEOUT: Duration = Duration::from_millis(255);
+/// Default for [`MstpCoreConfig::reply_transmit_margin`], the value the host
+/// MS/TP transport reserves.
+const DEFAULT_REPLY_TRANSMIT_MARGIN: Duration = Duration::from_millis(25);
 
 /// A configuration value that violates a protocol or local safety bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +85,14 @@ pub enum ConfigError {
         value: Duration,
         /// Maximum permitted duration.
         maximum: Duration,
+    },
+    /// The reply transmit margin must leave part of T_reply_delay for the
+    /// application to answer.
+    ReplyMarginTooLong {
+        /// Supplied margin.
+        margin: Duration,
+        /// Configured T_reply_delay.
+        reply_delay: Duration,
     },
     /// T_reply_timeout must be between 255 and 300 ms.
     ReplyTimeoutOutOfRange {
@@ -194,7 +208,8 @@ pub struct MstpCoreConfig {
     pub t_no_token: Duration,
     /// T_postdrive.
     pub t_postdrive: Duration,
-    /// T_reply_delay.
+    /// T_reply_delay: the longest a reply to a data-expecting-reply frame may
+    /// take to start.
     pub t_reply_delay: Duration,
     /// T_reply_timeout.
     pub t_reply_timeout: Duration,
@@ -207,6 +222,14 @@ pub struct MstpCoreConfig {
     /// T_usage_timeout.
     pub t_usage_timeout: Duration,
 
+    /// Time kept back from T_reply_delay for the platform to get a reply onto
+    /// the wire.
+    ///
+    /// The core waits for the application's answer until T_reply_delay less
+    /// this margin, then sends Reply Postponed itself, so that adapter and
+    /// UART latency still lets the frame start within T_reply_delay. It must
+    /// be shorter than T_reply_delay. Default 25 ms.
+    pub reply_transmit_margin: Duration,
     /// Maximum time an item may remain in a local transmit queue.
     pub queue_max_age: Duration,
     /// Number of broadcast frames scheduled per unicast frame while both
@@ -316,12 +339,17 @@ impl MstpCoreConfig {
                 value: self.t_no_token,
             });
         }
-        let reply_timeout_min = Duration::from_millis(255);
+        if self.reply_transmit_margin >= self.t_reply_delay {
+            return Err(ConfigError::ReplyMarginTooLong {
+                margin: self.reply_transmit_margin,
+                reply_delay: self.t_reply_delay,
+            });
+        }
         let reply_timeout_max = Duration::from_millis(300);
-        if self.t_reply_timeout < reply_timeout_min || self.t_reply_timeout > reply_timeout_max {
+        if self.t_reply_timeout < MIN_REPLY_TIMEOUT || self.t_reply_timeout > reply_timeout_max {
             return Err(ConfigError::ReplyTimeoutOutOfRange {
                 value: self.t_reply_timeout,
-                minimum: reply_timeout_min,
+                minimum: MIN_REPLY_TIMEOUT,
                 maximum: reply_timeout_max,
             });
         }
@@ -402,11 +430,12 @@ impl MstpCoreConfig {
             t_no_token: Duration::from_millis(500),
             t_postdrive: or_max(floor_bit_times(baud_rate, 15)),
             t_reply_delay: Duration::from_millis(250),
-            t_reply_timeout: Duration::from_millis(255),
+            t_reply_timeout: MIN_REPLY_TIMEOUT,
             t_slot: Duration::from_millis(10),
             t_turnaround: or_max(ceil_bit_times(baud_rate, 40)),
             t_usage_delay: Duration::from_millis(15),
             t_usage_timeout: Duration::from_millis(20),
+            reply_transmit_margin: DEFAULT_REPLY_TRANSMIT_MARGIN,
             queue_max_age: Duration::from_secs(5),
             broadcast_unicast_ratio: 1,
             multiple_frame_ratio: 100,
@@ -528,5 +557,30 @@ mod tests {
             config.validate(),
             Err(ConfigError::MultipleFrameRatioOutOfRange { value: 101 })
         );
+    }
+
+    #[test]
+    fn reply_margin_must_leave_part_of_the_reply_delay() {
+        let config = MstpCoreConfig::default();
+        assert_eq!(config.reply_transmit_margin, Duration::from_millis(25));
+
+        let config = MstpCoreConfig {
+            reply_transmit_margin: Duration::from_millis(250),
+            ..MstpCoreConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::ReplyMarginTooLong {
+                margin: Duration::from_millis(250),
+                reply_delay: Duration::from_millis(250),
+            })
+        );
+
+        let config = MstpCoreConfig {
+            t_reply_delay: Duration::from_millis(100),
+            reply_transmit_margin: Duration::from_micros(99_999),
+            ..MstpCoreConfig::default()
+        };
+        assert_eq!(config.validate(), Ok(()));
     }
 }

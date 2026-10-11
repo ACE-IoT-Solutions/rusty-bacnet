@@ -226,6 +226,9 @@ fn abandoned_request_returns_idle_without_wire_actions() {
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.snapshot().request_id, None);
     assert_eq!(core.poll_action(), Action::Idle);
+    // Idle again: the next deadline is token loss, not the old reply
+    // deadline.
+    assert_eq!(core.next_deadline(), Some(at(502)));
 }
 
 #[test]

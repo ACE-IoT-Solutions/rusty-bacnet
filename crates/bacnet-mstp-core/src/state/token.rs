@@ -149,9 +149,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         let (frame_type, post) = if expecting {
             (
                 FrameType::BACnetDataExpectingReply,
-                PostTransmit::WaitForReply {
-                    source: item.destination,
-                },
+                PostTransmit::WaitForReply,
             )
         } else {
             (

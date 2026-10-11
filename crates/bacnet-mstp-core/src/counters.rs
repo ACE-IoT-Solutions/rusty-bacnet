@@ -80,8 +80,15 @@ pub struct MstpCounters {
     pub token_regenerations: u32,
     /// Token-pass retries.
     pub token_retries: u32,
-    /// Parser or frame validation errors.
+    /// Received frames counted invalid: bad headers, and frames for this
+    /// station or broadcast that were too long, undecodable or corrupt.
     pub parser_errors: u32,
+    /// Replies, Reply Postponed included, whose transmission started after
+    /// T_reply_delay. They were still sent.
+    pub late_replies: u32,
+    /// Requests dropped unanswered because the requester may already have
+    /// stopped waiting (255 ms, the shortest T_reply_timeout).
+    pub expired_requests: u32,
     /// Frames abandoned by T_frame_abort.
     pub frame_aborts: u32,
     /// Valid MS/TP frames received.
@@ -109,6 +116,16 @@ impl MstpCounters {
     /// Record a missed or late deadline.
     pub(crate) fn record_deadline_miss(&mut self) {
         increment(&mut self.deadline_misses);
+    }
+
+    /// Record a reply that started after T_reply_delay.
+    pub(crate) fn record_late_reply(&mut self) {
+        increment(&mut self.late_replies);
+    }
+
+    /// Record a request dropped unanswered.
+    pub(crate) fn record_expired_request(&mut self) {
+        increment(&mut self.expired_requests);
     }
 
     /// Record a successful token rotation.

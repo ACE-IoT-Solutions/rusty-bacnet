@@ -21,7 +21,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         data: &[u8],
         post: PostTransmit,
         now: Instant,
-        expires: Option<Instant>,
+        reply: Option<ReplyWindow>,
     ) -> Result<(), CoreError> {
         let mut encoded = [0; MAX_STANDARD_FRAME_LENGTH];
         let length = Frame::new(frame_type, destination, self.config.station, data)
@@ -33,17 +33,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                 frame: encoded,
                 post,
                 earliest,
-                expires,
+                reply,
             });
             self.protocol_deadline = Some(earliest);
             return Ok(());
         }
-        if expires.is_some_and(|deadline| now > deadline) {
-            self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
-            return Ok(());
-        }
-        self.dispatch_frame(&encoded[..length], post, expires, now)
+        self.dispatch_frame(&encoded[..length], post, reply, now)
     }
 
     pub(super) fn dispatch_pending_send(&mut self, now: Instant) -> Result<(), CoreError> {
@@ -52,8 +47,11 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             self.protocol_deadline = Some(pending.earliest);
             return Ok(());
         }
-        if pending.expires.is_some_and(|deadline| now > deadline) {
+        if pending.reply.is_some_and(|reply| now >= reply.give_up) {
+            // The requester may have stopped waiting; sending now could
+            // collide with it.
             self.pending_send = None;
+            self.counters.record_expired_request();
             self.set_state(MasterState::Idle);
             self.protocol_deadline = Some(now + self.config.t_no_token);
             return Ok(());
@@ -61,7 +59,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         self.dispatch_frame(
             &pending.frame[..pending.length],
             pending.post,
-            pending.expires,
+            pending.reply,
             now,
         )?;
         self.pending_send = None;
@@ -72,7 +70,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         &mut self,
         frame: &[u8],
         post: PostTransmit,
-        expires: Option<Instant>,
+        reply: Option<ReplyWindow>,
         now: Instant,
     ) -> Result<(), CoreError> {
         if self.active_transmit.is_some() {
@@ -88,7 +86,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             asserted_at: now,
             started: false,
             post,
-            expires,
+            reply,
         });
         self.protocol_deadline = None;
         Ok(())

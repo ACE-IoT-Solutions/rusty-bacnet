@@ -9,11 +9,12 @@ use crate::actions::{
     Action, ActionEnqueueError, ActionQueue, Direction, RequestId, TransmitFailure, TransmitId,
 };
 use crate::clock::{Duration, Instant};
-use crate::config::{ConfigError, MstpCoreConfig};
+use crate::config::{ConfigError, MstpCoreConfig, MIN_REPLY_TIMEOUT};
 use crate::counters::MstpCounters;
 use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
 
 mod receive;
+mod reply;
 mod token;
 mod transmission;
 
@@ -79,13 +80,17 @@ pub enum CoreError {
     },
     /// The bounded control-action ring could not accept protocol work.
     ActionCapacity,
-    /// Frame encoding failed.
+    /// A frame could not be encoded, or a frame handed to
+    /// [`MasterCore::on_validated_frame`] is not a standard frame.
     Frame(FrameError),
     /// No application request is pending.
     NoPendingRequest,
     /// The request identifier is stale or belongs to another transaction.
     StaleRequest,
-    /// The request's reply-delay deadline has already arrived.
+    /// Too late for this reply. Either a data reply came after the decision
+    /// deadline (the core still owns the request and sends Reply Postponed),
+    /// or the requester may have stopped waiting, so the request was released
+    /// unanswered.
     RequestExpired,
     /// The reply is too large for a standard MS/TP frame.
     ReplyOversize {
@@ -137,14 +142,27 @@ pub struct MasterSnapshot {
 struct PendingRequest {
     id: RequestId,
     source: u8,
-    deadline: Instant,
+    /// When the core stops waiting for the application and sends Reply
+    /// Postponed: T_reply_delay less the transmit margin.
+    decide_by: Instant,
+    window: ReplyWindow,
+}
+
+/// When a reply to a received request may still go out.
+#[derive(Debug, Clone, Copy)]
+struct ReplyWindow {
+    /// The end of T_reply_delay. A reply that starts later is counted late.
+    send_by: Instant,
+    /// The requester's shortest possible reply timeout. From here on it may
+    /// be transmitting again, so nothing is sent.
+    give_up: Instant,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum PostTransmit {
     Idle,
     ContinueToken,
-    WaitForReply { source: u8 },
+    WaitForReply,
     PassToken,
     PollForMaster,
 }
@@ -155,7 +173,7 @@ struct ActiveTransmit {
     asserted_at: Instant,
     started: bool,
     post: PostTransmit,
-    expires: Option<Instant>,
+    reply: Option<ReplyWindow>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -164,7 +182,7 @@ struct PendingSend {
     frame: [u8; MAX_STANDARD_FRAME_LENGTH],
     post: PostTransmit,
     earliest: Instant,
-    expires: Option<Instant>,
+    reply: Option<ReplyWindow>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,7 +206,6 @@ pub struct MasterCore<'rx, Q: QueueStorage> {
     retry_token_count: u8,
     event_count: u32,
     sole_master: bool,
-    expected_reply_source: Option<u8>,
     pending_request: Option<PendingRequest>,
     next_request_generation: u32,
     active_transmit: Option<ActiveTransmit>,
@@ -205,6 +222,12 @@ pub struct MasterCore<'rx, Q: QueueStorage> {
 
 impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Construct a core over caller-owned receive storage.
+    ///
+    /// `rx_storage` is the stream decoder's buffer for [`Self::on_octet`].
+    /// Size it for the largest frame this station accepts:
+    /// [`MAX_STANDARD_FRAME_LENGTH`] takes any standard frame. A longer frame
+    /// addressed to this station or broadcast counts as an invalid frame
+    /// (Clause 9.5.4.4).
     pub fn new(
         config: MstpCoreConfig,
         mut queues: Q,
@@ -226,7 +249,6 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             retry_token_count: 0,
             event_count: 0,
             sole_master: false,
-            expected_reply_source: None,
             pending_request: None,
             next_request_generation: 0,
             active_transmit: None,
@@ -291,6 +313,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     /// Feed one wire-timestamped octet through the incremental codec.
+    ///
+    /// A candidate the codec drops counts as an invalid frame only as
+    /// Clause 9.5.4 would count it for this station; see
+    /// [`DecodeEvent::Malformed`].
     pub fn on_octet(&mut self, byte: u8, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         if self.active_transmit.is_some() {
@@ -303,33 +329,23 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             self.invalid_frame_event(now)?;
         }
         self.last_octet = Some(now);
-        let mut complete = None;
-        match self.decoder.push(byte) {
-            DecodeEvent::NeedMore => {
-                self.parser_partial = self.decoder.phase() != StreamPhase::Sync
-            }
-            DecodeEvent::Invalid { .. } => {
-                self.parser_partial = self.decoder.phase() != StreamPhase::Sync;
-            }
-            DecodeEvent::Malformed { .. } | DecodeEvent::Error(_) => {
-                self.parser_partial = self.decoder.phase() != StreamPhase::Sync;
-                self.counters.record_parser_error();
-                self.invalid_frame_event(now)?;
-            }
-            DecodeEvent::Frame { frame, .. } => {
-                self.parser_partial = false;
-                complete = Some(Self::copy_frame(frame));
-            }
-        }
-        if let Some(frame) = complete {
-            self.process_owned_frame(frame, now)?;
-        }
-        Ok(())
+        let result = self.decode_octet(byte, now);
+        self.parser_partial = self.decoder.phase() != StreamPhase::Sync;
+        result
     }
 
     /// Feed a frame already validated by a host-side chunk-tolerant assembler.
+    ///
+    /// A frame with more data than a standard frame carries (501 octets) is
+    /// refused with [`CoreError::Frame`] and changes nothing.
     pub fn on_validated_frame(&mut self, frame: Frame<'_>, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
+        if frame.data.len() > MAX_STANDARD_MPDU_DATA {
+            return Err(CoreError::Frame(FrameError::Oversize {
+                length: frame.data.len(),
+                maximum: MAX_STANDARD_MPDU_DATA,
+            }));
+        }
         self.note_bus_activity(now);
         self.cancel_pending_send_on_activity(now);
         self.process_owned_frame(Self::copy_frame(frame), now)
@@ -436,82 +452,25 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             MasterState::Idle => self.enter_no_token(now),
             MasterState::NoToken => self.generate_token_if_in_slot(now),
             MasterState::WaitForReply => {
-                self.expected_reply_source = None;
                 // Clause 9.5.6.4 ends this token use after a reply timeout;
                 // queued information frames wait for the next token.
                 self.frame_count = self.config.max_info_frames;
                 self.set_state(MasterState::DoneWithToken);
                 self.drive_token(now)
             }
-            MasterState::AnswerDataRequest => {
-                let Some(request) = self.pending_request else {
-                    self.set_state(MasterState::Idle);
-                    return Ok(());
-                };
-                if now > request.deadline {
-                    self.expire_request_ownership(now);
-                    return Ok(());
-                }
-                self.complete_request(request.id, ReplyDecision::Postponed, now)
-            }
+            MasterState::AnswerDataRequest => self.reply_deadline(now),
             MasterState::PassToken => self.pass_token_timeout(now),
             MasterState::PollForMaster => self.poll_timeout(now),
             MasterState::UseToken | MasterState::DoneWithToken => self.drive_token(now),
         }
     }
 
-    /// Complete a request-bearing delivery using its generation identifier.
-    pub fn complete_request(
-        &mut self,
-        id: RequestId,
-        decision: ReplyDecision<'_>,
-        now: Instant,
-    ) -> Result<(), CoreError> {
-        self.observe_time(now)?;
-        let request = self.pending_request.ok_or(CoreError::NoPendingRequest)?;
-        if request.id != id {
-            return Err(CoreError::StaleRequest);
-        }
-        if now > request.deadline {
-            self.expire_request_ownership(now);
-            return Err(CoreError::RequestExpired);
-        }
-        if now >= request.deadline && matches!(decision, ReplyDecision::Data(_)) {
-            return Err(CoreError::RequestExpired);
-        }
-        if matches!(decision, ReplyDecision::Abandoned) {
-            self.pending_request = None;
-            self.set_state(MasterState::Idle);
-            return Ok(());
-        }
-        let (frame_type, payload) = match decision {
-            ReplyDecision::Data(data) => {
-                if data.len() > MAX_STANDARD_MPDU_DATA {
-                    return Err(CoreError::ReplyOversize {
-                        length: data.len(),
-                        maximum: MAX_STANDARD_MPDU_DATA,
-                    });
-                }
-                (FrameType::BACnetDataNotExpectingReply, data)
-            }
-            ReplyDecision::Postponed | ReplyDecision::Cancelled => {
-                (FrameType::ReplyPostponed, &[][..])
-            }
-            ReplyDecision::Abandoned => unreachable!("handled above"),
-        };
-        self.queue_frame_until(
-            frame_type,
-            request.source,
-            payload,
-            PostTransmit::Idle,
-            now,
-            Some(request.deadline),
-        )?;
-        self.pending_request = None;
-        Ok(())
-    }
-
     /// Confirm that the platform has started the matching UART transfer.
+    ///
+    /// A reply that starts after T_reply_delay still goes out and is counted
+    /// in [`MstpCounters::late_replies`]. One that would start once the
+    /// requester may have stopped waiting is refused with
+    /// [`CoreError::RequestExpired`]; the platform must abort it.
     pub fn on_transmit_started(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         let tx = self
@@ -521,14 +480,20 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         if tx.started {
             return Err(CoreError::TransmitAlreadyStarted);
         }
-        if tx.expires.is_some_and(|deadline| now > deadline) {
-            self.actions
-                .enqueue_direction(Direction::Receive)
-                .map_err(|_| CoreError::ActionCapacity)?;
-            self.active_transmit = None;
-            self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
-            return Err(CoreError::RequestExpired);
+        if let Some(reply) = tx.reply {
+            if now >= reply.give_up {
+                self.actions
+                    .enqueue_direction(Direction::Receive)
+                    .map_err(|_| CoreError::ActionCapacity)?;
+                self.active_transmit = None;
+                self.counters.record_expired_request();
+                self.set_state(MasterState::Idle);
+                self.protocol_deadline = Some(now + self.config.t_no_token);
+                return Err(CoreError::RequestExpired);
+            }
+            if now > reply.send_by {
+                self.counters.record_late_reply();
+            }
         }
         let tx = self.active_transmit.as_mut().expect("checked above");
         tx.started = true;
@@ -561,8 +526,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                 self.set_state(MasterState::UseToken);
                 self.drive_token(now)
             }
-            PostTransmit::WaitForReply { source } => {
-                self.expected_reply_source = Some(source);
+            PostTransmit::WaitForReply => {
                 self.set_state(MasterState::WaitForReply);
                 self.protocol_deadline = Some(now + self.config.t_reply_timeout);
                 Ok(())
@@ -669,12 +633,6 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             self.set_state(MasterState::Idle);
             self.protocol_deadline = Some(now + self.config.t_no_token);
         }
-    }
-
-    fn expire_request_ownership(&mut self, now: Instant) {
-        self.pending_request = None;
-        self.set_state(MasterState::Idle);
-        self.protocol_deadline = Some(now + self.config.t_no_token);
     }
 
     fn set_state(&mut self, state: MasterState) {
