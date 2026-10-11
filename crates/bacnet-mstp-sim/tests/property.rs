@@ -59,9 +59,6 @@ fn plan(seed: u64) -> Plan {
     // Collect violations to report them with the seed; MSTP_SIM_PANIC=1
     // stops at the first one instead, with the trace leading up to it.
     config.panic_on_violation = std::env::var_os("MSTP_SIM_PANIC").is_some();
-    // What the slow adapter's core misses in its own blind spot is the known
-    // core gap #1625, pinned in `known_gaps.rs`; everything else stays strict.
-    config.tolerance.slow_adapter_blind_spot = true;
     let mut sim = Sim::new(config);
 
     let max_master = 23;

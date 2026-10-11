@@ -205,7 +205,7 @@ reliably within one LTO image:
 - `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
   features, plus the core's `heapless` queues);
 - `bip` links `bacnet-bip-codec` (default features, plus its `heapless`
-  sink).
+  sink), both its B/IP and its B/IPv6 messages.
 
 A use of `alloc` anywhere in an image fails its build with "no global memory
 allocator found", and a symbol that only a hosted target provides fails the
@@ -228,7 +228,11 @@ link.
     paths: a Length field that disagrees with the datagram, a table that
     isn't whole entries, an undefined result code on encode, an unknown
     function, and a message too long for a fixed slice and for a nearly
-    full sink.
+    full sink. Then `bip::ipv6::run` does the same for each `Bvll6`
+    variant in the same storage: three datagrams written by hand from the
+    Annex U.2 layouts, a Forwarded-NPDU's origin, and B/IPv6 rejections,
+    among them a B/IP type octet, the deleted function 0x0B and an
+    address of the wrong length.
 
   The host tests `firmware/link/tests/mstp.rs` and `tests/bip.rs` run them
   and compare each whole summary, so the behaviour is checked natively, in
@@ -291,13 +295,13 @@ link.
   install the toolchain again for builds that take seconds.
 - **What `.text` holds.** Each image's `.text` includes its scenario, not
   just the stack it links. The check's by-crate list shows the split: on
-  `thumbv7m-none-eabi`, the MS/TP image's 18.3 KB is about 5.8 KB of
-  `bacnet-mstp-core`, 6.5 KB of the scenario (with the core code it
+  `thumbv7m-none-eabi`, the MS/TP image's 18.7 KB is about 6.3 KB of
+  `bacnet-mstp-core`, 6.4 KB of the scenario (with the core code it
   inlines), 4.3 KB of compiler-builtins and startup code (memory copies,
   64-bit division and the reset handler; the list shows the unmangled part
   separately) and 1.4 KB of `bacnet-mstp-codec`.
 - **RAM.** The scenarios' buffers and the core are statics, so `.bss`
-  measures them: the core is 13,352 octets on these targets. `.bss` doesn't
+  measures them: the core is 13,344 octets on these targets. `.bss` doesn't
   count the stack, where `MasterCore::new` builds the core before it is
   copied into place (#1618). `cargo nextest run -p firmware-link` prints the
   host sizes from the `ram_sizes` test.

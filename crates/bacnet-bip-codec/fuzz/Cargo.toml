@@ -20,3 +20,10 @@ path = "fuzz_targets/bip_decode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "bip6_decode"
+path = "fuzz_targets/bip6_decode.rs"
+test = false
+doc = false
+bench = false

@@ -42,7 +42,6 @@ impl Sim {
             return;
         }
         let mut missed = Vec::new();
-        let mut blind = Vec::new();
         for &(node, before) in listeners {
             let station = self.nodes[node].station;
             let listened_throughout = self.nodes[node]
@@ -56,24 +55,7 @@ impl Sim {
             };
             let after = core.counters().frames_received;
             if listened_throughout && after != before + 1 {
-                let text = format!("station {station} counted {}", after - before);
-                if master.blind_during(frame.start, frame.end) {
-                    blind.push(text);
-                } else {
-                    missed.push(text);
-                }
-            }
-        }
-        if !blind.is_empty() {
-            self.report.blind_spot_frames += 1;
-            let detail = format!(
-                "clean frame {frame}: {} (slow adapter blind spot, #1625)",
-                blind.join(", ")
-            );
-            if self.config.tolerance.slow_adapter_blind_spot {
-                self.note(Who::Sim, TraceKind::Note(detail));
-            } else {
-                missed.push(detail);
+                missed.push(format!("station {station} counted {}", after - before));
             }
         }
         if !missed.is_empty() {
@@ -176,7 +158,8 @@ impl Sim {
 
     /// A master starts a frame no sooner than its Tturnaround after the last
     /// character on the line, its own included, and its core hands the frame
-    /// over no sooner than that either.
+    /// over no sooner than that either. Every character reaches the core
+    /// before it confirms a start, so neither has an excuse (#1625).
     pub(super) fn check_turnaround(&mut self, node: usize, pending: &PendingTx) {
         let now = self.now;
         let station = self.nodes[node].station;
@@ -184,9 +167,6 @@ impl Sim {
             return;
         };
         let turnaround = master.spec.config.t_turnaround;
-        let slow = master.spec.adapter.start_delay > bacnet_mstp_core::Duration::ZERO;
-        // The core had heard everything up to the dispatch, so a dispatch
-        // inside Tturnaround is the core's own error, never the blind spot.
         if let Some(before) = pending.activity_at_dispatch {
             if pending.dispatched - before < turnaround {
                 self.violation(
@@ -213,22 +193,6 @@ impl Sim {
             Millis(last),
             turnaround.as_micros()
         );
-        // The blind spot (#1625): the core takes octets for its own echo from
-        // dispatch on, so it cannot see activity it had not heard by then.
-        // Only a run whose first character arrived after the dispatch is
-        // excused; a run it had heard part of would have put the dispatch
-        // itself inside Tturnaround, caught above.
-        let heard_after = self
-            .line
-            .last_run_first_heard()
-            .is_some_and(|first| first > pending.dispatched);
-        if slow && heard_after {
-            self.report.blind_spot_starts += 1;
-            if self.config.tolerance.slow_adapter_blind_spot {
-                self.note(Who::Sim, TraceKind::Note(format!("blind spot: {detail}")));
-                return;
-            }
-        }
         self.violation(ViolationKind::Turnaround, detail);
     }
 

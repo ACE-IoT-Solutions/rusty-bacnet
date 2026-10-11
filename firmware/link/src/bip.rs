@@ -1,8 +1,9 @@
 //! The B/IP image's scenario.
 //!
 //! [`run`] drives `bacnet-bip-codec`, with default features plus its
-//! `heapless` sink, through every message it knows. It returns a
-//! [`Summary`] of what it saw.
+//! `heapless` sink, through every message it knows: the B/IPv4 messages of
+//! Annex J here, then the B/IPv6 messages of Annex U in [`ipv6`], in the
+//! same storage. It returns a [`Summary`] of what it saw.
 //!
 //! - **Messages:** encode one message of each [`Bvll`] variant into a slice
 //!   and into a `heapless::Vec` sink, and decode each back.
@@ -19,8 +20,13 @@
 //!   unknown function, and a message too long for a fixed slice and for a
 //!   nearly full sink.
 //!
+//! The B/IPv6 part ([`ipv6::run`]) does the same for its twelve messages and
+//! its own rejections.
+//!
 //! `tests/bip.rs` runs it natively and compares the whole summary; the `bip`
 //! image (`src/bin/bip.rs`) links it.
+
+pub mod ipv6;
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
@@ -29,7 +35,8 @@ use bacnet_bip_codec::{
     FdtEntries, FdtEntry, PayloadShape, TableEntry,
 };
 
-/// Octets the scenario encodes into at once; its longest message takes 24.
+/// Octets the scenario encodes into at once; its longest message, the
+/// B/IPv6 Forwarded-NPDU, takes 33.
 const WIRE_LENGTH: usize = 64;
 
 /// The growable-sink path: a `heapless::Vec`, whose capacity the codec checks
@@ -182,6 +189,8 @@ pub struct Summary {
     /// Calls that failed where the scenario expects success. Zero in a good
     /// run.
     pub errors: u8,
+    /// What the B/IPv6 part saw.
+    pub ipv6: ipv6::Summary,
 }
 
 impl Summary {
@@ -202,6 +211,7 @@ impl Summary {
             naks: [None; NAKED.len()],
             rejections: [None; REJECTIONS],
             errors: 0,
+            ipv6: ipv6::Summary::new(),
         }
     }
 
@@ -231,6 +241,7 @@ pub fn run(memory: &mut Memory) -> Summary {
         *nak = function.nak();
     }
     summary.rejections = rejections(wire, sink);
+    summary.ipv6 = ipv6::run(wire, sink);
     summary
 }
 

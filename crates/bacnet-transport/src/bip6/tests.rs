@@ -4,14 +4,24 @@ use std::time::Duration;
 use bytes::BytesMut;
 use tokio::net::UdpSocket;
 
-use super::ingress::{original_destination_matches, LocalBinding};
+use super::frame::encoded;
+use super::ingress::{destination_vmac_matches, original_destination_matches, LocalBinding};
 use super::vmac_table::derive_vmac_from_device_instance;
 use super::*;
 use crate::port::TransportPort;
 
+fn vmac(octets: [u8; 3]) -> Bip6Vmac {
+    Bip6Vmac::new(octets)
+}
+
+/// `message` on the wire.
+fn wire(message: Bvll6<'_>) -> BytesMut {
+    encoded(&message).expect("a valid B/IPv6 message")
+}
+
 fn binding(
     ip: Ipv6Addr,
-    vmac: [u8; 3],
+    vmac: Bip6Vmac,
     unicast_ips: &[Ipv6Addr],
     wildcard_bind: bool,
 ) -> LocalBinding<'_> {
@@ -26,38 +36,38 @@ fn binding(
 #[test]
 fn original_function_requires_matching_ip_destination_and_vmac() {
     let local_ip = Ipv6Addr::LOCALHOST;
-    let local_vmac = [1, 2, 3];
+    let local_vmac = vmac([1, 2, 3]);
 
     assert!(original_destination_matches(
-        Bvlc6Function::OriginalUnicast,
+        Bvlc6Function::ORIGINAL_UNICAST_NPDU,
         local_ip.into(),
         Some(local_vmac),
         &binding(local_ip, local_vmac, &[local_ip], false),
         None,
     ));
     assert!(!original_destination_matches(
-        Bvlc6Function::OriginalUnicast,
+        Bvlc6Function::ORIGINAL_UNICAST_NPDU,
         BACNET_IPV6_MULTICAST_LINK_LOCAL.into(),
         Some(local_vmac),
         &binding(local_ip, local_vmac, &[local_ip], false),
         None,
     ));
     assert!(!original_destination_matches(
-        Bvlc6Function::OriginalUnicast,
+        Bvlc6Function::ORIGINAL_UNICAST_NPDU,
         local_ip.into(),
-        Some([9, 9, 9]),
+        Some(vmac([9, 9, 9])),
         &binding(local_ip, local_vmac, &[local_ip], false),
         None,
     ));
     assert!(original_destination_matches(
-        Bvlc6Function::OriginalBroadcast,
+        Bvlc6Function::ORIGINAL_BROADCAST_NPDU,
         BACNET_IPV6_MULTICAST_LINK_LOCAL.into(),
         None,
         &binding(local_ip, local_vmac, &[local_ip], false),
         None,
     ));
     assert!(!original_destination_matches(
-        Bvlc6Function::AddressResolutionAck,
+        Bvlc6Function::ADDRESS_RESOLUTION_ACK,
         BACNET_IPV6_MULTICAST_LINK_LOCAL.into(),
         Some(local_vmac),
         &binding(local_ip, local_vmac, &[local_ip], false),
@@ -65,7 +75,7 @@ fn original_function_requires_matching_ip_destination_and_vmac() {
     ));
 
     assert!(original_destination_matches(
-        Bvlc6Function::OriginalUnicast,
+        Bvlc6Function::ORIGINAL_UNICAST_NPDU,
         Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 9).into(),
         Some(local_vmac),
         &binding(
@@ -77,47 +87,97 @@ fn original_function_requires_matching_ip_destination_and_vmac() {
         None,
     ));
     assert!(!original_destination_matches(
-        Bvlc6Function::OriginalUnicast,
+        Bvlc6Function::ORIGINAL_UNICAST_NPDU,
         BACNET_IPV6_MULTICAST_LINK_LOCAL.into(),
         Some(local_vmac),
         &binding(local_ip, local_vmac, &[local_ip], true),
         Some(true),
     ));
     assert!(original_destination_matches(
-        Bvlc6Function::AddressResolution,
+        Bvlc6Function::ADDRESS_RESOLUTION,
         BACNET_IPV6_MULTICAST_LINK_LOCAL.into(),
         Some(local_vmac),
         &binding(local_ip, local_vmac, &[local_ip], false),
         Some(true),
     ));
     assert!(!original_destination_matches(
-        Bvlc6Function::AddressResolution,
+        Bvlc6Function::ADDRESS_RESOLUTION,
         local_ip.into(),
         Some(local_vmac),
         &binding(local_ip, local_vmac, &[local_ip], false),
         Some(false),
     ));
     assert!(original_destination_matches(
-        Bvlc6Function::VirtualAddressResolution,
+        Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION,
         local_ip.into(),
         None,
         &binding(local_ip, local_vmac, &[local_ip], false),
         Some(false),
     ));
     assert!(!original_destination_matches(
-        Bvlc6Function::VirtualAddressResolution,
+        Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION,
         BACNET_IPV6_MULTICAST_LINK_LOCAL.into(),
         None,
         &binding(local_ip, local_vmac, &[local_ip], false),
         Some(true),
     ));
     assert!(!original_destination_matches(
-        Bvlc6Function::ForwardedAddressResolution,
+        Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION,
         local_ip.into(),
         Some(local_vmac),
         &binding(local_ip, local_vmac, &[local_ip], false),
         Some(false),
     ));
+}
+
+/// U.3: the three messages that name a recipient's VMAC pass only when it
+/// is this node's. Address-Resolution's target is not a destination, and a
+/// message that names none passes.
+#[test]
+fn destination_vmac_filter_admits_only_this_nodes_vmac() {
+    let local = vmac([1, 2, 3]);
+    let other = vmac([9, 9, 9]);
+    let unicast = |destination| Bvll6::OriginalUnicastNpdu {
+        source: other,
+        destination,
+        npdu: &[0x01, 0x00],
+    };
+    let ar_ack = |destination| Bvll6::AddressResolutionAck {
+        source: other,
+        destination,
+    };
+    let var_ack = |destination| Bvll6::VirtualAddressResolutionAck {
+        source: other,
+        destination,
+    };
+    for (message, admitted) in [
+        (unicast(local), true),
+        (unicast(other), false),
+        (ar_ack(local), true),
+        (ar_ack(other), false),
+        (var_ack(local), true),
+        (var_ack(other), false),
+        (
+            Bvll6::AddressResolution {
+                source: other,
+                target: other,
+            },
+            true,
+        ),
+        (
+            Bvll6::OriginalBroadcastNpdu {
+                source: other,
+                npdu: &[0x01, 0x00],
+            },
+            true,
+        ),
+    ] {
+        assert_eq!(
+            destination_vmac_matches(&message, local),
+            admitted,
+            "{message:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -127,17 +187,17 @@ async fn vmac_table_preserves_scope_and_replaces_address_owner() {
     let first = SocketAddrV6::new(ip, 47808, 0, 4);
     let replacement = SocketAddrV6::new(ip, 47808, 0, 4);
 
-    table.learn([1, 2, 3], first).await;
+    table.learn(vmac([1, 2, 3]), first).await;
     assert_eq!(
         table.resolve_by_addr(ip, 47808).await,
-        Some(([1, 2, 3], first))
+        Some((vmac([1, 2, 3]), first))
     );
 
-    table.learn([4, 5, 6], replacement).await;
-    assert_eq!(table.lookup(&[1, 2, 3]).await, None);
+    table.learn(vmac([4, 5, 6]), replacement).await;
+    assert_eq!(table.lookup(&vmac([1, 2, 3])).await, None);
     assert_eq!(
         table.resolve_by_addr(ip, 47808).await,
-        Some(([4, 5, 6], replacement))
+        Some((vmac([4, 5, 6]), replacement))
     );
 }
 
@@ -147,10 +207,10 @@ async fn vmac_table_fails_closed_for_ambiguous_scope() {
     let ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
 
     table
-        .learn([1, 2, 3], SocketAddrV6::new(ip, 47808, 0, 4))
+        .learn(vmac([1, 2, 3]), SocketAddrV6::new(ip, 47808, 0, 4))
         .await;
     table
-        .learn([4, 5, 6], SocketAddrV6::new(ip, 47808, 0, 7))
+        .learn(vmac([4, 5, 6]), SocketAddrV6::new(ip, 47808, 0, 7))
         .await;
 
     assert_eq!(table.resolve_by_addr(ip, 47808).await, None);
@@ -160,37 +220,37 @@ async fn vmac_table_fails_closed_for_ambiguous_scope() {
 async fn vmac_table_is_bounded() {
     let table = super::vmac_table::VmacTable::new();
     for index in 0..super::vmac_table::MAX_VMAC_TABLE_ENTRIES {
-        let vmac = [
+        let octets = [
             ((index >> 16) & 0xFF) as u8,
             ((index >> 8) & 0xFF) as u8,
             (index & 0xFF) as u8,
         ];
         table
             .learn(
-                vmac,
+                vmac(octets),
                 SocketAddrV6::new(Ipv6Addr::LOCALHOST, 10_000 + index as u16, 0, 0),
             )
             .await;
     }
     table
         .learn(
-            [0xFE, 0xFE, 0xFE],
+            vmac([0xFE, 0xFE, 0xFE]),
             SocketAddrV6::new(Ipv6Addr::LOCALHOST, 9999, 0, 0),
         )
         .await;
 
     assert_eq!(table.len().await, super::vmac_table::MAX_VMAC_TABLE_ENTRIES);
-    assert_eq!(table.lookup(&[0xFE, 0xFE, 0xFE]).await, None);
+    assert_eq!(table.lookup(&vmac([0xFE, 0xFE, 0xFE])).await, None);
 
     table
         .learn(
-            [0xFD, 0xFD, 0xFD],
+            vmac([0xFD, 0xFD, 0xFD]),
             SocketAddrV6::new(Ipv6Addr::LOCALHOST, 10_000, 0, 0),
         )
         .await;
     assert_eq!(table.len().await, super::vmac_table::MAX_VMAC_TABLE_ENTRIES);
-    assert_eq!(table.lookup(&[0, 0, 0]).await, None);
-    assert!(table.lookup(&[0xFD, 0xFD, 0xFD]).await.is_some());
+    assert_eq!(table.lookup(&vmac([0, 0, 0])).await, None);
+    assert!(table.lookup(&vmac([0xFD, 0xFD, 0xFD])).await.is_some());
 }
 
 #[tokio::test]
@@ -200,10 +260,10 @@ async fn vmac_table_does_not_retain_ambiguous_reverse_entries() {
 
     for port in 10_000..10_100 {
         table
-            .learn([1, 2, 3], SocketAddrV6::new(ip, port, 0, 4))
+            .learn(vmac([1, 2, 3]), SocketAddrV6::new(ip, port, 0, 4))
             .await;
         table
-            .learn([4, 5, 6], SocketAddrV6::new(ip, port, 0, 7))
+            .learn(vmac([4, 5, 6]), SocketAddrV6::new(ip, port, 0, 7))
             .await;
         assert_eq!(table.resolve_by_addr(ip, port).await, None);
     }
@@ -223,20 +283,26 @@ async fn wrong_destination_vmac_ack_is_not_learned() {
         std::net::SocketAddr::V6(address) => address,
         _ => unreachable!(),
     };
-    let foreign_destination = [9, 9, 9];
+    let foreign_destination = vmac([9, 9, 9]);
 
-    let ar_source = [1, 2, 3];
+    let ar_source = vmac([1, 2, 3]);
     sender
         .send_to(
-            &encode_address_resolution_ack(&ar_source, &foreign_destination),
+            &wire(Bvll6::AddressResolutionAck {
+                source: ar_source,
+                destination: foreign_destination,
+            }),
             destination,
         )
         .await
         .unwrap();
-    let var_source = [4, 5, 6];
+    let var_source = vmac([4, 5, 6]);
     sender
         .send_to(
-            &encode_virtual_address_resolution_ack(&var_source, &foreign_destination),
+            &wire(Bvll6::VirtualAddressResolutionAck {
+                source: var_source,
+                destination: foreign_destination,
+            }),
             destination,
         )
         .await
@@ -254,100 +320,6 @@ async fn wrong_destination_vmac_ack_is_not_learned() {
     );
 
     transport.stop().await.unwrap();
-}
-
-#[test]
-fn encode_original_unicast() {
-    let src_vmac: Bip6Vmac = [0x01, 0x02, 0x03];
-    let dst_vmac: Bip6Vmac = [0x0A, 0x0B, 0x0C];
-    let npdu = vec![0x01, 0x00, 0xAA];
-    let mut buf = BytesMut::new();
-    encode_bvlc6_original_unicast(&mut buf, &src_vmac, &dst_vmac, &npdu)
-        .expect("valid BVLC6 unicast encoding");
-    assert_eq!(buf[0], BVLC6_TYPE);
-    assert_eq!(buf[1], Bvlc6Function::OriginalUnicast.to_byte());
-    let len = u16::from_be_bytes([buf[2], buf[3]]);
-    assert_eq!(len as usize, BVLC6_UNICAST_HEADER_LENGTH + npdu.len());
-    assert_eq!(&buf[4..7], &src_vmac);
-    assert_eq!(&buf[7..10], &dst_vmac);
-    assert_eq!(&buf[10..], &npdu[..]);
-}
-
-#[test]
-fn encode_original_broadcast() {
-    let vmac: Bip6Vmac = [0x01; 3];
-    let npdu = vec![0xBB];
-    let mut buf = BytesMut::new();
-    encode_bvlc6_original_broadcast(&mut buf, &vmac, &npdu)
-        .expect("valid BVLC6 broadcast encoding");
-    assert_eq!(buf[1], Bvlc6Function::OriginalBroadcast.to_byte());
-}
-
-#[test]
-fn encode_bvlc6_oversized_payload_errors() {
-    let vmac: Bip6Vmac = [0x01; 3];
-    let npdu = vec![0; u16::MAX as usize - BVLC6_HEADER_LENGTH + 1];
-    let mut buf = BytesMut::new();
-    assert!(encode_bvlc6(&mut buf, Bvlc6Function::OriginalBroadcast, &vmac, &npdu).is_err());
-}
-
-#[test]
-fn encode_bvlc6_unicast_oversized_payload_errors() {
-    let src_vmac: Bip6Vmac = [0x01, 0x02, 0x03];
-    let dst_vmac: Bip6Vmac = [0x0A, 0x0B, 0x0C];
-    let npdu = vec![0; u16::MAX as usize - BVLC6_UNICAST_HEADER_LENGTH + 1];
-    let mut buf = BytesMut::new();
-    assert!(encode_bvlc6_original_unicast(&mut buf, &src_vmac, &dst_vmac, &npdu).is_err());
-}
-
-#[test]
-fn decode_round_trip_unicast() {
-    let src_vmac: Bip6Vmac = [0x01, 0x02, 0x03];
-    let dst_vmac: Bip6Vmac = [0x0A, 0x0B, 0x0C];
-    let npdu = vec![0x01, 0x00, 0xAA, 0xBB];
-    let mut buf = BytesMut::new();
-    encode_bvlc6_original_unicast(&mut buf, &src_vmac, &dst_vmac, &npdu)
-        .expect("valid BVLC6 unicast encoding");
-    let decoded = decode_bvlc6(&buf).unwrap();
-    assert_eq!(decoded.function, Bvlc6Function::OriginalUnicast);
-    assert_eq!(decoded.source_vmac, src_vmac);
-    assert_eq!(decoded.destination_vmac, Some(dst_vmac));
-    assert_eq!(decoded.payload, npdu);
-}
-
-#[test]
-fn decode_rejects_short_frame() {
-    assert!(decode_bvlc6(&[0x82, 0x01]).is_err());
-}
-
-#[test]
-fn decode_rejects_wrong_type() {
-    assert!(decode_bvlc6(&[0x81, 0x01, 0x00, 0x07, 0, 0, 0]).is_err());
-}
-
-#[test]
-fn function_round_trip() {
-    for byte in 0x00..=0x0Cu8 {
-        let f = Bvlc6Function::from_byte(byte);
-        assert_eq!(f.to_byte(), byte);
-    }
-}
-
-#[test]
-fn bip6_mac_round_trip() {
-    let ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-    let port = 47808u16;
-    let mac = encode_bip6_mac(ip, port);
-    assert_eq!(mac.len(), 18);
-    let (decoded_ip, decoded_port) = decode_bip6_mac(&mac).unwrap();
-    assert_eq!(decoded_ip, ip);
-    assert_eq!(decoded_port, port);
-}
-
-#[test]
-fn bip6_mac_rejects_wrong_length() {
-    assert!(decode_bip6_mac(&[0; 6]).is_err());
-    assert!(decode_bip6_mac(&[0; 20]).is_err());
 }
 
 #[test]
@@ -409,171 +381,14 @@ async fn bip6_unicast_loopback() {
     transport_b.stop().await.unwrap();
 }
 
-// --- Virtual Address Resolution tests ---
-
-#[test]
-fn encode_decode_virtual_address_resolution() {
-    let vmac: Bip6Vmac = [0xAA, 0xBB, 0xCC];
-    let buf = encode_virtual_address_resolution(&vmac);
-
-    // VAR is 7 bytes: type(1) + function(1) + length(2) + source_vmac(3)
-    assert_eq!(buf.len(), BVLC6_HEADER_LENGTH);
-    assert_eq!(buf[0], BVLC6_TYPE);
-    assert_eq!(buf[1], Bvlc6Function::VirtualAddressResolution.to_byte());
-    let total_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-    assert_eq!(total_len, BVLC6_HEADER_LENGTH);
-    assert_eq!(&buf[4..7], &vmac);
-
-    let frame = decode_bvlc6(&buf).unwrap();
-    assert_eq!(frame.function, Bvlc6Function::VirtualAddressResolution);
-    assert_eq!(frame.source_vmac, vmac);
-    assert!(frame.payload.is_empty());
-}
-
-#[test]
-fn encode_decode_virtual_address_resolution_ack() {
-    let source: Bip6Vmac = [0x11, 0x22, 0x33];
-    let dest: Bip6Vmac = [0x44, 0x55, 0x66];
-    let buf = encode_virtual_address_resolution_ack(&source, &dest);
-
-    // VAR-ACK is 10 bytes: type(1)+function(1)+length(2)+source(3)+dest(3)
-    assert_eq!(buf.len(), BVLC6_UNICAST_HEADER_LENGTH);
-    assert_eq!(buf[0], BVLC6_TYPE);
-    assert_eq!(buf[1], Bvlc6Function::VirtualAddressResolutionAck.to_byte());
-    let total_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-    assert_eq!(total_len, BVLC6_UNICAST_HEADER_LENGTH);
-    assert_eq!(&buf[4..7], &source);
-    assert_eq!(&buf[7..10], &dest);
-
-    let frame = decode_bvlc6(&buf).unwrap();
-    assert_eq!(frame.function, Bvlc6Function::VirtualAddressResolutionAck);
-    assert_eq!(frame.source_vmac, source);
-    assert_eq!(frame.destination_vmac, Some(dest));
-    assert!(frame.payload.is_empty());
-}
-
-#[test]
-fn encode_decode_address_resolution() {
-    let source: Bip6Vmac = [0x01, 0x02, 0x03];
-    let target: Bip6Vmac = [0x04, 0x05, 0x06];
-    let buf = encode_address_resolution(&source, &target);
-
-    assert_eq!(buf.len(), BVLC6_UNICAST_HEADER_LENGTH);
-    let frame = decode_bvlc6(&buf).unwrap();
-    assert_eq!(frame.function, Bvlc6Function::AddressResolution);
-    assert_eq!(frame.source_vmac, source);
-    assert_eq!(frame.destination_vmac, Some(target));
-}
-
-#[test]
-fn encode_decode_address_resolution_ack() {
-    let source: Bip6Vmac = [0x0A, 0x0B, 0x0C];
-    let dest: Bip6Vmac = [0x0D, 0x0E, 0x0F];
-    let buf = encode_address_resolution_ack(&source, &dest);
-
-    assert_eq!(buf.len(), BVLC6_UNICAST_HEADER_LENGTH);
-    let frame = decode_bvlc6(&buf).unwrap();
-    assert_eq!(frame.function, Bvlc6Function::AddressResolutionAck);
-    assert_eq!(frame.source_vmac, source);
-    assert_eq!(frame.destination_vmac, Some(dest));
-}
-
-#[test]
-fn fixed_length_bvlc6_frames_reject_surplus_bytes() {
-    let mut var = encode_virtual_address_resolution(&[1, 2, 3]);
-    var.extend_from_slice(&[0]);
-    assert!(decode_bvlc6(&var).is_err());
-
-    let mut ar = encode_address_resolution(&[1, 2, 3], &[4, 5, 6]);
-    ar.extend_from_slice(&[0]);
-    let ar_len = ar.len() as u16;
-    ar[2..4].copy_from_slice(&ar_len.to_be_bytes());
-    assert!(decode_bvlc6(&ar).is_err());
-
-    for (function, payload) in [
-        (Bvlc6Function::Result, vec![0; 2]),
-        (Bvlc6Function::RegisterForeignDevice, vec![0; 2]),
-        (Bvlc6Function::DeleteForeignDeviceEntry, vec![0; 18]),
-    ] {
-        let mut frame = BytesMut::new();
-        encode_bvlc6(&mut frame, function, &[1, 2, 3], &payload).unwrap();
-        assert!(decode_bvlc6(&frame).is_ok());
-        frame.extend_from_slice(&[0]);
-        let length = frame.len() as u16;
-        frame[2..4].copy_from_slice(&length.to_be_bytes());
-        assert!(decode_bvlc6(&frame).is_err(), "{function:?}");
-    }
-}
-
-#[test]
-fn bvlc6_declared_length_must_match_datagram() {
-    let mut frame = encode_virtual_address_resolution(&[1, 2, 3]);
-    frame[2..4].copy_from_slice(&6u16.to_be_bytes());
-    assert!(decode_bvlc6(&frame).is_err());
-}
-
 #[test]
 fn vmac_from_valid_device_instance_uses_all_22_bits() {
     let vmac = derive_vmac_from_device_instance(0x123456);
-    assert_eq!(vmac, [0x12, 0x34, 0x56]);
+    assert_eq!(vmac.octets(), [0x12, 0x34, 0x56]);
     assert_eq!(
-        derive_vmac_from_device_instance(0x3F_FFFF),
+        derive_vmac_from_device_instance(0x3F_FFFF).octets(),
         [0x3F, 0xFF, 0xFF]
     );
-}
-
-// --- ForwardedNpdu tests ---
-
-#[test]
-fn decode_forwarded_npdu_extracts_npdu() {
-    let source_ip = Ipv6Addr::LOCALHOST;
-    let source_port: u16 = 47808;
-    let npdu_data = vec![0x01, 0x00, 0xFF, 0xEE];
-    let mut payload = source_ip.octets().to_vec();
-    payload.extend_from_slice(&source_port.to_be_bytes());
-    payload.extend_from_slice(&npdu_data);
-
-    let (addr, npdu) = decode_forwarded_npdu_payload(&payload).unwrap();
-    assert_eq!(*addr.ip(), source_ip);
-    assert_eq!(addr.port(), source_port);
-    assert_eq!(npdu, &npdu_data[..]);
-}
-
-#[test]
-fn decode_forwarded_npdu_rejects_short_payload() {
-    assert!(decode_forwarded_npdu_payload(&[0x01; 17]).is_err());
-    assert!(decode_forwarded_npdu_payload(&[0x01; 18]).is_err());
-    assert!(decode_forwarded_npdu_payload(&[0x01; 19]).is_err());
-    assert!(decode_forwarded_npdu_payload(&[]).is_err());
-}
-
-#[test]
-fn forwarded_npdu_encode_decode_round_trip() {
-    // Build a full ForwardedNpdu BVLC6 frame and decode it
-    let originating_vmac: Bip6Vmac = [0xAA, 0xBB, 0xCC];
-    let source_ip = Ipv6Addr::LOCALHOST;
-    let npdu = vec![0x01, 0x00, 0xDE, 0xAD];
-
-    let mut forwarded_payload = source_ip.octets().to_vec();
-    forwarded_payload.extend_from_slice(&47808u16.to_be_bytes());
-    forwarded_payload.extend_from_slice(&npdu);
-
-    let mut buf = BytesMut::new();
-    encode_bvlc6(
-        &mut buf,
-        Bvlc6Function::ForwardedNpdu,
-        &originating_vmac,
-        &forwarded_payload,
-    )
-    .expect("valid BVLC6 encoding");
-
-    let frame = decode_bvlc6(&buf).unwrap();
-    assert_eq!(frame.function, Bvlc6Function::ForwardedNpdu);
-    assert_eq!(frame.source_vmac, originating_vmac);
-
-    let (addr, extracted_npdu) = decode_forwarded_npdu_payload(&frame.payload).unwrap();
-    assert_eq!(*addr.ip(), source_ip);
-    assert_eq!(extracted_npdu, &npdu[..]);
 }
 
 #[tokio::test]
@@ -593,47 +408,32 @@ async fn bip6_forwarded_npdu_delivered() {
     let mut rx = transport.start().await.unwrap();
 
     // Build a ForwardedNpdu frame from a "BBMD"
-    let originating_vmac: Bip6Vmac = [0xAA, 0xAA, 0xAA];
+    let originating_vmac = vmac([0xAA, 0xAA, 0xAA]);
     let test_npdu = vec![0x01, 0x00, 0xCA, 0xFE];
 
     let origin_addr =
         SocketAddrV6::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 9), 47_808, 0, 0);
-
-    let mut forwarded_payload = origin_addr.ip().octets().to_vec();
-    forwarded_payload.extend_from_slice(&origin_addr.port().to_be_bytes());
-    forwarded_payload.extend_from_slice(&test_npdu);
-
-    let mut buf = BytesMut::new();
-    encode_bvlc6(
-        &mut buf,
-        Bvlc6Function::ForwardedNpdu,
-        &originating_vmac,
-        &forwarded_payload,
-    )
-    .expect("valid BVLC6 encoding");
+    let forwarded = |source: Bip6Vmac, origin: SocketAddrV6, npdu: &[u8]| {
+        wire(Bvll6::ForwardedNpdu {
+            original_source: source,
+            original_address: origin.into(),
+            npdu,
+        })
+    };
+    let buf = forwarded(originating_vmac, origin_addr, &test_npdu);
 
     let (_, transport_port) = decode_bip6_mac(transport.local_mac()).unwrap();
     let dest = SocketAddrV6::new(Ipv6Addr::LOCALHOST, transport_port, 0, 0);
 
-    let malformed_vmac = [0x41, 0x00, 0x01];
-    let mut malformed_payload = origin_addr.ip().octets().to_vec();
-    malformed_payload.extend_from_slice(&origin_addr.port().to_be_bytes());
-    malformed_payload.push(0);
-    let mut malformed = BytesMut::new();
-    encode_bvlc6(
-        &mut malformed,
-        Bvlc6Function::ForwardedNpdu,
-        &malformed_vmac,
-        &malformed_payload,
-    )
-    .unwrap();
+    let malformed_vmac = vmac([0x41, 0x00, 0x01]);
+    let malformed = forwarded(malformed_vmac, origin_addr, &[0]);
     sender.send_to(&malformed, dest).await.unwrap();
     tokio::time::sleep(Duration::from_millis(25)).await;
     assert_eq!(transport.vmac_table.lookup(&malformed_vmac).await, None);
 
     let invalid_origins = [
         (
-            [0x41, 0x00, 0x02],
+            vmac([0x41, 0x00, 0x02]),
             SocketAddrV6::new(
                 Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1),
                 origin_addr.port(),
@@ -642,28 +442,24 @@ async fn bip6_forwarded_npdu_delivered() {
             ),
         ),
         (
-            [0x41, 0x00, 0x03],
+            vmac([0x41, 0x00, 0x03]),
             SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, origin_addr.port(), 0, 0),
         ),
         (
-            [0x41, 0x00, 0x04],
+            vmac([0x41, 0x00, 0x04]),
             SocketAddrV6::new(BACNET_IPV6_MULTICAST_SITE_LOCAL, origin_addr.port(), 0, 0),
         ),
         (
-            [0x41, 0x00, 0x05],
+            vmac([0x41, 0x00, 0x05]),
             SocketAddrV6::new(Ipv6Addr::LOCALHOST, origin_addr.port(), 0, 0),
         ),
         (
-            [0x41, 0x00, 0x06],
+            vmac([0x41, 0x00, 0x06]),
             SocketAddrV6::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 10), 0, 0, 0),
         ),
     ];
     for (vmac, invalid_origin) in invalid_origins {
-        let mut payload = invalid_origin.ip().octets().to_vec();
-        payload.extend_from_slice(&invalid_origin.port().to_be_bytes());
-        payload.extend_from_slice(&test_npdu);
-        let mut frame = BytesMut::new();
-        encode_bvlc6(&mut frame, Bvlc6Function::ForwardedNpdu, &vmac, &payload).unwrap();
+        let frame = forwarded(vmac, invalid_origin, &test_npdu);
         sender.send_to(&frame, dest).await.unwrap();
     }
     tokio::time::sleep(Duration::from_millis(25)).await;
@@ -699,9 +495,11 @@ async fn bip6_var_response() {
     let mut transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(42));
     let _rx = transport.start().await.unwrap();
     let our_vmac = transport.source_vmac;
-    let requester_vmac = [0x41, 0x22, 0x33];
+    let requester_vmac = vmac([0x41, 0x22, 0x33]);
 
-    let buf = encode_virtual_address_resolution(&requester_vmac);
+    let buf = wire(Bvll6::VirtualAddressResolution {
+        source: requester_vmac,
+    });
 
     // Send VAR to the transport
     let checker = UdpSocket::bind("[::1]:0").await.unwrap();
@@ -716,58 +514,17 @@ async fn bip6_var_response() {
 
     match result {
         Ok(Ok((len, _))) => {
-            let frame = decode_bvlc6(&resp_buf[..len]).unwrap();
-            assert_eq!(frame.function, Bvlc6Function::VirtualAddressResolutionAck);
-            assert_eq!(frame.source_vmac, our_vmac);
-            assert_eq!(frame.destination_vmac, Some(requester_vmac));
+            let frame = decode_bvll6(&resp_buf[..len]).unwrap();
+            assert_eq!(
+                frame.function(),
+                Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION_ACK
+            );
+            assert_eq!(frame.source_vmac(), our_vmac);
+            assert_eq!(frame.destination_vmac(), Some(requester_vmac));
         }
         Ok(Err(e)) => panic!("recv error: {e}"),
         Err(_) => panic!("timeout waiting for VAR-Ack response"),
     }
 
     transport.stop().await.unwrap();
-}
-
-/// Verify that local `Bvlc6Function` byte values match `bacnet_types::Bvlc6Function`.
-#[test]
-fn bvlc6_function_codes_match_types_crate() {
-    use bacnet_types::enums::Bvlc6Function as TypesBvlc6;
-
-    let expected: &[(u8, &str)] = &[
-        (0x00, "BVLC_RESULT"),
-        (0x01, "ORIGINAL_UNICAST_NPDU"),
-        (0x02, "ORIGINAL_BROADCAST_NPDU"),
-        (0x03, "ADDRESS_RESOLUTION"),
-        (0x04, "FORWARDED_ADDRESS_RESOLUTION"),
-        (0x05, "ADDRESS_RESOLUTION_ACK"),
-        (0x06, "VIRTUAL_ADDRESS_RESOLUTION"),
-        (0x07, "VIRTUAL_ADDRESS_RESOLUTION_ACK"),
-        (0x08, "FORWARDED_NPDU"),
-        (0x09, "REGISTER_FOREIGN_DEVICE"),
-        (0x0A, "DELETE_FOREIGN_DEVICE_TABLE_ENTRY"),
-        (0x0C, "DISTRIBUTE_BROADCAST_TO_NETWORK"),
-    ];
-
-    for &(byte, _name) in expected {
-        let local = Bvlc6Function::from_byte(byte);
-        let types_val = TypesBvlc6::from_raw(byte);
-        assert_eq!(
-            local.to_byte(),
-            types_val.to_raw(),
-            "Mismatch at 0x{byte:02X}: bip6.rs={}, enums.rs={}",
-            local.to_byte(),
-            types_val.to_raw(),
-        );
-    }
-
-    // Verify 0x0C is Distribute-Broadcast-To-Network (not the old SECURE_BVLL)
-    assert_eq!(
-        Bvlc6Function::DistributeBroadcastToNetwork.to_byte(),
-        TypesBvlc6::DISTRIBUTE_BROADCAST_TO_NETWORK.to_raw(),
-    );
-    // 0x0B should decode as Unknown since it's removed
-    assert!(matches!(
-        Bvlc6Function::from_byte(0x0B),
-        Bvlc6Function::Unknown(0x0B)
-    ));
 }

@@ -165,10 +165,9 @@ fn without_timing_variation_a_generation_race_never_ends() {
 
 /// Clause 9.5.6.7 defines no transition once a master's slot has passed
 /// unused. The core then opens the master's window again every
-/// Tslot x (Max_Master + 1), a local recovery policy; #1618 item 1 decides
-/// whether to keep it. This documents the current behaviour: a lone master
-/// whose adapter served the slot deadline too late generates one cycle
-/// later.
+/// Tslot x (Max_Master + 1), a local recovery policy kept by #1618 item 1
+/// and counted in `missed_generation_slots`. A lone master whose adapter
+/// served the slot deadline too late generates one cycle later.
 #[test]
 fn a_missed_generation_slot_comes_round_again_a_cycle_later() {
     let mut sim = Sim::new(SimConfig::new(BAUD));
@@ -201,6 +200,9 @@ fn a_missed_generation_slot_comes_round_again_a_cycle_later() {
     );
     assert!(frames[0].generation);
     assert_eq!(frames[0].start, ms(530) + millis(10 * 32));
-    assert!(sim.core(3).unwrap().counters().deadline_misses > 0);
+    let counters = sim.core(3).unwrap().counters();
+    assert!(counters.deadline_misses > 0);
+    assert_eq!(counters.missed_generation_slots, 1);
+    assert_eq!(counters.token_regenerations, 1);
     sim.assert_no_violations();
 }

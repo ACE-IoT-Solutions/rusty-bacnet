@@ -15,8 +15,8 @@ Foundations
   bacnet-services       Service request/response structures (no_std + alloc)
   bacnet-mstp-codec     MS/TP frame codec (no_std; by default no allocator, no deps)
   bacnet-mstp-core      MS/TP master state machine (no_std; by default no allocator)
-  bacnet-bip-codec      BACnet/IP BVLL codec (no_std; by default no allocator, no deps)
-  bacnet-transport      Data-link transports and framing (B/IP BVLL via bacnet-bip-codec)
+  bacnet-bip-codec      B/IP and B/IPv6 BVLL codec (no_std; by default no allocator, no deps)
+  bacnet-transport      Data-link transports and framing (B/IP, B/IPv6 BVLL via bacnet-bip-codec)
   bacnet-network        Network layer, BACnetRouter, RouterTable
   bacnet-objects        BACnetObject, ObjectDatabase, object implementations
 
@@ -42,8 +42,8 @@ builds: the CLI pulls in heavier application dependencies, and the Python
 extension needs its native Python build context. They remain workspace
 members and can be selected explicitly. So does the unpublished firmware link
 test, `firmware/link`, which links the MS/TP stack (`bacnet-mstp-codec`,
-`bacnet-mstp-core`) and the B/IP codec (`bacnet-bip-codec`) into bare-metal
-images without an allocator and checks their size
+`bacnet-mstp-core`) and the B/IP and B/IPv6 codec (`bacnet-bip-codec`) into
+bare-metal images without an allocator and checks their size
 ([CI](ci.md#firmware-link-test)).
 
 ## Packet Flow
@@ -55,7 +55,7 @@ Physical network (UDP socket / WebSocket / serial port)
     |
     v
 TransportPort::start() -> mpsc::Receiver<ReceivedNpdu>
-    |  Decodes data-link framing (BVLL for BIP, BVLC-SC for SC, MS/TP frames)
+    |  Decodes data-link framing (BVLL for BIP and BIP6, BVLC-SC for SC, MS/TP frames)
     |  Extracts NPDU bytes + source MAC + raw link-layer group provenance + attributes
     v
 NetworkLayer::start() -> mpsc::Receiver<ReceivedApdu>

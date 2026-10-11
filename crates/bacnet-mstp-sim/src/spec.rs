@@ -12,8 +12,8 @@ pub struct AdapterSpec {
     /// models a slow one (a busy executor, a DMA queue, a late interrupt).
     pub start_delay: Duration,
     /// Feed the node its own octets while it transmits, as a transceiver
-    /// whose receiver stays enabled would. The core ignores octets while one
-    /// of its transmits is active.
+    /// whose receiver stays enabled would. The core takes what it hears
+    /// after confirming a start for its own echo, and ignores it.
     pub echo: bool,
     /// How late the adapter services each core deadline. Zero services it
     /// exactly when it falls due.

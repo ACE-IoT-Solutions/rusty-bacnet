@@ -82,30 +82,52 @@ pub struct MstpCounters {
     pub token_rotations: u32,
     /// Token regeneration attempts after token loss.
     pub token_regenerations: u32,
+    /// Tokens generated in a repeated window rather than in this station's
+    /// first slot of the silence, because the NO_TOKEN deadline was serviced
+    /// after that slot closed. A local recovery policy, not Clause 9.5.6.7
+    /// behaviour; see [`MasterCore`](crate::MasterCore).
+    pub missed_generation_slots: u32,
     /// Token-pass retries.
     pub token_retries: u32,
     /// Received frames counted invalid: bad headers, and frames for this
     /// station or broadcast that were too long, undecodable or corrupt.
     pub parser_errors: u32,
-    /// Replies, Reply Postponed included, whose transmission started after
-    /// T_reply_delay. They were still sent.
+    /// Answers whose transmission started after their send-by time:
+    /// T_reply_delay for a data reply, Reply Postponed or Test_Response, and
+    /// T_usage_delay for a Reply To Poll For Master. They were still sent.
     pub late_replies: u32,
-    /// Requests dropped unanswered because the requester may already have
-    /// stopped waiting: the shortest T_reply_timeout (255 ms) less one octet
-    /// time and a 1 ms guard.
+    /// Answers dropped unsent because the asker may already have stopped
+    /// waiting: its shortest T_reply_timeout (255 ms), or for a Reply To Poll
+    /// For Master its shortest T_usage_timeout (20 ms), less one octet time
+    /// and a 1 ms guard. An answer aborted before it started counts here
+    /// too, whether the adapter aborted it or the core's transmit watchdog
+    /// did because the adapter never started it: its request goes
+    /// unanswered.
     pub expired_requests: u32,
-    /// Frames dropped because the line became busy while they waited out
-    /// T_turnaround. A reply is not dropped: it waits a fresh turnaround.
+    /// Frames other than answers given up before they went out: line
+    /// activity kept them waiting past their limit, or was the evidence
+    /// their state watches for (SawTokenUser, SawFrame, a late Reply To Poll
+    /// For Master), or they were aborted before they started, by the adapter
+    /// or by the core's transmit watchdog. Line activity alone only delays a
+    /// frame.
     pub cancelled_sends: u32,
+    /// Transmit starts refused because the line was active within
+    /// T_turnaround of them (Clause 9.5.5.1). Each frame waited for a quiet
+    /// line again.
+    pub deferred_starts: u32,
     /// Transmit events refused because the adapter broke the transmit
     /// contract: confirming a start twice, or completing a transmit it never
     /// confirmed starting.
     pub adapter_errors: u32,
-    /// Frames for this station that wanted a prompt answer (Poll For Master,
-    /// a data request, Test_Request) but arrived while it was answering
-    /// another request, so they were dropped.
-    pub discarded_while_answering: u32,
-    /// Frames abandoned by T_frame_abort.
+    /// Frames for this station that it could not act on, so dropped: a Poll
+    /// For Master, data request, Test_Request or Reply To Poll For Master
+    /// that arrived while it was answering a request or waiting to send a
+    /// frame of its own, or a Token that arrived while a frame it sends as
+    /// token holder waited.
+    pub discarded_while_busy: u32,
+    /// Frames abandoned part way through: by T_frame_abort, or when this
+    /// station confirmed a transmit start, since its receiver is off while
+    /// its driver is on.
     pub frame_aborts: u32,
     /// Valid MS/TP frames received.
     pub frames_received: u32,
@@ -144,14 +166,19 @@ impl MstpCounters {
         increment(&mut self.expired_requests);
     }
 
-    /// Record a frame dropped while it waited out T_turnaround.
+    /// Record a frame given up before it went out.
     pub(crate) fn record_cancelled_send(&mut self) {
         increment(&mut self.cancelled_sends);
     }
 
-    /// Record a frame dropped because it arrived while answering a request.
-    pub(crate) fn record_discarded_while_answering(&mut self) {
-        increment(&mut self.discarded_while_answering);
+    /// Record a transmit start refused for a broken turnaround.
+    pub(crate) fn record_deferred_start(&mut self) {
+        increment(&mut self.deferred_starts);
+    }
+
+    /// Record a received frame dropped because the station was busy.
+    pub(crate) fn record_discarded_while_busy(&mut self) {
+        increment(&mut self.discarded_while_busy);
     }
 
     /// Record a transmit event refused for breaking the transmit contract.
@@ -167,6 +194,11 @@ impl MstpCounters {
     /// Record token regeneration.
     pub(crate) fn record_token_regeneration(&mut self) {
         increment(&mut self.token_regenerations);
+    }
+
+    /// Record a token generated in a repeated window.
+    pub(crate) fn record_missed_generation_slot(&mut self) {
+        increment(&mut self.missed_generation_slots);
     }
 
     /// Record a token retry.

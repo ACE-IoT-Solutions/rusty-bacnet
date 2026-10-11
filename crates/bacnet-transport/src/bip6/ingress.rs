@@ -3,9 +3,19 @@
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
 use super::{
-    Bip6Vmac, Bvlc6Function, BACNET_IPV6_MULTICAST_LINK_LOCAL, BACNET_IPV6_MULTICAST_ORG_LOCAL,
-    BACNET_IPV6_MULTICAST_SITE_LOCAL,
+    Bip6Vmac, Bvlc6Function, Bvll6, BACNET_IPV6_MULTICAST_LINK_LOCAL,
+    BACNET_IPV6_MULTICAST_ORG_LOCAL, BACNET_IPV6_MULTICAST_SITE_LOCAL,
 };
+
+/// Whether a message that names a recipient's VMAC names this node's: an
+/// Original-Unicast-NPDU or either ACK for another VMAC is discarded (U.3).
+/// Address-Resolution's target is not a destination: it goes to a group,
+/// and its handler decides whether the target is local.
+pub(super) fn destination_vmac_matches(message: &Bvll6<'_>, local_vmac: Bip6Vmac) -> bool {
+    message
+        .destination_vmac()
+        .is_none_or(|destination| destination == local_vmac)
+}
 
 fn is_bacnet_ipv6_multicast(destination: Ipv6Addr) -> bool {
     matches!(
@@ -91,12 +101,12 @@ pub(super) fn original_destination_matches(
         ..
     } = *local;
     match function {
-        Bvlc6Function::OriginalUnicast
-        | Bvlc6Function::AddressResolutionAck
-        | Bvlc6Function::VirtualAddressResolutionAck => {
+        Bvlc6Function::ORIGINAL_UNICAST_NPDU
+        | Bvlc6Function::ADDRESS_RESOLUTION_ACK
+        | Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION_ACK => {
             is_local_unicast_delivery(destination, destination_vmac, local, os_group_delivery)
         }
-        Bvlc6Function::VirtualAddressResolution => {
+        Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION => {
             let ip_matches = match destination {
                 IpAddr::V6(ip) if wildcard_bind => {
                     !ip.is_multicast()
@@ -108,13 +118,14 @@ pub(super) fn original_destination_matches(
             };
             ip_matches && os_group_delivery != Some(true)
         }
-        Bvlc6Function::OriginalBroadcast | Bvlc6Function::AddressResolution => {
+        Bvlc6Function::ORIGINAL_BROADCAST_NPDU | Bvlc6Function::ADDRESS_RESOLUTION => {
             matches!(destination, IpAddr::V6(ip) if is_bacnet_ipv6_multicast(ip))
                 && os_group_delivery != Some(false)
         }
         // Forwarded-Address-Resolution is not implemented. Drop it before
-        // learning or any other state mutation.
-        Bvlc6Function::ForwardedAddressResolution => false,
+        // learning or any other state mutation. Answering one whose target
+        // is this node's VMAC is #1632.
+        Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION => false,
         _ => true,
     }
 }
