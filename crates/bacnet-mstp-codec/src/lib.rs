@@ -5,9 +5,10 @@
 //! for a serial byte stream. Token passing, timers and line control belong to
 //! the layer that uses it.
 //!
-//! Nothing here allocates. [`Frame`] borrows its data, [`Frame::encode_into`]
-//! writes into caller storage, and [`StreamDecoder`] keeps its receive state in
-//! a buffer the caller lends it.
+//! The default build never allocates. [`Frame`] borrows its data,
+//! [`Frame::encode_into`] writes into caller storage, and [`StreamDecoder`]
+//! keeps its receive state in a buffer the caller lends it. Only the optional
+//! `alloc` and `bytes` sinks grow on the heap.
 //!
 //! # Validation
 //!
@@ -16,11 +17,14 @@
 //! no station may send from (Clause 9.3). It accepts every other source,
 //! including the slave-only range 128-254: whether a station may use its
 //! address in its role is for the receiver to judge. It also accepts data on a
-//! frame type that never carries any, so a receiver can see what arrived.
+//! frame type that never carries any, and a proprietary frame too short for
+//! its vendor identifier, so a receiver can see what arrived.
 //!
 //! Encoding is strict. [`Frame::encode_into`] and [`Frame::encode_to_sink`]
-//! refuse source 255, and refuse data on the four frame types defined without
-//! any (see [`FrameType::allows_data`]).
+//! refuse source 255, data on the four frame types defined without any (see
+//! [`FrameType::allows_data`]), and a proprietary frame (128-255) with less
+//! than its 2-octet vendor identifier (Clause 9.3.11). The reserved types 8-31
+//! pass through both ways unchecked.
 //!
 //! Both directions refuse the COBS-encoded frame types 32-127, which this
 //! crate does not implement yet.

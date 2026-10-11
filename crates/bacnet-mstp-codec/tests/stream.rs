@@ -44,6 +44,7 @@ fn stream_resync_and_bad_data_crc_discard() {
         DecodeEvent::Malformed {
             discard: used,
             error: FrameError::DataCrcMismatch { data_length: 2 },
+            destination: Some(0),
         }
     );
     let valid = encode(frame);
@@ -126,6 +127,93 @@ fn stream_exhaustion_preserves_state_and_recovers() {
     ));
 }
 
+/// `BufferExhausted` reports the refused slice and the room that was free,
+/// not totals, and leaves what was buffered alone.
+#[test]
+fn refused_slice_reports_its_length_and_the_free_room() {
+    let wire = encode(Frame::new(FrameType::TestRequest, 1, 2, &[0xAB; 6]));
+    assert_eq!(wire.len(), 16);
+    let mut storage = [0u8; 20];
+    let mut decoder = StreamDecoder::new(&mut storage);
+    assert_eq!(decoder.push_slice(&wire[..10]), DecodeEvent::NeedMore);
+    assert_eq!(
+        decoder.push_slice(&[0u8; 11]),
+        DecodeEvent::Error(FrameError::BufferExhausted {
+            needed: 11,
+            available: 10
+        })
+    );
+    assert_eq!(decoder.buffered_len(), 10);
+    assert!(matches!(
+        decoder.push_slice(&wire[10..]),
+        DecodeEvent::Frame { consumed: 16, .. }
+    ));
+}
+
+/// Storage of exactly a frame's length decodes it, octet by octet or whole.
+#[test]
+fn storage_of_exactly_one_frame_decodes_it() {
+    let wire = encode(Frame::new(
+        FrameType::BACnetDataExpectingReply,
+        9,
+        8,
+        &[0x01, 0x04, 0x00, 0x05],
+    ));
+    let mut storage = vec![0u8; wire.len()];
+    let mut decoder = StreamDecoder::new(&mut storage);
+    for (index, &byte) in wire.iter().enumerate() {
+        let event = decoder.push(byte);
+        if index + 1 < wire.len() {
+            assert_eq!(event, DecodeEvent::NeedMore, "octet {index}");
+        } else {
+            assert!(
+                matches!(event, DecodeEvent::Frame { consumed, .. } if consumed == wire.len()),
+                "{event:?}"
+            );
+        }
+    }
+    assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
+    assert!(matches!(
+        decoder.push_slice(&wire),
+        DecodeEvent::Frame { consumed, .. } if consumed == wire.len()
+    ));
+}
+
+/// A dropped candidate carries its destination once the header CRC passed,
+/// so a receiver can ignore trouble on frames meant for other stations.
+#[test]
+fn malformed_candidates_carry_a_trusted_destination() {
+    let mut storage = [0u8; 64];
+    let mut decoder = StreamDecoder::new(&mut storage);
+
+    // COBS type 32 to station 5: header good, so the destination is known.
+    let fields = [0x20, 0x05, 0x01, 0x00, 0x00];
+    let mut cobs = PREAMBLE.to_vec();
+    cobs.extend_from_slice(&fields);
+    cobs.push(crc8(&fields));
+    assert_eq!(
+        decoder.push_slice(&cobs),
+        DecodeEvent::Malformed {
+            discard: 1,
+            error: FrameError::UnsupportedCobsFrame { raw_type: 0x20 },
+            destination: Some(5),
+        }
+    );
+    assert_eq!(drain(&mut decoder), []);
+
+    // A bad header CRC: the destination octet can't be trusted.
+    let mut bad = encode(Frame::new(FrameType::Token, 5, 1, &[]));
+    bad[7] ^= 0xFF;
+    assert_eq!(
+        decoder.push_slice(&bad),
+        DecodeEvent::Malformed {
+            discard: 1,
+            error: FrameError::HeaderCrcMismatch,
+            destination: None,
+        }
+    );
+}
+
 /// A frame longer than the whole storage used to wedge the decoder: every
 /// later push failed with `BufferExhausted` until `reset()`. Now the decoder
 /// reports it once, as soon as the header shows its size, and keeps going.
@@ -149,9 +237,11 @@ fn frame_longer_than_storage_is_reported_once_then_decoding_resumes() {
             DecodeEvent::Malformed {
                 discard: 1,
                 error: FrameError::FrameTooLong { needed, capacity },
+                destination,
             } => {
                 // Reported when the header completes, not when storage fills.
                 assert_eq!((index, needed, capacity), (7, 13, 12));
+                assert_eq!(destination, Some(1));
                 too_long += 1;
             }
             DecodeEvent::Frame { frame, .. } => frames.push((
@@ -195,6 +285,7 @@ fn full_storage_with_an_unfinishable_frame_recovers() {
                 needed: 13,
                 capacity: 12
             },
+            destination: Some(1),
         }
     );
     let last = decoder.push(long[12]);
@@ -219,6 +310,7 @@ fn storage_smaller_than_a_header_reports_and_resynchronizes() {
                         needed: 8,
                         capacity: 4,
                     },
+                destination: None,
                 ..
             } => reports += 1,
             DecodeEvent::Error(error) => panic!("decoder wedged: {error:?}"),
@@ -242,6 +334,7 @@ fn broadcast_source_is_malformed_and_slave_source_decodes() {
         DecodeEvent::Malformed {
             discard: 1,
             error: FrameError::BroadcastSource,
+            destination: Some(1),
         }
     );
     assert_eq!(drain(&mut decoder), []);

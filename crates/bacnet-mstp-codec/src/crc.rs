@@ -59,6 +59,10 @@ pub fn crc8_accumulate_all(data: &[u8]) -> u8 {
 }
 
 /// Verify a header CRC whose final byte is the transmitted CRC.
+///
+/// Any non-empty input is checked, so a single octet is compared with the
+/// CRC of nothing. Unlike [`crc16_valid`], this does not demand content: the
+/// codec only calls it on a whole header, which always has its five fields.
 pub fn crc8_valid(data_with_crc: &[u8]) -> bool {
     !data_with_crc.is_empty()
         && crc8(&data_with_crc[..data_with_crc.len() - 1]) == data_with_crc[data_with_crc.len() - 1]
@@ -83,6 +87,10 @@ pub fn crc16_accumulate_all(data: &[u8]) -> u16 {
 }
 
 /// Verify a data CRC whose final two bytes are little-endian on the wire.
+///
+/// Needs at least one data octet before the two CRC octets, and returns
+/// `false` for anything shorter: a frame sends a data CRC only after a
+/// non-empty data field, so two octets alone are never a valid data field.
 pub fn crc16_valid(data_with_crc: &[u8]) -> bool {
     if data_with_crc.len() < 3 {
         return false;

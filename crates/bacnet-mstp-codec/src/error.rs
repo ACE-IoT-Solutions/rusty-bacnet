@@ -48,6 +48,14 @@ pub enum FrameError {
         /// Length of the supplied data.
         length: usize,
     },
+    /// Encode: a proprietary frame (type 128-255) has fewer than the two data
+    /// octets its vendor identifier takes (Clause 9.3.11).
+    MissingVendorId {
+        /// The frame type octet.
+        raw_type: u8,
+        /// Length of the supplied data.
+        length: usize,
+    },
     /// Decode: the input ended before the data field and its CRC were complete.
     Truncated {
         /// Data length declared by the header.
@@ -68,12 +76,15 @@ pub enum FrameError {
         /// The decoder's storage capacity.
         capacity: usize,
     },
-    /// The destination had no room: an encode sink, or a stream decoder's free
-    /// storage for a pushed slice.
+    /// There was no room for the octets: an encode sink is too small for the
+    /// frame, or a stream decoder's free storage is too small for a pushed
+    /// slice. Nothing was stored.
     BufferExhausted {
-        /// Octets needed.
+        /// Octets this call had to store: the encoded frame, or the pushed
+        /// slice.
         needed: usize,
-        /// Octets of room.
+        /// Free room at the time of the call: the sink's remaining capacity,
+        /// or the decoder's capacity less what it already buffers.
         available: usize,
     },
 }
@@ -101,6 +112,10 @@ impl fmt::Display for FrameError {
                     "frame type {raw_type} carries no data, got {length} octets"
                 )
             }
+            Self::MissingVendorId { raw_type, length } => write!(
+                f,
+                "proprietary frame type {raw_type} needs a 2-octet vendor ID, got {length} octets"
+            ),
             Self::Truncated {
                 data_length,
                 available,

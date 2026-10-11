@@ -13,6 +13,7 @@ Foundations
   bacnet-types          Enums, primitives, error types (no I/O)
   bacnet-encoding       ASN.1 tags, APDU/NPDU codecs, value encoding
   bacnet-services       Service request/response structures
+  bacnet-mstp-codec     MS/TP frame codec (no_std, no allocator, no deps)
   bacnet-transport      Data-link transports and framing
   bacnet-network        Network layer, BACnetRouter, RouterTable
   bacnet-objects        BACnetObject, ObjectDatabase, object implementations

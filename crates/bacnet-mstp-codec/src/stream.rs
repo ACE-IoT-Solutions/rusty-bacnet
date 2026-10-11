@@ -32,6 +32,10 @@ pub enum DecodeEvent<'a> {
         discard: usize,
         /// Why the candidate was dropped.
         error: FrameError,
+        /// The candidate's destination address, when its header passed the
+        /// CRC check; `None` when the header was bad or never complete. See
+        /// [`StreamDecoder`] for why a receiver needs it.
+        destination: Option<u8>,
     },
     /// The pushed slice did not fit in the free storage. None of it was
     /// buffered; see [`StreamDecoder`].
@@ -64,8 +68,9 @@ pub enum StreamPhase {
 ///   buffered, such as a second frame from the same slice or more noise. Call
 ///   `push_slice(&[])` until it returns `NeedMore` to drain it.
 /// - A slice longer than the free storage is refused whole with
-///   [`DecodeEvent::Error`] and nothing is buffered. Drain, then push it again
-///   or in smaller pieces.
+///   [`DecodeEvent::Error`] carrying [`FrameError::BufferExhausted`] (the
+///   slice's length and the free room), and nothing is buffered. Drain, then
+///   push it again or in smaller pieces.
 ///
 /// Size the storage for the largest frame you accept:
 /// [`MAX_STANDARD_FRAME_LENGTH`](crate::MAX_STANDARD_FRAME_LENGTH) covers every
@@ -76,6 +81,17 @@ pub enum StreamPhase {
 /// octet is discarded, the decoder rescans from the next one, and its
 /// remaining octets drain as noise. Clause 9.5.4.4 has a receiver skip such a
 /// frame's data by count instead; that belongs to a receive state machine.
+///
+/// The decoder does not know which station it serves, so it reports every
+/// candidate it drops, whatever the destination. A receive state machine
+/// (Clause 9.5.4.4) only counts an oversized, COBS-encoded or bad-data-CRC
+/// frame as invalid when it is addressed to that station or broadcast, and
+/// skips one meant for another station without complaint. Such a caller
+/// should check the `destination` of a [`DecodeEvent::Malformed`] carrying
+/// [`FrameError::FrameTooLong`], [`FrameError::UnsupportedCobsFrame`] or
+/// [`FrameError::DataCrcMismatch`] before treating it as an invalid frame. A
+/// bad header (CRC, source 255, length over the limit) counts wherever it was
+/// going.
 ///
 /// The decoder keeps no time. A receiver that aborts a partial frame after a
 /// silence (Clause 9.5.4) calls [`reset`](Self::reset).
@@ -110,12 +126,23 @@ pub struct StreamDecoder<'a> {
     pending: usize,
 }
 
+/// Offset of the destination octet: after the preamble and the type octet.
+const DESTINATION_INDEX: usize = PREAMBLE.len() + 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InternalEvent {
     NeedMore,
-    Frame { consumed: usize },
-    Invalid { discard: usize },
-    Malformed { discard: usize, error: FrameError },
+    Frame {
+        consumed: usize,
+    },
+    Invalid {
+        discard: usize,
+    },
+    Malformed {
+        discard: usize,
+        error: FrameError,
+        destination: Option<u8>,
+    },
 }
 
 impl<'a> StreamDecoder<'a> {
@@ -172,10 +199,11 @@ impl<'a> StreamDecoder<'a> {
     /// protocol.
     pub fn push_slice(&mut self, input: &[u8]) -> DecodeEvent<'_> {
         self.commit_pending();
-        if input.len() > self.storage.len() - self.length {
+        let free = self.storage.len() - self.length;
+        if input.len() > free {
             return DecodeEvent::Error(FrameError::BufferExhausted {
-                needed: self.length + input.len(),
-                available: self.storage.len(),
+                needed: input.len(),
+                available: free,
             });
         }
         let end = self.length + input.len();
@@ -185,9 +213,15 @@ impl<'a> StreamDecoder<'a> {
             InternalEvent::NeedMore => DecodeEvent::NeedMore,
             InternalEvent::Frame { consumed } => self.frame_event(consumed),
             InternalEvent::Invalid { discard } => DecodeEvent::Invalid { discard },
-            InternalEvent::Malformed { discard, error } => {
-                DecodeEvent::Malformed { discard, error }
-            }
+            InternalEvent::Malformed {
+                discard,
+                error,
+                destination,
+            } => DecodeEvent::Malformed {
+                discard,
+                error,
+                destination,
+            },
         }
     }
 
@@ -217,29 +251,48 @@ impl<'a> StreamDecoder<'a> {
             return InternalEvent::Invalid { discard: 1 };
         }
         if self.length < 2 {
-            return self.need_more(DATA_OFFSET);
+            return self.need_more(DATA_OFFSET, None);
         }
         if self.storage[1] != PREAMBLE[1] {
             self.discard(1);
             return InternalEvent::Invalid { discard: 1 };
         }
-        match decode_frame(&self.storage[..self.length]) {
+        let error = match decode_frame(&self.storage[..self.length]) {
             Ok((_, consumed)) => {
                 self.pending = consumed;
-                InternalEvent::Frame { consumed }
+                return InternalEvent::Frame { consumed };
             }
-            Err(FrameError::TooShort { needed, .. }) => self.need_more(needed),
-            Err(FrameError::Truncated { data_length, .. }) => {
-                self.need_more(wire_length(data_length))
+            Err(error) => error,
+        };
+        // Every other error comes after the header CRC passed, so the whole
+        // header is buffered and its destination octet can be trusted.
+        let destination = match error {
+            FrameError::TooShort { .. }
+            | FrameError::InvalidPreamble { .. }
+            | FrameError::HeaderCrcMismatch => None,
+            _ => Some(self.storage[DESTINATION_INDEX]),
+        };
+        match error {
+            FrameError::TooShort { needed, .. } => self.need_more(needed, None),
+            FrameError::Truncated { data_length, .. } => {
+                self.need_more(wire_length(data_length), destination)
             }
-            Err(error @ FrameError::DataCrcMismatch { data_length }) => {
+            FrameError::DataCrcMismatch { data_length } => {
                 let discard = wire_length(data_length);
                 self.discard(discard);
-                InternalEvent::Malformed { discard, error }
+                InternalEvent::Malformed {
+                    discard,
+                    error,
+                    destination,
+                }
             }
-            Err(error) => {
+            _ => {
                 self.discard(1);
-                InternalEvent::Malformed { discard: 1, error }
+                InternalEvent::Malformed {
+                    discard: 1,
+                    error,
+                    destination,
+                }
             }
         }
     }
@@ -247,7 +300,7 @@ impl<'a> StreamDecoder<'a> {
     /// Wait for more input, unless the candidate needs `needed` octets in all
     /// and that is more than the storage holds: then drop its first octet so
     /// the decoder resynchronizes instead of filling up for good.
-    fn need_more(&mut self, needed: usize) -> InternalEvent {
+    fn need_more(&mut self, needed: usize, destination: Option<u8>) -> InternalEvent {
         let capacity = self.storage.len();
         if needed <= capacity {
             return InternalEvent::NeedMore;
@@ -256,6 +309,7 @@ impl<'a> StreamDecoder<'a> {
         InternalEvent::Malformed {
             discard: 1,
             error: FrameError::FrameTooLong { needed, capacity },
+            destination,
         }
     }
 

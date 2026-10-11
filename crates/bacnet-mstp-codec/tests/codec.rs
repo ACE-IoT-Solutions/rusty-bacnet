@@ -36,6 +36,7 @@ fn golden_crc_vectors() {
         assert!(crc8_valid(&bytes));
         assert_eq!(crc8_accumulate_all(&bytes), HEADER_CRC_RESIDUAL);
     }
+    // Computed here, not taken from the standard; the frames below use it.
     assert_eq!(crc16(&[0x01, 0x00]), 0x169F);
     assert!(crc16_valid(&[0x01, 0x00, 0x9F, 0x16]));
     assert_eq!(
@@ -67,6 +68,28 @@ fn annex_g_token_example() {
     assert_eq!(token.encode_into(&mut wire), Ok(8));
     assert_eq!(wire, expected);
     assert_eq!(decode_frame(&expected), Ok((token, 8)));
+}
+
+/// The worked data CRC example of Annex G.2: data octets 01 22 30.
+#[test]
+fn annex_g_data_crc_example() {
+    let data = [0x01, 0x22, 0x30];
+    // The CRC register after each data octet, before the final complement.
+    let registers = [0x1E0E, 0xEB70, 0x42EF];
+    for (count, register) in registers.into_iter().enumerate() {
+        assert_eq!(crc16_accumulate_all(&data[..=count]), register);
+    }
+    assert_eq!(crc16(&data), 0xBD10);
+    // Sent least significant octet first; the receiver's register after each.
+    let received = [0x01, 0x22, 0x30, 0x10, 0xBD];
+    assert_eq!(crc16_accumulate_all(&received[..4]), 0x0F3A);
+    assert_eq!(crc16_accumulate_all(&received), DATA_CRC_RESIDUAL);
+    assert!(crc16_valid(&received));
+
+    let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0x10, 0x05, &data);
+    let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
+    let used = frame.encode_into(&mut wire).unwrap();
+    assert_eq!(&wire[8..used], &received);
 }
 
 #[test]
@@ -198,6 +221,50 @@ fn no_data_types_refuse_data_on_encode_but_decode_it() {
             .unwrap();
         assert_eq!(&output[..used], &raw_frame(raw_type, 3, 4, &[9, 8])[..]);
     }
+}
+
+/// Clause 9.3.11: proprietary data opens with a 2-octet vendor identifier.
+/// Encode refuses less; a raw decode reports what arrived. Reserved types
+/// 8-31 are not policed either way.
+#[test]
+fn proprietary_types_need_a_vendor_id_on_encode() {
+    for raw_type in [0x80, 0xC3, 0xFF] {
+        let frame_type = FrameType::from_raw(raw_type);
+        assert!(frame_type.is_proprietary());
+        for data in [&[][..], &[0x01][..]] {
+            let mut output = [0xA5u8; MAX_STANDARD_FRAME_LENGTH];
+            assert_eq!(
+                Frame::new(frame_type, 3, 4, data).encode_into(&mut output),
+                Err(FrameError::MissingVendorId {
+                    raw_type,
+                    length: data.len()
+                })
+            );
+            assert!(output.iter().all(|&byte| byte == 0xA5));
+            let wire = raw_frame(raw_type, 3, 4, data);
+            assert_eq!(decode_frame(&wire).unwrap().0.data, data);
+        }
+        let vendor = [0x01, 0x04];
+        let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
+        let used = Frame::new(frame_type, 3, 4, &vendor)
+            .encode_into(&mut output)
+            .unwrap();
+        assert_eq!(&output[..used], &raw_frame(raw_type, 3, 4, &vendor)[..]);
+    }
+    for raw_type in [0x08, 0x1F] {
+        let frame_type = FrameType::from_raw(raw_type);
+        assert!(!frame_type.is_proprietary());
+        let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
+        assert_eq!(
+            Frame::new(frame_type, 3, 4, &[]).encode_into(&mut output),
+            Ok(8)
+        );
+        assert_eq!(
+            Frame::new(frame_type, 3, 4, &[7]).encode_into(&mut output),
+            Ok(11)
+        );
+    }
+    assert!(!FrameType::from_raw(0x7F).is_proprietary());
 }
 
 #[test]

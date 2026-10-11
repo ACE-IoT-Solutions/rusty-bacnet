@@ -39,10 +39,13 @@ pub enum FrameType {
     BACnetDataNotExpectingReply = 0x06,
     /// Reply postponed frame.
     ReplyPostponed = 0x07,
-    /// Any other type octet: reserved, proprietary or COBS-encoded.
+    /// Any other type octet: reserved (8-31), COBS-encoded (32-127) or
+    /// proprietary (128-255).
     ///
-    /// [`FrameType::from_raw`] never returns it for 0-7. A value built by hand
-    /// with 0-7 behaves as the named type in every check.
+    /// [`FrameType::from_raw`] never returns it for 0-7. If one is built by
+    /// hand, the codec's checks still treat it as the named type, because they
+    /// look at the raw value; `==` does not, since equality is structural
+    /// (`Unknown(0) != Token`).
     Unknown(u8),
 }
 
@@ -83,8 +86,8 @@ impl FrameType {
     /// [`PollForMaster`](Self::PollForMaster),
     /// [`ReplyToPollForMaster`](Self::ReplyToPollForMaster) and
     /// [`ReplyPostponed`](Self::ReplyPostponed) (Clauses 9.3.1-9.3.3, 9.3.8).
-    /// The reserved and proprietary types this crate passes through may carry
-    /// data.
+    /// Every other type may, including the reserved types 8-31, which the
+    /// codec passes through without policing their content.
     pub const fn allows_data(self) -> bool {
         !matches!(self.to_raw(), 0 | 1 | 2 | 7)
     }
@@ -93,6 +96,12 @@ impl FrameType {
     pub const fn is_cobs(self) -> bool {
         let raw = self.to_raw();
         raw >= 0x20 && raw <= 0x7F
+    }
+
+    /// Whether this type is in the vendor-proprietary range, 128-255. Such a
+    /// frame's data opens with a 2-octet vendor identifier (Clause 9.3.11).
+    pub const fn is_proprietary(self) -> bool {
+        self.to_raw() >= 0x80
     }
 }
 
@@ -144,7 +153,8 @@ impl<'a> Frame<'a> {
     ///
     /// The frame is checked first, as described in the [crate docs](crate):
     /// no COBS type, at most [`MAX_STANDARD_MPDU_DATA`] octets of data, a
-    /// source other than 255, and no data on a type that never carries any.
+    /// source other than 255, no data on a type that never carries any, and
+    /// at least a vendor identifier's two octets on a proprietary type.
     /// Nothing is written unless the frame passes and fits.
     ///
     /// ```
@@ -223,6 +233,12 @@ impl<'a> Frame<'a> {
         }
         if length != 0 && !frame_type.allows_data() {
             return Err(FrameError::UnexpectedData {
+                raw_type: frame_type.to_raw(),
+                length,
+            });
+        }
+        if length < 2 && frame_type.is_proprietary() {
+            return Err(FrameError::MissingVendorId {
                 raw_type: frame_type.to_raw(),
                 length,
             });

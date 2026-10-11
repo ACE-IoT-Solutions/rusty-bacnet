@@ -41,6 +41,7 @@ cargo clippy --workspace --exclude rusty-bacnet --all-targets --locked --feature
 step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
 step "clippy and rustdoc (each published crate, default features; no_std bacnet-types)"
 bash scripts/ci/check-default-features.sh
+step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
 step "rustdoc (every macOS feature, private items)"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$features"
 step "rustdoc (PyO3 bindings, private items)"
