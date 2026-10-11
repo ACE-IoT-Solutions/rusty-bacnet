@@ -263,6 +263,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-bip-codec"
+version = "0.12.0"
+dependencies = [
+ "bytes",
+ "heapless",
+ "proptest",
+]
+
+[[package]]
 name = "bacnet-cli"
 version = "0.12.0"
 dependencies = [
