@@ -55,7 +55,9 @@
 //! - For a transmit, after [`AdapterSpec::start_delay`] it calls
 //!   `on_transmit_started` and, if the core agrees, drives the frame. It
 //!   reports `on_transmit_complete` when the final stop bit has gone out and
-//!   re-enables its receiver then.
+//!   re-enables its receiver then. Until the start, its receiver stays on;
+//!   if the core switches back to receive first, it has taken the frame
+//!   back, and the adapter drops it.
 //! - It hands NPDUs to the node's application, which answers requests per
 //!   its [`ReplyPolicy`].
 //!
@@ -144,20 +146,6 @@
 //! Each powered-on core borrows a receive buffer for its whole life, so the
 //! simulator leaks one 512-octet buffer per power-up; scenarios power nodes
 //! up a bounded number of times.
-//!
-//! # A known core gap (#1625)
-//!
-//! From the moment a core hands its adapter a frame until the adapter
-//! confirms the start, the core treats every octet it is fed as its own echo.
-//! A slow adapter's core is therefore deaf for that time: it can start
-//! within Tturnaround of activity that first reached it after the
-//! hand-over, and it loses any frame that arrives then.
-//! [`Report::blind_spot_starts`] and [`Report::blind_spot_frames`] count
-//! these, each a violation unless [`Tolerance::slow_adapter_blind_spot`] is
-//! set. The tolerance never excuses a hand-over inside Tturnaround of
-//! activity the core had heard, nor a start after a run of characters it had
-//! begun to hear: those are errors whatever the adapter. The crate's
-//! `known_gaps` tests pin the correct behaviour until #1625 is fixed.
 //!
 //! # Adding a scenario
 //!

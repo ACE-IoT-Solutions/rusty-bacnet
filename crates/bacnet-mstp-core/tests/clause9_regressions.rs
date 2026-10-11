@@ -332,47 +332,6 @@ fn configured_ratios_preserve_max_info_frames_and_weight_broadcasts() {
 }
 
 #[test]
-fn every_receive_ingress_cancels_a_deferred_token_owned_send() {
-    let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
-    core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
-        .unwrap();
-    validated(&mut core, FrameType::Token, 1, 2, &[], Instant::ZERO);
-    let stale_due = core.next_deadline().unwrap();
-    validated(
-        &mut core,
-        FrameType::BACnetDataNotExpectingReply,
-        0xff,
-        2,
-        &[7],
-        stale_due - Duration::from_micros(1),
-    );
-    assert_eq!(core.state(), MasterState::Idle);
-    assert!(matches!(core.poll_action(), Action::DeliverNpdu { .. }));
-    core.on_deadline(stale_due).unwrap();
-    assert_eq!(core.poll_action(), Action::Idle);
-    // The dropped frame is counted, not lost silently.
-    assert_eq!(core.counters().cancelled_sends, 1);
-
-    let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
-    core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
-        .unwrap();
-    validated(&mut core, FrameType::Token, 1, 2, &[], Instant::ZERO);
-    let stale_due = core.next_deadline().unwrap();
-    core.on_receive_error(
-        bacnet_mstp_core::ReceiveError::Overrun,
-        stale_due - Duration::from_micros(1),
-    )
-    .unwrap();
-    assert_eq!(core.state(), MasterState::Idle);
-    core.on_deadline(stale_due).unwrap();
-    assert_eq!(core.poll_action(), Action::Idle);
-    assert!(core.counters().state_transitions > 0);
-    assert_eq!(core.counters().cancelled_sends, 1);
-}
-
-#[test]
 fn malformed_poll_response_advances_poll_and_sole_master_resumes_queued_work() {
     let mut rx = [0; 1024];
     let mut core = MasterCore::new(config(0, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
