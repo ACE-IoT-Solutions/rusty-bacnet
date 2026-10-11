@@ -47,5 +47,5 @@ pub use router_control::{
 pub use types::{
     AdmissionOutcome, Diagnostics, Egress, EgressDestination, EgressRequest, LinkAddress,
     LinkAddressError, NetworkNumber, NetworkNumberError, PortCapabilities, PortId, PortKind,
-    TrafficClass, STANDARD_MSTP_MAX_NPDU,
+    TrafficClass, EXTENDED_MSTP_MAX_NPDU, STANDARD_MSTP_MAX_NPDU,
 };

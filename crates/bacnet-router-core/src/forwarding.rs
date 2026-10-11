@@ -213,13 +213,17 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
         }
 
         let destination = if parsed.destination_mac.is_empty()
-            || (request.egress_capabilities.kind == PortKind::MstpStandard
-                && parsed.destination_mac == [0xff])
+            || (matches!(
+                request.egress_capabilities.kind,
+                PortKind::MstpStandard | PortKind::MstpExtended
+            ) && parsed.destination_mac == [0xff])
         {
             EgressDestination::Broadcast
         } else {
             let valid_length = match request.egress_capabilities.kind {
-                PortKind::MstpStandard => parsed.destination_mac.len() == 1,
+                PortKind::MstpStandard | PortKind::MstpExtended => {
+                    parsed.destination_mac.len() == 1
+                }
                 PortKind::Bip => parsed.destination_mac.len() == 6,
                 PortKind::Other => true,
             };
@@ -568,7 +572,7 @@ impl<const DIRECT: usize, const LEARNED: usize> Default for RouterCore<DIRECT, L
 
 fn valid_egress_address(address: &[u8], kind: PortKind) -> bool {
     match kind {
-        PortKind::MstpStandard => address.len() == 1,
+        PortKind::MstpStandard | PortKind::MstpExtended => address.len() == 1,
         PortKind::Bip => address.len() == 6,
         PortKind::Other => address.len() <= 6,
     }
@@ -579,7 +583,10 @@ fn direct_destination(
     capabilities: PortCapabilities,
 ) -> Result<EgressDestination, ForwardError> {
     if parsed.destination_mac.is_empty()
-        || (capabilities.kind == PortKind::MstpStandard && parsed.destination_mac == [0xff])
+        || (matches!(
+            capabilities.kind,
+            PortKind::MstpStandard | PortKind::MstpExtended
+        ) && parsed.destination_mac == [0xff])
     {
         return Ok(EgressDestination::Broadcast);
     }

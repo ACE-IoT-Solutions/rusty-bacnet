@@ -9,11 +9,11 @@ use composition::{
     forward_bip_datagram_to_mstp, forward_mstp_action_to_bip, BindingAdmission, CompositionError,
     RequestBindings,
 };
-use mstp::MstpEgress;
+use mstp::{ExtendedMstpEgress, MstpEgress};
 
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
-    Action, HeaplessQueues, Instant, MasterCore, MstpCoreConfig, ReplyDecision,
+    Action, ExtendedMasterCore, HeaplessQueues, Instant, MasterCore, MstpCoreConfig, ReplyDecision,
 };
 use bacnet_router_core::{
     encode_forwarded_npdu, AdmissionOutcome, BipDecodeError, Egress, EgressDestination,
@@ -36,6 +36,15 @@ fn mstp_caps(port: u8, network: u16) -> PortCapabilities {
     }
 }
 
+fn extended_mstp_caps(port: u8, network: u16) -> PortCapabilities {
+    PortCapabilities {
+        id: PortId(port),
+        network: net(network),
+        kind: PortKind::MstpExtended,
+        max_npdu_len: 1497,
+    }
+}
+
 fn bip_caps(port: u8, network: u16) -> PortCapabilities {
     PortCapabilities {
         id: PortId(port),
@@ -47,6 +56,20 @@ fn bip_caps(port: u8, network: u16) -> PortCapabilities {
 
 fn core<'rx>(rx: &'rx mut [u8]) -> MasterCore<'rx, Queues> {
     MasterCore::new(
+        MstpCoreConfig {
+            station: 1,
+            max_master: 2,
+            ..MstpCoreConfig::default()
+        },
+        Queues::new(),
+        rx,
+        Instant::ZERO,
+    )
+    .unwrap()
+}
+
+fn extended_core<'rx>(rx: &'rx mut [u8]) -> ExtendedMasterCore<'rx, Queues> {
+    ExtendedMasterCore::new(
         MstpCoreConfig {
             station: 1,
             max_master: 2,
@@ -220,6 +243,83 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
         &[0x01, 0x0b, 0x00, 0x64, 0x06, 198, 51, 100, 10, 0xba, 0xc1]
     );
     assert_eq!(frame.data[1] & 0x03, 3);
+}
+
+#[test]
+fn bip_to_explicit_extended_mstp_profile_is_admitted() {
+    let mut router = RouterCore::<2, 2>::new();
+    router.routes_mut().add_direct(net(200), PortId(2)).unwrap();
+    let origin = Ipv4SocketAddress {
+        ip: [198, 51, 100, 10],
+        port: 47_809,
+    };
+    let npdu = routed_npdu(100, 200, &[5]);
+    let mut datagram = [0; 1600];
+    let datagram_len = encode_forwarded_npdu(&mut datagram, origin, &npdu).unwrap();
+    let mut rx = [0; 1600];
+    let mut extended_core = extended_core(&mut rx);
+    let mut mstp = ExtendedMstpEgress::new(&mut extended_core, PortId(2), Instant::from_micros(1));
+    let mut scratch = [0; 1600];
+
+    let (_, outcome) = forward_bip_datagram_to_mstp(
+        &mut router,
+        &datagram[..datagram_len],
+        metadata(
+            Ipv4SocketAddress {
+                ip: [203, 0, 113, 4],
+                port: 47_809,
+            },
+            false,
+        ),
+        Instant::from_micros(1),
+        net(100),
+        extended_mstp_caps(2, 200),
+        &mut scratch,
+        &mut mstp,
+    )
+    .unwrap();
+
+    assert_eq!(
+        outcome,
+        bacnet_router_core::ForwardOutcome::Forwarded {
+            final_npdu_len: 104
+        }
+    );
+    assert_eq!(mstp.core_mut().counters().unicast.depth, 1);
+}
+
+#[test]
+fn bip_to_mstp_rejects_opaque_port_kind_before_decode() {
+    let mut router = RouterCore::<2, 2>::new();
+    let mut rx = [0; 1024];
+    let mut mstp_core = core(&mut rx);
+    let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::ZERO);
+    let mut scratch = [0; 512];
+    let error = forward_bip_datagram_to_mstp(
+        &mut router,
+        &[],
+        metadata(
+            Ipv4SocketAddress {
+                ip: [198, 51, 100, 2],
+                port: 47_809,
+            },
+            false,
+        ),
+        Instant::ZERO,
+        net(100),
+        PortCapabilities {
+            id: PortId(2),
+            network: net(200),
+            kind: PortKind::Other,
+            max_npdu_len: 1497,
+        },
+        &mut scratch,
+        &mut mstp,
+    )
+    .unwrap_err();
+
+    assert_eq!(error, CompositionError::InvalidBipPort);
+    assert_eq!(router.diagnostics().ingress_npdus, 0);
 }
 
 #[test]
@@ -413,6 +513,59 @@ fn binding_calls_core_on_reply_and_timeout_without_hidden_payload_storage() {
 
     let mut rx = [0; 1024];
     let mut mstp = core(&mut rx);
+    mstp.on_validated_frame(
+        Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 1]),
+        Instant::from_micros(1),
+    )
+    .unwrap();
+    let id = match mstp.poll_action() {
+        Action::DeliverNpdu {
+            request_id: Some(id),
+            ..
+        } => id,
+        other => panic!("expected request delivery, got {other:?}"),
+    };
+    let mut bindings = RequestBindings::<1>::new(100, 0);
+    assert_eq!(bindings.bind(id, 1), BindingAdmission::Bound);
+    bindings
+        .timeout(&mut mstp, id, Instant::from_micros(2))
+        .unwrap();
+    assert!(bindings.is_empty());
+    assert_eq!(mstp.snapshot().request_id, None);
+}
+
+#[test]
+fn extended_profile_binding_completion_and_timeout_use_profile_core() {
+    let mut rx = [0; 1600];
+    let mut mstp = extended_core(&mut rx);
+    mstp.on_validated_frame(
+        Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 1]),
+        Instant::from_micros(1),
+    )
+    .unwrap();
+    let id = match mstp.poll_action() {
+        Action::DeliverNpdu {
+            request_id: Some(id),
+            ..
+        } => id,
+        other => panic!("expected request delivery, got {other:?}"),
+    };
+    let mut bindings = RequestBindings::<1>::new(100, 0);
+    assert_eq!(bindings.bind(id, 1), BindingAdmission::Bound);
+    let response = [0x55; 1497];
+    bindings
+        .complete(
+            &mut mstp,
+            id,
+            ReplyDecision::Data(&response),
+            Instant::from_micros(2),
+        )
+        .unwrap();
+    assert!(bindings.is_empty());
+    assert_eq!(mstp.snapshot().request_id, None);
+
+    let mut rx = [0; 1600];
+    let mut mstp = extended_core(&mut rx);
     mstp.on_validated_frame(
         Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 1]),
         Instant::from_micros(1),

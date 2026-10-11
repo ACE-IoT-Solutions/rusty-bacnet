@@ -4,6 +4,8 @@
 pub const MAX_LINK_ADDRESS_LEN: usize = 6;
 /// Largest NPDU carried by standard-frame MS/TP.
 pub const STANDARD_MSTP_MAX_NPDU: usize = 501;
+/// Largest NPDU carried by extended DER/DNER MS/TP frames.
+pub const EXTENDED_MSTP_MAX_NPDU: usize = 1497;
 
 /// A BACnet network number valid for routing-table entries.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -43,6 +45,8 @@ pub enum PortKind {
     Bip,
     /// Clause 9 standard-frame MS/TP, with a 501-byte NPDU ceiling.
     MstpStandard,
+    /// Extended DER/DNER MS/TP, with a 1497-byte NPDU ceiling.
+    MstpExtended,
     /// An application-defined data link.
     Other,
 }
@@ -66,6 +70,9 @@ impl PortCapabilities {
         match self.kind {
             PortKind::MstpStandard if self.max_npdu_len > STANDARD_MSTP_MAX_NPDU => {
                 STANDARD_MSTP_MAX_NPDU
+            }
+            PortKind::MstpExtended if self.max_npdu_len > EXTENDED_MSTP_MAX_NPDU => {
+                EXTENDED_MSTP_MAX_NPDU
             }
             _ => self.max_npdu_len,
         }
