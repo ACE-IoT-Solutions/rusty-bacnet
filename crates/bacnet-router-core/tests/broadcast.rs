@@ -3,18 +3,20 @@
 use bacnet_router_core::{
     AdmissionOutcome, BroadcastDestination, BroadcastError, BroadcastFanoutOutcome,
     BroadcastFanoutResult, BroadcastPolicy, BroadcastPolicyConfig, BroadcastRequest,
-    BroadcastTarget, Egress, EgressRequest, LinkAddress, NetworkNumber, PortCapabilities, PortId,
-    PortKind, TrafficClass,
+    BroadcastTarget, Egress, EgressDestination, EgressRequest, LinkAddress, NetworkNumber,
+    PortCapabilities, PortId, PortKind, TrafficClass,
 };
 
 #[derive(Default)]
 struct RecordingEgress {
     calls: Vec<(PortId, Vec<u8>)>,
+    destinations: Vec<EgressDestination>,
 }
 
 impl Egress for RecordingEgress {
     fn try_admit(&mut self, request: EgressRequest<'_>) -> AdmissionOutcome {
         self.calls.push((request.port, request.npdu.to_vec()));
+        self.destinations.push(request.destination);
         match request.port {
             PortId(3) => AdmissionOutcome::Full,
             PortId(4) => AdmissionOutcome::PortDown,
@@ -41,6 +43,21 @@ fn target(port: u8, network_number: u16, maximum: usize) -> BroadcastTarget {
             kind: PortKind::MstpStandard,
             max_npdu_len: maximum,
         },
+        routed_network: network(network_number),
+        destination: EgressDestination::Broadcast,
+    }
+}
+
+fn learned_target(port: u8, port_network: u16, routed_network: u16) -> BroadcastTarget {
+    BroadcastTarget {
+        capabilities: PortCapabilities {
+            id: PortId(port),
+            network: network(port_network),
+            kind: PortKind::MstpStandard,
+            max_npdu_len: 501,
+        },
+        routed_network: network(routed_network),
+        destination: EgressDestination::Unicast(address(7)),
     }
 }
 
@@ -343,6 +360,36 @@ fn remote_broadcast_preserves_existing_origin_exactly() {
         .unwrap();
 
     assert_eq!(egress.calls[0].1, [1, 0x08, 0, 20, 1, 9, 0xaa]);
+}
+
+#[test]
+fn remote_broadcast_to_learned_network_preserves_route_header_and_uses_next_hop() {
+    let npdu = [1, 0x20, 1, 44, 0, 5, 0xaa];
+    let targets = [learned_target(2, 200, 300)];
+    let mut output = results(1);
+    let mut scratch = [0; 16];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<4>(100);
+
+    let report = policy
+        .forward(
+            request(1, BroadcastDestination::Remote(network(300)), &npdu, 18, 1),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        )
+        .unwrap();
+
+    assert_eq!(report.accepted, 1);
+    assert_eq!(
+        egress.destinations,
+        [EgressDestination::Unicast(address(7))]
+    );
+    assert_eq!(
+        egress.calls[0].1,
+        [1, 0x28, 1, 44, 0, 0, 10, 1, 0x42, 4, 0xaa]
+    );
 }
 
 #[test]

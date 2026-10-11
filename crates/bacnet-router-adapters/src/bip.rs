@@ -65,6 +65,9 @@ pub enum BipAddressError {
         /// Number of bytes supplied by the caller.
         actual: usize,
     },
+    /// A unicast request named an IPv4 group destination and must use the
+    /// router's explicit broadcast-policy path instead.
+    GroupDestinationRequiresPolicy,
 }
 
 /// Convert an exactly six-byte B/IP link address to an IPv4 socket address.
@@ -170,10 +173,16 @@ where
                 self.broadcast_destination,
                 BvlcFunction::OriginalBroadcastNpdu,
             )),
-            EgressDestination::Unicast(address) => Ok((
-                socket_address_from_link(address)?,
-                BvlcFunction::OriginalUnicastNpdu,
-            )),
+            EgressDestination::Unicast(address) => {
+                let socket = socket_address_from_link(address)?;
+                if socket.ip == self.broadcast_destination.ip
+                    || socket.ip == [255; 4]
+                    || (224..=239).contains(&socket.ip[0])
+                {
+                    return Err(BipAddressError::GroupDestinationRequiresPolicy);
+                }
+                Ok((socket, BvlcFunction::OriginalUnicastNpdu))
+            }
         }
     }
 }
@@ -386,6 +395,26 @@ mod tests {
         .unwrap();
         assert_eq!(decoded.function, BvlcFunction::OriginalBroadcastNpdu);
         assert_eq!(decoded.npdu, npdu);
+    }
+
+    #[test]
+    fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
+        for ip in [BROADCAST.ip, [255; 4], [239, 1, 2, 3]] {
+            let mut sink = RecordingSink::accepting();
+            let mut scratch = [0xa5; 32];
+            let before = scratch;
+            let mut egress =
+                BipEgress::new(&mut sink, &mut scratch, PORT, BROADCAST, Instant::ZERO);
+            let destination = link_address_from_socket(socket(ip, 47_808));
+
+            assert_eq!(
+                egress.try_admit(request(EgressDestination::Unicast(destination), &[1, 0])),
+                AdmissionOutcome::Invalid
+            );
+            drop(egress);
+            assert_eq!(sink.calls, 0);
+            assert_eq!(scratch, before);
+        }
     }
 
     #[test]

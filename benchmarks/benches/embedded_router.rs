@@ -134,6 +134,8 @@ fn broadcast<const CACHE: usize, const PORTS: usize>(c: &mut Criterion) {
             kind: PortKind::MstpStandard,
             max_npdu_len: 501,
         },
+        routed_network: network(100 + i as u16),
+        destination: EgressDestination::Broadcast,
     });
     let mut results = [BroadcastFanoutResult {
         port: PortId(0),

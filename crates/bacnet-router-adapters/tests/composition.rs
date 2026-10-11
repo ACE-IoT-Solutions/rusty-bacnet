@@ -485,6 +485,51 @@ fn mstp_broadcast_requires_the_explicit_broadcast_policy() {
 }
 
 #[test]
+fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
+    for ip in [[192, 0, 2, 255], [255; 4], [239, 1, 2, 3]] {
+        let mut router = RouterCore::<2, 2>::new();
+        router.routes_mut().add_direct(net(300), PortId(3)).unwrap();
+        let npdu = routed_npdu(20, 300, &[ip[0], ip[1], ip[2], ip[3], 0xba, 0xc0]);
+        let action = Action::DeliverNpdu {
+            source: 7,
+            destination: 1,
+            npdu: &npdu,
+            request_id: None,
+        };
+        let mut sink = Sink::accepting();
+        let mut bip_scratch = [0; 1600];
+        let mut bip = BipEgress::new(
+            &mut sink,
+            &mut bip_scratch,
+            PortId(3),
+            Ipv4SocketAddress {
+                ip: [192, 0, 2, 255],
+                port: 47_808,
+            },
+            Instant::ZERO,
+        );
+        let mut bindings = RequestBindings::<1>::new(100, 0);
+        let mut scratch = [0; 512];
+
+        assert_eq!(
+            forward_mstp_action_to_bip(
+                &mut router,
+                action,
+                net(100),
+                bip_caps(3, 300),
+                &mut scratch,
+                &mut bip,
+                &mut bindings,
+                1,
+            ),
+            Ok(bacnet_router_core::ForwardOutcome::EgressRejected)
+        );
+        drop(bip);
+        assert_eq!(sink.calls, 0);
+    }
+}
+
+#[test]
 fn binding_full_expired_invalid_and_timeout_are_explicit() {
     let id = bacnet_mstp_core::RequestId::new(4);
     let mut bindings = RequestBindings::<1>::new(10, 10);

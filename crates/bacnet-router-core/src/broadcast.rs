@@ -75,11 +75,15 @@ pub struct BroadcastRequest<'a> {
     pub now: u64,
 }
 
-/// One directly connected port considered by a broadcast fanout operation.
+/// One policy-approved route target considered by a broadcast operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BroadcastTarget {
-    /// Capabilities and directly connected network identity.
+    /// Capabilities of the actual egress data-link.
     pub capabilities: PortCapabilities,
+    /// Destination network reached through this target.
+    pub routed_network: NetworkNumber,
+    /// Link destination: broadcast for final delivery or a router next hop.
+    pub destination: EgressDestination,
 }
 
 /// A per-egress result. Results are written in the exact order of the target
@@ -345,14 +349,6 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
             _ => {}
         }
 
-        let final_len = parsed.final_len(request.origin_address, request.destination);
-        if scratch.len() < final_len {
-            return Err(BroadcastError::ScratchTooSmall {
-                needed: final_len,
-                available: scratch.len(),
-            });
-        }
-
         let mut report = BroadcastReport::new();
         let enabled = match request.destination {
             BroadcastDestination::Remote(_) => self.config.allow_remote,
@@ -364,7 +360,7 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
                 BroadcastFanoutOutcome::IngressExcluded
             } else if !enabled {
                 BroadcastFanoutOutcome::PolicyDisabled
-            } else if !target_selected(request.destination, target.capabilities) {
+            } else if !target_selected(request.destination, *target) {
                 report.not_destination_network += 1;
                 BroadcastFanoutOutcome::NotDestinationNetwork
             } else {
@@ -382,10 +378,28 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
             return Ok(report);
         }
 
+        let needed = targets
+            .iter()
+            .filter(|target| target_selected_for_request(request, **target))
+            .map(|target| {
+                parsed.final_len(
+                    request.origin_address,
+                    target_is_final_delivery(request.destination, *target),
+                )
+            })
+            .max()
+            .unwrap_or(0);
+        if scratch.len() < needed {
+            return Err(BroadcastError::ScratchTooSmall {
+                needed,
+                available: scratch.len(),
+            });
+        }
+
         if let Some(hop) = parsed.hop_count {
             if hop <= 1 {
                 for (index, target) in targets.iter().enumerate() {
-                    if target_selected_for_request(request, target.capabilities) {
+                    if target_selected_for_request(request, *target) {
                         results[index].outcome = BroadcastFanoutOutcome::HopExhausted;
                     }
                 }
@@ -404,7 +418,7 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
         report.cache_outcome = Some(cache_outcome);
         if matches!(cache_outcome, DuplicateOutcome::Duplicate) {
             for (index, target) in targets.iter().enumerate() {
-                if target_selected_for_request(request, target.capabilities) {
+                if target_selected_for_request(request, *target) {
                     results[index].outcome = BroadcastFanoutOutcome::Duplicate;
                 }
             }
@@ -417,7 +431,7 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
         // class; ordinary routed broadcasts retain deterministic replacement.
         if parsed.hop_count.is_none() && matches!(cache_outcome, DuplicateOutcome::Replaced) {
             for (index, target) in targets.iter().enumerate() {
-                if target_selected_for_request(request, target.capabilities) {
+                if target_selected_for_request(request, *target) {
                     results[index].outcome = BroadcastFanoutOutcome::CacheUntracked;
                 }
             }
@@ -425,24 +439,26 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
         }
         if matches!(cache_outcome, DuplicateOutcome::Untracked) {
             for (index, target) in targets.iter().enumerate() {
-                if target_selected_for_request(request, target.capabilities) {
+                if target_selected_for_request(request, *target) {
                     results[index].outcome = BroadcastFanoutOutcome::CacheUntracked;
                 }
             }
             return Ok(report);
         }
 
-        parsed.rewrite(
-            request.origin_network,
-            request.origin_address,
-            request.destination,
-            scratch,
-        );
         for (index, target) in targets.iter().enumerate() {
-            if !target_selected_for_request(request, target.capabilities) {
+            if !target_selected_for_request(request, *target) {
                 continue;
             }
             let capabilities = target.capabilities;
+            let final_delivery = target_is_final_delivery(request.destination, *target);
+            let final_len = parsed.final_len(request.origin_address, final_delivery);
+            parsed.rewrite(
+                request.origin_network,
+                request.origin_address,
+                final_delivery,
+                scratch,
+            );
             let npdu = &scratch[..final_len];
             let outcome = if npdu.len() > capabilities.effective_max_npdu_len() {
                 report.oversize += 1;
@@ -453,7 +469,7 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
             } else {
                 match egress.try_admit(EgressRequest {
                     port: capabilities.id,
-                    destination: EgressDestination::Broadcast,
+                    destination: target.destination,
                     class: request.class,
                     priority: request.priority,
                     npdu,
@@ -501,11 +517,20 @@ impl<const CACHE: usize> Default for BroadcastPolicy<CACHE> {
     }
 }
 
-fn target_selected(destination: BroadcastDestination, capabilities: PortCapabilities) -> bool {
+fn target_selected(destination: BroadcastDestination, target: BroadcastTarget) -> bool {
     match destination {
-        BroadcastDestination::Remote(network) => capabilities.network == network,
-        BroadcastDestination::Global => true,
+        BroadcastDestination::Remote(network) => target.routed_network == network,
+        BroadcastDestination::Global => {
+            target.routed_network == target.capabilities.network
+                && target.destination == EgressDestination::Broadcast
+        }
     }
+}
+
+fn target_is_final_delivery(destination: BroadcastDestination, target: BroadcastTarget) -> bool {
+    matches!(destination, BroadcastDestination::Remote(_))
+        && target.routed_network == target.capabilities.network
+        && target.destination == EgressDestination::Broadcast
 }
 
 const BACNET_PROTOCOL_VERSION: u8 = 1;
@@ -605,18 +630,16 @@ impl<'a> ParsedBroadcastNpdu<'a> {
         self.destination_mac.is_empty() || self.destination_mac == [0xff]
     }
 
-    fn final_len(&self, origin: LinkAddress, destination: BroadcastDestination) -> usize {
-        let destination_len = match destination {
-            BroadcastDestination::Remote(_) => 0,
-            BroadcastDestination::Global => self.destination_fields.map_or(0, <[u8]>::len),
+    fn final_len(&self, origin: LinkAddress, final_delivery: bool) -> usize {
+        let destination_len = if final_delivery {
+            0
+        } else {
+            self.destination_fields.map_or(0, <[u8]>::len)
         };
         let source_len = self
             .source_fields
             .map_or(3 + origin.as_slice().len(), <[u8]>::len);
-        let hop_len = match destination {
-            BroadcastDestination::Remote(_) => 0,
-            BroadcastDestination::Global => usize::from(self.hop_count.is_some()),
-        };
+        let hop_len = usize::from(!final_delivery && self.hop_count.is_some());
         2 + destination_len + source_len + hop_len + self.remainder.len()
     }
 
@@ -624,10 +647,9 @@ impl<'a> ParsedBroadcastNpdu<'a> {
         &self,
         origin_network: NetworkNumber,
         origin_address: LinkAddress,
-        destination: BroadcastDestination,
+        final_delivery: bool,
         output: &mut [u8],
     ) {
-        let final_delivery = matches!(destination, BroadcastDestination::Remote(_));
         output[0] = BACNET_PROTOCOL_VERSION;
         output[1] = if final_delivery {
             (self.control & !DESTINATION_BIT) | SOURCE_BIT
@@ -661,9 +683,6 @@ impl<'a> ParsedBroadcastNpdu<'a> {
     }
 }
 
-fn target_selected_for_request(
-    request: BroadcastRequest<'_>,
-    capabilities: PortCapabilities,
-) -> bool {
-    capabilities.id != request.ingress_port && target_selected(request.destination, capabilities)
+fn target_selected_for_request(request: BroadcastRequest<'_>, target: BroadcastTarget) -> bool {
+    target.capabilities.id != request.ingress_port && target_selected(request.destination, target)
 }
