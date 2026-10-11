@@ -60,6 +60,9 @@ if ! "$quick"; then
   cargo test --doc --workspace --exclude rusty-bacnet --locked --features "$features"
   step "bacnet-cli tests (default features)"
   cargo nextest run -p bacnet-cli --locked
+  step "no_std crates' tests and doctests (alloc, without std)"
+  cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
+  cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
   step "PyO3 crate Rust tests"
   cargo nextest run -p rusty-bacnet --locked
 fi
