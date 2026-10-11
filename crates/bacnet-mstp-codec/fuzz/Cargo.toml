@@ -12,7 +12,7 @@ members = []
 
 [dependencies]
 libfuzzer-sys = "0.4"
-bacnet-mstp-codec = { path = "..", features = ["alloc"] }
+bacnet-mstp-codec = { path = ".." }
 
 [[bin]]
 name = "mstp_decode"

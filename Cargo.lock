@@ -384,7 +384,6 @@ dependencies = [
 name = "bacnet-mstp-codec"
 version = "0.12.0"
 dependencies = [
- "bacnet-types",
  "bytes",
  "heapless",
  "proptest",

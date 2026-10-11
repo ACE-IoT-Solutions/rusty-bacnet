@@ -1,35 +1,40 @@
-//! Caller-buffered incremental decoding.
+//! Incremental decoding over caller-owned storage.
 
+use crate::frame::{wire_length, DATA_OFFSET};
 use crate::{decode_frame, Frame, FrameError, PREAMBLE};
 
-/// Result of feeding one or more octets to [`StreamDecoder`].
+/// The outcome of one [`StreamDecoder::push_slice`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeEvent<'a> {
-    /// The input does not yet contain a complete frame.
+    /// Nothing complete and nothing to discard: push more octets.
     NeedMore,
-    /// A validated frame is available. It remains borrowed until the next push.
+    /// A valid frame. It borrows the decoder's storage and stays buffered
+    /// until the next push, which removes it.
     Frame {
-        /// Validated frame borrowing decoder storage.
+        /// The decoded frame.
         frame: Frame<'a>,
-        /// Number of input octets occupied by the frame.
+        /// The frame's wire length.
         consumed: usize,
     },
-    /// Non-frame input was discarded while looking for the next preamble.
+    /// Line noise was discarded while searching for a preamble.
     ///
-    /// This is synchronization noise, not a received-invalid-frame event in
-    /// the Clause 9 receive state machine.
+    /// This is not a received invalid frame in terms of the Clause 9.5.4
+    /// receive state machine.
     Invalid {
-        /// Number of synchronization-noise octets discarded.
+        /// Octets discarded.
         discard: usize,
     },
-    /// A candidate frame was malformed and discarded.
+    /// A candidate frame failed a check and was dropped.
     Malformed {
-        /// Number of candidate octets discarded while resynchronizing.
+        /// Octets discarded. For a bad data CRC this is the whole frame; for
+        /// anything else it is the first preamble octet, and the octets after it
+        /// are scanned again.
         discard: usize,
-        /// Validation failure for the malformed candidate.
+        /// Why the candidate was dropped.
         error: FrameError,
     },
-    /// The caller-owned receive buffer could not accept another octet.
+    /// The pushed slice did not fit in the free storage. None of it was
+    /// buffered; see [`StreamDecoder`].
     Error(FrameError),
 }
 
@@ -46,7 +51,59 @@ pub enum StreamPhase {
     Data,
 }
 
-/// Incremental decoder backed by a caller-owned receive buffer.
+/// Incremental frame decoder over a buffer the caller lends it.
+///
+/// Feed it received octets with [`push`](Self::push) or
+/// [`push_slice`](Self::push_slice). Each call buffers the input and reports
+/// at most one [`DecodeEvent`], so:
+///
+/// - A [`DecodeEvent::Frame`] borrows the storage. The frame stays buffered
+///   until the next push, which commits it (drops it from the buffer) before
+///   it reads new input. An empty push commits it too.
+/// - After any event other than [`DecodeEvent::NeedMore`], more may already be
+///   buffered, such as a second frame from the same slice or more noise. Call
+///   `push_slice(&[])` until it returns `NeedMore` to drain it.
+/// - A slice longer than the free storage is refused whole with
+///   [`DecodeEvent::Error`] and nothing is buffered. Drain, then push it again
+///   or in smaller pieces.
+///
+/// Size the storage for the largest frame you accept:
+/// [`MAX_STANDARD_FRAME_LENGTH`](crate::MAX_STANDARD_FRAME_LENGTH) covers every
+/// standard frame, plus room for the slices you push. A candidate that could
+/// never fit is reported once, as [`DecodeEvent::Malformed`] with
+/// [`FrameError::FrameTooLong`], as soon as its header shows its size (or at
+/// its first octet, if the storage cannot even hold a header). Its first
+/// octet is discarded, the decoder rescans from the next one, and its
+/// remaining octets drain as noise. Clause 9.5.4.4 has a receiver skip such a
+/// frame's data by count instead; that belongs to a receive state machine.
+///
+/// The decoder keeps no time. A receiver that aborts a partial frame after a
+/// silence (Clause 9.5.4) calls [`reset`](Self::reset).
+///
+/// ```
+/// use bacnet_mstp_codec::{DecodeEvent, Frame, FrameType, StreamDecoder};
+///
+/// let mut wire = [0u8; 16];
+/// Frame::new(FrameType::Token, 1, 0, &[]).encode_into(&mut wire[..8])?;
+/// Frame::new(FrameType::Token, 2, 1, &[]).encode_into(&mut wire[8..])?;
+///
+/// let mut storage = [0u8; 64];
+/// let mut decoder = StreamDecoder::new(&mut storage);
+/// let mut destinations = Vec::new();
+/// let mut event = decoder.push_slice(&wire);
+/// loop {
+///     match event {
+///         DecodeEvent::NeedMore => break,
+///         DecodeEvent::Frame { frame, .. } => destinations.push(frame.header.destination),
+///         _ => {}
+///     }
+///     // Commit the frame, if any, and look for the next one.
+///     event = decoder.push_slice(&[]);
+/// }
+/// assert_eq!(destinations, [1, 2]);
+/// assert_eq!(decoder.buffered_len(), 0);
+/// # Ok::<(), bacnet_mstp_codec::FrameError>(())
+/// ```
 pub struct StreamDecoder<'a> {
     storage: &'a mut [u8],
     length: usize,
@@ -92,7 +149,7 @@ impl<'a> StreamDecoder<'a> {
         if self.storage[1] != PREAMBLE[1] {
             return StreamPhase::Sync;
         }
-        if self.length < 8 {
+        if self.length < DATA_OFFSET {
             StreamPhase::Header
         } else {
             StreamPhase::Data
@@ -105,15 +162,17 @@ impl<'a> StreamDecoder<'a> {
         self.pending = 0;
     }
 
-    /// Feed one octet and return the first resulting decode event.
+    /// Feed one octet; see [`push_slice`](Self::push_slice).
     pub fn push(&mut self, byte: u8) -> DecodeEvent<'_> {
         self.push_slice(core::slice::from_ref(&byte))
     }
 
-    /// Feed a DMA or serial slice and return the first resulting event.
+    /// Commit a frame delivered by the previous push, buffer `input`, and
+    /// report the first resulting event. The [type docs](Self) describe the
+    /// protocol.
     pub fn push_slice(&mut self, input: &[u8]) -> DecodeEvent<'_> {
         self.commit_pending();
-        if input.len() > self.storage.len().saturating_sub(self.length) {
+        if input.len() > self.storage.len() - self.length {
             return DecodeEvent::Error(FrameError::BufferExhausted {
                 needed: self.length + input.len(),
                 available: self.storage.len(),
@@ -136,14 +195,13 @@ impl<'a> StreamDecoder<'a> {
         if self.pending == 0 {
             return;
         }
-        let consumed = self.pending.min(self.length);
-        let remaining = self.length - consumed;
-        self.storage.copy_within(consumed..self.length, 0);
-        self.length = remaining;
+        self.discard(self.pending);
         self.pending = 0;
     }
 
     fn frame_event(&self, consumed: usize) -> DecodeEvent<'_> {
+        // try_decode just accepted these octets; decoding them again only
+        // re-borrows the frame from storage, so this cannot fail.
         match decode_frame(&self.storage[..self.length]) {
             Ok((frame, _)) => DecodeEvent::Frame { frame, consumed },
             Err(error) => DecodeEvent::Error(error),
@@ -159,7 +217,7 @@ impl<'a> StreamDecoder<'a> {
             return InternalEvent::Invalid { discard: 1 };
         }
         if self.length < 2 {
-            return InternalEvent::NeedMore;
+            return self.need_more(DATA_OFFSET);
         }
         if self.storage[1] != PREAMBLE[1] {
             self.discard(1);
@@ -170,16 +228,13 @@ impl<'a> StreamDecoder<'a> {
                 self.pending = consumed;
                 InternalEvent::Frame { consumed }
             }
-            Err(FrameError::TooShort { .. } | FrameError::Truncated { .. }) => {
-                InternalEvent::NeedMore
+            Err(FrameError::TooShort { needed, .. }) => self.need_more(needed),
+            Err(FrameError::Truncated { data_length, .. }) => {
+                self.need_more(wire_length(data_length))
             }
             Err(error @ FrameError::DataCrcMismatch { data_length }) => {
-                let discard = if self.length >= 8 {
-                    8 + data_length + 2
-                } else {
-                    1
-                };
-                self.discard(discard.min(self.length));
+                let discard = wire_length(data_length);
+                self.discard(discard);
                 InternalEvent::Malformed { discard, error }
             }
             Err(error) => {
@@ -189,10 +244,24 @@ impl<'a> StreamDecoder<'a> {
         }
     }
 
+    /// Wait for more input, unless the candidate needs `needed` octets in all
+    /// and that is more than the storage holds: then drop its first octet so
+    /// the decoder resynchronizes instead of filling up for good.
+    fn need_more(&mut self, needed: usize) -> InternalEvent {
+        let capacity = self.storage.len();
+        if needed <= capacity {
+            return InternalEvent::NeedMore;
+        }
+        self.discard(1);
+        InternalEvent::Malformed {
+            discard: 1,
+            error: FrameError::FrameTooLong { needed, capacity },
+        }
+    }
+
     fn discard(&mut self, count: usize) {
         let count = count.min(self.length);
-        let remaining = self.length - count;
         self.storage.copy_within(count..self.length, 0);
-        self.length = remaining;
+        self.length -= count;
     }
 }
