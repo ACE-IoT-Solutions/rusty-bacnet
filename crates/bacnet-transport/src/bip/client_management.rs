@@ -12,9 +12,9 @@ use tokio::time::Instant;
 use super::bvlc_response::{decode_bvlc_result_code, BvlcResponseKind, PendingBvlcResponse};
 use super::client_snapshot::{increment, BvlcClientSnapshot, ForeignRegistrationOutcome};
 use super::BipSocket;
-use crate::bbmd::{self, BbmdState};
+use crate::bbmd;
 use crate::bvll::{decode_bip_mac, encode_bvll, BvllMessage};
-use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
+use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_types::error::Error;
 
 #[derive(Default)]
@@ -121,13 +121,16 @@ impl ManagementClient {
     /// cannot steal a request; typed malformed ACKs preserve helper decode errors.
     pub(super) fn complete(&self, msg: &BvllMessage, sender: ([u8; 4], u16)) -> bool {
         let validity = match msg.function {
-            BvlcFunction::BVLC_RESULT => decode_bvlc_result_code(msg).map(|_| ()),
-            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK => {
-                BbmdState::decode_bdt(&msg.payload).map(|_| ())
-            }
-            BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK => {
-                bbmd::decode_fdt(&msg.payload).map(|_| ())
-            }
+            BvlcFunction::BVLC_RESULT
+            | BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK
+            | BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK => match msg.message() {
+                Ok(Bvll::ReadBroadcastDistributionTableAck(table)) => {
+                    bbmd::bdt_from_wire(table).map(drop)
+                }
+                Ok(Bvll::ReadForeignDeviceTableAck(table)) => bbmd::fdt_from_wire(table).map(drop),
+                Ok(_) => Ok(()),
+                Err(error) => Err(error),
+            },
             _ => return false,
         };
         let mut state = self.lock();
@@ -209,22 +212,18 @@ impl ManagementClient {
         self: &Arc<Self>,
         socket: &BipSocket,
         target: &[u8],
-        function: BvlcFunction,
+        request: Bvll<'_>,
         expected: BvlcResponseKind,
-        payload: &[u8],
         timeout: Duration,
     ) -> Result<BvllMessage, Error> {
         let (ip, port) = decode_bip_mac(target)?;
-        let ttl = if function == BvlcFunction::REGISTER_FOREIGN_DEVICE {
-            Some(u16::from_be_bytes(payload.try_into().map_err(|_| {
-                Error::Encoding("Register-FD requires a two-byte TTL".into())
-            })?))
-        } else {
-            None
+        let ttl = match request {
+            Bvll::RegisterForeignDevice { ttl } => Some(ttl),
+            _ => None,
         };
-        let (guard, rx) = self.begin((ip, port), function, expected, ttl)?;
-        let mut buf = BytesMut::with_capacity(4 + payload.len());
-        if let Err(error) = encode_bvll(&mut buf, function, payload) {
+        let (guard, rx) = self.begin((ip, port), request.function(), expected, ttl)?;
+        let mut buf = BytesMut::new();
+        if let Err(error) = encode_bvll(&mut buf, &request) {
             guard.fail(ForeignRegistrationOutcome::LocalError);
             return Err(error);
         }

@@ -114,12 +114,6 @@ fn unconfirmed_service_choice_values() {
 }
 
 #[test]
-fn bvlc_function_values() {
-    assert_eq!(BvlcFunction::ORIGINAL_UNICAST_NPDU.to_raw(), 0x0A);
-    assert_eq!(BvlcFunction::ORIGINAL_BROADCAST_NPDU.to_raw(), 0x0B);
-}
-
-#[test]
 fn engineering_units_round_trip() {
     assert_eq!(EngineeringUnits::DEGREES_CELSIUS.to_raw(), 62);
     assert_eq!(

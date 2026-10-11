@@ -37,6 +37,10 @@ checks=(
   "bacnet-mstp-core alloc"
   "bacnet-mstp-core heapless"
   "bacnet-mstp-core alloc,heapless"
+  "bacnet-bip-codec -"
+  "bacnet-bip-codec alloc"
+  "bacnet-bip-codec heapless"
+  "bacnet-bip-codec bytes,heapless"
   "bacnet-types alloc"
   "bacnet-types serde"
   "bacnet-encoding alloc"
@@ -54,7 +58,7 @@ skip_reason() {
     # bytes needs atomic compare-and-swap. Without it in hardware, bytes
     # takes it from portable-atomic, whose backend (a critical section, or
     # assuming a single core) only the firmware can choose. The encoding and
-    # services crates always use bytes; the codec only with its feature.
+    # services crates always use bytes; the codecs only with their feature.
     case "$crate:,$features," in bacnet-encoding:*|bacnet-services:*|*,bytes,*)
       echo "bytes needs a portable-atomic backend that only firmware can choose"
       return ;;

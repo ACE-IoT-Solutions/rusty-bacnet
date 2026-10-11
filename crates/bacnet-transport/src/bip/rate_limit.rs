@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use bacnet_types::enums::BvlcFunction;
+use bacnet_bip_codec::BvlcFunction;
 
 /// Fixed window length for management quota accounting.
 pub(super) const MANAGEMENT_RATE_WINDOW: Duration = Duration::from_secs(1);

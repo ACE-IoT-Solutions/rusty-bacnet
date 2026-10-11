@@ -77,9 +77,7 @@ async fn start_on_one_port<const N: usize>(
 }
 
 fn frame(function: BvlcFunction, npdu: &[u8]) -> BytesMut {
-    let mut buf = BytesMut::new();
-    encode_bvll(&mut buf, function, npdu).unwrap();
-    buf
+    raw_frame(function, npdu)
 }
 
 /// A non-routed NPDU expecting no reply, tagged so each one is told apart.

@@ -25,9 +25,7 @@ fn listed_and_reachable() -> (Vec<Ipv4Addr>, Vec<Ipv4Addr>) {
 }
 
 fn frame(function: BvlcFunction, npdu: &[u8]) -> BytesMut {
-    let mut buf = BytesMut::new();
-    encode_bvll(&mut buf, function, npdu).unwrap();
-    buf
+    raw_frame(function, npdu)
 }
 
 async fn next_npdu(rx: &mut mpsc::Receiver<ReceivedNpdu>) -> ReceivedNpdu {

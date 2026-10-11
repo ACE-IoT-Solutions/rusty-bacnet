@@ -140,7 +140,7 @@ fn fdt_encode() {
     bbmd.register_foreign_device([10, 0, 0, 5], 0xBAC0, 60);
     let mut buf = BytesMut::new();
     bbmd.encode_fdt(&mut buf);
-    assert_eq!(buf.len(), FDT_ENTRY_SIZE);
+    assert_eq!(buf.len(), bacnet_bip_codec::FDT_ENTRY_LENGTH);
     // IP
     assert_eq!(&buf[0..4], &[10, 0, 0, 5]);
     // Port
@@ -162,7 +162,7 @@ fn fdt_encode_caps_max_ttl_remaining_time() {
     let mut buf = BytesMut::new();
     bbmd.encode_fdt(&mut buf);
 
-    assert_eq!(buf.len(), FDT_ENTRY_SIZE);
+    assert_eq!(buf.len(), bacnet_bip_codec::FDT_ENTRY_LENGTH);
     assert_eq!(u16::from_be_bytes([buf[6], buf[7]]), u16::MAX);
     assert_eq!(u16::from_be_bytes([buf[8], buf[9]]), u16::MAX);
 }

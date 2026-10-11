@@ -83,8 +83,6 @@ async fn dbtn_registered_foreign_device_fans_out_without_origin_echo() {
     let msg = BvllMessage {
         function: BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
         payload: Bytes::from_static(&[0x01, 0x20, 0xBA, 0xC0, 0xDB, 0x10]),
-        originating_ip: None,
-        originating_port: None,
     };
 
     handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;
@@ -107,9 +105,12 @@ async fn dbtn_registered_foreign_device_fans_out_without_origin_echo() {
     ] {
         let frame = recv_bvll(socket).await;
         assert_eq!(frame.function, BvlcFunction::FORWARDED_NPDU, "{label}");
-        assert_eq!(frame.originating_ip, Some(sender.0), "{label}");
-        assert_eq!(frame.originating_port, Some(sender.1), "{label}");
-        assert_eq!(frame.payload.as_ref(), msg.payload.as_ref(), "{label}");
+        assert_eq!(origin_of(&frame), Some(sender), "{label}");
+        assert_eq!(
+            frame.npdu().unwrap().as_ref(),
+            msg.payload.as_ref(),
+            "{label}"
+        );
     }
 
     for (label, socket) in [
@@ -161,8 +162,6 @@ async fn dbtn_registered_foreign_device_naks_when_forwarding_fails() {
     let msg = BvllMessage {
         function: BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
         payload: Bytes::from_static(&[0x01, 0x20, 0xBA, 0xC0, 0x00, 0x60]),
-        originating_ip: None,
-        originating_port: None,
     };
 
     handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;

@@ -11,11 +11,11 @@ use bacnet_services::who_is::IAmRequest;
 use bacnet_transport::{
     bbmd::{BdtEntry, ForeignDevicePolicy},
     bip::{BipTransport, ForeignDeviceConfig, ForeignRegistrationOutcome},
-    bvll::decode_bvll,
+    bvll::{decode_bvll, BvlcFunction},
     port::TransportPort,
 };
 use bacnet_types::{
-    enums::{BvlcFunction, ObjectType, Segmentation, UnconfirmedServiceChoice},
+    enums::{ObjectType, Segmentation, UnconfirmedServiceChoice},
     primitives::ObjectIdentifier,
 };
 use bytes::BytesMut;
@@ -132,11 +132,13 @@ async fn bip_foreign_builder_discovers_device_through_bbmd_after_observed_regist
         .unwrap();
     let forwarded = decode_bvll(&packet[..length]).unwrap();
     assert_eq!(forwarded.function, BvlcFunction::FORWARDED_NPDU);
-    assert_eq!(forwarded.originating_ip, Some(Ipv4Addr::LOCALHOST.octets()));
     let client_mac = client.local_mac();
     assert_eq!(
-        forwarded.originating_port,
-        Some(u16::from_be_bytes([client_mac[4], client_mac[5]]))
+        forwarded.origin(),
+        Some(std::net::SocketAddrV4::new(
+            Ipv4Addr::LOCALHOST,
+            u16::from_be_bytes([client_mac[4], client_mac[5]])
+        ))
     );
 
     // Its own I-Am is forwarded to the registered foreign client through the
