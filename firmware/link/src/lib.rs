@@ -3,7 +3,7 @@
 //! Each image links one stack into a bare-metal binary with no allocator:
 //!
 //! - `mstp` ([`mstp::run`]): `bacnet-mstp-codec` and `bacnet-mstp-core`.
-//! - `bip` ([`bip::run`]): `bacnet-bip-codec`.
+//! - `bip` ([`bip::run`]): `bacnet-bip-codec`, B/IP and B/IPv6.
 //!
 //! One image per stack keeps each stack's flash and RAM separate: within one
 //! LTO image, code can't be attributed to a crate reliably.
