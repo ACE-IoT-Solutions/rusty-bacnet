@@ -567,6 +567,15 @@ pub trait TransportPort: Send + Sync {
         1476
     }
 
+    /// Current encoded-NPDU limit for this transport's ordinary send path.
+    ///
+    /// `None` means the transport does not expose a useful dispatch-time
+    /// bound. Connected transports may update this value after negotiation;
+    /// wrappers must delegate it when they preserve the underlying send path.
+    fn max_npdu_length(&self) -> Option<usize> {
+        None
+    }
+
     /// Whether `mac` is this data link's broadcast address.
     ///
     /// A destination can spell a broadcast two ways: the network-layer form

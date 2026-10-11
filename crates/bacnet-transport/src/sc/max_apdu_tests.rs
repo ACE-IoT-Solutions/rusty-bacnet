@@ -120,6 +120,7 @@ async fn sc_max_apdu_length_accounts_for_sc_and_npdu_headers() {
     let ws_hub = hub_task.await.unwrap();
 
     assert_eq!(transport.egress_apdu_limit(), 1464);
+    assert_eq!(transport.max_npdu_length(), Some(1466));
 
     transport.stop().await.unwrap();
     drop(ws_hub);
@@ -131,6 +132,7 @@ async fn sc_max_apdu_length_reflects_negotiated_hub_npdu_limit() {
     let hub_vmac = [0x10; 6];
     let mut transport = ScTransport::new(ws_client, [0x01; 6]).with_device_uuid([1; 16]);
     assert_eq!(transport.egress_apdu_limit(), 1476);
+    assert_eq!(transport.max_npdu_length(), Some(1478));
 
     let hub_task = tokio::spawn(async move {
         accept_with_limits(&ws_hub, hub_vmac, 1200, 480).await;

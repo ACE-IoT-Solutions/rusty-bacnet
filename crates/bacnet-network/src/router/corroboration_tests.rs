@@ -138,7 +138,7 @@ impl Fixture {
             payload: Bytes::from_static(&[0x10, 0x20]),
             ..Default::default()
         };
-        forward_unicast(&self.txs, &route, 1000, &[7], npdu.clone(), 2, &[]);
+        forward_unicast(&self.txs, &route, 1000, &[7], npdu.clone(), &[], None);
         for (index, rx) in self.rxs.iter_mut().enumerate() {
             if index == expected_port {
                 let SendRequest::Unicast {

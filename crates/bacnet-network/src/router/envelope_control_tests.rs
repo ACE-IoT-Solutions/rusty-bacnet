@@ -442,8 +442,8 @@ async fn proprietary_unicast_forward_preserves_identity() {
         1000,
         &[7],
         npdu.clone(),
-        0,
         &attributes(),
+        None,
     );
     match rx1.try_recv().unwrap() {
         SendRequest::Unicast {
@@ -484,7 +484,7 @@ async fn proprietary_unicast_forward_preserves_identity() {
         flap_count: 0,
         last_port_change: None,
     };
-    forward_unicast(&send_txs, &route, 1000, &[7], npdu, 0, &[]);
+    forward_unicast(&send_txs, &route, 1000, &[7], npdu, &[], None);
     match rx1.try_recv().unwrap() {
         SendRequest::Unicast { npdu, mac, .. } => {
             assert_eq!(mac.as_slice(), &[9]);

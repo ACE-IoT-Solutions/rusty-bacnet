@@ -321,6 +321,20 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
+    fn max_npdu_length(&self) -> Option<usize> {
+        match self {
+            Self::Bip(t) => t.max_npdu_length(),
+            Self::Mstp(t) => t.max_npdu_length(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.max_npdu_length(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.max_npdu_length(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.max_npdu_length(),
+            Self::Loopback(t) => t.max_npdu_length(),
+        }
+    }
+
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
         match self {
             Self::Bip(t) => t.is_broadcast_mac(mac),

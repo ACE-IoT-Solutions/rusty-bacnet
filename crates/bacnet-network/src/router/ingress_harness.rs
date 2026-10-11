@@ -18,6 +18,7 @@ pub(super) struct IngressTransport {
     incoming: Option<mpsc::Receiver<ReceivedNpdu>>,
     outgoing: mpsc::Sender<SendRequest>,
     mac: [u8; 1],
+    max_npdu_length: Option<usize>,
 }
 
 impl TransportPort for IngressTransport {
@@ -71,6 +72,10 @@ impl TransportPort for IngressTransport {
         1476
     }
 
+    fn max_npdu_length(&self) -> Option<usize> {
+        self.max_npdu_length
+    }
+
     fn local_mac(&self) -> &[u8] {
         &self.mac
     }
@@ -87,6 +92,13 @@ pub(super) fn network(port: usize) -> u16 {
 }
 
 pub(super) fn fixture(count: usize) -> (Vec<RouterPort<IngressTransport>>, Vec<Peer>) {
+    fixture_with_limits(vec![None; count])
+}
+
+pub(super) fn fixture_with_limits(
+    limits: Vec<Option<usize>>,
+) -> (Vec<RouterPort<IngressTransport>>, Vec<Peer>) {
+    let count = limits.len();
     (0..count)
         .map(|port| {
             // Only injected transport backlog is larger than the production
@@ -99,6 +111,7 @@ pub(super) fn fixture(count: usize) -> (Vec<RouterPort<IngressTransport>>, Vec<P
                         incoming: Some(rx),
                         outgoing,
                         mac: [port as u8 + 1],
+                        max_npdu_length: limits[port],
                     },
                     network_number: network(port),
                 },

@@ -126,6 +126,13 @@ impl TransportPort for MixedTestTransport {
         }
     }
 
+    fn max_npdu_length(&self) -> Option<usize> {
+        match self {
+            Self::Bip(port) => port.max_npdu_length(),
+            Self::Sc(port) => port.max_npdu_length(),
+        }
+    }
+
     fn local_receive_apdu_capacity(&self) -> u16 {
         match self {
             Self::Bip(port) => port.local_receive_apdu_capacity(),

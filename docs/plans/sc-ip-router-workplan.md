@@ -196,8 +196,9 @@ Crates: `bacnet-transport`.
 - [x] Make `ActiveHub` public and track `last_error`, `attempt`, and
       `connected_since` inside `ScTransport`; publish through the new watch on
       every state transition, reconnect attempt, and terminal exit.
-- [ ] Add `max_npdu_length()` defaulted hint; SC returns the negotiated
-      `hub_max_apdu_length` after Connect-Accept.
+- [x] Add `max_npdu_length()` defaulted hint; SC returns the effective
+      encoded-NPDU ceiling negotiated from the Hub's Max-NPDU and Max-BVLC
+      values after Connect-Accept.
 
 Tests: unit tests per transport for kind and topology; SC health sequence over
 `LoopbackWebSocket` covering connect, disconnect, reconnect, failover, and
@@ -250,12 +251,13 @@ Crates: `bacnet-network`.
 - [ ] Add `RouterConfig { announce_interval: Option<Duration> }` and
       `start_with_config`; `start` delegates with defaults. Re-announce on the
       timer and on any port transition to `Up`.
-- [ ] Oversize handling in the dispatch path: when the target port's
+- [x] Oversize handling in the dispatch path: when the target port's
       `max_npdu_length()` is known and the NPDU exceeds it, send
       Reject-Message-To-Network reason 4 to the originator via the existing
       `send_reject`, increment a new `oversize_drops` counter, and do not
       forward. Keep the sender-task `send_errors` path for anything else.
-- [ ] Keep existing `port_counters()` field order; append new fields only.
+- [x] The 0.12 router has no `port_counters()` interface to extend; expose the
+      additive router-wide `oversize_drops()` counter instead.
 
 Tests: duplicate-topology rejection; health snapshot ordering matches config
 order; routing table snapshot after a learned route; re-announce fires on the
@@ -866,12 +868,21 @@ Delivered on `feature/sc-ip-router-upstream-0.12`:
 
 The removed virtual-network transport, legacy virtual-router constructor, and
 old per-port forwarding counters were not restored because the 0.12 native
-router no longer owns those interfaces. R7 oversize rejection, R8 periodic and
+router no longer owns those interfaces. R7 size configuration, R8 periodic and
 recovery-triggered announcements, the shared SC dial helper, and R10 remain the
 next planned slices.
 
+The first R7 slice is now delivered: SC exposes its negotiated encoded-NPDU
+ceiling through the defaulted transport hint, and the router rejects an
+oversize rewritten unicast before queueing it, increments `oversize_drops()`,
+and returns Reject-Message-To-Network reason 4 to an addressable originator.
+The exact-limit boundary forwards normally. Phase 4 remains open for explicit
+node and Hub receive-limit configuration; the upstream 0.12 defaults and its
+existing local 1478-byte NPDU evidence were not replaced by the older plan's
+unverified 1497-byte assumption.
+
 Verification on macOS arm64: `cargo test -p bacnet-transport -p
-bacnet-network -p rusty-bacnet` passed (1,221 transport, 264 network, and 133
+bacnet-network -p rusty-bacnet` passed (1,221 transport, 266 network, and 133
 binding unit tests, plus integration targets). The all-features transport gate
 remains Linux-only because its GPIO dependency does not compile on macOS.
 

@@ -179,7 +179,7 @@ fn forward_unicast_drops_hop_count_zero() {
         ..Npdu::default()
     };
 
-    forward_unicast(&send_txs, &route, 1000, &[0x0A], npdu, 0, &[]);
+    forward_unicast(&send_txs, &route, 1000, &[0x0A], npdu, &[], None);
 
     assert!(rx_a.try_recv().is_err());
     assert!(rx_b.try_recv().is_err());
@@ -243,7 +243,7 @@ fn forward_unicast_decrements_hop_count() {
         ..Npdu::default()
     };
 
-    forward_unicast(&send_txs, &route, 1000, &[0x0A], npdu, 0, &[]);
+    forward_unicast(&send_txs, &route, 1000, &[0x0A], npdu, &[], None);
 
     let sent = rx_b.try_recv().unwrap();
     match sent {
@@ -485,7 +485,7 @@ fn forward_unicast_with_hop_count_one_still_forwards() {
         ..Npdu::default()
     };
 
-    forward_unicast(&send_txs, &route, 1000, &[0x0A], npdu, 0, &[]);
+    forward_unicast(&send_txs, &route, 1000, &[0x0A], npdu, &[], None);
 
     let sent = rx_b.try_recv().unwrap();
     match sent {

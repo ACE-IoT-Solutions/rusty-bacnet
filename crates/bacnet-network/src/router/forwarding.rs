@@ -7,6 +7,14 @@ use tracing::warn;
 
 use super::SendRequest;
 
+/// Result of preparing and queueing one routed unicast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ForwardResult {
+    Queued,
+    Dropped,
+    Oversize { actual: usize, limit: usize },
+}
+
 /// Build the source NpduAddress for a forwarded message.
 fn build_source(npdu: &Npdu, source_network: u16, source_mac: &[u8]) -> NpduAddress {
     npdu.source.clone().unwrap_or(NpduAddress {
@@ -22,12 +30,12 @@ pub(super) fn forward_unicast(
     source_network: u16,
     source_mac: &[u8],
     npdu: Npdu,
-    _source_port_idx: usize,
     data_attributes: &[DataAttribute],
-) {
+    max_npdu_length: Option<usize>,
+) -> ForwardResult {
     if npdu.hop_count == 0 {
         warn!("Discarding NPDU with hop_count=0");
-        return;
+        return ForwardResult::Dropped;
     }
 
     let payload_len = npdu.payload.len();
@@ -70,7 +78,13 @@ pub(super) fn forward_unicast(
     let mut buf = BytesMut::with_capacity(32 + payload_len);
     if let Err(e) = encode_npdu(&mut buf, &forwarded) {
         warn!("Failed to encode forwarded NPDU: {e}");
-        return;
+        return ForwardResult::Dropped;
+    }
+    if let Some(limit) = max_npdu_length.filter(|&limit| buf.len() > limit) {
+        return ForwardResult::Oversize {
+            actual: buf.len(),
+            limit,
+        };
     }
 
     if route.port_index >= send_txs.len() {
@@ -78,21 +92,25 @@ pub(super) fn forward_unicast(
             port = route.port_index,
             "Route references invalid port index"
         );
-        return;
+        return ForwardResult::Dropped;
     }
-    if dest_mac.is_empty() {
-        if let Err(e) = send_txs[route.port_index].try_send(SendRequest::Broadcast {
+    let queued = if dest_mac.is_empty() {
+        send_txs[route.port_index].try_send(SendRequest::Broadcast {
             npdu: buf.freeze(),
             data_attributes: data_attributes.to_vec(),
-        }) {
-            warn!(%e, "Router dropped message: output channel full");
-        }
-    } else if let Err(e) = send_txs[route.port_index].try_send(SendRequest::Unicast {
-        npdu: buf.freeze(),
-        mac: dest_mac,
-        data_attributes: data_attributes.to_vec(),
-    }) {
+        })
+    } else {
+        send_txs[route.port_index].try_send(SendRequest::Unicast {
+            npdu: buf.freeze(),
+            mac: dest_mac,
+            data_attributes: data_attributes.to_vec(),
+        })
+    };
+    if let Err(e) = queued {
         warn!(%e, "Router dropped message: output channel full");
+        ForwardResult::Dropped
+    } else {
+        ForwardResult::Queued
     }
 }
 

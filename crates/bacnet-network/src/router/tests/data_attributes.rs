@@ -75,7 +75,15 @@ fn forward_unicast_preserves_data_attributes() {
         },
     ];
 
-    forward_unicast(&send_txs, &route, 1000, &[0x0A], npdu, 0, &data_attributes);
+    forward_unicast(
+        &send_txs,
+        &route,
+        1000,
+        &[0x0A],
+        npdu,
+        &data_attributes,
+        None,
+    );
 
     match rx_b.try_recv().unwrap() {
         SendRequest::Unicast {

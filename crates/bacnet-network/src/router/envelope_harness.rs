@@ -6,7 +6,7 @@
 //! and control-envelope coverage stays in lockstep.
 
 use super::control_messages::handle_network_message;
-use super::dispatch::dispatch_network_message;
+use super::dispatch::{dispatch_network_message, EgressConstraints};
 use super::*;
 use bacnet_transport::port::TransportProvenance;
 
@@ -33,6 +33,8 @@ pub(super) struct Harness {
     pub(super) txs: Vec<mpsc::Sender<SendRequest>>,
     pub(super) rxs: Vec<mpsc::Receiver<SendRequest>>,
     pub(super) gate: Arc<super::control_policy::ControlGate>,
+    pub(super) max_npdu_lengths: Vec<Option<usize>>,
+    pub(super) oversize_drops: AtomicU64,
     /// The router's own network-control consumer, absent until
     /// [`Self::network_control`] installs one.
     pub(super) local: LocalControl,
@@ -85,6 +87,8 @@ impl Harness {
             txs: vec![tx0, tx1],
             rxs: vec![rx0, rx1],
             gate,
+            max_npdu_lengths: vec![None, None],
+            oversize_drops: AtomicU64::new(0),
             local: local_control(None),
         }
     }
@@ -140,10 +144,15 @@ impl Harness {
     }
 
     pub(super) async fn dispatch(&mut self, ctx: IngressContext) {
+        let egress = EgressConstraints {
+            max_npdu_lengths: &self.max_npdu_lengths,
+            oversize_drops: &self.oversize_drops,
+        };
         dispatch_network_message(
             &self.table,
             &self.discovery,
             &self.txs,
+            &egress,
             &ctx,
             &self.gate,
             &self.local,

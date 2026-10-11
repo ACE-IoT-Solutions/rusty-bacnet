@@ -393,6 +393,9 @@ pub struct BACnetRouter {
     broadcast_pdu_type_drops: Arc<AtomicU64>,
     /// NPDUs dropped for a DADR that is a group on its delivery port (#1504).
     group_dadr_drops: Arc<AtomicU64>,
+    /// Routed NPDUs refused because the egress port's encoded-NPDU limit
+    /// would be exceeded.
+    oversize_drops: Arc<AtomicU64>,
     /// Last sequence given to a control for the router's own consumer.
     network_control_ingress_sequence: Arc<AtomicU64>,
     /// Stable metadata and live health receivers for configured ports.
@@ -506,6 +509,14 @@ impl BACnetRouter {
         self.group_dadr_drops.load(Ordering::Relaxed)
     }
 
+    /// Routed NPDUs refused since start because their encoded forwarding form
+    /// exceeded the target port's advertised NPDU limit. Saturates at
+    /// `u64::MAX`; each refusal also sends Reject-Message-To-Network reason 4
+    /// when the originator can be addressed.
+    pub fn oversize_drops(&self) -> u64 {
+        self.oversize_drops.load(Ordering::Relaxed)
+    }
+
     async fn start_dispatch<T: TransportPort + 'static>(
         mut ports: Vec<RouterPort<T>>,
         track_depth: bool,
@@ -553,6 +564,7 @@ impl BACnetRouter {
         let mut port_networks = Vec::new();
         let mut port_local_macs = Vec::new();
         let mut port_groups = Vec::new();
+        let mut port_max_npdu_lengths = Vec::new();
 
         for (port_idx, port) in ports.iter_mut().enumerate() {
             let transport_kind = port.transport.transport_kind();
@@ -564,8 +576,10 @@ impl BACnetRouter {
             port_networks.push(port.network_number);
             port_local_macs.push(MacAddr::from_slice(port.transport.local_mac()));
             port_groups.push(port.transport.group_destinations());
+            port_max_npdu_lengths.push(port.transport.max_npdu_length());
         }
         let port_groups = Arc::new(port_groups);
+        let port_max_npdu_lengths = Arc::new(port_max_npdu_lengths);
 
         let port_health = ports
             .iter()
@@ -664,6 +678,7 @@ impl BACnetRouter {
         let global_broadcast_dadr_drops = Arc::new(AtomicU64::new(0));
         let broadcast_pdu_type_drops = Arc::new(AtomicU64::new(0));
         let group_dadr_drops = Arc::new(AtomicU64::new(0));
+        let oversize_drops = Arc::new(AtomicU64::new(0));
         let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
         let local_control = Arc::new(LocalControl::new(
             OwnAddresses::new(
@@ -690,6 +705,8 @@ impl BACnetRouter {
                 global_broadcast_dadr_drops: Arc::clone(&global_broadcast_dadr_drops),
                 broadcast_pdu_type_drops: Arc::clone(&broadcast_pdu_type_drops),
                 group_dadr_drops: Arc::clone(&group_dadr_drops),
+                oversize_drops: Arc::clone(&oversize_drops),
+                port_max_npdu_lengths: Arc::clone(&port_max_npdu_lengths),
                 port_groups: Arc::clone(&port_groups),
                 local_tx: local_tx.clone(),
                 send_txs: Arc::clone(&send_txs),
@@ -742,6 +759,7 @@ impl BACnetRouter {
                 global_broadcast_dadr_drops,
                 broadcast_pdu_type_drops,
                 group_dadr_drops,
+                oversize_drops,
                 network_control_ingress_sequence,
                 port_health,
             },
@@ -811,6 +829,8 @@ mod envelope_harness;
 mod ingress_harness;
 #[cfg(test)]
 mod init_routing_table_tests;
+#[cfg(test)]
+mod oversize_tests;
 #[cfg(test)]
 mod rb06_convergence_tests;
 #[cfg(test)]

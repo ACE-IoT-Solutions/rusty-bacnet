@@ -2,6 +2,18 @@
 
 use super::*;
 
+fn effective_max_apdu_length(conn: &ScConnection) -> u16 {
+    let bvlc_npdu_budget = conn
+        .hub_max_bvlc_length
+        .saturating_sub(SC_ENCAPSULATED_NPDU_BASE_HEADER_LEN);
+    let effective_npdu = conn.hub_max_apdu_length.min(bvlc_npdu_budget);
+    effective_npdu.saturating_sub(LOCAL_NPDU_HEADER_LEN)
+}
+
+pub(crate) fn publish_effective_max_apdu_length(store: &AtomicU16, conn: &ScConnection) {
+    store.store(effective_max_apdu_length(conn), Ordering::Relaxed);
+}
+
 impl<W: WebSocketPort> ScTransport<W> {
     /// Stable local APDU receive capacity, available before opening a connection.
     /// Negotiated outgoing limits do not change this declaration.

@@ -24,7 +24,7 @@ use tracing::warn;
 
 use super::control_messages::handle_network_message;
 use super::control_policy::ControlGate;
-use super::forwarding::{forward_broadcast, forward_unicast};
+use super::forwarding::{forward_broadcast, forward_unicast, ForwardResult};
 use super::local_control::LocalControl;
 use super::reject::{refuse_address_too_long, route_refusal, send_reject, Refused};
 use super::{local_delivery, DiscoveryTracker, IngressContext, SendRequest};
@@ -34,6 +34,11 @@ use crate::layer::{
 };
 use crate::layer::{AdmissionSender, ReceivedApdu};
 use crate::router_table::{ReachabilityStatus, RouteEntry, RouterTable};
+
+pub(super) struct EgressConstraints<'a> {
+    pub max_npdu_lengths: &'a [Option<usize>],
+    pub oversize_drops: &'a AtomicU64,
+}
 
 /// One port's dispatch task, with what it shares with the rest of the router.
 pub(super) struct PortDispatch {
@@ -55,6 +60,11 @@ pub(super) struct PortDispatch {
     /// Count of NPDUs dropped for a DADR that is a group on its delivery
     /// port (#1504).
     pub group_dadr_drops: Arc<AtomicU64>,
+    /// Count of routed NPDUs refused because the egress port's advertised
+    /// encoded-NPDU limit is smaller than the forwarded frame.
+    pub oversize_drops: Arc<AtomicU64>,
+    /// Dispatch-time encoded-NPDU limits by egress port.
+    pub port_max_npdu_lengths: Arc<Vec<Option<usize>>>,
     /// Every port's group destinations, by port index.
     pub port_groups: Arc<Vec<GroupDestinations>>,
     /// The local application receive queue.
@@ -122,10 +132,15 @@ impl PortDispatch {
                 provenance: received.provenance,
                 npdu,
             };
+            let egress = EgressConstraints {
+                max_npdu_lengths: &self.port_max_npdu_lengths,
+                oversize_drops: &self.oversize_drops,
+            };
             dispatch_network_message(
                 &self.table,
                 &self.discovery,
                 &self.send_txs,
+                &egress,
                 &ctx,
                 &self.control,
                 &self.local_control,
@@ -195,15 +210,19 @@ impl PortDispatch {
         if self.refuses_group_dadr(&route, &npdu) {
             return;
         }
-        forward_unicast(
+        let result = forward_unicast(
             &self.send_txs,
             &route,
             self.port_network,
             &received.source_mac,
-            npdu,
-            self.port_idx,
+            npdu.clone(),
             &received.data_attributes,
+            self.port_max_npdu_lengths
+                .get(route.port_index)
+                .copied()
+                .flatten(),
         );
+        refuse_oversize(result, &refused(), dest_net, &self.oversize_drops);
     }
 
     /// Whether to drop an APDU that this router would deliver, on the
@@ -269,6 +288,7 @@ pub(super) async fn dispatch_network_message(
     table: &Arc<Mutex<RouterTable>>,
     discovery: &Arc<Mutex<DiscoveryTracker>>,
     send_txs: &[mpsc::Sender<SendRequest>],
+    egress: &EgressConstraints<'_>,
     ctx: &IngressContext,
     control: &ControlGate,
     local: &LocalControl,
@@ -315,14 +335,40 @@ pub(super) async fn dispatch_network_message(
         send_reject(&refused(), dest_net, reason);
         return;
     }
-    forward_unicast(
+    let result = forward_unicast(
         send_txs,
         &route,
         ctx.port_network,
         ctx.source_mac.as_slice(),
         ctx.npdu.clone(),
-        ctx.port_idx,
         &ctx.data_attributes,
+        egress
+            .max_npdu_lengths
+            .get(route.port_index)
+            .copied()
+            .flatten(),
+    );
+    refuse_oversize(result, &refused(), dest_net, egress.oversize_drops);
+}
+
+fn refuse_oversize(
+    result: ForwardResult,
+    refused: &Refused<'_>,
+    rejected_network: u16,
+    drops: &AtomicU64,
+) {
+    let ForwardResult::Oversize { actual, limit } = result else {
+        return;
+    };
+    count_drop(drops);
+    warn!(
+        network = rejected_network,
+        actual, limit, "Router refused an NPDU larger than the egress port limit"
+    );
+    send_reject(
+        refused,
+        rejected_network,
+        RejectMessageReason::MESSAGE_TOO_LONG,
     );
 }
 

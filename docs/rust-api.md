@@ -911,6 +911,11 @@ operational connection. Its states are `Down`, `Connecting`, `Reconnecting`,
 `Up`, and `Failed`. SC reports its normalized primary/failover hub topology and
 live health; stateless transports use the default `Up` snapshot.
 
+`TransportPort::max_npdu_length()` is a defaulted dispatch-time hint for the
+current encoded-NPDU egress ceiling. Most transports return `None`; SC derives
+its value from the Hub's negotiated Max-NPDU and Max-BVLC limits. Transparent
+wrappers such as `AnyTransport` delegate the hint.
+
 Production BACnet/SC transports validate heartbeat settings at `start()`: the interval must be
 `3_000..=300_000` ms, and the disconnect timeout must be greater than the interval.
 
@@ -1757,6 +1762,14 @@ use bacnet_network::router::{BACnetRouter, RouterOptions, StartedRouter};
 let StartedRouter { router, apdus, network_control } =
     BACnetRouter::start(ports, RouterOptions::new().track_admission()).await?;
 ```
+
+At startup the router records each port's `max_npdu_length()` hint after the
+transport handshake. Before queueing a routed unicast, it encodes the actual
+rewritten NPDU and compares that complete length with the target port's hint.
+An oversize NPDU is not forwarded: the router increments its saturating
+`oversize_drops()` total and returns Reject-Message-To-Network reason 4
+(`MESSAGE_TOO_LONG`) when the originator can be addressed. A frame exactly at
+the limit is forwarded.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

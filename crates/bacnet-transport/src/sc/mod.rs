@@ -65,6 +65,7 @@ pub use random48::generate_random48_vmac;
 #[cfg(test)]
 pub(crate) use random48::set_test_random48_vmac_generator;
 pub use reconnect::ScReconnectConfig;
+pub(super) use transport_config::publish_effective_max_apdu_length;
 
 const DEFAULT_MAX_APDU_LENGTH: u16 = 1476;
 use crate::sc_limits::LOCAL_NPDU_HEADER_LEN;
@@ -122,18 +123,6 @@ pub struct ScTransport<W: WebSocketPort> {
     pub(super) direct: Option<Arc<direct_discovery::DirectShared<W>>>,
     #[cfg(test)]
     allow_test_heartbeat_timing: bool,
-}
-
-fn effective_max_apdu_length(conn: &ScConnection) -> u16 {
-    let bvlc_npdu_budget = conn
-        .hub_max_bvlc_length
-        .saturating_sub(SC_ENCAPSULATED_NPDU_BASE_HEADER_LEN);
-    let effective_npdu = conn.hub_max_apdu_length.min(bvlc_npdu_budget);
-    effective_npdu.saturating_sub(LOCAL_NPDU_HEADER_LEN)
-}
-
-fn publish_effective_max_apdu_length(store: &AtomicU16, conn: &ScConnection) {
-    store.store(effective_max_apdu_length(conn), Ordering::Relaxed);
 }
 
 async fn publish_connected_ws<W: WebSocketPort>(
@@ -768,6 +757,13 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
 
     fn egress_apdu_limit(&self) -> u16 {
         self.effective_max_apdu_length.load(Ordering::Relaxed)
+    }
+
+    fn max_npdu_length(&self) -> Option<usize> {
+        Some(usize::from(
+            self.egress_apdu_limit()
+                .saturating_add(LOCAL_NPDU_HEADER_LEN),
+        ))
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {

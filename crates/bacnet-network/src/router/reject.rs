@@ -250,8 +250,8 @@ pub(super) async fn route_received_reject(
         ctx.port_network,
         &ctx.source_mac,
         ctx.npdu.clone(),
-        ctx.port_idx,
         &ctx.data_attributes,
+        None,
     );
 }
 
