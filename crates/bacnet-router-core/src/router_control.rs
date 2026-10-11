@@ -148,8 +148,8 @@ pub enum RouterControlAction<'a> {
     RebroadcastIAm {
         /// Ingress port to exclude from the fanout.
         exclude: PortId,
-        /// Validated wire network list to copy to other ports.
-        networks: NetworkList<'a>,
+        /// Networks that were retained in the bounded learned table.
+        networks: NetworkSet<'a>,
     },
     /// Send an Initialize-Routing-Table-ACK to the ingress peer.
     SendRoutingTableAck {
@@ -162,15 +162,15 @@ pub enum RouterControlAction<'a> {
     RebroadcastBusy {
         /// Ingress port to exclude from the fanout.
         exclude: PortId,
-        /// Owner-authorized network list.
-        networks: NetworkList<'a>,
+        /// Owner-authorized networks copied into caller-provided storage.
+        networks: NetworkSet<'a>,
     },
     /// Rebroadcast a valid, owner-authorized Router-Available announcement.
     RebroadcastAvailable {
         /// Ingress port to exclude from the fanout.
         exclude: PortId,
-        /// Owner-authorized network list.
-        networks: NetworkList<'a>,
+        /// Owner-authorized networks copied into caller-provided storage.
+        networks: NetworkSet<'a>,
     },
     /// The message type is known to be a network message but is not handled by
     /// this portable router core.  The caller may forward or reject it by
@@ -192,6 +192,9 @@ pub struct RouterControlOutcome<'a> {
     pub updated: usize,
     /// Number of entries ignored because they named configured direct routes.
     pub direct_conflicts: usize,
+    /// Number of unique announced networks that could not be retained because
+    /// the bounded learned-route partition was full.
+    pub capacity_lost: usize,
 }
 
 /// Inputs and caller-owned output buffers for one control transition.
@@ -400,6 +403,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
                     inserted: 0,
                     updated: 0,
                     direct_conflicts: 0,
+                    capacity_lost: 0,
                 });
             }
             Err(error) => return Err(RouterControlError::Codec(error)),
@@ -409,13 +413,13 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
                 self.handle_who_is(ingress, network, network_out)
             }
             NetworkControl::IAmRouter { networks } => {
-                self.handle_i_am(ingress, peer, networks, now)
+                self.handle_i_am(ingress, peer, networks, now, network_out)
             }
             NetworkControl::RouterBusy { networks } => {
-                self.handle_busy(ingress, peer, networks, now)
+                self.handle_busy(ingress, peer, networks, now, network_out)
             }
             NetworkControl::RouterAvailable { networks } => {
-                self.handle_available(ingress, peer, networks)
+                self.handle_available(ingress, peer, networks, network_out)
             }
             NetworkControl::InitializeRoutingTable { table } => {
                 self.handle_init(ingress, peer, table, now, snapshot_out)
@@ -432,6 +436,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
                 inserted: 0,
                 updated: 0,
                 direct_conflicts: 0,
+                capacity_lost: 0,
             }),
         }
     }
@@ -467,6 +472,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
                         inserted: 0,
                         updated: 0,
                         direct_conflicts: 0,
+                        capacity_lost: 0,
                     });
                 }
             }
@@ -489,6 +495,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
                         inserted: 0,
                         updated: 0,
                         direct_conflicts: 0,
+                        capacity_lost: 0,
                     });
                 }
             }
@@ -503,6 +510,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             inserted: 0,
             updated: 0,
             direct_conflicts: 0,
+            capacity_lost: 0,
         })
     }
 
@@ -512,16 +520,26 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
         peer: LinkAddress,
         networks: NetworkList<'a>,
         now: u64,
+        network_out: &'a mut [NetworkNumber],
     ) -> Result<RouterControlOutcome<'a>, RouterControlError> {
         if peer.is_empty() {
             return Err(RouterControlError::MissingPeerAddress);
         }
-        let (inserted, updated, direct_conflicts) =
-            self.apply_networks(ingress, peer, networks, now);
-        let action = if inserted + updated > 0 {
+        let retainable = self.count_retained_networks(networks);
+        if retainable > network_out.len() {
+            return Err(RouterControlError::ResponseBufferTooSmall {
+                needed: retainable,
+                capacity: network_out.len(),
+            });
+        }
+        let (inserted, updated, direct_conflicts, capacity_lost, retained) =
+            self.apply_networks(ingress, peer, networks, now, network_out);
+        let action = if retained > 0 {
             RouterControlAction::RebroadcastIAm {
                 exclude: ingress,
-                networks,
+                networks: NetworkSet {
+                    values: &network_out[..retained],
+                },
             }
         } else {
             RouterControlAction::None
@@ -531,6 +549,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             inserted,
             updated,
             direct_conflicts,
+            capacity_lost,
         })
     }
 
@@ -540,10 +559,12 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
         peer: LinkAddress,
         networks: NetworkList<'a>,
         now: u64,
+        network_out: &'a mut [NetworkNumber],
     ) -> Result<RouterControlOutcome<'a>, RouterControlError> {
         if peer.is_empty() {
             return Err(RouterControlError::MissingPeerAddress);
         }
+        let count = self.collect_authorized_networks(ingress, peer, networks, network_out)?;
         let deadline = now.saturating_add(self.busy_duration);
         let changed = if networks.is_empty() {
             self.routes.mark_all_busy_from(ingress, peer, deadline) > 0
@@ -558,7 +579,9 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             action: if changed {
                 RouterControlAction::RebroadcastBusy {
                     exclude: ingress,
-                    networks,
+                    networks: NetworkSet {
+                        values: &network_out[..count],
+                    },
                 }
             } else {
                 RouterControlAction::None
@@ -566,6 +589,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             inserted: 0,
             updated: 0,
             direct_conflicts: 0,
+            capacity_lost: 0,
         })
     }
 
@@ -574,10 +598,12 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
         ingress: PortId,
         peer: LinkAddress,
         networks: NetworkList<'a>,
+        network_out: &'a mut [NetworkNumber],
     ) -> Result<RouterControlOutcome<'a>, RouterControlError> {
         if peer.is_empty() {
             return Err(RouterControlError::MissingPeerAddress);
         }
+        let count = self.collect_authorized_networks(ingress, peer, networks, network_out)?;
         let changed = if networks.is_empty() {
             self.routes.mark_all_available_from(ingress, peer) > 0
         } else {
@@ -591,7 +617,9 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             action: if changed {
                 RouterControlAction::RebroadcastAvailable {
                     exclude: ingress,
-                    networks,
+                    networks: NetworkSet {
+                        values: &network_out[..count],
+                    },
                 }
             } else {
                 RouterControlAction::None
@@ -599,6 +627,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             inserted: 0,
             updated: 0,
             direct_conflicts: 0,
+            capacity_lost: 0,
         })
     }
 
@@ -617,6 +646,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
                     inserted: 0,
                     updated: 0,
                     direct_conflicts: 0,
+                    capacity_lost: 0,
                 };
                 (summary, self.snapshot(snapshot_out)?)
             }
@@ -686,7 +716,74 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             inserted,
             updated,
             direct_conflicts,
+            capacity_lost: 0,
         })
+    }
+
+    fn count_retained_networks(&self, networks: NetworkList<'_>) -> usize {
+        let available = LEARNED.saturating_sub(self.routes.learned_len());
+        let mut new_count = 0;
+        let mut retained = 0;
+        for (index, network) in networks.iter().enumerate() {
+            if seen_network_list(networks, index, network) {
+                continue;
+            }
+            match self.routes.lookup(network) {
+                Some(entry) if entry.kind == crate::RouteKind::Learned => retained += 1,
+                Some(_) => {}
+                None if new_count < available => {
+                    new_count += 1;
+                    retained += 1;
+                }
+                None => {}
+            }
+        }
+        retained
+    }
+
+    fn collect_authorized_networks(
+        &self,
+        ingress: PortId,
+        peer: LinkAddress,
+        networks: NetworkList<'_>,
+        out: &mut [NetworkNumber],
+    ) -> Result<usize, RouterControlError> {
+        let mut count = 0;
+        if networks.is_empty() {
+            for entry in self.routes.learned_entries() {
+                if entry.port == ingress && entry.next_hop == peer {
+                    if count == out.len() {
+                        return Err(RouterControlError::ResponseBufferTooSmall {
+                            needed: count + 1,
+                            capacity: out.len(),
+                        });
+                    }
+                    out[count] = entry.network;
+                    count += 1;
+                }
+            }
+            return Ok(count);
+        }
+        for (index, network) in networks.iter().enumerate() {
+            if seen_network_list(networks, index, network)
+                || !self.routes.lookup(network).is_some_and(|entry| {
+                    entry.kind == crate::RouteKind::Learned
+                        && entry.port == ingress
+                        && entry.next_hop == peer
+                })
+            {
+                continue;
+            }
+            if count == out.len() {
+                return Err(RouterControlError::ResponseBufferTooSmall {
+                    needed: count + 1,
+                    capacity: out.len(),
+                });
+            }
+            out[count] = network;
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn apply_networks(
@@ -695,19 +792,33 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
         peer: LinkAddress,
         networks: NetworkList<'_>,
         now: u64,
-    ) -> (usize, usize, usize) {
+        out: &mut [NetworkNumber],
+    ) -> (usize, usize, usize, usize, usize) {
         let mut inserted = 0;
         let mut updated = 0;
         let mut direct_conflicts = 0;
-        for network in networks.iter() {
+        let mut capacity_lost = 0;
+        let mut retained = 0;
+        for (index, network) in networks.iter().enumerate() {
+            if seen_network_list(networks, index, network) {
+                continue;
+            }
             match self.routes.learn(network, ingress, peer, now) {
-                LearnOutcome::Inserted => inserted += 1,
-                LearnOutcome::Updated => updated += 1,
+                LearnOutcome::Inserted => {
+                    inserted += 1;
+                    out[retained] = network;
+                    retained += 1;
+                }
+                LearnOutcome::Updated => {
+                    updated += 1;
+                    out[retained] = network;
+                    retained += 1;
+                }
                 LearnOutcome::DirectConflict => direct_conflicts += 1,
-                LearnOutcome::TableFull => {}
+                LearnOutcome::TableFull => capacity_lost += 1,
             }
         }
-        (inserted, updated, direct_conflicts)
+        (inserted, updated, direct_conflicts, capacity_lost, retained)
     }
 }
 
@@ -722,6 +833,13 @@ fn seen_network(table: RoutingTable<'_>, before: usize, network: NetworkNumber) 
         .iter()
         .take(before)
         .any(|entry| entry.network == network)
+}
+
+fn seen_network_list(networks: NetworkList<'_>, before: usize, network: NetworkNumber) -> bool {
+    networks
+        .iter()
+        .take(before)
+        .any(|previous| previous == network)
 }
 
 /// Return the effective state of a route at caller time without mutating it.

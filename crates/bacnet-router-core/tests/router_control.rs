@@ -181,7 +181,7 @@ fn malformed_initialize_table_is_transactional() {
 fn full_table_refreshes_existing_without_eviction_or_direct_overwrite() {
     let mut state = RouterControl::<1, 1>::new();
     state.add_direct(net(100), PortId(1)).unwrap();
-    let mut networks = [net(999); 1];
+    let mut networks = [net(999); 2];
     let mut snapshot = [state.routes().entries().next().unwrap(); 2];
     handle(
         &mut state,
@@ -247,7 +247,7 @@ fn busy_available_and_aging_use_exact_caller_time_and_owner() {
     let mut state = RouterControl::<0, 1>::new()
         .with_busy_duration(30)
         .with_learned_age(100);
-    let mut networks = [net(999); 1];
+    let mut networks = [net(999); 2];
     let mut snapshot: [bacnet_router_core::RouteEntry; 0] = [];
     handle(
         &mut state,
@@ -332,7 +332,7 @@ fn empty_busy_and_available_lists_apply_to_every_route_owned_by_peer() {
     for (network, owner) in [(200, peer(8)), (201, peer(8)), (202, peer(9))] {
         state.routes_mut().learn(net(network), PortId(2), owner, 1);
     }
-    let mut networks = [net(999); 1];
+    let mut networks = [net(999); 2];
     let mut snapshot: [bacnet_router_core::RouteEntry; 0] = [];
 
     let busy = handle(
@@ -400,7 +400,7 @@ fn query_ack_is_detached_and_unsupported_is_explicit() {
         PortId(2),
         peer(7),
         INIT,
-        &[],
+        &[0],
         1,
         &mut networks,
         &mut snapshot,
@@ -461,4 +461,111 @@ fn empty_peer_is_rejected_before_learning_or_busy_mutation() {
     .unwrap_err();
     assert_eq!(error, RouterControlError::MissingPeerAddress);
     assert_eq!(state.routes().learned_len(), 1);
+}
+
+#[test]
+fn mixed_owner_busy_and_available_rebroadcast_only_authorized_networks() {
+    let mut state = RouterControl::<0, 3>::new().with_busy_duration(30);
+    state.routes_mut().learn(net(200), PortId(2), peer(8), 1);
+    state.routes_mut().learn(net(201), PortId(2), peer(9), 1);
+    state.routes_mut().learn(net(202), PortId(2), peer(8), 1);
+    let mut networks = [net(999); 2];
+    let mut snapshot: [bacnet_router_core::RouteEntry; 0] = [];
+
+    let busy = handle(
+        &mut state,
+        PortId(2),
+        peer(8),
+        BUSY,
+        &[0, 200, 0, 201, 0, 202],
+        10,
+        &mut networks,
+        &mut snapshot,
+    )
+    .unwrap();
+    match busy.action {
+        RouterControlAction::RebroadcastBusy { networks, .. } => {
+            assert_eq!(networks.as_slice(), &[net(200), net(202)]);
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
+    assert_eq!(
+        state.routes().lookup(net(201)).unwrap().reachability,
+        Reachability::Reachable
+    );
+
+    let available = handle(
+        &mut state,
+        PortId(2),
+        peer(8),
+        AVAILABLE,
+        &[0, 200, 0, 201, 0, 202],
+        20,
+        &mut networks,
+        &mut snapshot,
+    )
+    .unwrap();
+    match available.action {
+        RouterControlAction::RebroadcastAvailable { networks, .. } => {
+            assert_eq!(networks.as_slice(), &[net(200), net(202)]);
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
+}
+
+#[test]
+fn i_am_reports_capacity_loss_and_rebroadcasts_only_retained_networks() {
+    let mut state = RouterControl::<0, 1>::new();
+    let mut networks = [net(999); 2];
+    let mut snapshot: [bacnet_router_core::RouteEntry; 0] = [];
+    let outcome = handle(
+        &mut state,
+        PortId(2),
+        peer(8),
+        I_AM,
+        &[0, 200, 0, 201],
+        10,
+        &mut networks,
+        &mut snapshot,
+    )
+    .unwrap();
+    assert_eq!(outcome.inserted, 1);
+    assert_eq!(outcome.capacity_lost, 1);
+    match outcome.action {
+        RouterControlAction::RebroadcastIAm { networks, .. } => {
+            assert_eq!(networks.as_slice(), &[net(200)]);
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
+    assert!(state.routes().lookup(net(201)).is_none());
+}
+
+#[test]
+fn i_am_with_zero_capacity_reports_loss_without_advertising() {
+    let mut state = RouterControl::<0, 0>::new();
+    let mut networks: [NetworkNumber; 0] = [];
+    let mut snapshot: [bacnet_router_core::RouteEntry; 0] = [];
+    let outcome = handle(
+        &mut state,
+        PortId(2),
+        peer(8),
+        I_AM,
+        &[0, 200],
+        10,
+        &mut networks,
+        &mut snapshot,
+    )
+    .unwrap();
+    assert_eq!(outcome.capacity_lost, 1);
+    assert_eq!(outcome.action, RouterControlAction::None);
+}
+
+#[test]
+fn age_at_zero_uses_inclusive_expiry_boundary() {
+    let mut state = RouterControl::<0, 1>::new().with_learned_age(100);
+    state.routes_mut().learn(net(200), PortId(2), peer(8), 0);
+    assert_eq!(state.age(99), 0);
+    assert_eq!(state.routes().learned_len(), 1);
+    assert_eq!(state.age(100), 1);
+    assert_eq!(state.routes().learned_len(), 0);
 }
