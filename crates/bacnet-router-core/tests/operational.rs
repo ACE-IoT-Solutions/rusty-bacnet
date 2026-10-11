@@ -1,3 +1,5 @@
+//! Bounded operational diagnostics and control regression tests.
+
 use std::mem::size_of;
 
 use bacnet_router_core::{

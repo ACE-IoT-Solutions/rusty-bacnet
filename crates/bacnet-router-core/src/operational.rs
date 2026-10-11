@@ -205,7 +205,12 @@ impl<'a> OperationalSnapshot<'a> {
 pub enum OperationalControl {
     /// Enable or disable one registered port. The adapter must enforce the
     /// returned state at its actual ingress/egress boundary.
-    SetPortEnabled { port: PortId, enabled: bool },
+    SetPortEnabled {
+        /// Stable port identifier to update.
+        port: PortId,
+        /// New operational state.
+        enabled: bool,
+    },
     /// Ask the route owner to remove all learned routes.
     ClearLearnedRoutes,
     /// Ask the route/discovery owner to refresh learned routes.
@@ -223,8 +228,11 @@ pub enum OperationalControlResult {
     /// Port state after the operation. `changed` is false for an idempotent
     /// request.
     PortState {
+        /// Stable port identifier that was updated.
         port: PortId,
+        /// Resulting operational state.
         enabled: bool,
+        /// Whether this request changed the state.
         changed: bool,
     },
     /// The caller must clear learned route state in its route owner.
@@ -245,16 +253,29 @@ pub enum InvalidState {
     /// A port advertised no possible NPDU capacity.
     ZeroPortNpduCapacity(PortId),
     /// Route occupancy exceeded this instance's fixed route capacity.
-    RouteOccupancyExceedsCapacity { used: usize, capacity: usize },
+    RouteOccupancyExceedsCapacity {
+        /// Occupancy reported by the route owner.
+        used: usize,
+        /// Configured route capacity.
+        capacity: usize,
+    },
     /// Cache occupancy exceeded this instance's fixed cache capacity.
-    CacheOccupancyExceedsCapacity { used: usize, capacity: usize },
+    CacheOccupancyExceedsCapacity {
+        /// Occupancy reported by the duplicate-cache owner.
+        used: usize,
+        /// Configured duplicate-cache capacity.
+        capacity: usize,
+    },
 }
 
 /// A bounded operational API failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationalError {
     /// No registration slot remained.
-    PortTableFull { capacity: usize },
+    PortTableFull {
+        /// Configured registration capacity.
+        capacity: usize,
+    },
     /// A control or observation named no registered port.
     UnknownPort(PortId),
     /// The request conflicts with the current bounded state.
@@ -511,9 +532,7 @@ impl<const PORTS: usize, const ROUTES: usize, const CACHE: usize>
     /// port registration, enabled state, and route/cache occupancy.
     pub fn reset_diagnostics(&mut self) {
         self.global = DiagnosticCounters::ZERO;
-        for counter in &mut self.per_port {
-            *counter = DiagnosticCounters::ZERO;
-        }
+        self.per_port.fill(DiagnosticCounters::ZERO);
         for snapshot in &mut self.ports {
             if let Some(snapshot) = snapshot.as_mut() {
                 snapshot.last_queue_outcome = None;

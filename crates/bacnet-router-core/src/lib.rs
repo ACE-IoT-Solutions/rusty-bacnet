@@ -12,6 +12,7 @@ pub mod broadcast;
 pub mod control;
 mod duplicate;
 mod forwarding;
+pub mod operational;
 mod route_table;
 mod router_control;
 mod types;
@@ -28,6 +29,11 @@ pub use duplicate::{DuplicateCache, DuplicateCacheStats, DuplicateKey, Duplicate
 pub use forwarding::{
     DirectForwardRequest, ForwardAttempt, ForwardError, ForwardOutcome, ForwardRejectReason,
     RefusalSource, RejectMessage, RouterCore,
+};
+pub use operational::{
+    DiagnosticCounters, DiagnosticEvent, InvalidState, OccupancySnapshot, OperationalControl,
+    OperationalControlResult, OperationalDiagnostics, OperationalError, OperationalSnapshot,
+    PortSnapshot, RecentFailure, DIAGNOSTIC_COUNTER_COUNT,
 };
 pub use route_table::{
     LearnOutcome, Reachability, RouteEntry, RouteKind, RouteTable, RouteTableError,
