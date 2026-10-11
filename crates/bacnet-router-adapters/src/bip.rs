@@ -8,9 +8,9 @@
 
 use bacnet_mstp_core::Instant;
 use bacnet_router_core::{
-    decode_bip_datagram, encode_bvll, AdmissionOutcome, BipDecodeError, BipIngress,
-    BvlcFunction, Egress, EgressDestination, EgressRequest, Ipv4SocketAddress, LinkAddress,
-    PortId, UdpDatagramMeta,
+    decode_bip_datagram, encode_bvll, AdmissionOutcome, BipDecodeError, BipIngress, BvlcFunction,
+    Egress, EgressDestination, EgressRequest, Ipv4SocketAddress, LinkAddress, PortId,
+    UdpDatagramMeta,
 };
 
 /// A caller-provided timestamped UDP datagram sink.
@@ -213,8 +213,7 @@ where
 mod tests {
     use super::*;
     use bacnet_router_core::{
-        decode_bip_datagram, BipDecodeError, BvlcFunction, UdpDatagramMeta,
-        BVLL_HEADER_LENGTH,
+        decode_bip_datagram, BipDecodeError, BvlcFunction, UdpDatagramMeta, BVLL_HEADER_LENGTH,
     };
 
     const PORT: PortId = PortId(3);
@@ -238,7 +237,10 @@ mod tests {
             Self {
                 outcome: AdmissionOutcome::AcceptedOwned,
                 calls: 0,
-                destination: Ipv4SocketAddress { ip: [0; 4], port: 0 },
+                destination: Ipv4SocketAddress {
+                    ip: [0; 4],
+                    port: 0,
+                },
                 frame: [0; 64],
                 length: 0,
                 timestamp: Instant::ZERO,
@@ -268,10 +270,7 @@ mod tests {
         Ipv4SocketAddress { ip, port }
     }
 
-    fn request<'a>(
-        destination: EgressDestination,
-        npdu: &'a [u8],
-    ) -> EgressRequest<'a> {
+    fn request<'a>(destination: EgressDestination, npdu: &'a [u8]) -> EgressRequest<'a> {
         EgressRequest {
             port: PORT,
             destination,
@@ -326,10 +325,7 @@ mod tests {
         let destination_link = link_address_from_socket(destination);
         let npdu = [0x01, 0x20, 0x00, 0xff];
         assert_eq!(
-            egress.try_admit(request(
-                EgressDestination::Unicast(destination_link),
-                &npdu,
-            )),
+            egress.try_admit(request(EgressDestination::Unicast(destination_link), &npdu,)),
             AdmissionOutcome::AcceptedOwned
         );
         drop(egress);
@@ -357,13 +353,7 @@ mod tests {
     fn outgoing_broadcast_uses_exact_original_broadcast_wire() {
         let mut sink = RecordingSink::accepting();
         let mut scratch = [0; 32];
-        let mut egress = BipEgress::new(
-            &mut sink,
-            &mut scratch,
-            PORT,
-            BROADCAST,
-            Instant::ZERO,
-        );
+        let mut egress = BipEgress::new(&mut sink, &mut scratch, PORT, BROADCAST, Instant::ZERO);
         let npdu = [0x01, 0x00];
         assert_eq!(
             egress.try_admit(request(EgressDestination::Broadcast, &npdu)),
@@ -391,11 +381,17 @@ mod tests {
         let frame = [
             0x81, 0x04, 0x00, 0x0c, 203, 0, 113, 7, 0xba, 0xc1, 0x01, 0x00,
         ];
-        let context = decode_ingress(&frame, ingress_meta(false), Instant::from_micros(44))
-            .unwrap();
+        let context =
+            decode_ingress(&frame, ingress_meta(false), Instant::from_micros(44)).unwrap();
         assert_eq!(context.received_at, Instant::from_micros(44));
-        assert_eq!(context.ingress.immediate_peer, socket([198, 51, 100, 10], 47_809));
-        assert_eq!(context.ingress.logical_source, socket([203, 0, 113, 7], 0xbac1));
+        assert_eq!(
+            context.ingress.immediate_peer,
+            socket([198, 51, 100, 10], 47_809)
+        );
+        assert_eq!(
+            context.ingress.logical_source,
+            socket([203, 0, 113, 7], 0xbac1)
+        );
         assert_eq!(
             context.ingress.logical_source_mac().as_slice(),
             &[203, 0, 113, 7, 0xba, 0xc1]
@@ -423,7 +419,11 @@ mod tests {
             Err(BipDecodeError::DatagramTruncated)
         );
         assert_eq!(
-            decode_ingress(&[0x81, 0x0a, 0, 7, 1, 0], ingress_meta(false), Instant::ZERO),
+            decode_ingress(
+                &[0x81, 0x0a, 0, 7, 1, 0],
+                ingress_meta(false),
+                Instant::ZERO
+            ),
             Err(BipDecodeError::LengthMismatch {
                 declared: 7,
                 actual: 6

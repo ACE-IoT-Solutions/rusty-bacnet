@@ -1,3 +1,5 @@
+//! Extended MS/TP COBS/XOR-0x55 and CRC-32K primitive vectors.
+
 use bacnet_mstp_codec::{
     cobs_decode_xor55, cobs_decode_xor55_in_place, cobs_encode_xor55, cobs_encoded_len, crc32k,
     crc32k_accumulate_all, crc32k_valid, CobsError, CRC32K_RESIDUAL,
@@ -14,6 +16,26 @@ fn crc32k_addendum_vectors() {
     assert!(crc32k_valid(&with_crc));
     assert_eq!(crc32k_accumulate_all(&with_crc), CRC32K_RESIDUAL);
     assert!(!crc32k_valid(&[0, 1, 2, 3]));
+}
+
+#[test]
+fn independent_crc32k_check_and_embedded_xor_mask_vector() {
+    // CRC-32K/Koopman's conventional ASCII check value, independent of the
+    // BACnet Annex G byte sequence.
+    assert_eq!(crc32k(b"123456789"), 0x2D3D_D0AE);
+
+    // Ordinary COBS for [0x55, 0x00, 0x55] is [2, 0x55, 2, 0x55].
+    // Applying the required XOR mask yields literal zero octets for the two
+    // embedded 0x55 data bytes, which must still round-trip exactly.
+    let input = [0x55, 0x00, 0x55];
+    let expected = [0x57, 0x00, 0x57, 0x00];
+    let mut encoded = [0xA5; 4];
+    assert_eq!(cobs_encode_xor55(&input, &mut encoded), Ok(4));
+    assert_eq!(encoded, expected);
+
+    let mut decoded = [0xA5; 3];
+    assert_eq!(cobs_decode_xor55(&encoded, &mut decoded), Ok(3));
+    assert_eq!(decoded, input);
 }
 
 #[test]

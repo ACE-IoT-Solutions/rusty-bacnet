@@ -1,30 +1,13 @@
 //! Source-aware refusal actions for routed NPDUs.
 
 use super::{npdu::ParsedNpdu, DirectForwardRequest, ForwardError, ForwardOutcome};
+pub use crate::control::RejectReason as ForwardRejectReason;
 use crate::{LinkAddress, NetworkNumber};
 
 const BACNET_PROTOCOL_VERSION: u8 = 1;
 const DESTINATION_AND_NETWORK_MESSAGE: u8 = 0xa0;
 const REJECT_MESSAGE_TO_NETWORK: u8 = 0x03;
 const DEFAULT_REJECTION_HOP_COUNT: u8 = 0xff;
-
-/// Standard Reject-Message-To-Network reason values emitted by the router.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum ForwardRejectReason {
-    /// The router could not classify the refusal more specifically.
-    Other = 0,
-    /// No route exists for the requested destination network.
-    NotDirectlyConnected = 1,
-    /// The selected route or egress queue is temporarily unavailable.
-    RouterBusy = 2,
-    /// The request used an unsupported or malformed network-layer message.
-    UnknownMessageType = 3,
-    /// The rewritten NPDU exceeds the selected egress capability.
-    MessageTooLong = 4,
-    /// Addressing, route ownership, or adapter validation failed.
-    AddressingError = 6,
-}
 
 /// The original source to which a refusal must be returned.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,22 +117,25 @@ pub(super) fn classify(
     let parsed = ParsedNpdu::decode_for_refusal(request.npdu).ok()?;
     let source = parsed.refusal_source(request.ingress_network, request.logical_source)?;
     let (reason, network) = match result {
-        Ok(ForwardOutcome::Oversize { .. }) => {
-            (ForwardRejectReason::MessageTooLong, parsed.destination_network)
-        }
+        Ok(ForwardOutcome::Oversize { .. }) => (
+            ForwardRejectReason::MessageTooLong,
+            parsed.destination_network,
+        ),
         Ok(ForwardOutcome::QueueFull | ForwardOutcome::PortDown | ForwardOutcome::Expired) => {
             (ForwardRejectReason::RouterBusy, parsed.destination_network)
         }
-        Ok(ForwardOutcome::EgressRejected) => {
-            (ForwardRejectReason::AddressingError, parsed.destination_network)
-        }
+        Ok(ForwardOutcome::EgressRejected) => (
+            ForwardRejectReason::AddressingError,
+            parsed.destination_network,
+        ),
         Ok(ForwardOutcome::Forwarded { .. }) => return None,
         Err(ForwardError::InvalidDestinationNetwork(network)) => {
             (ForwardRejectReason::AddressingError, *network)
         }
-        Err(ForwardError::NoDirectRoute | ForwardError::NoRoute) => {
-            (ForwardRejectReason::NotDirectlyConnected, parsed.destination_network)
-        }
+        Err(ForwardError::NoDirectRoute | ForwardError::NoRoute) => (
+            ForwardRejectReason::NotDirectlyConnected,
+            parsed.destination_network,
+        ),
         Err(ForwardError::RouteUnavailable) => {
             (ForwardRejectReason::RouterBusy, parsed.destination_network)
         }
@@ -159,16 +145,19 @@ pub(super) fn classify(
             | ForwardError::PortCapabilityMismatch
             | ForwardError::RouteLoopsToIngress
             | ForwardError::InvalidEgressAddress,
-        ) => (ForwardRejectReason::AddressingError, parsed.destination_network),
-        Err(ForwardError::InvalidNetworkMessage) => {
-            (ForwardRejectReason::UnknownMessageType, parsed.destination_network)
-        }
-        Err(ForwardError::ScratchTooSmall { .. }) => {
-            (ForwardRejectReason::MessageTooLong, parsed.destination_network)
-        }
-        Err(ForwardError::HopExhausted) => {
-            (ForwardRejectReason::Other, parsed.destination_network)
-        }
+        ) => (
+            ForwardRejectReason::AddressingError,
+            parsed.destination_network,
+        ),
+        Err(ForwardError::InvalidNetworkMessage) => (
+            ForwardRejectReason::UnknownMessageType,
+            parsed.destination_network,
+        ),
+        Err(ForwardError::ScratchTooSmall { .. }) => (
+            ForwardRejectReason::MessageTooLong,
+            parsed.destination_network,
+        ),
+        Err(ForwardError::HopExhausted) => (ForwardRejectReason::Other, parsed.destination_network),
         Err(
             ForwardError::Truncated
             | ForwardError::UnsupportedVersion(_)

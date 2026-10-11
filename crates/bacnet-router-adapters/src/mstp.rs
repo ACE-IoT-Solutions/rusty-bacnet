@@ -8,7 +8,7 @@
 
 use bacnet_mstp_core::{Instant, MasterCore, NetworkPriority, QueueRejectReason, QueueStorage};
 use bacnet_router_core::{
-    AdmissionOutcome, Egress, EgressDestination, EgressRequest, LinkAddress, PortId,
+    AdmissionOutcome, Egress, EgressDestination, EgressRequest, LinkAddress, PortId, TrafficClass,
 };
 
 /// The MS/TP link-layer broadcast station address.
@@ -95,10 +95,19 @@ impl<Q: QueueStorage> Egress for MstpEgress<'_, '_, Q> {
         // capacity, and a later call must not regress behind it.
         self.last_now = self.now;
 
-        match self
-            .core
-            .enqueue_npdu(destination, request.npdu, priority, self.now)
-        {
+        let admitted = match request.class {
+            TrafficClass::Data => {
+                self.core
+                    .enqueue_npdu(destination, request.npdu, priority, self.now)
+            }
+            TrafficClass::NetworkControl => self.core.enqueue_network_control_npdu(
+                destination,
+                request.npdu,
+                priority,
+                self.now,
+            ),
+        };
+        match admitted {
             Ok(()) => AdmissionOutcome::AcceptedOwned,
             Err(QueueRejectReason::Full) => AdmissionOutcome::Full,
             Err(QueueRejectReason::Oversize) => AdmissionOutcome::Oversize,
@@ -274,5 +283,29 @@ mod tests {
         let counters = egress.core_mut().counters();
         assert_eq!(counters.broadcast.depth, 1);
         assert_eq!(counters.unicast.depth, 0);
+    }
+
+    #[test]
+    fn saturated_data_queue_does_not_consume_reserved_control_capacity() {
+        let mut rx = [0; 1024];
+        let mut core = core(&mut rx);
+        let mut egress = MstpEgress::new(&mut core, PortId(5), at(1));
+        let destination = EgressDestination::Unicast(LinkAddress::try_from_slice(&[2]).unwrap());
+
+        assert_eq!(
+            egress.try_admit(request(PortId(5), destination, 0, &[0x10])),
+            AdmissionOutcome::AcceptedOwned
+        );
+        assert_eq!(
+            egress.try_admit(request(PortId(5), destination, 0, &[0x11])),
+            AdmissionOutcome::Full
+        );
+
+        let mut control = request(PortId(5), destination, 1, &[0x20]);
+        control.class = TrafficClass::NetworkControl;
+        assert_eq!(egress.try_admit(control), AdmissionOutcome::AcceptedOwned);
+        let counters = egress.core_mut().counters();
+        assert_eq!(counters.unicast.depth, 1);
+        assert_eq!(counters.network_control.depth, 1);
     }
 }

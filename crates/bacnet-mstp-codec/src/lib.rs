@@ -24,10 +24,13 @@ pub use crc::{
     crc16, crc16_accumulate_all, crc16_valid, crc32k, crc32k_accumulate_all, crc32k_valid, crc8,
     crc8_accumulate_all, crc8_valid,
 };
-pub use error::FrameError;
+pub use error::{ExtendedField, FrameError};
 pub use frame::{
-    decode_frame, encode_into, find_preamble, is_cobs_raw, is_valid_source,
-    retain_lone_preamble_byte, Frame, FrameHeader, FrameType,
+    decode_extended_frame, decode_extended_frame_in_place, decode_frame, encode_extended_into,
+    encode_into, find_preamble, is_cobs_raw, is_valid_source, retain_lone_preamble_byte,
+    ExtendedFrame, Frame, FrameHeader, FrameType, EXTENDED_CRC_LENGTH, MAX_EXTENDED_ENCODED_DATA,
+    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_LENGTH, MAX_EXTENDED_MPDU_DATA, MIN_EXTENDED_LENGTH,
+    MIN_EXTENDED_MPDU_DATA,
 };
 pub use sink::{encode_to_sink, FrameSink};
 pub use stream::{DecodeEvent, StreamDecoder, StreamPhase};

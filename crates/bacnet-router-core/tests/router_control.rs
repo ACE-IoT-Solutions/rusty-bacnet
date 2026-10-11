@@ -1,3 +1,5 @@
+//! Router discovery and routing-table control state tests.
+
 use bacnet_router_core::{
     AdmissionOutcome, ControlDelivery, LinkAddress, NetworkNumber, PortId, PortIdSemantics,
     Reachability, RouterControl, RouterControlAction, RouterControlError, RouterControlRequest,
@@ -18,6 +20,7 @@ fn peer(value: u8) -> LinkAddress {
     LinkAddress::try_from_slice(&[value]).unwrap()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle<'a, const D: usize, const L: usize>(
     state: &'a mut RouterControl<D, L>,
     ingress: PortId,

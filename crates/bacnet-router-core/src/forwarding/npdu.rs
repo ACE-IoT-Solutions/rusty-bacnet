@@ -231,5 +231,4 @@ impl<'a> ParsedNpdu<'a> {
             .map_or(3 + ingress_source.as_slice().len(), <[u8]>::len);
         Ok(2 + 2 + 1 + next_hop.as_slice().len() + source_len + 1 + self.remainder.len())
     }
-
 }

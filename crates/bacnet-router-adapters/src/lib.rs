@@ -9,4 +9,5 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod bip;
 pub mod mstp;

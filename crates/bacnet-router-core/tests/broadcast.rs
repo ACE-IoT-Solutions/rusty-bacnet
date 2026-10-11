@@ -1,3 +1,5 @@
+//! Routed-broadcast policy, fanout, and loop-suppression tests.
+
 use bacnet_router_core::{
     AdmissionOutcome, BroadcastDestination, BroadcastFanoutOutcome, BroadcastFanoutResult,
     BroadcastPolicy, BroadcastPolicyConfig, BroadcastRequest, BroadcastTarget, Egress,
