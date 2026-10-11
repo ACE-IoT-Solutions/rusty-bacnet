@@ -1,6 +1,7 @@
 //! Configuration and Clause 9 timing validation for the MS/TP master core.
 
 use crate::clock::Duration;
+use bacnet_mstp_codec::MAX_EXTENDED_FRAME_LENGTH;
 
 const MAX_MASTER_ADDRESS: u8 = 127;
 const DEFAULT_BAUD_RATE: u32 = 9_600;
@@ -128,6 +129,14 @@ pub enum ConfigError {
     ZeroLocalDuration {
         /// Local duration setting that was zero.
         field: LocalDurationField,
+    },
+    /// The transmit watchdog cannot cover the selected frame profile at the
+    /// configured baud rate.
+    TransmitWatchdogTooShort {
+        /// Configured watchdog duration.
+        value: Duration,
+        /// Minimum complete-frame wire time for the profile.
+        minimum: Duration,
     },
     /// A local scheduling ratio or starvation limit of zero is invalid.
     ZeroLocalLimit {
@@ -382,6 +391,20 @@ impl MstpCoreConfig {
         Ok(())
     }
 
+    pub(crate) fn validate_frame_capacity(&self, frame_capacity: usize) -> Result<(), ConfigError> {
+        self.validate()?;
+        let octets = u64::try_from(frame_capacity).map_err(|_| ConfigError::TimingOverflow)?;
+        let bits = octets.checked_mul(10).ok_or(ConfigError::TimingOverflow)?;
+        let minimum = ceil_bit_times(self.baud_rate, bits)?;
+        if self.transmit_watchdog < minimum {
+            return Err(ConfigError::TransmitWatchdogTooShort {
+                value: self.transmit_watchdog,
+                minimum,
+            });
+        }
+        Ok(())
+    }
+
     const fn for_baud_rate_unchecked(baud_rate: u32) -> Self {
         Self {
             station: 0,
@@ -405,7 +428,11 @@ impl MstpCoreConfig {
             broadcast_unicast_ratio: 1,
             multiple_frame_ratio: 100,
             starvation_limit: 8,
-            transmit_watchdog: Duration::from_secs(1),
+            transmit_watchdog: ceil_bit_times_const(
+                baud_rate,
+                MAX_EXTENDED_FRAME_LENGTH as u64 * 10,
+            )
+            .saturating_add(Duration::from_millis(100)),
         }
     }
 }

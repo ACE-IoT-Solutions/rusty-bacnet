@@ -5,11 +5,11 @@ use core::mem::size_of;
 
 use bacnet_mstp_codec::{
     encode_extended_into, ExtendedFrame, Frame, FrameHeader, FrameType, MAX_EXTENDED_FRAME_LENGTH,
-    MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA,
+    MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
 };
 use bacnet_mstp_core::{
-    Action, ExtendedMasterCore, HeaplessQueues, Instant, NetworkPriority, QueueStorage,
-    StandardMasterCore,
+    Action, ConfigError, CoreError, Direction, Duration, ExtendedMasterCore, HeaplessQueues,
+    Instant, MasterState, MstpCoreConfig, NetworkPriority, QueueStorage, StandardMasterCore,
 };
 #[cfg(feature = "alloc")]
 use bacnet_mstp_core::{ExtendedAllocQueues, QueueRejectReason};
@@ -143,6 +143,114 @@ fn extended_profile_accepts_incremental_stream_delivery() {
 }
 
 #[test]
+fn standard_profile_resynchronizes_after_an_extended_frame_exhausts_storage() {
+    let extended_payload = [0x5A; MAX_STANDARD_MPDU_DATA + 1];
+    let mut extended_wire = [0; MAX_EXTENDED_FRAME_LENGTH];
+    let extended_header = FrameHeader::new(
+        FrameType::ExtendedDataNotExpectingReply,
+        0,
+        7,
+        extended_payload.len(),
+    );
+    let extended_used =
+        encode_extended_into(&mut extended_wire, &extended_header, &extended_payload).unwrap();
+
+    let mut rx = [0; MAX_STANDARD_FRAME_LENGTH];
+    let mut core = StandardMasterCore::new(
+        Default::default(),
+        StandardQueues::new(),
+        &mut rx,
+        Instant::ZERO,
+    )
+    .unwrap();
+    for byte in &extended_wire[..extended_used] {
+        core.on_octet(*byte, at(1)).unwrap();
+    }
+
+    let standard_payload = [0x01, 0x00];
+    let mut standard_wire = [0; MAX_STANDARD_FRAME_LENGTH];
+    let standard_used = Frame::new(
+        FrameType::BACnetDataNotExpectingReply,
+        0,
+        7,
+        &standard_payload,
+    )
+    .encode_into(&mut standard_wire)
+    .unwrap();
+    for byte in &standard_wire[..standard_used] {
+        core.on_octet(*byte, at(2)).unwrap();
+    }
+
+    assert!(matches!(
+        core.poll_action(),
+        Action::DeliverNpdu {
+            source: 7,
+            destination: 0,
+            npdu,
+            request_id: None,
+        } if npdu == standard_payload
+    ));
+    assert_eq!(core.counters().npdus_delivered, 1);
+    assert!(core.counters().parser_errors >= 1);
+}
+
+#[test]
+fn extended_dner_reply_is_delivered_while_waiting_for_reply() {
+    let mut rx = [0; MAX_EXTENDED_FRAME_LENGTH];
+    let mut core = ExtendedMasterCore::new(
+        Default::default(),
+        ExtendedQueues::new(),
+        &mut rx,
+        Instant::ZERO,
+    )
+    .unwrap();
+    let mut request = [0x44; MAX_STANDARD_MPDU_DATA + 1];
+    request[1] |= 0x04;
+    core.enqueue_npdu(7, &request, NetworkPriority::Normal, at(1))
+        .unwrap();
+    core.on_validated_frame(Frame::new(FrameType::Token, 0, 7, &[]), at(2))
+        .unwrap();
+    core.on_deadline(at(10)).unwrap();
+    assert_eq!(
+        core.poll_action(),
+        Action::SetDirection(Direction::Transmit)
+    );
+    let transmit_id = match core.poll_action() {
+        Action::Transmit { id, frame } => {
+            assert_eq!(frame[2], FrameType::ExtendedDataExpectingReply.to_raw());
+            id
+        }
+        other => panic!("expected extended request transmission, got {other:?}"),
+    };
+    core.on_transmit_started(transmit_id, at(10)).unwrap();
+    core.on_transmit_complete(transmit_id, at(11)).unwrap();
+    assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
+    assert_eq!(core.state(), MasterState::WaitForReply);
+
+    let reply = [0xA5; MAX_STANDARD_MPDU_DATA + 1];
+    let mut reply_wire = [0; MAX_EXTENDED_FRAME_LENGTH];
+    let reply_header =
+        FrameHeader::new(FrameType::ExtendedDataNotExpectingReply, 0, 7, reply.len());
+    let reply_used = encode_extended_into(&mut reply_wire, &reply_header, &reply).unwrap();
+    let (reply_frame, _) =
+        bacnet_mstp_codec::decode_extended_frame_in_place(&mut reply_wire[..reply_used]).unwrap();
+    core.on_validated_extended_frame(reply_frame, at(12))
+        .unwrap();
+
+    assert!(matches!(
+        core.poll_action(),
+        Action::DeliverNpdu {
+            source: 7,
+            destination: 0,
+            npdu,
+            request_id: None,
+        } if npdu == reply
+    ));
+    assert_eq!(core.counters().npdus_delivered, 1);
+    assert_ne!(core.state(), MasterState::WaitForReply);
+}
+
+#[test]
 fn representative_profile_storage_delta_is_measured_and_nonzero() {
     let standard = size_of::<StandardMasterCore<'static, StandardQueues>>();
     let extended = size_of::<ExtendedMasterCore<'static, ExtendedQueues>>();
@@ -152,6 +260,23 @@ fn representative_profile_storage_delta_is_measured_and_nonzero() {
     assert_eq!(standard, 13_368);
     assert_eq!(extended, 37_432);
     assert_eq!(extended - standard, 24_064);
+}
+
+#[test]
+fn extended_profile_rejects_a_watchdog_shorter_than_maximum_wire_time() {
+    let config = MstpCoreConfig {
+        transmit_watchdog: Duration::from_secs(1),
+        ..MstpCoreConfig::default()
+    };
+    let mut rx = [0; MAX_EXTENDED_FRAME_LENGTH];
+    assert!(matches!(
+        ExtendedMasterCore::new(config, ExtendedQueues::new(), &mut rx, Instant::ZERO),
+        Err(CoreError::Config(
+            ConfigError::TransmitWatchdogTooShort { .. }
+        ))
+    ));
+    let default = MstpCoreConfig::default();
+    assert!(default.transmit_watchdog > Duration::from_micros(1_516 * 10 * 1_000_000 / 9_600));
 }
 
 #[cfg(feature = "alloc")]

@@ -202,7 +202,10 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             self.protocol_deadline = Some(now + self.config.t_no_token);
             return Ok(());
         }
-        if frame.header.frame_type == FrameType::BACnetDataNotExpectingReply {
+        if matches!(
+            frame.header.frame_type,
+            FrameType::BACnetDataNotExpectingReply | FrameType::ExtendedDataNotExpectingReply
+        ) {
             self.deliver(&frame, None);
         }
         self.set_state(MasterState::DoneWithToken);

@@ -5,7 +5,8 @@
 //! rather than output produced by this crate's encoder.
 
 use bacnet_mstp_codec::{
-    decode_extended_frame, FrameError, FrameType, MAX_EXTENDED_MPDU_DATA, MIN_EXTENDED_MPDU_DATA,
+    decode_extended_frame, encode_extended_into, FrameError, FrameHeader, FrameType,
+    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MIN_EXTENDED_MPDU_DATA,
 };
 
 /// ANSI/ASHRAE Addendum an to Standard 135-2012, Annex X.4, printed pages
@@ -52,6 +53,17 @@ const ANNEX_X4_FRAME: &[u8] = &[
     0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x50, 0xF9, 0xA1, 0xD6, 0xE8,
 ];
 
+fn annex_x4_npdu() -> [u8; 507] {
+    let mut expected = [0u8; 507];
+    expected[..13].copy_from_slice(&[
+        0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x07, 0x3D, 0xFE, 0x01, 0xEF, 0x00,
+    ]);
+    for (index, byte) in expected[13..].iter_mut().enumerate() {
+        *byte = b'A' + (index / 19) as u8;
+    }
+    expected
+}
+
 #[test]
 fn annex_x4_complete_wire_image_decodes_without_encoder() {
     assert_eq!(ANNEX_X4_FRAME.len(), 522);
@@ -66,14 +78,22 @@ fn annex_x4_complete_wire_image_decodes_without_encoder() {
     assert_eq!(frame.header.source, 1);
     assert_eq!(frame.header.data_length, 507);
 
-    let mut expected = [0u8; 507];
-    expected[..13].copy_from_slice(&[
-        0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x07, 0x3D, 0xFE, 0x01, 0xEF, 0x00,
-    ]);
-    for (index, byte) in expected[13..].iter_mut().enumerate() {
-        *byte = b'A' + (index / 19) as u8;
-    }
+    let expected = annex_x4_npdu();
     assert_eq!(frame.data, expected);
+}
+
+#[test]
+fn annex_x4_complete_wire_image_is_an_exact_encoder_oracle() {
+    let npdu = annex_x4_npdu();
+    let header = FrameHeader::new(
+        FrameType::ExtendedDataNotExpectingReply,
+        0xFF,
+        1,
+        npdu.len(),
+    );
+    let mut encoded = [0; MAX_EXTENDED_FRAME_LENGTH];
+    let used = encode_extended_into(&mut encoded, &header, &npdu).unwrap();
+    assert_eq!(&encoded[..used], ANNEX_X4_FRAME);
 }
 
 // These helpers deliberately implement only the fixture construction needed

@@ -244,7 +244,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         rx_storage: &'rx mut [u8],
         now: Instant,
     ) -> Result<Self, CoreError> {
-        config.validate()?;
+        config.validate_frame_capacity(FRAME)?;
         queues.set_starvation_limit(config.starvation_limit);
         Ok(Self {
             config,
@@ -375,8 +375,17 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             DecodeEvent::Invalid { .. } => {
                 self.parser_partial = self.decoder.phase() != StreamPhase::Sync;
             }
-            DecodeEvent::Malformed { .. } | DecodeEvent::Error(_) => {
+            DecodeEvent::Malformed { .. } => {
                 self.parser_partial = self.decoder.phase() != StreamPhase::Sync;
+                self.counters.record_parser_error();
+                self.invalid_frame_event(now)?;
+            }
+            DecodeEvent::Error(_) => {
+                // A frame larger than the selected profile's receive storage
+                // must not pin that storage forever. Discard the candidate;
+                // subsequent octets resynchronize on the next preamble.
+                self.decoder.reset();
+                self.parser_partial = false;
                 self.counters.record_parser_error();
                 self.invalid_frame_event(now)?;
             }

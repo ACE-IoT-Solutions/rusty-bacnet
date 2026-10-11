@@ -2,8 +2,9 @@
 
 use bacnet_mstp_codec::{
     crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid, decode_frame,
-    encode_into, DecodeEvent, Frame, FrameError, FrameHeader, FrameSink, FrameType, StreamDecoder,
-    StreamPhase, DATA_CRC_RESIDUAL, HEADER_CRC_RESIDUAL, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    encode_extended_into, encode_into, is_valid_source, DecodeEvent, Frame, FrameError,
+    FrameHeader, FrameSink, FrameType, StreamDecoder, StreamPhase, DATA_CRC_RESIDUAL,
+    HEADER_CRC_RESIDUAL, MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 use proptest::prelude::*;
 
@@ -45,6 +46,63 @@ fn all_standard_types_round_trip() {
         let (decoded, consumed) = decode_frame(&wire[..used]).unwrap();
         assert_eq!(used, consumed);
         assert_eq!(decoded, frame);
+    }
+}
+
+#[test]
+fn master_and_slave_sources_decode_but_broadcast_source_is_rejected() {
+    for source in [127, 128, 254] {
+        assert!(is_valid_source(source));
+        let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, source, &[1]);
+        let mut standard = [0; 32];
+        let used = frame.encode_into(&mut standard).unwrap();
+        assert_eq!(
+            decode_frame(&standard[..used]).unwrap().0.header.source,
+            source
+        );
+
+        let payload = [0x55; 502];
+        let header = FrameHeader::new(
+            FrameType::ExtendedDataNotExpectingReply,
+            0,
+            source,
+            payload.len(),
+        );
+        let mut extended = [0; MAX_EXTENDED_FRAME_LENGTH];
+        let used = encode_extended_into(&mut extended, &header, &payload).unwrap();
+        let decoded = bacnet_mstp_codec::decode_extended_frame_in_place(&mut extended[..used])
+            .unwrap()
+            .0;
+        assert_eq!(decoded.header.source, source);
+    }
+
+    assert!(!is_valid_source(255));
+    for extended in [false, true] {
+        let mut wire = [0; MAX_EXTENDED_FRAME_LENGTH];
+        let used = if extended {
+            let payload = [0x55; 502];
+            encode_extended_into(
+                &mut wire,
+                &FrameHeader::new(
+                    FrameType::ExtendedDataNotExpectingReply,
+                    0,
+                    255,
+                    payload.len(),
+                ),
+                &payload,
+            )
+            .unwrap()
+        } else {
+            Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 255, &[1])
+                .encode_into(&mut wire)
+                .unwrap()
+        };
+        let result = if extended {
+            bacnet_mstp_codec::decode_extended_frame_in_place(&mut wire[..used]).map(|_| ())
+        } else {
+            decode_frame(&wire[..used]).map(|_| ())
+        };
+        assert_eq!(result, Err(FrameError::InvalidSource { source: 255 }));
     }
 }
 

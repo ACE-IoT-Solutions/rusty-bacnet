@@ -3,7 +3,7 @@
 use crate::error::ExtendedField;
 use crate::{
     cobs_decode_xor55, cobs_decode_xor55_in_place, cobs_encode_xor55, cobs_encoded_len, crc16,
-    crc16_valid, crc32k, crc8, crc8_valid, FrameError, BROADCAST_MAC, HEADER_LENGTH, MAX_MASTER,
+    crc16_valid, crc32k, crc8, crc8_valid, FrameError, BROADCAST_MAC, HEADER_LENGTH,
     MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 
@@ -239,7 +239,7 @@ pub fn decode_frame(data: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
         return Err(FrameError::UnsupportedCobsFrame { raw_type });
     }
     let source = data[4];
-    if source > MAX_MASTER {
+    if source == BROADCAST_MAC {
         return Err(FrameError::InvalidSource { source });
     }
     let data_length = u16::from_be_bytes([data[5], data[6]]) as usize;
@@ -299,7 +299,7 @@ fn extended_layout(data: &[u8]) -> Result<ExtendedLayout, FrameError> {
         return Err(FrameError::UnsupportedCobsFrame { raw_type });
     }
     let source = data[4];
-    if source > MAX_MASTER {
+    if source == BROADCAST_MAC {
         return Err(FrameError::InvalidSource { source });
     }
     let length = u16::from_be_bytes([data[5], data[6]]) as usize;
@@ -528,9 +528,9 @@ pub const fn is_cobs_raw(raw: u8) -> bool {
     raw >= 0x20 && raw <= 0x7F
 }
 
-/// The broadcast source value is never valid; this helper documents the rule.
+/// Any master or slave address can be a source; broadcast never can.
 pub const fn is_valid_source(source: u8) -> bool {
-    source <= MAX_MASTER && source != BROADCAST_MAC
+    source != BROADCAST_MAC
 }
 
 #[cfg(test)]

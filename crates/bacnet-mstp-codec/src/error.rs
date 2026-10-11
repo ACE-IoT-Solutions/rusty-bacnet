@@ -222,7 +222,7 @@ impl From<FrameError> for bacnet_types::error::Error {
             }
             FrameError::InvalidSource { source } => Self::decoding(
                 4,
-                format!("MS/TP source address 0x{source:02X} exceeds MAX_MASTER (127)"),
+                format!("MS/TP source address 0x{source:02X} is the broadcast address"),
             ),
             FrameError::Oversize { length, maximum } => Self::decoding(
                 5,
