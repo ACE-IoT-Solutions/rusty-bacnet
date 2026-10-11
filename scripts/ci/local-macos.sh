@@ -41,7 +41,7 @@ features=bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,b
 step "clippy (every macOS feature)"
 cargo clippy --workspace --exclude rusty-bacnet --all-targets --locked --features "$features" -- -D warnings
 step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
-step "clippy and rustdoc (each published crate, default features; no_std bacnet-types)"
+step "clippy and rustdoc (each published crate, default features; no_std types, encoding and services)"
 bash scripts/ci/check-default-features.sh
 step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
 step "rustdoc (every macOS feature, private items)"

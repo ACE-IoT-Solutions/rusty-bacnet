@@ -3,6 +3,9 @@
 //! The wire form follows the WriteGroup-Request production in Clause 21.3.2 and the
 //! BACnetGroupChannelValue / BACnetChannelValue productions in Clause 21.6.
 
+#[cfg(not(feature = "std"))]
+use alloc::{string::String, vec::Vec};
+
 use core::num::NonZeroU32;
 
 use bacnet_encoding::constructed::channel_value_end;

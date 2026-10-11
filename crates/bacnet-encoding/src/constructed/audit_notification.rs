@@ -1,3 +1,6 @@
+#[cfg(not(feature = "std"))]
+use alloc::{string::ToString, vec::Vec};
+
 use super::recipient::{check_encoded_recipient, write_recipient};
 use super::tagged::{
     decode_app_canonical_enumerated, decode_ctx_canonical_unsigned, decode_ctx_character_string,

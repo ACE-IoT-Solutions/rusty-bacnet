@@ -10,9 +10,9 @@ are omitted; each crate's `Cargo.toml` is the exact dependency authority.
 
 ```text
 Foundations
-  bacnet-types          Enums, primitives, error types (no I/O)
-  bacnet-encoding       ASN.1 tags, APDU/NPDU codecs, value encoding
-  bacnet-services       Service request/response structures
+  bacnet-types          Enums, primitives, error types (no I/O; no_std + alloc)
+  bacnet-encoding       ASN.1 tags, APDU/NPDU codecs, value encoding (no_std + alloc)
+  bacnet-services       Service request/response structures (no_std + alloc)
   bacnet-mstp-codec     MS/TP frame codec (no_std; by default no allocator, no deps)
   bacnet-mstp-core      MS/TP master state machine (no_std; by default no allocator)
   bacnet-transport      Data-link transports and framing

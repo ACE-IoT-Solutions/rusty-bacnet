@@ -17,8 +17,7 @@ bytes = ["alloc", "dep:bytes"]
 heapless = ["dep:heapless"]
 
 [dependencies]
-# Not the workspace entry, which keeps bytes' default std feature.
-bytes = { version = "1", default-features = false, optional = true }
+bytes = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 
 [dev-dependencies]

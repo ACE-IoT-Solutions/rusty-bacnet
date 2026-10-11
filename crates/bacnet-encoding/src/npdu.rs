@@ -215,6 +215,8 @@ pub fn decode_npdu(data: Bytes) -> Result<Npdu, NpduDecodeError> {
     let expecting_reply = control & 0x04 != 0;
     let priority = NetworkPriority::from_raw(control & 0x03);
 
+    // Only hosted builds log; tracing is a std-only dependency.
+    #[cfg(feature = "std")]
     if control & 0x50 != 0 {
         tracing::warn!(
             control_byte = control,
