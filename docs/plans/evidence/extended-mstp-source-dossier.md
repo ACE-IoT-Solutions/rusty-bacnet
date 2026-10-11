@@ -39,7 +39,18 @@ Standard 135-2020 PDF remains required before raising conformance status.
   `58 1d 30 39 39 3a 75 02 3a 27 39 31 5f 54`; separately encoded CRC field
   `50 60 82 25 19`; header Length 17 (135-2012an Annex X.1).
 - Annex X.4 supplies a full `55 ff 21 ...` extended DNER frame fixture for the
-  later one-shot and streaming codec tests.
+  one-shot and streaming codec tests. It is 522 wire octets, decodes to a
+  507-octet NPDU, and has header `55 ff 21 ff 01 02 00 4e` and encoded CRC
+  tail `50 f9 a1 d6 e8` (Annex X.4, printed pp. 31–32 / PDF pp. 33–34).
+
+Integrity anchors captured from the official publications and fixture:
+
+| Artifact | SHA-256 |
+|---|---|
+| Addendum 135-2012an PDF | `ba0c8c91210a82cf5bdf892d143ae5f5cd52ce833a2cf087c8798ef795f11664` |
+| Addendum 135-2020ce PDF | `e9cbe13e09b2f61d54ea65cde497b7a38326dbd613c51ad9c0b7f447bd9e68ef` |
+| Annex X.4 522-byte wire fixture | `4d4aac4ef1c5029a77272b9e34729eb2c36ed533343d28b96d712477a8ac43f1` |
+| Annex X.4 decoded 507-byte NPDU | `e821385f15854711411f76a257f7f81b8da4796925ff823029cf196665cc6c21` |
 
 ## Code implications
 

@@ -1528,6 +1528,82 @@ client.stop().await?;
 hub.stop().await;
 ```
 
+## Embedded B/IP↔MS/TP router
+
+The embedded router is a synchronous, allocation-free library boundary. It is
+split into:
+
+- `bacnet-router-core` for BVLL/NPDU validation, direct and learned routes,
+  router control messages, routed broadcasts, duplicate suppression, and
+  operational state;
+- `bacnet-router-adapters` for bounded B/IP and MS/TP admission plus
+  bidirectional composition; and
+- `bacnet-mstp-core` for the caller-clocked MS/TP state machine and its real
+  bounded transmit queues.
+
+The router crates own no UDP socket, UART, clock, task, executor, or hidden
+backlog. An ESP-IDF application supplies complete UDP datagrams with their
+actual local-destination metadata, supplies monotonic timestamps, drives the
+MS/TP core, and executes the returned synchronous actions. A successful
+`AdmissionOutcome::AcceptedOwned` means the selected sink or queue copied the
+bytes before returning.
+
+`BipIngressContext` keeps the immediate UDP peer, logical Forwarded-NPDU
+origin, actual local destination, group classification, and receive timestamp
+separate. `BipEgress` encodes Original-Unicast-NPDU or
+Original-Broadcast-NPDU into caller-owned scratch and calls a bounded
+`BipDatagramSink`. The sink receives `TrafficClass`, so a platform can reserve
+network-control capacity independently from ordinary data.
+
+`StandardMstpEgress` is hard-capped at a 501-byte NPDU even if a caller
+overstates the configured port limit. `ExtendedMstpEgress` and
+`PortKind::MstpExtended` are hard-capped at 1497 bytes. Extended transmission
+is fail-closed: `MstpPeerCapability` defaults to `Standard`, so the application
+must explicitly verify and enable extended capability for the destination
+segment or peer before an NPDU larger than 501 bytes can enter the queue.
+Extended frame types `0x20` and `0x21` are DER and DNER; reserved types
+`0x22..=0x7f` are never delivered as BACnet NPDUs.
+
+The portable core provides bounded route discovery, caller-time route aging,
+owner-checked Router-Busy/Router-Available handling, transactional
+Initialize-Routing-Table processing, explicit broadcast policy, per-egress
+fanout results, and caller-time duplicate suppression. It never fragments or
+truncates an NPDU. Unknown routes can be given one bounded
+Who-Is-Router-To-Network discovery interval before a source-aware
+Reject-Message-To-Network is produced; the library retains no pending NPDU
+bytes.
+
+`OperationalDiagnostics` exposes saturating global/per-port counters, bounded
+occupancy snapshots, recent failures, and synchronous controls. Its typed
+forwarding, broadcast, and router-control observers define one terminal event
+owner per operation. The adapter functions
+`forward_bip_datagram_to_mstp_observed` and
+`forward_mstp_action_to_bip_observed` validate diagnostic registration before
+executing the raw composition path and record exactly one outer result. Raw
+composition functions remain available for integrations that own a different
+telemetry system; callers must not observe both the raw nested admission and
+the outer result as separate failures.
+
+### Embedded router limitations
+
+The embedded adapter implements ordinary BACnet/IPv4 routing boundaries. It
+does not implement BBMD/BDT/FDT management, foreign-device registration, NAT
+rewriting, or B/IP multicast. Those are separate policies and are not implied
+by Original/Forwarded-NPDU parsing. BACnet/SC, BACnet/IPv6, Ethernet, ARCNET,
+PTP, LonTalk, ZigBee, and security network messages are outside this
+component's supported data-link scope.
+
+Socket lifecycle, UDP destination ancillary-data capture, subnet broadcast
+configuration, UART direction control, DMA ownership, timer scheduling, task
+serialization, flashing, and hardware-in-the-loop validation remain platform
+responsibilities. In-memory composition tests establish library behavior; they
+do not establish ESP-IDF deployment or independent interoperability evidence.
+
+The configured consolidated Standard 135-2020 reference is not present in the
+repository. Extended MS/TP implementation and tests are anchored to official
+ASHRAE addenda, but no consolidated-edition conformance claim is made until
+the licensed standard and independent interoperability evidence are reviewed.
+
 ## Embedded MS/TP
 
 The embedded MS/TP implementation is split into two allocation-free layers:

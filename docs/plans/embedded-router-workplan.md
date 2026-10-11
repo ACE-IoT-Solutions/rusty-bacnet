@@ -1,436 +1,281 @@
-# Embedded BACnet/IP↔MS/TP Router Workplan
+# Embedded BACnet/IP↔MS/TP router workplan
 
-Status: active; R0 complete, R1a/R1b implemented, R1c and R2b next
+Status: active closeout
 
 Last updated: 2026-10-11
 
-Scope: portable library components only; firmware integration and hardware
-validation remain downstream responsibilities.
+Target branch: `fix/sc-router-review-closeout`
 
-## Architecture decision
+Scope: portable Rust library components. ESP-IDF task/socket/UART ownership,
+firmware integration, flashing, and hardware-in-the-loop validation belong to
+the downstream firmware team.
 
-The hosted `bacnet-network` router remains the runtime implementation for
-Tokio transports. It cannot be used directly on ESP-IDF because it owns Tokio
-channels/tasks, `std` clocks and hosted `bacnet-transport` ports. Embedded
-routing is therefore implemented in the independent `bacnet-router-core`
-crate, following the synchronous, caller-clock pattern already used by
-`bacnet-mstp-core`.
+## Completion definition
 
-The core must not own sockets, UARTs, executors or unbounded queues. A platform
-adapter provides ingress metadata and implements synchronous egress admission.
-`AdmissionOutcome::AcceptedOwned` means the actual data-link queue copied or
-took ownership of the NPDU before returning. Router scheduling alone is not
-success.
+The library work is ready for human review when:
 
-## Fixed invariants
+1. the portable router discovers, learns, ages, controls, and forwards routes
+   without unbounded storage or hosted-runtime dependencies;
+2. standard and explicitly configured Extended MS/TP ports enforce their real
+   NPDU limits before queue mutation;
+3. unicast, routed broadcast, router-control, refusal, oversize, saturation,
+   and duplicate-suppression behavior has exact or transition-level tests;
+4. all changed crates pass their host, feature, bare-target, lint, file-size,
+   and packaging gates; and
+5. the conformance ledger and public limitations describe only the evidence
+   actually present.
 
-- Validate the complete NPDU length after routing-header rewriting against the
-  selected port's `max_npdu_len`; never use APDU or ingress length as a proxy.
-- Keep configured direct-route capacity independent of learned-route capacity.
-  Discovery traffic cannot evict a configured network.
-- Preserve immediate UDP peer, actual local destination/group provenance and
-  logical Forwarded-NPDU origin as distinct values.
-- Keep network-control capacity distinct from ordinary data capacity in every
-  concrete adapter.
-- Reject malformed control payloads before any routing-table mutation.
-- Never truncate or fragment an NPDU in the router.
-- Standard MS/TP remains capped at a 501-byte NPDU until the Extended MS/TP
-  work item below is complete end to end.
+Independent interoperability and HIL evidence are not library completion
+criteria, but remain claim/release gates and must be reported as downstream
+work rather than inferred from in-memory tests.
 
-## Implementation phases
+## Architecture and fixed invariants
 
-Phases are ordered by dependency. Each phase should land as one focused PR, or
-as the smaller PR slices listed under that phase. A phase is complete only when
-its exit criteria pass; compiling a type or codec alone is not completion.
+The hosted `bacnet-network` router remains the Tokio runtime implementation.
+The embedded path is split between allocation-free `bacnet-router-core`,
+bounded `bacnet-router-adapters`, and the caller-clocked `bacnet-mstp-core`.
+The library owns no socket, UART, executor, lock, or unbounded queue.
 
-| Phase | State | Depends on | Capability unlocked |
-|---|---|---|---|
-| R0 Portable boundary/direct forwarding | Complete | — | Bounded direct unicast foundation |
-| R1 Complete unicast routing | In progress; R1c remains | R0 | Direct and learned unicast with explicit refusal |
-| R2 Router discovery/table control | In progress; R2a landed | R1 | Dynamic route discovery and management |
-| R3 Routed broadcasts/loop safety | In progress; cache primitive landed | R1, R2 | Bounded remote/global broadcast forwarding |
-| R4 Adapter composition | In progress; MS/TP egress slice landed | R1–R3 | Library-complete standard-frame B/IP↔MS/TP router |
-| R5 Diagnostics/control | Planned | R2–R4 | Operationally supportable embedded router |
-| X0–X5 Extended MS/TP | In progress, claim blocker | R0; converge with R4 | Extended DER/DNER transport to 1497-byte NPDU |
-| R6 Release evidence | Planned | R0–R5; X0–X5 for broad claim | Evidence-backed release/claim decision |
+- `AdmissionOutcome::AcceptedOwned` means the selected data-link queue or sink
+  owns the bytes before returning.
+- Validate the final rewritten NPDU against the selected port's effective
+  limit. Never truncate or fragment in the router.
+- Keep configured direct routes independent of learned-route capacity.
+- Preserve the immediate UDP peer, actual local destination/group, and logical
+  Forwarded-NPDU origin as distinct values.
+- Preserve the final DNET/DADR across learned next hops; a next-hop address is
+  a link-layer egress destination, not a replacement routed destination.
+- Reserve network-control capacity separately from ordinary data capacity in
+  every concrete adapter contract.
+- Parse a complete control payload before mutating routing state.
+- Default broadcast forwarding and Extended MS/TP peer capability fail closed.
+- Use caller-provided monotonic time for expiry, aging, and duplicate windows.
+- Enforce the repository's 700 non-empty/non-comment Rust-line limit.
 
-### Delivery snapshot and remaining order
+## Phase dashboard
 
-The state labels above describe complete phase outcomes, not merely code that
-exists. In particular, a committed primitive remains "in progress" until it is
-publicly integrated, its phase exit criteria pass and the evidence is recorded.
+“Implemented” means code exists on the branch. “Complete” additionally means
+the phase exit criteria and recorded gates pass. Uncommitted closeout work is
+never counted as complete.
 
-Implemented foundations as of 2026-10-11:
-
-- R1a/R1b: strict shared NPDU parsing/rewrite and learned-route unicast,
-  including exact next-hop, source and hop-count behavior.
-- R2a: strict network-control codec and negative fixtures are committed; crate
-  export and integrated router-state handling remain.
-- R3b foundation: the bounded caller-time duplicate cache is public and tested;
-  canonical broadcast identity and fanout policy remain.
-- R4b foundation: direct admission into the bounded MS/TP core queue is
-  committed; workspace integration, monotonic-time validation and the reverse
-  delivery path remain.
-- X0: official Addenda 135-2012an and 135-2020ce have been reduced to a source
-  dossier. The configured consolidated Standard is still absent.
-- X1 COBS/XOR-0x55 and CRC-32K primitives are committed and tested. They do not
-  change the current standard-frame support claim by themselves.
-
-Execute the remaining work in this order:
-
-1. Close the active integration slices: export and validate R2a, finish R4b
-   workspace integration, close the remaining X0 vector gap, and split any Rust
-   file approaching the 700-line gate.
-2. Finish R1c rejection actions and source-aware refusal routing.
-3. Implement R2b–R2d discovery, transactional table control, owner-bound route
-   state and caller-time aging.
-4. Implement R3a/R3c broadcast policy, deterministic fanout, duplicate-cache
-   integration and reserved control admission.
-5. Complete R4a/R4c B/IP egress, reverse MS/TP delivery, request binding,
-   composed tests and bare-target checks.
-6. Add R5 operational diagnostics, snapshots, controls and bounded-memory
-   measurements.
-7. Continue X2–X5 in parallel where dependencies permit, converging the
-   extended storage/capability contract with R4 before composition tests.
-8. Run R6 evidence, compliance-ledger, packaging and release-claim review.
-
-Firmware task creation, ESP-IDF socket/UART ownership, flashing and HIL are not
-steps in this plan; the firmware team consumes the bounded library interfaces
-after the applicable R4/R5 gates pass.
-
-Current evidence anchors:
-
-| Slice | Commit or file | Validation state |
+| Phase | State | Remaining gate |
 |---|---|---|
-| R0 | `d39425ea` | Router-core foundation tests passed |
-| R1a/R1b | `902a85b2`, `774f7f66` | Focused forwarding tests passed; R1c still gates the phase |
-| R2a | `4a2636a3` | Standalone codec harness passed; crate integration remains |
-| R3b primitive | `a02bde58`, `46308c55` | Six cache tests passed; broadcast integration remains |
-| R4b foundation | `20d48b07` | Code committed; workspace/time-regression validation remains |
-| X0 | `docs/plans/evidence/extended-mstp-source-dossier.md` | Official addenda reviewed; consolidated Standard absent |
-| X1 | `b8f0bb0e` | Codec tests and no-default-features check passed |
-
-When a slice changes, update this table, its phase checkboxes and the relevant
-conformance-ledger row in the same PR. Do not advance a whole phase based only
-on a commit hash.
-
-### R0 — Portable boundary and direct forwarding (implemented)
-
-- [x] Add allocation-free `bacnet-router-core`.
-- [x] Add strict borrowed BVLL decode and caller-buffered encode.
-- [x] Require actual UDP destination metadata and preserve immediate/logical
-  source identities.
-- [x] Add independently bounded direct and learned route storage.
-- [x] Add direct-network NPDU rewrite with priority preservation.
-- [x] Add per-port final-NPDU MTU validation.
-- [x] Add synchronous owned-admission results and diagnostic counters.
-- [x] Prove the B/IP→standard-MS/TP 501-byte accept / 502-byte reject boundary.
-
-This phase is foundation work, not a claim that the embedded router is
-complete.
-
-### R1 — Complete unicast routing
-
-Goal: make the portable core authoritative for all unicast forwarding outcomes,
-without yet learning routes from network-control messages.
-
-Deliverables:
-
-- [x] Add one validated borrowed NPDU view used by direct and learned routing.
-- [x] Forward through learned next hops, retaining DNET/DADR and decrementing
-  hop count exactly once.
-- [x] Preserve or insert SNET/SADR correctly for both direct and learned paths.
-- [x] Preserve standard and proprietary network-message type/vendor fields
-  byte-for-byte.
-- [x] Reject zero input hop count before admission; allow the defined
-  intermediate `1 → 0` transition without underflow.
-- [x] Reject unavailable/busy routes deterministically and retain the route's
-  owning next-hop identity.
-- [ ] Model Reject-Message-To-Network as a core output, including message-too-
-  long for a final rewritten NPDU that exceeds egress capability.
-- [ ] Retain enough ingress context to route a refusal toward the original
-  source rather than only the immediate peer.
-- [x] Keep `Full`, `Oversize`, `PortDown`, `Expired`, invalid admission,
-  malformed input and no-route as
-  distinct observable results.
-
-Suggested PR split:
-
-1. [x] R1a — borrowed NPDU view plus direct/learned rewrite builder;
-2. [x] R1b — learned-route selection, hop behavior and next-hop admission; and
-3. [ ] R1c — rejection actions and refusal-path diagnostics.
-
-Exit criteria:
-
-- [ ] Exact-wire tests cover direct and learned application NPDUs, standard
-  network messages and proprietary network messages.
-- [ ] Boundary tests cover hop counts 0, 1 and 255.
-- [ ] Final-size tests cover packets that grow and shrink during rewrite.
-- [ ] Egress is never called for malformed, exhausted, unavailable, no-route
-  or pre-admission oversize traffic.
-- [ ] Queue-full/port-down/adapter-oversize outcomes retain source context and
-  increment exactly one counter.
-
-### R2 — Router discovery and table control
-
-Goal: discover and manage routes without allowing malformed or unauthoritative
-control traffic to partially mutate state.
-
-Deliverables:
-
-- [ ] Add borrowed parsers and caller-buffered encoders for the supported
-  Clause 6 network-control messages.
-- [ ] Implement strict Who-Is-Router-To-Network query handling, including the
-  all-networks form and forwarding of unknown specific-network queries.
-- [ ] Implement I-Am-Router-To-Network learning, announcements and controlled
-  rebroadcast.
-- [ ] Parse the entire Initialize-Routing-Table or ACK payload before applying
-  any entry; reject truncation, trailing bytes and invalid/reserved networks.
-- [ ] Define and enforce Initialize-Routing-Table port-ID semantics for this
-  core rather than copying hosted port indices implicitly.
-- [ ] Apply Router-Busy/Router-Available only when the ingress port and next-hop
-  MAC own the learned route; never mark configured direct routes busy.
-- [ ] Add caller-time route aging, busy expiry and explicit learned-route clear.
-- [ ] Add detached route snapshots that expose no live mutable storage.
-- [ ] Define behavior for unsupported standard, security and proprietary
-  network messages without broadening protocol claims.
-
-Suggested PR split:
-
-1. [x] R2a — strict control-message codec and truncation matrix (crate export
-   and shared-fixture integration remain verification tasks);
-2. [ ] R2b — Who-Is/I-Am discovery and route learning;
-3. [ ] R2c — Initialize-Routing-Table transaction; and
-4. [ ] R2d — Busy/Available ownership, aging and snapshots.
-
-Exit criteria:
-
-- [ ] Every truncation offset and malformed entry leaves the table unchanged.
-- [ ] A full learned table can refresh an existing entry but cannot evict or
-  overwrite a direct route.
-- [ ] Control response admission failures are visible and never reported as
-  successful announcements.
-- [ ] Deterministic caller-time tests cover exact busy and aging boundaries.
-- [ ] Hosted and portable control codecs share byte fixtures where their scope
-  overlaps.
-
-### R3 — Routed broadcasts and loop safety
-
-Goal: support routed remote/global broadcasts without unbounded amplification
-or silently suppressing legitimate repeated requests.
-
-Deliverables:
-
-- [ ] Add explicit policy for disabled, remote-network and global broadcast
-  forwarding; default fail-closed until configured.
-- [ ] Exclude the ingress port and decrement routed hop count exactly once per
-  forwarded copy.
-- [ ] Add a fixed-capacity, caller-time echo cache keyed by canonical origin,
-  destination semantics and packet identity, with hop count normalized out.
-- [ ] Scope suppression to routed echoes; do not use an indefinite blanket
-  `(source, payload)` duplicate rule.
-- [ ] Define deterministic cache-full behavior and expiry/replacement policy.
-- [ ] Reserve separate control admission so saturated data queues cannot block
-  discovery, rejection or congestion signaling.
-- [ ] Return per-egress fanout results rather than collapsing partial success
-  into a single forwarded outcome.
-
-Suggested PR split:
-
-1. R3a — broadcast policy and deterministic fanout;
-2. R3b — bounded echo cache and canonical key; and
-3. R3c — reserved control admission and partial-fanout diagnostics.
-
-Exit criteria:
-
-- [ ] Tests cover remote and global broadcast, ingress exclusion, mixed
-  accepted/full/down ports and exact hop behavior.
-- [ ] Alternate-ingress loops are suppressed within the configured window.
-- [ ] An identical legitimate transmission is admitted after expiry.
-- [ ] Cache saturation is bounded, deterministic and observable.
-- [ ] I-Am-Router and other hopless control rebroadcasts cannot circulate
-  indefinitely between router ports.
-
-### R4 — Concrete adapters and composition
-
-Goal: provide the complete library seam the firmware team can drive, while
-leaving ESP-IDF task/socket/UART ownership downstream.
-
-Deliverables:
-
-- [ ] Stabilize the ESP-IDF-facing UDP contract for datagram source, actual
-  destination, group classification, truncation and monotonic timestamp.
-- [ ] Keep socket calls outside `bacnet-router-core`; provide an adapter that
-  converts those facts into `BipIngress` and executes caller-buffered BVLL send
-  actions.
-- [ ] Define ordinary-node scope explicitly. BBMD/FDT, foreign-device, NAT and
-  B/IP-M behavior remain separate unless deliberately added.
-- [ ] Bridge router admission directly to `bacnet-mstp-core` queues so
-  `AcceptedOwned` means that queue owns the bytes.
-- [ ] Preserve NPDU priority rather than forcing all MS/TP submissions to
-  Normal.
-- [ ] Map MS/TP `Full`, `Oversize` and `Expired` distinctly without adding a
-  second hidden backlog.
-- [ ] Add reverse MS/TP→B/IP address conversion and Original-Unicast/Broadcast
-  selection.
-- [ ] Add composed in-memory B/IP→router→MS/TP and MS/TP→router→B/IP tests.
-- [ ] Add local bare-target dependency and file-size checks for the new crate;
-  changing CI remains a separate explicitly authorized task.
-
-Suggested PR split:
-
-1. R4a — stable UDP/BVLL adapter contract;
-2. R4b — direct MS/TP core admission adapter; and
-3. R4c — bidirectional composed tests and bare-target validation scripts.
-
-Exit criteria:
-
-- [ ] Forwarded-NPDU origin remains distinct from its BBMD peer through final
-  SADR and reply routing.
-- [ ] Destination/function mismatch, missing packet metadata and UDP truncation
-  fail closed before routing.
-- [ ] B/IP bursts cannot allocate an unbounded router backlog ahead of MS/TP.
-- [ ] Standard MS/TP accepts exactly 501-byte final NPDUs and rejects 502 bytes
-  before queue mutation.
-- [ ] Both supported bare targets compile with no hosted dependencies.
-
-### R5 — Diagnostics, operational control and hosted convergence
-
-- [ ] Expose global and per-port accepted, full, oversize, expired, malformed,
-  duplicate, policy-drop, rejection and transport-failure counters.
-- [ ] Define counter saturation and reset semantics.
-- [ ] Add immutable snapshots for routes, cache occupancy, port capabilities,
-  queue outcomes and most recent failure reason.
-- [ ] Add explicit controls for learned-route clear/refresh, port enable/disable,
-  discovery announcement and diagnostics reset.
-- [ ] Ensure control operations are synchronous, bounded and safe when invoked
-  concurrently by an adapter that serializes core ownership.
-- [ ] Share wire fixtures with the hosted router and record any intentionally
-  different policy.
-- [ ] Decide whether hosted `bacnet-network` should adapt to the core in a later
-  PR; do not couple the embedded release to that refactor.
-- [ ] Benchmark bounded admission latency and memory across representative
-  route/cache/queue profiles.
-
-Exit criteria:
-
-- [ ] Every drop/refusal path increments one documented counter and exposes no
-  packet data or stale mutable reference.
-- [ ] Control commands have deterministic success/capacity/invalid-state results.
-- [ ] Snapshot and counter reads do not allocate in the core.
-- [ ] A documented memory budget includes route storage, duplicate cache,
-  action scratch and the connected MS/TP queue profile.
-
-## Extended MS/TP prerequisite (X0–X5)
-
-Frame types `0x20` (Data Expecting Reply) and `0x21` (Data Not Expecting Reply)
-use COBS and CRC-32K and are currently rejected deliberately. Types
-`0x22..=0x7f` share the extended framing range but must not automatically be
-treated as BACnet NPDU frames.
-
-This is a separate local-fork stream and blocks any broad modern-router claim.
-It may proceed alongside R1–R3, but its storage/capability contract must converge
-with R4.
-
-### X0 — Normative source and independent vectors
-
-- [ ] Restore or otherwise obtain the configured consolidated Standard 135-2020
-  reference before raising conformance status.
-- [x] Confirm exact extended Length, maximum-size, CRC residual and type rules
-  from official ASHRAE Addenda 135-2012an and 135-2020ce; see
-  `docs/plans/evidence/extended-mstp-source-dossier.md`.
-- [ ] Check in official plus independently derived COBS/XOR and CRC-32K vectors, including
-  254-byte block boundaries, zero-heavy payloads and embedded `0x55` values.
-
-### X1 — Portable COBS and CRC-32K primitives
-
-- [x] Add allocation-free caller-buffered primitives with exact capacity
-  reporting and no partial-success ambiguity.
-- [x] Reject malformed code octets, bad CRC and output exhaustion.
-
-### X2 — Extended one-shot and streaming codec
-
-- [ ] Name only `0x20` DER and `0x21` DNER as BACnet extended data frames.
-- [ ] Add caller-buffered or in-place decode; the immutable borrowed standard
-  decoder cannot return transformed COBS payload bytes.
-- [ ] Cover 501/502 and 1497/1498 decoded boundaries, every stream split point,
-  corruption, resynchronization and mixed standard/extended streams.
-- [ ] Extend fuzzing beyond the current one-shot standard decoder.
-
-### X3 — MS/TP core storage and state machine
-
-- [ ] Add an explicit standard/extended storage profile rather than globally
-  widening every inline action slot.
-- [ ] Update queues, action rings, receive delivery, reply storage, token-send
-  scratch and frame-type selection together.
-- [ ] Reject unsupported peer/port capability before queue mutation.
-- [ ] Measure the memory delta for each supported profile.
-
-### X4 — Hosted compatibility and timing
-
-- [ ] Update hosted assembler limits, complete-frame timeout calculations,
-  queue wrappers and compatibility decoding.
-- [ ] Retain every existing standard-frame golden vector unchanged.
-- [ ] Add mixed standard/extended in-memory serial tests at the slowest supported
-  baud rate.
-
-### X5 — Router composition and claim gate
-
-- [ ] Report an explicit extended-capable per-port NPDU limit to the router.
-- [ ] Prove 502-byte and 1497-byte NPDU queue→frame→decode→delivery paths.
-- [ ] Prove deterministic 1498-byte rejection without queue mutation.
-- [ ] Test mixed segments where an extended-capable local router cannot assume
-  every remote station accepts extended frames.
-- [ ] Record interoperability evidence before changing public support claims.
-
-Simply widening `MAX_NPDU_LEN` or adding codec support is insufficient: current
-core action rings and transmission scratch storage remain standard-frame sized.
-
-## R6 — Release evidence and claim decision
-
-- [ ] Complete the Clause 6 negative/transition matrix for implemented scope.
-- [ ] Update the conformance ledger with exact source and test anchors.
-- [ ] Run the full workspace, MSRV, bare-target, feature-matrix and packaging
-  gates applicable to changed crates.
-- [ ] Capture raw benchmark artifacts for admission latency, queue saturation
-  and memory profiles if performance claims are made.
-- [ ] Document unsupported BBMD/foreign-device/NAT/B/IP-M/PTP/security-network-
-  message behavior explicitly.
-- [ ] Publish no broad modern-router claim until X0–X5 are complete.
-
-Claim milestones:
-
-- R0–R3: portable routing core under active development; no deployable-router
-  claim.
-- R0–R5: library-complete B/IP↔standard-MS/TP router boundary, pending downstream
-  firmware integration evidence.
-- R0–R6 without X0–X5: standard-frame router only; Extended MS/TP explicitly
-  unsupported.
-- R0–R6 plus X0–X5: eligible for a broader claim after ledger and interop review.
-
-## Deferred/out of scope
-
-- ESP-IDF task creation, socket lifecycle, UART ownership, flashing and HIL
-  orchestration belong to the firmware/integration team.
-- BBMD/BDT/FDT, foreign-device registration, NAT rewriting and B/IP-M are not
-  implied by ordinary B/IP routing.
-- BACnet/SC, Ethernet, ARCNET, PTP and other data links are not part of this
-  embedded B/IP↔MS/TP component.
-- Routers do not perform APDU segmentation, NPDU fragmentation or silent
-  truncation to fit an egress link.
-
-## Verification gates
-
-- `cargo test -p bacnet-router-core --locked`
-- `cargo clippy -p bacnet-router-core --all-targets -- -D warnings`
-- bare-target checks for `thumbv7em-none-eabi` and
-  `riscv32imac-unknown-none-elf`
-- embedded dependency-tree check proving no hosted runtime dependencies
-- repository 700-line Rust source-file cap
-- existing `bacnet-network`, `bacnet-mstp-codec` and `bacnet-mstp-core` focused
-  regression suites after each integration slice
-
-Normative caveat: the configured `_spec/` Standard 135-2020 PDF is absent from
-this checkout. Existing Clause 6 ledger anchors and hosted tests inform the
-work, but exact clause wording and Extended MS/TP length rules must be checked
-against the Standard before raising conformance status.
+| R0 Portable boundary/direct routing | Complete | None |
+| R1 Unicast routing/refusal | Complete | Discovery-before-refusal and zero-hop silence landed in `8a0c71fb` |
+| R2 Discovery/table control | Complete | Canonical Initialize query landed in `60ffb85b`; router-core matrix passes |
+| R3 Routed broadcasts/loop safety | Complete | Host, strict-lint, feature, and bare-target gates pass |
+| R4 Standard B/IP↔MS/TP adapters | Complete | Composition and both bare-target gates pass |
+| R5 Diagnostics/operational control | Complete | Exactly-once observers and bounded benchmark evidence pass |
+| X0 Normative sources/vectors | External gap | Licensed consolidated 135-2020 review; Annex X.4 full fixture |
+| X1 COBS/CRC-32K primitives | Complete | None |
+| X2 Extended codec | Complete | Independent fixtures and streaming fuzz landed in `8a3f0dd0` |
+| X3 Extended core profile | Complete | Explicit profiles, memory evidence, and strict gates pass |
+| X4 Hosted extended compatibility | Complete | Hosted transport regression passes |
+| X5 Extended router composition | Complete | Composition and boundary gates pass; interop remains a claim gate |
+| R6 Release evidence/claim | In review | Independent review and documented packaging caveat |
+
+## Completed implementation baseline
+
+The following work is present and should not be reopened unless a closeout
+test identifies a regression:
+
+- R0: strict borrowed BVLL ingress, bounded direct/learned partitions,
+  direct-network rewrite, final-NPDU limits, and synchronous owned admission.
+- R1/R2: shared strict NPDU parsing, learned-route forwarding, source-aware
+  rejection actions, network-control codecs, Who-Is/I-Am handling,
+  Initialize-Routing-Table transactions, owner-bound Busy/Available state,
+  caller-time route aging, and detached route snapshots.
+- R3: explicit remote/global broadcast policy, exact header rewrites,
+  deterministic per-port fanout, bounded duplicate suppression, ingress
+  exclusion, reserved control admission, and fail-closed cache saturation.
+- R4: bounded B/IP ingress/egress contracts, standard MS/TP queue ownership,
+  priority preservation, typed backpressure, reverse MS/TP→B/IP delivery,
+  request bindings, and bidirectional in-memory composition tests.
+- R5: bounded global/per-port diagnostics, snapshots, saturation/reset rules,
+  learned-route and port controls, announcement requests, and representative
+  memory-budget assertions.
+- X1–X4: allocation-free COBS/XOR-`0x55`, CRC-32K, extended one-shot and
+  streaming codecs, explicit standard/extended storage profiles, hosted
+  assembly/timing support, reserved-type rejection, and maximum-frame split
+  tests.
+- X5 foundation: standard and extended MS/TP egress profiles, fail-closed peer
+  capability, 501/502/1497/1498 queue limits, and extended frame composition.
+
+Primary implementation commits include `d39425ea`, `902a85b2`, `7f192fe1`,
+`647800ed`, `dec02bff`, `d91db207`, `47669cd5`, `8d8767a5`, `9337d020`,
+`afc15d1a`, `4fef1f9e`, `a592bbca`, `d1d2dda2`, `c647b807`, `dbd93ae5`,
+`8a0c71fb`, `f7385399`, `8a3f0dd0`, `d0f13836`, `ec5046f3`, and
+`321c7cce`.
+
+## Remaining phases
+
+### C1 — Finish the active router-control closeout
+
+Purpose: make unknown-route behavior discovery-first and make the control wire
+format unambiguous before taking a clean checkpoint.
+
+- [x] Finish and commit the bounded `RouteDiscovery` integration (`8a0c71fb`).
+- [x] First unknown destination returns one Who-Is-Router action; repeat calls
+  before the caller-time deadline report pending without duplicating traffic.
+- [x] A timed-out discovery produces a source-aware
+  Reject-Message-To-Network; capacity exhaustion remains distinct and
+  observable (`29498835`).
+- [x] A hop-exhausted NPDU is dropped without generating another network
+  message.
+- [x] Encode an Initialize-Routing-Table query as a single zero
+  Number-of-Ports octet and reject an empty request body as truncated
+  (`60ffb85b`).
+- [x] Prove malformed discovery/control input and every truncation offset leave
+  route state unchanged (`f006cad9`).
+- [x] Run router-core tests, strict Clippy, `git diff --check`, and the file-size
+  gate for the discovery/refusal checkpoint.
+- [x] Repeat those gates after the Initialize-Routing-Table correction and
+  commit the complete control checkpoint.
+
+Exit evidence:
+
+- exact actions for first request, pending request, timeout, and full pending
+  table;
+- exact refusal destination for direct and learned source contexts;
+- no egress/refusal for hop count zero; and
+- canonical query and zero-entry ACK remain distinct.
+
+### C2 — Close Extended MS/TP evidence and composition
+
+Purpose: turn the current implementation into evidence-backed end-to-end
+support without treating every `0x20..=0x7f` frame as an NPDU.
+
+- [x] Add the complete official Annex X.4 DNER wire fixture as an independent
+  decoder/encoder oracle, with source attribution (`8a3f0dd0`).
+- [x] Add independently constructed valid-CRC receive fixtures for decoded
+  lengths 501, 502, 1497, and 1498. Confirm 502 and 1497 delivery and
+  deterministic out-of-range handling for 501 and 1498 (`8a3f0dd0`).
+- [x] Retain negative coverage for all reserved types `0x22..=0x7f`, malformed
+  encoded CRC lengths, bad CRC, noncanonical COBS, truncation,
+  resynchronization, and mixed standard/extended streams.
+- [x] Keep the extended streaming decoder in the fuzz target (`8a3f0dd0`).
+- [x] Add an explicit `PortKind::MstpExtended` with a 1497-byte hard ceiling.
+  Do not model extended capability as `Other` or by merely raising a standard
+  port's configured length (`f7385399`).
+- [x] Update address validation, forwarding, broadcast selection, snapshots,
+  composition checks, and tests for the new kind (`f7385399`, `697fe5c7`).
+- [x] Export the extended core profile required by the adapter (`07c0fb82`).
+- [x] Correct the extended delivery tests so their receiver station matches
+  the encoded destination, then prove queue→frame→decode→delivery at 502 and
+  1497 bytes (`07c0fb82`).
+- [x] Generalize request/reply bindings over the standard and extended core
+  profiles and prove an Extended DER delivery can complete or time out through
+  the public composition seam (`f7385399`).
+- [x] Prove an extended-capable port still rejects an unverified extended peer
+  and rejects 1498 bytes before queue mutation (`f7385399`).
+- [x] Record the measured standard-versus-extended core memory delta: standard
+  profile 13,368 bytes, extended profile 37,432 bytes, delta 24,064 bytes
+  (`86547c56`).
+
+Exit evidence:
+
+- codec, core, hosted transport, and router-adapter suites all pass;
+- standard golden vectors are unchanged;
+- standard ports remain capped at 501 bytes regardless of configured values;
+- extended ports are capped at 1497 bytes and require explicit peer opt-in;
+- both supported bare targets compile.
+
+External X0 gate: official addenda support the implementation and are recorded
+in `docs/plans/evidence/extended-mstp-source-dossier.md`. The configured
+licensed consolidated Standard 135-2020 PDF is absent. Obtain and reconcile
+Clauses 9.3, 9.5, 9.6, 9.10 and Annexes G/X before raising conformance status;
+do not substitute an unofficial copy. This does not block finishing the public
+addendum-derived tests.
+
+### C3 — Operational and performance evidence
+
+Purpose: demonstrate that the bounded design remains predictable under the
+route, cache, and queue profiles a firmware consumer will actually configure.
+
+- [x] Audit that every drop/refusal/admission failure increments exactly one
+  documented counter and retains no packet data or mutable borrowed state.
+  Typed core observers landed in `d0f13836`; concrete observed composition
+  landed in `ec5046f3`.
+- [x] Confirm control commands have deterministic success, capacity, and
+  invalid-state results.
+- [x] Add a reproducible local benchmark for direct forwarding, learned
+  forwarding, broadcast fanout, duplicate lookup, and saturated queue
+  admission across representative table sizes (`321c7cce`).
+- [x] Capture raw host/toolchain/configuration output; do not make latency or
+  throughput claims from a single workstation run (`321c7cce`).
+- [x] Record memory budgets for routes, pending discovery, duplicate cache,
+  action scratch, diagnostics, standard queues, and extended queues
+  (`321c7cce`).
+
+Exit evidence: benchmark command and raw artifact are reproducible, memory
+limits are explicit, and no performance claim exceeds the recorded evidence.
+
+### C4 — Release evidence and documentation
+
+Purpose: produce a reviewable library checkpoint without broadening protocol
+or platform claims.
+
+- [x] Update `BACNET-6-ROUTER-MESSAGES` in the Standard 135-2020 conformance
+  ledger with current source/test anchors and remaining Clause 6 gaps.
+- [x] Update the MS/TP ledger evidence for standard and extended frame scope.
+- [x] Document unsupported BBMD/BDT/FDT, foreign-device, NAT, B/IP-M, PTP,
+  security-network-message, and non-B/IP/non-MS/TP behavior.
+- [x] Record that actual ESP-IDF UDP destination metadata, socket lifecycle,
+  UART direction control, timers, task serialization, and HIL remain
+  downstream responsibilities.
+- [x] Run the full verification matrix below and retain exact command/results.
+- [ ] Run a BACnet-focused correctness/safety review and a release-readiness
+  review. Resolve blockers/high findings or record an explicit human decision.
+- [ ] Package the branch for human review as focused commits; do not publish a
+  broad modern-router claim until the external X0 and interoperability gates
+  are satisfied.
+
+## Verification matrix
+
+Minimum local gates:
+
+```text
+cargo test -p bacnet-router-core --locked
+cargo test -p bacnet-router-adapters --all-features --locked
+cargo test -p bacnet-mstp-codec --all-features --locked
+cargo test -p bacnet-mstp-core --all-features --locked
+cargo clippy -p bacnet-router-core --all-targets --no-deps --locked -- -D warnings
+cargo clippy -p bacnet-router-adapters --all-targets --no-deps --locked -- -D warnings
+cargo clippy -p bacnet-mstp-codec --all-targets --all-features --no-deps --locked -- -D warnings
+cargo clippy -p bacnet-mstp-core --all-targets --all-features --no-deps --locked -- -D warnings
+.github/scripts/check-file-size.sh
+git diff --check
+```
+
+Also run:
+
+- no-default-feature checks for the router, adapter, codec, and core crates;
+- `thumbv7em-none-eabi` and `riscv32imac-unknown-none-elf` checks using the
+  pinned Rust 1.97.1 toolchain/compiler when the default Homebrew Cargo cannot
+  locate the installed target `core`;
+- focused regressions for `bacnet-network` and hosted `bacnet-transport` after
+  control-codec or hosted extended-frame changes;
+- package-list/content checks for every changed publishable crate; and
+- a refreshed `ccc` index after the final source/document changes.
+
+Closeout result: all listed host tests, strict Clippy commands, feature checks,
+and both pinned bare-target checks passed. Package content listing passed for
+all five changed publishable crates, and `bacnet-router-core` also passed
+standalone package verification. Cargo cannot prepare the four packages that
+depend on unpublished `0.11.8` sibling crates against crates.io; this is a
+release-order/registry prerequisite rather than a source-content failure and
+must remain visible to the human release review.
+
+## Claim gates and downstream handoff
+
+| Milestone | Permitted statement |
+|---|---|
+| C1 complete | Portable routing/control closeout is ready for consolidated verification |
+| C1–C4 complete, without external X0/interoperability | Library-complete B/IP↔MS/TP implementation; conformance/interoperability pending |
+| C1–C4 plus X0 reconciliation and independent interop | Eligible for human review of a broader modern-router claim |
+| Firmware/HIL complete | Platform deployment evidence, maintained by the firmware team |
+
+The library handoff must expose bounded ingress/egress contracts and their
+timing/capacity requirements. It must not absorb firmware task creation,
+Tailscale/host setup, ESP-IDF socket ownership, UART ownership, flashing, or
+field-network validation into this workplan.
