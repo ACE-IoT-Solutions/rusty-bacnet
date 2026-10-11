@@ -1905,10 +1905,13 @@ await router.stop()
 
 `RouterBipPort(network_number, interface="0.0.0.0", port=0xBAC0,
 broadcast_address="255.255.255.255", reuse_port=False)` validates both IPv4
-addresses. `RouterVirtualPort(network_number, name, mac)` joins a named
-in-process network. Network numbers `0` and `65535`, duplicate network numbers,
-duplicate B/IP `(interface, port)` endpoints, duplicate virtual-network names,
-and a port list shorter than two are rejected.
+addresses. `reuse_port` remains accepted for 0.11 adaptor configuration
+compatibility; the 0.12 native transport automatically enables OS port sharing
+for every explicit nonzero port, so this value no longer changes socket setup.
+The 0.12 router binding supports B/IP and SC ports; the superseded fork-only
+virtual-network port is not exposed. Network numbers `0` and `65535`, duplicate
+network numbers, duplicate B/IP `(interface, port)` endpoints, and a port list
+shorter than two are rejected.
 
 `RouterScPort` requires a `wss://` primary hub, a non-reserved six-byte VMAC, a
 nonzero 16-byte device UUID, and nonempty CA/certificate/key paths. Its remaining
@@ -1925,8 +1928,8 @@ unless `reconnect_forever` is true.
 has `config_index`, `network_number`, `transport_kind`, `identity`, `state`,
 `detail`, `active_hub`, `last_error`, `attempt`, and `since`. States are
 `"Down"`, `"Connecting"`, `"Reconnecting"`, `"Up"`, and `"Failed"`;
-`since` is elapsed seconds for the current operational connection. B/IP and
-virtual transports report static `Up`; SC health follows its connection and
+`since` is elapsed seconds for the current operational connection. B/IP
+transports report static `Up`; SC health follows its connection and
 recovery tasks, including terminal failure.
 
 `routing_table()` returns immutable entries sorted by `network_number`, detached
@@ -1936,10 +1939,10 @@ or `"Unreachable"`), `last_seen_age_s`, `busy_remaining_s`, `flap_count`, and
 `last_port_change_age_s`. Health and route methods preserve their final snapshot
 after `stop()`; before a successful start they return an empty list.
 
-The existing `BACnetRouter(bip_network, virtual_ports, ...)` constructor remains
-supported and delegates to the same internal typed port model. Periodic and
-recovery-triggered announcements are not implemented, so `from_ports` does not
-expose an announcement-interval keyword yet. Oversize-NPDU rejection and an
+The reconciled 0.12 binding exposes `BACnetRouter.from_ports()` rather than the
+superseded fork-only virtual-network constructor. Periodic and recovery-triggered
+announcements are not implemented, so `from_ports` does not expose an
+announcement-interval keyword yet. Oversize-NPDU rejection and an
 `oversize_drops` counter are also not part of this surface.
 
 BACnet/SC Data Options are carried on SC-capable sends. At an SC-to-B/IP router

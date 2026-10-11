@@ -1,8 +1,9 @@
 # SC-to-IP router work plan
 
-Status: R1-R6 and R9 delivered on `fix/sc-router-review-closeout` `9f5e019`
-(PR #4, open); A1-A8, B1-B7, C1-C5 closed; D1 closed as moot; D2-D6 and
-E1-E4 below are open; R7, R8, R10 not started. Last verified 2026-10-10.
+Status: R1-R6 and R9 carried onto the upstream 0.12 baseline on
+`feature/sc-ip-router-upstream-0.12`; R7, R8, and R10 remain open. The latest
+reconciliation note below supersedes the older branch bookkeeping. Last
+verified 2026-10-11.
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
@@ -306,12 +307,13 @@ the helper; the runtime rejects a missing or zero UUID before dialing.
 
 Crates: `rusty-bacnet`.
 
-- [x] Add frozen `RouterBipPort`, `RouterScPort`, `RouterVirtualPort`
+- [x] Add frozen `RouterBipPort` and `RouterScPort`
       classes with validation at construction (network number, VMAC, UUID,
       PEM presence, heartbeat timing, and reconnect ranges).
 - [x] Add `BACnetRouter.from_ports(ports)`;
       require at least two ports and at most one B/IP port per interface and
-      UDP port; legacy `__init__` builds the same internal port list.
+      UDP port. The removed upstream virtual transport and legacy constructor
+      are not revived on 0.12.
 - [ ] Consolidate `start()` SC construction through the deferred Phase 5
       helper. Current SC dial failures already surface as `RuntimeError`
       naming the port index and hub URL.
@@ -821,7 +823,7 @@ R9 is delivered. Phase 8 is complete except the multi-arch image job (R10).
       cross-platform gate is skipped. The flaky tests it was written around
       were fixed in `6b6e08ad`, `ceb9392b`, and `153dac52`, and `v0.11.4`
       passed the full gate. Delete the bypass and close D2.
-- [ ] **E3 - Upstream has moved a full minor.** `upstream/dev` is at
+- [x] **E3 - Upstream has moved a full minor.** `upstream/dev` is at
       `74fca30`, 1590 commits past the C4 audit pin, and upstream has tagged
       `v0.12.0`. The C4 audit and the upstream PR queue (PRs 1-3) are stale.
       Decide whether to keep offering R1-R6 upstream against 0.12, or to
@@ -842,6 +844,36 @@ and D5 (Phase 8 bookkeeping, now partly reconciled above) remain open.
 R7 oversize handling, R8 re-announce, the Phase 5 shared dial helper, and the
 R10 multi-arch image job have not been touched since 2026-09-19. The
 conformance-status caveat from A7 still applies.
+
+## Reconciliation 2026-10-11 - upstream 0.12 continuation
+
+The E3 decision is to continue R1-R6 upstream on the merged 0.12 router rather
+than retain the 0.11 implementation as a fork-only line. The replacement work
+starts at merge commit `da59a8a7` and preserves 0.12's `RouterOptions`,
+`StartedRouter`, bounded discovery, routing-control policy, reconnect jitter,
+24-hour delay cap, diagnostic throttling, provenance, and NPDU admission.
+
+Delivered on `feature/sc-ip-router-upstream-0.12`:
+
+- defaulted transport identity and health capabilities, including live SC
+  health and unbounded primary/failover reconnect;
+- duplicate-topology rejection, contextual port-start errors, ordered router
+  health, and detached routing-table snapshots;
+- frozen Python `RouterBipPort` and `RouterScPort` configurations plus
+  `BACnetRouter.from_ports()`, stop-safe health/routes, and local B/IP address;
+- restored initial-primary-error handoff so native SC startup can attempt the
+  configured failover without weakening the 0.12 TLS policy.
+
+The removed virtual-network transport, legacy virtual-router constructor, and
+old per-port forwarding counters were not restored because the 0.12 native
+router no longer owns those interfaces. R7 oversize rejection, R8 periodic and
+recovery-triggered announcements, the shared SC dial helper, and R10 remain the
+next planned slices.
+
+Verification on macOS arm64: `cargo test -p bacnet-transport -p
+bacnet-network -p rusty-bacnet` passed (1,221 transport, 264 network, and 133
+binding unit tests, plus integration targets). The all-features transport gate
+remains Linux-only because its GPIO dependency does not compile on macOS.
 
 ## Out of scope
 
