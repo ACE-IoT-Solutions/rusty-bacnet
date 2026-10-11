@@ -1,7 +1,7 @@
 # SC-to-IP router work plan
 
 Status: R1-R6 and R9 carried onto the upstream 0.12 baseline on
-`feature/sc-ip-router-upstream-0.12`; R7, R8, and R10 remain open. The latest
+`feature/sc-ip-router-upstream-0.12`; R7 and R10 remain open. The latest
 reconciliation note below supersedes the older branch bookkeeping. Last
 verified 2026-10-11.
 Created: 2026-09-11
@@ -43,10 +43,11 @@ and W14 Linux arm64 execution evidence. Local focused, workspace, installed
 wheel, W5, and W14 gates are green. CI execution remains a delivery gate, not
 an implementation gap in the blocking scope.
 
-The implementation intentionally leaves the nonblocking follow-ons out of this
-slice: oversize-NPDU rejection/counters (R7), periodic or recovery-triggered
-I-Am-Router-To-Network announcements (R8), fork wheel publication (R9), and
-multi-arch images (R10). At an SC-to-B/IP boundary, SC-only Data Options are
+The implementation now includes dispatch-time oversize-NPDU rejection and
+counters (the first R7 slice), periodic and recovery-triggered
+I-Am-Router-To-Network announcements (R8), and fork wheel publication (R9).
+Explicit SC receive-limit configuration (R7 completion) and multi-arch images
+(R10) remain open. At an SC-to-B/IP boundary, SC-only Data Options are
 ignored by B/IP while the NPDU is forwarded; this boundary behavior is not an
 oversize or general Annex AB conformance claim.
 
@@ -248,7 +249,7 @@ Crates: `bacnet-network`.
 - [x] Add `RouterPortHealth` and `BACnetRouter::port_health()` built from each
       port's `health()`; subscribe to `health_changes()` where available.
 - [x] Add `RouteSnapshot` and `BACnetRouter::routing_table()`.
-- [ ] Add `RouterConfig { announce_interval: Option<Duration> }` and
+- [x] Add `RouterConfig { announce_interval: Option<Duration> }` and
       `start_with_config`; `start` delegates with defaults. Re-announce on the
       timer and on any port transition to `Up`.
 - [x] Oversize handling in the dispatch path: when the target port's
@@ -482,17 +483,16 @@ remediation and commit partitioning; unresolved items remain unchecked.
 | Phase | Items done | Gap |
 |---|---|---|
 | 0 baseline | 4 of 4 | none |
-| 1 transport identity and health | 5 of 6 | `max_npdu_length()` hint |
+| 1 transport identity and health | 6 of 6 | none |
 | 2 unbounded SC reconnect | 5 of 5 | none |
-| 3 router extensions | 3 of 6 | re-announce, oversize reject, counter append |
+| 3 router extensions | 6 of 6 | none |
 | 4 SC size limits | 0 of 4 | not started |
 | 5 shared dial helper and runtime UUID | 2 of 4 | shared helper/consolidation deferred |
 | 6 Python typed ports | 5 of 6 | Phase 5 consolidation |
 | 7 mixed-transport evidence | 5 of 5 | none |
-| 8 release engineering | 1 of 5 | distribution rename complete; tag automation remains open |
+| 8 release engineering | 4 of 5 | multi-arch image remains open |
 
-Delivered against the router team's asks: R1, R2, R3, R4, R5, R6. Open: R7,
-R8, R9, R10.
+Delivered against the router team's asks: R1-R6, R8, and R9. Open: R7 and R10.
 
 ### Verification performed by the reviewer
 
@@ -868,16 +868,18 @@ Delivered on `feature/sc-ip-router-upstream-0.12`:
 
 The removed virtual-network transport, legacy virtual-router constructor, and
 old per-port forwarding counters were not restored because the 0.12 native
-router no longer owns those interfaces. R7 size configuration, R8 periodic and
-recovery-triggered announcements, the shared SC dial helper, and R10 remain the
-next planned slices.
+router no longer owns those interfaces. R7 size configuration, the shared SC
+dial helper, and R10 remain the next planned slices.
 
 The first R7 slice is now delivered: SC exposes its negotiated encoded-NPDU
 ceiling through the defaulted transport hint, and the router rejects an
 oversize rewritten unicast before queueing it, increments `oversize_drops()`,
 and returns Reject-Message-To-Network reason 4 to an addressable originator.
-The exact-limit boundary forwards normally. Phase 4 remains open for explicit
-node and Hub receive-limit configuration; the upstream 0.12 defaults and its
+The exact-limit boundary forwards normally. R8 is also delivered through
+`RouterConfig`, Python `announce_interval_s`, and per-port health watchers:
+the periodic timer waits a full interval, while a non-`Up` to `Up` transition
+immediately re-announces only on the recovered port. Phase 4 remains open for
+explicit node and Hub receive-limit configuration; the upstream 0.12 defaults and its
 existing local 1478-byte NPDU evidence were not replaced by the older plan's
 unverified 1497-byte assumption.
 

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use bacnet_network::router::{
-    BACnetRouter as NativeRouter, RouterOptions, RouterPort, StartedRouter,
+    BACnetRouter as NativeRouter, RouterConfig, RouterOptions, RouterPort, StartedRouter,
 };
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
@@ -80,6 +80,7 @@ impl Drop for StopCompletion {
 pub struct PyBACnetRouter {
     inner: Arc<Mutex<Option<NativeRouter>>>,
     configured_ports: Vec<PyRouterPortConfig>,
+    router_config: RouterConfig,
     bip_config_index: Option<usize>,
     started: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
@@ -95,18 +96,34 @@ pub struct PyBACnetRouter {
 impl PyBACnetRouter {
     /// Build a mixed-transport router from typed port configurations.
     #[classmethod]
-    #[pyo3(signature = (ports))]
+    #[pyo3(signature = (ports, *, announce_interval_s=None))]
     fn from_ports(
         _class: &Bound<'_, pyo3::types::PyType>,
         ports: Vec<PyRouterPortConfig>,
+        announce_interval_s: Option<f64>,
     ) -> PyResult<Self> {
         validate_ports(&ports)?;
+        let announce_interval = announce_interval_s
+            .map(|seconds| {
+                Duration::try_from_secs_f64(seconds).map_err(|_| {
+                    PyValueError::new_err(
+                        "announce_interval_s must be a finite number greater than zero",
+                    )
+                })
+            })
+            .transpose()?;
+        if announce_interval == Some(Duration::ZERO) {
+            return Err(PyValueError::new_err(
+                "announce_interval_s must be a finite number greater than zero",
+            ));
+        }
         let bip_config_index = ports
             .iter()
             .position(|port| matches!(port, PyRouterPortConfig::Bip(_)));
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
             configured_ports: ports,
+            router_config: RouterConfig { announce_interval },
             bip_config_index,
             started: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
@@ -151,6 +168,7 @@ impl PyBACnetRouter {
         let restart_reserved = Arc::clone(&self.restart_reserved);
         let stop_notify = Arc::clone(&self.stop_notify);
         let configured_ports = self.configured_ports.clone();
+        let router_config = self.router_config;
         let initial_start_reservation = (!waiting_for_stop).then(|| {
             let token = generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
             StartReservation {
@@ -205,9 +223,10 @@ impl PyBACnetRouter {
                 for (config_index, configured) in configured_ports.into_iter().enumerate() {
                     ports.push(build_router_port(config_index, configured).await?);
                 }
-                let StartedRouter { router, .. } = NativeRouter::start(ports, RouterOptions::new())
-                    .await
-                    .map_err(to_py_err)?;
+                let StartedRouter { router, .. } =
+                    NativeRouter::start_with_config(ports, RouterOptions::new(), router_config)
+                        .await
+                        .map_err(to_py_err)?;
                 *inner.lock().await = Some(router);
                 Ok(())
             }

@@ -1763,6 +1763,13 @@ let StartedRouter { router, apdus, network_control } =
     BACnetRouter::start(ports, RouterOptions::new().track_admission()).await?;
 ```
 
+`BACnetRouter::start_with_config` additionally accepts a `RouterConfig`.
+Setting `announce_interval` periodically repeats the startup
+I-Am-Router-To-Network advertisements; `None` preserves one startup
+advertisement. Independently, a port health transition from a non-operational
+state to `Up` immediately re-advertises reachable networks on that recovered
+port. A zero interval is rejected before any transport starts.
+
 At startup the router records each port's `max_npdu_length()` hint after the
 transport handshake. Before queueing a routed unicast, it encodes the actual
 rewritten NPDU and compares that complete length with the target port's hint.

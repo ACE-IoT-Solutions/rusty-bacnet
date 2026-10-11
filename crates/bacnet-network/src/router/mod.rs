@@ -62,12 +62,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
+#[cfg(test)]
+use bacnet_encoding::npdu::encode_npdu;
+use bacnet_encoding::npdu::{Npdu, NpduAddress};
 use bacnet_transport::port::{DataAttribute, TransportHealth, TransportPort};
+#[cfg(test)]
 use bacnet_types::enums::NetworkMessageType;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
+#[cfg(test)]
+use bytes::{BufMut, BytesMut};
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -77,6 +82,7 @@ use crate::layer::{AdmissionSender, ReceivedNetworkControl};
 use crate::router_table::RouterTable;
 use bacnet_transport::port::TransportProvenance;
 
+mod announcements;
 mod control_messages;
 pub mod control_policy;
 mod dispatch;
@@ -86,6 +92,7 @@ mod options;
 mod reject;
 
 pub use crate::router_table::RouteSnapshot;
+pub use announcements::RouterConfig;
 pub use control_policy::{ControlAuthContext, ControlAuthorizer, ControlClass};
 pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
 pub use control_policy::{ControlServiceCounters, ControlTrust};
@@ -383,6 +390,8 @@ pub struct BACnetRouter {
     sender_tasks: Vec<JoinHandle<()>>,
     /// Background task that purges stale learned routes.
     aging_task: Option<JoinHandle<()>>,
+    /// Periodic and per-port recovery announcement tasks.
+    announcement_tasks: Vec<JoinHandle<()>>,
     /// NPDUs refused for a link-layer source MAC, DLEN or SLEN past
     /// `NpduAddress::MAX_MAC_LEN`.
     address_length_drops: Arc<AtomicU64>,
@@ -424,6 +433,30 @@ impl BACnetRouter {
         A: LocalApduReceiver,
         C: NetworkControlReceiver,
     {
+        Self::start_with_config(ports, options, RouterConfig::default()).await
+    }
+
+    /// Create and start a router with optional background announcement behavior.
+    ///
+    /// In addition to the startup announcement, a configured interval
+    /// re-advertises reachable networks on every port. A port that reports a
+    /// transition from any non-operational state to `Up` is re-announced on
+    /// that port immediately, regardless of the periodic setting.
+    pub async fn start_with_config<T, A, C>(
+        ports: Vec<RouterPort<T>>,
+        options: RouterOptions<A, C>,
+        config: RouterConfig,
+    ) -> Result<StartedRouter<A, C>, Error>
+    where
+        T: TransportPort + 'static,
+        A: LocalApduReceiver,
+        C: NetworkControlReceiver,
+    {
+        if config.announce_interval == Some(Duration::ZERO) {
+            return Err(Error::Encoding(
+                "Router announce interval must be greater than zero".to_owned(),
+            ));
+        }
         let (control_tx, network_control) = if options.wants_network_control() {
             let (tx, rx, counters) = AdmissionReceiver::channel(C::TRACKED);
             (Some(tx), Some(C::from_queue(rx, counters)))
@@ -432,7 +465,7 @@ impl BACnetRouter {
         };
         let gate = Arc::new(options.control_gate());
         let (router, rx, counters) =
-            Self::start_dispatch(ports, A::TRACKED, gate, control_tx).await?;
+            Self::start_dispatch(ports, A::TRACKED, gate, control_tx, config).await?;
         Ok(StartedRouter {
             router,
             apdus: A::from_queue(rx, counters),
@@ -522,6 +555,7 @@ impl BACnetRouter {
         track_depth: bool,
         control: Arc<control_policy::ControlGate>,
         network_control: Option<AdmissionSender<ReceivedNetworkControl>>,
+        config: RouterConfig,
     ) -> Result<(Self, mpsc::Receiver<ReceivedApdu>, QueueAdmissionCounters), Error> {
         let mut table = RouterTable::new();
 
@@ -581,20 +615,23 @@ impl BACnetRouter {
         let port_groups = Arc::new(port_groups);
         let port_max_npdu_lengths = Arc::new(port_max_npdu_lengths);
 
-        let port_health = ports
-            .iter()
-            .enumerate()
-            .map(|(config_index, port)| PortHealthEntry {
+        let mut recovery_health = Vec::with_capacity(ports.len());
+        let mut port_health = Vec::with_capacity(ports.len());
+        for (config_index, port) in ports.iter().enumerate() {
+            let live_health = port.transport.health_changes();
+            let health = live_health.clone().unwrap_or_else(|| {
+                let (_tx, rx) = watch::channel(port.transport.health());
+                rx
+            });
+            recovery_health.push(live_health);
+            port_health.push(PortHealthEntry {
                 config_index,
                 network_number: port.network_number,
                 transport_kind: port.transport.transport_kind().to_owned(),
                 identity: format_transport_identity(&port.transport),
-                health: port.transport.health_changes().unwrap_or_else(|| {
-                    let (_tx, rx) = watch::channel(port.transport.health());
-                    rx
-                }),
-            })
-            .collect();
+                health,
+            });
+        }
 
         // Move transports into sender tasks
         for port in ports {
@@ -636,41 +673,18 @@ impl BACnetRouter {
 
         let send_txs = Arc::new(send_txs);
 
-        // Announce I-Am-Router-To-Network on each port listing networks reachable via other ports.
-        for (port_idx, tx) in send_txs.iter().enumerate() {
-            let other_networks: Vec<u16> = port_networks
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| *idx != port_idx)
-                .map(|(_, net)| *net)
-                .collect();
-
-            if other_networks.is_empty() {
-                continue;
-            }
-
-            let mut payload = BytesMut::with_capacity(other_networks.len() * 2);
-            for net in &other_networks {
-                payload.put_u16(*net);
-            }
-
-            let payload_len = payload.len();
-            let response = Npdu {
-                is_network_message: true,
-                message_type: Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw()),
-                payload: payload.freeze(),
-                ..Npdu::default()
-            };
-
-            let mut buf = BytesMut::with_capacity(8 + payload_len);
-            if let Err(e) = encode_npdu(&mut buf, &response) {
-                warn!("Failed to encode I-Am-Router NPDU: {e}");
-                continue;
-            }
-
-            if let Err(e) = tx.try_send(SendRequest::broadcast(buf.freeze())) {
-                warn!(%e, "Router dropped I-Am-Router announcement: output channel full");
-            }
+        // Announce once at startup, optionally on a timer, and whenever a
+        // live-health port recovers to Up.
+        let announcements = announcements::encode_for_ports(&port_networks)?;
+        announcements::announce_all(&send_txs, &announcements, "startup");
+        let mut announcement_tasks =
+            announcements::spawn_recovery(recovery_health, &send_txs, &announcements);
+        if let Some(task) = announcements::spawn_periodic(
+            config.announce_interval,
+            send_txs.as_ref().clone(),
+            announcements,
+        ) {
+            announcement_tasks.push(task);
         }
 
         let mut dispatch_tasks = Vec::new();
@@ -755,6 +769,7 @@ impl BACnetRouter {
                 dispatch_tasks,
                 sender_tasks,
                 aging_task: Some(aging_task),
+                announcement_tasks,
                 address_length_drops,
                 global_broadcast_dadr_drops,
                 broadcast_pdu_type_drops,
@@ -796,6 +811,10 @@ impl BACnetRouter {
     /// [receive-queue contract](crate::layer#receive-queue-admission).
     pub async fn stop(&mut self) {
         for task in self.dispatch_tasks.drain(..) {
+            task.abort();
+            let _ = task.await;
+        }
+        for task in self.announcement_tasks.drain(..) {
             task.abort();
             let _ = task.await;
         }

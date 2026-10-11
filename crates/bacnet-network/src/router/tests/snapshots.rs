@@ -8,6 +8,7 @@ struct HealthTestTransport {
     topology: String,
     mac: [u8; 1],
     start_error: Option<std::io::ErrorKind>,
+    broadcasts: Option<mpsc::Sender<Bytes>>,
 }
 
 impl HealthTestTransport {
@@ -25,6 +26,7 @@ impl HealthTestTransport {
                 topology: topology.into(),
                 mac: [mac],
                 start_error: None,
+                broadcasts: None,
             },
             health_tx,
         )
@@ -38,6 +40,11 @@ impl HealthTestTransport {
         );
         transport.start_error = Some(error_kind);
         transport
+    }
+
+    fn with_broadcasts(mut self, broadcasts: mpsc::Sender<Bytes>) -> Self {
+        self.broadcasts = Some(broadcasts);
+        self
     }
 }
 
@@ -78,7 +85,13 @@ impl TransportPort for HealthTestTransport {
         Ok(())
     }
 
-    async fn send_broadcast(&self, _npdu: &[u8]) -> Result<(), Error> {
+    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
+        if let Some(broadcasts) = &self.broadcasts {
+            broadcasts
+                .send(Bytes::copy_from_slice(npdu))
+                .await
+                .map_err(|error| Error::Encoding(error.to_string()))?;
+        }
         Ok(())
     }
 
@@ -262,4 +275,113 @@ async fn routing_table_snapshot_contains_direct_and_learned_routes() {
     assert_eq!(snapshot[2].next_hop_mac, vec![0xAA, 0xBB]);
 
     router.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn configured_interval_reannounces_without_an_immediate_extra_tick() {
+    let (broadcasts_tx, mut broadcasts_rx) = mpsc::channel(8);
+    let (first, _first_health) =
+        HealthTestTransport::new("periodic-a", 1, health(TransportHealthState::Up, "ready"));
+    let (second, _second_health) =
+        HealthTestTransport::new("periodic-b", 2, health(TransportHealthState::Up, "ready"));
+    let StartedRouter { mut router, .. } = BACnetRouter::start_with_config(
+        vec![
+            RouterPort {
+                transport: first.with_broadcasts(broadcasts_tx.clone()),
+                network_number: 100,
+            },
+            RouterPort {
+                transport: second.with_broadcasts(broadcasts_tx),
+                network_number: 200,
+            },
+        ],
+        RouterOptions::new(),
+        RouterConfig {
+            announce_interval: Some(Duration::from_secs(30)),
+        },
+    )
+    .await
+    .unwrap();
+
+    tokio::task::yield_now().await;
+    assert_eq!(broadcasts_rx.len(), 2);
+    broadcasts_rx.recv().await.unwrap();
+    broadcasts_rx.recv().await.unwrap();
+    assert!(broadcasts_rx.try_recv().is_err());
+
+    tokio::time::advance(Duration::from_secs(29)).await;
+    tokio::task::yield_now().await;
+    assert!(broadcasts_rx.try_recv().is_err());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(broadcasts_rx.len(), 2);
+
+    router.stop().await;
+}
+
+#[tokio::test]
+async fn recovery_to_up_reannounces_only_on_the_recovered_port() {
+    let (broadcasts_tx, mut broadcasts_rx) = mpsc::channel(8);
+    let (first, first_health) =
+        HealthTestTransport::new("recovery-a", 1, health(TransportHealthState::Up, "ready"));
+    let (second, _second_health) =
+        HealthTestTransport::new("recovery-b", 2, health(TransportHealthState::Up, "ready"));
+    let StartedRouter { mut router, .. } = BACnetRouter::start(
+        vec![
+            RouterPort {
+                transport: first.with_broadcasts(broadcasts_tx.clone()),
+                network_number: 100,
+            },
+            RouterPort {
+                transport: second.with_broadcasts(broadcasts_tx),
+                network_number: 200,
+            },
+        ],
+        RouterOptions::new(),
+    )
+    .await
+    .unwrap();
+
+    tokio::task::yield_now().await;
+    broadcasts_rx.recv().await.unwrap();
+    broadcasts_rx.recv().await.unwrap();
+
+    first_health
+        .send(health(TransportHealthState::Reconnecting, "retrying"))
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(broadcasts_rx.try_recv().is_err());
+    first_health
+        .send(health(TransportHealthState::Up, "restored"))
+        .unwrap();
+    tokio::task::yield_now().await;
+    let recovered = broadcasts_rx.recv().await.unwrap();
+    let decoded = bacnet_encoding::npdu::decode_npdu(recovered).unwrap();
+    assert_eq!(decoded.payload.as_ref(), &[0, 200]);
+    assert!(broadcasts_rx.try_recv().is_err());
+
+    router.stop().await;
+}
+
+#[tokio::test]
+async fn zero_announcement_interval_is_rejected_before_ports_start() {
+    let (transport, _health) = HealthTestTransport::new(
+        "zero-interval",
+        1,
+        health(TransportHealthState::Down, "not started"),
+    );
+    let error = BACnetRouter::start_with_config(
+        vec![RouterPort {
+            transport,
+            network_number: 100,
+        }],
+        RouterOptions::new(),
+        RouterConfig {
+            announce_interval: Some(Duration::ZERO),
+        },
+    )
+    .await
+    .err()
+    .expect("zero interval must be rejected");
+    assert!(error.to_string().contains("greater than zero"));
 }

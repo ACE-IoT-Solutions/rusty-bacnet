@@ -1895,7 +1895,7 @@ router = BACnetRouter.from_ports([
         failover_hub="wss://failover.example:47808",
         reconnect_forever=True,
     ),
-])
+], announce_interval_s=300)
 
 await router.start()
 health = await router.port_health()
@@ -1940,10 +1940,12 @@ or `"Unreachable"`), `last_seen_age_s`, `busy_remaining_s`, `flap_count`, and
 after `stop()`; before a successful start they return an empty list.
 
 The reconciled 0.12 binding exposes `BACnetRouter.from_ports()` rather than the
-superseded fork-only virtual-network constructor. Periodic and recovery-triggered
-announcements are not implemented, so `from_ports` does not expose an
-announcement-interval keyword yet. Oversize-NPDU rejection and an
-`oversize_drops` counter are also not part of this surface.
+superseded fork-only virtual-network constructor. Its optional positive,
+finite `announce_interval_s` keyword repeats I-Am-Router-To-Network
+advertisements; `None` retains startup-only periodic behavior. A port recovery
+to `Up` re-announces on that port even when no interval is configured.
+Oversize-NPDU rejection is active in the native router, while its
+`oversize_drops` counter is not yet part of the Python surface.
 
 BACnet/SC Data Options are carried on SC-capable sends. At an SC-to-B/IP router
 boundary they are intentionally ignored by the B/IP egress transport because

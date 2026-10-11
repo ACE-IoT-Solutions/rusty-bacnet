@@ -64,13 +64,17 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
         )
         router = BACnetRouter.from_ports([bip, sc])
         self.assertIsInstance(router, BACnetRouter)
-        self.assertNotIn(
+        self.assertIn(
             "announce_interval_s", inspect.signature(BACnetRouter.from_ports).parameters
+        )
+        self.assertIsInstance(
+            BACnetRouter.from_ports([bip, sc], announce_interval_s=60), BACnetRouter
         )
         with self.assertRaises(ValueError):
             BACnetRouter.from_ports([bip])
-        with self.assertRaises(TypeError):
-            BACnetRouter.from_ports([bip, sc], announce_interval_s=60)
+        for invalid_interval in (0, -1, float("inf"), float("nan")):
+            with self.subTest(announce_interval_s=invalid_interval), self.assertRaises(ValueError):
+                BACnetRouter.from_ports([bip, sc], announce_interval_s=invalid_interval)
         with self.assertRaises(ValueError):
             BACnetRouter.from_ports(
                 [bip, RouterBipPort(300, interface="127.0.0.1", port=0)]
