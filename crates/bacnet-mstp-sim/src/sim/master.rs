@@ -55,7 +55,8 @@ pub(crate) struct PendingTx {
     pub(super) dispatched: Instant,
     /// The line's last activity at that moment.
     pub(super) activity_at_dispatch: Option<Instant>,
-    /// The core was answering a request when it handed the frame over.
+    /// The frame is the core's answer to a request (a data frame or Reply
+    /// Postponed, handed over while answering).
     pub(super) while_answering: bool,
     pub(super) generation: bool,
 }
@@ -139,6 +140,18 @@ enum Effect {
         npdu: Vec<u8>,
         request: Option<RequestId>,
     },
+}
+
+/// Whether a frame is an answer to a request: a data frame not expecting a
+/// reply, or Reply Postponed.
+fn is_answer(octets: &[u8]) -> bool {
+    bacnet_mstp_codec::decode_frame(octets).is_ok_and(|(frame, _)| {
+        matches!(
+            frame.header.frame_type,
+            bacnet_mstp_codec::FrameType::BACnetDataNotExpectingReply
+                | bacnet_mstp_codec::FrameType::ReplyPostponed
+        )
+    })
 }
 
 /// Poll actions until the core is idle.
@@ -349,12 +362,13 @@ impl Sim {
                     if delay > bacnet_mstp_core::Duration::ZERO {
                         master.blind = Some((now, None));
                     }
+                    let answer = answering && is_answer(&octets);
                     master.pending = Some(PendingTx {
                         id,
                         octets,
                         dispatched: now,
                         activity_at_dispatch: activity,
-                        while_answering: answering,
+                        while_answering: answer,
                         generation,
                     });
                     if replaced {

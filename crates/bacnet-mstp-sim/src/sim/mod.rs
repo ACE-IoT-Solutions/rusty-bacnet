@@ -379,7 +379,17 @@ impl Sim {
     /// Call it once nothing is in flight: no armed fault, no node about to
     /// power up, and the token has gone round the ring with every frame
     /// clean, so every receiver's decoder is back in step.
+    ///
+    /// # Panics
+    ///
+    /// If a corruption or cut-off is still armed; withdraw it first with
+    /// [`Fault::Disarm`].
     pub fn settle(&mut self) {
+        assert!(
+            self.armed.is_empty(),
+            "settle() with faults still armed: {:?}",
+            self.armed
+        );
         if self.perturbed {
             self.perturbed = false;
             self.note(

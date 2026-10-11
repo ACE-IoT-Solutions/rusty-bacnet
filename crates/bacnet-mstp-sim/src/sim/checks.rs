@@ -151,15 +151,19 @@ impl Sim {
             return CollisionClass::Scripted;
         };
         // A slow adapter explains the overlap only if its core handed the
-        // frame over before the other frame began: the core could not have
-        // heard it, and only the adapter's delay put the two together. A core
-        // that dispatched while a frame was already on the line is at fault
-        // whatever its adapter.
+        // frame over before the other frame's first character arrived: until
+        // then the core could not have heard it, and only the adapter's delay
+        // put the two together. This is the reference point the turnaround
+        // check uses. A core that dispatched after hearing the other frame is
+        // at fault whatever its adapter.
         let dispatched = |tx: Option<TxId>| tx.and_then(|tx| self.meta.get(&tx)?.dispatched);
-        let began = |tx: Option<TxId>| tx.and_then(|tx| self.line.get(tx)).map(|t| t.start);
+        let first_heard = |tx: Option<TxId>| {
+            tx.and_then(|tx| self.line.get(tx))
+                .map(|t| t.start + self.timing.octet())
+        };
         let slow_first = |slow: &super::master::MasterNode, own: Option<TxId>, theirs| {
             slow.spec.adapter.is_slow()
-                && matches!((dispatched(own), began(theirs)), (Some(at), Some(start)) if at < start)
+                && matches!((dispatched(own), first_heard(theirs)), (Some(at), Some(heard)) if at < heard)
         };
         if first.generating && second.generating {
             CollisionClass::GenerationRace
@@ -333,6 +337,86 @@ impl Sim {
                 ),
             );
             self.duplicate_since = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_mstp_codec::{Frame, FrameType};
+    use bacnet_mstp_core::{Duration, Instant};
+
+    use crate::line::Driver;
+    use crate::report::{CollisionClass, ViolationKind};
+    use crate::sim::{Sim, SimConfig};
+    use crate::spec::{AdapterSpec, MasterSpec};
+
+    const BAUD: u32 = 38_400;
+
+    fn token(from: u8, to: u8) -> Vec<u8> {
+        let mut wire = [0u8; 8];
+        Frame::new(FrameType::Token, to, from, &[])
+            .encode_into(&mut wire)
+            .expect("a Token encodes");
+        wire.to_vec()
+    }
+
+    /// Station 0's frame starts at `t0`; station 3, whose adapter is late,
+    /// starts over its second octet with a frame its core handed over
+    /// `dispatched` after `t0`. Both frames go onto the line directly, not
+    /// through the cores: a correct core never hands a frame over after
+    /// hearing a character, because the character restarts its turnaround or
+    /// cancels the frame, and such a hand-over would also fail the
+    /// dispatch-time turnaround check, which this bypasses.
+    fn overlap(dispatched: Duration) -> (CollisionClass, Vec<ViolationKind>) {
+        let mut config = SimConfig::new(BAUD);
+        config.panic_on_violation = false;
+        config.tolerance.slow_adapter_collisions = true;
+        let mut sim = Sim::new(config);
+        let late = AdapterSpec {
+            deadline_lateness: Duration::from_millis(1),
+            ..AdapterSpec::default()
+        };
+        sim.add_master(MasterSpec::new(0, 3, BAUD))
+            .add_master(MasterSpec::new(3, 3, BAUD).adapter(late));
+        let octet = sim.timing.octet();
+        let t0 = Instant::from_micros(1_000_000);
+        sim.now = t0;
+        let first =
+            sim.begin_transmission(Driver::Station(0), token(0, 3), None, Some((t0, false)));
+        sim.nodes[0].driving = Some(first);
+        sim.octet_start(first, 0);
+        sim.now = t0 + octet;
+        sim.octet_start(first, 1);
+        sim.now = t0 + octet + Duration::from_micros(100);
+        let second = sim.begin_transmission(
+            Driver::Station(3),
+            token(3, 0),
+            None,
+            Some((t0 + dispatched, false)),
+        );
+        sim.nodes[1].driving = Some(second);
+        sim.octet_start(second, 0);
+        let kinds = sim.report.violations.iter().map(|v| v.kind).collect();
+        (sim.report.collisions[0].class, kinds)
+    }
+
+    /// The reference point is the arrival of the other frame's first
+    /// character, as for the turnaround check: before it the late core could
+    /// not have heard the frame, so the collision is the adapter's and the
+    /// tolerance covers it; from it on the core had heard the frame, and the
+    /// collision is unexplained even with the tolerance on.
+    #[test]
+    fn a_slow_adapter_collision_needs_a_hand_over_before_the_first_character() {
+        let octet = crate::wire::WireTiming::new(BAUD).octet();
+        for before in [Duration::from_micros(50), octet - Duration::from_micros(1)] {
+            assert_eq!(overlap(before), (CollisionClass::SlowAdapter, Vec::new()));
+        }
+        for after in [octet, octet + Duration::from_micros(50)] {
+            assert_eq!(
+                overlap(after),
+                (CollisionClass::Unexplained, vec![ViolationKind::Collision])
+            );
         }
     }
 }

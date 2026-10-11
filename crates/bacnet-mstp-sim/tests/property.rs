@@ -174,8 +174,10 @@ fn plan(seed: u64) -> Plan {
 }
 
 /// Run until the token has gone once round the ring with every frame clean,
-/// from a Token some master sends to the next Token that master sends; then
-/// declare the bus settled, so the checks a fault suspends apply again.
+/// from a Token some master sends to the next Token addressed back to that
+/// master (a token sent again by the same master does not close the lap);
+/// then declare the bus settled, so the checks a fault suspends apply
+/// again.
 fn settle_after_a_clean_rotation(sim: &mut Sim, limit: Instant, seed: u64) {
     let mut seen = sim.frames().len();
     let mut lap: Option<u8> = None;
@@ -189,7 +191,7 @@ fn settle_after_a_clean_rotation(sim: &mut Sim, limit: Instant, seed: u64) {
             } else if frame.frame_type() == Some(FrameType::Token) {
                 match lap {
                     None => lap = frame.source(),
-                    Some(first) if frame.source() == Some(first) => closed = true,
+                    Some(first) if frame.destination() == Some(first) => closed = true,
                     Some(_) => {}
                 }
             }
@@ -231,6 +233,8 @@ fn check(seed: u64) {
             "seed {seed}: {collision:?}"
         );
     }
+    // Races are rare here (none in a 400-seed sweep); lost_token.rs drives
+    // them on purpose. Any that happens must end within a second.
     for race in &report.generation_races {
         assert!(race.length < millis(1_000), "seed {seed}: {race:?}");
     }

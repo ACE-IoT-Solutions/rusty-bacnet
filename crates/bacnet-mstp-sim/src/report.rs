@@ -177,9 +177,9 @@ pub enum CollisionClass {
     /// on part way through it, say), so their generation slots coincided.
     GenerationRace,
     /// A master with a slow or late adapter was one of them, and its core
-    /// handed its frame over before the other frame began, so only the
-    /// adapter's delay brought them together. Tolerated only under
-    /// [`Tolerance::slow_adapter_collisions`].
+    /// handed its frame over before the other frame's first character
+    /// arrived, so only the adapter's delay brought them together. Tolerated
+    /// only under [`Tolerance::slow_adapter_collisions`].
     SlowAdapter,
     /// A scripted station was one of them.
     Scripted,
@@ -223,9 +223,9 @@ pub struct Report {
     /// Stretches in which more than one master held a token it had generated
     /// itself, each within [`Tolerance::generation_race`].
     pub generation_races: Vec<Episode>,
-    /// Starts a slow adapter made within Tturnaround of activity that
-    /// arrived after its core had handed it the frame. Each is a violation
-    /// unless [`Tolerance::slow_adapter_blind_spot`] is set.
+    /// Starts a slow adapter made within Tturnaround of activity whose first
+    /// character arrived after its core had handed it the frame. Each is a
+    /// violation unless [`Tolerance::slow_adapter_blind_spot`] is set.
     pub blind_spot_starts: u32,
     /// Clean frames a master with a slow adapter never counted because they
     /// arrived between its core handing a frame over and the adapter
@@ -270,8 +270,8 @@ pub struct Tolerance {
     /// frame whole. A core bug, #1625; see the crate documentation.
     pub slow_adapter_blind_spot: bool,
     /// Accept collisions a slow or late adapter causes: its core handed the
-    /// frame over before the other frame began, and only the delay before
-    /// the start made them overlap.
+    /// frame over before the other frame's first character arrived, and only
+    /// the adapter's delay made them overlap.
     pub slow_adapter_collisions: bool,
     /// Accept collisions involving scripted stations.
     pub scripted_collisions: bool,

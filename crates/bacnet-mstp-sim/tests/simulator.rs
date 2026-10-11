@@ -162,29 +162,42 @@ fn a_slow_adapter_collision_fails_a_strict_run() {
         .all(|violation| violation.kind != ViolationKind::Collision));
 }
 
-/// A late adapter whose core hands its frame over after the other frame has
-/// begun is not excused by the slow-adapter tolerance: the core dispatched
-/// into a frame already on the line.
+/// Station 3's adapter serves deadlines 19 ms late, so its core hands its
+/// frame over 42 us after station 0's second token began, but before that
+/// token's first character arrives (260 us in): the core could not have
+/// heard it, and the collision is the late adapter's. The tolerance covers
+/// it; a strict run fails on it. A core that hands a frame over after
+/// hearing a character is never excused; `sim::checks` tests that case.
 #[test]
-fn a_late_core_that_dispatches_into_a_frame_is_not_excused() {
+fn a_late_core_that_dispatches_before_hearing_the_frame_is_the_adapters() {
     let late = AdapterSpec {
         deadline_lateness: Duration::from_micros(19_000),
         ..AdapterSpec::default()
     };
     let mut config = SimConfig::new(BAUD);
     config.panic_on_violation = false;
-    config.tolerance.slow_adapter_collisions = true;
     let sim = collide_with_the_second_token(config, late);
     let report = sim.report();
-    assert_eq!(report.collisions[0].class, CollisionClass::Unexplained);
+    assert_eq!(report.collisions[0].class, CollisionClass::SlowAdapter);
     assert_eq!(report.violations[0].kind, ViolationKind::Collision);
+
+    config.tolerance.slow_adapter_collisions = true;
+    let sim = collide_with_the_second_token(config, late);
+    assert_eq!(sim.report().collisions_of(CollisionClass::SlowAdapter), 1);
+    assert!(sim
+        .report()
+        .violations
+        .iter()
+        .all(|violation| violation.kind != ViolationKind::Collision));
 }
 
 /// Every adapter here starts frames 4 ms after its core hands them over,
 /// which would hide a core that dispatched with no turnaround at all: each
 /// start would still come 4 ms after the last activity. The simulator checks
-/// the hand-over too, so that core fails even with the blind-spot tolerance
-/// on.
+/// the hand-over too. With a correct core this test only shows that check
+/// raises nothing falsely, tolerances on; its failing half needs a core
+/// mutated to skip the turnaround, which then fails here even with both
+/// tolerances on (checked by hand, PR #1627).
 #[test]
 fn slow_adapters_do_not_hide_a_dispatch_inside_turnaround() {
     let slow = AdapterSpec {

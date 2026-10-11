@@ -156,8 +156,8 @@
 //! these, each a violation unless [`Tolerance::slow_adapter_blind_spot`] is
 //! set. The tolerance never excuses a hand-over inside Tturnaround of
 //! activity the core had heard, nor a start after a run of characters it had
-//! begun to hear: those are errors whatever the adapter. The crate's `known_gaps` tests pin the correct behaviour until #1625
-//! is fixed.
+//! begun to hear: those are errors whatever the adapter. The crate's
+//! `known_gaps` tests pin the correct behaviour until #1625 is fixed.
 //!
 //! # Adding a scenario
 //!
