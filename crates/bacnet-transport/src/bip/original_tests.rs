@@ -179,8 +179,6 @@ async fn original_unicast_npdu_uses_udp_sender_source_mac_and_ignores_self() {
     let msg = BvllMessage {
         function: BvlcFunction::ORIGINAL_UNICAST_NPDU,
         payload: Bytes::from_static(&[0x01, 0x04, 0xAA, 0xBB]),
-        originating_ip: None,
-        originating_port: None,
     };
 
     handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;
@@ -264,8 +262,6 @@ async fn original_broadcast_npdu_bbmd_forwards_to_bdt_and_fdt_without_local_echo
     let msg = BvllMessage {
         function: BvlcFunction::ORIGINAL_BROADCAST_NPDU,
         payload: Bytes::from_static(&[0x01, 0x20, 0xDE, 0xAD, 0xBE, 0xEF]),
-        originating_ip: None,
-        originating_port: None,
     };
 
     handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;
@@ -287,9 +283,12 @@ async fn original_broadcast_npdu_bbmd_forwards_to_bdt_and_fdt_without_local_echo
     ] {
         let frame = recv_bvll(socket).await;
         assert_eq!(frame.function, BvlcFunction::FORWARDED_NPDU, "{label}");
-        assert_eq!(frame.originating_ip, Some(sender.0), "{label}");
-        assert_eq!(frame.originating_port, Some(sender.1), "{label}");
-        assert_eq!(frame.payload.as_ref(), msg.payload.as_ref(), "{label}");
+        assert_eq!(origin_of(&frame), Some(sender), "{label}");
+        assert_eq!(
+            frame.npdu().unwrap().as_ref(),
+            msg.payload.as_ref(),
+            "{label}"
+        );
     }
 
     let mut local_broadcast_buf = [0u8; 2048];
@@ -385,8 +384,6 @@ async fn original_broadcast_npdu_bbmd_fanout_deduplicates_and_throttles() {
     let msg = BvllMessage {
         function: BvlcFunction::ORIGINAL_BROADCAST_NPDU,
         payload: Bytes::from_static(&[0x01, 0x20, 0xFE, 0xED]),
-        originating_ip: None,
-        originating_port: None,
     };
 
     handle_bvll_message(&msg, sender, Delivery::Broadcast, &ctx).await;
@@ -401,9 +398,12 @@ async fn original_broadcast_npdu_bbmd_fanout_deduplicates_and_throttles() {
     for (label, socket) in [("BDT peer A", &peer_a), ("BDT peer B", &peer_b)] {
         let frame = recv_bvll(socket).await;
         assert_eq!(frame.function, BvlcFunction::FORWARDED_NPDU, "{label}");
-        assert_eq!(frame.originating_ip, Some(sender.0), "{label}");
-        assert_eq!(frame.originating_port, Some(sender.1), "{label}");
-        assert_eq!(frame.payload.as_ref(), msg.payload.as_ref(), "{label}");
+        assert_eq!(origin_of(&frame), Some(sender), "{label}");
+        assert_eq!(
+            frame.npdu().unwrap().as_ref(),
+            msg.payload.as_ref(),
+            "{label}"
+        );
         assert_silent(socket, label).await;
     }
     assert_silent(&device_c, "throttled foreign device C").await;

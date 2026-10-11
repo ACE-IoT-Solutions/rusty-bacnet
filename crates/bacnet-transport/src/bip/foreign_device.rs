@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bacnet_types::enums::BvlcFunction;
+use bacnet_bip_codec::Bvll;
 use bacnet_types::error::Error;
 use tokio::time::Instant;
 
@@ -61,9 +61,8 @@ pub(super) async fn run(
             .request(
                 &socket,
                 &target,
-                BvlcFunction::REGISTER_FOREIGN_DEVICE,
+                Bvll::RegisterForeignDevice { ttl: config.ttl },
                 BvlcResponseKind::Result,
-                &config.ttl.to_be_bytes(),
                 interval.min(BipTransport::BVLC_RESPONSE_TIMEOUT),
             )
             .await

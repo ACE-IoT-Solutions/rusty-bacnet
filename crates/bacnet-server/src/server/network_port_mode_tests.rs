@@ -311,7 +311,7 @@ async fn bbmd_mode_serves_its_tables_through_rp_and_rpm() {
             .lock()
             .unwrap()
             .register_foreign_device_at([10, 0, 0, 9], UDP, 60, now),
-        bacnet_types::enums::BvlcResultCode::SUCCESSFUL_COMPLETION
+        bacnet_transport::bvll::BvlcResultCode::SUCCESSFUL_COMPLETION
     );
     let server = start(BipPortMode::Bbmd {
         tables: Some(Arc::clone(&bbmd) as Arc<dyn BbmdTables>),

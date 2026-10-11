@@ -5,7 +5,7 @@
 //! `Error::Encoding`-style error and preserve the committed table.
 
 use super::{BbmdState, BdtEntry, ForeignDevicePolicy};
-use bacnet_types::enums::BvlcResultCode;
+use bacnet_bip_codec::BvlcResultCode;
 use bacnet_types::error::Error;
 
 const PORT: u16 = 0xBAC0;

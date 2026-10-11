@@ -4,23 +4,20 @@
 //! (FDT) per ASHRAE 135-2020 Annex J. Pure state/logic — no async or I/O.
 
 use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::net::SocketAddrV4;
 use std::time::{Duration, Instant};
 
-use bacnet_types::enums::BvlcResultCode;
+use bacnet_bip_codec::{self as codec, BdtEntries, BvlcResultCode, FdtEntries};
 use bacnet_types::error::Error;
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
+
+use crate::bvll::bvll_error;
 
 mod policy;
 mod tables;
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
 pub(crate) use tables::{lock, LiveTables};
-
-/// BDT entry wire format size: IP(4) + port(2) + mask(4) = 10 bytes.
-pub const BDT_ENTRY_SIZE: usize = 10;
-
-/// FDT entry wire format size: IP(4) + port(2) + TTL(2) + remaining(2) = 10 bytes.
-pub const FDT_ENTRY_SIZE: usize = 10;
 
 /// A Broadcast Distribution Table entry — one peer BBMD.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +69,34 @@ impl FdtEntry {
     /// Seconds remaining including the 30-second grace period.
     pub fn seconds_remaining(&self) -> u16 {
         self.seconds_remaining_at(Instant::now())
+    }
+
+    /// This entry as a Read-FDT-Ack reports it at `now` (Annex J.2.8.1).
+    pub fn wire_entry_at(&self, now: Instant) -> codec::FdtEntry {
+        codec::FdtEntry::new(
+            SocketAddrV4::new(self.ip.into(), self.port),
+            self.ttl,
+            self.seconds_remaining_at(now),
+        )
+    }
+}
+
+impl From<&BdtEntry> for codec::BdtEntry {
+    fn from(entry: &BdtEntry) -> Self {
+        Self::new(
+            SocketAddrV4::new(entry.ip.into(), entry.port),
+            entry.broadcast_mask.into(),
+        )
+    }
+}
+
+impl From<codec::BdtEntry> for BdtEntry {
+    fn from(entry: codec::BdtEntry) -> Self {
+        Self {
+            ip: entry.address.ip().octets(),
+            port: entry.address.port(),
+            broadcast_mask: entry.mask.octets(),
+        }
     }
 }
 
@@ -176,46 +201,53 @@ pub struct FdtEntryWire {
     pub seconds_remaining: u16,
 }
 
-/// Encode a slice of BDT entries into wire format without needing a `BbmdState` instance.
-pub fn encode_bdt_entries(entries: &[BdtEntry], buf: &mut BytesMut) {
-    buf.reserve(entries.len() * BDT_ENTRY_SIZE);
-    for entry in entries {
-        buf.put_slice(&entry.ip);
-        buf.put_u16(entry.port);
-        buf.put_slice(&entry.broadcast_mask);
+impl From<codec::FdtEntry> for FdtEntryWire {
+    fn from(entry: codec::FdtEntry) -> Self {
+        Self {
+            ip: entry.address.ip().octets(),
+            port: entry.address.port(),
+            ttl: entry.ttl,
+            seconds_remaining: entry.remaining,
+        }
     }
 }
 
-/// Decode FDT entries from a Read-FDT-ACK payload.
-///
-/// Wire format per entry: ip(4) + port(2) + ttl(2) + remaining(2) = 10 bytes.
-pub fn decode_fdt(data: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
-    if !data.len().is_multiple_of(FDT_ENTRY_SIZE) {
-        return Err(Error::decoding(
-            0,
-            format!(
-                "FDT data length {} not a multiple of {}",
-                data.len(),
-                FDT_ENTRY_SIZE
-            ),
-        ));
+/// Append the wire octets of `entries`, a BDT payload (Annex J.2.2.1), to
+/// `buf`. A persisted BDT is stored in this form.
+pub fn encode_bdt_entries(entries: &[BdtEntry], buf: &mut BytesMut) {
+    buf.reserve(entries.len() * codec::BDT_ENTRY_LENGTH);
+    for entry in entries {
+        buf.extend_from_slice(&codec::BdtEntry::from(entry).to_octets());
     }
-    let count = data.len() / FDT_ENTRY_SIZE;
+}
+
+/// The rows of a BDT a peer sent, refusing more than
+/// [`BbmdState::MAX_BDT_ENTRIES`].
+pub fn bdt_from_wire(table: BdtEntries<'_>) -> Result<Vec<BdtEntry>, Error> {
+    let count = table.len();
+    if count > BbmdState::MAX_BDT_ENTRIES {
+        let max = BbmdState::MAX_BDT_ENTRIES;
+        let msg = format!("BDT entry count {count} exceeds maximum of {max}");
+        return Err(Error::decoding(0, msg));
+    }
+    Ok(table.iter().map(BdtEntry::from).collect())
+}
+
+/// The rows of an FDT a BBMD returned, refusing more than
+/// [`BbmdState::MAX_FDT_ENTRIES`].
+pub fn fdt_from_wire(table: FdtEntries<'_>) -> Result<Vec<FdtEntryWire>, Error> {
+    let count = table.len();
     if count > BbmdState::MAX_FDT_ENTRIES {
         let max = BbmdState::MAX_FDT_ENTRIES;
         let msg = format!("FDT entry count {count} exceeds maximum of {max}");
         return Err(Error::decoding(0, msg));
     }
-    let mut entries = Vec::with_capacity(count);
-    for chunk in data.as_chunks::<FDT_ENTRY_SIZE>().0 {
-        entries.push(FdtEntryWire {
-            ip: [chunk[0], chunk[1], chunk[2], chunk[3]],
-            port: u16::from_be_bytes([chunk[4], chunk[5]]),
-            ttl: u16::from_be_bytes([chunk[6], chunk[7]]),
-            seconds_remaining: u16::from_be_bytes([chunk[8], chunk[9]]),
-        });
-    }
-    Ok(entries)
+    Ok(table.iter().map(FdtEntryWire::from).collect())
+}
+
+/// Decode FDT entries from a Read-FDT-ACK payload (Annex J.2.8.1).
+pub fn decode_fdt(data: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
+    fdt_from_wire(FdtEntries::from_wire(data).map_err(bvll_error)?)
 }
 
 /// BBMD state — BDT and FDT tables with forwarding logic.
@@ -356,46 +388,17 @@ impl BbmdState {
 
     /// Encode the BDT for a Read-BDT-ACK payload.
     pub fn encode_bdt(&self, buf: &mut BytesMut) {
-        buf.reserve(self.bdt.len() * BDT_ENTRY_SIZE);
-        for entry in &self.bdt {
-            buf.put_slice(&entry.ip);
-            buf.put_u16(entry.port);
-            buf.put_slice(&entry.broadcast_mask);
-        }
+        encode_bdt_entries(&self.bdt, buf);
+    }
+
+    /// The BDT as wire entries, for a Read-BDT-ACK (Annex J.2.4.1).
+    pub fn bdt_wire_entries(&self) -> Vec<codec::BdtEntry> {
+        self.bdt.iter().map(codec::BdtEntry::from).collect()
     }
 
     /// Decode a BDT from wire bytes (Write-BDT payload or Read-BDT-ACK payload).
     pub fn decode_bdt(data: &[u8]) -> Result<Vec<BdtEntry>, Error> {
-        if !data.len().is_multiple_of(BDT_ENTRY_SIZE) {
-            return Err(Error::decoding(
-                0,
-                format!(
-                    "BDT data length {} not a multiple of {}",
-                    data.len(),
-                    BDT_ENTRY_SIZE
-                ),
-            ));
-        }
-        let count = data.len() / BDT_ENTRY_SIZE;
-        if count > Self::MAX_BDT_ENTRIES {
-            return Err(Error::decoding(
-                0,
-                format!(
-                    "BDT entry count {} exceeds maximum of {}",
-                    count,
-                    Self::MAX_BDT_ENTRIES
-                ),
-            ));
-        }
-        let mut entries = Vec::with_capacity(count);
-        for chunk in data.as_chunks::<BDT_ENTRY_SIZE>().0 {
-            entries.push(BdtEntry {
-                ip: [chunk[0], chunk[1], chunk[2], chunk[3]],
-                port: u16::from_be_bytes([chunk[4], chunk[5]]),
-                broadcast_mask: [chunk[6], chunk[7], chunk[8], chunk[9]],
-            });
-        }
-        Ok(entries)
+        bdt_from_wire(BdtEntries::from_wire(data).map_err(bvll_error)?)
     }
 
     // -----------------------------------------------------------------------
@@ -531,14 +534,22 @@ impl BbmdState {
 
     /// Encode the FDT for a Read-FDT-ACK payload.
     pub fn encode_fdt(&mut self, buf: &mut BytesMut) {
-        self.purge_expired();
-        buf.reserve(self.fdt.len() * FDT_ENTRY_SIZE);
-        for entry in &self.fdt {
-            buf.put_slice(&entry.ip);
-            buf.put_u16(entry.port);
-            buf.put_u16(entry.ttl);
-            buf.put_u16(entry.seconds_remaining());
+        let rows = self.fdt_wire_entries();
+        buf.reserve(rows.len() * codec::FDT_ENTRY_LENGTH);
+        for row in rows {
+            buf.extend_from_slice(&row.to_octets());
         }
+    }
+
+    /// The FDT as wire entries for a Read-FDT-ACK (Annex J.2.8.1), after
+    /// purging expired entries.
+    pub fn fdt_wire_entries(&mut self) -> Vec<codec::FdtEntry> {
+        let now = Instant::now();
+        self.purge_expired_at(now);
+        self.fdt
+            .iter()
+            .map(|entry| entry.wire_entry_at(now))
+            .collect()
     }
 
     // -----------------------------------------------------------------------

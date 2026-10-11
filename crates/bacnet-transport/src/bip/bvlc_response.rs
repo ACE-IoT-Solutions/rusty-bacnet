@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::bvll::BvllMessage;
-use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
+use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_types::error::Error;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,21 +57,10 @@ impl PendingBvlcResponse {
         let Ok(code) = decode_bvlc_result_code(msg) else {
             return false;
         };
-        let nak = match self.function {
-            BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE => {
-                BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
-            }
-            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE => {
-                BvlcResultCode::READ_BROADCAST_DISTRIBUTION_TABLE_NAK
-            }
-            BvlcFunction::REGISTER_FOREIGN_DEVICE => BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK,
-            BvlcFunction::READ_FOREIGN_DEVICE_TABLE => {
-                BvlcResultCode::READ_FOREIGN_DEVICE_TABLE_NAK
-            }
-            BvlcFunction::DELETE_FOREIGN_DEVICE_TABLE_ENTRY => {
-                BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK
-            }
-            _ => return false,
+        // A Result answers this request only with the request's own NAK, or
+        // with success when no ACK is expected (Annex J.2.1).
+        let Some(nak) = self.function.nak() else {
+            return false;
         };
         code == nak
             || (self.expected == BvlcResponseKind::Result
@@ -79,35 +68,21 @@ impl PendingBvlcResponse {
     }
 }
 
-pub(super) fn expect_bvlc_function(msg: &BvllMessage, expected: BvlcFunction) -> Result<(), Error> {
-    if msg.function == expected {
-        Ok(())
-    } else {
-        Err(Error::Encoding(format!(
-            "expected BVLC response {expected:?}, got {:?}",
-            msg.function
-        )))
-    }
+/// The error for a response of the wrong function.
+pub(super) fn unexpected_response(expected: BvlcFunction, got: BvlcFunction) -> Error {
+    Error::Encoding(format!("expected BVLC response {expected:?}, got {got:?}"))
 }
 
+/// The result code of a BVLC-Result, or why `msg` isn't a well-formed one.
 pub(super) fn decode_bvlc_result_code(msg: &BvllMessage) -> Result<BvlcResultCode, Error> {
-    expect_bvlc_function(msg, BvlcFunction::BVLC_RESULT)?;
-    if msg.payload.len() != std::mem::size_of::<u16>() {
-        return Err(Error::Encoding(format!(
-            "BVLC-Result payload must be 2 bytes, got {}",
-            msg.payload.len()
-        )));
+    if msg.function != BvlcFunction::BVLC_RESULT {
+        return Err(unexpected_response(BvlcFunction::BVLC_RESULT, msg.function));
     }
-
-    Ok(BvlcResultCode::from_raw(u16::from_be_bytes([
-        msg.payload[0],
-        msg.payload[1],
-    ])))
-}
-
-pub(super) fn bvlc_result_error(msg: &BvllMessage) -> Error {
-    match decode_bvlc_result_code(msg) {
-        Ok(code) => Error::Encoding(format!("BVLC-Result: {code:?}")),
-        Err(err) => err,
+    match msg.message()? {
+        Bvll::BvlcResult(code) => Ok(code),
+        other => Err(unexpected_response(
+            BvlcFunction::BVLC_RESULT,
+            other.function(),
+        )),
     }
 }

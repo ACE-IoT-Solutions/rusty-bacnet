@@ -1,5 +1,4 @@
 use super::*;
-use bytes::Bytes;
 use tokio::time::{timeout, Duration};
 
 async fn recv_bvll(socket: &UdpSocket) -> BvllMessage {
@@ -70,12 +69,7 @@ async fn forwarded_npdu_from_bdt_peer_uses_originating_source_mac() {
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
     };
-    let msg = BvllMessage {
-        function: BvlcFunction::FORWARDED_NPDU,
-        payload: Bytes::from_static(&[0x01, 0x00, 0xAA, 0xBB]),
-        originating_ip: Some(origin.0),
-        originating_port: Some(origin.1),
-    };
+    let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
     handle_bvll_message(&msg, peer, Delivery::Unicast, &ctx).await;
 
@@ -83,7 +77,7 @@ async fn forwarded_npdu_from_bdt_peer_uses_originating_source_mac() {
         .await
         .expect("timed out waiting for received NPDU")
         .expect("NPDU channel closed");
-    assert_eq!(received.npdu.as_ref(), msg.payload.as_ref());
+    assert_eq!(received.npdu, msg.npdu().unwrap());
     assert_eq!(
         received.source_mac.as_slice(),
         &encode_bip_mac(origin.0, origin.1)
@@ -92,8 +86,7 @@ async fn forwarded_npdu_from_bdt_peer_uses_originating_source_mac() {
 
     let local_frame = recv_bvll(&local_broadcast_sink).await;
     assert_eq!(local_frame.function, BvlcFunction::FORWARDED_NPDU);
-    assert_eq!(local_frame.originating_ip, Some(origin.0));
-    assert_eq!(local_frame.originating_port, Some(origin.1));
+    assert_eq!(origin_of(&local_frame), Some(origin));
     assert_eq!(local_frame.payload.as_ref(), msg.payload.as_ref());
 
     let mut bdt_peer_buf = [0u8; 2048];
@@ -160,12 +153,7 @@ async fn forwarded_npdu_from_non_bdt_sender_is_rejected_without_delivery() {
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
     };
-    let msg = BvllMessage {
-        function: BvlcFunction::FORWARDED_NPDU,
-        payload: Bytes::from_static(&[0x01, 0x00, 0xAA, 0xBB]),
-        originating_ip: Some(origin.0),
-        originating_port: Some(origin.1),
-    };
+    let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
     handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;
 
@@ -239,19 +227,13 @@ async fn forwarded_npdu_from_directed_broadcast_peer_skips_local_rebroadcast() {
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
     };
-    let msg = BvllMessage {
-        function: BvlcFunction::FORWARDED_NPDU,
-        payload: Bytes::from_static(&[0x01, 0x00, 0xAA, 0xBB]),
-        originating_ip: Some(origin.0),
-        originating_port: Some(origin.1),
-    };
+    let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
     handle_bvll_message(&msg, peer, Delivery::Unicast, &ctx).await;
 
     let fdt_frame = recv_bvll(&fdt_socket).await;
     assert_eq!(fdt_frame.function, BvlcFunction::FORWARDED_NPDU);
-    assert_eq!(fdt_frame.originating_ip, Some(origin.0));
-    assert_eq!(fdt_frame.originating_port, Some(origin.1));
+    assert_eq!(origin_of(&fdt_frame), Some(origin));
     assert_eq!(fdt_frame.payload.as_ref(), msg.payload.as_ref());
 
     let mut local_broadcast_buf = [0u8; 2048];
@@ -339,26 +321,19 @@ async fn forwarded_npdu_fdt_fanout_respects_budget_and_increments_counter() {
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
     };
-    let msg = BvllMessage {
-        function: BvlcFunction::FORWARDED_NPDU,
-        payload: Bytes::from_static(&[0x01, 0x00, 0xAA, 0xBB]),
-        originating_ip: Some(origin.0),
-        originating_port: Some(origin.1),
-    };
+    let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
     handle_bvll_message(&msg, peer, Delivery::Unicast, &ctx).await;
 
     // First two foreign devices received the frame
     let frame1 = recv_bvll(&fd_sockets[0]).await;
     assert_eq!(frame1.function, BvlcFunction::FORWARDED_NPDU);
-    assert_eq!(frame1.originating_ip, Some(origin.0));
-    assert_eq!(frame1.originating_port, Some(origin.1));
+    assert_eq!(origin_of(&frame1), Some(origin));
     assert_eq!(frame1.payload.as_ref(), msg.payload.as_ref());
 
     let frame2 = recv_bvll(&fd_sockets[1]).await;
     assert_eq!(frame2.function, BvlcFunction::FORWARDED_NPDU);
-    assert_eq!(frame2.originating_ip, Some(origin.0));
-    assert_eq!(frame2.originating_port, Some(origin.1));
+    assert_eq!(origin_of(&frame2), Some(origin));
     assert_eq!(frame2.payload.as_ref(), msg.payload.as_ref());
 
     // Third foreign device was capped and received nothing
@@ -419,15 +394,10 @@ async fn forwarded_npdu_bbmd_self_sender_is_ignored_before_delivery_and_fanout()
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
     };
-    let mut msg = BvllMessage {
-        function: BvlcFunction::FORWARDED_NPDU,
-        payload: Bytes::from_static(&[1, 0x80, 0x13, 0, 99, 1]),
-        originating_ip: Some([192, 0, 2, 9]),
-        originating_port: Some(47808),
-    };
+    let mut msg = forwarded_message(([192, 0, 2, 9], 47808), &[1, 0x80, 0x13, 0, 99, 1]);
     // Remote embedded origin does not make our looped-back UDP send a peer.
     handle_bvll_message(&msg, self_sender, Delivery::Unicast, &ctx).await;
-    msg.payload = Bytes::from_static(&[1, 0x80, 0x13, 0, 77, 1]);
+    msg = forwarded_message(([192, 0, 2, 9], 47808), &[1, 0x80, 0x13, 0, 77, 1]);
     // Same IP, different port is an admitted peer: this fences every output
     // without a timeout-only silence assertion and rejects an IP-only filter.
     handle_bvll_message(&msg, peer_sender, Delivery::Unicast, &ctx).await;
@@ -435,7 +405,7 @@ async fn forwarded_npdu_bbmd_self_sender_is_ignored_before_delivery_and_fanout()
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(received.npdu, msg.payload);
+    assert_eq!(received.npdu, msg.npdu().unwrap());
     assert!(received.link_layer_group);
     assert_eq!(
         received.source_mac.as_slice(),
@@ -445,8 +415,7 @@ async fn forwarded_npdu_bbmd_self_sender_is_ignored_before_delivery_and_fanout()
         let received = recv_bvll(sink).await;
         assert_eq!(received.function, BvlcFunction::FORWARDED_NPDU);
         assert_eq!(received.payload, msg.payload);
-        assert_eq!(received.originating_ip, msg.originating_ip);
-        assert_eq!(received.originating_port, msg.originating_port);
+        assert_eq!(origin_of(&received), origin_of(&msg));
     }
 }
 
@@ -525,16 +494,10 @@ async fn forwarded_npdu_arriving_by_broadcast_is_not_rebroadcast_locally() {
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
     };
-    let msg = BvllMessage {
-        function: BvlcFunction::FORWARDED_NPDU,
-        payload: Bytes::from_static(&[0x01, 0x00, 0xAA, 0xBB]),
-        originating_ip: Some([192, 0, 2, 20]),
-        originating_port: Some(0xBAC1),
-    };
+    let msg = forwarded_message(([192, 0, 2, 20], 0xBAC1), &[0x01, 0x00, 0xAA, 0xBB]);
     let assert_forwarded = |frame: &BvllMessage, label: &str| {
         assert_eq!(frame.function, BvlcFunction::FORWARDED_NPDU, "{label}");
-        assert_eq!(frame.originating_ip, msg.originating_ip, "{label}");
-        assert_eq!(frame.originating_port, msg.originating_port, "{label}");
+        assert_eq!(origin_of(frame), origin_of(&msg), "{label}");
         assert_eq!(frame.payload, msg.payload, "{label}");
     };
 
@@ -545,7 +508,7 @@ async fn forwarded_npdu_arriving_by_broadcast_is_not_rebroadcast_locally() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(received.npdu, msg.payload);
+    assert_eq!(received.npdu, msg.npdu().unwrap());
     assert_forwarded(&recv_bvll(&foreign).await, "foreign device");
     assert_no_bvll(&local_sink, "local broadcast after a broadcast arrival").await;
 
