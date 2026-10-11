@@ -40,6 +40,9 @@ const CRC16_TABLE: [u16; 256] = {
     table
 };
 
+/// Reflected CRC-32K polynomial used by Extended MS/TP.
+const CRC32K_POLY: u32 = 0xEB31_D82E;
+
 /// Compute the reflected BACnet header CRC-8.
 pub fn crc8(data: &[u8]) -> u8 {
     let mut crc = 0xFF;
@@ -90,4 +93,45 @@ pub fn crc16_valid(data_with_crc: &[u8]) -> bool {
     let split = data_with_crc.len() - 2;
     let stored = u16::from_le_bytes([data_with_crc[split], data_with_crc[split + 1]]);
     crc16(&data_with_crc[..split]) == stored
+}
+
+/// Compute the reflected CRC-32K used by Extended MS/TP.
+pub fn crc32k(data: &[u8]) -> u32 {
+    !crc32k_accumulate_all(data)
+}
+
+/// Compute the running CRC-32K state, including any transmitted CRC bytes.
+///
+/// A valid message with its little-endian CRC appended has the residual
+/// [`crate::CRC32K_RESIDUAL`].
+pub fn crc32k_accumulate_all(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ CRC32K_POLY
+            } else {
+                crc >> 1
+            };
+            bit += 1;
+        }
+    }
+    crc
+}
+
+/// Verify a little-endian transmitted CRC-32K field.
+pub fn crc32k_valid(data_with_crc: &[u8]) -> bool {
+    if data_with_crc.len() < 4 {
+        return false;
+    }
+    let split = data_with_crc.len() - 4;
+    let stored = u32::from_le_bytes([
+        data_with_crc[split],
+        data_with_crc[split + 1],
+        data_with_crc[split + 2],
+        data_with_crc[split + 3],
+    ]);
+    crc32k(&data_with_crc[..split]) == stored
 }

@@ -10,13 +10,20 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+mod cobs;
 mod crc;
 mod error;
 mod frame;
 mod sink;
 mod stream;
 
-pub use crc::{crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid};
+pub use cobs::{
+    cobs_decode_xor55, cobs_decode_xor55_in_place, cobs_encode_xor55, cobs_encoded_len, CobsError,
+};
+pub use crc::{
+    crc16, crc16_accumulate_all, crc16_valid, crc32k, crc32k_accumulate_all, crc32k_valid, crc8,
+    crc8_accumulate_all, crc8_valid,
+};
 pub use error::FrameError;
 pub use frame::{
     decode_frame, encode_into, find_preamble, is_cobs_raw, is_valid_source,
@@ -46,6 +53,8 @@ pub const BROADCAST_MAC: u8 = 0xFF;
 pub const HEADER_CRC_RESIDUAL: u8 = 0x55;
 /// Good data CRC receiver residual.
 pub const DATA_CRC_RESIDUAL: u16 = 0xF0B8;
+/// Good Extended MS/TP CRC-32K receiver residual.
+pub const CRC32K_RESIDUAL: u32 = 0x0843_323B;
 /// Maximum encoded length of a standard frame.
 pub const MAX_STANDARD_FRAME_LENGTH: usize =
     PREAMBLE.len() + HEADER_LENGTH + MAX_STANDARD_MPDU_DATA + 2;
