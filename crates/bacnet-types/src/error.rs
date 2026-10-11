@@ -6,8 +6,7 @@
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, format, string::String, vec::Vec};
-#[cfg(feature = "std")]
-use std::time::Duration;
+use core::time::Duration;
 
 use crate::constructed::BACnetObjectPropertyReference;
 use crate::data_link::DataLink;
@@ -114,13 +113,13 @@ pub enum Error {
         message: String,
     },
 
-    /// Transport-level I/O error.
+    /// Transport-level I/O error. Only with the `std` feature, which has
+    /// `std::io`.
     #[cfg(feature = "std")]
     #[error("transport error: {0}")]
     Transport(#[from] std::io::Error),
 
     /// Request timed out.
-    #[cfg(feature = "std")]
     #[error("request timed out after {0:?}")]
     Timeout(Duration),
 
@@ -655,7 +654,6 @@ mod tests {
         assert!(err.to_string().contains("have 3"));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn timeout_error_display() {
         let err = Error::Timeout(Duration::from_secs(3));

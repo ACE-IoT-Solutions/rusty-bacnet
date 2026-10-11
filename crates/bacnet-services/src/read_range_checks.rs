@@ -2,6 +2,9 @@
 //! choice of refusing one that breaks them or keeping it with the list of
 //! what it broke (#1531).
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use bacnet_types::error::{Error, ReadRangeViolation};
 
 use super::{RangeSpec, ReadRangeAck, ReadRangeRequest};

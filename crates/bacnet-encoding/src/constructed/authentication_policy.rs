@@ -10,6 +10,9 @@
 //! Point judges whether a policy is usable. An index or timeout wider than
 //! 32 bits is malformed.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use bacnet_types::constructed::{BACnetAuthenticationPolicy, BACnetAuthenticationPolicyEntry};
 use bacnet_types::error::Error;
 use bytes::BytesMut;

@@ -57,9 +57,15 @@ keywords = ["bacnet", "building-automation", "ashrae", "iot", "protocol"]
 categories = ["network-programming", "embedded"]
 
 [workspace.dependencies]
-bacnet-types = { version = "0.12.0", path = "crates/bacnet-types" }
-bacnet-encoding = { version = "0.12.0", path = "crates/bacnet-encoding" }
-bacnet-services = { version = "0.12.0", path = "crates/bacnet-services" }
+# The no_std crates build without std on bare-metal targets (#1604), so their
+# entries, and those of thiserror and bytes, leave default features off:
+# cargo ignores `default-features = false` on a member's `workspace = true`
+# edge, so only the entry can. Hosted crates turn std back on with
+# `features = ["std"]` on each edge. tracing keeps its defaults: only
+# bacnet-encoding's `std` feature brings it into a no_std crate.
+bacnet-types = { version = "0.12.0", path = "crates/bacnet-types", default-features = false }
+bacnet-encoding = { version = "0.12.0", path = "crates/bacnet-encoding", default-features = false }
+bacnet-services = { version = "0.12.0", path = "crates/bacnet-services", default-features = false }
 bacnet-mstp-codec = { version = "0.12.0", path = "crates/bacnet-mstp-codec", default-features = false }
 bacnet-transport = { version = "0.12.0", path = "crates/bacnet-transport" }
 bacnet-network = { version = "0.12.0", path = "crates/bacnet-network" }
@@ -68,9 +74,9 @@ bacnet-client = { version = "0.12.0", path = "crates/bacnet-client" }
 bacnet-objects = { version = "0.12.0", path = "crates/bacnet-objects" }
 bacnet-server = { version = "0.12.0", path = "crates/bacnet-server" }
 bacnet-endpoint = { version = "0.12.0", path = "crates/bacnet-endpoint" }
-thiserror = "2"
+thiserror = { version = "2", default-features = false }
 bitflags = "2"
-bytes = "1"
+bytes = { version = "1", default-features = false }
 tracing = "0.1"
 tokio = "1"
 socket2 = "0.6"

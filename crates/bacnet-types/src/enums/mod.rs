@@ -117,8 +117,7 @@ impl core::fmt::Display for ParseEnumError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for ParseEnumError {}
+impl core::error::Error for ParseEnumError {}
 
 /// Compare two enum names for equality, ignoring `_`/`-` separators and ASCII
 /// case. Dropping separators and folding case collapses every supported spelling

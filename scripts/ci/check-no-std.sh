@@ -26,7 +26,10 @@ checks=(
   "bacnet-mstp-codec alloc"
   "bacnet-mstp-codec heapless"
   "bacnet-mstp-codec bytes,heapless"
-  "bacnet-types -"
+  "bacnet-types alloc"
+  "bacnet-types serde"
+  "bacnet-encoding alloc"
+  "bacnet-services alloc"
 )
 default_targets=(thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf)
 
@@ -34,18 +37,14 @@ default_targets=(thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-no
 skip_reason() {
   local crate=$1 features=$2 target=$3
   case "$target" in thumbv6m-*)
-    case ",$features," in *,bytes,*)
-      # bytes needs atomic compare-and-swap. Without it in hardware, bytes
-      # takes it from portable-atomic, whose backend (a critical section, or
-      # assuming a single core) only the firmware can choose.
+    # bytes needs atomic compare-and-swap. Without it in hardware, bytes
+    # takes it from portable-atomic, whose backend (a critical section, or
+    # assuming a single core) only the firmware can choose. The encoding and
+    # services crates always use bytes; the codec only with its feature.
+    case "$crate:,$features," in bacnet-encoding:*|bacnet-services:*|*,bytes,*)
       echo "bytes needs a portable-atomic backend that only firmware can choose"
       return ;;
-    esac
-    if [ "$crate" = bacnet-types ]; then
-      # It uses alloc::sync::Arc, which needs atomic compare-and-swap.
-      echo "bacnet-types uses alloc::sync, which this target lacks"
-      return
-    fi ;;
+    esac ;;
   esac
 }
 

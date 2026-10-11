@@ -3,6 +3,9 @@
 //! Both requests use only application tags, as in the Who-Am-I-Request and You-Are-Request
 //! productions of Clause 21.3.3.
 
+#[cfg(not(feature = "std"))]
+use alloc::{string::String, vec::Vec};
+
 use bacnet_encoding::constructed::{check_decoded_mac_len, check_encoded_mac_len};
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;

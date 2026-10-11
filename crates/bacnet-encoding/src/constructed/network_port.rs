@@ -26,6 +26,9 @@
 //! Decoding is strict: a missing, misplaced, truncated or wrong-sized member,
 //! or a port or time past an Unsigned16, is an error.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use bacnet_types::constructed::{

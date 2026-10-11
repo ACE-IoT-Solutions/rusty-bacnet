@@ -1,5 +1,8 @@
 //! Who-Has and I-Have services per ASHRAE 135-2020 Clause 16.9.
 
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
 use crate::who_is::{DeviceInstanceRange, WireLimits};
 use bacnet_encoding::constructed::tagged::{
     decode_app_character_string, decode_app_object_id, decode_ctx_character_string,

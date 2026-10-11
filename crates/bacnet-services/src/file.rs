@@ -1,5 +1,8 @@
 //! AtomicReadFile / AtomicWriteFile services per ASHRAE 135-2020 Clauses 14.1–14.2.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use bacnet_encoding::constructed::tagged::{
     decode_app_object_id, decode_app_primitive, decode_app_unsigned, decode_ctx_constructed,
     decode_ctx_primitive, expect_end, next_is_context, next_is_opening,

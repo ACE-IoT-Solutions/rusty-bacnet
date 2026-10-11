@@ -6,6 +6,9 @@
 //! 12.64.10). These decoders walk that list, so a caller never loops the
 //! record codecs by hand.
 
+#[cfg(not(feature = "std"))]
+use alloc::{string::ToString, vec::Vec};
+
 use core::fmt;
 
 use bacnet_encoding::constructed::{
@@ -132,7 +135,7 @@ impl<C> fmt::Display for LogRecordsError<C> {
     }
 }
 
-impl<C: fmt::Debug> std::error::Error for LogRecordsError<C> {}
+impl<C: fmt::Debug> core::error::Error for LogRecordsError<C> {}
 
 impl<C> From<LogRecordsError<C>> for Error {
     /// A [`Error::Decoding`] at the failing record's offset, keeping the
