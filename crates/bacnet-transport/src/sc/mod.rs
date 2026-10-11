@@ -15,9 +15,7 @@ use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::port::{
-    DataAttribute, ReceivedNpdu, TransportHealth, TransportHealthState, TransportPort,
-};
+use crate::port::{DataAttribute, ReceivedNpdu, TransportHealth, TransportPort};
 #[cfg(test)]
 use crate::sc_frame::{decode_sc_bvlc_result, ScMessage};
 use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, Vmac, BROADCAST_VMAC};
@@ -41,6 +39,7 @@ mod empty_npdu;
 mod errors;
 mod failover;
 mod handshake;
+mod health;
 mod heartbeat;
 mod lifecycle;
 mod loopback;
@@ -52,6 +51,7 @@ mod recovery;
 mod rejection;
 mod send;
 mod source_admission;
+mod transport_config;
 mod unknown_function;
 pub use connection::{ScConnection, ScConnectionState};
 use connector::{dial_failover_ws, WebSocketConnector};
@@ -122,174 +122,6 @@ pub struct ScTransport<W: WebSocketPort> {
     pub(super) direct: Option<Arc<direct_discovery::DirectShared<W>>>,
     #[cfg(test)]
     allow_test_heartbeat_timing: bool,
-}
-
-impl<W: WebSocketPort> ScTransport<W> {
-    /// Stable local APDU receive capacity, available before opening a connection.
-    /// Negotiated outgoing limits do not change this declaration.
-    pub const LOCAL_RECEIVE_APDU_CAPACITY: u16 = crate::sc_limits::LOCAL_RECEIVE_APDU_CAPACITY;
-
-    /// Create an unstarted transport with an unconfigured, zero UUID placeholder.
-    /// Call [`Self::with_device_uuid`] before [`TransportPort::start`].
-    /// The supplied local VMAC must be neither all-zero nor broadcast.
-    pub fn new(ws: W, local_vmac: Vmac) -> Self {
-        let (state_tx, _) = watch::channel(ScConnectionState::Disconnected);
-        let (health_tx, _) = watch::channel(TransportHealth::default());
-        Self {
-            ws: Some(ws),
-            ws_shared: None,
-            local_vmac,
-            device_uuid: [0u8; 16],
-            advertised_uris: Vec::new(),
-            direct_intake: advertisement::DirectIntake::default(),
-            #[cfg(feature = "sc-tls")]
-            direct_listener_shutdown: None,
-            connection: None,
-            effective_max_apdu_length: Arc::new(AtomicU16::new(DEFAULT_MAX_APDU_LENGTH)),
-            state_tx,
-            health_tx,
-            topology_id: None,
-            recv_task: None,
-            connect_timeout_ms: 10_000,
-            heartbeat_interval_ms: heartbeat::DEFAULT_HEARTBEAT_INTERVAL_MS,
-            heartbeat_timeout_ms: heartbeat::DEFAULT_HEARTBEAT_TIMEOUT_MS,
-            failover_ws: None,
-            primary_connector: None,
-            failover_connector: None,
-            reconnect_config: None,
-            npdu_admission_policy: ScNpduAdmissionPolicy::default(),
-            npdu_admission: None,
-            restore_disconnect_task: Arc::new(StdMutex::new(None)),
-            direct_membership: Arc::new(direct_membership::DirectMembership::default()),
-            direct: None,
-            #[cfg(test)]
-            allow_test_heartbeat_timing: false,
-        }
-    }
-
-    /// Configure the device UUID before start (builder-style).
-    ///
-    /// The caller must generate it before deployment and persist the same bytes
-    /// across restarts for the device's lifetime (Annex AB.1.5.3). No UUID is
-    /// generated here. Startup rejects only the all-zero UUID, not RFC version
-    /// or variant bits, and rejects only all-zero/broadcast local VMACs.
-    ///
-    /// After reconnect and heartbeat validation, [`TransportPort::start`] checks
-    /// identity before transport-owned I/O or startup state changes. These errors
-    /// retain both sockets; a UUID error can be repaired with this setter and
-    /// start retried on the same owned WebSocket. This cannot undo caller-owned
-    /// WebSocket creation or external dials (including work creating closures),
-    /// and is not generic endpoint rollback or a promise that every field has a
-    /// repair setter. The transport gives applications no mutable access to
-    /// the live connection afterwards; they read its state through
-    /// [`connection_state_changes`](Self::connection_state_changes).
-    pub fn with_device_uuid(mut self, uuid: [u8; 16]) -> Self {
-        self.device_uuid = uuid;
-        self
-    }
-
-    /// Set the connect handshake timeout in milliseconds (builder-style).
-    pub fn with_connect_timeout_ms(mut self, ms: u64) -> Self {
-        self.connect_timeout_ms = ms;
-        self
-    }
-
-    /// Set the heartbeat send interval in milliseconds (builder-style).
-    ///
-    /// Production transports validate this at [`TransportPort::start`] against
-    /// the Annex AB.6.3 configurable heartbeat timeout range of 3..300 seconds.
-    pub fn with_heartbeat_interval_ms(mut self, ms: u64) -> Self {
-        self.heartbeat_interval_ms = ms;
-        self
-    }
-
-    /// Set the heartbeat ack timeout in milliseconds (builder-style).
-    ///
-    /// This disconnect timeout must be greater than the heartbeat interval so
-    /// the peer has a chance to send a Heartbeat-ACK.
-    pub fn with_heartbeat_timeout_ms(mut self, ms: u64) -> Self {
-        self.heartbeat_timeout_ms = ms;
-        self
-    }
-
-    #[cfg(test)]
-    fn with_test_heartbeat_timing_ms(mut self, interval_ms: u64, timeout_ms: u64) -> Self {
-        self.heartbeat_interval_ms = interval_ms;
-        self.heartbeat_timeout_ms = timeout_ms;
-        self.allow_test_heartbeat_timing = true;
-        self
-    }
-
-    /// Set a failover WebSocket to try if the primary connection fails (builder-style).
-    pub fn with_failover(mut self, ws: W) -> Self {
-        self.failover_ws = Some(ws);
-        self
-    }
-
-    /// Enable reconnection with the given configuration.
-    ///
-    /// When the BACnet/SC connection drops, the transport will attempt to reconnect
-    /// using exponential backoff as configured. Configure [`Self::with_connector`]
-    /// for true transport-level recovery from a dead WebSocket/TCP/TLS connection;
-    /// otherwise reconnect attempts can only reuse the current WebSocket object,
-    /// except after a rejection NAK exhausts its heartbeat budget. That socket
-    /// cannot be reused: recovery needs a fresh connector or unused failover
-    /// socket under the existing retry policy, or remains disconnected.
-    /// The local VMAC is preserved across reconnections.
-    ///
-    /// [`TransportPort::start`] validates this configuration before any transport
-    /// startup state changes or I/O, retaining the socket on validation failure.
-    /// It cannot undo a caller-owned dial: call [`ScReconnectConfig::validate`]
-    /// before dialing if needed. Generic endpoint startup may change its own
-    /// state before calling the transport; this is not transactional rollback.
-    pub fn with_reconnect(mut self, config: ScReconnectConfig) -> Self {
-        self.reconnect_config = Some(config);
-        self
-    }
-
-    /// Attach stable hub URLs used to identify this SC topology.
-    pub fn with_hub_urls(
-        mut self,
-        primary_hub_url: impl AsRef<str>,
-        failover_hub_url: Option<impl AsRef<str>>,
-    ) -> Self {
-        fn normalize(value: &str) -> String {
-            let value = value.trim().trim_end_matches('/');
-            let Some((scheme, remainder)) = value.split_once("://") else {
-                return value.to_owned();
-            };
-            let authority_end = remainder.find('/').unwrap_or(remainder.len());
-            let (authority, path) = remainder.split_at(authority_end);
-            format!(
-                "{}://{}{}",
-                scheme.to_ascii_lowercase(),
-                authority.to_ascii_lowercase(),
-                path
-            )
-        }
-        let primary = normalize(primary_hub_url.as_ref());
-        let failover = failover_hub_url.map(|url| normalize(url.as_ref()));
-        self.topology_id = Some(match failover {
-            Some(url) => format!("{primary}|{url}"),
-            None => primary,
-        });
-        self
-    }
-
-    /// Subscribe to BACnet/SC connection state changes.
-    ///
-    /// The returned watch receiver yields the latest known state immediately and
-    /// change notifications for subsequent state updates observed by the
-    /// transport. Rapid updates can coalesce under Tokio watch semantics, so use
-    /// this as a current-state signal rather than a durable transition log.
-    pub fn connection_state_changes(&self) -> watch::Receiver<ScConnectionState> {
-        self.state_tx.subscribe()
-    }
-
-    /// Subscribe to the current operational SC health snapshot.
-    pub fn transport_health_changes(&self) -> watch::Receiver<TransportHealth> {
-        self.health_tx.subscribe()
-    }
 }
 
 fn effective_max_apdu_length(conn: &ScConnection) -> u16 {
@@ -379,11 +211,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         let conn = Arc::new(Mutex::new(connection));
         self.connection = Some(conn.clone());
 
-        self.health_tx.send_replace(TransportHealth {
-            state: TransportHealthState::Connecting,
-            detail: Some("connecting to hub".into()),
-            ..TransportHealth::default()
-        });
+        health::connecting(&self.health_tx);
 
         let primary_ws = self
             .ws
@@ -411,12 +239,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                 // Primary failed — try failover if configured.
                 if !conn.lock().await.connect_retry_allowed {
                     self.local_vmac = conn.lock().await.local_vmac;
-                    self.health_tx.send_replace(TransportHealth {
-                        state: TransportHealthState::Failed,
-                        detail: Some("initial connection rejected".into()),
-                        last_error: Some(primary_err.to_string()),
-                        ..TransportHealth::default()
-                    });
+                    health::failed(&self.health_tx, "initial connection rejected", &primary_err);
                     return Err(primary_err);
                 } else if let Some(failover) = dial_failover_ws(
                     &failover_connector,
@@ -443,22 +266,16 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                     {
                         (failover, ActiveHub::Failover)
                     } else {
-                        self.health_tx.send_replace(TransportHealth {
-                            state: TransportHealthState::Failed,
-                            detail: Some("initial primary and failover connection failed".into()),
-                            last_error: Some(primary_err.to_string()),
-                            ..TransportHealth::default()
-                        });
+                        health::failed(
+                            &self.health_tx,
+                            "initial primary and failover connection failed",
+                            &primary_err,
+                        );
                         return Err(primary_err);
                     }
                 } else {
                     self.local_vmac = conn.lock().await.local_vmac;
-                    self.health_tx.send_replace(TransportHealth {
-                        state: TransportHealthState::Failed,
-                        detail: Some("initial connection failed".into()),
-                        last_error: Some(primary_err.to_string()),
-                        ..TransportHealth::default()
-                    });
+                    health::failed(&self.health_tx, "initial connection failed", &primary_err);
                     return Err(primary_err);
                 }
             }
@@ -469,14 +286,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             self.local_vmac = c.local_vmac;
             publish_effective_max_apdu_length(&self.effective_max_apdu_length, &c);
         }
-        health_tx.send_replace(TransportHealth {
-            state: TransportHealthState::Up,
-            detail: Some("connected".into()),
-            active_hub: Some(active_hub.label().into()),
-            last_error: None,
-            attempt: 0,
-            since: Some(Instant::now()),
-        });
+        health::up(&health_tx, active_hub.label());
 
         #[cfg(feature = "sc-tls")]
         if let Some(direct) = &self.direct {
@@ -751,7 +561,9 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                             "fatal BACnet/SC BVLC-Result received".into();
                                         break;
                                     }
-                                    if state_change == Some(ScConnectionState::Disconnected) {
+                                    if state_change == Some(ScConnectionState::Disconnected)
+                                        && reconnect_config.is_some()
+                                    {
                                         // A peer Disconnect-Request is complete only after its ACK
                                         // has been sent above. Retire the logical connection even
                                         // when the peer holds the WebSocket open, then let normal
@@ -807,14 +619,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                     active_hub = ActiveHub::Primary;
                                     last_bvlc_received = tokio::time::Instant::now();
                                     pending_heartbeat_id = None;
-                                    health_tx.send_replace(TransportHealth {
-                                        state: TransportHealthState::Up,
-                                        detail: Some("connected".into()),
-                                        active_hub: Some(ActiveHub::Primary.label().into()),
-                                        last_error: None,
-                                        attempt: 0,
-                                        since: Some(Instant::now()),
-                                    });
+                                    health::up(&health_tx, ActiveHub::Primary.label());
                                     info!("SC restored primary hub while failover was active");
                                 }
                                 Ok(None) => {}
@@ -866,28 +671,11 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                 // Cancel before recovery can replace the active socket.
                 drop(primary_attempt);
                 // After recv loop exits (ws closed/error) — attempt reconnection
-                health_tx.send_modify(|health| {
-                    health.state = if reconnect_config.is_some() {
-                        TransportHealthState::Reconnecting
-                    } else {
-                        TransportHealthState::Failed
-                    };
-                    health.detail = Some("connection lost".into());
-                    health.last_error = Some(disconnect_reason);
-                    health.since = None;
-                });
+                health::connection_lost(&health_tx, reconnect_config.is_some(), disconnect_reason);
                 let config = match &reconnect_config {
                     Some(cfg) => cfg,
                     None => {
-                        health_tx.send_modify(|health| {
-                            health.state = TransportHealthState::Failed;
-                            health.detail = Some("reconnection terminated".into());
-                            health.active_hub = None;
-                            health.since = None;
-                            health
-                                .last_error
-                                .get_or_insert_with(|| "reconnect attempts exhausted".into());
-                        });
+                        health::reconnect_terminated(&health_tx);
                         break 'transport;
                     }
                 };
@@ -919,15 +707,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                         primary_restore_interval.reset();
                     }
                     None => {
-                        health_tx.send_modify(|health| {
-                            health.state = TransportHealthState::Failed;
-                            health.detail = Some("reconnection terminated".into());
-                            health.active_hub = None;
-                            health.since = None;
-                            health
-                                .last_error
-                                .get_or_insert_with(|| "reconnect attempts exhausted".into());
-                        });
+                        health::reconnect_terminated(&health_tx);
                         break 'transport;
                     }
                 }

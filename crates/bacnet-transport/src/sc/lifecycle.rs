@@ -7,11 +7,10 @@ use std::sync::atomic::Ordering;
 
 use tokio::task::JoinHandle;
 
-use crate::port::TransportPort;
+use crate::port::{TransportHealthState, TransportPort};
 
 use super::{
-    advertisement, ScConnectionState, ScTransport, TransportHealthState, WebSocketPort,
-    DEFAULT_MAX_APDU_LENGTH,
+    advertisement, ScConnectionState, ScTransport, WebSocketPort, DEFAULT_MAX_APDU_LENGTH,
 };
 use crate::sc_frame::encode_sc_message;
 use bacnet_types::error::Error;

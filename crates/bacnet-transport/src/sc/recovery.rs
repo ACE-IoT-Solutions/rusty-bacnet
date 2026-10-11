@@ -105,15 +105,15 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                 break;
             }
             attempt += 1;
-            let target_hub = if self.config.retry_forever && alternate_available && attempt % 2 == 0
-            {
-                match active_hub {
-                    ActiveHub::Primary => ActiveHub::Failover,
-                    ActiveHub::Failover => ActiveHub::Primary,
-                }
-            } else {
-                active_hub
-            };
+            let target_hub =
+                if self.config.retry_forever && alternate_available && attempt.is_multiple_of(2) {
+                    match active_hub {
+                        ActiveHub::Primary => ActiveHub::Failover,
+                        ActiveHub::Failover => ActiveHub::Primary,
+                    }
+                } else {
+                    active_hub
+                };
             let last_error = self.health_tx.borrow().last_error.clone();
             self.health_tx.send_replace(TransportHealth {
                 state: TransportHealthState::Reconnecting,
