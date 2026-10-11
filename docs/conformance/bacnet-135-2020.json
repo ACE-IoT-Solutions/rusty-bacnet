@@ -320,14 +320,23 @@
    "requirement_summary": "MS/TP frame encode/decode, CRC, address validation, extended-frame handling, and serial transport assumptions.",
    "status": "implementation-present-needs-source-review",
    "code_anchors": [
+    "crates/bacnet-mstp-codec/src",
+    "crates/bacnet-mstp-core/src",
+    "crates/bacnet-router-adapters/src/mstp.rs",
     "crates/bacnet-transport/src/mstp_frame.rs",
-    "crates/bacnet-transport/src/mstp",
-    "crates/bacnet-transport/src/mstp/tests.rs"
+    "crates/bacnet-transport/src/mstp"
    ],
    "positive_tests": [
+    "crates/bacnet-mstp-codec/tests/codec.rs",
+    "crates/bacnet-mstp-codec/tests/extended_wire_fixtures.rs",
+    "crates/bacnet-mstp-core/tests/extended_profile.rs",
+    "crates/bacnet-router-adapters/tests/composition.rs",
     "crates/bacnet-transport/src/mstp/tests.rs"
    ],
    "negative_tests": [
+    "crates/bacnet-mstp-codec/tests/codec.rs",
+    "crates/bacnet-mstp-codec/tests/extended_wire_fixtures.rs",
+    "crates/bacnet-mstp-core/tests/extended_profile.rs",
     "crates/bacnet-transport/src/mstp/tests.rs"
    ],
    "benchmarks": [],
@@ -335,7 +344,7 @@
     "README transports table: MS/TP",
     "docs/rust-api.md MS/TP"
    ],
-   "notes": "Needs clause-level review and hardware assumptions documented separately."
+   "notes": "Portable standard and Extended profiles have exact and transition tests. Hosted support is limited to framing/assembly; consolidated-standard review, independent interoperability, and hardware timing remain open."
   },
   {
    "id": "BACNET-10-PTP",

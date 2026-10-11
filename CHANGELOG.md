@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discard exhausted hop counts before side effects, reclaim expired discovery
   capacity, suppress same-ingress route advertisements, and encode local
   refusal messages without a routed destination.
+- Preserve remote-broadcast routing through learned next hops inside the
+  broadcast policy, and reject B/IP subnet-broadcast, limited-broadcast, and
+  multicast addresses presented as unicast destinations before socket
+  admission.
 - Accept valid MS/TP slave source addresses 128–254, resynchronize a standard
   profile after an oversized Extended frame, deliver Extended DNER replies,
   and size the transmit watchdog for the selected maximum frame profile.

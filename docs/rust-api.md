@@ -1581,6 +1581,16 @@ bypassed. Router-control payloads are rejected above
 Initialize-Routing-Table peer `port_id` values remain opaque: local learned
 route ownership uses the ingress `PortId` and immediate peer address.
 
+Each `BroadcastTarget` names both the final `routed_network` and the actual
+data-link `destination`. A directly connected remote broadcast uses a
+link-layer broadcast and removes DNET/DADR/Hop for final delivery. A learned
+remote broadcast uses the next router's unicast link address, preserves the
+final DNET/DADR, and decrements Hop Count. Global fanout selects only explicit
+direct link-layer broadcast targets. `BipEgress` additionally rejects a
+configured subnet broadcast, limited broadcast, or IPv4 multicast address if
+it is supplied through the unicast link-address path; those destinations must
+enter through broadcast policy.
+
 `OperationalDiagnostics` exposes saturating global/per-port counters, bounded
 occupancy snapshots, recent failures, and synchronous controls. Its typed
 forwarding, broadcast, and router-control observers define one terminal event

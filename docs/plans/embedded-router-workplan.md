@@ -254,6 +254,13 @@ BACnet-focused review panel before asking the human team to review the branch.
 - [x] Route all direct unicast APIs with a broadcast link destination to the
   explicit broadcast-policy seam; neither B/IP→MS/TP nor MS/TP→B/IP can bypass
   policy and duplicate suppression (`9f8e7892`).
+- [x] Represent direct delivery and learned-router next hops explicitly in
+  `BroadcastTarget`, so remote broadcasts to learned networks remain inside
+  policy/duplicate suppression while preserving DNET and decrementing hop
+  count (`63d00b5d`).
+- [x] Reject configured subnet broadcast, limited-broadcast, and IPv4
+  multicast addresses supplied through the B/IP unicast link-address path
+  before BVLL encoding or sink mutation (`63d00b5d`).
 - [x] Discard routed NPDUs with hop count zero or one before egress, cache
   insertion, discovery, or refusal generation (`9f8e7892`).
 - [x] Reclaim expired discovery slots before reporting bounded-capacity
@@ -276,6 +283,13 @@ remain a consolidated-standard review item; the portable core currently treats
 the peer port identifier as opaque and learns ownership from the local ingress
 port plus immediate peer. Do not promote that behavior to a conformance claim
 until X0 is complete.
+
+The direct-delivery interpretation of hop count one is also an X0 item. The
+current implementation discards routed NPDUs at hop count zero or one before
+any direct or learned delivery. Published errata and available conformance-test
+material support that behavior, but a later public-review draft creates enough
+ambiguity that the consolidated 135-2020 text must be checked before promoting
+the behavior to a conformance claim.
 
 ## Remaining external and release phases
 
@@ -343,8 +357,8 @@ results, and claim limits are recorded in
 | Milestone | Permitted statement |
 |---|---|
 | C1 complete | Portable routing/control closeout is ready for consolidated verification |
-| C1–C4 complete, without external X0/interoperability | Library-complete B/IP↔MS/TP implementation; conformance/interoperability pending |
-| C1–C4 plus X0 reconciliation and independent interop | Eligible for human review of a broader modern-router claim |
+| C1–C5 complete, without external X0/interoperability | Library-complete B/IP↔MS/TP implementation; conformance/interoperability pending |
+| C1–C5 plus X0 reconciliation and independent interop | Eligible for human review of a broader modern-router claim |
 | Firmware/HIL complete | Platform deployment evidence, maintained by the firmware team |
 
 The library handoff must expose bounded ingress/egress contracts and their
