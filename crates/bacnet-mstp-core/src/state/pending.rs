@@ -38,7 +38,9 @@
 //! The last four rows follow a silence of at least T_usage_timeout or
 //! T_no_token, so those frames go to the adapter at once; activity can only
 //! reach them before an adapter confirms the start. Their event count bounds
-//! the wait before the time limit can.
+//! the wait too: at most Nmin_octets events, each worth up to T_turnaround of
+//! delay. That stays far inside T_no_token, so the generating poll's limit is
+//! only a backstop; a long T_turnaround can reach PASS_TOKEN's.
 //!
 //! An answer's limit applies to its start as well: one the adapter starts at
 //! or after it is refused with [`CoreError::RequestExpired`], since the asker
