@@ -35,15 +35,16 @@ Selected direct dependencies
 ```
 
 `bacnet-client`, `bacnet-server` and `bacnet-endpoint` are all workspace
-`default-members`, along with the foundational crates, endpoint-core, integration
-tests and benchmarks. The CLI (`bacnet-cli`) and PyO3 binding (`rusty-bacnet`)
-are excluded from default builds: the CLI pulls in heavier application
-dependencies, and the Python extension needs its native Python build context.
-They remain workspace members and can be selected explicitly. So does the
-unpublished firmware link test, `firmware/link`, which links the MS/TP stack
-(`bacnet-mstp-codec`, `bacnet-mstp-core`) and the B/IP codec
-(`bacnet-bip-codec`) into bare-metal images without an allocator and checks
-their size ([CI](ci.md#firmware-link-test)).
+`default-members`, along with the foundational crates, endpoint-core,
+integration tests, the MS/TP bus simulator and benchmarks. The CLI
+(`bacnet-cli`) and PyO3 binding (`rusty-bacnet`) are excluded from default
+builds: the CLI pulls in heavier application dependencies, and the Python
+extension needs its native Python build context. They remain workspace
+members and can be selected explicitly. So does the unpublished firmware link
+test, `firmware/link`, which links the MS/TP stack (`bacnet-mstp-codec`,
+`bacnet-mstp-core`) and the B/IP codec (`bacnet-bip-codec`) into bare-metal
+images without an allocator and checks their size
+([CI](ci.md#firmware-link-test)).
 
 ## Packet Flow
 
@@ -176,6 +177,19 @@ Deferred from this thread-isolation subset: RT scheduling policy/priority
 IRQ, mlock and buffer-tuning deployment guidance beyond this note; and on-wire
 hardware qualification (#502). These RT APIs are not implemented here, and #501
 remains open for its residual RT-policy/affinity and full documentation work.
+
+### Testing MS/TP without hardware
+
+`bacnet-mstp-sim`, a test-only crate that is not published, puts several
+`bacnet-mstp-core` masters on a simulated RS-485 line and runs them in
+virtual time: ten-bit characters at the configured baud rate, collisions,
+noise, power loss and slow adapters, with Clause 9 invariants checked after
+every event. Its scenarios cover ring formation, rotation, replies, joins and
+leaves, token loss and noise, plus randomized fault runs. The crate
+documentation describes the model and what it leaves out, such as electrical
+effects and propagation delay. The host `MstpTransport` does not use the
+core yet (#1608), so these scenarios test the core rather than the host
+transport.
 
 ## Object Model
 
