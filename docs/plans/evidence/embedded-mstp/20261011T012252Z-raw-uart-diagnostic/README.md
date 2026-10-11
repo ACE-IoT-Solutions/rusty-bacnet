@@ -25,11 +25,11 @@ The EXIT-guarded rollback wrote and verified the known C factory image. F then
 returned `ok`; 26 seconds after rollback it had received 3598 bytes and
 recorded 76 token events. The dashboard service was active again.
 
-This run is intentionally not an acceptance `pass`. Observer C was unreachable
-because the controller's dedicated interface had no carrier, and no independent
-logic-analyzer DE trace was captured. The active image remained unflashed. A
-repeat passive run must include those artifacts before the fail-closed evaluator
-may advance the Phase 6 checklist.
+This run is intentionally not an acceptance `pass`. The inventory still
+pointed to observer C's former address; C was subsequently found healthy at
+`192.168.9.110`. No independent logic-analyzer DE trace was captured. The
+active image remained unflashed. A repeat passive run must include those
+artifacts before the fail-closed evaluator may advance the Phase 6 checklist.
 
 Captured files in this directory are the timestamped F serial log, preflight,
 candidate and rollback flash logs, before/after peer snapshots, and restored-F

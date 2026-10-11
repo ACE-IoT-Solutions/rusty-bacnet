@@ -452,11 +452,11 @@ flash hash, restarted the dashboard, and F resumed token participation. This
 isolates the prior zero-byte failure to the extra UART mode/interrupt setup in
 the high-level HAL path and validates the raw ESP-IDF receive path.
 
-This diagnostic does not close passive acceptance: observer C's management
-network was unavailable because the controller's dedicated interface had no
-carrier, and no independent logic-analyzer DE trace was captured. The active
-image remains unflashed until a repeat run includes both artifacts and earns a
-fail-closed passive `pass` verdict.
+This diagnostic does not close passive acceptance: the inventory still pointed
+to observer C's former management address, so its counters were not captured,
+and no independent logic-analyzer DE trace was recorded. C was subsequently
+located at `192.168.9.110`. The active image remains unflashed until a repeat
+run includes both artifacts and earns a fail-closed passive `pass` verdict.
 
 ## Proposed PR queue
 

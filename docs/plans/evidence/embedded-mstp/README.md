@@ -280,10 +280,10 @@ advanced by 8182 receive bytes. The guarded runner then restored the known C
 image, verified the write, restarted the dashboard collector, and independently
 confirmed F health and resumed token participation.
 
-This is diagnostic success but not a passive acceptance verdict. Observer C's
-management network was unavailable because the controller's dedicated
-interface had no carrier, and no independent logic-analyzer DE trace was
-captured. The sanitized downstream capture is indexed under
+This is diagnostic success but not a passive acceptance verdict. The inventory
+still pointed to observer C's former management address, so its counters were
+not captured; C was subsequently located at `192.168.9.110`. No independent
+logic-analyzer DE trace was captured. The sanitized downstream capture is indexed under
 `20261011T012252Z-raw-uart-diagnostic/`. Both Phase 6 hardware checklist items
 remain open, and the active image must not be flashed until a repeat passive run
 includes the missing artifacts and passes the fail-closed evaluator.
