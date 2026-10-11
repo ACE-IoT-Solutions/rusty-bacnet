@@ -1,10 +1,11 @@
 //! The B/IPv6 receive loop: what happens to one datagram once the socket has
 //! admitted it to the selected link.
 
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use bacnet_bip_codec::ipv6::decode;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
@@ -14,18 +15,19 @@ use tracing::{debug, warn};
 use crate::port::{ReceivedNpdu, TransportProvenance};
 use crate::udp_metadata::ReceivedDatagram;
 
-use super::frame::destination_vmac_matches;
+use super::frame::encoded;
 use super::ingress::{
-    forwarded_npdu_is_trusted, forwarded_source_is_usable, group_destination,
-    original_destination_matches, LocalBinding,
+    destination_vmac_matches, forwarded_npdu_is_trusted, forwarded_source_is_usable,
+    group_destination, original_destination_matches, LocalBinding,
 };
 use super::port::is_bip6_group;
 use super::socket::Bip6Socket;
 use super::vmac_table::VmacTable;
-use super::{
-    decode_bvlc6, decode_forwarded_npdu_payload, encode_address_resolution_ack, encode_bip6_mac,
-    encode_virtual_address_resolution_ack, Bip6Vmac, Bvlc6Frame, Bvlc6Function,
-};
+use super::{encode_bip6_mac, Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6, Bvll6Error};
+
+/// Octets an NPDU starts with whatever else it holds: version and control
+/// (Clause 6.2).
+const MIN_NPDU_LENGTH: usize = 2;
 
 /// What the receive loop needs besides the datagram itself.
 pub(super) struct Receiver {
@@ -85,36 +87,41 @@ impl Receiver {
     /// Decode one datagram, drop it if its addressing does not fit its BVLC
     /// function, and otherwise act on it.
     pub(super) async fn handle_datagram(&self, data: &[u8], received: &ReceivedDatagram) {
-        let frame = match decode_bvlc6(data) {
-            Ok(frame) => frame,
+        let message = match decode(data) {
+            Ok(message) => message,
+            Err(Bvll6Error::UnknownFunction { function }) => {
+                debug!(function, "Unhandled BVLC6 function");
+                return;
+            }
             Err(e) => {
                 warn!(error = %e, "Failed to decode BVLC6 frame");
                 return;
             }
         };
-        if !destination_vmac_matches(frame.function, frame.destination_vmac, self.vmac) {
+        let function = message.function();
+        if !destination_vmac_matches(&message, self.vmac) {
             debug!(
-                function = frame.function.to_byte(),
-                destination_vmac = ?frame.destination_vmac,
+                function = function.to_raw(),
+                destination_vmac = ?message.destination_vmac(),
                 "Dropping BVLC6 message addressed to another VMAC"
             );
             return;
         }
         if !original_destination_matches(
-            frame.function,
+            function,
             received.destination,
-            frame.destination_vmac,
+            message.destination_vmac(),
             &self.binding(),
             received.os_group_delivery,
         ) {
             debug!(
-                function = frame.function.to_byte(),
+                function = function.to_raw(),
                 destination = %received.destination,
                 "Dropping BVLC6/IP or Destination-VMAC mismatch"
             );
             return;
         }
-        if frame.function == Bvlc6Function::ForwardedNpdu
+        if function == Bvlc6Function::FORWARDED_NPDU
             && !forwarded_npdu_is_trusted(
                 received.peer,
                 received.destination,
@@ -136,25 +143,35 @@ impl Receiver {
         // forwarding BBMD. Its original address is learned from the function
         // payload in `dispatch`.
         if matches!(
-            frame.function,
-            Bvlc6Function::OriginalUnicast
-                | Bvlc6Function::OriginalBroadcast
-                | Bvlc6Function::AddressResolution
-                | Bvlc6Function::AddressResolutionAck
-                | Bvlc6Function::VirtualAddressResolution
-                | Bvlc6Function::VirtualAddressResolutionAck
+            function,
+            Bvlc6Function::ORIGINAL_UNICAST_NPDU
+                | Bvlc6Function::ORIGINAL_BROADCAST_NPDU
+                | Bvlc6Function::ADDRESS_RESOLUTION
+                | Bvlc6Function::ADDRESS_RESOLUTION_ACK
+                | Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION
+                | Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION_ACK
         ) {
             if let SocketAddr::V6(v6) = received.peer {
-                self.vmac_table.learn(frame.source_vmac, v6).await;
+                self.vmac_table.learn(message.source_vmac(), v6).await;
             }
         }
-        self.dispatch(frame, received).await;
+        self.dispatch(message, received).await;
     }
 
-    /// Act on a frame whose addressing `handle_datagram` has checked.
-    pub(super) async fn dispatch(&self, frame: Bvlc6Frame, received: &ReceivedDatagram) {
-        match frame.function {
-            Bvlc6Function::OriginalUnicast | Bvlc6Function::OriginalBroadcast => {
+    /// Send an address-resolution answer back to the peer that asked.
+    async fn answer(&self, reply: &Bvll6<'_>, received: &ReceivedDatagram) {
+        match encoded(reply) {
+            Ok(reply) => {
+                let _ = self.socket.send_to(&reply, received.peer).await;
+            }
+            Err(e) => debug!(error = %e, "Failed to encode BVLC6 reply"),
+        }
+    }
+
+    /// Act on a message whose addressing `handle_datagram` has checked.
+    pub(super) async fn dispatch(&self, message: Bvll6<'_>, received: &ReceivedDatagram) {
+        match message {
+            Bvll6::OriginalUnicastNpdu { npdu, .. } | Bvll6::OriginalBroadcastNpdu { npdu, .. } => {
                 let SocketAddr::V6(v6) = received.peer else {
                     return;
                 };
@@ -166,13 +183,13 @@ impl Receiver {
                 // says so: an Original-Unicast-NPDU sent to a multicast group
                 // reached every node in it, so a confirmed request in it is
                 // never answered as a directed one (Clause 5.4.5.1).
-                let link_layer_group = frame.function == Bvlc6Function::OriginalBroadcast
+                let link_layer_group = matches!(message, Bvll6::OriginalBroadcastNpdu { .. })
                     || group_destination(received.destination, received.os_group_delivery);
                 if self
                     .tx
                     .try_send(ReceivedNpdu {
                         direct_response: None,
-                        npdu: frame.payload.clone(),
+                        npdu: Bytes::copy_from_slice(npdu),
                         source_mac,
                         link_layer_group,
                         data_attributes: Vec::new(),
@@ -185,89 +202,101 @@ impl Receiver {
                 }
             }
 
-            Bvlc6Function::ForwardedNpdu => match decode_forwarded_npdu_payload(&frame.payload) {
-                Ok((source_addr, npdu_bytes)) => {
-                    // The origin is taken as the NPDU's source, so a group
-                    // there would bind a forged I-Am to every node in it, or
-                    // send a request's answer to them all. No node sends from
-                    // one: the frame is malformed, and counted (#1493).
-                    let source_mac = encode_bip6_mac(*source_addr.ip(), source_addr.port());
-                    if is_bip6_group(&source_mac) {
-                        self.forwarded_group_origin_drops
-                            .fetch_add(1, Ordering::Relaxed);
-                        debug!(
-                            source = %source_addr,
-                            "Dropping Forwarded-NPDU whose origin is a group address"
-                        );
-                        return;
-                    }
-                    if npdu_bytes.is_empty() {
-                        debug!("ForwardedNpdu with no NPDU payload, ignoring");
-                        return;
-                    }
-                    if !forwarded_source_is_usable(source_addr) {
-                        debug!(
-                            source = %source_addr,
-                            "Dropping Forwarded-NPDU with unusable origin"
-                        );
-                        return;
-                    }
-                    if decode_npdu(Bytes::copy_from_slice(npdu_bytes)).is_err() {
-                        debug!("Dropping Forwarded-NPDU with malformed NPDU");
-                        return;
-                    }
-                    self.vmac_table.learn(frame.source_vmac, source_addr).await;
-                    if self
-                        .tx
-                        .try_send(ReceivedNpdu {
-                            direct_response: None,
-                            npdu: Bytes::copy_from_slice(npdu_bytes),
-                            source_mac: MacAddr::from_slice(&source_mac),
-                            link_layer_group: true,
-                            data_attributes: Vec::new(),
-                            provenance: TransportProvenance::unverified(),
-                            reply_tx: None,
-                        })
-                        .is_err()
-                    {
-                        warn!("BIP6: NPDU channel full, dropping forwarded frame");
-                    }
+            Bvll6::ForwardedNpdu {
+                original_source,
+                original_address,
+                npdu,
+            } => {
+                // Too short to start an NPDU: dropped before anything else,
+                // the origin included, is looked at.
+                if npdu.len() < MIN_NPDU_LENGTH {
+                    debug!(
+                        length = npdu.len(),
+                        "Dropping Forwarded-NPDU too short to hold an NPDU"
+                    );
+                    return;
                 }
-                Err(e) => {
-                    debug!(error = %e, "Failed to decode ForwardedNpdu payload");
+                // The 18 octets carry no scope ID, so the origin gets none.
+                let source_addr = SocketAddrV6::from(original_address);
+                // The origin is taken as the NPDU's source, so a group there
+                // would bind a forged I-Am to every node in it, or send a
+                // request's answer to them all. No node sends from one: the
+                // frame is malformed, and counted (#1493).
+                let source_mac = original_address.to_octets();
+                if is_bip6_group(&source_mac) {
+                    self.forwarded_group_origin_drops
+                        .fetch_add(1, Ordering::Relaxed);
+                    debug!(
+                        source = %source_addr,
+                        "Dropping Forwarded-NPDU whose origin is a group address"
+                    );
+                    return;
                 }
-            },
+                if !forwarded_source_is_usable(source_addr) {
+                    debug!(
+                        source = %source_addr,
+                        "Dropping Forwarded-NPDU with unusable origin"
+                    );
+                    return;
+                }
+                let npdu = Bytes::copy_from_slice(npdu);
+                if decode_npdu(npdu.clone()).is_err() {
+                    debug!("Dropping Forwarded-NPDU with malformed NPDU");
+                    return;
+                }
+                self.vmac_table.learn(original_source, source_addr).await;
+                if self
+                    .tx
+                    .try_send(ReceivedNpdu {
+                        direct_response: None,
+                        npdu,
+                        source_mac: MacAddr::from_slice(&source_mac),
+                        link_layer_group: true,
+                        data_attributes: Vec::new(),
+                        provenance: TransportProvenance::unverified(),
+                        reply_tx: None,
+                    })
+                    .is_err()
+                {
+                    warn!("BIP6: NPDU channel full, dropping forwarded frame");
+                }
+            }
 
-            Bvlc6Function::VirtualAddressResolution => {
+            Bvll6::VirtualAddressResolution { source } => {
                 // A node receiving VAR at its unicast B/IPv6 address
                 // answers with its own VMAC and the requester's VMAC.
-                let ack = encode_virtual_address_resolution_ack(&self.vmac, &frame.source_vmac);
-                let _ = self.socket.send_to(&ack, received.peer).await;
+                let ack = Bvll6::VirtualAddressResolutionAck {
+                    source: self.vmac,
+                    destination: source,
+                };
+                self.answer(&ack, received).await;
             }
 
-            Bvlc6Function::AddressResolution => {
+            Bvll6::AddressResolution { source, target } => {
                 // AR: sender wants to know our B/IPv6 address from our VMAC.
-                // destination_vmac is the target being resolved.
-                if frame.destination_vmac == Some(self.vmac) {
+                if target == self.vmac {
                     debug!(vmac = ?self.vmac, "Received AR for our VMAC, sending AR-Ack");
-                    let ack = encode_address_resolution_ack(&self.vmac, &frame.source_vmac);
-                    let _ = self.socket.send_to(&ack, received.peer).await;
+                    let ack = Bvll6::AddressResolutionAck {
+                        source: self.vmac,
+                        destination: source,
+                    };
+                    self.answer(&ack, received).await;
                 }
             }
 
-            Bvlc6Function::AddressResolutionAck => {
+            Bvll6::AddressResolutionAck { source, .. } => {
                 // AR-ACK: learn the sender's VMAC→address mapping
                 // (will be used by VMAC table in future)
                 debug!(
-                    vmac = ?frame.source_vmac,
+                    vmac = ?source,
                     addr = %received.peer,
                     "Received AR-Ack"
                 );
             }
 
-            Bvlc6Function::VirtualAddressResolutionAck => {
+            Bvll6::VirtualAddressResolutionAck { source, .. } => {
                 // VAR-ACK: someone responded to our collision check
-                if frame.source_vmac == self.vmac {
+                if source == self.vmac {
                     warn!(
                         vmac = ?self.vmac,
                         "BIP6 VMAC collision detected! \
@@ -276,20 +305,17 @@ impl Receiver {
                 }
             }
 
-            Bvlc6Function::Result => {
+            Bvll6::BvlcResult { code, .. } => {
                 // Log BVLC-Result for diagnostics
-                if frame.payload.len() >= 2 {
-                    let result_code = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
-                    if result_code == 0x0000 {
-                        debug!("BIP6: BVLC-Result successful");
-                    } else {
-                        tracing::error!(code = result_code, "BIP6: BVLC-Result NAK");
-                    }
+                if code == Bvlc6ResultCode::SUCCESSFUL_COMPLETION {
+                    debug!("BIP6: BVLC-Result successful");
+                } else {
+                    tracing::error!(code = code.to_raw(), "BIP6: BVLC-Result NAK");
                 }
             }
 
             _ => {
-                debug!(function = ?frame.function, "Unhandled BVLC6 function");
+                debug!(function = ?message.function(), "Unhandled BVLC6 function");
             }
         }
     }

@@ -14,7 +14,7 @@ pub(super) const MAX_VMAC_TABLE_ENTRIES: usize = 4096;
 pub(super) fn derive_vmac_from_device_instance(device_instance: u32) -> Bip6Vmac {
     debug_assert!(device_instance <= 0x3F_FFFF);
     let bytes = device_instance.to_be_bytes();
-    [bytes[1], bytes[2], bytes[3]]
+    Bip6Vmac::new([bytes[1], bytes[2], bytes[3]])
 }
 
 /// Generate a Random Device Instance VMAC for collision resolution (Clause H.7.2).
@@ -24,7 +24,7 @@ pub fn generate_random_vmac() -> Result<Bip6Vmac, Error> {
         Error::Encoding(format!("failed to generate Random Instance VMAC: {error}"))
     })?;
     vmac[0] = (vmac[0] & 0x3F) | 0x40;
-    Ok(vmac)
+    Ok(Bip6Vmac::new(vmac))
 }
 
 /// VMAC-to-address mapping table per Clause U.5.
