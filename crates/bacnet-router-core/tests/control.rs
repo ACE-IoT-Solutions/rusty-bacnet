@@ -1,3 +1,5 @@
+//! Strict Clause 6 network-control codec tests.
+
 use bacnet_router_core::control::{
     decode_control, encode_control, encoded_len, ControlCodecError, InitializeRoutingTable,
     NetworkControl, RejectReason, INITIALIZE_ROUTING_TABLE, INITIALIZE_ROUTING_TABLE_ACK,

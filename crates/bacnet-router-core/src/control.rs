@@ -36,6 +36,11 @@ impl<'a> NetworkList<'a> {
         self.bytes.len() / 2
     }
 
+    /// Whether this list contains no network numbers.
+    pub const fn is_empty(self) -> bool {
+        self.bytes.is_empty()
+    }
+
     /// Return the original wire bytes.
     pub const fn as_bytes(self) -> &'a [u8] {
         self.bytes
@@ -89,6 +94,11 @@ impl<'a> RoutingTable<'a> {
     /// Number of entries in the table.
     pub const fn len(self) -> usize {
         self.count as usize
+    }
+
+    /// Whether this table contains no entries.
+    pub const fn is_empty(self) -> bool {
+        self.count == 0
     }
 
     /// Return the table body, excluding its count octet.
@@ -150,22 +160,42 @@ pub enum InitializeRoutingTable<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkControl<'a> {
     /// Query one network, or all networks when `network` is `None`.
-    WhoIsRouter { network: Option<NetworkNumber> },
+    WhoIsRouter {
+        /// Requested network, or `None` for the all-networks form.
+        network: Option<NetworkNumber>,
+    },
     /// Announce networks reachable through this router.
-    IAmRouter { networks: NetworkList<'a> },
+    IAmRouter {
+        /// Networks announced as reachable through the sender.
+        networks: NetworkList<'a>,
+    },
     /// Report why a message to `network` was rejected.
     RejectMessageToNetwork {
+        /// Standard rejection reason.
         reason: RejectReason,
+        /// Destination network whose message was rejected.
         network: NetworkNumber,
     },
     /// Announce temporarily busy networks.
-    RouterBusy { networks: NetworkList<'a> },
+    RouterBusy {
+        /// Networks whose learned route is temporarily busy.
+        networks: NetworkList<'a>,
+    },
     /// Announce networks that are available again.
-    RouterAvailable { networks: NetworkList<'a> },
+    RouterAvailable {
+        /// Networks whose learned route is available again.
+        networks: NetworkList<'a>,
+    },
     /// Request a routing table or advertise one.
-    InitializeRoutingTable { table: InitializeRoutingTable<'a> },
+    InitializeRoutingTable {
+        /// Query marker or validated advertised entries.
+        table: InitializeRoutingTable<'a>,
+    },
     /// Reply with a routing table, including the valid zero-entry form.
-    InitializeRoutingTableAck { table: RoutingTable<'a> },
+    InitializeRoutingTableAck {
+        /// Validated routing-table entries.
+        table: RoutingTable<'a>,
+    },
 }
 
 impl NetworkControl<'_> {
@@ -187,11 +217,17 @@ impl NetworkControl<'_> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum RejectReason {
+    /// An implementation-specific reason not covered by another value.
     Other = 0,
+    /// The destination network is not directly connected.
     NotDirectlyConnected = 1,
+    /// The selected router is temporarily unable to accept the message.
     RouterBusy = 2,
+    /// The network-message type is not understood or supported.
     UnknownMessageType = 3,
+    /// The message is too long for the next data link.
     MessageTooLong = 4,
+    /// The destination address cannot be used on the selected data link.
     AddressingError = 6,
 }
 
@@ -216,22 +252,43 @@ pub enum ControlCodecError {
     UnsupportedMessageType(u8),
     /// A field was shorter than the wire format requires.
     Truncated {
+        /// Byte offset at which the field begins.
         offset: usize,
+        /// Minimum complete payload length required at this point.
         needed: usize,
+        /// Actual payload length supplied by the caller.
         actual: usize,
     },
     /// The payload has a shape that is not valid for its message type.
-    InvalidLength { message_type: u8, length: usize },
+    InvalidLength {
+        /// Network-message type being decoded.
+        message_type: u8,
+        /// Invalid payload length.
+        length: usize,
+    },
     /// Extra bytes remain after all fields have been consumed.
-    TrailingBytes { offset: usize, remaining: usize },
+    TrailingBytes {
+        /// First unconsumed byte offset.
+        offset: usize,
+        /// Number of unconsumed bytes.
+        remaining: usize,
+    },
     /// A reserved network number was present on the wire.
     InvalidNetwork(u16),
     /// A reserved Reject-Message-To-Network reason was present.
     InvalidRejectReason(u8),
     /// The caller's output buffer cannot hold the encoded payload.
-    BufferTooSmall { needed: usize, capacity: usize },
+    BufferTooSmall {
+        /// Exact encoded length required.
+        needed: usize,
+        /// Bytes available in the caller's buffer.
+        capacity: usize,
+    },
     /// A port-info slice cannot be represented by the one-octet wire length.
-    PortInfoTooLong { length: usize },
+    PortInfoTooLong {
+        /// Unrepresentable port-info length.
+        length: usize,
+    },
 }
 
 /// Decode one supported Clause 6 network-control payload.
@@ -283,7 +340,7 @@ pub fn decode_control<'a>(
             }
             let table = parse_routing_table(payload, message_type)?;
             Ok(NetworkControl::InitializeRoutingTable {
-                table: if table.len() == 0 {
+                table: if table.is_empty() {
                     // Zero entries is the alternate query spelling used by
                     // existing hosted peers; normalize it to Query.
                     InitializeRoutingTable::Query
@@ -393,7 +450,7 @@ fn parse_network_list<'a>(
     message_type: u8,
     payload: &'a [u8],
 ) -> Result<NetworkList<'a>, ControlCodecError> {
-    if payload.is_empty() || payload.len() % 2 != 0 {
+    if payload.is_empty() || payload.len() & 1 != 0 {
         return Err(ControlCodecError::InvalidLength {
             message_type,
             length: payload.len(),

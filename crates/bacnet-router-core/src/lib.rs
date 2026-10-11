@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod bip;
+pub mod control;
 mod duplicate;
 mod forwarding;
 mod route_table;
