@@ -1,11 +1,8 @@
 //! Duplicate suppression primitive tests.
 
-use bacnet_router_core::LinkAddress;
-
-#[path = "../src/duplicate.rs"]
-mod duplicate;
-
-use duplicate::{DuplicateCache, DuplicateCacheStats, DuplicateKey, DuplicateOutcome};
+use bacnet_router_core::{
+    DuplicateCache, DuplicateCacheStats, DuplicateKey, DuplicateOutcome, LinkAddress,
+};
 
 fn address(value: u8) -> LinkAddress {
     LinkAddress::try_from_slice(&[value]).unwrap()
