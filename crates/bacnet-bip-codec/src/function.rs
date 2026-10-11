@@ -81,6 +81,8 @@ macro_rules! named_codes {
     };
 }
 
+pub(crate) use named_codes;
+
 named_codes! {
     /// A BVLC function code: the second octet of every B/IP BVLL message,
     /// which says what the message is (Annex J.2).
@@ -139,13 +141,17 @@ named_codes! {
 }
 
 /// How long the payload of a BVLL message may be: the octets after the
-/// 4-octet header, which depend on the function alone (Annex J.2).
+/// 4-octet header, which depend on the function alone (Annex J.2, U.2).
+///
+/// [`BvlcFunction::payload_shape`] gives it for B/IP and
+/// [`Bvlc6Function::payload_shape`](crate::ipv6::Bvlc6Function::payload_shape)
+/// for B/IPv6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadShape {
     /// Exactly this many octets.
     Fixed(usize),
     /// A table of whole entries of this many octets each. An empty table is
-    /// allowed.
+    /// allowed. Only B/IP messages carry tables.
     Table {
         /// Octets per entry.
         entry_length: usize,
