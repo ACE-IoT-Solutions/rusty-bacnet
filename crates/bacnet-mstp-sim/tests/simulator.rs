@@ -4,9 +4,11 @@
 mod common;
 
 use bacnet_mstp_codec::FrameType;
+use bacnet_mstp_core::Duration;
+use bacnet_mstp_sim::analysis::token_users;
 use bacnet_mstp_sim::{
-    CollisionClass, Driver, MasterSpec, ScriptSend, SeenFrame, Sim, SimConfig, TraceKind,
-    ViolationKind,
+    AdapterSpec, CollisionClass, Driver, Fault, MasterSpec, ScriptSend, SeenFrame, Sim, SimConfig,
+    TraceKind, ViolationKind,
 };
 
 use common::*;
@@ -104,4 +106,104 @@ fn the_trace_records_octets_actions_and_state_changes() {
     let dump = sim.dump(5);
     assert!(dump.starts_with("trace at     560.000ms:\n"), "{dump}");
     assert_eq!(dump.lines().count(), 7);
+}
+
+/// Masters 0 and 3, run until 3 has just received the token; from then on
+/// station 3's adapter behaves as `adapter`. Station 0 sends the token again
+/// 20 ms after the first one ended, so a frame from 3 that starts then
+/// collides with it.
+fn collide_with_the_second_token(config: SimConfig, adapter: AdapterSpec) -> Sim {
+    let mut sim = Sim::new(config);
+    sim.add_master(MasterSpec::new(0, 3, BAUD))
+        .add_master(MasterSpec::new(3, 3, BAUD));
+    run_until_frame(&mut sim, ms(1_500), ms(3_000), |frame| {
+        frame.is(FrameType::Token, 0, 3)
+    });
+    let now = sim.now();
+    sim.inject(
+        now,
+        Fault::SetAdapter {
+            station: 3,
+            adapter,
+        },
+    );
+    sim.run_for(millis(100));
+    sim
+}
+
+/// Station 3's core hands its frame over Tturnaround (1042 us) after the
+/// token, and its adapter starts it 18958 us later: exactly when station 0
+/// sends the token again. The core could not have known, so the collision is
+/// the slow adapter's; a strict run still fails on it.
+#[test]
+fn a_slow_adapter_collision_fails_a_strict_run() {
+    let slow = AdapterSpec {
+        start_delay: Duration::from_micros(18_958),
+        ..AdapterSpec::default()
+    };
+    let mut config = SimConfig::new(BAUD);
+    config.panic_on_violation = false;
+    let sim = collide_with_the_second_token(config, slow);
+    let report = sim.report();
+    assert_eq!(report.collisions[0].class, CollisionClass::SlowAdapter);
+    assert_eq!(
+        (report.collisions[0].driver, report.collisions[0].other),
+        (Driver::Station(3), Driver::Station(0))
+    );
+    assert_eq!(report.violations[0].kind, ViolationKind::Collision);
+
+    config.tolerance.slow_adapter_collisions = true;
+    let sim = collide_with_the_second_token(config, slow);
+    assert_eq!(sim.report().collisions_of(CollisionClass::SlowAdapter), 1);
+    assert!(sim
+        .report()
+        .violations
+        .iter()
+        .all(|violation| violation.kind != ViolationKind::Collision));
+}
+
+/// A late adapter whose core hands its frame over after the other frame has
+/// begun is not excused by the slow-adapter tolerance: the core dispatched
+/// into a frame already on the line.
+#[test]
+fn a_late_core_that_dispatches_into_a_frame_is_not_excused() {
+    let late = AdapterSpec {
+        deadline_lateness: Duration::from_micros(19_000),
+        ..AdapterSpec::default()
+    };
+    let mut config = SimConfig::new(BAUD);
+    config.panic_on_violation = false;
+    config.tolerance.slow_adapter_collisions = true;
+    let sim = collide_with_the_second_token(config, late);
+    let report = sim.report();
+    assert_eq!(report.collisions[0].class, CollisionClass::Unexplained);
+    assert_eq!(report.violations[0].kind, ViolationKind::Collision);
+}
+
+/// Every adapter here starts frames 4 ms after its core hands them over,
+/// which would hide a core that dispatched with no turnaround at all: each
+/// start would still come 4 ms after the last activity. The simulator checks
+/// the hand-over too, so that core fails even with the blind-spot tolerance
+/// on.
+#[test]
+fn slow_adapters_do_not_hide_a_dispatch_inside_turnaround() {
+    let slow = AdapterSpec {
+        start_delay: Duration::from_millis(4),
+        ..AdapterSpec::default()
+    };
+    let mut config = SimConfig::new(BAUD);
+    config.tolerance.slow_adapter_blind_spot = true;
+    config.tolerance.slow_adapter_collisions = true;
+    let mut sim = Sim::new(config);
+    for station in [0, 3, 10] {
+        sim.add_master(MasterSpec::new(station, 15, BAUD).adapter(slow));
+    }
+    sim.run_until(ms(3_000));
+    assert_eq!(
+        token_users(sim.frames(), ms(2_000))
+            .into_iter()
+            .collect::<Vec<u8>>(),
+        [0, 3, 10]
+    );
+    sim.assert_no_violations();
 }

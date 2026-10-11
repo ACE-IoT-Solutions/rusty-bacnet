@@ -1,7 +1,7 @@
 //! Core behaviour the simulator shows to be wrong, pinned by tests of the
 //! correct behaviour that are ignored until the core is fixed.
 //!
-//! Gap: the core's transmit blind spot. From the moment the core hands an
+//! Gap (#1625): the core's transmit blind spot. From the moment the core hands an
 //! adapter a frame (`Action::Transmit`) until the adapter confirms the start
 //! (`on_transmit_started`), `on_octet` treats every octet as the station's
 //! own echo and drops it. Echo can only begin once the driver is enabled,
@@ -48,7 +48,7 @@ fn slow_station_3(config: SimConfig, delay: Duration) -> Sim {
 /// before that start is activity station 3 must wait Tturnaround after;
 /// today it starts on time regardless.
 #[test]
-#[ignore = "core bug: octets between dispatch and confirmed start are taken for echo, so a slow adapter starts within Tturnaround of activity; see follow-up"]
+#[ignore = "core bug #1625: octets between dispatch and confirmed start are taken for echo, so a slow adapter starts within Tturnaround of activity"]
 fn a_slow_adapter_never_starts_within_turnaround_of_activity() {
     let mut sim = slow_station_3(SimConfig::new(BAUD), Duration::from_millis(4));
     let token_end = sim.now();
@@ -65,7 +65,7 @@ fn a_slow_adapter_never_starts_within_turnaround_of_activity() {
 /// waiting for its adapter, drops that Token unheard; it should at least
 /// count it as a valid frame received.
 #[test]
-#[ignore = "core bug: a frame that arrives between dispatch and confirmed start is dropped as echo; see follow-up"]
+#[ignore = "core bug #1625: a frame that arrives between dispatch and confirmed start is dropped as echo"]
 fn a_frame_that_arrives_before_a_slow_start_is_still_heard() {
     let mut sim = slow_station_3(SimConfig::new(BAUD), Duration::from_millis(25));
     let token_end = sim.now();
@@ -74,8 +74,8 @@ fn a_frame_that_arrives_before_a_slow_start_is_still_heard() {
 }
 
 /// The same two runs, collecting violations instead of stopping, show the
-/// gap today. These pass, and start failing once the core is fixed; then
-/// delete them and drop the ignore above.
+/// gap today. They pass, and start failing once #1625 is fixed; then delete
+/// this test and drop the two ignores above.
 #[test]
 fn the_blind_spot_today() {
     let mut config = SimConfig::new(BAUD);

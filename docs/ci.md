@@ -167,7 +167,9 @@ whose soft limit on open files was 1024. On the hosted runner they run as
 - The MS/TP token ring is tested without a serial port on
   `bacnet-mstp-sim`, a simulated RS-485 bus in virtual time that runs real
   `bacnet-mstp-core` masters (#1605). Its scenarios, randomized fault runs
-  included, take a few seconds of wall time and read no clock.
+  included, take a few seconds of wall time and read no clock. To widen the
+  randomized runs locally, run
+  `MSTP_SIM_SEEDS=400 cargo nextest run -p bacnet-mstp-sim -E 'binary(property)'`.
 - The BACnet/SC hub capacity test needs about 2,100 descriptors and raises its
   own soft limit to that, which needs no privilege below the hard limit. The
   step above logs both limits.

@@ -3,8 +3,8 @@
 
 use bacnet_mstp_codec::MAX_STANDARD_FRAME_LENGTH;
 use bacnet_mstp_core::{
-    Action, AllocQueues, CoreError, Direction, Instant, MasterCore, MstpCounters, NetworkPriority,
-    QueueRejectReason, ReceiveError, ReplyDecision, RequestId, TransmitId,
+    Action, AllocQueues, CoreError, Direction, Instant, MasterCore, MasterState, MstpCounters,
+    NetworkPriority, QueueRejectReason, ReceiveError, ReplyDecision, RequestId, TransmitId,
 };
 
 use super::{describe, leak_storage, Event, NodeKind, Sim, SimCore};
@@ -51,7 +51,12 @@ pub(crate) struct MasterNode {
 pub(crate) struct PendingTx {
     pub(super) id: TransmitId,
     pub(super) octets: Vec<u8>,
+    /// When the core handed the frame over.
     pub(super) dispatched: Instant,
+    /// The line's last activity at that moment.
+    pub(super) activity_at_dispatch: Option<Instant>,
+    /// The core was answering a request when it handed the frame over.
+    pub(super) while_answering: bool,
     pub(super) generation: bool,
 }
 
@@ -230,8 +235,9 @@ impl Sim {
                 format!("station {station}: new deadline {deadline:?} is before now"),
             );
         }
+        let answering = before == MasterState::AnswerDataRequest;
         match effects {
-            Ok(effects) => self.apply_effects(node, effects),
+            Ok(effects) => self.apply_effects(node, effects, answering),
             Err(count) => self.violation(
                 ViolationKind::CoreError,
                 format!("station {station}: {count} actions from one event"),
@@ -317,7 +323,7 @@ impl Sim {
         }
     }
 
-    fn apply_effects(&mut self, node: usize, effects: Vec<Effect>) {
+    fn apply_effects(&mut self, node: usize, effects: Vec<Effect>, answering: bool) {
         let station = self.nodes[node].station;
         let who = Who::Station(station);
         for effect in effects {
@@ -334,6 +340,7 @@ impl Sim {
                         TraceKind::Action(format!("Transmit #{} {}", id.raw(), describe(&octets))),
                     );
                     let now = self.now;
+                    let activity = self.line.last_activity();
                     let master = self.master_mut(node).expect("a master");
                     let replaced = master.pending.is_some();
                     let delay = master.spec.adapter.start_delay;
@@ -346,6 +353,8 @@ impl Sim {
                         id,
                         octets,
                         dispatched: now,
+                        activity_at_dispatch: activity,
+                        while_answering: answering,
                         generation,
                     });
                     if replaced {
@@ -527,7 +536,7 @@ impl Sim {
                     Driver::Station(station),
                     pending.octets,
                     corruption,
-                    pending.generation,
+                    Some((pending.dispatched, pending.generation)),
                 );
                 let master = self.master_mut(node).expect("a master");
                 master.transmitting = Some(id);

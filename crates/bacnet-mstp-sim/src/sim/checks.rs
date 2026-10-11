@@ -67,7 +67,7 @@ impl Sim {
         if !blind.is_empty() {
             self.report.blind_spot_frames += 1;
             let detail = format!(
-                "clean frame {frame}: {} (slow adapter blind spot)",
+                "clean frame {frame}: {} (slow adapter blind spot, #1625)",
                 blind.join(", ")
             );
             if self.config.tolerance.slow_adapter_blind_spot {
@@ -103,7 +103,7 @@ impl Sim {
         if let Some(meta) = other_tx.and_then(|other_tx| self.meta.get_mut(&other_tx)) {
             meta.collided_with.push(driver);
         }
-        let class = self.classify(driver, other);
+        let class = self.classify(tx, driver, other_tx, other);
         let collision = Collision {
             at: self.now,
             driver,
@@ -117,9 +117,8 @@ impl Sim {
         );
         self.perturb("a collision");
         let tolerated = match class {
-            CollisionClass::Noise
-            | CollisionClass::GenerationRace
-            | CollisionClass::SlowAdapter => true,
+            CollisionClass::Noise | CollisionClass::GenerationRace => true,
+            CollisionClass::SlowAdapter => self.config.tolerance.slow_adapter_collisions,
             CollisionClass::Scripted => self.config.tolerance.scripted_collisions,
             CollisionClass::Unexplained => false,
         };
@@ -131,7 +130,13 @@ impl Sim {
         }
     }
 
-    fn classify(&self, driver: Driver, other: Driver) -> CollisionClass {
+    fn classify(
+        &self,
+        tx: TxId,
+        driver: Driver,
+        other_tx: Option<TxId>,
+        other: Driver,
+    ) -> CollisionClass {
         if matches!(driver, Driver::Noise(_)) || matches!(other, Driver::Noise(_)) {
             return CollisionClass::Noise;
         }
@@ -145,9 +150,20 @@ impl Sim {
         let (Some(first), Some(second)) = (master_of(driver), master_of(other)) else {
             return CollisionClass::Scripted;
         };
+        // A slow adapter explains the overlap only if its core handed the
+        // frame over before the other frame began: the core could not have
+        // heard it, and only the adapter's delay put the two together. A core
+        // that dispatched while a frame was already on the line is at fault
+        // whatever its adapter.
+        let dispatched = |tx: Option<TxId>| tx.and_then(|tx| self.meta.get(&tx)?.dispatched);
+        let began = |tx: Option<TxId>| tx.and_then(|tx| self.line.get(tx)).map(|t| t.start);
+        let slow_first = |slow: &super::master::MasterNode, own: Option<TxId>, theirs| {
+            slow.spec.adapter.is_slow()
+                && matches!((dispatched(own), began(theirs)), (Some(at), Some(start)) if at < start)
+        };
         if first.generating && second.generating {
             CollisionClass::GenerationRace
-        } else if first.spec.adapter.is_slow() || second.spec.adapter.is_slow() {
+        } else if slow_first(first, Some(tx), other_tx) || slow_first(second, other_tx, Some(tx)) {
             CollisionClass::SlowAdapter
         } else {
             CollisionClass::Unexplained
@@ -155,18 +171,35 @@ impl Sim {
     }
 
     /// A master starts a frame no sooner than its Tturnaround after the last
-    /// character on the line, its own included.
+    /// character on the line, its own included, and its core hands the frame
+    /// over no sooner than that either.
     pub(super) fn check_turnaround(&mut self, node: usize, pending: &PendingTx) {
         let now = self.now;
-        let Some(last) = self.line.last_activity() else {
-            return;
-        };
         let station = self.nodes[node].station;
         let NodeKind::Master(master) = &self.nodes[node].kind else {
             return;
         };
         let turnaround = master.spec.config.t_turnaround;
         let slow = master.spec.adapter.start_delay > bacnet_mstp_core::Duration::ZERO;
+        // The core had heard everything up to the dispatch, so a dispatch
+        // inside Tturnaround is the core's own error, never the blind spot.
+        if let Some(before) = pending.activity_at_dispatch {
+            if pending.dispatched - before < turnaround {
+                self.violation(
+                    ViolationKind::Turnaround,
+                    format!(
+                        "station {station}'s core handed a frame over {} us after line activity at {}, Tturnaround {} us",
+                        (pending.dispatched - before).as_micros(),
+                        Millis(before),
+                        turnaround.as_micros()
+                    ),
+                );
+                return;
+            }
+        }
+        let Some(last) = self.line.last_activity() else {
+            return;
+        };
         if now - last >= turnaround {
             return;
         }
@@ -176,9 +209,16 @@ impl Sim {
             Millis(last),
             turnaround.as_micros()
         );
-        if slow && last > pending.dispatched {
-            // The activity came after the core dispatched the frame; the
-            // core treats octets as its own echo from then on.
+        // The blind spot (#1625): the core takes octets for its own echo from
+        // dispatch on, so it cannot see activity it had not heard by then.
+        // Only a run whose first character arrived after the dispatch is
+        // excused; a run it had heard part of would have put the dispatch
+        // itself inside Tturnaround, caught above.
+        let heard_after = self
+            .line
+            .last_run_first_heard()
+            .is_some_and(|first| first > pending.dispatched);
+        if slow && heard_after {
             self.report.blind_spot_starts += 1;
             if self.config.tolerance.slow_adapter_blind_spot {
                 self.note(Who::Sim, TraceKind::Note(format!("blind spot: {detail}")));
@@ -190,13 +230,15 @@ impl Sim {
 
     /// A punctual master answers a Token or Poll For Master addressed to it
     /// within Tusage_delay, when nothing else has happened on the line since.
+    /// A master answering a request finishes that answer first (Clause
+    /// 9.5.6.9), so its answer is not held to it.
     pub(super) fn check_usage_delay(&mut self, node: usize, pending: &PendingTx) {
         let now = self.now;
         let station = self.nodes[node].station;
         let NodeKind::Master(master) = &self.nodes[node].kind else {
             return;
         };
-        if master.spec.adapter.is_slow() {
+        if master.spec.adapter.is_slow() || pending.while_answering {
             return;
         }
         let limit = master.spec.config.t_usage_delay;

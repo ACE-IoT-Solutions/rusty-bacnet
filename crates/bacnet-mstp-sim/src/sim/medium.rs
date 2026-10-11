@@ -1,6 +1,7 @@
 //! Line events: octets going out, characters arriving, transmissions ending.
 
 use bacnet_mstp_codec::{decode_frame, DecodeEvent, FrameHeader};
+use bacnet_mstp_core::Instant;
 
 use super::master::Input;
 use super::{describe, tie_of, Event, NodeKind, Sim, TxMeta};
@@ -22,14 +23,15 @@ fn who(driver: Driver) -> Who {
 }
 
 impl Sim {
-    /// Register a transmission and the facts the checks need about it. The
-    /// caller starts its first octet.
+    /// Register a transmission and the facts the checks need about it. A
+    /// master's frame carries when its core handed it over and whether it is
+    /// a token-generation poll. The caller starts its first octet.
     pub(super) fn begin_transmission(
         &mut self,
         driver: Driver,
         octets: Vec<u8>,
         corruption: Option<(usize, Corruption)>,
-        generation: bool,
+        dispatch: Option<(Instant, bool)>,
     ) -> TxId {
         let now = self.now;
         self.note(who(driver), TraceKind::FrameStart(describe(&octets)));
@@ -43,7 +45,8 @@ impl Sim {
         self.meta.insert(
             tx,
             TxMeta {
-                generation,
+                dispatched: dispatch.map(|(at, _)| at),
+                generation: dispatch.is_some_and(|(_, generation)| generation),
                 corrupted: corruption.is_some(),
                 cut_after,
                 listeners,
@@ -275,7 +278,7 @@ impl Sim {
         if send.malformed {
             self.perturb("a deliberately malformed scripted frame");
         }
-        let tx = self.begin_transmission(Driver::Station(station), send.octets, None, false);
+        let tx = self.begin_transmission(Driver::Station(station), send.octets, None, None);
         self.nodes[node].driving = Some(tx);
         self.nodes[node].listening_since = None;
         self.octet_start(tx, 0);
@@ -288,13 +291,13 @@ impl Sim {
         }
         self.perturb("injected noise");
         self.noise_bursts += 1;
-        let tx = self.begin_transmission(Driver::Noise(self.noise_bursts), octets, None, false);
+        let tx = self.begin_transmission(Driver::Noise(self.noise_bursts), octets, None, None);
         self.octet_start(tx, 0);
     }
 
     /// The header of the last frame on the line, if it was clean and nothing
     /// has happened since it ended.
-    pub(super) fn last_clean_frame(&self) -> Option<(FrameHeader, bacnet_mstp_core::Instant)> {
+    pub(super) fn last_clean_frame(&self) -> Option<(FrameHeader, Instant)> {
         let frame = self.frames.last()?;
         let header = frame.header?;
         (frame.is_clean() && self.line.last_activity() == Some(frame.end))

@@ -174,7 +174,7 @@ fn with_no_answer_the_requester_waits_treply_timeout() {
 /// the requester's shortest Treply_timeout is withheld, so it cannot collide
 /// with the requester passing the token on.
 ///
-/// The withheld case also shows the slow-adapter blind spot (see
+/// The withheld case also shows the slow-adapter blind spot (#1625, see
 /// `known_gaps.rs`): the requester's token pass arrives while the doomed
 /// reply still waits in the adapter, the core takes it for its own echo, and
 /// the requester has to send the token again.
@@ -246,7 +246,8 @@ fn a_reply_the_adapter_starts_late_goes_out_until_the_requester_may_give_up() {
     assert_eq!(sim.report().refused_starts, 1);
     assert_eq!(sim.core(3).unwrap().counters().expired_requests, 1);
     assert_eq!(sim.report().collisions.len(), 0);
-    // The blind spot's cost: station 3 missed that token, and 0 sent it again.
+    // The blind spot's cost (#1625): station 3 missed that token, and 0 sent
+    // it again. Once #1625 is fixed station 3 hears it: update these.
     assert_eq!(sim.report().blind_spot_frames, 1);
     let again = first_after(frames, next.end, |_| true).expect("the second token");
     assert!(again.is(FrameType::Token, 0, 3), "{again}");

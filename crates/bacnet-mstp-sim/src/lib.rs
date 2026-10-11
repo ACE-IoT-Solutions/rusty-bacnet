@@ -78,14 +78,18 @@
 //! Checked continuously; see [`ViolationKind`]:
 //!
 //! 1. **Frames decode.** Every frame a master sends decodes whole unless a
-//!    fault touched it. Until the run is [perturbed](Sim::perturbed) (a fault
-//!    or collision has happened), every master that heard a clean frame whole
+//!    fault touched it. While the run is not [perturbed](Sim::perturbed) (no
+//!    fault or collision since the start or since it was
+//!    [settled](Sim::settle)), every master that heard a clean frame whole
 //!    counted it as received.
-//! 2. **Turnaround.** A master starts a frame no sooner than its Tturnaround
-//!    after the last character on the line, its own included.
-//! 3. **Collisions.** Every overlap of two drivers is explained or fails:
-//!    noise, a generation race and a slow adapter are tolerated; scripted
-//!    stations only when [`Tolerance::scripted_collisions`] is set.
+//! 2. **Turnaround.** A master's core hands a frame over, and its adapter
+//!    starts it, no sooner than its Tturnaround after the last character on
+//!    the line, its own included.
+//! 3. **Collisions.** Every overlap of two drivers is explained or fails.
+//!    Noise and a generation race are tolerated. A slow adapter is tolerated
+//!    only under [`Tolerance::slow_adapter_collisions`], and only when its
+//!    core handed the frame over before the other frame began. Scripted
+//!    stations are tolerated only under [`Tolerance::scripted_collisions`].
 //! 4. **One token holder.** At most one master is in USE_TOKEN,
 //!    DONE_WITH_TOKEN, WAIT_FOR_REPLY or POLL_FOR_MASTER. A master in
 //!    PASS_TOKEN has handed the token on and only watches for its successor
@@ -103,7 +107,8 @@
 //!    counts no deadline misses; no new deadline lies in the past, and none
 //!    stays due after being serviced over and over at one instant.
 //! 7. **Usage delay.** A punctual master answers a Token or Poll For Master
-//!    addressed to it within Tusage_delay.
+//!    addressed to it within Tusage_delay, unless it is still answering a
+//!    request (Clause 9.5.6.9 finishes that first).
 //!
 //! # What it models and what it does not
 //!
@@ -125,6 +130,12 @@
 //! - **Noise at bit level.** Noise on an idle line arrives as clean random
 //!   octets; noise over a frame garbles whole characters. There are no
 //!   overruns, parity errors or breaks.
+//! - **Contention.** Every overlap reaches every receiver as framing errors.
+//!   Two real drivers fighting over the line can also yield valid but wrong
+//!   characters, and different ones at different receivers.
+//! - **When a character is reported.** A received character is timestamped
+//!   at the end of its stop bit; a UART usually signals it in the middle of
+//!   the stop bit, about half a bit time sooner.
 //! - **Host-style input.** Received octets go through `on_octet` one at a
 //!   time. The chunked `on_validated_frame` and `on_host_activity` paths of
 //!   a host adapter are not exercised.
@@ -134,15 +145,19 @@
 //! simulator leaks one 512-octet buffer per power-up; scenarios power nodes
 //! up a bounded number of times.
 //!
-//! # A known core gap
+//! # A known core gap (#1625)
 //!
 //! From the moment a core hands its adapter a frame until the adapter
 //! confirms the start, the core treats every octet it is fed as its own echo.
 //! A slow adapter's core is therefore deaf for that time: it can start
-//! within Tturnaround of activity, and it loses any frame that arrives then.
+//! within Tturnaround of activity that first reached it after the
+//! hand-over, and it loses any frame that arrives then.
 //! [`Report::blind_spot_starts`] and [`Report::blind_spot_frames`] count
 //! these, each a violation unless [`Tolerance::slow_adapter_blind_spot`] is
-//! set. The crate's `known_gaps` tests pin the correct behaviour.
+//! set. The tolerance never excuses a hand-over inside Tturnaround of
+//! activity the core had heard, nor a start after a run of characters it had
+//! begun to hear: those are errors whatever the adapter. The crate's `known_gaps` tests pin the correct behaviour until #1625
+//! is fixed.
 //!
 //! # Adding a scenario
 //!

@@ -3,11 +3,13 @@
 //! adapter for most of a run, then leaves it quiet; every invariant must hold
 //! throughout, and the ring must be whole again at the end.
 //!
+//! Run it alone with `cargo nextest run -p bacnet-mstp-sim -E 'binary(property)'`.
 //! `MSTP_SIM_SEEDS=<n>` runs more seeds; `MSTP_SIM_SEED=<seed>` runs one;
 //! `MSTP_SIM_PANIC=1` stops at the first violation with the trace before it.
 
 mod common;
 
+use bacnet_mstp_codec::FrameType;
 use bacnet_mstp_core::{Duration, Instant};
 use bacnet_mstp_sim::analysis::token_users;
 use bacnet_mstp_sim::{
@@ -21,6 +23,7 @@ use common::*;
 const DEFAULT_SEEDS: u64 = 24;
 const FAULTS_FROM: u64 = 1_000;
 const FAULTS_UNTIL: u64 = 12_000;
+const SETTLE_FROM: u64 = 14_000;
 const END: u64 = 26_000;
 
 struct Plan {
@@ -56,8 +59,8 @@ fn plan(seed: u64) -> Plan {
     // Collect violations to report them with the seed; MSTP_SIM_PANIC=1
     // stops at the first one instead, with the trace leading up to it.
     config.panic_on_violation = std::env::var_os("MSTP_SIM_PANIC").is_some();
-    // Starts inside the slow adapter's own blind spot are the known core gap
-    // `known_gaps.rs` pins down; everything else stays strict.
+    // What the slow adapter's core misses in its own blind spot is the known
+    // core gap #1625, pinned in `known_gaps.rs`; everything else stays strict.
     config.tolerance.slow_adapter_blind_spot = true;
     let mut sim = Sim::new(config);
 
@@ -170,25 +173,66 @@ fn plan(seed: u64) -> Plan {
     Plan { sim, stations }
 }
 
+/// Run until the token has gone once round the ring with every frame clean,
+/// from a Token some master sends to the next Token that master sends; then
+/// declare the bus settled, so the checks a fault suspends apply again.
+fn settle_after_a_clean_rotation(sim: &mut Sim, limit: Instant, seed: u64) {
+    let mut seen = sim.frames().len();
+    let mut lap: Option<u8> = None;
+    loop {
+        assert!(sim.now() < limit, "seed {seed}: the bus never settled");
+        sim.run_for(millis(1));
+        let mut closed = false;
+        for frame in &sim.frames()[seen..] {
+            if !frame.is_clean() {
+                lap = None;
+            } else if frame.frame_type() == Some(FrameType::Token) {
+                match lap {
+                    None => lap = frame.source(),
+                    Some(first) if frame.source() == Some(first) => closed = true,
+                    Some(_) => {}
+                }
+            }
+        }
+        seen = sim.frames().len();
+        if closed {
+            sim.settle();
+            return;
+        }
+    }
+}
+
 fn check(seed: u64) {
     let Plan { mut sim, stations } = plan(seed);
+    // The faults stop at 12 s and every node is powered again at 13 s. From
+    // 14 s, once the bus has settled, every listening master must count every
+    // clean frame again for the rest of the run.
+    sim.run_until(ms(SETTLE_FROM));
+    settle_after_a_clean_rotation(&mut sim, ms(END - 6_000), seed);
     sim.run_until(ms(END));
+    assert!(
+        !sim.perturbed(),
+        "seed {seed}: a fault after the bus settled"
+    );
     let report = sim.report();
     assert!(
         report.violations.is_empty(),
         "seed {seed}: invariant violations\n{}",
         sim.dump(200)
     );
+    // Slow-adapter collisions are not tolerated here: the slow adapter stays
+    // inside Tusage_delay, so it should never cause one.
     for collision in &report.collisions {
         assert!(
             matches!(
                 collision.class,
-                CollisionClass::Noise
-                    | CollisionClass::GenerationRace
-                    | CollisionClass::SlowAdapter
+                CollisionClass::Noise | CollisionClass::GenerationRace
             ),
             "seed {seed}: {collision:?}"
         );
+    }
+    for race in &report.generation_races {
+        assert!(race.length < millis(1_000), "seed {seed}: {race:?}");
     }
     // The pending events stay small however long the run.
     assert!(
@@ -196,64 +240,19 @@ fn check(seed: u64) {
         "seed {seed}: {} pending events",
         report.max_pending_events
     );
-    // Quiet from 13 s, when every master is powered again: a joiner waits
-    // up to Npoll token uses for a maintenance poll to reach it, about 4 s
-    // at 9600 baud. By the last four seconds every master uses the token
-    // again.
-    let expected: Vec<u8> = stations
+    // A joiner waits up to Npoll token uses for a maintenance poll to reach
+    // it, about 4 s at 9600 baud. By the last four seconds every master uses
+    // the token again.
+    let powered: Vec<u8> = stations
         .iter()
         .copied()
         .filter(|&station| sim.core(station).is_some())
         .collect();
-    assert_eq!(expected, stations, "seed {seed}");
+    assert_eq!(powered, stations, "seed {seed}");
     let users: Vec<u8> = token_users(sim.frames(), ms(END - 4_000))
         .into_iter()
         .collect();
-    if users != expected {
-        let missing: Vec<u8> = expected
-            .iter()
-            .copied()
-            .filter(|s| !users.contains(s))
-            .collect();
-        let mut text = String::new();
-        for &m in &missing {
-            text += &format!(
-                "station {m}: {:?}\n",
-                sim.core(m).map(|c| (c.snapshot(), c.counters()))
-            );
-            let involved: Vec<String> = sim
-                .frames()
-                .iter()
-                .filter(|f| {
-                    f.source() == Some(m)
-                        || f.destination() == Some(m)
-                        || f.driver == bacnet_mstp_sim::Driver::Station(m)
-                })
-                .rev()
-                .take(12)
-                .map(ToString::to_string)
-                .collect();
-            text += &format!("{involved:#?}\n");
-        }
-        let polls: Vec<String> = sim
-            .frames()
-            .iter()
-            .filter(|f| {
-                f.start > ms(END - 3_000)
-                    && f.frame_type() == Some(bacnet_mstp_codec::FrameType::PollForMaster)
-            })
-            .map(ToString::to_string)
-            .collect();
-        text += &format!("late polls {polls:#?}\n");
-        let faults: Vec<String> = sim
-            .trace()
-            .entries()
-            .filter(|e| matches!(e.kind, bacnet_mstp_sim::TraceKind::Fault(_)))
-            .map(ToString::to_string)
-            .collect();
-        text += &format!("{faults:#?}");
-        panic!("seed {seed}: {users:?} vs {expected:?}\n{text}");
-    }
+    assert_eq!(users, stations, "seed {seed}\n{}", sim.dump(60));
 }
 
 fn seeds() -> Vec<u64> {

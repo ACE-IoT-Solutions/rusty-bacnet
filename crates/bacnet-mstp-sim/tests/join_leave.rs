@@ -8,8 +8,8 @@ use bacnet_mstp_sim::{Fault, MasterSpec, Sim, SimConfig};
 
 use common::*;
 
-/// Clauses 9.5.6.5 (SendMaintenancePFM) and 9.5.6.8 (ReceivedReplyToPFM,
-/// then NextStationUnknown at the newcomer).
+/// Clauses 9.5.6.5 (SendMaintenancePFM), 9.5.6.8 (ReceivedReplyToPFM) and
+/// 9.5.6.5 again (NextStationUnknown, at the newcomer).
 ///
 /// A master powered up inside a running ring stays quiet in IDLE until the
 /// master below it polls its address during maintenance. It answers, takes
@@ -37,8 +37,8 @@ fn a_new_master_is_found_by_maintenance_polling() {
         .filter_map(|poll| poll.destination())
         .collect();
     assert!(polls.ends_with(&[4, 5, 6]), "{polls:?}");
-    // It may not have answered sooner than within 2 s: Npoll token uses at
-    // most, plus the two polls.
+    // Station 3 reaches address 6 within Npoll token uses plus the polls of
+    // 4 and 5, well inside 2 s of the power-up.
     assert!(reply.start < ms(3_500));
 
     let passes: Vec<(u8, u8)> = token_passes(frames)

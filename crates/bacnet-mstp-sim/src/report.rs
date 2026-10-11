@@ -176,7 +176,10 @@ pub enum CollisionClass {
     /// held it: they measured the silence from different points (one powered
     /// on part way through it, say), so their generation slots coincided.
     GenerationRace,
-    /// A master with a slow or late adapter was one of them.
+    /// A master with a slow or late adapter was one of them, and its core
+    /// handed its frame over before the other frame began, so only the
+    /// adapter's delay brought them together. Tolerated only under
+    /// [`Tolerance::slow_adapter_collisions`].
     SlowAdapter,
     /// A scripted station was one of them.
     Scripted,
@@ -263,20 +266,27 @@ pub struct Tolerance {
     /// Accept what a slow adapter's core misses between handing a frame
     /// over and the adapter confirming its start: the core ignores octets in
     /// that window as its own echo, so it can start within Tturnaround of
-    /// activity and lose a peer's frame whole. See the crate documentation.
+    /// activity that first reached it after the hand-over, and lose a peer's
+    /// frame whole. A core bug, #1625; see the crate documentation.
     pub slow_adapter_blind_spot: bool,
+    /// Accept collisions a slow or late adapter causes: its core handed the
+    /// frame over before the other frame began, and only the delay before
+    /// the start made them overlap.
+    pub slow_adapter_collisions: bool,
     /// Accept collisions involving scripted stations.
     pub scripted_collisions: bool,
 }
 
 impl Default for Tolerance {
     /// Strict: no duplicate token, generation races resolved within two
-    /// seconds, no blind-spot starts and no scripted collisions.
+    /// seconds, and no blind-spot starts, slow-adapter collisions or
+    /// scripted collisions.
     fn default() -> Self {
         Self {
             duplicate_token: Duration::ZERO,
             generation_race: Duration::from_secs(2),
             slow_adapter_blind_spot: false,
+            slow_adapter_collisions: false,
             scripted_collisions: false,
         }
     }

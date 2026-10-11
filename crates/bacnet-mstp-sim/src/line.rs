@@ -106,6 +106,11 @@ pub(crate) struct Line {
     active: Vec<ActiveOctet>,
     window: Option<Window>,
     last_activity: Option<Instant>,
+    /// When the first character of the current run of back-to-back
+    /// characters reached receivers; `None` until it has.
+    run_first_heard: Option<Instant>,
+    /// The same for the run that `last_activity` ended.
+    last_run_first_heard: Option<Instant>,
 }
 
 impl Line {
@@ -117,6 +122,8 @@ impl Line {
             active: Vec::new(),
             window: None,
             last_activity: None,
+            run_first_heard: None,
+            last_run_first_heard: None,
         }
     }
 
@@ -124,6 +131,14 @@ impl Line {
     /// activity a node's turnaround is measured from.
     pub(crate) fn last_activity(&self) -> Option<Instant> {
         self.last_activity
+    }
+
+    /// When the first character of the run that ended at
+    /// [`Self::last_activity`] reached receivers. Characters that follow one
+    /// another with no idle time, such as the octets of one frame, form one
+    /// run.
+    pub(crate) fn last_run_first_heard(&self) -> Option<Instant> {
+        self.last_run_first_heard
     }
 
     /// Whether any octet is on the line at `now`.
@@ -196,6 +211,9 @@ impl Line {
         self.active.push(ActiveOctet { tx, driver, end });
         let window_end = match self.window.as_mut() {
             None => {
+                if self.last_activity != Some(now) {
+                    self.run_first_heard = None;
+                }
                 self.window = Some(Window {
                     start: now,
                     end,
@@ -261,6 +279,8 @@ impl Line {
             None => Character::Garbled,
         };
         self.last_activity = Some(now);
+        let first = *self.run_first_heard.get_or_insert(now);
+        self.last_run_first_heard = Some(first);
         self.prune(now);
         let reopened = if self.busy(now) {
             let end = now + self.timing.octet();
@@ -341,6 +361,15 @@ mod tests {
         assert_eq!(outcome.character, Character::Clean(0xFF));
         assert!(!line.finish(tx).unwrap().collided);
         assert_eq!(line.last_activity(), Some(us(2_084)));
+        // Both octets ran back to back: one run, first heard at the end of
+        // its first octet.
+        assert_eq!(line.last_run_first_heard(), Some(us(1_042)));
+
+        // After idle time a new run begins.
+        let next = line.begin(Driver::Station(2), vec![0x55], us(5_000), None);
+        line.start_octet(next, 0, us(5_000));
+        line.end_window(us(6_042)).unwrap();
+        assert_eq!(line.last_run_first_heard(), Some(us(6_042)));
     }
 
     #[test]

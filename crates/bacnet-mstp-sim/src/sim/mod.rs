@@ -122,6 +122,8 @@ pub(crate) struct Node {
 /// Facts about a transmission the line itself doesn't track.
 #[derive(Debug, Default)]
 pub(crate) struct TxMeta {
+    /// When a master's core handed this frame over.
+    dispatched: Option<Instant>,
     generation: bool,
     corrupted: bool,
     /// Power fails once this many octets have gone out.
@@ -362,10 +364,29 @@ impl Sim {
     }
 
     /// Whether a fault, a malformed scripted frame or a collision has
-    /// happened. Until then every listening master must count every frame.
+    /// happened since the run began or was last [settled](Self::settle).
+    /// Until then every listening master must count every clean frame, and
+    /// no two masters may hold the token at once.
     #[must_use]
     pub fn perturbed(&self) -> bool {
         self.perturbed
+    }
+
+    /// Declare the bus settled after a fault, and re-arm the checks a fault
+    /// suspends: from now on every listening master must count every clean
+    /// frame again, and a duplicate token is a violation outright.
+    ///
+    /// Call it once nothing is in flight: no armed fault, no node about to
+    /// power up, and the token has gone round the ring with every frame
+    /// clean, so every receiver's decoder is back in step.
+    pub fn settle(&mut self) {
+        if self.perturbed {
+            self.perturbed = false;
+            self.note(
+                Who::Sim,
+                TraceKind::Note("bus settled: strict checks re-armed".into()),
+            );
+        }
     }
 
     /// The last `lines` trace entries, with any violations, for a failure

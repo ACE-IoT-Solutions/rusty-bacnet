@@ -34,11 +34,12 @@ Selected direct dependencies
 ```
 
 `bacnet-client`, `bacnet-server` and `bacnet-endpoint` are all workspace
-`default-members`, along with the foundational crates, endpoint-core, integration
-tests, the MS/TP bus simulator and benchmarks. The CLI (`bacnet-cli`) and PyO3 binding (`rusty-bacnet`)
-are excluded from default builds: the CLI pulls in heavier application
-dependencies, and the Python extension needs its native Python build context.
-They remain workspace members and can be selected explicitly.
+`default-members`, along with the foundational crates, endpoint-core,
+integration tests, the MS/TP bus simulator and benchmarks. The CLI
+(`bacnet-cli`) and PyO3 binding (`rusty-bacnet`) are excluded from default
+builds: the CLI pulls in heavier application dependencies, and the Python
+extension needs its native Python build context. They remain workspace
+members and can be selected explicitly.
 
 ## Packet Flow
 
