@@ -125,6 +125,41 @@ fn read_broadcast_distribution_table_ack() {
     assert_eq!(table.iter().next_back(), Some(rows[1]));
 }
 
+/// Wire and caller-built tables iterate alike from both ends, and know how
+/// many entries are left at every step.
+#[test]
+fn table_iterators_count_down_from_both_ends() {
+    let rows = [
+        FdtEntry::new(address(10, 0, 0, 1, 47808), 60, 90),
+        FdtEntry::new(address(10, 0, 0, 2, 47809), 120, 150),
+        FdtEntry::new(address(10, 0, 0, 3, 47810), 300, 330),
+    ];
+    let octets: Vec<u8> = rows.iter().flat_map(|row| row.to_octets()).collect();
+    let tables = [
+        FdtEntries::from_wire(&octets).unwrap(),
+        FdtEntries::from_entries(&rows),
+    ];
+    for table in tables {
+        let mut entries = table.iter();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.size_hint(), (3, Some(3)));
+        assert_eq!(entries.next(), Some(rows[0]));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.next_back(), Some(rows[2]));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.next_back(), Some(rows[1]));
+        assert_eq!(entries.len(), 0);
+        assert_eq!(entries.next(), None);
+        assert_eq!(entries.next_back(), None);
+        assert_eq!(
+            table.iter().rev().collect::<Vec<_>>(),
+            [rows[2], rows[1], rows[0]]
+        );
+    }
+    assert_eq!(tables[0], tables[1]);
+    assert_eq!(format!("{:?}", tables[0]), format!("{:?}", rows));
+}
+
 #[test]
 fn forwarded_npdu() {
     // J.2.5.1: function 0x04, length 4 + 6 + 8 = 18, the originator's B/IP

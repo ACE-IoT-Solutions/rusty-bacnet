@@ -20,6 +20,8 @@ pub use policy::{FdtCounters, ForeignDevicePolicy};
 pub(crate) use tables::{lock, LiveTables};
 
 /// A Broadcast Distribution Table entry — one peer BBMD.
+///
+/// Its wire form is [`crate::bvll::BdtEntry`]; `From` converts both ways.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BdtEntry {
     /// IPv4 address of the peer BBMD.
@@ -32,6 +34,8 @@ pub struct BdtEntry {
 }
 
 /// A Foreign Device Table entry — one registered foreign device.
+///
+/// [`FdtEntry::wire_entry_at`] gives its wire form, [`crate::bvll::FdtEntry`].
 #[derive(Debug, Clone)]
 pub struct FdtEntry {
     /// IPv4 address of the foreign device.

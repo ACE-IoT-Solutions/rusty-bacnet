@@ -6,6 +6,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use bacnet_bip_codec::address_from_slice;
 use tracing::debug;
 
 use super::BipTransport;
@@ -37,12 +38,11 @@ impl BipGroups {
     }
 
     pub(super) fn contains(self, mac: &[u8]) -> bool {
-        let Ok(&[a, b, c, d, high, low]) = <&[u8; 6]>::try_from(mac) else {
+        let Ok(address) = address_from_slice(mac) else {
             return false;
         };
-        let ip = Ipv4Addr::new(a, b, c, d);
-        (ip == self.broadcast && u16::from_be_bytes([high, low]) == self.port)
-            || self.is_group_ip(ip)
+        let ip = *address.ip();
+        (ip == self.broadcast && address.port() == self.port) || self.is_group_ip(ip)
     }
 
     /// A group address whatever the port: the limited broadcast, a

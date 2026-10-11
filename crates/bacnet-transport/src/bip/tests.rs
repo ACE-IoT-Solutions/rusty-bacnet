@@ -815,6 +815,7 @@ fn is_broadcast_mac_requires_configured_ip_and_port() {
     assert!(!transport.is_broadcast_mac(&[255, 255, 255, 255, 0xBA, 0xC0]));
     assert!(!transport.is_broadcast_mac(&[192, 168, 1, 7, 0xBA, 0xC0]));
     assert!(!transport.is_broadcast_mac(&[192, 168, 1, 255]));
+    assert!(!transport.is_broadcast_mac(&[192, 168, 1, 255, 0xBA, 0xC0, 0x00]));
 }
 
 /// #1479: a group destination is any address that reaches more than one
@@ -840,6 +841,7 @@ fn group_destinations_cover_every_broadcast_and_multicast_address() {
         assert_eq!(owned.contains(&mac), group, "{mac:?}");
     }
     assert!(!transport.is_group_destination(&[255, 255, 255, 255]));
+    assert!(!transport.is_group_destination(&[255, 255, 255, 255, 0xBA, 0xC0, 0x00]));
     assert!(!transport.is_broadcast_mac(&[255, 255, 255, 255, 0xBA, 0xC0]));
 
     // Loopback tests name a unicast address as the broadcast one; it stays a

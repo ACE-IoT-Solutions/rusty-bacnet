@@ -6,16 +6,64 @@
 //! buffer, encoding into `BytesMut`, six-octet B/IP MAC helpers, and
 //! [`bvll_error`], which maps a codec error to [`Error`].
 //!
-//! The codec types this module's API uses, [`BvlcFunction`] and
-//! [`BvlcResultCode`] among them, are re-exported here so crates that
-//! already depend on the transport don't need the codec too.
+//! Every codec item that a public transport signature names is re-exported
+//! here under its codec name, so a crate that depends on the transport can
+//! build and read B/IP messages without depending on the codec too: the
+//! message and error types, the function and result codes, the table views
+//! and entries, the address helpers and the wire-length constants.
+//!
+//! [`BdtEntry`] and [`FdtEntry`] here are table rows as they travel on the
+//! wire, with `SocketAddrV4` addresses. They are not
+//! [`bbmd::BdtEntry`](crate::bbmd::BdtEntry) and
+//! [`bbmd::FdtEntry`](crate::bbmd::FdtEntry), the BBMD's own table rows;
+//! `From` impls and [`bbmd::bdt_from_wire`](crate::bbmd::bdt_from_wire)
+//! convert between them. Import one pair by its module path where both are
+//! in scope.
+//!
+//! ```
+//! use bacnet_transport::bvll::{
+//!     decode_bvll, BdtEntries, BdtEntry, Bvll, BvlcFunction, FdtEntries, FdtEntry,
+//!     BDT_ENTRY_LENGTH, FDT_ENTRY_LENGTH, HEADER_LENGTH,
+//! };
+//! use std::net::{Ipv4Addr, SocketAddrV4};
+//!
+//! // Build a Write-Broadcast-Distribution-Table from wire rows.
+//! let peer = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 47808);
+//! let rows = [BdtEntry::new(peer, Ipv4Addr::BROADCAST)];
+//! let write = Bvll::WriteBroadcastDistributionTable(BdtEntries::from_entries(&rows));
+//! let mut wire = [0u8; 64];
+//! let length = write.encode_into(&mut wire).unwrap();
+//! assert_eq!(length, HEADER_LENGTH + BDT_ENTRY_LENGTH);
+//! assert_eq!(decode_bvll(&wire[..length])?.message()?, write);
+//!
+//! // Read the rows of a Read-Foreign-Device-Table-Ack.
+//! let device = FdtEntry::new(peer, 60, 75);
+//! let registered = [device];
+//! let ack = Bvll::ReadForeignDeviceTableAck(FdtEntries::from_entries(&registered));
+//! let length = ack.encode_into(&mut wire).unwrap();
+//! assert_eq!(length, HEADER_LENGTH + FDT_ENTRY_LENGTH);
+//! let received = decode_bvll(&wire[..length])?;
+//! assert_eq!(received.function, BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK);
+//! let Bvll::ReadForeignDeviceTableAck(table) = received.message()? else {
+//!     unreachable!("a Read-FDT-Ack");
+//! };
+//! assert_eq!(table.iter().collect::<Vec<_>>(), [device]);
+//! let rows = bacnet_transport::bbmd::fdt_from_wire(table)?;
+//! assert_eq!((rows[0].ttl, rows[0].seconds_remaining), (60, 75));
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 
-pub use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll, BvllError, BvllFrame};
+pub use bacnet_bip_codec::{
+    address_from_octets, address_from_slice, address_to_octets, BdtEntries, BdtEntry, BvlcFunction,
+    BvlcResultCode, Bvll, BvllError, BvllFrame, BvllSink, Entries, EntryIter, FdtEntries, FdtEntry,
+    PayloadShape, TableEntry, BDT_ENTRY_LENGTH, BIP_ADDRESS_LENGTH, BVLC_TYPE_BIP, DEFAULT_PORT,
+    FDT_ENTRY_LENGTH, HEADER_LENGTH, MAX_BVLL_LENGTH,
+};
 
 /// Map a codec error to the transport's [`Error`].
 ///

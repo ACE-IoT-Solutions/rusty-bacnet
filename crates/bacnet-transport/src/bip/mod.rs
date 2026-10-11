@@ -833,9 +833,8 @@ impl TransportPort for BipTransport {
         // IP (every host bit set) together with this port's UDP
         // port — a broadcast IP at a different port belongs to a different
         // B/IP network and must not be folded into this link's broadcast.
-        mac.len() == 6
-            && mac[..4] == self.broadcast_address.octets()
-            && mac[4..] == self.port.to_be_bytes()
+        matches!(codec::address_from_slice(mac), Ok(address)
+            if *address.ip() == self.broadcast_address && address.port() == self.port)
     }
 
     fn is_group_destination(&self, mac: &[u8]) -> bool {
