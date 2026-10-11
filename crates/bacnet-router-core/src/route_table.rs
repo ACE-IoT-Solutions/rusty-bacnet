@@ -150,6 +150,9 @@ impl<const DIRECT: usize, const LEARNED: usize> RouteTable<DIRECT, LEARNED> {
     }
 
     /// Set a learned route temporarily busy. Direct routes are not changed.
+    ///
+    /// This is an administrative operation. Network-control handlers should
+    /// use [`Self::mark_busy_from`] so an unrelated peer cannot mutate a route.
     pub fn mark_busy(&mut self, network: NetworkNumber, deadline: u64) -> bool {
         self.update_learned(network, |entry| {
             entry.reachability = Reachability::BusyUntil(deadline);
@@ -157,6 +160,9 @@ impl<const DIRECT: usize, const LEARNED: usize> RouteTable<DIRECT, LEARNED> {
     }
 
     /// Mark a learned route available.
+    ///
+    /// This is an administrative operation. Network-control handlers should
+    /// use [`Self::mark_available_from`].
     pub fn mark_available(&mut self, network: NetworkNumber) -> bool {
         self.update_learned(network, |entry| {
             entry.reachability = Reachability::Reachable;
@@ -164,10 +170,68 @@ impl<const DIRECT: usize, const LEARNED: usize> RouteTable<DIRECT, LEARNED> {
     }
 
     /// Mark a learned route unreachable.
+    ///
+    /// This is an administrative operation. Network-control handlers should
+    /// use [`Self::mark_unreachable_from`].
     pub fn mark_unreachable(&mut self, network: NetworkNumber) -> bool {
         self.update_learned(network, |entry| {
             entry.reachability = Reachability::Unreachable;
         })
+    }
+
+    /// Mark a learned route busy only when the announcing peer owns it.
+    pub fn mark_busy_from(
+        &mut self,
+        network: NetworkNumber,
+        port: PortId,
+        next_hop: LinkAddress,
+        deadline: u64,
+    ) -> bool {
+        self.update_learned_from(network, port, next_hop, |entry| {
+            entry.reachability = Reachability::BusyUntil(deadline);
+        })
+    }
+
+    /// Mark a learned route available only when the announcing peer owns it.
+    pub fn mark_available_from(
+        &mut self,
+        network: NetworkNumber,
+        port: PortId,
+        next_hop: LinkAddress,
+    ) -> bool {
+        self.update_learned_from(network, port, next_hop, |entry| {
+            entry.reachability = Reachability::Reachable;
+        })
+    }
+
+    /// Mark a learned route unreachable only when the rejecting peer owns it.
+    pub fn mark_unreachable_from(
+        &mut self,
+        network: NetworkNumber,
+        port: PortId,
+        next_hop: LinkAddress,
+    ) -> bool {
+        self.update_learned_from(network, port, next_hop, |entry| {
+            entry.reachability = Reachability::Unreachable;
+        })
+    }
+
+    /// Remove a learned route only when the requesting peer owns it.
+    pub fn remove_learned_from(
+        &mut self,
+        network: NetworkNumber,
+        port: PortId,
+        next_hop: LinkAddress,
+    ) -> bool {
+        let Some(slot) = self.learned.iter_mut().find(|slot| {
+            slot.is_some_and(|entry| {
+                entry.network == network && entry.port == port && entry.next_hop == next_hop
+            })
+        }) else {
+            return false;
+        };
+        *slot = None;
+        true
     }
 
     /// Remove learned entries last seen at or before `deadline`.
@@ -192,6 +256,32 @@ impl<const DIRECT: usize, const LEARNED: usize> RouteTable<DIRECT, LEARNED> {
         self.learned.iter().flatten().count()
     }
 
+    /// Iterate over detached direct entries followed by learned entries.
+    pub fn entries(&self) -> impl Iterator<Item = RouteEntry> + '_ {
+        self.direct
+            .iter()
+            .chain(self.learned.iter())
+            .flatten()
+            .copied()
+    }
+
+    /// Iterate over configured direct routes.
+    pub fn direct_entries(&self) -> impl Iterator<Item = RouteEntry> + '_ {
+        self.direct.iter().flatten().copied()
+    }
+
+    /// Iterate over learned routes.
+    pub fn learned_entries(&self) -> impl Iterator<Item = RouteEntry> + '_ {
+        self.learned.iter().flatten().copied()
+    }
+
+    /// Remove every learned route and return the number removed.
+    pub fn clear_learned(&mut self) -> usize {
+        let removed = self.learned_len();
+        self.learned.fill(None);
+        removed
+    }
+
     fn remove_learned(&mut self, network: NetworkNumber) {
         if let Some(slot) = self
             .learned
@@ -213,6 +303,22 @@ impl<const DIRECT: usize, const LEARNED: usize> RouteTable<DIRECT, LEARNED> {
             .flatten()
             .find(|entry| entry.network == network)
         else {
+            return false;
+        };
+        update(entry);
+        true
+    }
+
+    fn update_learned_from(
+        &mut self,
+        network: NetworkNumber,
+        port: PortId,
+        next_hop: LinkAddress,
+        update: impl FnOnce(&mut RouteEntry),
+    ) -> bool {
+        let Some(entry) = self.learned.iter_mut().flatten().find(|entry| {
+            entry.network == network && entry.port == port && entry.next_hop == next_hop
+        }) else {
             return false;
         };
         update(entry);

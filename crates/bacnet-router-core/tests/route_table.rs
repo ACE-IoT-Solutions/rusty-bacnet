@@ -76,3 +76,53 @@ fn busy_deadline_is_effective_without_mutating_direct_routes() {
     );
     assert_eq!(learned.effective_reachability(50), Reachability::Reachable);
 }
+
+#[test]
+fn network_control_mutation_requires_the_learned_route_owner() {
+    let mut table = RouteTable::<1, 2>::new();
+    let owner = LinkAddress::try_from_slice(&[7]).unwrap();
+    let stranger = LinkAddress::try_from_slice(&[8]).unwrap();
+    table.add_direct(net(100), PortId(1)).unwrap();
+    table.learn(net(200), PortId(2), owner, 10);
+
+    assert!(!table.mark_busy_from(net(100), PortId(1), owner, 50));
+    assert!(!table.mark_busy_from(net(200), PortId(3), owner, 50));
+    assert!(!table.mark_busy_from(net(200), PortId(2), stranger, 50));
+    assert_eq!(
+        table.lookup(net(200)).unwrap().reachability,
+        Reachability::Reachable
+    );
+
+    assert!(table.mark_busy_from(net(200), PortId(2), owner, 50));
+    assert!(!table.mark_available_from(net(200), PortId(2), stranger));
+    assert_eq!(
+        table.lookup(net(200)).unwrap().reachability,
+        Reachability::BusyUntil(50)
+    );
+    assert!(table.mark_available_from(net(200), PortId(2), owner));
+    assert!(table.mark_unreachable_from(net(200), PortId(2), owner));
+    assert_eq!(
+        table.lookup(net(200)).unwrap().reachability,
+        Reachability::Unreachable
+    );
+    assert!(!table.remove_learned_from(net(200), PortId(2), stranger));
+    assert!(table.remove_learned_from(net(200), PortId(2), owner));
+    assert!(table.lookup(net(200)).is_none());
+}
+
+#[test]
+fn snapshots_are_detached_and_clear_only_removes_learned_routes() {
+    let mut table = RouteTable::<2, 2>::new();
+    let hop = LinkAddress::try_from_slice(&[7]).unwrap();
+    table.add_direct(net(100), PortId(1)).unwrap();
+    table.learn(net(200), PortId(2), hop, 10);
+
+    let entries: Vec<_> = table.entries().collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(table.direct_entries().count(), 1);
+    assert_eq!(table.learned_entries().count(), 1);
+    assert_eq!(table.clear_learned(), 1);
+    assert_eq!(table.direct_len(), 1);
+    assert_eq!(table.learned_len(), 0);
+    assert_eq!(entries[1].network, net(200));
+}
