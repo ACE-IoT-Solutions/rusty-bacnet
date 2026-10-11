@@ -620,14 +620,9 @@ impl<'a> ParsedBroadcastNpdu<'a> {
             self.control | SOURCE_BIT
         };
         let mut offset = 2;
-        if !final_delivery {
-            match self.destination_fields {
-                Some(fields) => {
-                    output[offset..offset + fields.len()].copy_from_slice(fields);
-                    offset += fields.len();
-                }
-                None => {}
-            }
+        if let Some(fields) = self.destination_fields.filter(|_| !final_delivery) {
+            output[offset..offset + fields.len()].copy_from_slice(fields);
+            offset += fields.len();
         }
         if let Some(fields) = self.source_fields {
             output[offset..offset + fields.len()].copy_from_slice(fields);

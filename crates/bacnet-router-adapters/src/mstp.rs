@@ -6,21 +6,56 @@
 //! observable at the router boundary and avoids an unbounded adapter-side
 //! staging path.
 
-use bacnet_mstp_core::{Instant, MasterCore, NetworkPriority, QueueRejectReason, QueueStorage};
+use bacnet_mstp_core::{
+    Instant, NetworkPriority, ProfileMasterCore, QueueRejectReason, QueueStorage,
+};
 use bacnet_router_core::{
     AdmissionOutcome, Egress, EgressDestination, EgressRequest, LinkAddress, PortId, TrafficClass,
 };
 
 /// The MS/TP link-layer broadcast station address.
 pub const MSTP_BROADCAST: u8 = 0xff;
+/// Maximum NPDU payload in a standard MS/TP frame.
+pub const STANDARD_MSTP_MAX_NPDU: usize = 501;
+/// Maximum NPDU payload in an extended DER/DNER frame.
+pub const EXTENDED_MSTP_MAX_NPDU: usize = 1497;
+/// Maximum encoded storage required for a standard frame.
+pub const STANDARD_MSTP_FRAME_STORAGE: usize = 511;
+/// Maximum encoded storage required for an extended frame.
+pub const EXTENDED_MSTP_FRAME_STORAGE: usize = 1516;
+
+/// The largest NPDU a remote station is known to accept.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MstpPeerCapability {
+    /// The peer accepts only standard MS/TP frames.
+    Standard,
+    /// The peer accepts extended DER/DNER frames.
+    Extended,
+}
+
+impl MstpPeerCapability {
+    /// Return the peer's advertised/verified NPDU ceiling.
+    pub const fn max_npdu_len(self) -> usize {
+        match self {
+            Self::Standard => STANDARD_MSTP_MAX_NPDU,
+            Self::Extended => EXTENDED_MSTP_MAX_NPDU,
+        }
+    }
+}
 
 /// A synchronous MS/TP egress bound to one configured router port and time.
 ///
 /// The timestamp is explicit so an ESP-IDF adapter can use the same monotonic
 /// epoch as its owning MS/TP core.  Call [`Self::set_now`] before admitting a
 /// later batch; the adapter never reads a platform clock implicitly.
-pub struct MstpEgress<'core, 'rx, Q: QueueStorage> {
-    core: &'core mut MasterCore<'rx, Q>,
+pub struct MstpEgress<
+    'core,
+    'rx,
+    Q: QueueStorage,
+    const NPDU: usize = STANDARD_MSTP_MAX_NPDU,
+    const FRAME: usize = STANDARD_MSTP_FRAME_STORAGE,
+> {
+    core: &'core mut ProfileMasterCore<'rx, Q, NPDU, FRAME>,
     port: PortId,
     now: Instant,
     /// The greatest timestamp offered to this adapter so far.
@@ -30,16 +65,35 @@ pub struct MstpEgress<'core, 'rx, Q: QueueStorage> {
     /// delivered a bus event.  Keep this boundary-local watermark so a clock
     /// regression cannot be mistaken for a fresh admission.
     last_now: Instant,
+    peer_capability: MstpPeerCapability,
 }
 
-impl<'core, 'rx, Q: QueueStorage> MstpEgress<'core, 'rx, Q> {
+/// Adapter bound to the standard 501-byte MS/TP storage profile.
+pub type StandardMstpEgress<'core, 'rx, Q> =
+    MstpEgress<'core, 'rx, Q, STANDARD_MSTP_MAX_NPDU, STANDARD_MSTP_FRAME_STORAGE>;
+
+/// Adapter bound to the extended DER/DNER storage profile.
+pub type ExtendedMstpEgress<'core, 'rx, Q> =
+    MstpEgress<'core, 'rx, Q, EXTENDED_MSTP_MAX_NPDU, EXTENDED_MSTP_FRAME_STORAGE>;
+
+impl<'core, 'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
+    MstpEgress<'core, 'rx, Q, NPDU, FRAME>
+{
     /// Bind an MS/TP core to one router port and an explicit monotonic time.
-    pub const fn new(core: &'core mut MasterCore<'rx, Q>, port: PortId, now: Instant) -> Self {
+    pub const fn new(
+        core: &'core mut ProfileMasterCore<'rx, Q, NPDU, FRAME>,
+        port: PortId,
+        now: Instant,
+    ) -> Self {
         Self {
             core,
             port,
             now,
             last_now: now,
+            // Extended operation is opt-in.  A segment remains safe for
+            // legacy stations until the owning application verifies peer
+            // capability explicitly.
+            peer_capability: MstpPeerCapability::Standard,
         }
     }
 
@@ -59,8 +113,32 @@ impl<'core, 'rx, Q: QueueStorage> MstpEgress<'core, 'rx, Q> {
     }
 
     /// Borrow the underlying MS/TP core after the adapter operation.
-    pub fn core_mut(&mut self) -> &mut MasterCore<'rx, Q> {
+    pub fn core_mut(&mut self) -> &mut ProfileMasterCore<'rx, Q, NPDU, FRAME> {
         self.core
+    }
+
+    /// Return the NPDU payload ceiling of this MS/TP storage profile.
+    pub const fn max_npdu_len() -> usize {
+        NPDU
+    }
+
+    /// Whether this adapter uses the extended DER/DNER storage profile.
+    pub const fn is_extended() -> bool {
+        NPDU == EXTENDED_MSTP_MAX_NPDU && FRAME == EXTENDED_MSTP_FRAME_STORAGE
+    }
+
+    /// Set the verified capability of stations on this MS/TP segment.
+    ///
+    /// The default is [`MstpPeerCapability::Standard`], including for an
+    /// extended local core.  This fail-closed default prevents an extended
+    /// NPDU from being emitted toward a mixed or unverified segment.
+    pub const fn set_peer_capability(&mut self, capability: MstpPeerCapability) {
+        self.peer_capability = capability;
+    }
+
+    /// Return the currently configured remote-station capability.
+    pub const fn peer_capability(&self) -> MstpPeerCapability {
+        self.peer_capability
     }
 
     fn destination(destination: EgressDestination) -> Option<u8> {
@@ -78,7 +156,9 @@ impl<'core, 'rx, Q: QueueStorage> MstpEgress<'core, 'rx, Q> {
     }
 }
 
-impl<Q: QueueStorage> Egress for MstpEgress<'_, '_, Q> {
+impl<Q: QueueStorage, const NPDU: usize, const FRAME: usize> Egress
+    for MstpEgress<'_, '_, Q, NPDU, FRAME>
+{
     fn try_admit(&mut self, request: EgressRequest<'_>) -> AdmissionOutcome {
         if request.port != self.port {
             return AdmissionOutcome::Invalid;
@@ -89,6 +169,9 @@ impl<Q: QueueStorage> Egress for MstpEgress<'_, '_, Q> {
         let Some(priority) = NetworkPriority::from_u8(request.priority) else {
             return AdmissionOutcome::Invalid;
         };
+        if request.npdu.len() > self.peer_capability.max_npdu_len() {
+            return AdmissionOutcome::Oversize;
+        }
         if self.now < self.last_now {
             return AdmissionOutcome::Expired;
         }
@@ -125,10 +208,11 @@ impl<Q: QueueStorage> Egress for MstpEgress<'_, '_, Q> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
+    use bacnet_mstp_codec::{decode_extended_frame, decode_frame, Frame, FrameType};
     use bacnet_mstp_core::{Action, HeaplessQueues, MstpCoreConfig};
 
     type Queues = HeaplessQueues<1, 1>;
+    type ExtendedQueues = HeaplessQueues<1, 1, EXTENDED_MSTP_MAX_NPDU, 1>;
 
     fn config() -> MstpCoreConfig {
         MstpCoreConfig {
@@ -140,6 +224,18 @@ mod tests {
 
     fn core<'rx>(rx: &'rx mut [u8]) -> MasterCore<'rx, Queues> {
         MasterCore::new(config(), Queues::new(), rx, Instant::ZERO).unwrap()
+    }
+
+    fn extended_core<'rx>(
+        rx: &'rx mut [u8],
+    ) -> bacnet_mstp_core::ExtendedMasterCore<'rx, ExtendedQueues> {
+        bacnet_mstp_core::ExtendedMasterCore::new(
+            config(),
+            ExtendedQueues::new(),
+            rx,
+            Instant::ZERO,
+        )
+        .unwrap()
     }
 
     fn request<'a>(
@@ -323,5 +419,121 @@ mod tests {
         let counters = egress.core_mut().counters();
         assert_eq!(counters.unicast.depth, 1);
         assert_eq!(counters.network_control.depth, 1);
+    }
+
+    #[test]
+    fn extended_profile_admits_1497_bytes_and_emits_decodable_extended_frame() {
+        let mut rx = [0; 4096];
+        let mut core = extended_core(&mut rx);
+        let mut egress = ExtendedMstpEgress::new(&mut core, PortId(9), at(1));
+        assert_eq!(egress.max_npdu_len(), EXTENDED_MSTP_MAX_NPDU);
+        assert!(egress.is_extended());
+        assert_eq!(egress.peer_capability(), MstpPeerCapability::Standard);
+        egress.set_peer_capability(MstpPeerCapability::Extended);
+
+        let payload = [0xa5; EXTENDED_MSTP_MAX_NPDU];
+        let destination = EgressDestination::Unicast(LinkAddress::try_from_slice(&[2]).unwrap());
+        assert_eq!(
+            egress.try_admit(EgressRequest {
+                port: PortId(9),
+                destination,
+                class: TrafficClass::Data,
+                priority: 0,
+                npdu: &payload,
+            }),
+            AdmissionOutcome::AcceptedOwned
+        );
+
+        egress
+            .core_mut()
+            .on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), at(2))
+            .unwrap();
+        egress.core_mut().on_deadline(at(50_000)).unwrap();
+        let frame = loop {
+            match egress.core_mut().poll_action() {
+                Action::Transmit { frame, .. } => break frame,
+                Action::Idle | Action::SetDirection(_) => {}
+                other => panic!("unexpected action: {other:?}"),
+            }
+        };
+        let (decoded, consumed) =
+            decode_extended_frame(frame, &mut [0; EXTENDED_MSTP_MAX_NPDU]).unwrap();
+        assert_eq!(consumed, frame.len());
+        assert_eq!(decoded.header.destination, 2);
+        assert_eq!(decoded.data.len(), EXTENDED_MSTP_MAX_NPDU);
+        assert_eq!(decoded.data, payload);
+    }
+
+    #[test]
+    fn extended_profile_fails_closed_for_unverified_standard_peer() {
+        let mut rx = [0; 4096];
+        let mut core = extended_core(&mut rx);
+        let mut egress = ExtendedMstpEgress::new(&mut core, PortId(9), at(1));
+        let payload = [0xa5; STANDARD_MSTP_MAX_NPDU + 1];
+        assert_eq!(
+            egress.try_admit(EgressRequest {
+                port: PortId(9),
+                destination: EgressDestination::Broadcast,
+                class: TrafficClass::Data,
+                priority: 0,
+                npdu: &payload,
+            }),
+            AdmissionOutcome::Oversize
+        );
+        assert_eq!(egress.core_mut().counters().broadcast.depth, 0);
+    }
+
+    #[test]
+    fn standard_profile_rejects_502_bytes_before_queue_mutation() {
+        let mut rx = [0; 1024];
+        let mut core = core(&mut rx);
+        let mut egress = StandardMstpEgress::new(&mut core, PortId(9), at(1));
+        let payload = [0xa5; STANDARD_MSTP_MAX_NPDU + 1];
+        assert_eq!(
+            egress.try_admit(EgressRequest {
+                port: PortId(9),
+                destination: EgressDestination::Broadcast,
+                class: TrafficClass::Data,
+                priority: 0,
+                npdu: &payload,
+            }),
+            AdmissionOutcome::Oversize
+        );
+        assert_eq!(egress.core_mut().counters().broadcast.depth, 0);
+    }
+
+    #[test]
+    fn extended_profile_admits_the_first_extended_boundary() {
+        let mut rx = [0; 4096];
+        let mut core = extended_core(&mut rx);
+        let mut egress = ExtendedMstpEgress::new(&mut core, PortId(9), at(1));
+        egress.set_peer_capability(MstpPeerCapability::Extended);
+        let payload = [0x5a; STANDARD_MSTP_MAX_NPDU + 1];
+        assert_eq!(
+            egress.try_admit(EgressRequest {
+                port: PortId(9),
+                destination: EgressDestination::Unicast(
+                    LinkAddress::try_from_slice(&[2]).unwrap(),
+                ),
+                class: TrafficClass::Data,
+                priority: 0,
+                npdu: &payload,
+            }),
+            AdmissionOutcome::AcceptedOwned
+        );
+        egress
+            .core_mut()
+            .on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), at(2))
+            .unwrap();
+        egress.core_mut().on_deadline(at(50_000)).unwrap();
+        let frame = loop {
+            match egress.core_mut().poll_action() {
+                Action::Transmit { frame, .. } => break frame,
+                Action::Idle | Action::SetDirection(_) => {}
+                other => panic!("unexpected action: {other:?}"),
+            }
+        };
+        let (decoded, _) = decode_extended_frame(frame, &mut [0; EXTENDED_MSTP_MAX_NPDU]).unwrap();
+        assert_eq!(decoded.data, payload);
     }
 }
