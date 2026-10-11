@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Clippy for the no_std crates on bare-metal targets, denying warnings, once
 # per feature set that changes what they compile, and a check of each build's
-# dependency graph (#1604).
+# dependency graph (#1604, #1605).
 #
 #   check-no-std.sh               for the default targets below
 #   check-no-std.sh <triple>...   for those targets; cargo checks them side by
@@ -33,6 +33,10 @@ checks=(
   "bacnet-mstp-codec alloc"
   "bacnet-mstp-codec heapless"
   "bacnet-mstp-codec bytes,heapless"
+  "bacnet-mstp-core -"
+  "bacnet-mstp-core alloc"
+  "bacnet-mstp-core heapless"
+  "bacnet-mstp-core alloc,heapless"
   "bacnet-types alloc"
   "bacnet-types serde"
   "bacnet-encoding alloc"

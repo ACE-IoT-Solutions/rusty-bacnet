@@ -32,9 +32,11 @@ pub enum DecodeEvent<'a> {
         discard: usize,
         /// Why the candidate was dropped.
         error: FrameError,
-        /// The candidate's destination address, when its header passed the
-        /// CRC check; `None` when the header was bad or never complete. See
-        /// [`StreamDecoder`] for why a receiver needs it.
+        /// The candidate's destination address once its header CRC has
+        /// passed, including for a header refused afterwards (source 255, a
+        /// length over the limit). `None` when the header CRC failed or the
+        /// header never completed. See [`StreamDecoder`] for why a receiver
+        /// needs it.
         destination: Option<u8>,
     },
     /// The pushed slice did not fit in the free storage. None of it was
@@ -92,6 +94,13 @@ pub enum StreamPhase {
 /// [`FrameError::DataCrcMismatch`] before treating it as an invalid frame. A
 /// bad header (CRC, source 255, length over the limit) counts wherever it was
 /// going.
+///
+/// That includes a COBS-type frame whose Length falls outside the range COBS
+/// frames allow, or whose source is 255: Clause 9.5.8 rejects its header.
+/// The decoder doesn't tell those apart yet. It refuses every COBS type with
+/// [`FrameError::UnsupportedCobsFrame`] before it looks at the source or the
+/// length, so a receiver sees such a header as a good one and skips it when
+/// it is for another station.
 ///
 /// The decoder keeps no time. A receiver that aborts a partial frame after a
 /// silence (Clause 9.5.4) calls [`reset`](Self::reset).
@@ -264,13 +273,24 @@ impl<'a> StreamDecoder<'a> {
             }
             Err(error) => error,
         };
-        // Every other error comes after the header CRC passed, so the whole
-        // header is buffered and its destination octet can be trusted.
+        // Errors past the header CRC come with the whole header buffered,
+        // so its destination octet can be trusted. Every variant is listed,
+        // so a new error has to say which side of the CRC it falls on.
         let destination = match error {
             FrameError::TooShort { .. }
             | FrameError::InvalidPreamble { .. }
             | FrameError::HeaderCrcMismatch => None,
-            _ => Some(self.storage[DESTINATION_INDEX]),
+            FrameError::UnsupportedCobsFrame { .. }
+            | FrameError::BroadcastSource
+            | FrameError::Oversize { .. }
+            | FrameError::Truncated { .. }
+            | FrameError::DataCrcMismatch { .. } => Some(self.storage[DESTINATION_INDEX]),
+            // decode_frame never returns these: they come from encoding or
+            // from the stream decoder itself.
+            FrameError::UnexpectedData { .. }
+            | FrameError::MissingVendorId { .. }
+            | FrameError::FrameTooLong { .. }
+            | FrameError::BufferExhausted { .. } => None,
         };
         match error {
             FrameError::TooShort { needed, .. } => self.need_more(needed, None),

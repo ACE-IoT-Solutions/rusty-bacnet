@@ -24,7 +24,8 @@
 //! refuse source 255, data on the four frame types defined without any (see
 //! [`FrameType::allows_data`]), and a proprietary frame (128-255) with less
 //! than its 2-octet vendor identifier (Clause 9.3.11). The reserved types 8-31
-//! pass through both ways unchecked.
+//! get the same CRC, source and length checks as any frame in both
+//! directions, but the codec doesn't police their content.
 //!
 //! Both directions refuse the COBS-encoded frame types 32-127, which this
 //! crate does not implement yet.

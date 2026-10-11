@@ -150,6 +150,38 @@ fn refused_slice_reports_its_length_and_the_free_room() {
     ));
 }
 
+/// A push commits the frame delivered before it ahead of measuring the free
+/// room, so a refused slice reports the room the frame left behind, and the
+/// frame is not delivered again.
+#[test]
+fn refused_slice_after_a_delivered_frame_counts_the_frame_as_committed() {
+    let token = encode(Frame::new(FrameType::Token, 1, 2, &[]));
+    let mut wire = token.clone();
+    wire.extend_from_slice(&token[..4]);
+    let mut storage = [0u8; 16];
+    let mut decoder = StreamDecoder::new(&mut storage);
+    assert!(matches!(
+        decoder.push_slice(&wire),
+        DecodeEvent::Frame { consumed: 8, .. }
+    ));
+    assert_eq!(decoder.buffered_len(), 12);
+    assert_eq!(
+        decoder.push_slice(&[0u8; 13]),
+        DecodeEvent::Error(FrameError::BufferExhausted {
+            needed: 13,
+            available: 12
+        })
+    );
+    // The delivered frame is gone; the half token behind it stays.
+    assert_eq!(decoder.buffered_len(), 4);
+    assert!(matches!(
+        decoder.push_slice(&token[4..]),
+        DecodeEvent::Frame { consumed: 8, .. }
+    ));
+    assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
+    assert_eq!(decoder.buffered_len(), 0);
+}
+
 /// Storage of exactly a frame's length decodes it, octet by octet or whole.
 #[test]
 fn storage_of_exactly_one_frame_decodes_it() {

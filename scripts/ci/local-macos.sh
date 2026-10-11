@@ -10,7 +10,9 @@
 #
 # serial and ethernet are Linux-only features, so macOS uses every other
 # optional feature, including those crates gate on their own features (#906).
-# Clippy and rustdoc deny warnings, as CI does. Tests need cargo-nextest
+# Clippy and rustdoc deny warnings, as CI does. The no_std clippy step needs
+# the three bare-metal targets once: `rustup target add thumbv6m-none-eabi
+# thumbv7em-none-eabihf riscv32imac-unknown-none-elf`. Tests need cargo-nextest
 # 0.9.145 or later (`cargo install cargo-nextest --locked`). The PyO3 crate's
 # Rust tests link libpython from PYO3_PYTHON, the active venv, or `python` /
 # `python3` on PATH, in that order (#919). .github/workflows/native-tests.yml
@@ -35,7 +37,7 @@ step "file-size cap";    bash scripts/ci/check-file-size.sh
 step "no-secret scan";   bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh
 step "MSRV script regressions"; python3 scripts/ci/test-check-msrv.py
 step "changelog fragments"; python3 -m unittest discover -s scripts -p 'test_changelog.py' && python3 scripts/changelog.py check
-features=bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
+features=bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-mstp-core/heapless,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
 step "clippy (every macOS feature)"
 cargo clippy --workspace --exclude rusty-bacnet --all-targets --locked --features "$features" -- -D warnings
 step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
