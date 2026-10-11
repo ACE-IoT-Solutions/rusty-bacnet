@@ -6,15 +6,15 @@ use crate::counters::QueueCounters;
 
 use super::{
     better, expired, DequeuedNpdu, Item, NetworkPriority, QueueItemInfo, QueueKind,
-    QueueRejectReason, QueueStorage, MAX_NPDU_LEN,
+    QueueRejectReason, QueueStorage, MAX_STANDARD_MPDU_DATA,
 };
 
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
 #[derive(Debug)]
 pub struct AllocQueues {
-    unicast: Vec<Item<MAX_NPDU_LEN>>,
-    broadcast: Vec<Item<MAX_NPDU_LEN>>,
+    unicast: Vec<Item<MAX_STANDARD_MPDU_DATA>>,
+    broadcast: Vec<Item<MAX_STANDARD_MPDU_DATA>>,
     unicast_capacity: usize,
     broadcast_capacity: usize,
     sequence: u64,
@@ -132,7 +132,7 @@ impl QueueStorage for AllocQueues {
         expires_at: Option<u64>,
     ) -> Result<(), QueueRejectReason> {
         let kind = QueueKind::from_destination(destination);
-        if payload.len() > MAX_NPDU_LEN {
+        if payload.len() > MAX_STANDARD_MPDU_DATA {
             self.counters_mut(kind).record_drop_oversize();
             return Err(QueueRejectReason::Oversize);
         }
@@ -160,7 +160,7 @@ impl QueueStorage for AllocQueues {
             sequence: self.sequence,
             service_wait: 0,
             len: payload.len(),
-            payload: [0; MAX_NPDU_LEN],
+            payload: [0; MAX_STANDARD_MPDU_DATA],
         };
         owned.payload[..payload.len()].copy_from_slice(payload);
         self.sequence = self.sequence.wrapping_add(1);

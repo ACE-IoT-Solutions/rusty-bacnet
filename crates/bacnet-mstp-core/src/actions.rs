@@ -109,8 +109,7 @@ pub enum Action<'a> {
         /// expecting-reply frame.
         request_id: Option<RequestId>,
     },
-    /// No action is pending.  [`ActionRing::poll_action`] uses `None` for
-    /// this condition so an idle poll does not need to borrow the ring.
+    /// No action is pending: both rings are empty.
     Idle,
 }
 
@@ -130,14 +129,12 @@ pub(crate) enum ActionEnqueueError {
 const DEFAULT_CONTROL_CAPACITY: usize = 8;
 const DEFAULT_DELIVERY_CAPACITY: usize = 8;
 
+/// A queued control action. A transmit's octets live in the ring's frame
+/// storage at the same index as its slot, so a slot stays small.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlKind {
     Direction(Direction),
-    Transmit {
-        id: TransmitId,
-        length: usize,
-        frame: [u8; MAX_STANDARD_FRAME_LENGTH],
-    },
+    Transmit { id: TransmitId, length: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,9 +163,10 @@ struct DeliverySlot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ActionRing<const CONTROL: usize, const DELIVERY: usize> {
     controls: [Option<ControlSlot>; CONTROL],
+    /// Octets of the transmit queued in the control slot with the same index.
+    frames: [[u8; MAX_STANDARD_FRAME_LENGTH]; CONTROL],
     deliveries: [Option<DeliverySlot>; DELIVERY],
     next_sequence: u64,
-    scratch_frame: [u8; MAX_STANDARD_FRAME_LENGTH],
     scratch_npdu: [u8; MAX_STANDARD_MPDU_DATA],
 }
 
@@ -180,9 +178,9 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
     pub(crate) const fn new() -> Self {
         Self {
             controls: [None; CONTROL],
+            frames: [[0; MAX_STANDARD_FRAME_LENGTH]; CONTROL],
             deliveries: [None; DELIVERY],
             next_sequence: 0,
-            scratch_frame: [0; MAX_STANDARD_FRAME_LENGTH],
             scratch_npdu: [0; MAX_STANDARD_MPDU_DATA],
         }
     }
@@ -231,20 +229,18 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
                 maximum: MAX_STANDARD_FRAME_LENGTH,
             });
         }
-        let sequence = self.reserve_sequence();
-        let slot = self
+        let index = self
             .controls
-            .iter_mut()
-            .find(|slot| slot.is_none())
+            .iter()
+            .position(Option::is_none)
             .ok_or(ActionEnqueueError::ControlFull)?;
-        let mut owned = [0; MAX_STANDARD_FRAME_LENGTH];
-        owned[..frame.len()].copy_from_slice(frame);
-        *slot = Some(ControlSlot {
+        let sequence = self.reserve_sequence();
+        self.frames[index][..frame.len()].copy_from_slice(frame);
+        self.controls[index] = Some(ControlSlot {
             sequence,
             kind: ControlKind::Transmit {
                 id,
                 length: frame.len(),
-                frame: owned,
             },
         });
         Ok(())
@@ -284,8 +280,7 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
 
         let direction_sequence = self.reserve_sequence();
         let transmit_sequence = self.reserve_sequence();
-        let mut owned = [0; MAX_STANDARD_FRAME_LENGTH];
-        owned[..frame.len()].copy_from_slice(frame);
+        self.frames[free[1]][..frame.len()].copy_from_slice(frame);
         self.controls[free[0]] = Some(ControlSlot {
             sequence: direction_sequence,
             kind: ControlKind::Direction(Direction::Transmit),
@@ -295,7 +290,6 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
             kind: ControlKind::Transmit {
                 id,
                 length: frame.len(),
-                frame: owned,
             },
         });
         Ok(())
@@ -334,13 +328,13 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         Ok(())
     }
 
-    /// Remove the next action and borrow its payload from the scheduler's
-    /// scratch storage.
+    /// Remove the next action and borrow its payload from the scheduler.
     ///
     /// Removing the slot before constructing the returned action means a
-    /// caller may enqueue more work after the returned borrow ends.  The
-    /// scratch buffers are overwritten only by a subsequent poll, so no
-    /// action contains a self-reference or an external borrowed payload.
+    /// caller may enqueue more work after the returned borrow ends.  A
+    /// transmit borrows the frame storage of the slot it left, and a delivery
+    /// borrows the scratch buffer; both are overwritten only by later calls
+    /// that need `&mut self`, so no action outlives its payload.
     ///
     /// Protocol-control actions always preempt queued deliveries.  This is
     /// intentional: a full application ring must not delay restoring receive
@@ -396,13 +390,10 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         let slot = self.controls[index].take()?;
         match slot.kind {
             ControlKind::Direction(direction) => Some(Action::SetDirection(direction)),
-            ControlKind::Transmit { id, length, frame } => {
-                self.scratch_frame[..length].copy_from_slice(&frame[..length]);
-                Some(Action::Transmit {
-                    id,
-                    frame: &self.scratch_frame[..length],
-                })
-            }
+            ControlKind::Transmit { id, length } => Some(Action::Transmit {
+                id,
+                frame: &self.frames[index][..length],
+            }),
         }
     }
 

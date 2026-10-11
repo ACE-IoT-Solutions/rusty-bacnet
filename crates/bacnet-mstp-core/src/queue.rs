@@ -6,12 +6,13 @@
 //! available.  The alloc implementation reserves all of its item storage in
 //! its constructor; enqueue and dequeue do not grow a vector.
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 use core::cmp::Ordering;
 
-use crate::counters::QueueCounters;
+#[cfg(any(feature = "alloc", feature = "heapless"))]
+use bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA;
 
-/// The largest NPDU accepted by the MS/TP core queue.
-pub const MAX_NPDU_LEN: usize = 501;
+use crate::counters::QueueCounters;
 
 /// Destination class used by the two independently bounded queues.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +125,7 @@ pub struct QueueItemInfo {
     pub service_wait: u8,
 }
 
+#[cfg(feature = "heapless")]
 const EMPTY_QUEUE_COUNTERS: QueueCounters = QueueCounters {
     depth: 0,
     high_water: 0,
@@ -201,6 +203,10 @@ pub trait QueueStorage {
     }
 }
 
+// The item type and selection policy below are shared by the two queue
+// backends, so they build only when one of them does.
+
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 #[derive(Clone, Copy, Debug)]
 struct Item<const N: usize> {
     destination: u8,
@@ -213,6 +219,7 @@ struct Item<const N: usize> {
     payload: [u8; N],
 }
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 impl<const N: usize> Item<N> {
     fn info(self, kind: QueueKind) -> QueueItemInfo {
         QueueItemInfo {
@@ -228,10 +235,12 @@ impl<const N: usize> Item<N> {
     }
 }
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 fn expired(expires_at: Option<u64>, now: u64) -> bool {
     expires_at.is_some_and(|deadline| now >= deadline)
 }
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 fn is_older(left: u64, right: u64) -> bool {
     // Sequence numbers are only compared while both entries are live.  This
     // half-range comparison remains FIFO-correct across a u64 wrap unless a
@@ -239,6 +248,7 @@ fn is_older(left: u64, right: u64) -> bool {
     left != right && left.wrapping_sub(right) > (u64::MAX / 2)
 }
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 fn better(candidate: QueueItemInfo, current: Option<QueueItemInfo>, starvation_limit: u8) -> bool {
     let Some(current) = current else { return true };
     let candidate_starved = candidate.service_wait >= starvation_limit;
@@ -258,7 +268,7 @@ fn better(candidate: QueueItemInfo, current: Option<QueueItemInfo>, starvation_l
 #[cfg(feature = "heapless")]
 #[derive(Debug)]
 /// Heapless, independently bounded unicast and broadcast queues.
-pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_NPDU_LEN> {
+pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: heapless::Vec<Item<N>, U>,
     broadcast: heapless::Vec<Item<N>, B>,
     sequence: u64,
@@ -403,10 +413,8 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         };
         owned.payload[..payload.len()].copy_from_slice(payload);
         self.sequence = self.sequence.wrapping_add(1);
-        self.push_item(kind, owned).map_err(|reason| {
-            self.counters_mut(kind).record_drop_full();
-            reason
-        })?;
+        self.push_item(kind, owned)
+            .inspect_err(|_| self.counters_mut(kind).record_drop_full())?;
         let depth = match kind {
             QueueKind::Unicast => self.unicast.len(),
             QueueKind::Broadcast => self.broadcast.len(),
@@ -500,5 +508,5 @@ mod alloc;
 
 #[cfg(feature = "alloc")]
 pub use alloc::AllocQueues;
-#[cfg(test)]
+#[cfg(all(test, any(feature = "alloc", feature = "heapless")))]
 mod tests;

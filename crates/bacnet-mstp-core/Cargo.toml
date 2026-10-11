@@ -9,10 +9,10 @@ repository.workspace = true
 keywords = ["bacnet", "mstp", "embedded", "no-std"]
 categories = ["embedded", "network-programming", "no-std"]
 
+# No feature needs std: each one only adds a QueueStorage backend.
 [features]
 default = []
 alloc = []
-std = ["alloc"]
 heapless = ["dep:heapless"]
 
 [dependencies]

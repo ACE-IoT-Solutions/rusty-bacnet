@@ -144,15 +144,20 @@ pub enum ConfigError {
 /// Names of local duration settings used by [`ConfigError::ZeroLocalDuration`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalDurationField {
+    /// [`MstpCoreConfig::queue_max_age`].
     QueueMaxAge,
+    /// [`MstpCoreConfig::transmit_watchdog`].
     TransmitWatchdog,
 }
 
 /// Names of local count/ratio settings used by [`ConfigError::ZeroLocalLimit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalLimitField {
+    /// [`MstpCoreConfig::broadcast_unicast_ratio`].
     BroadcastUnicastRatio,
+    /// [`MstpCoreConfig::multiple_frame_ratio`].
     MultipleFrameRatio,
+    /// [`MstpCoreConfig::starvation_limit`].
     StarvationLimit,
 }
 
@@ -276,10 +281,11 @@ impl MstpCoreConfig {
             });
         }
 
-        let frame_abort_min = ceil_bit_times(self.baud_rate, 60)?;
-        let frame_gap_max = floor_bit_times(self.baud_rate, 20)?;
-        let postdrive_max = floor_bit_times(self.baud_rate, 15)?;
-        let turnaround_min = ceil_bit_times(self.baud_rate, 40)?;
+        let bit_times = |bound: Option<Duration>| bound.ok_or(ConfigError::TimingOverflow);
+        let frame_abort_min = bit_times(ceil_bit_times(self.baud_rate, 60))?;
+        let frame_gap_max = bit_times(floor_bit_times(self.baud_rate, 20))?;
+        let postdrive_max = bit_times(floor_bit_times(self.baud_rate, 15))?;
+        let turnaround_min = bit_times(ceil_bit_times(self.baud_rate, 40))?;
         if self.t_frame_abort < frame_abort_min || self.t_frame_abort > MAX_FRAME_ABORT {
             return Err(ConfigError::FrameAbortOutOfRange {
                 value: self.t_frame_abort,
@@ -391,14 +397,14 @@ impl MstpCoreConfig {
             n_poll: 50,
             n_retry_token: 1,
             n_min_octets: 4,
-            t_frame_abort: ceil_bit_times_const(baud_rate, 60),
-            t_frame_gap: floor_bit_times_const(baud_rate, 20),
+            t_frame_abort: or_max(ceil_bit_times(baud_rate, 60)),
+            t_frame_gap: or_max(floor_bit_times(baud_rate, 20)),
             t_no_token: Duration::from_millis(500),
-            t_postdrive: floor_bit_times_const(baud_rate, 15),
+            t_postdrive: or_max(floor_bit_times(baud_rate, 15)),
             t_reply_delay: Duration::from_millis(250),
             t_reply_timeout: Duration::from_millis(255),
             t_slot: Duration::from_millis(10),
-            t_turnaround: ceil_bit_times_const(baud_rate, 40),
+            t_turnaround: or_max(ceil_bit_times(baud_rate, 40)),
             t_usage_delay: Duration::from_millis(15),
             t_usage_timeout: Duration::from_millis(20),
             queue_max_age: Duration::from_secs(5),
@@ -410,49 +416,34 @@ impl MstpCoreConfig {
     }
 }
 
-/// Return the ceiling of `bits / baud` in microseconds.
-fn ceil_bit_times(baud_rate: u32, bits: u64) -> Result<Duration, ConfigError> {
-    if baud_rate == 0 {
-        return Err(ConfigError::ZeroBaudRate);
-    }
-    let numerator = bits
-        .checked_mul(1_000_000)
-        .ok_or(ConfigError::TimingOverflow)?;
-    let baud = u64::from(baud_rate);
-    let micros = numerator
-        .checked_add(baud - 1)
-        .ok_or(ConfigError::TimingOverflow)?
-        / baud;
-    Ok(Duration::from_micros(micros))
-}
-
-/// Return the floor of `bits / baud` in microseconds for maximum bounds.
-fn floor_bit_times(baud_rate: u32, bits: u64) -> Result<Duration, ConfigError> {
-    if baud_rate == 0 {
-        return Err(ConfigError::ZeroBaudRate);
-    }
-    let numerator = bits
-        .checked_mul(1_000_000)
-        .ok_or(ConfigError::TimingOverflow)?;
-    Ok(Duration::from_micros(numerator / u64::from(baud_rate)))
-}
-
-const fn ceil_bit_times_const(baud_rate: u32, bits: u64) -> Duration {
-    let numerator = bits * 1_000_000;
+/// `bits` bit times at `baud_rate` in microseconds, rounded up, for minimum
+/// bounds. `None` for a zero baud rate or on overflow.
+const fn ceil_bit_times(baud_rate: u32, bits: u64) -> Option<Duration> {
     let baud = baud_rate as u64;
-    if baud == 0 {
-        Duration::MAX
-    } else {
-        Duration::from_micros((numerator + baud - 1) / baud)
+    match bits.checked_mul(1_000_000) {
+        Some(numerator) if baud != 0 => Some(Duration::from_micros(numerator.div_ceil(baud))),
+        _ => None,
     }
 }
 
-const fn floor_bit_times_const(baud_rate: u32, bits: u64) -> Duration {
-    let baud = baud_rate as u64;
-    if baud == 0 {
-        Duration::MAX
-    } else {
-        Duration::from_micros((bits * 1_000_000) / baud)
+/// `bits` bit times at `baud_rate` in microseconds, rounded down, for maximum
+/// bounds. `None` for a zero baud rate or on overflow.
+const fn floor_bit_times(baud_rate: u32, bits: u64) -> Option<Duration> {
+    match bits.checked_mul(1_000_000) {
+        Some(numerator) => match numerator.checked_div(baud_rate as u64) {
+            Some(micros) => Some(Duration::from_micros(micros)),
+            None => None,
+        },
+        None => None,
+    }
+}
+
+/// A bit-time default for [`MstpCoreConfig::for_baud_rate_unchecked`]: a
+/// zero baud rate gives [`Duration::MAX`], which `validate` then rejects.
+const fn or_max(duration: Option<Duration>) -> Duration {
+    match duration {
+        Some(duration) => duration,
+        None => Duration::MAX,
     }
 }
 
@@ -473,13 +464,17 @@ mod tests {
 
     #[test]
     fn validation_rejects_zero_baud_and_bad_addresses() {
-        let mut config = MstpCoreConfig::default();
-        config.baud_rate = 0;
+        let config = MstpCoreConfig {
+            baud_rate: 0,
+            ..MstpCoreConfig::default()
+        };
         assert_eq!(config.validate(), Err(ConfigError::ZeroBaudRate));
 
-        config = MstpCoreConfig::default();
-        config.max_master = 127;
-        config.station = 128;
+        let config = MstpCoreConfig {
+            max_master: 127,
+            station: 128,
+            ..MstpCoreConfig::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::StationExceedsMaxMaster { .. })
@@ -488,15 +483,19 @@ mod tests {
 
     #[test]
     fn validation_enforces_bit_time_edges_without_overflow() {
-        let mut config = MstpCoreConfig::default();
-        config.t_frame_abort = Duration::from_millis(1);
+        let config = MstpCoreConfig {
+            t_frame_abort: Duration::from_millis(1),
+            ..MstpCoreConfig::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::FrameAbortOutOfRange { .. })
         ));
 
-        config = MstpCoreConfig::default();
-        config.baud_rate = 1;
+        let config = MstpCoreConfig {
+            baud_rate: 1,
+            ..MstpCoreConfig::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::FrameAbortOutOfRange { .. })
@@ -512,15 +511,19 @@ mod tests {
 
     #[test]
     fn validation_rejects_infeasible_response_and_ratio_policies() {
-        let mut config = MstpCoreConfig::default();
-        config.t_turnaround = Duration::from_millis(16);
+        let config = MstpCoreConfig {
+            t_turnaround: Duration::from_millis(16),
+            ..MstpCoreConfig::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::TurnaroundExceedsUsageDelay { .. })
         ));
 
-        config = MstpCoreConfig::default();
-        config.multiple_frame_ratio = 101;
+        let config = MstpCoreConfig {
+            multiple_frame_ratio: 101,
+            ..MstpCoreConfig::default()
+        };
         assert_eq!(
             config.validate(),
             Err(ConfigError::MultipleFrameRatioOutOfRange { value: 101 })

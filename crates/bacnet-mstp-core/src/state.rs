@@ -28,7 +28,8 @@ pub enum MasterState {
     UseToken,
     /// Selecting token-pass or maintenance work.
     DoneWithToken,
-    /// Waiting for a successor to begin using the token.
+    /// The token went to the next station; watching the line for traffic that
+    /// shows it was taken up.
     PassToken,
     /// Waiting for a reply to a data-expecting-reply frame.
     WaitForReply,

@@ -27,6 +27,8 @@ pub struct QueueCounters {
     pub drops_starved: u32,
 }
 
+// Only the queue backends record queue counters.
+#[cfg(any(feature = "alloc", feature = "heapless", test))]
 impl QueueCounters {
     /// Record an enqueue and the resulting depth.
     pub(crate) fn record_enqueue(&mut self, depth: usize) {
@@ -57,7 +59,7 @@ impl QueueCounters {
 
     /// Set current depth and update high-water mark.
     pub(crate) fn set_depth(&mut self, depth: usize) {
-        let depth = saturating_u32(depth);
+        let depth = u32::try_from(depth).unwrap_or(u32::MAX);
         self.depth = depth;
         if depth > self.high_water {
             self.high_water = depth;
@@ -172,14 +174,6 @@ impl MstpCounters {
 
 fn increment(value: &mut u32) {
     *value = value.saturating_add(1);
-}
-
-fn saturating_u32(value: usize) -> u32 {
-    if value > u32::MAX as usize {
-        u32::MAX
-    } else {
-        value as u32
-    }
 }
 
 #[cfg(test)]
