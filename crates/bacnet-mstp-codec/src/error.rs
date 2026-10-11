@@ -204,9 +204,7 @@ impl From<FrameError> for bacnet_types::error::Error {
                 maximum,
             } => Self::decoding(
                 5,
-                format!(
-                    "MS/TP extended Length {length} outside {minimum}..={maximum}"
-                ),
+                format!("MS/TP extended Length {length} outside {minimum}..={maximum}"),
             ),
             FrameError::ExtendedTruncated { needed, available } => Self::decoding(
                 8,
@@ -220,14 +218,11 @@ impl From<FrameError> for bacnet_types::error::Error {
                 maximum,
             } => Self::decoding(
                 8,
-                format!(
-                    "MS/TP extended payload length {length} outside {minimum}..={maximum}"
-                ),
+                format!("MS/TP extended payload length {length} outside {minimum}..={maximum}"),
             ),
-            FrameError::ExtendedCobs { field, error } => Self::decoding(
-                8,
-                format!("MS/TP extended {field:?} COBS error: {error}"),
-            ),
+            FrameError::ExtendedCobs { field, error } => {
+                Self::decoding(8, format!("MS/TP extended {field:?} COBS error: {error}"))
+            }
             FrameError::ExtendedCrcLength { length } => Self::decoding(
                 8,
                 format!("MS/TP extended CRC decoded to {length} octets, expected 4"),

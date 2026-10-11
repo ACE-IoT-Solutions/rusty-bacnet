@@ -1,11 +1,11 @@
 //! Frame headers and one-shot encode/decode operations.
 
+use crate::error::ExtendedField;
 use crate::{
     cobs_decode_xor55, cobs_decode_xor55_in_place, cobs_encode_xor55, cobs_encoded_len, crc16,
-    crc16_valid, crc32k, crc8, crc8_valid, FrameError, BROADCAST_MAC,
-    HEADER_LENGTH, MAX_MASTER, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    crc16_valid, crc32k, crc8, crc8_valid, FrameError, BROADCAST_MAC, HEADER_LENGTH, MAX_MASTER,
+    MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
-use crate::error::ExtendedField;
 
 /// Smallest decoded NPDU accepted by a BACnet Extended MS/TP frame.
 pub const MIN_EXTENDED_MPDU_DATA: usize = 502;
@@ -332,10 +332,7 @@ fn extended_layout(data: &[u8]) -> Result<ExtendedLayout, FrameError> {
     })
 }
 
-fn validate_extended_envelope(
-    data: &[u8],
-    layout: ExtendedLayout,
-) -> Result<(), FrameError> {
+fn validate_extended_envelope(data: &[u8], layout: ExtendedLayout) -> Result<(), FrameError> {
     let encoded_data =
         &data[layout.encoded_data_start..layout.encoded_data_start + layout.encoded_data_length];
     let encoded_crc = &data[layout.encoded_crc_start..layout.total];
@@ -427,12 +424,13 @@ pub fn encode_extended_into(
     })?;
     debug_assert_eq!(written, encoded_data_length);
     let crc_bytes = crc32k(&output[data_start..data_end]).to_le_bytes();
-    let crc_written = cobs_encode_xor55(&crc_bytes, &mut output[data_end..total]).map_err(|error| {
-        FrameError::ExtendedCobs {
-            field: ExtendedField::Crc,
-            error,
-        }
-    })?;
+    let crc_written =
+        cobs_encode_xor55(&crc_bytes, &mut output[data_end..total]).map_err(|error| {
+            FrameError::ExtendedCobs {
+                field: ExtendedField::Crc,
+                error,
+            }
+        })?;
     debug_assert_eq!(crc_written, encoded_crc_length);
     Ok(total)
 }
@@ -447,12 +445,11 @@ pub fn decode_extended_frame<'a>(
     validate_extended_type(layout.raw_type)?;
     let encoded_data =
         &data[layout.encoded_data_start..layout.encoded_data_start + layout.encoded_data_length];
-    let decoded_length = cobs_decode_xor55(encoded_data, scratch).map_err(|error| {
-        FrameError::ExtendedCobs {
+    let decoded_length =
+        cobs_decode_xor55(encoded_data, scratch).map_err(|error| FrameError::ExtendedCobs {
             field: ExtendedField::Data,
             error,
-        }
-    })?;
+        })?;
     if !(MIN_EXTENDED_MPDU_DATA..=MAX_EXTENDED_MPDU_DATA).contains(&decoded_length) {
         return Err(FrameError::ExtendedPayloadOutOfRange {
             length: decoded_length,
@@ -496,13 +493,11 @@ pub(crate) fn decode_extended_in_place_fields(
     validate_extended_envelope(data, layout)?;
     validate_extended_type(layout.raw_type)?;
     let data_end = layout.encoded_data_start + layout.encoded_data_length;
-    let decoded_length = cobs_decode_xor55_in_place(
-        &mut data[layout.encoded_data_start..data_end],
-    )
-    .map_err(|error| FrameError::ExtendedCobs {
-        field: ExtendedField::Data,
-        error,
-    })?;
+    let decoded_length = cobs_decode_xor55_in_place(&mut data[layout.encoded_data_start..data_end])
+        .map_err(|error| FrameError::ExtendedCobs {
+            field: ExtendedField::Data,
+            error,
+        })?;
     if !(MIN_EXTENDED_MPDU_DATA..=MAX_EXTENDED_MPDU_DATA).contains(&decoded_length) {
         return Err(FrameError::ExtendedPayloadOutOfRange {
             length: decoded_length,
@@ -563,7 +558,10 @@ mod tests {
             );
             let (frame, consumed) = decode_extended_frame_in_place(&mut wire[..used]).unwrap();
             assert_eq!(consumed, used);
-            assert_eq!(frame.header.frame_type, FrameType::ExtendedDataNotExpectingReply);
+            assert_eq!(
+                frame.header.frame_type,
+                FrameType::ExtendedDataNotExpectingReply
+            );
             assert_eq!(frame.data, &payload[..length]);
         }
     }
@@ -573,12 +571,7 @@ mod tests {
         let payload = [0xA5; MAX_EXTENDED_MPDU_DATA + 1];
         let mut output = [0u8; MAX_EXTENDED_FRAME_LENGTH];
         for length in [MIN_EXTENDED_MPDU_DATA - 1, MAX_EXTENDED_MPDU_DATA + 1] {
-            let header = FrameHeader::new(
-                FrameType::ExtendedDataExpectingReply,
-                0,
-                1,
-                length,
-            );
+            let header = FrameHeader::new(FrameType::ExtendedDataExpectingReply, 0, 1, length);
             assert!(matches!(
                 encode_extended_into(&mut output, &header, &payload[..length]),
                 Err(FrameError::ExtendedPayloadOutOfRange { .. })
@@ -590,8 +583,8 @@ mod tests {
             1,
             MIN_EXTENDED_MPDU_DATA,
         );
-        let used = encode_extended_into(&mut output, &header, &payload[..MIN_EXTENDED_MPDU_DATA])
-            .unwrap();
+        let used =
+            encode_extended_into(&mut output, &header, &payload[..MIN_EXTENDED_MPDU_DATA]).unwrap();
         output[8] ^= 1;
         assert_eq!(
             decode_extended_frame(&output[..used], &mut [0u8; MAX_EXTENDED_MPDU_DATA]),

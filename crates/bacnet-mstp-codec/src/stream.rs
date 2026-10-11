@@ -1,10 +1,10 @@
 //! Caller-buffered incremental decoding.
 
-use crate::{decode_frame, is_cobs_raw, Frame, FrameError, HEADER_LENGTH, PREAMBLE};
 use crate::frame::{
     decode_extended_in_place_fields, ExtendedFrame, FrameType, MAX_EXTENDED_LENGTH,
     MIN_EXTENDED_LENGTH,
 };
+use crate::{decode_frame, is_cobs_raw, Frame, FrameError, HEADER_LENGTH, PREAMBLE};
 
 /// Result of feeding one or more octets to [`StreamDecoder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,10 +167,7 @@ impl<'a> StreamDecoder<'a> {
                 }
                 Err(error) => {
                     self.discard(discard);
-                    return DecodeEvent::Malformed {
-                        discard,
-                        error,
-                    };
+                    return DecodeEvent::Malformed { discard, error };
                 }
             }
         }
@@ -252,9 +249,7 @@ impl<'a> StreamDecoder<'a> {
     }
 
     fn extended_candidate_len(&self) -> usize {
-        if self.length < PREAMBLE.len() + HEADER_LENGTH
-            || !crate::crc8_valid(&self.storage[2..8])
-        {
+        if self.length < PREAMBLE.len() + HEADER_LENGTH || !crate::crc8_valid(&self.storage[2..8]) {
             return 1;
         }
         let length = u16::from_be_bytes([self.storage[5], self.storage[6]]) as usize;
