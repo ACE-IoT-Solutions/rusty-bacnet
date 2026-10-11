@@ -1,0 +1,6 @@
+candidate_sha256=8f784ce3c5c284532655649c0d64a8e61c94a5db9341378df29f8c057d323519
+rollback_sha256=3c7ae9896efb646b6e8d41c8a3c5bd71ea74cb68072d871a7dae5d6ed9392460
+serial_device=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_28:84:85:B5:1E:C8-if00
+capture_seconds=40
+started_at=2026-10-11T01:22:52Z
+finished_at=2026-10-11T01:23:41Z

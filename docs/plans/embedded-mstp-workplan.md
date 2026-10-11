@@ -430,7 +430,7 @@ factory image was restored and both F and C recovered. These runs rule out
 flash/PSRAM mismatch, timeout log starvation, timeout misclassification, and
 observer inactivity; they do not satisfy passive acceptance.
 
-The next passive image now replaces the high-level `esp-idf-hal` UART driver
+The raw-UART passive image replaces the high-level `esp-idf-hal` UART driver
 with a narrow owner-backed adapter using the same ESP-IDF UART1 initialization
 and read calls as the known-working C node. Both downstream feature-mode test
 suites pass seven tests, all 35 evaluator/dashboard Python tests pass, and the
@@ -439,12 +439,24 @@ vendored inventory is exact. The target build produced passive ELF
 and merged DIO factory image
 `8f784ce3c5c284532655649c0d64a8e61c94a5db9341378df29f8c057d323519`.
 The generated configuration retains 16 MB flash, OPI PSRAM, 1 kHz FreeRTOS
-ticks, and the UART ISR-in-IRAM setting. It has not been flashed: the ARM HIL
-host went offline before its rollback asset, serial path, and observer C could
-be re-verified. Node F itself remains reachable on its management interface:
-`/healthz` returned `ok`, and its restored C firmware reported 212763 receive
-bytes, 70 token events, and stable PSRAM. Active testing remains prohibited
-until the Rust image receives and decodes valid passive frames.
+ticks, and the UART ISR-in-IRAM setting.
+
+Bounded diagnostic `20261011T012252Z-raw-uart` flashed that exact factory
+image after verifying the USB serial device and rollback hash. In 40 seconds,
+F advanced from 976 to 7784 UART bytes and from 122 to 973 valid frames, with
+zero read, malformed-frame, or codec errors. Every report held `DE=0`, free
+heap stayed at 8716772 bytes, and minimum free heap stayed at 8716244 bytes.
+Peer E concurrently advanced by 8182 receive bytes, independently proving the
+bus remained live. The guarded runner restored the known C image, verified the
+flash hash, restarted the dashboard, and F resumed token participation. This
+isolates the prior zero-byte failure to the extra UART mode/interrupt setup in
+the high-level HAL path and validates the raw ESP-IDF receive path.
+
+This diagnostic does not close passive acceptance: observer C's management
+network was unavailable because the controller's dedicated interface had no
+carrier, and no independent logic-analyzer DE trace was captured. The active
+image remains unflashed until a repeat run includes both artifacts and earns a
+fail-closed passive `pass` verdict.
 
 ## Proposed PR queue
 
