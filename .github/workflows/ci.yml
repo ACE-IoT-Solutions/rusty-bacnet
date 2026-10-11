@@ -13,9 +13,10 @@ name: CI
 #           clippy and rustdoc with warnings denied (every feature, the PyO3
 #           crate, and each published crate alone with default features, for
 #           Linux, Windows and macOS; the every-feature and PyO3 rustdoc runs
-#           include private items), the no_std crates on bare-metal targets,
-#           and the MS/TP and B/IP firmware images linked without an
-#           allocator and checked against their size budgets,
+#           include private items), the no_std crates on bare-metal targets
+#           and their alloc tests on the host, and the MS/TP and B/IP
+#           firmware images linked without an allocator and checked against
+#           their size budgets,
 #           every-feature Linux tests plus bacnet-cli's feature-off tests
 #           and the no_std crates' tests and doctests without std,
 #           and the Python bindings built with maturin, their unittest suite
@@ -231,6 +232,12 @@ jobs:
           rustup target add $NO_STD_TARGETS
           # shellcheck disable=SC2086
           bash scripts/ci/check-no-std.sh $NO_STD_TARGETS
+      # bacnet-types, bacnet-encoding and bacnet-services with alloc and
+      # without std, tests included: Test runs those tests, and no run above
+      # lints them (#1613).
+      - name: Clippy (no_std crates with alloc, all targets)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
       # Clippy doesn't link, so this builds the MS/TP and B/IP stacks into
       # bare-metal images with no allocator (firmware/link), one per stack, for
       # each target, and checks their sizes against the budget. It links with
