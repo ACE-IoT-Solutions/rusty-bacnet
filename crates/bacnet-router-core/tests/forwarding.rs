@@ -640,7 +640,7 @@ fn malformed_input_has_no_refusal_and_never_reaches_egress() {
 }
 
 #[test]
-fn exhausted_hop_can_return_to_the_attributed_source_without_forwarding() {
+fn exhausted_hop_is_silently_discarded_without_a_refusal() {
     let mut core = configured_core();
     let source = LinkAddress::try_from_slice(&[192, 0, 2, 10, 0xba, 0xc1]).unwrap();
     let mut npdu = routed_npdu(100);
@@ -659,11 +659,6 @@ fn exhausted_hop_can_return_to_the_attributed_source_without_forwarding() {
         &mut egress,
     );
     assert_eq!(attempt.result, Err(ForwardError::HopExhausted));
-    let rejection = attempt
-        .rejection
-        .expect("source is still structurally known");
-    assert_eq!(rejection.reason as u8, 0);
-    assert_eq!(rejection.source.network(), NetworkNumber::new(100).unwrap());
-    assert_eq!(rejection.source.address(), source);
+    assert!(attempt.rejection.is_none());
     assert_eq!(egress.calls, 0);
 }

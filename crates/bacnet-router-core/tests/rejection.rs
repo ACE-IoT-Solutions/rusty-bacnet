@@ -1,8 +1,9 @@
 //! Source-aware Reject-Message-To-Network action tests.
 
 use bacnet_router_core::{
-    AdmissionOutcome, DirectForwardRequest, Egress, EgressRequest, ForwardError, ForwardOutcome,
-    LinkAddress, NetworkNumber, PortCapabilities, PortId, PortKind, RouterCore,
+    AdmissionOutcome, DirectForwardRequest, DiscoveryAction, Egress, EgressRequest, ForwardError,
+    ForwardOutcome, LinkAddress, NetworkNumber, PortCapabilities, PortId, PortKind, RouteDiscovery,
+    RouterCore,
 };
 
 #[derive(Default)]
@@ -141,4 +142,93 @@ fn queue_full_refusal_is_busy_and_counts_only_the_forwarding_drop() {
     assert_eq!(core.diagnostics().drops_full, 1);
     assert_eq!(core.diagnostics().drops_no_route, 0);
     assert_eq!(core.diagnostics().drops_invalid, 0);
+}
+
+#[test]
+fn unknown_route_requests_who_is_router_then_times_out_to_a_source_refusal() {
+    let source = LinkAddress::try_from_slice(&[198, 51, 100, 7, 0xba, 0xc1]).unwrap();
+    let input = [0x01, 0x20, 0x01, 0x2c, 0x01, 0x09, 0xff, 0x10];
+    let mut core = RouterCore::<2, 2>::new();
+    let mut discovery = RouteDiscovery::<1>::new(10);
+    let mut scratch = [0u8; 64];
+    let mut egress = TestEgress::default();
+    let request = |now| DirectForwardRequest {
+        ingress_network: NetworkNumber::new(100).unwrap(),
+        logical_source: source,
+        npdu: &input,
+        egress_capabilities: capabilities(),
+        now,
+    };
+
+    let first = core.forward_unicast_with_discovery(
+        request(100),
+        &mut scratch,
+        &mut egress,
+        &mut discovery,
+    );
+    assert_eq!(first.result, Err(ForwardError::NoRoute));
+    assert_eq!(
+        first.discovery,
+        Some(DiscoveryAction::WhoIsRouter(
+            bacnet_router_core::DiscoveryRequest {
+                network: NetworkNumber::new(300).unwrap(),
+                deadline: 110,
+            },
+        ))
+    );
+    assert!(first.rejection.is_none());
+
+    let pending = core.forward_unicast_with_discovery(
+        request(105),
+        &mut scratch,
+        &mut egress,
+        &mut discovery,
+    );
+    assert!(matches!(
+        pending.discovery,
+        Some(DiscoveryAction::Pending(_))
+    ));
+    assert!(pending.rejection.is_none());
+
+    let timed_out = core.forward_unicast_with_discovery(
+        request(110),
+        &mut scratch,
+        &mut egress,
+        &mut discovery,
+    );
+    assert_eq!(timed_out.result, Err(ForwardError::NoRoute));
+    assert!(timed_out.discovery.is_none());
+    assert_eq!(
+        timed_out.rejection.map(|reject| reject.reason as u8),
+        Some(1)
+    );
+    assert_eq!(discovery.pending_len(), 0);
+    assert_eq!(egress.calls, 0);
+}
+
+#[test]
+fn zero_hop_discovery_attempt_is_dropped_without_action_or_refusal() {
+    let mut core = RouterCore::<2, 2>::new();
+    let mut discovery = RouteDiscovery::<1>::new(10);
+    let mut scratch = [0u8; 64];
+    let mut egress = TestEgress::default();
+    let input = [0x01, 0x20, 0x01, 0x2c, 0x01, 0x09, 0x00, 0x10];
+    let source = LinkAddress::try_from_slice(&[198, 51, 100, 7, 0xba, 0xc1]).unwrap();
+    let attempt = core.forward_unicast_with_discovery(
+        DirectForwardRequest {
+            ingress_network: NetworkNumber::new(100).unwrap(),
+            logical_source: source,
+            npdu: &input,
+            egress_capabilities: capabilities(),
+            now: 100,
+        },
+        &mut scratch,
+        &mut egress,
+        &mut discovery,
+    );
+    assert_eq!(attempt.result, Err(ForwardError::HopExhausted));
+    assert!(attempt.discovery.is_none());
+    assert!(attempt.rejection.is_none());
+    assert_eq!(discovery.pending_len(), 0);
+    assert_eq!(egress.calls, 0);
 }

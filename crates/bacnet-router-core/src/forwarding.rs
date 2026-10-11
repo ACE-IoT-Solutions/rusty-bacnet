@@ -1,10 +1,13 @@
 //! Direct-network NPDU rewrite and synchronous egress admission.
 
+mod discovery;
 mod npdu;
 mod rejection;
 
-use npdu::ParsedNpdu;
+use discovery::DiscoveryDecision;
 #[allow(unused_imports)]
+pub use discovery::{DiscoveryAction, DiscoveryRequest, RouteDiscovery};
+use npdu::ParsedNpdu;
 pub use rejection::{ForwardAttempt, ForwardRejectReason, RefusalSource, RejectMessage};
 
 use crate::{
@@ -99,6 +102,19 @@ pub struct DirectForwardRequest<'a> {
     pub egress_capabilities: PortCapabilities,
     /// Caller monotonic timestamp.
     pub now: u64,
+}
+
+/// Forwarding result with caller-owned route-discovery state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForwardDiscoveryAttempt {
+    /// Ordinary forwarding result. Unknown routes remain visible as
+    /// [`ForwardError::NoRoute`] or [`ForwardError::NoDirectRoute`].
+    pub result: Result<ForwardOutcome, ForwardError>,
+    /// Who-Is-Router, pending, or bounded-capacity action for the caller.
+    pub discovery: Option<DiscoveryAction>,
+    /// Source-aware refusal, available only after discovery timed out (or for
+    /// errors that do not require route discovery).
+    pub rejection: Option<RejectMessage>,
 }
 
 /// Portable router state for the initial direct-forwarding slice.
@@ -301,6 +317,19 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
         ForwardAttempt { result, rejection }
     }
 
+    /// Forward a direct-route request while giving an unknown network one
+    /// bounded Who-Is-Router discovery opportunity before refusing it.
+    pub fn forward_direct_with_discovery<const CAPACITY: usize>(
+        &mut self,
+        request: DirectForwardRequest<'_>,
+        scratch: &mut [u8],
+        egress: &mut impl Egress,
+        discovery: &mut RouteDiscovery<CAPACITY>,
+    ) -> ForwardDiscoveryAttempt {
+        let result = self.forward_direct(request, scratch, egress);
+        self.finish_discovery(request, result, discovery, true)
+    }
+
     /// Forward a unicast NPDU through either a configured direct route or a
     /// learned next-hop route.
     ///
@@ -469,6 +498,65 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
         let result = self.forward_unicast(request, scratch, egress);
         let rejection = rejection::classify(request, &result);
         ForwardAttempt { result, rejection }
+    }
+
+    /// Forward a unicast request while discovering an unknown destination
+    /// network. The original NPDU remains caller-owned; this method only
+    /// returns a bounded action and suppresses the immediate reason-1 reject.
+    pub fn forward_unicast_with_discovery<const CAPACITY: usize>(
+        &mut self,
+        request: DirectForwardRequest<'_>,
+        scratch: &mut [u8],
+        egress: &mut impl Egress,
+        discovery: &mut RouteDiscovery<CAPACITY>,
+    ) -> ForwardDiscoveryAttempt {
+        let result = self.forward_unicast(request, scratch, egress);
+        self.finish_discovery(request, result, discovery, false)
+    }
+
+    fn finish_discovery<const CAPACITY: usize>(
+        &self,
+        request: DirectForwardRequest<'_>,
+        result: Result<ForwardOutcome, ForwardError>,
+        discovery: &mut RouteDiscovery<CAPACITY>,
+        direct: bool,
+    ) -> ForwardDiscoveryAttempt {
+        let unknown_route = if direct {
+            matches!(result, Err(ForwardError::NoDirectRoute))
+        } else {
+            matches!(result, Err(ForwardError::NoRoute))
+        };
+        if !unknown_route {
+            let rejection = rejection::classify(request, &result);
+            return ForwardDiscoveryAttempt {
+                result,
+                discovery: None,
+                rejection,
+            };
+        }
+
+        let Some(network) = ParsedNpdu::decode_for_refusal(request.npdu)
+            .ok()
+            .and_then(|parsed| NetworkNumber::new(parsed.destination_network).ok())
+        else {
+            return ForwardDiscoveryAttempt {
+                result,
+                discovery: None,
+                rejection: None,
+            };
+        };
+        match discovery.begin(network, request.now) {
+            DiscoveryDecision::Action(action) => ForwardDiscoveryAttempt {
+                result,
+                discovery: Some(action),
+                rejection: None,
+            },
+            DiscoveryDecision::TimedOut => ForwardDiscoveryAttempt {
+                result,
+                discovery: None,
+                rejection: rejection::classify(request, &result),
+            },
+        }
     }
 }
 

@@ -157,7 +157,9 @@ pub(super) fn classify(
             ForwardRejectReason::MessageTooLong,
             parsed.destination_network,
         ),
-        Err(ForwardError::HopExhausted) => (ForwardRejectReason::Other, parsed.destination_network),
+        // A zero-hop NPDU is consumed as a forwarding-loop drop. BACnet does
+        // not permit a router to amplify it with a second network message.
+        Err(ForwardError::HopExhausted) => return None,
         Err(
             ForwardError::Truncated
             | ForwardError::UnsupportedVersion(_)

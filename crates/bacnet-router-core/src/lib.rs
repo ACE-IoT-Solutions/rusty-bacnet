@@ -27,8 +27,9 @@ pub use broadcast::{
 };
 pub use duplicate::{DuplicateCache, DuplicateCacheStats, DuplicateKey, DuplicateOutcome};
 pub use forwarding::{
-    DirectForwardRequest, ForwardAttempt, ForwardError, ForwardOutcome, ForwardRejectReason,
-    RefusalSource, RejectMessage, RouterCore,
+    DirectForwardRequest, DiscoveryAction, DiscoveryRequest, ForwardAttempt,
+    ForwardDiscoveryAttempt, ForwardError, ForwardOutcome, ForwardRejectReason, RefusalSource,
+    RejectMessage, RouteDiscovery, RouterCore,
 };
 pub use operational::{
     DiagnosticCounters, DiagnosticEvent, InvalidState, OccupancySnapshot, OperationalControl,
