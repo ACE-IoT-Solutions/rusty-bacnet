@@ -143,10 +143,12 @@ fn initialize_routing_table_is_validated_before_exposure() {
 #[test]
 fn initialize_request_query_and_ack_zero_entry_forms_are_distinct() {
     assert_eq!(
-        decode_control(INITIALIZE_ROUTING_TABLE, &[]).unwrap(),
-        NetworkControl::InitializeRoutingTable {
-            table: InitializeRoutingTable::Query,
-        }
+        decode_control(INITIALIZE_ROUTING_TABLE, &[]),
+        Err(ControlCodecError::Truncated {
+            offset: 0,
+            needed: 1,
+            actual: 0,
+        })
     );
     assert_eq!(
         decode_control(INITIALIZE_ROUTING_TABLE, &[0]).unwrap(),
@@ -154,6 +156,13 @@ fn initialize_request_query_and_ack_zero_entry_forms_are_distinct() {
             table: InitializeRoutingTable::Query,
         }
     );
+    let query = NetworkControl::InitializeRoutingTable {
+        table: InitializeRoutingTable::Query,
+    };
+    let mut encoded = [0xA5; 1];
+    assert_eq!(encoded_len(&query), Ok(1));
+    assert_eq!(encode_control(&query, &mut encoded), Ok(1));
+    assert_eq!(encoded, [0]);
     let ack = decode_control(INITIALIZE_ROUTING_TABLE_ACK, &[0]).unwrap();
     match ack {
         NetworkControl::InitializeRoutingTableAck { table } => assert_eq!(table.len(), 0),

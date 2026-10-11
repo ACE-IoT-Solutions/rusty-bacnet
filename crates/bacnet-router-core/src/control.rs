@@ -149,7 +149,7 @@ impl<'a> Iterator for RoutingTableIter<'a> {
 /// Initialize-Routing-Table request body.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitializeRoutingTable<'a> {
-    /// Query the peer's complete routing table (canonical wire form: empty).
+    /// Query the peer's complete routing table (zero Number-of-Ports octet).
     Query,
     /// Advertise these entries.
     Entries(RoutingTable<'a>),
@@ -342,15 +342,16 @@ pub fn decode_control<'a>(
         }),
         INITIALIZE_ROUTING_TABLE => {
             if payload.is_empty() {
-                return Ok(NetworkControl::InitializeRoutingTable {
-                    table: InitializeRoutingTable::Query,
+                return Err(ControlCodecError::Truncated {
+                    offset: 0,
+                    needed: 1,
+                    actual: 0,
                 });
             }
             let table = parse_routing_table(payload, message_type)?;
             Ok(NetworkControl::InitializeRoutingTable {
                 table: if table.is_empty() {
-                    // Zero entries is the alternate query spelling used by
-                    // existing hosted peers; normalize it to Query.
+                    // Zero ports is the canonical query form.
                     InitializeRoutingTable::Query
                 } else {
                     InitializeRoutingTable::Entries(table)
@@ -399,7 +400,10 @@ pub fn encode_control(
             put_u16(out, &mut offset, network.get());
         }
         NetworkControl::InitializeRoutingTable { table } => match table {
-            InitializeRoutingTable::Query => {}
+            InitializeRoutingTable::Query => {
+                out[offset] = 0;
+                offset += 1;
+            }
             InitializeRoutingTable::Entries(table) => {
                 out[offset] = table.len() as u8;
                 offset += 1;
@@ -429,7 +433,7 @@ pub fn encoded_len(control: &NetworkControl<'_>) -> Result<usize, ControlCodecEr
             Ok(3)
         }
         NetworkControl::InitializeRoutingTable { table } => Ok(match table {
-            InitializeRoutingTable::Query => 0,
+            InitializeRoutingTable::Query => 1,
             InitializeRoutingTable::Entries(table) => 1 + table.as_bytes().len(),
         }),
         NetworkControl::InitializeRoutingTableAck { table } => Ok(1 + table.as_bytes().len()),
