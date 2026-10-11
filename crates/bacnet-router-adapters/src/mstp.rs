@@ -208,7 +208,7 @@ impl<Q: QueueStorage, const NPDU: usize, const FRAME: usize> Egress
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bacnet_mstp_codec::{decode_extended_frame, decode_frame, Frame, FrameType};
+    use bacnet_mstp_codec::{Frame, FrameType, decode_extended_frame, decode_frame};
     use bacnet_mstp_core::{Action, HeaplessQueues, MasterCore, MstpCoreConfig};
 
     type Queues = HeaplessQueues<1, 1>;
@@ -238,13 +238,8 @@ mod tests {
     ) -> bacnet_mstp_core::ExtendedMasterCore<'rx, ExtendedQueues> {
         let mut config = config();
         config.station = station;
-        bacnet_mstp_core::ExtendedMasterCore::new(
-            config,
-            ExtendedQueues::new(),
-            rx,
-            Instant::ZERO,
-        )
-        .unwrap()
+        bacnet_mstp_core::ExtendedMasterCore::new(config, ExtendedQueues::new(), rx, Instant::ZERO)
+            .unwrap()
     }
 
     fn request<'a>(
