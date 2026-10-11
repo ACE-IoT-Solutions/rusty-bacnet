@@ -240,7 +240,14 @@ pub fn forward_bip_datagram_to_mstp<'a, const DIRECT: usize, const LEARNED: usiz
     scratch: &mut [u8],
     egress: &mut impl Egress,
 ) -> Result<(BipIngressContext<'a>, ForwardOutcome), CompositionError> {
-    if egress_capabilities.kind != bacnet_router_core::PortKind::MstpStandard {
+    // Keep this boundary open to the router-core's future extended MS/TP
+    // profile while rejecting B/IP and opaque application links.  The
+    // concrete `MstpEgress` still applies its own profile ceiling and
+    // fail-closed peer-capability policy before queue mutation.
+    if matches!(
+        egress_capabilities.kind,
+        bacnet_router_core::PortKind::Bip | bacnet_router_core::PortKind::Other
+    ) {
         return Err(CompositionError::InvalidBipPort);
     }
     let context =
