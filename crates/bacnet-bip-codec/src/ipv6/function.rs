@@ -50,7 +50,9 @@ named_codes! {
 
     /// The request succeeded.
     const SUCCESSFUL_COMPLETION = 0x0000;
-    /// A BBMD could not pass on a foreign device's Address-Resolution.
+    /// A BBMD refused an Address-Resolution sent to it: the sender is not
+    /// one of its registered foreign devices, or the BBMD could not pass the
+    /// request on (U.4.4).
     const ADDRESS_RESOLUTION_NAK = 0x0030;
     /// A Virtual-Address-Resolution failed.
     const VIRTUAL_ADDRESS_RESOLUTION_NAK = 0x0060;
@@ -128,10 +130,13 @@ impl Bvlc6Function {
     /// registration, FDT entry deletion and broadcast distribution. `None`
     /// for every other code.
     ///
-    /// Annex U says when to send three of them: a device that is not a BBMD
+    /// Annex U says when to send four of them. A device that is not a BBMD
     /// answers the last three with their NAKs (U.4.4, U.4.5.3, U.4.5.4), and
-    /// so does a BBMD that can't carry them out. A BBMD also NAKs a foreign
-    /// device's Address-Resolution it can't pass on (U.4.4). A
+    /// so does a BBMD that can't carry them out. A BBMD answers an
+    /// Address-Resolution sent to it with its NAK when the sender is not a
+    /// registered foreign device, or when the BBMD can't pass the request on
+    /// (U.4.4); a broadcast distribution from a node that isn't a registered
+    /// foreign device gets its NAK the same way. A
     /// Forwarded-Address-Resolution is never answered with a BVLC-Result.
     pub const fn nak(self) -> Option<Bvlc6ResultCode> {
         Some(match self {

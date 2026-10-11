@@ -1,7 +1,7 @@
 //! B/IPv6 BVLL frames and messages: one-shot decode, and checked encode.
 
 use super::{Bip6Address, Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6Error, BVLC_TYPE_BIP6};
-use crate::{BvllSink, HEADER_LENGTH, MAX_BVLL_LENGTH};
+use crate::{BvllSink, PayloadShape, HEADER_LENGTH, MAX_BVLL_LENGTH};
 
 /// A B/IPv6 BVLL message whose header checks out, before its payload is
 /// read.
@@ -359,9 +359,11 @@ impl<'a> Bvll6<'a> {
         }
     }
 
-    /// The VMAC every message starts with: the sender's, or for a
-    /// Forwarded-NPDU, a Forwarded-Address-Resolution or a
-    /// Distribute-Broadcast-To-Network, the originating node's.
+    /// The VMAC every message starts with: the sender's, except in the two
+    /// messages a BBMD relays (Forwarded-NPDU and
+    /// Forwarded-Address-Resolution), where it is the originating node's.
+    /// Distribute-Broadcast-To-Network calls its VMAC the original source,
+    /// but the foreign device that sends one is that source.
     pub const fn source_vmac(&self) -> Bip6Vmac {
         match *self {
             Self::BvlcResult { source, .. }
@@ -425,20 +427,20 @@ impl<'a> Bvll6<'a> {
         }
     }
 
-    /// Octets after the header.
+    /// Octets after the header: the fixed fields
+    /// [`Bvlc6Function::payload_shape`] gives the function, then the NPDU of
+    /// the four functions that carry one.
     const fn payload_length(&self) -> usize {
-        match self {
-            Self::VirtualAddressResolution { .. } => 3,
-            Self::BvlcResult { .. } | Self::RegisterForeignDevice { .. } => 5,
-            Self::AddressResolution { .. }
-            | Self::AddressResolutionAck { .. }
-            | Self::VirtualAddressResolutionAck { .. } => 6,
-            Self::DeleteForeignDeviceTableEntry { .. } => 21,
-            Self::ForwardedAddressResolution { .. } => 24,
-            Self::OriginalBroadcastNpdu { npdu, .. }
-            | Self::DistributeBroadcastToNetwork { npdu, .. } => 3 + npdu.len(),
-            Self::OriginalUnicastNpdu { npdu, .. } => 6 + npdu.len(),
-            Self::ForwardedNpdu { npdu, .. } => 21 + npdu.len(),
+        let fixed = match self.function().payload_shape() {
+            Some(PayloadShape::Fixed(length) | PayloadShape::Npdu { prefix: length }) => length,
+            // Unreachable: every variant's function is one Annex U defines,
+            // and no B/IPv6 message carries a table. The golden vectors
+            // check every variant's encoded length.
+            Some(PayloadShape::Table { .. }) | None => 0,
+        };
+        match self.npdu() {
+            Some(npdu) => fixed + npdu.len(),
+            None => fixed,
         }
     }
 

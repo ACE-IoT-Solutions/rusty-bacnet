@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords = ["bacnet", "bip", "bvll", "embedded", "no-std"]
+keywords = ["bacnet", "bip", "bvll", "ipv6", "no-std"]
 categories = ["embedded", "network-programming", "no-std"]
 
 # No feature needs std: each one only adds a BvllSink impl.

@@ -123,7 +123,8 @@ pub(super) fn original_destination_matches(
                 && os_group_delivery != Some(false)
         }
         // Forwarded-Address-Resolution is not implemented. Drop it before
-        // learning or any other state mutation.
+        // learning or any other state mutation. Answering one whose target
+        // is this node's VMAC is #1632.
         Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION => false,
         _ => true,
     }

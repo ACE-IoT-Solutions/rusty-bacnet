@@ -4,7 +4,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{
     address_from_slice, decode, BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode, Bvll,
-    BvllError, BvllFrame, BvllSink, FdtEntries, PayloadShape, MAX_BVLL_LENGTH,
+    BvllError, BvllFrame, BvllSink, FdtEntries, PayloadShape, SinkFull, MAX_BVLL_LENGTH,
 };
 
 /// A header with `function` and a Length field counting `payload`, then the
@@ -239,6 +239,53 @@ fn a_fixed_sink_too_small_is_left_untouched() {
     assert_eq!(message.encode_to_sink(&mut sink), Ok(8));
     assert_eq!(sink.len(), 2);
     assert_eq!(BvllSink::remaining_capacity(&sink), Some(2));
+}
+
+/// A sink that takes the header and then refuses: the encoder reports its
+/// refusal as `BufferExhausted`.
+#[test]
+fn a_sink_that_refuses_mid_message() {
+    struct Refuses(usize);
+    impl BvllSink for Refuses {
+        fn remaining_capacity(&self) -> Option<usize> {
+            None
+        }
+        fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
+            if self.0 == 0 {
+                return Err(SinkFull {
+                    needed: bytes.len(),
+                    available: 0,
+                });
+            }
+            self.0 -= 1;
+            Ok(())
+        }
+    }
+    let message = Bvll::ForwardedNpdu {
+        origin: SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 9), 47808),
+        npdu: &[0x01, 0x00],
+    };
+    // The header goes through; the 6-octet origin is refused.
+    assert_eq!(
+        message.encode_to_sink(&mut Refuses(1)),
+        Err(BvllError::BufferExhausted {
+            needed: 6,
+            available: 0
+        })
+    );
+    // A table is refused row by row: the first 10-octet entry.
+    let rows = [BdtEntry::new(
+        SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 9), 47808),
+        Ipv4Addr::BROADCAST,
+    )];
+    let table = Bvll::ReadBroadcastDistributionTableAck(BdtEntries::from_entries(&rows));
+    assert_eq!(
+        table.encode_to_sink(&mut Refuses(1)),
+        Err(BvllError::BufferExhausted {
+            needed: 10,
+            available: 0
+        })
+    );
 }
 
 #[cfg(feature = "heapless")]

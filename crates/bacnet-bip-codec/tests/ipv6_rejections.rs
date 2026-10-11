@@ -355,7 +355,10 @@ fn bytes_sink_grows() {
 #[test]
 fn errors_display_their_fields() {
     let cases = [
-        (Bvll6Error::TooShort { length: 2 }, "2 octets"),
+        (
+            Bvll6Error::TooShort { length: 2 },
+            "BVLC6 datagram too short: 2 octets",
+        ),
         (Bvll6Error::NotBip6 { bvlc_type: 0x81 }, "0x81"),
         (
             Bvll6Error::LengthMismatch {
@@ -364,7 +367,10 @@ fn errors_display_their_fields() {
             },
             "length 7",
         ),
-        (Bvll6Error::UnknownFunction { function: 0x0B }, "0x0B"),
+        (
+            Bvll6Error::UnknownFunction { function: 0x0B },
+            "unknown BVLC6 function 0x0B",
+        ),
         (
             Bvll6Error::PayloadLength {
                 function: Bvlc6Function::REGISTER_FOREIGN_DEVICE,
@@ -373,7 +379,10 @@ fn errors_display_their_fields() {
             "REGISTER_FOREIGN_DEVICE cannot carry a 4-octet payload",
         ),
         (Bvll6Error::AddressLength { length: 6 }, "18 octets, got 6"),
-        (Bvll6Error::TooLong { length: 65536 }, "65536"),
+        (
+            Bvll6Error::TooLong { length: 65536 },
+            "BVLC6 message of 65536 octets exceeds the 16-bit BVLC6 length field",
+        ),
         (Bvll6Error::UndefinedResultCode { code: 0x10 }, "0x0010"),
         (
             Bvll6Error::BufferExhausted {

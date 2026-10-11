@@ -77,7 +77,7 @@ impl fmt::Display for Bvll6Error {
         match self {
             Self::TooShort { length } => write!(
                 f,
-                "BVLL6 datagram too short: {length} octets, header needs 4"
+                "BVLC6 datagram too short: {length} octets, header needs 4"
             ),
             Self::NotBip6 { bvlc_type } => {
                 write!(f, "BVLC type {bvlc_type:#04X} is not B/IPv6 (0x82)")
@@ -97,7 +97,7 @@ impl fmt::Display for Bvll6Error {
             }
             Self::TooLong { length } => write!(
                 f,
-                "BVLL6 message of {length} octets exceeds the 16-bit BVLC length field"
+                "BVLC6 message of {length} octets exceeds the 16-bit BVLC6 length field"
             ),
             Self::UndefinedResultCode { code } => {
                 write!(f, "BVLC6 result code {code:#06X} is not defined")

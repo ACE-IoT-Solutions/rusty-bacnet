@@ -314,6 +314,9 @@ impl Receiver {
                 }
             }
 
+            // A node that isn't a BBMD should NAK a registration, an FDT
+            // entry deletion or a broadcast distribution; here they go
+            // unanswered: #1632.
             _ => {
                 debug!(function = ?message.function(), "Unhandled BVLC6 function");
             }

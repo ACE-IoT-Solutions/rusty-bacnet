@@ -288,7 +288,7 @@ fn decode_forwarded_npdu_extracts_npdu() {
 /// with a 0- or 1-octet NPDU decodes, and the receive path drops it
 /// (`group_delivery_tests::a_forwarded_npdu_too_short_for_an_npdu_is_dropped_uncounted`).
 #[test]
-fn decode_forwarded_npdu_rejects_short_payload() {
+fn decode_forwarded_npdu_needs_a_whole_address() {
     assert!(decode_bvll6(&forwarded_payload(&[0x01; 17])).is_err());
     assert!(decode_bvll6(&forwarded_payload(&[])).is_err());
     for npdu in [0, 1] {
@@ -318,7 +318,7 @@ fn forwarded_npdu_encode_decode_round_trip() {
     assert_eq!(frame.npdu(), Some(&npdu[..]));
 }
 
-/// The transport's function codes are the codec's: Annex U's twelve, with
+/// The function codes the transport re-exports name Annex U's twelve, with
 /// the deleted 0x0B unknown and 0x0C Distribute-Broadcast-To-Network.
 #[test]
 fn bvlc6_function_codes_are_the_codecs() {
@@ -339,10 +339,6 @@ fn bvlc6_function_codes_are_the_codecs() {
     for &(byte, name) in expected {
         let function = Bvlc6Function::from_raw(byte);
         assert_eq!(function.name(), Some(name), "0x{byte:02X}");
-        assert_eq!(
-            function,
-            bacnet_bip_codec::ipv6::Bvlc6Function::from_raw(byte)
-        );
     }
 
     // Verify 0x0C is Distribute-Broadcast-To-Network (not the old SECURE_BVLL)

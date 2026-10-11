@@ -35,9 +35,10 @@
 //!
 //! # Addresses
 //!
-//! Every B/IPv6 message starts its payload with a VMAC: the sender's, or
-//! for the three messages a BBMD relays, the originating node's
-//! ([`Bvll6::source_vmac`]). A [`Bip6Address`] holds the IPv6 address and
+//! Every B/IPv6 message starts its payload with a VMAC
+//! ([`Bvll6::source_vmac`]): the sender's, except in the two messages a
+//! BBMD relays, Forwarded-NPDU and Forwarded-Address-Resolution, where it is
+//! the originating node's. A [`Bip6Address`] holds the IPv6 address and
 //! UDP port that travel, and nothing else: a socket address's flow label
 //! and scope ID never cross the wire, so a receiver decides a link-local
 //! address's scope itself.
