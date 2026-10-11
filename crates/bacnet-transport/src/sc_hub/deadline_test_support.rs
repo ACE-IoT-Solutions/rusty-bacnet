@@ -44,71 +44,6 @@ pub(super) async fn until(predicate: impl Fn() -> bool) {
     .await;
 }
 
-/// How many times a fixture's connect may run before a local port collision
-/// fails it.
-const CONNECT_ATTEMPTS: usize = 5;
-
-/// The real time a fixture waits after a local port collision.
-const CONNECT_PAUSE: Duration = Duration::from_millis(50);
-
-/// Opens a fixture's outbound loopback TCP connection. The SC hub test
-/// support dials through here: [`TestTls::websocket`] and the heartbeat
-/// fixtures' `LiveClient::open` (#1629).
-///
-/// The OS picks the connection's source port. After many short-lived loopback
-/// connections the port it picks can still be in use, and Windows then fails
-/// the connect with `WSAEADDRINUSE`; on Linux and macOS a host out of
-/// ephemeral ports fails it with `AddrNotAvailable`. Neither says anything
-/// about the listener, so the connect runs again on a new socket, up to
-/// [`CONNECT_ATTEMPTS`] times. Any other error fails at once.
-pub(super) async fn connect_loopback(address: SocketAddr) -> tokio::net::TcpStream {
-    match retry_local_port(|| tokio::net::TcpStream::connect(address)).await {
-        Ok(tcp) => tcp,
-        Err(err) if local_port_collision(&err) => panic!(
-            "no free local port to connect to {address} in {CONNECT_ATTEMPTS} attempts: {err}"
-        ),
-        Err(err) => panic!("connect to {address} failed: {err}"),
-    }
-}
-
-/// Whether a connect failed at its own end: the source port the OS gave it
-/// was taken, or there was none to give. A connect's errors all come from the
-/// OS, so the kind is enough.
-fn local_port_collision(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::AddrInUse | std::io::ErrorKind::AddrNotAvailable
-    )
-}
-
-/// Runs `dial` again while it fails with a local port collision, up to
-/// [`CONNECT_ATTEMPTS`] runs, and returns the last run's result.
-///
-/// The pause between runs is a thread sleep on Tokio's blocking pool. Many
-/// callers run on a paused clock, some inside [`poll_io`], whose yields keep
-/// that clock from auto-advancing. A Tokio `sleep` would never end there, and
-/// elsewhere its auto-advance would move the clock past hub deadlines a test
-/// pins to the millisecond. Tokio holds a paused clock still while a
-/// `spawn_blocking` task runs (see `tokio::time::pause`), so the pause is real
-/// time on either clock, and it leaves the runtime's thread free.
-async fn retry_local_port<T, F>(mut dial: impl FnMut() -> F) -> std::io::Result<T>
-where
-    F: std::future::Future<Output = std::io::Result<T>>,
-{
-    let mut attempt = 1;
-    loop {
-        match dial().await {
-            Err(err) if attempt < CONNECT_ATTEMPTS && local_port_collision(&err) => {
-                attempt += 1;
-                tokio::task::spawn_blocking(|| std::thread::sleep(CONNECT_PAUSE))
-                    .await
-                    .unwrap();
-            }
-            result => return result,
-        }
-    }
-}
-
 /// Binds the address a stopped hub listened on, the tests' proof that the hub
 /// closed its listener. The port is free in between, so another process can
 /// take it first (#1095). `None` means one did, and the test goes again from
@@ -245,7 +180,7 @@ impl TestTls {
         &self,
         address: SocketAddr,
     ) -> WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>> {
-        let tcp = connect_loopback(address).await;
+        let tcp = crate::port_ownership::connect_loopback(address).await;
         let tls = boxed(|| self.connect_tls(tcp)).await;
         let request = tokio_tungstenite::tungstenite::client::ClientRequestBuilder::new(
             format!("wss://localhost:{}", address.port())
@@ -363,93 +298,3 @@ pub(super) fn reserve_descriptors(needed: libc::rlim_t) {
 
 #[cfg(not(unix))]
 pub(super) fn reserve_descriptors(_needed: u64) {}
-
-mod connect_loopback_tests {
-    use super::{local_port_collision, retry_local_port, CONNECT_ATTEMPTS};
-    use std::io::{Error, ErrorKind};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// OS error codes, each with whether it is a local port collision:
-    /// WSAEADDRINUSE (the code #1629 reported), WSAEADDRNOTAVAIL,
-    /// WSAECONNREFUSED and WSAECONNRESET.
-    #[cfg(windows)]
-    const OS_CODES: [(i32, bool); 4] =
-        [(10048, true), (10049, true), (10061, false), (10054, false)];
-
-    /// OS error codes, each with whether it is a local port collision.
-    #[cfg(unix)]
-    const OS_CODES: [(i32, bool); 4] = [
-        (libc::EADDRINUSE, true),
-        (libc::EADDRNOTAVAIL, true),
-        (libc::ECONNREFUSED, false),
-        (libc::ECONNRESET, false),
-    ];
-
-    /// Runs a dial through the retry, its first runs failing with `errors` in
-    /// turn and the rest connecting. Returns how many runs there were and the
-    /// result.
-    async fn dial(errors: &[ErrorKind]) -> (usize, std::io::Result<()>) {
-        let runs = AtomicUsize::new(0);
-        let result = retry_local_port(|| {
-            let outcome = match errors.get(runs.fetch_add(1, Ordering::Relaxed)) {
-                Some(&kind) => Err(Error::from(kind)),
-                None => Ok(()),
-            };
-            async move { outcome }
-        })
-        .await;
-        (runs.into_inner(), result)
-    }
-
-    #[test]
-    fn only_the_address_in_use_family_is_a_local_port_collision() {
-        for (code, collision) in OS_CODES {
-            let err = Error::from_raw_os_error(code);
-            assert_eq!(local_port_collision(&err), collision, "{err:?}");
-        }
-        for kind in [
-            ErrorKind::ConnectionRefused,
-            ErrorKind::ConnectionReset,
-            ErrorKind::ConnectionAborted,
-            ErrorKind::TimedOut,
-            ErrorKind::PermissionDenied,
-            ErrorKind::Other,
-        ] {
-            assert!(!local_port_collision(&kind.into()), "{kind:?}");
-        }
-    }
-
-    /// A collision connects again and a real failure fails at once, on a
-    /// paused clock that holds still across the pauses.
-    #[tokio::test(start_paused = true)]
-    async fn a_collision_connects_again_and_a_refusal_fails_at_once() {
-        // A pending timer, standing in for a hub deadline: a pause that let
-        // the clock auto-advance would fire it.
-        let deadline = tokio::spawn(tokio::time::sleep(std::time::Duration::from_millis(1)));
-        tokio::task::yield_now().await;
-        let start = tokio::time::Instant::now();
-
-        let (runs, result) = dial(&[ErrorKind::AddrInUse, ErrorKind::AddrNotAvailable]).await;
-        assert_eq!(runs, 3);
-        result.unwrap();
-
-        let (runs, result) = dial(&[ErrorKind::ConnectionRefused]).await;
-        assert_eq!(runs, 1);
-        assert_eq!(result.unwrap_err().kind(), ErrorKind::ConnectionRefused);
-
-        let (runs, result) = dial(&[ErrorKind::AddrInUse, ErrorKind::ConnectionRefused]).await;
-        assert_eq!(runs, 2);
-        assert_eq!(result.unwrap_err().kind(), ErrorKind::ConnectionRefused);
-
-        let (runs, result) = dial(&[ErrorKind::AddrInUse; CONNECT_ATTEMPTS + 1]).await;
-        assert_eq!(runs, CONNECT_ATTEMPTS);
-        assert_eq!(result.unwrap_err().kind(), ErrorKind::AddrInUse);
-
-        assert_eq!(
-            tokio::time::Instant::now(),
-            start,
-            "a pause moved the clock"
-        );
-        assert!(!deadline.is_finished(), "a pause fired a pending timer");
-    }
-}

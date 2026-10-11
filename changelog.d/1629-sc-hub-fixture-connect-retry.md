@@ -1,6 +1,6 @@
 ---
 section: Changed
 ---
-- Test-only: the SC hub test fixtures connect again when the OS hands an
-  outbound loopback connect a source port that is still in use, as Windows CI
-  did, instead of failing the test (#1629).
+- Test-only: the BACnet/SC hub and TLS tests connect again when the OS hands
+  an outbound loopback connect a source port that is still in use, as it did
+  on Windows CI, instead of failing (#1629).
