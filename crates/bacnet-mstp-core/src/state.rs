@@ -72,7 +72,9 @@ pub enum CoreError {
     Config(ConfigError),
     /// The caller supplied a timestamp older than the previous event.
     ClockRegression {
+        /// Last accepted timestamp.
         previous: Instant,
+        /// Rejected timestamp.
         supplied: Instant,
     },
     /// The bounded control-action ring could not accept protocol work.
@@ -85,18 +87,25 @@ pub enum CoreError {
     StaleRequest,
     /// The request's reply-delay deadline has already arrived.
     RequestExpired,
+    /// A reply NPDU was larger than the active storage profile.
     ReplyOversize {
+        /// Supplied reply length.
         length: usize,
+        /// Maximum reply length for this profile.
         maximum: usize,
     },
     /// An Extended DER/DNER frame was supplied to a standard-profile core.
     ExtendedFrameUnsupported {
+        /// Supplied extended-frame payload length.
         length: usize,
+        /// Maximum payload length accepted by this profile.
         maximum: usize,
     },
     /// An NPDU was larger than the active storage profile.
     NpduOversize {
+        /// Supplied NPDU length.
         length: usize,
+        /// Maximum NPDU length for this profile.
         maximum: usize,
     },
     /// The transmit identifier is stale or does not match the active transfer.

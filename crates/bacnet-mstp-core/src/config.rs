@@ -14,60 +14,131 @@ pub enum ConfigError {
     /// A derived timing calculation overflowed the microsecond representation.
     TimingOverflow,
     /// Clause 9 fixes Npoll at 50 token uses.
-    InvalidPollCount { value: u8 },
+    InvalidPollCount {
+        /// Supplied Npoll value.
+        value: u8,
+    },
     /// Clause 9 fixes Nretry_token at one retry.
-    InvalidTokenRetryCount { value: u8 },
+    InvalidTokenRetryCount {
+        /// Supplied Nretry_token value.
+        value: u8,
+    },
     /// Clause 9 fixes Nmin_octets at four octets.
-    InvalidMinimumOctets { value: u8 },
+    InvalidMinimumOctets {
+        /// Supplied Nmin_octets value.
+        value: u8,
+    },
     /// Max_Master is a seven-bit station address.
-    MaxMasterOutOfRange { value: u8 },
+    MaxMasterOutOfRange {
+        /// Supplied Max_Master value.
+        value: u8,
+    },
     /// This station cannot be beyond Max_Master.
-    StationExceedsMaxMaster { station: u8, max_master: u8 },
+    StationExceedsMaxMaster {
+        /// Configured station address.
+        station: u8,
+        /// Configured Max_Master address.
+        max_master: u8,
+    },
     /// Max_Info_Frames must be in the inclusive 1..=255 range.
-    MaxInfoFramesOutOfRange { value: u8 },
+    MaxInfoFramesOutOfRange {
+        /// Supplied Max_Info_Frames value.
+        value: u8,
+    },
     /// T_frame_abort is outside the 60-bit-time through 100 ms range.
     FrameAbortOutOfRange {
+        /// Configured T_frame_abort value.
         value: Duration,
+        /// Minimum permitted T_frame_abort value.
         minimum: Duration,
+        /// Maximum permitted T_frame_abort value.
         maximum: Duration,
     },
     /// T_frame_gap is longer than 20 bit times.
-    FrameGapTooLong { value: Duration, maximum: Duration },
+    FrameGapTooLong {
+        /// Configured T_frame_gap value.
+        value: Duration,
+        /// Maximum permitted T_frame_gap value.
+        maximum: Duration,
+    },
     /// T_postdrive is longer than 15 bit times.
-    PostdriveTooLong { value: Duration, maximum: Duration },
+    PostdriveTooLong {
+        /// Configured T_postdrive value.
+        value: Duration,
+        /// Maximum permitted T_postdrive value.
+        maximum: Duration,
+    },
     /// T_no_token is the fixed 500 ms lost-token deadline.
-    InvalidNoToken { value: Duration },
+    InvalidNoToken {
+        /// Configured T_no_token value.
+        value: Duration,
+    },
     /// T_reply_delay cannot exceed 250 ms.
-    ReplyDelayTooLong { value: Duration, maximum: Duration },
+    ReplyDelayTooLong {
+        /// Configured T_reply_delay value.
+        value: Duration,
+        /// Maximum permitted T_reply_delay value.
+        maximum: Duration,
+    },
     /// T_reply_timeout must be between 255 and 300 ms.
     ReplyTimeoutOutOfRange {
+        /// Configured T_reply_timeout value.
         value: Duration,
+        /// Minimum permitted T_reply_timeout value.
         minimum: Duration,
+        /// Maximum permitted T_reply_timeout value.
         maximum: Duration,
     },
     /// T_slot is the ten-millisecond maintenance slot.
-    InvalidSlot { value: Duration },
+    InvalidSlot {
+        /// Configured T_slot value.
+        value: Duration,
+    },
     /// T_turnaround must cover at least 40 bit times.
-    TurnaroundTooShort { value: Duration, minimum: Duration },
+    TurnaroundTooShort {
+        /// Configured T_turnaround value.
+        value: Duration,
+        /// Minimum permitted T_turnaround value.
+        minimum: Duration,
+    },
     /// T_turnaround cannot exceed the maximum T_usage_delay response window.
     TurnaroundExceedsUsageDelay {
+        /// Configured T_turnaround value.
         turnaround: Duration,
+        /// Configured T_usage_delay value.
         usage_delay: Duration,
     },
     /// T_usage_delay cannot exceed 15 ms.
-    UsageDelayTooLong { value: Duration, maximum: Duration },
+    UsageDelayTooLong {
+        /// Configured T_usage_delay value.
+        value: Duration,
+        /// Maximum permitted T_usage_delay value.
+        maximum: Duration,
+    },
     /// T_usage_timeout must be between 20 and 35 ms.
     UsageTimeoutOutOfRange {
+        /// Configured T_usage_timeout value.
         value: Duration,
+        /// Minimum permitted T_usage_timeout value.
         minimum: Duration,
+        /// Maximum permitted T_usage_timeout value.
         maximum: Duration,
     },
     /// A local queue age or watchdog of zero would disable the safety bound.
-    ZeroLocalDuration { field: LocalDurationField },
+    ZeroLocalDuration {
+        /// Local duration setting that was zero.
+        field: LocalDurationField,
+    },
     /// A local scheduling ratio or starvation limit of zero is invalid.
-    ZeroLocalLimit { field: LocalLimitField },
+    ZeroLocalLimit {
+        /// Local limit setting that was zero.
+        field: LocalLimitField,
+    },
     /// Multiple-frame ratio is a percentage and cannot exceed 100.
-    MultipleFrameRatioOutOfRange { value: u8 },
+    MultipleFrameRatioOutOfRange {
+        /// Supplied percentage value.
+        value: u8,
+    },
 }
 
 /// Names of local duration settings used by [`ConfigError::ZeroLocalDuration`].
@@ -369,19 +440,17 @@ fn floor_bit_times(baud_rate: u32, bits: u64) -> Result<Duration, ConfigError> {
 const fn ceil_bit_times_const(baud_rate: u32, bits: u64) -> Duration {
     let numerator = bits * 1_000_000;
     let baud = baud_rate as u64;
-    if baud == 0 {
-        Duration::MAX
-    } else {
-        Duration::from_micros((numerator + baud - 1) / baud)
+    match baud {
+        0 => Duration::MAX,
+        _ => Duration::from_micros(numerator.div_ceil(baud)),
     }
 }
 
 const fn floor_bit_times_const(baud_rate: u32, bits: u64) -> Duration {
     let baud = baud_rate as u64;
-    if baud == 0 {
-        Duration::MAX
-    } else {
-        Duration::from_micros((bits * 1_000_000) / baud)
+    match baud {
+        0 => Duration::MAX,
+        _ => Duration::from_micros((bits * 1_000_000) / baud),
     }
 }
 
@@ -402,8 +471,10 @@ mod tests {
 
     #[test]
     fn validation_rejects_zero_baud_and_bad_addresses() {
-        let mut config = MstpCoreConfig::default();
-        config.baud_rate = 0;
+        let mut config = MstpCoreConfig {
+            baud_rate: 0,
+            ..MstpCoreConfig::default()
+        };
         assert_eq!(config.validate(), Err(ConfigError::ZeroBaudRate));
 
         config = MstpCoreConfig::default();
@@ -417,8 +488,10 @@ mod tests {
 
     #[test]
     fn validation_enforces_bit_time_edges_without_overflow() {
-        let mut config = MstpCoreConfig::default();
-        config.t_frame_abort = Duration::from_millis(1);
+        let mut config = MstpCoreConfig {
+            t_frame_abort: Duration::from_millis(1),
+            ..MstpCoreConfig::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::FrameAbortOutOfRange { .. })
@@ -441,8 +514,10 @@ mod tests {
 
     #[test]
     fn validation_rejects_infeasible_response_and_ratio_policies() {
-        let mut config = MstpCoreConfig::default();
-        config.t_turnaround = Duration::from_millis(16);
+        let mut config = MstpCoreConfig {
+            t_turnaround: Duration::from_millis(16),
+            ..MstpCoreConfig::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::TurnaroundExceedsUsageDelay { .. })

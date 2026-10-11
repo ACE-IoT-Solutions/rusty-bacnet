@@ -49,8 +49,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
                 self.config.station,
                 data.len(),
             );
-            let length = bacnet_mstp_codec::encode_extended_into(&mut encoded, &header, data)?;
-            length
+            bacnet_mstp_codec::encode_extended_into(&mut encoded, &header, data)?
         } else {
             let length = Frame::new(frame_type, destination, self.config.station, data)
                 .encode_into(&mut encoded)?;
