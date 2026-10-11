@@ -1,0 +1,48 @@
+[package]
+name = "firmware-link"
+description = "No-allocator firmware link test and size budget for the MS/TP and B/IP stacks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# The lib holds one scenario per stack, which the host tests run and the
+# images link. Each bin is an image on a bare-metal target, and a stub on a
+# host.
+[lib]
+test = false
+doctest = false
+
+[[bin]]
+name = "mstp"
+path = "src/bin/mstp.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "bip"
+path = "src/bin/bip.rs"
+test = false
+bench = false
+
+# Default features, so no allocator, plus each crate's heapless storage: the
+# core's queues and the BVLL codec's sink.
+[dependencies]
+bacnet-mstp-codec = { workspace = true }
+bacnet-mstp-core = { workspace = true, features = ["heapless"] }
+bacnet-bip-codec = { workspace = true, features = ["heapless"] }
+heapless = { workspace = true }
+
+# The runtimes only on bare-metal targets, so a host build pulls in neither.
+[target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
+cortex-m-rt = { workspace = true }
+
+# single-hart: the images target parts with one hart, so the startup code
+# can drop its multi-hart gate; memory: its link.x includes memory.x, as
+# cortex-m-rt's does.
+[target.'cfg(all(target_arch = "riscv32", target_os = "none"))'.dependencies]
+riscv-rt = { workspace = true, features = ["single-hart", "memory"] }
+
+[lints]
+workspace = true

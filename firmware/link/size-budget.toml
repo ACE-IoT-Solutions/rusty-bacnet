@@ -1,0 +1,87 @@
+# Size budget for the firmware link test's images (#1626), in octets: one
+# table per target and image, `[<target>.<image>]`.
+# scripts/ci/check-firmware-link.sh builds the images with the `firmware`
+# profile and fails when a size outgrows its budget, or when more core::fmt
+# functions are linked in than `fmt_functions` allows.
+#
+# - text, rodata, data, bss: those sections.
+# - flash: every loaded section with contents, .data's initial image
+#   included (on Cortex-M, also the 1 KB or 192 B vector table).
+# - ram: every loaded writable section; riscv-rt's .stack, which fills
+#   whatever RAM is left, doesn't count, but its .heap (`_heap_size`, 0
+#   here) does. The stack the code uses at run time isn't measured.
+#
+# The totals go by section flags, not memory regions, and leave out the
+# alignment gaps between sections (at most 4 octets of flash per image today).
+#
+# Each budget is the size measured when it was set plus 12%, rounded up to
+# 16 octets: what `check-firmware-link.sh --suggest` prints. .data is empty,
+# so it gets a token 64 octets: a static with a nonzero initial value lands
+# there, and costs flash for its initial image as well as RAM. Raising a
+# budget is a reviewed change: say why the image grew. Re-measure after a
+# toolchain bump. See docs/ci.md, "Firmware link test", and firmware_size.py
+# for the syntax this file may use.
+#
+# Measured 2026-10-11 with Rust 1.99.0, as text / rodata / data / bss, then
+# flash / ram:
+#
+#   thumbv7m mstp     18304 / 1004 / 0 / 14504   20332 / 14504
+#   thumbv7m bip       4952 /  392 / 0 /   132    6368 /   132
+#   thumbv6m mstp     19012 / 1004 / 0 / 14504   20208 / 14504
+#   thumbv6m bip       5740 /  392 / 0 /   132    6324 /   132
+#   riscv32imc mstp   19704 / 1292 / 0 / 14502   21018 / 14502
+#   riscv32imc bip     6616 /  744 / 0 /   132    7382 /   132
+
+[thumbv7m-none-eabi.mstp]
+text = 20512
+rodata = 1136
+data = 64
+bss = 16256
+flash = 22784
+ram = 16256
+fmt_functions = 0
+
+[thumbv7m-none-eabi.bip]
+text = 5552
+rodata = 448
+data = 64
+bss = 160
+flash = 7136
+ram = 160
+fmt_functions = 0
+
+[thumbv6m-none-eabi.mstp]
+text = 21296
+rodata = 1136
+data = 64
+bss = 16256
+flash = 22640
+ram = 16256
+fmt_functions = 0
+
+[thumbv6m-none-eabi.bip]
+text = 6432
+rodata = 448
+data = 64
+bss = 160
+flash = 7088
+ram = 160
+fmt_functions = 0
+
+[riscv32imc-unknown-none-elf.mstp]
+text = 22080
+rodata = 1456
+data = 64
+bss = 16256
+flash = 23552
+ram = 16256
+fmt_functions = 0
+
+[riscv32imc-unknown-none-elf.bip]
+text = 7424
+rodata = 848
+data = 64
+bss = 160
+flash = 8272
+ram = 160
+fmt_functions = 0

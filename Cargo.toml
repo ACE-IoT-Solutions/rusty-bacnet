@@ -19,6 +19,9 @@ members = [
     "crates/rusty-bacnet",
     "crates/bacnet-cli",
     "benchmarks",
+    # The no-allocator firmware link test (publish = false, #1626). Its runtimes
+    # are bare-metal dependencies only; on a host its binaries are stubs.
+    "firmware/link",
     # The sample programs (publish = false), which share this Cargo.lock (#1450).
     # Listed one by one: with a glob, a leftover directory there without a
     # Cargo.toml would break every cargo command in the workspace.
@@ -30,8 +33,8 @@ members = [
 ]
 # rusty-bacnet's tests link libpython, so they need a Python with its shared library.
 # bacnet-cli has heavy deps (rustyline, clap) — excluded from default builds.
-# Use `cargo nextest run -p rusty-bacnet`. The samples are left out too:
-# `--workspace` runs build them, and `-p <sample>` picks one.
+# Use `cargo nextest run -p rusty-bacnet`. The samples and the firmware link
+# test are left out too: `--workspace` runs build them, and `-p` picks one.
 default-members = [
     "crates/bacnet-types",
     "crates/bacnet-encoding",
@@ -110,6 +113,9 @@ getrandom = "0.3"
 # 0.9.0 was yanked.
 heapless = "0.9.1"
 proptest = "1"
+# Startup code for the firmware link test's images (#1626): Cortex-M and RISC-V.
+cortex-m-rt = "0.7.7"
+riscv-rt = "0.18.0"
 
 [workspace.lints.rust]
 # Workspace floor. `bacnet-transport` overrides nothing: each FFI site
@@ -127,3 +133,13 @@ todo = "deny"
 dbg_macro = "deny"
 print_stderr = "deny"
 print_stdout = "deny"
+
+# The firmware link test's images (#1626): `cargo build -p firmware-link --target
+# <bare-metal triple> --profile firmware`. scripts/ci/check-firmware-link.sh
+# checks their sizes against firmware/link/size-budget.toml.
+[profile.firmware]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

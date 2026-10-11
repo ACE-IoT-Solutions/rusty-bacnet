@@ -23,7 +23,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
 | Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins) | ✓ | ✓ | ✓ | ✓ |
-| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples) | ✓ | ✓ | ✓ | ✓ |
+| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator and checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`) | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`) |  | ✓ |  | ✓ |
@@ -62,7 +62,7 @@ too.
 
 Rust caches are keyed per job on the toolchain, `Cargo.lock`, the manifests,
 and, for Clippy and Test, `LINUX_FEATURES` (Clippy also on
-`DEFAULT_FEATURES_TARGETS` and `NO_STD_TARGETS`). Only a job that succeeded
+`DEFAULT_FEATURES_TARGETS`, `NO_STD_TARGETS` and `FIRMWARE_TARGETS`). Only a job that succeeded
 on `dev` saves its cache, so a failed or cancelled run can't leave a partial
 cache that later runs restore by exact key. The MSRV job's cache comes from the weekly run, the Heavy run on
 `dev`. A new push to a PR cancels its superseded run.
@@ -131,6 +131,129 @@ them; `-p` picks one, as in `cargo run -p whois-scan -- --help`. A sample
 inherits the workspace's license, which Cargo Deny checks for every member,
 but not `[workspace.lints]`, since samples print to the terminal.
 
+### Firmware link test
+
+`check-no-std.sh` runs clippy on the `no_std` crates, and clippy never links.
+The firmware link test (#1626) does. `firmware/link` (the `firmware-link`
+crate, `publish = false`) builds two `#![no_main]` bare-metal images with no
+global allocator, one per stack, because code can't be credited to a crate
+reliably within one LTO image:
+
+- `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
+  features, plus the core's `heapless` queues);
+- `bip` links `bacnet-bip-codec` (default features, plus its `heapless`
+  sink).
+
+A use of `alloc` anywhere in an image fails its build with "no global memory
+allocator found", and a symbol that only a hosted target provides fails the
+link.
+
+- **The scenarios.** Each image's scenario is one `no_std` function in the
+  crate's lib that returns a summary of what it saw:
+  - `mstp::run` encodes a few frame types and decodes them with a
+    `StreamDecoder`, noise and a bad CRC included. It drives a `MasterCore`
+    with injected time through a token pass, a queued data frame, a poll for
+    master, a received broadcast and an answered request, carrying out each
+    action, and records each frame sent with its destination. Then it fills
+    the unicast queue and offers an NPDU too long for a standard frame.
+  - `bip::run` encodes one message of each `Bvll` variant into a slice and
+    into a `heapless::Vec` sink and decodes each back, and decodes three
+    datagrams written by hand from the Annex J.2 layouts, so a fault that
+    encode and decode share can't cancel out. It reads the decoded BDT and
+    FDT tables from both ends, takes a Forwarded-NPDU's origin, asks a few
+    functions for their payload shape and NAK, and takes the rejection
+    paths: a Length field that disagrees with the datagram, a table that
+    isn't whole entries, an undefined result code on encode, an unknown
+    function, and a message too long for a fixed slice and for a nearly
+    full sink.
+
+  The host tests `firmware/link/tests/mstp.rs` and `tests/bip.rs` run them
+  and compare each whole summary, so the behaviour is checked natively, in
+  every `--workspace` test run on Linux, macOS and Windows. Each image's
+  reset entry calls its scenario, passing the inputs and the summary
+  through `core::hint::black_box`. Nothing runs the images, under an
+  emulator or otherwise: building them proves that they link, and measures
+  them.
+- **Targets.** `thumbv7m-none-eabi` (Cortex-M3), `thumbv6m-none-eabi`
+  (Cortex-M0/M0+) and `riscv32imc-unknown-none-elf` (RV32IMC, the ESP32-C3
+  class), in `FIRMWARE_TARGETS` in `ci.yml`. They share one generic memory
+  layout, `firmware/link/memory.x`: 256 KiB of flash at `0x08000000` and 64
+  KiB of RAM at `0x20000000`. The startup code comes from `cortex-m-rt` and
+  `riscv-rt`, bare-metal dependencies only; `firmware/link/build.rs` hands
+  the linker `memory.x` and `link.x`. `memory.x` also discards `.eh_frame`,
+  the unwind tables riscv-rt's script would leave in flash (2.6 KB in the
+  MS/TP image). Only unwinding reads them, and the images never unwind:
+  they build with `panic = "abort"`, which is both the `firmware` profile's
+  setting and these targets' default. Were that ever to change, the worst
+  case is a panic that aborts, which is what happens today. cortex-m-rt
+  already drops ARM's unwind tables. The images' only `unsafe` code is in the runtimes' entry
+  macros and, on RISC-V, one block per image that borrows its statics, which
+  cortex-m-rt's macro does safely.
+- **Workspace.** The crate is a workspace member outside `default-members`,
+  like the [samples](#samples). It shares `Cargo.lock`, so Cargo Deny and
+  Cargo Audit cover the runtime crates; it follows `[workspace.lints]`; and it
+  builds with the root `Cargo.toml`'s `firmware` profile (release with
+  `opt-level = "z"`, LTO, one codegen unit and `panic = "abort"`), since
+  cargo reads profiles only from the workspace root. On a host the binaries
+  are empty stubs and the runtimes aren't built, so `--workspace` builds,
+  clippy, rustdoc and tests work as before.
+- **The check.** `scripts/ci/check-firmware-link.sh` runs, per target,
+  clippy on the images' code (a host build compiles it out), the
+  `firmware`-profile build, and `scripts/ci/firmware_size.py` for each image
+  against its `[<target>.<image>]` table in `firmware/link/size-budget.toml`.
+  The helper reads the ELF itself, so it needs no binutils. It prints:
+  - every loaded section and which total it counts toward;
+  - `.text`, `.rodata`, `.data`, `.bss` and two totals against their
+    budgets. **flash** is every loaded section with contents: the vector
+    table on Cortex-M, `.init.rust` on RISC-V, and `.data`'s initial image
+    included. **RAM** is every loaded writable section, `.data` and
+    riscv-rt's `.heap` (`_heap_size` octets, 0 here) included, but not its
+    `.stack`, which fills whatever RAM is left. Neither counts the stack
+    used at run time. Both go by section flags, not by memory region, so
+    code placed in RAM would count toward flash only, and the alignment
+    gaps between sections (at most 4 octets of flash per image today)
+    count toward neither;
+  - the count of `core::fmt` functions linked in, the largest objects in
+    RAM, and `.text` by crate.
+
+  It fails when a size is over budget, or when any formatting code is
+  linked in: the panic handler never reads the message, so panics cost no
+  formatting code, and a change that adds some shows up here. It also fails
+  when the image has no function symbols to look for that code in: the
+  images must not be stripped. A size more than 20% under its budget gets a
+  notice to tighten it, not a failure. `scripts/ci/test-firmware-size.py`
+  tests the helper on small ELF files it builds itself, in the Lint job. CI
+  runs the check in the Clippy job, after the `no_std` check, which already
+  sets up bare-metal targets, rather than in a job of its own that would
+  install the toolchain again for builds that take seconds.
+- **What `.text` holds.** Each image's `.text` includes its scenario, not
+  just the stack it links. The check's by-crate list shows the split: on
+  `thumbv7m-none-eabi`, the MS/TP image's 18.3 KB is about 5.8 KB of
+  `bacnet-mstp-core`, 6.5 KB of the scenario (with the core code it
+  inlines), 4.3 KB of compiler-builtins and startup code (memory copies,
+  64-bit division and the reset handler; the list shows the unmangled part
+  separately) and 1.4 KB of `bacnet-mstp-codec`.
+- **RAM.** The scenarios' buffers and the core are statics, so `.bss`
+  measures them: the core is 13,352 octets on these targets. `.bss` doesn't
+  count the stack, where `MasterCore::new` builds the core before it is
+  copied into place (#1618). `cargo nextest run -p firmware-link` prints the
+  host sizes from the `ram_sizes` test.
+- **Raising a budget.** Each budget is the measured size plus 12%, rounded
+  up to 16 octets. When a change grows an image on purpose, the error
+  suggests a new budget; update it and the measured sizes in the file's
+  comments, and say in the PR why the image grew. That makes the growth a
+  reviewed change. `check-firmware-link.sh --suggest` prints a full budget
+  table for each image as it builds now.
+
+```bash
+rustup target add thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf
+bash scripts/ci/check-firmware-link.sh                       # every target
+bash scripts/ci/check-firmware-link.sh thumbv6m-none-eabi    # one
+bash scripts/ci/check-firmware-link.sh --suggest             # budgets as the images build now
+cargo nextest run -p firmware-link                           # the scenarios, natively
+python3 scripts/ci/test-firmware-size.py                     # the size helper's tests
+```
+
 ### Runner
 
 Every Linux job runs on GitHub's `ubuntu-24.04` hosted runner, an x86_64 VM
@@ -190,7 +313,9 @@ image.
   the jobs cold each time. The Clippy job adds the `x86_64-pc-windows-msvc` and
   `aarch64-apple-darwin` standard libraries for the per-crate default-features
   check, and the bare-metal targets in `NO_STD_TARGETS` for the `no_std`
-  check (neither clippy nor rustdoc links, so nothing else is needed). The
+  check (neither clippy nor rustdoc links, so nothing else is needed) and in
+  `FIRMWARE_TARGETS` for the [firmware link test](#firmware-link-test), which
+  links with the `rust-lld` that rustc ships. The
   MSRV job adds the MSRV toolchain and sets `RUSTUP_TOOLCHAIN` to it.
 - **Tools.** [`.github/ci-pins.env`](../.github/ci-pins.env) pins
   cargo-nextest, cargo-deny, cargo-audit and maturin, each with the SHA-256 of
@@ -218,7 +343,13 @@ The Lint job's "Check the pins" step fails when:
 
 **Bumping a pin:**
 
-- **Toolchain:** `rust-toolchain.toml` alone; both workflows install from it.
+- **Toolchain:** `rust-toolchain.toml`; both workflows install from it. A new
+  compiler changes the firmware images' sizes, so re-measure
+  `firmware/link/size-budget.toml` with it: `bash
+  scripts/ci/check-firmware-link.sh --suggest` prints a budget table for each
+  image, each size plus 12% (see [Firmware link test](#firmware-link-test)).
+  Copy the tables into the file, and the sizes the check then prints into
+  its comments.
 - **MSRV:** `Cargo.toml`'s `rust-version`, `RUST_MSRV` and
   `scripts/ci/check-msrv.sh` together.
 - **A tool:** its `*_VERSION` and `*_SHA256` together. The digest is of the
@@ -617,6 +748,7 @@ cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
 cargo clippy -p bacnet-cli --no-default-features --all-targets --locked -- -D warnings
 bash scripts/ci/check-default-features.sh   # the host; or pass target triples, as CI does
 bash scripts/ci/check-no-std.sh             # needs the bare-metal targets (rustup target add)
+bash scripts/ci/check-firmware-link.sh      # likewise; see "Firmware link test"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$FEATURES"
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusty-bacnet --no-deps --locked --document-private-items
 cargo nextest run -p bacnet-cli --locked   # the CLI's feature-off tests
@@ -625,6 +757,7 @@ cargo nextest run -p rusty-bacnet --locked # the PyO3 crate's Rust tests
 bash scripts/ci/check-file-size.sh
 bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh
 python3 scripts/ci/test-check-msrv.py
+python3 scripts/ci/test-firmware-size.py
 python3 -m unittest discover -s scripts/release
 python3 -m unittest discover -s scripts -p 'test_changelog.py'
 python3 scripts/changelog.py check

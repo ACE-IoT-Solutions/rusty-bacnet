@@ -10,9 +10,10 @@
 #
 # serial and ethernet are Linux-only features, so macOS uses every other
 # optional feature, including those crates gate on their own features (#906).
-# Clippy and rustdoc deny warnings, as CI does. The no_std clippy step needs
-# the three bare-metal targets once: `rustup target add thumbv6m-none-eabi
-# thumbv7em-none-eabihf riscv32imac-unknown-none-elf`. Tests need cargo-nextest
+# Clippy and rustdoc deny warnings, as CI does. The no_std clippy step and the
+# firmware link test need their bare-metal targets once: `rustup target add
+# thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf
+# thumbv7m-none-eabi riscv32imc-unknown-none-elf`. Tests need cargo-nextest
 # 0.9.145 or later (`cargo install cargo-nextest --locked`). The PyO3 crate's
 # Rust tests link libpython from PYO3_PYTHON, the active venv, or `python` /
 # `python3` on PATH, in that order (#919). .github/workflows/native-tests.yml
@@ -36,6 +37,7 @@ step "rustfmt";          cargo fmt --all --check
 step "file-size cap";    bash scripts/ci/check-file-size.sh
 step "no-secret scan";   bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh
 step "MSRV script regressions"; python3 scripts/ci/test-check-msrv.py
+step "firmware size script regressions"; python3 scripts/ci/test-firmware-size.py
 step "changelog fragments"; python3 -m unittest discover -s scripts -p 'test_changelog.py' && python3 scripts/changelog.py check
 features=bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-mstp-core/heapless,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
 step "clippy (every macOS feature)"
@@ -44,6 +46,7 @@ step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --lock
 step "clippy and rustdoc (each published crate, default features; no_std types, encoding and services)"
 bash scripts/ci/check-default-features.sh
 step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
+step "firmware link test (bare-metal images, no allocator, size budgets)"; bash scripts/ci/check-firmware-link.sh
 step "rustdoc (every macOS feature, private items)"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$features"
 step "rustdoc (PyO3 bindings, private items)"
