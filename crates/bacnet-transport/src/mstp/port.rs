@@ -12,8 +12,8 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tracing::warn;
 
 use crate::mstp_frame::{
-    decode_frame_stream, find_preamble, retain_lone_preamble_byte, MstpFrame, StreamDecode,
-    BROADCAST_MAC,
+    decode_frame_stream_with_scratch, find_preamble, retain_lone_preamble_byte, MstpFrame,
+    StreamDecode, BROADCAST_MAC, MAX_EXTENDED_MPDU_DATA,
 };
 use crate::port::{ReceivedNpdu, TransportPort};
 
@@ -25,6 +25,18 @@ use super::{
 
 /// Assemble host serial reads and return only complete, CRC-validated frames.
 fn assemble_host_chunk(frame_buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<MstpFrame> {
+    let mut scratch = vec![0u8; MAX_EXTENDED_MPDU_DATA];
+    assemble_host_chunk_with_scratch(frame_buf, chunk, &mut scratch)
+}
+
+/// Assemble host serial reads using caller-owned decoded extended-payload
+/// storage. The encoded receive buffer and transformed COBS payload workspace
+/// are independently bounded.
+fn assemble_host_chunk_with_scratch(
+    frame_buf: &mut Vec<u8>,
+    chunk: &[u8],
+    scratch: &mut [u8],
+) -> Vec<MstpFrame> {
     let mut frames = Vec::new();
     let mut remaining = chunk;
     while !remaining.is_empty() {
@@ -48,7 +60,7 @@ fn assemble_host_chunk(frame_buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<MstpFrame> 
             if preamble_pos > 0 {
                 frame_buf.drain(..preamble_pos);
             }
-            match decode_frame_stream(frame_buf) {
+            match decode_frame_stream_with_scratch(frame_buf, scratch) {
                 StreamDecode::Complete { frame, consumed } => {
                     frame_buf.drain(..consumed);
                     frames.push(frame);
@@ -427,6 +439,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
         let task = tokio::spawn(async move {
             let mut recv_buf = vec![0u8; 2048];
             let mut frame_buf = Vec::with_capacity(MSTP_MAX_FRAME_BUF);
+            let mut decode_scratch = vec![0u8; MAX_EXTENDED_MPDU_DATA];
             let mut last_byte_time = None;
             loop {
                 if task_runtime.receive_faulted.swap(false, Ordering::AcqRel) {
@@ -466,7 +479,22 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
                                 warn!("MS/TP host activity rejected by core: {error:?}");
                             }
                         }
-                        for frame in assemble_host_chunk(&mut frame_buf, &recv_buf[..count]) {
+                        for frame in assemble_host_chunk_with_scratch(
+                            &mut frame_buf,
+                            &recv_buf[..count],
+                            &mut decode_scratch,
+                        ) {
+                            // The hosted state machine and its action storage
+                            // remain standard-frame sized until X3. Decode and
+                            // resynchronize extended frames here without
+                            // passing them into a standard-only core.
+                            if frame.frame_type.is_cobs() {
+                                warn!(
+                                    frame_type = frame.frame_type.to_raw(),
+                                    "MS/TP extended frame requires an extended core profile"
+                                );
+                                continue;
+                            }
                             let mut core = task_runtime.core.lock().await;
                             let timestamp = core.now();
                             let validated = Frame::new(

@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
 use crate::mstp_frame::{
-    FrameType, MstpFrame, BROADCAST_MAC, MAX_MASTER, MAX_STANDARD_FRAME_LENGTH,
+    FrameType, MstpFrame, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_MASTER,
     MAX_STANDARD_MPDU_DATA,
 };
 use crate::port::ReceivedNpdu;
@@ -117,8 +117,8 @@ fn calculate_t_turnaround_us(baud_rate: u32) -> u64 {
 }
 /// Number of retries for token pass before declaring token lost.
 const N_RETRY_TOKEN: u8 = 1;
-/// Maximum standard frame buffer size: preamble + header + data + data CRC.
-pub(crate) const MSTP_MAX_FRAME_BUF: usize = MAX_STANDARD_FRAME_LENGTH;
+/// Maximum hosted assembly buffer: the larger extended encoded frame.
+pub(crate) const MSTP_MAX_FRAME_BUF: usize = MAX_EXTENDED_FRAME_LENGTH;
 /// Host-side stale partial-frame timeout for USB/chunked serial reassembly.
 ///
 /// This is **not** Clause 9 `T_frame_abort` (wire inter-byte silence). Host async reads
@@ -316,7 +316,7 @@ impl MasterNode {
                 }
                 None
             }
-            FrameType::BACnetDataNotExpectingReply => {
+            FrameType::BACnetDataNotExpectingReply | FrameType::ExtendedDataNotExpectingReply => {
                 if self.state == MasterState::WaitForReply
                     && frame.destination == self.config.this_station
                 {
@@ -348,7 +348,7 @@ impl MasterNode {
                 }
                 None
             }
-            FrameType::BACnetDataExpectingReply => {
+            FrameType::BACnetDataExpectingReply | FrameType::ExtendedDataExpectingReply => {
                 if frame.destination == self.config.this_station {
                     if self.pending_reply_source.is_some() {
                         return None;

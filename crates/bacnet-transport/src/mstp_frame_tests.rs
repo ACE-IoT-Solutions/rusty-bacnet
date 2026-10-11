@@ -421,6 +421,38 @@ fn decode_standard_data_length_boundary() {
 }
 
 #[test]
+fn extended_data_boundaries_round_trip_through_hosted_api() {
+    for length in [MAX_STANDARD_MPDU_DATA + 1, MAX_EXTENDED_MPDU_DATA] {
+        let frame = MstpFrame {
+            frame_type: FrameType::ExtendedDataNotExpectingReply,
+            destination: BROADCAST_MAC,
+            source: 7,
+            data: Bytes::from(vec![0xA5; length]),
+        };
+        let mut wire = BytesMut::new();
+        encode_frame(&mut wire, &frame).unwrap();
+        assert!(wire.len() <= MAX_EXTENDED_FRAME_LENGTH);
+        let (decoded, consumed) = decode_frame(&wire).unwrap();
+        assert_eq!(consumed, wire.len());
+        assert_eq!(decoded, frame);
+        assert_eq!(
+            decode_frame_stream(&wire),
+            StreamDecode::Complete { frame, consumed }
+        );
+    }
+}
+
+#[test]
+fn extended_frame_rejects_reserved_type_above_der_and_dner() {
+    let wire = header_only_wire(0x22, MIN_EXTENDED_LENGTH);
+    assert!(decode_frame(&wire).is_err());
+    assert_eq!(
+        decode_frame_stream(&wire),
+        StreamDecode::Invalid { discard: 1 }
+    );
+}
+
+#[test]
 fn stream_decode_standard_data_length_boundary() {
     let frame = data_frame_with_length(MAX_STANDARD_MPDU_DATA);
     let mut wire = BytesMut::new();

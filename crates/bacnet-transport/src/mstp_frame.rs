@@ -11,8 +11,9 @@ use bytes::{Bytes, BytesMut};
 
 pub use codec::{
     crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid, find_preamble,
-    FrameType, BROADCAST_MAC, DATA_CRC_RESIDUAL, HEADER_CRC_RESIDUAL, HEADER_LENGTH, MAX_MASTER,
-    MAX_MPDU_DATA, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    FrameType, BROADCAST_MAC, DATA_CRC_RESIDUAL, HEADER_CRC_RESIDUAL, HEADER_LENGTH,
+    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_MASTER, MAX_MPDU_DATA,
+    MAX_STANDARD_MPDU_DATA, MIN_EXTENDED_LENGTH, PREAMBLE,
 };
 
 pub(crate) const MAX_STANDARD_FRAME_LENGTH: usize = codec::MAX_STANDARD_FRAME_LENGTH;
@@ -36,6 +37,25 @@ pub struct MstpFrame {
 /// control frame types; constructing the codec header from the actual payload
 /// preserves both behaviors.
 pub fn encode_frame(buf: &mut BytesMut, frame: &MstpFrame) -> Result<(), Error> {
+    if frame.frame_type.is_cobs() {
+        // Keep the historical BytesMut API while delegating the extended wire
+        // format to the caller-buffered codec.  Encoding into a temporary first
+        // preserves the standard API's all-or-nothing behavior on errors.
+        let mut wire = [0u8; MAX_EXTENDED_FRAME_LENGTH];
+        let used = codec::encode_extended_into(
+            &mut wire,
+            &codec::FrameHeader::new(
+                frame.frame_type,
+                frame.destination,
+                frame.source,
+                frame.data.len(),
+            ),
+            &frame.data,
+        )
+        .map_err(Error::from)?;
+        buf.extend_from_slice(&wire[..used]);
+        return Ok(());
+    }
     let borrowed = codec::Frame::new(
         frame.frame_type,
         frame.destination,
@@ -59,6 +79,16 @@ pub enum StreamDecode {
 
 /// Incrementally decode an MS/TP frame from a receive buffer (starting at the preamble).
 pub fn decode_frame_stream(data: &[u8]) -> StreamDecode {
+    let mut scratch = [0u8; MAX_EXTENDED_MPDU_DATA];
+    decode_frame_stream_with_scratch(data, &mut scratch)
+}
+
+/// Incrementally decode a frame using caller-owned decoded-payload storage.
+///
+/// The returned [`MstpFrame`] owns a copy for compatibility with the hosted
+/// transport API; `scratch` is nevertheless required for extended COBS decode
+/// so a caller can bound and account for the transformed payload workspace.
+pub fn decode_frame_stream_with_scratch(data: &[u8], scratch: &mut [u8]) -> StreamDecode {
     if data.is_empty() {
         return StreamDecode::NeedMore;
     }
@@ -73,6 +103,28 @@ pub fn decode_frame_stream(data: &[u8]) -> StreamDecode {
     }
     if data.len() < 2 + HEADER_LENGTH {
         return StreamDecode::NeedMore;
+    }
+
+    if codec::is_cobs_raw(data[2]) {
+        if !matches!(
+            data[2],
+            value if value == FrameType::ExtendedDataExpectingReply.to_raw()
+                || value == FrameType::ExtendedDataNotExpectingReply.to_raw()
+        ) {
+            return StreamDecode::Invalid { discard: 1 };
+        }
+        return match codec::decode_extended_frame(data, scratch) {
+            Ok((frame, consumed)) => StreamDecode::Complete {
+                frame: owned_extended_frame(frame),
+                consumed,
+            },
+            Err(
+                codec::FrameError::TooShort { .. } | codec::FrameError::ExtendedTruncated { .. },
+            ) => StreamDecode::NeedMore,
+            Err(_) => StreamDecode::Invalid {
+                discard: extended_candidate_length(data),
+            },
+        };
     }
 
     match codec::decode_frame(data) {
@@ -99,6 +151,12 @@ pub fn retain_lone_preamble_byte(buf: &mut Vec<u8>) {
 
 /// Decode an MS/TP frame from raw bytes (starting at the preamble).
 pub fn decode_frame(data: &[u8]) -> Result<(MstpFrame, usize), Error> {
+    if data.len() >= 3 && codec::is_cobs_raw(data[2]) {
+        let mut scratch = [0u8; MAX_EXTENDED_MPDU_DATA];
+        let (frame, consumed) =
+            codec::decode_extended_frame(data, &mut scratch).map_err(Error::from)?;
+        return Ok((owned_extended_frame(frame), consumed));
+    }
     let (frame, consumed) = codec::decode_frame(data).map_err(Error::from)?;
     Ok((owned_frame(frame), consumed))
 }
@@ -110,6 +168,26 @@ fn owned_frame(frame: codec::Frame<'_>) -> MstpFrame {
         source: frame.header.source,
         data: Bytes::copy_from_slice(frame.data),
     }
+}
+
+fn owned_extended_frame(frame: codec::ExtendedFrame<'_>) -> MstpFrame {
+    MstpFrame {
+        frame_type: frame.header.frame_type,
+        destination: frame.header.destination,
+        source: frame.header.source,
+        data: Bytes::copy_from_slice(frame.data),
+    }
+}
+
+fn extended_candidate_length(data: &[u8]) -> usize {
+    if data.len() < 2 + HEADER_LENGTH || !codec::crc8_valid(&data[2..8]) {
+        return 1;
+    }
+    let length = u16::from_be_bytes([data[5], data[6]]) as usize;
+    if !(codec::MIN_EXTENDED_LENGTH..=codec::MAX_EXTENDED_LENGTH).contains(&length) {
+        return 1;
+    }
+    (2 + HEADER_LENGTH + length + 2).min(data.len())
 }
 
 #[cfg(test)]

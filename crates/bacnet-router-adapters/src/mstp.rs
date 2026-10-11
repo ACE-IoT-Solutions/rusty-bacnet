@@ -118,12 +118,12 @@ impl<'core, 'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
     }
 
     /// Return the NPDU payload ceiling of this MS/TP storage profile.
-    pub const fn max_npdu_len() -> usize {
+    pub const fn max_npdu_len(&self) -> usize {
         NPDU
     }
 
     /// Whether this adapter uses the extended DER/DNER storage profile.
-    pub const fn is_extended() -> bool {
+    pub const fn is_extended(&self) -> bool {
         NPDU == EXTENDED_MSTP_MAX_NPDU && FRAME == EXTENDED_MSTP_FRAME_STORAGE
     }
 
@@ -209,7 +209,7 @@ impl<Q: QueueStorage, const NPDU: usize, const FRAME: usize> Egress
 mod tests {
     use super::*;
     use bacnet_mstp_codec::{decode_extended_frame, decode_frame, Frame, FrameType};
-    use bacnet_mstp_core::{Action, HeaplessQueues, MstpCoreConfig};
+    use bacnet_mstp_core::{Action, HeaplessQueues, MasterCore, MstpCoreConfig};
 
     type Queues = HeaplessQueues<1, 1>;
     type ExtendedQueues = HeaplessQueues<1, 1, EXTENDED_MSTP_MAX_NPDU, 1>;
