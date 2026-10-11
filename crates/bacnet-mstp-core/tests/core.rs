@@ -1,4 +1,5 @@
 #![cfg(feature = "heapless")]
+#![doc = "Integration tests for the standard MS/TP master core."]
 
 use bacnet_mstp_codec::{Frame, FrameType, MAX_STANDARD_MPDU_DATA};
 use bacnet_mstp_core::{
@@ -18,14 +19,15 @@ fn frame(kind: FrameType, destination: u8, source: u8, data: &[u8]) -> Frame<'_>
 }
 
 fn standard_config(station: u8, max_master: u8) -> bacnet_mstp_core::MstpCoreConfig {
-    let mut config = bacnet_mstp_core::MstpCoreConfig::default();
-    config.station = station;
-    config.max_master = max_master;
-    config
+    bacnet_mstp_core::MstpCoreConfig {
+        station,
+        max_master,
+        ..bacnet_mstp_core::MstpCoreConfig::default()
+    }
 }
 
-fn take_transmit<'a, Q: bacnet_mstp_core::QueueStorage>(
-    core: &'a mut MasterCore<'_, Q>,
+fn take_transmit<Q: bacnet_mstp_core::QueueStorage>(
+    core: &mut MasterCore<'_, Q>,
     now: Instant,
 ) -> TransmitId {
     assert_eq!(
@@ -344,7 +346,7 @@ fn monotone_random_events_never_panic_and_deadlines_are_causal() {
             .unwrap();
         let mut now = Instant::ZERO;
         for step in steps {
-            now = now + Duration::from_micros(u64::from(step));
+            now += Duration::from_micros(u64::from(step));
             match step {
                 0 => { core.on_silence(now).unwrap(); }
                 1 => { core.on_receive_error(ReceiveError::Overrun, now).unwrap(); }

@@ -1,4 +1,5 @@
 #![cfg(feature = "heapless")]
+#![doc = "Integration tests for reserved MS/TP network-control capacity."]
 
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType, MAX_STANDARD_MPDU_DATA};
 use bacnet_mstp_core::{
@@ -17,7 +18,7 @@ fn config() -> MstpCoreConfig {
     }
 }
 
-fn take_transmit<'a>(core: &'a mut MasterCore<'_, Queues>, now: Instant) -> (TransmitId, u8) {
+fn take_transmit(core: &mut MasterCore<'_, Queues>, now: Instant) -> (TransmitId, u8) {
     assert_eq!(
         core.poll_action(),
         Action::SetDirection(Direction::Transmit)

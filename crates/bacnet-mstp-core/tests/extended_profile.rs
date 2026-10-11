@@ -1,4 +1,5 @@
 #![cfg(feature = "heapless")]
+#![doc = "Integration tests for the extended MS/TP storage profile."]
 
 use core::mem::size_of;
 
@@ -146,12 +147,11 @@ fn representative_profile_storage_delta_is_measured_and_nonzero() {
     let standard = size_of::<StandardMasterCore<'static, StandardQueues>>();
     let extended = size_of::<ExtendedMasterCore<'static, ExtendedQueues>>();
     // The extended profile intentionally pays for larger queue/action slots;
-    // the standard profile remains the compact 501-byte default.
-    std::println!("MS/TP profile storage: standard={standard} bytes, extended={extended} bytes, delta={} bytes", extended - standard);
-    assert!(
-        extended > standard,
-        "standard={standard}, extended={extended}"
-    );
+    // the standard profile remains the compact 501-byte default. These exact
+    // values are the checked-in memory evidence for the current target.
+    assert_eq!(standard, 13_368);
+    assert_eq!(extended, 37_432);
+    assert_eq!(extended - standard, 24_064);
 }
 
 #[cfg(feature = "alloc")]
