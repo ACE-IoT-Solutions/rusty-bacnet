@@ -220,15 +220,16 @@ fn abandoned_request_returns_idle_without_wire_actions() {
         other => panic!("expected request delivery, got {other:?}"),
     };
 
-    core.complete_request(id, ReplyDecision::Abandoned, at(2))
+    core.complete_request(id, ReplyDecision::Abandoned, at(200))
         .unwrap();
 
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.snapshot().request_id, None);
     assert_eq!(core.poll_action(), Action::Idle);
-    // Idle again: the next deadline is token loss, not the old reply
+    // Idle again: the next deadline is token loss, timed from the request,
+    // the last activity on the line, not from the decision or the old reply
     // deadline.
-    assert_eq!(core.next_deadline(), Some(at(502)));
+    assert_eq!(core.next_deadline(), Some(at(501)));
 }
 
 #[test]

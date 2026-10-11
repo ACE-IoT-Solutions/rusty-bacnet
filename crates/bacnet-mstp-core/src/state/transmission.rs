@@ -52,8 +52,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             // collide with it.
             self.pending_send = None;
             self.counters.record_expired_request();
-            self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
+            self.enter_idle();
             return Ok(());
         }
         self.dispatch_frame(

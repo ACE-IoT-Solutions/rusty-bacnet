@@ -78,8 +78,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             FrameError::HeaderCrcMismatch
             | FrameError::BroadcastSource
             | FrameError::Oversize { .. } => true,
-            // No destination means the header never fit in storage, so the
-            // frame may have been for this station.
+            // No destination means the header never completed, which the
+            // storage `new` accepts rules out; count it to be safe.
             FrameError::FrameTooLong { .. }
             | FrameError::UnsupportedCobsFrame { .. }
             | FrameError::DataCrcMismatch { .. } => destination
@@ -121,7 +121,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         now: Instant,
     ) -> Result<(), CoreError> {
         self.counters.record_frame_received();
-        if self.pending_request.is_some() {
+        // While answering a request, before or after the application's
+        // decision, this station only sends its reply.
+        if self.pending_request.is_some() || self.state == MasterState::AnswerDataRequest {
             return Ok(());
         }
         // A complete valid frame proves that another station began using the

@@ -2,14 +2,22 @@
 //!
 //! The application has until T_reply_delay less the configured transmit
 //! margin to decide. After that the core sends Reply Postponed itself, even
-//! when its deadline callback or the platform's transmit start comes late: the
-//! requester keeps waiting for at least the shortest T_reply_timeout (255 ms,
-//! Clause 9.5.3), so a late answer still spares it that wait, while no answer
-//! costs it the whole timeout. Only once that much time has passed does the
-//! core give up on the request, counting it, because the requester may be
-//! transmitting again by then.
+//! when its deadline callback or the platform's transmit start comes late.
+//! Such a late answer gains the requester little, a few milliseconds at most
+//! before its own reply timeout would have ended the wait, but it is still
+//! the correct answer, so the core sends it while that is safe. It stops once
+//! the requester may have given up: its shortest T_reply_timeout (255 ms,
+//! Clause 9.5.3), less one octet, which has to arrive whole before that
+//! timeout, and less a millisecond for clock resolution. The core's request
+//! time can only be later than the requester's last octet, which is why it
+//! keeps that guard. A request dropped then is counted.
 
 use super::*;
+
+/// Kept back from the requester's shortest reply timeout for silence-timer
+/// resolution and the gap between the requester's last octet and the
+/// request time the adapter reports.
+const REPLY_GUARD: Duration = Duration::from_millis(1);
 
 impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Hand a request to the application and open its reply window.
@@ -21,14 +29,15 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         let id = RequestId::new(self.next_request_generation);
         self.next_request_generation = self.next_request_generation.wrapping_add(1);
         let send_by = now + self.config.t_reply_delay;
+        // Never before the end of T_reply_delay, which a reply may use in
+        // full; that only matters below the standard baud rates.
+        let give_up =
+            (now + MIN_REPLY_TIMEOUT - self.config.octet_time() - REPLY_GUARD).max(send_by);
         let request = PendingRequest {
             id,
             source: frame.header.source,
             decide_by: send_by - self.config.reply_transmit_margin,
-            window: ReplyWindow {
-                send_by,
-                give_up: now + MIN_REPLY_TIMEOUT,
-            },
+            window: ReplyWindow { send_by, give_up },
         };
         self.pending_request = Some(request);
         self.set_state(MasterState::AnswerDataRequest);
@@ -47,9 +56,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// [`MstpCoreConfig::reply_transmit_margin`] after the request. A later
     /// one is refused with [`CoreError::RequestExpired`], and the core keeps
     /// the request and sends Reply Postponed when [`Self::on_deadline`] runs.
-    /// From 255 ms after the request, the shortest T_reply_timeout, every
-    /// decision is refused that way and the request is dropped unanswered
-    /// (counted in [`MstpCounters::expired_requests`]).
+    ///
+    /// Once the requester may have stopped waiting (the shortest
+    /// T_reply_timeout, 255 ms, less one octet time and a 1 ms guard), every
+    /// decision is refused that way, [`ReplyDecision::Abandoned`] included,
+    /// and the request is dropped unanswered and counted in
+    /// [`MstpCounters::expired_requests`].
     pub fn complete_request(
         &mut self,
         id: RequestId,
@@ -62,7 +74,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             return Err(CoreError::StaleRequest);
         }
         if now >= request.window.give_up {
-            self.release_unanswered_request(now);
+            self.release_unanswered_request();
             return Err(CoreError::RequestExpired);
         }
         let (frame_type, payload) = match decision {
@@ -81,8 +93,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             }
             ReplyDecision::Abandoned => {
                 self.pending_request = None;
-                self.set_state(MasterState::Idle);
-                self.protocol_deadline = Some(now + self.config.t_no_token);
+                self.enter_idle();
                 return Ok(());
             }
         };
@@ -102,8 +113,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Postponed, however late, unless the requester may have stopped waiting.
     pub(super) fn reply_deadline(&mut self, now: Instant) -> Result<(), CoreError> {
         let Some(request) = self.pending_request else {
-            self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
+            self.enter_idle();
             return Ok(());
         };
         match self.complete_request(request.id, ReplyDecision::Postponed, now) {
@@ -115,10 +125,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     /// Drop a request unanswered because its requester may have stopped
     /// waiting, and count it.
-    pub(super) fn release_unanswered_request(&mut self, now: Instant) {
+    pub(super) fn release_unanswered_request(&mut self) {
         self.pending_request = None;
         self.counters.record_expired_request();
-        self.set_state(MasterState::Idle);
-        self.protocol_deadline = Some(now + self.config.t_no_token);
+        self.enter_idle();
     }
 }

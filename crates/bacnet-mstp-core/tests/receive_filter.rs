@@ -136,23 +136,37 @@ fn a_reply_type_frame_from_any_station_ends_the_wait() {
 }
 
 #[test]
-fn validated_frame_with_oversize_data_is_refused() {
+fn validated_frame_the_codec_would_refuse_changes_nothing() {
     let mut rx = [0u8; 64];
     let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let late = Instant::from_micros(10_000);
     let data = [0u8; 502];
     assert_eq!(
         core.on_validated_frame(
             Frame::new(FrameType::BACnetDataNotExpectingReply, STATION, 5, &data),
-            Instant::ZERO,
+            late,
         ),
         Err(CoreError::Frame(FrameError::Oversize {
             length: 502,
             maximum: 501,
         }))
     );
+    assert_eq!(
+        core.on_validated_frame(Frame::new(FrameType::Token, STATION, 255, &[]), late),
+        Err(CoreError::Frame(FrameError::BroadcastSource))
+    );
+    assert_eq!(
+        core.on_validated_frame(Frame::new(FrameType::Unknown(0x20), STATION, 5, &[1]), late),
+        Err(CoreError::Frame(FrameError::UnsupportedCobsFrame {
+            raw_type: 0x20
+        }))
+    );
     assert_eq!(core.counters().frames_received, 0);
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.poll_action(), Action::Idle);
+    assert_eq!(core.next_deadline(), Some(Instant::from_micros(500_000)));
+    // The refused frames did not move the core's clock either.
+    core.on_silence(Instant::from_micros(1)).unwrap();
 }
 
 #[test]

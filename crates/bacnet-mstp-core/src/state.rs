@@ -2,7 +2,7 @@
 
 use bacnet_mstp_codec::{
     DecodeEvent, Frame, FrameError, FrameHeader, FrameType, StreamDecoder, StreamPhase,
-    BROADCAST_MAC, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
+    BROADCAST_MAC, HEADER_LENGTH, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 
 use crate::actions::{
@@ -10,13 +10,22 @@ use crate::actions::{
 };
 use crate::clock::{Duration, Instant};
 use crate::config::{ConfigError, MstpCoreConfig, MIN_REPLY_TIMEOUT};
-use crate::counters::MstpCounters;
+use crate::counters::{MstpCounters, QueueCounters};
 use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
 
 mod receive;
 mod reply;
 mod token;
 mod transmission;
+
+/// The smallest receive storage [`MasterCore::new`] accepts: a preamble and
+/// a header, the size of the shortest frame.
+pub const MIN_RX_STORAGE: usize = PREAMBLE.len() + HEADER_LENGTH;
+
+/// A deadline serviced at least this long after it fell due counts in
+/// [`MstpCounters::deadline_misses`]. Smaller lateness is normal for an
+/// adapter driven by a timer tick.
+pub const LATE_DEADLINE: Duration = Duration::from_millis(1);
 
 /// Token-passing master state names from Clause 9.5.6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +112,15 @@ pub enum CoreError {
     StaleTransmit,
     /// A transmit-start event was reported more than once.
     TransmitAlreadyStarted,
+    /// Completion was reported for a transmit whose start was never confirmed.
+    TransmitNotStarted,
+    /// The receive storage cannot hold even the shortest frame.
+    ReceiveStorageTooSmall {
+        /// Supplied storage length.
+        length: usize,
+        /// [`MIN_RX_STORAGE`].
+        minimum: usize,
+    },
 }
 
 impl From<ConfigError> for CoreError {
@@ -227,7 +245,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Size it for the largest frame this station accepts:
     /// [`MAX_STANDARD_FRAME_LENGTH`] takes any standard frame. A longer frame
     /// addressed to this station or broadcast counts as an invalid frame
-    /// (Clause 9.5.4.4).
+    /// (Clause 9.5.4.4). Storage shorter than [`MIN_RX_STORAGE`] is refused.
     pub fn new(
         config: MstpCoreConfig,
         mut queues: Q,
@@ -235,6 +253,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         now: Instant,
     ) -> Result<Self, CoreError> {
         config.validate()?;
+        if rx_storage.len() < MIN_RX_STORAGE {
+            return Err(CoreError::ReceiveStorageTooSmall {
+                length: rx_storage.len(),
+                minimum: MIN_RX_STORAGE,
+            });
+        }
         queues.set_starvation_limit(config.starvation_limit);
         Ok(Self {
             config,
@@ -289,14 +313,28 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     /// Return the counters snapshot, including current queue statistics.
+    ///
+    /// The queue counters come from the queue storage, plus the NPDUs the
+    /// core itself refused or dropped as too long for a standard frame.
     pub fn counters(&self) -> MstpCounters {
+        let merge = |queue: QueueCounters, core: QueueCounters| QueueCounters {
+            drops_oversize: queue.drops_oversize.saturating_add(core.drops_oversize),
+            ..queue
+        };
         let mut counters = self.counters;
-        counters.unicast = self.queues.stats(QueueKind::Unicast);
-        counters.broadcast = self.queues.stats(QueueKind::Broadcast);
+        counters.unicast = merge(self.queues.stats(QueueKind::Unicast), self.counters.unicast);
+        counters.broadcast = merge(
+            self.queues.stats(QueueKind::Broadcast),
+            self.counters.broadcast,
+        );
         counters
     }
 
     /// Queue an NPDU with an absolute expiry derived from configuration.
+    ///
+    /// An NPDU longer than a standard frame carries (501 octets) is refused
+    /// with [`QueueRejectReason::Oversize`] and counted in its queue's
+    /// `drops_oversize`, whatever the queue storage could hold.
     pub fn enqueue_npdu(
         &mut self,
         destination: u8,
@@ -307,12 +345,19 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         if now < self.last_now {
             return Err(QueueRejectReason::Expired);
         }
+        if npdu.len() > MAX_STANDARD_MPDU_DATA {
+            self.record_oversize_npdu(QueueKind::from_destination(destination));
+            return Err(QueueRejectReason::Oversize);
+        }
         let expires = now.saturating_add(self.config.queue_max_age).as_micros();
         self.queues
             .enqueue_npdu(destination, npdu, priority, now.as_micros(), Some(expires))
     }
 
     /// Feed one wire-timestamped octet through the incremental codec.
+    ///
+    /// `now` is when the octet arrived. When it completes a frame, every
+    /// reply time for that frame is measured from it.
     ///
     /// A candidate the codec drops counts as an invalid frame only as
     /// Clause 9.5.4 would count it for this station; see
@@ -336,16 +381,31 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     /// Feed a frame already validated by a host-side chunk-tolerant assembler.
     ///
-    /// A frame with more data than a standard frame carries (501 octets) is
-    /// refused with [`CoreError::Frame`] and changes nothing.
+    /// `now` should be the adapter's best estimate of when the frame's final
+    /// octet arrived: a reply to the frame is timed from it, and a late
+    /// estimate leaves the requester less time than the core assumes.
+    ///
+    /// A frame the codec would not have decoded is refused with
+    /// [`CoreError::Frame`] and changes nothing, not even the core's clock:
+    /// more data than a standard frame carries (501 octets), source 255, or
+    /// a COBS-encoded type.
     pub fn on_validated_frame(&mut self, frame: Frame<'_>, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let header = frame.header;
         if frame.data.len() > MAX_STANDARD_MPDU_DATA {
             return Err(CoreError::Frame(FrameError::Oversize {
                 length: frame.data.len(),
                 maximum: MAX_STANDARD_MPDU_DATA,
             }));
         }
+        if header.source == BROADCAST_MAC {
+            return Err(CoreError::Frame(FrameError::BroadcastSource));
+        }
+        if header.frame_type.is_cobs() {
+            return Err(CoreError::Frame(FrameError::UnsupportedCobsFrame {
+                raw_type: header.frame_type.to_raw(),
+            }));
+        }
+        self.observe_time(now)?;
         self.note_bus_activity(now);
         self.cancel_pending_send_on_activity(now);
         self.process_owned_frame(Self::copy_frame(frame), now)
@@ -436,7 +496,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         if now < deadline {
             return Ok(());
         }
-        if now > deadline {
+        if now - deadline >= LATE_DEADLINE {
             self.counters.record_deadline_miss();
         }
         if let Some(tx) = self.active_transmit {
@@ -465,12 +525,16 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
     }
 
-    /// Confirm that the platform has started the matching UART transfer.
+    /// Confirm that the platform is about to start the matching UART transfer.
+    ///
+    /// Call it after polling [`Action::Transmit`] and before enabling the
+    /// line driver, and send only if it returns `Ok`. After any error for a
+    /// transmit, or once it is aborted, send nothing more for its id.
     ///
     /// A reply that starts after T_reply_delay still goes out and is counted
     /// in [`MstpCounters::late_replies`]. One that would start once the
     /// requester may have stopped waiting is refused with
-    /// [`CoreError::RequestExpired`]; the platform must abort it.
+    /// [`CoreError::RequestExpired`] and counted as an expired request.
     pub fn on_transmit_started(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         let tx = self
@@ -482,13 +546,13 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
         if let Some(reply) = tx.reply {
             if now >= reply.give_up {
+                self.actions.purge_transmit(id);
                 self.actions
                     .enqueue_direction(Direction::Receive)
                     .map_err(|_| CoreError::ActionCapacity)?;
                 self.active_transmit = None;
                 self.counters.record_expired_request();
-                self.set_state(MasterState::Idle);
-                self.protocol_deadline = Some(now + self.config.t_no_token);
+                self.enter_idle();
                 return Err(CoreError::RequestExpired);
             }
             if now > reply.send_by {
@@ -502,12 +566,21 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     /// Report that the final stop bit for the matching generation left UART.
+    ///
+    /// The start must have been confirmed first. Completion without it is
+    /// refused with [`CoreError::TransmitNotStarted`] and counted in
+    /// [`MstpCounters::adapter_errors`]; the transmit stays active until it
+    /// is started and completed, aborted, or caught by the watchdog.
     pub fn on_transmit_complete(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         let tx = self
             .active_transmit
             .filter(|tx| tx.id == id)
             .ok_or(CoreError::StaleTransmit)?;
+        if !tx.started {
+            self.counters.record_adapter_error();
+            return Err(CoreError::TransmitNotStarted);
+        }
         self.actions
             .enqueue_direction(Direction::Receive)
             .map_err(|_| CoreError::ActionCapacity)?;
@@ -547,6 +620,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     /// Abort the matching transmit and restore logical receive direction.
+    ///
+    /// Its actions not yet polled are withdrawn, so the next action is the
+    /// switch back to receive.
     pub fn on_transmit_aborted(
         &mut self,
         id: TransmitId,
@@ -558,6 +634,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .active_transmit
             .filter(|tx| tx.id == id)
             .ok_or(CoreError::StaleTransmit)?;
+        self.actions.purge_transmit(id);
         self.actions
             .enqueue_direction(Direction::Receive)
             .map_err(|_| CoreError::ActionCapacity)?;
@@ -628,11 +705,39 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
     }
 
+    /// Line activity while a frame waits out T_turnaround. A reply waits a
+    /// fresh turnaround from this activity; its window still applies when it
+    /// is dispatched. Any other frame is dropped, counted in
+    /// [`MstpCounters::cancelled_sends`].
     fn cancel_pending_send_on_activity(&mut self, now: Instant) {
-        if self.pending_send.take().is_some() {
-            self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
+        let Some(pending) = self.pending_send.as_mut() else {
+            return;
+        };
+        if pending.reply.is_some() {
+            pending.earliest = self.last_activity + self.config.t_turnaround;
+            self.protocol_deadline = Some(pending.earliest);
+            return;
         }
+        self.pending_send = None;
+        self.counters.record_cancelled_send();
+        self.set_state(MasterState::Idle);
+        self.protocol_deadline = Some(now + self.config.t_no_token);
+    }
+
+    /// Go idle, with the token-loss timer running from the last activity on
+    /// the line (Clause 9.5.6.2).
+    fn enter_idle(&mut self) {
+        self.set_state(MasterState::Idle);
+        self.protocol_deadline = Some(self.last_activity + self.config.t_no_token);
+    }
+
+    /// Count an NPDU refused or dropped as too long for a standard frame.
+    fn record_oversize_npdu(&mut self, kind: QueueKind) {
+        let queue = match kind {
+            QueueKind::Unicast => &mut self.counters.unicast,
+            QueueKind::Broadcast => &mut self.counters.broadcast,
+        };
+        queue.drops_oversize = queue.drops_oversize.saturating_add(1);
     }
 
     fn set_state(&mut self, state: MasterState) {

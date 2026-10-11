@@ -269,6 +269,12 @@ impl MstpCoreConfig {
         Self::for_baud_rate_unchecked(DEFAULT_BAUD_RATE)
     }
 
+    /// The time one octet takes on the wire: ten bit times, rounded up.
+    #[must_use]
+    pub const fn octet_time(&self) -> Duration {
+        or_max(ceil_bit_times(self.baud_rate, 10))
+    }
+
     /// Validate all protocol and local bounds.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.baud_rate == 0 {

@@ -72,7 +72,8 @@ impl QueueCounters {
 pub struct MstpCounters {
     /// Number of state-machine transitions.
     pub state_transitions: u32,
-    /// Deadlines observed after their scheduled instant.
+    /// Deadlines serviced [`LATE_DEADLINE`](crate::LATE_DEADLINE) or more
+    /// after they fell due.
     pub deadline_misses: u32,
     /// Tokens successfully rotated to a successor.
     pub token_rotations: u32,
@@ -87,8 +88,15 @@ pub struct MstpCounters {
     /// T_reply_delay. They were still sent.
     pub late_replies: u32,
     /// Requests dropped unanswered because the requester may already have
-    /// stopped waiting (255 ms, the shortest T_reply_timeout).
+    /// stopped waiting: the shortest T_reply_timeout (255 ms) less one octet
+    /// time and a 1 ms guard.
     pub expired_requests: u32,
+    /// Frames dropped because the line became busy while they waited out
+    /// T_turnaround. A reply is not dropped: it waits a fresh turnaround.
+    pub cancelled_sends: u32,
+    /// Transmit events refused because the adapter broke the transmit
+    /// contract, such as completing a transmit it never confirmed starting.
+    pub adapter_errors: u32,
     /// Frames abandoned by T_frame_abort.
     pub frame_aborts: u32,
     /// Valid MS/TP frames received.
@@ -126,6 +134,16 @@ impl MstpCounters {
     /// Record a request dropped unanswered.
     pub(crate) fn record_expired_request(&mut self) {
         increment(&mut self.expired_requests);
+    }
+
+    /// Record a frame dropped while it waited out T_turnaround.
+    pub(crate) fn record_cancelled_send(&mut self) {
+        increment(&mut self.cancelled_sends);
+    }
+
+    /// Record a transmit event refused for breaking the transmit contract.
+    pub(crate) fn record_adapter_error(&mut self) {
+        increment(&mut self.adapter_errors);
     }
 
     /// Record a successful token rotation.

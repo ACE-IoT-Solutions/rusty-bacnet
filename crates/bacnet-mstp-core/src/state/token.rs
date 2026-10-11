@@ -112,8 +112,58 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         self.done_with_token(now)
     }
 
+    /// Send the next queued NPDU, if there is one.
+    ///
+    /// An NPDU that cannot go out in a standard frame is dropped, counted as
+    /// oversize, and the next one is tried, so it never holds the token. The
+    /// attempts are bounded in case a [`QueueStorage`] fails to drop it.
     fn dequeue_and_send(&mut self, now: Instant) -> Result<bool, CoreError> {
         self.queues.expire(now.as_micros());
+        let mut npdu = [0; MAX_STANDARD_MPDU_DATA];
+        for _ in 0..=self.queues.total_depth() {
+            let Some(kind) = self.next_queue_kind(now) else {
+                return Ok(false);
+            };
+            let item = match self
+                .queues
+                .dequeue_kind_into(kind, now.as_micros(), &mut npdu)
+            {
+                Ok(Some(item)) => item,
+                Ok(None) => return Ok(false),
+                // Too long for the scratch: the queue dropped and counted it.
+                Err(_) => continue,
+            };
+            let Some(data) = npdu.get(..item.len) else {
+                // The queue claims more octets than it copied.
+                self.record_oversize_npdu(kind);
+                continue;
+            };
+            self.consecutive_broadcast = if kind == QueueKind::Broadcast {
+                self.consecutive_broadcast.saturating_add(1)
+            } else {
+                0
+            };
+            self.frame_count = self.frame_count.saturating_add(1);
+            let expecting = kind == QueueKind::Unicast && data.len() >= 2 && data[1] & 0x04 != 0;
+            let (frame_type, post) = if expecting {
+                (
+                    FrameType::BACnetDataExpectingReply,
+                    PostTransmit::WaitForReply,
+                )
+            } else {
+                (
+                    FrameType::BACnetDataNotExpectingReply,
+                    PostTransmit::ContinueToken,
+                )
+            };
+            self.queue_frame(frame_type, item.destination, data, post, now)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// The queue to serve next under the broadcast/unicast ratio.
+    fn next_queue_kind(&self, now: Instant) -> Option<QueueKind> {
         let has_u = self
             .queues
             .peek_kind(QueueKind::Unicast, now.as_micros())
@@ -122,43 +172,15 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .queues
             .peek_kind(QueueKind::Broadcast, now.as_micros())
             .is_some();
-        let kind = match (has_u, has_b) {
-            (false, false) => return Ok(false),
-            (true, false) => QueueKind::Unicast,
-            (false, true) => QueueKind::Broadcast,
+        match (has_u, has_b) {
+            (false, false) => None,
+            (true, false) => Some(QueueKind::Unicast),
+            (false, true) => Some(QueueKind::Broadcast),
             (true, true) if self.consecutive_broadcast < self.config.broadcast_unicast_ratio => {
-                QueueKind::Broadcast
+                Some(QueueKind::Broadcast)
             }
-            (true, true) => QueueKind::Unicast,
-        };
-        let mut npdu = [0; MAX_STANDARD_MPDU_DATA];
-        let Some(item) = self
-            .queues
-            .dequeue_kind_into(kind, now.as_micros(), &mut npdu)
-            .map_err(|_| CoreError::ActionCapacity)?
-        else {
-            return Ok(false);
-        };
-        self.consecutive_broadcast = if kind == QueueKind::Broadcast {
-            self.consecutive_broadcast.saturating_add(1)
-        } else {
-            0
-        };
-        self.frame_count = self.frame_count.saturating_add(1);
-        let expecting = kind == QueueKind::Unicast && item.len >= 2 && npdu[1] & 0x04 != 0;
-        let (frame_type, post) = if expecting {
-            (
-                FrameType::BACnetDataExpectingReply,
-                PostTransmit::WaitForReply,
-            )
-        } else {
-            (
-                FrameType::BACnetDataNotExpectingReply,
-                PostTransmit::ContinueToken,
-            )
-        };
-        self.queue_frame(frame_type, item.destination, &npdu[..item.len], post, now)?;
-        Ok(true)
+            (true, true) => Some(QueueKind::Unicast),
+        }
     }
 
     fn done_with_token(&mut self, now: Instant) -> Result<(), CoreError> {

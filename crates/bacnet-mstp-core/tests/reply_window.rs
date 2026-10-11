@@ -7,7 +7,7 @@
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,
-    MstpCoreConfig, RequestId, TransmitId,
+    MstpCoreConfig, ReceiveError, ReplyDecision, RequestId, TransmitId, LATE_DEADLINE,
 };
 
 type Queues = HeaplessQueues<4, 4>;
@@ -18,8 +18,9 @@ const REQUEST_AT: Instant = Instant::from_micros(1_000);
 const DECIDE_BY: Instant = Instant::from_micros(226_000);
 /// The end of T_reply_delay.
 const SEND_BY: Instant = Instant::from_micros(251_000);
-/// The shortest T_reply_timeout (255 ms) after the request.
-const GIVE_UP: Instant = Instant::from_micros(256_000);
+/// The shortest T_reply_timeout (255 ms) after the request, less one octet
+/// at 9600 baud (1042 µs, rounded up) and the 1 ms guard.
+const GIVE_UP: Instant = Instant::from_micros(1_000 + 255_000 - 1_042 - 1_000);
 
 fn config() -> MstpCoreConfig {
     MstpCoreConfig {
@@ -104,10 +105,22 @@ fn decision_deadline_leaves_the_transmit_margin() {
 
 #[test]
 fn deadline_call_one_microsecond_late_still_sends_postponed() {
+    // Lateness under LATE_DEADLINE is ordinary tick jitter: sent, not counted.
     let mut rx = [0; 64];
     let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
     receive_request(&mut core);
     let late = DECIDE_BY + Duration::from_micros(1);
+    core.on_deadline(late).unwrap();
+    let id = take_postponed(&mut core);
+    core.on_transmit_started(id, late).unwrap();
+    assert_eq!(core.counters().deadline_misses, 0);
+    assert_eq!(core.counters().late_replies, 0);
+
+    // At LATE_DEADLINE it is counted as a miss, and still answered.
+    let mut rx = [0; 64];
+    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    receive_request(&mut core);
+    let late = DECIDE_BY + LATE_DEADLINE;
     core.on_deadline(late).unwrap();
     let id = take_postponed(&mut core);
     core.on_transmit_started(id, late).unwrap();
@@ -174,4 +187,69 @@ fn nothing_is_sent_once_the_requester_may_have_stopped_waiting() {
         .unwrap();
     assert_eq!(core.counters().late_replies, 1);
     assert_eq!(core.counters().expired_requests, 0);
+}
+
+#[test]
+fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
+    let mut rx = [0; 64];
+    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let id = receive_request(&mut core);
+    // The answer comes inside the turnaround, so the reply waits for it.
+    core.complete_request(
+        id,
+        ReplyDecision::Data(&[9]),
+        REQUEST_AT + Duration::from_micros(500),
+    )
+    .unwrap();
+    let noise = REQUEST_AT + Duration::from_millis(1);
+    core.on_receive_error(ReceiveError::Framing, noise).unwrap();
+    // The reply waits a fresh turnaround from the noise instead of vanishing.
+    let due = noise + core.config().t_turnaround;
+    assert_eq!(core.next_deadline(), Some(due));
+    core.on_deadline(due).unwrap();
+    assert_eq!(
+        core.poll_action(),
+        Action::SetDirection(Direction::Transmit)
+    );
+    let Action::Transmit { frame, .. } = core.poll_action() else {
+        panic!("expected the reply transmit");
+    };
+    let reply = decode_frame(frame).unwrap().0;
+    assert_eq!(
+        (
+            reply.header.frame_type,
+            reply.header.destination,
+            reply.data
+        ),
+        (FrameType::BACnetDataNotExpectingReply, 7, &[9][..])
+    );
+    assert_eq!(core.counters().cancelled_sends, 0);
+
+    // A frame for this station meanwhile is ignored rather than answered in
+    // the reply's place.
+    let mut rx = [0; 64];
+    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let id = receive_request(&mut core);
+    core.complete_request(
+        id,
+        ReplyDecision::Data(&[9]),
+        REQUEST_AT + Duration::from_micros(500),
+    )
+    .unwrap();
+    core.on_validated_frame(Frame::new(FrameType::PollForMaster, 1, 5, &[]), noise)
+        .unwrap();
+    let due = core.next_deadline().unwrap();
+    core.on_deadline(due).unwrap();
+    assert_eq!(
+        core.poll_action(),
+        Action::SetDirection(Direction::Transmit)
+    );
+    let Action::Transmit { frame, .. } = core.poll_action() else {
+        panic!("expected the reply transmit");
+    };
+    let reply = decode_frame(frame).unwrap().0.header;
+    assert_eq!(
+        (reply.frame_type, reply.destination),
+        (FrameType::BACnetDataNotExpectingReply, 7)
+    );
 }

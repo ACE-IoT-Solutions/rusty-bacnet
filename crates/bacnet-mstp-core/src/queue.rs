@@ -170,8 +170,10 @@ pub trait QueueStorage {
 
     /// Copy the selected payload into `scratch` and remove it atomically.
     ///
-    /// If `scratch` is too small, the item remains queued and
-    /// [`QueueRejectReason::Oversize`] is returned.
+    /// If `scratch` is too small, the item is dropped, counted in
+    /// `drops_oversize`, and [`QueueRejectReason::Oversize`] is returned. The
+    /// core's scratch holds a standard frame's data, so such an item could
+    /// never be sent; leaving it queued would keep it at the head.
     fn dequeue_into(
         &mut self,
         now: u64,
@@ -183,7 +185,8 @@ pub trait QueueStorage {
         self.dequeue_kind_into(info.kind, now, scratch)
     }
 
-    /// Copy and remove the next item from one destination class.
+    /// Copy and remove the next item from one destination class, with the
+    /// oversize rule of [`Self::dequeue_into`].
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
@@ -468,13 +471,17 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         let Some((index, info)) = self.select_kind(kind, now) else {
             return Ok(None);
         };
-        if scratch.len() < info.len {
-            return Err(QueueRejectReason::Oversize);
-        }
         let item = match kind {
             QueueKind::Unicast => self.unicast.remove(index),
             QueueKind::Broadcast => self.broadcast.remove(index),
         };
+        if scratch.len() < info.len {
+            let depth = self.depth(kind);
+            let counters = self.counters_mut(kind);
+            counters.record_dequeue(depth);
+            counters.record_drop_oversize();
+            return Err(QueueRejectReason::Oversize);
+        }
         let depth = self.depth(kind);
         self.counters_mut(kind).record_dequeue(depth);
         self.bump_waits();

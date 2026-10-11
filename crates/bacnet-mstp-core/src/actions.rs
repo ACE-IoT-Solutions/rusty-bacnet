@@ -91,6 +91,12 @@ pub enum Action<'a> {
     /// Change the serial transceiver direction.
     SetDirection(Direction),
     /// Send one complete MS/TP frame.
+    ///
+    /// Before enabling the line driver for it (the
+    /// [`SetDirection`](Self::SetDirection) polled just before), confirm the
+    /// start with [`MasterCore::on_transmit_started`](crate::MasterCore::on_transmit_started)
+    /// and send only if that succeeds. After any error for this id, or an
+    /// abort, send nothing more for it.
     Transmit {
         /// Generation-bound operation identifier.
         id: TransmitId,
@@ -293,6 +299,41 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
             },
         });
         Ok(())
+    }
+
+    /// Withdraw a transmit that has not been polled yet, with its direction
+    /// change if that has not been polled either.
+    ///
+    /// The direction change is always one sequence number ahead of its frame
+    /// (see [`Self::enqueue_transmission`]), and controls are polled oldest
+    /// first, so a polled frame means its direction change was polled too.
+    pub(crate) fn purge_transmit(&mut self, id: TransmitId) {
+        let Some(index) = self.controls.iter().position(|slot| {
+            matches!(
+                slot,
+                Some(ControlSlot {
+                    kind: ControlKind::Transmit { id: queued, .. },
+                    ..
+                }) if *queued == id
+            )
+        }) else {
+            return;
+        };
+        let Some(frame) = self.controls[index].take() else {
+            return;
+        };
+        let direction = frame.sequence.wrapping_sub(1);
+        for slot in &mut self.controls {
+            if matches!(
+                slot,
+                Some(ControlSlot {
+                    sequence,
+                    kind: ControlKind::Direction(Direction::Transmit),
+                }) if *sequence == direction
+            ) {
+                *slot = None;
+            }
+        }
     }
 
     /// Queue an NPDU delivery, copying the bytes into owned storage.

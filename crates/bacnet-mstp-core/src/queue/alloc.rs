@@ -221,13 +221,17 @@ impl QueueStorage for AllocQueues {
         let Some((index, info)) = self.select_kind(kind, now) else {
             return Ok(None);
         };
-        if scratch.len() < info.len {
-            return Err(QueueRejectReason::Oversize);
-        }
         let item = match kind {
             QueueKind::Unicast => self.unicast.remove(index),
             QueueKind::Broadcast => self.broadcast.remove(index),
         };
+        if scratch.len() < info.len {
+            let depth = self.depth(kind);
+            let counters = self.counters_mut(kind);
+            counters.record_dequeue(depth);
+            counters.record_drop_oversize();
+            return Err(QueueRejectReason::Oversize);
+        }
         let depth = self.depth(kind);
         self.counters_mut(kind).record_dequeue(depth);
         self.bump_waits();

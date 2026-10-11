@@ -348,6 +348,8 @@ fn every_receive_ingress_cancels_a_deferred_token_owned_send() {
     assert!(matches!(core.poll_action(), Action::DeliverNpdu { .. }));
     core.on_deadline(stale_due).unwrap();
     assert_eq!(core.poll_action(), Action::Idle);
+    // The dropped frame is counted, not lost silently.
+    assert_eq!(core.counters().cancelled_sends, 1);
 
     let mut rx = [0; 1024];
     let mut core = MasterCore::new(config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
@@ -364,6 +366,7 @@ fn every_receive_ingress_cancels_a_deferred_token_owned_send() {
     core.on_deadline(stale_due).unwrap();
     assert_eq!(core.poll_action(), Action::Idle);
     assert!(core.counters().state_transitions > 0);
+    assert_eq!(core.counters().cancelled_sends, 1);
 }
 
 #[test]

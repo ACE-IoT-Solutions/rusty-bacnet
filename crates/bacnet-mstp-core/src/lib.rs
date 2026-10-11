@@ -38,4 +38,7 @@ pub use queue::HeaplessQueues;
 pub use queue::{
     DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
 };
-pub use state::{CoreError, MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision};
+pub use state::{
+    CoreError, MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision, LATE_DEADLINE,
+    MIN_RX_STORAGE,
+};
