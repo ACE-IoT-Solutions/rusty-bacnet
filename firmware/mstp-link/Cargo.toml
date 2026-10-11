@@ -1,0 +1,36 @@
+[package]
+name = "mstp-link"
+description = "No-allocator firmware link test and size budget for the MS/TP codec and core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# The lib holds the scenario, which the host test runs and the image links.
+# The bin is the image on a bare-metal target, and a stub on a host.
+[lib]
+test = false
+doctest = false
+
+[[bin]]
+name = "mstp-link"
+test = false
+bench = false
+
+# Default features, so no allocator; heapless is the core's no-alloc queue.
+[dependencies]
+bacnet-mstp-codec = { workspace = true }
+bacnet-mstp-core = { workspace = true, features = ["heapless"] }
+
+# The runtimes only on bare-metal targets, so a host build pulls in neither.
+[target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
+cortex-m-rt = { workspace = true }
+
+# single-hart: one core, so the startup code skips the hart check; memory:
+# its link.x includes memory.x, as cortex-m-rt's does.
+[target.'cfg(all(target_arch = "riscv32", target_os = "none"))'.dependencies]
+riscv-rt = { workspace = true, features = ["single-hart", "memory"] }
+
+[lints]
+workspace = true

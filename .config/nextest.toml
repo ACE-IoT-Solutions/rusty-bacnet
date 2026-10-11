@@ -42,6 +42,12 @@ filter = '''
 '''
 success-output = "immediate"
 
+# The MS/TP firmware link test's RAM sizes on the host (#1626), for the log;
+# check-firmware-link.sh prints the bare-metal ones.
+[[profile.default.overrides]]
+filter = 'binary_id(mstp-link::scenario) & test(=ram_sizes)'
+success-output = "immediate"
+
 # Start the slowest tests first. nextest otherwise starts tests in binary and
 # name order, so a long test in a binary that sorts late, such as
 # bacnet-transport, starts near the end and keeps the run going alone for most
