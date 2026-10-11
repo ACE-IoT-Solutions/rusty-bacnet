@@ -102,3 +102,66 @@ fn caller_owned_encoders_produce_borrowed_decoder_vectors() {
     assert_eq!(decoded.logical_source, origin);
     assert_eq!(decoded.npdu, npdu);
 }
+
+#[test]
+fn malformed_or_unsupported_datagrams_fail_closed() {
+    let mut truncated_meta = meta(false);
+    truncated_meta.truncated = true;
+    assert_eq!(
+        decode_bip_datagram(&[0x81, 0x0a, 0x00, 0x04], truncated_meta),
+        Err(BipDecodeError::DatagramTruncated)
+    );
+    assert_eq!(
+        decode_bip_datagram(&[0x82, 0x0a, 0x00, 0x04], meta(false)),
+        Err(BipDecodeError::WrongType(0x82))
+    );
+    assert_eq!(
+        decode_bip_datagram(&[0x81, 0x00, 0x00, 0x04], meta(false)),
+        Err(BipDecodeError::UnsupportedFunction(0x00))
+    );
+    assert_eq!(
+        decode_bip_datagram(&[0x81, 0x04, 0x00, 0x09, 1, 2, 3, 4, 5], meta(false)),
+        Err(BipDecodeError::ForwardedAddressTruncated)
+    );
+}
+
+#[test]
+fn encoder_capacity_failures_do_not_mutate_output() {
+    let mut short = [0xa5; 5];
+    assert_eq!(
+        encode_bvll(&mut short, BvlcFunction::OriginalUnicastNpdu, &[1, 2],),
+        Err(BipDecodeError::OutputTooSmall {
+            needed: 6,
+            available: 5,
+        })
+    );
+    assert_eq!(short, [0xa5; 5]);
+
+    let too_long_npdu = vec![0; u16::MAX as usize - 3];
+    let mut untouched = [0x5a; 8];
+    assert_eq!(
+        encode_bvll(
+            &mut untouched,
+            BvlcFunction::OriginalUnicastNpdu,
+            &too_long_npdu,
+        ),
+        Err(BipDecodeError::FrameTooLong(u16::MAX as usize + 1))
+    );
+    assert_eq!(untouched, [0x5a; 8]);
+}
+
+#[test]
+fn encoder_accepts_largest_representable_bvll_datagram() {
+    let npdu = vec![0x5a; u16::MAX as usize - 4];
+    let mut output = vec![0; u16::MAX as usize];
+    let len = encode_bvll(&mut output, BvlcFunction::OriginalUnicastNpdu, &npdu).unwrap();
+    assert_eq!(len, u16::MAX as usize);
+    assert_eq!(&output[..4], &[0x81, 0x0a, 0xff, 0xff]);
+    assert_eq!(
+        decode_bip_datagram(&output, meta(false))
+            .unwrap()
+            .npdu
+            .len(),
+        npdu.len()
+    );
+}
