@@ -161,6 +161,17 @@ pub enum BroadcastError {
     InvalidPriority(u8),
     /// The logical source address is absent and cannot form a stable origin.
     InvalidOrigin,
+    /// The supplied bytes are not a structurally valid BACnet NPDU for
+    /// routed-broadcast processing.
+    InvalidNpdu,
+    /// The supplied hop offset does not identify the NPDU's actual hop-count
+    /// field.
+    HopOffsetMismatch {
+        /// Caller-supplied offset.
+        supplied: usize,
+        /// Parsed offset, when the NPDU carries a hop count.
+        actual: usize,
+    },
 }
 
 /// Counters and cache disposition for one fanout operation.
@@ -282,13 +293,49 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
         if request.origin_address.is_empty() {
             return Err(BroadcastError::InvalidOrigin);
         }
-        if let Some(offset) = request.hop_count_offset {
-            if offset >= request.npdu.len() {
-                return Err(BroadcastError::InvalidHopOffset {
-                    offset,
-                    length: request.npdu.len(),
-                });
+
+        let parsed =
+            ParsedBroadcastNpdu::decode(request.npdu).map_err(|_| BroadcastError::InvalidNpdu)?;
+        if let Some(supplied) = request.hop_count_offset {
+            match parsed.hop_offset {
+                Some(actual) if actual == supplied => {}
+                Some(actual) => {
+                    return Err(BroadcastError::HopOffsetMismatch { supplied, actual });
+                }
+                None => {
+                    return Err(BroadcastError::InvalidHopOffset {
+                        offset: supplied,
+                        length: request.npdu.len(),
+                    });
+                }
             }
+        } else if parsed.hop_offset.is_some() {
+            return Err(BroadcastError::InvalidNpdu);
+        }
+        match request.destination {
+            BroadcastDestination::Remote(network)
+                if parsed.destination_network != Some(network.get()) =>
+            {
+                return Err(BroadcastError::InvalidNpdu);
+            }
+            BroadcastDestination::Remote(_) if !parsed.destination_is_broadcast() => {
+                return Err(BroadcastError::InvalidNpdu);
+            }
+            BroadcastDestination::Global
+                if parsed.destination_network.is_some()
+                    && parsed.destination_network != Some(u16::MAX) =>
+            {
+                return Err(BroadcastError::InvalidNpdu);
+            }
+            _ => {}
+        }
+
+        let final_len = parsed.final_len(request.origin_address, request.destination);
+        if scratch.len() < final_len {
+            return Err(BroadcastError::ScratchTooSmall {
+                needed: final_len,
+                available: scratch.len(),
+            });
         }
 
         let mut report = BroadcastReport::new();
@@ -320,8 +367,8 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
             return Ok(report);
         }
 
-        if let Some(offset) = request.hop_count_offset {
-            if request.npdu[offset] == 0 {
+        if let Some(hop) = parsed.hop_count {
+            if hop == 0 {
                 for (index, target) in targets.iter().enumerate() {
                     if target_selected_for_request(request, target.capabilities) {
                         results[index].outcome = BroadcastFanoutOutcome::HopExhausted;
@@ -348,6 +395,19 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
             }
             return Ok(report);
         }
+        // Hopless network controls have no hop budget to terminate a loop.
+        // Once the bounded identity cache is live and full, replacing a live
+        // entry would let A/B/C traffic continually evict one another and
+        // circulate forever.  Treat replacement as fail-closed for this
+        // class; ordinary routed broadcasts retain deterministic replacement.
+        if parsed.hop_count.is_none() && matches!(cache_outcome, DuplicateOutcome::Replaced) {
+            for (index, target) in targets.iter().enumerate() {
+                if target_selected_for_request(request, target.capabilities) {
+                    results[index].outcome = BroadcastFanoutOutcome::CacheUntracked;
+                }
+            }
+            return Ok(report);
+        }
         if matches!(cache_outcome, DuplicateOutcome::Untracked) {
             for (index, target) in targets.iter().enumerate() {
                 if target_selected_for_request(request, target.capabilities) {
@@ -357,16 +417,18 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
             return Ok(report);
         }
 
-        scratch[..request.npdu.len()].copy_from_slice(request.npdu);
-        if let Some(offset) = request.hop_count_offset {
-            scratch[offset] = scratch[offset].saturating_sub(1);
-        }
+        parsed.rewrite(
+            request.origin_network,
+            request.origin_address,
+            request.destination,
+            scratch,
+        );
         for (index, target) in targets.iter().enumerate() {
             if !target_selected_for_request(request, target.capabilities) {
                 continue;
             }
             let capabilities = target.capabilities;
-            let npdu = &scratch[..request.npdu.len()];
+            let npdu = &scratch[..final_len];
             let outcome = if npdu.len() > capabilities.effective_max_npdu_len() {
                 report.oversize += 1;
                 BroadcastFanoutOutcome::Oversize {
@@ -428,6 +490,164 @@ fn target_selected(destination: BroadcastDestination, capabilities: PortCapabili
     match destination {
         BroadcastDestination::Remote(network) => capabilities.network == network,
         BroadcastDestination::Global => true,
+    }
+}
+
+const BACNET_PROTOCOL_VERSION: u8 = 1;
+const NETWORK_MESSAGE_BIT: u8 = 0x80;
+const DESTINATION_BIT: u8 = 0x20;
+const SOURCE_BIT: u8 = 0x08;
+
+/// The validated, borrowed wire view used by the broadcast policy.  Unlike
+/// the public request's optional offset, this parser owns the NPDU layout
+/// decision and never trusts a caller-provided byte as a hop count.
+struct ParsedBroadcastNpdu<'a> {
+    control: u8,
+    destination_network: Option<u16>,
+    destination_fields: Option<&'a [u8]>,
+    destination_mac: &'a [u8],
+    source_fields: Option<&'a [u8]>,
+    hop_offset: Option<usize>,
+    hop_count: Option<u8>,
+    remainder: &'a [u8],
+}
+
+impl<'a> ParsedBroadcastNpdu<'a> {
+    fn decode(data: &'a [u8]) -> Result<Self, ()> {
+        if data.len() < 2 || data[0] != BACNET_PROTOCOL_VERSION {
+            return Err(());
+        }
+        let control = data[1];
+        let mut offset = 2;
+        let (destination_network, destination_fields, destination_mac) =
+            if control & DESTINATION_BIT != 0 {
+                let start = offset;
+                if data.len() < offset + 3 {
+                    return Err(());
+                }
+                let network = u16::from_be_bytes([data[offset], data[offset + 1]]);
+                offset += 2;
+                let length = data[offset] as usize;
+                offset += 1;
+                if length > 6 || data.len() < offset + length {
+                    return Err(());
+                }
+                let address = &data[offset..offset + length];
+                offset += length;
+                (Some(network), Some(&data[start..offset]), address)
+            } else {
+                (None, None, &[] as &[u8])
+            };
+        let source_fields = if control & SOURCE_BIT != 0 {
+            let start = offset;
+            if data.len() < offset + 3 {
+                return Err(());
+            }
+            let network = u16::from_be_bytes([data[offset], data[offset + 1]]);
+            offset += 2;
+            let length = data[offset] as usize;
+            offset += 1;
+            if network == 0 || network == u16::MAX || length == 0 || length > 6 {
+                return Err(());
+            }
+            if data.len() < offset + length {
+                return Err(());
+            }
+            offset += length;
+            Some(&data[start..offset])
+        } else {
+            None
+        };
+        let (hop_offset, hop_count, remainder) = if destination_network.is_some() {
+            let Some(&hop) = data.get(offset) else {
+                return Err(());
+            };
+            (Some(offset), Some(hop), &data[offset + 1..])
+        } else {
+            (None, None, &data[offset..])
+        };
+        if control & NETWORK_MESSAGE_BIT != 0 {
+            let Some(&message_type) = remainder.first() else {
+                return Err(());
+            };
+            if message_type >= 0x80 && remainder.len() < 3 {
+                return Err(());
+            }
+        }
+        Ok(Self {
+            control,
+            destination_network,
+            destination_fields,
+            destination_mac,
+            source_fields,
+            hop_offset,
+            hop_count,
+            remainder,
+        })
+    }
+
+    fn destination_is_broadcast(&self) -> bool {
+        self.destination_mac.is_empty() || self.destination_mac == [0xff]
+    }
+
+    fn final_len(&self, origin: LinkAddress, destination: BroadcastDestination) -> usize {
+        let destination_len = match destination {
+            BroadcastDestination::Remote(_) => 0,
+            BroadcastDestination::Global => self.destination_fields.map_or(0, <[u8]>::len),
+        };
+        let source_len = self
+            .source_fields
+            .map_or(3 + origin.as_slice().len(), <[u8]>::len);
+        let hop_len = match destination {
+            BroadcastDestination::Remote(_) => 0,
+            BroadcastDestination::Global => usize::from(self.hop_count.is_some()),
+        };
+        2 + destination_len + source_len + hop_len + self.remainder.len()
+    }
+
+    fn rewrite(
+        &self,
+        origin_network: NetworkNumber,
+        origin_address: LinkAddress,
+        destination: BroadcastDestination,
+        output: &mut [u8],
+    ) {
+        let final_delivery = matches!(destination, BroadcastDestination::Remote(_));
+        output[0] = BACNET_PROTOCOL_VERSION;
+        output[1] = if final_delivery {
+            (self.control & !DESTINATION_BIT) | SOURCE_BIT
+        } else {
+            self.control | SOURCE_BIT
+        };
+        let mut offset = 2;
+        if !final_delivery {
+            match self.destination_fields {
+                Some(fields) => {
+                    output[offset..offset + fields.len()].copy_from_slice(fields);
+                    offset += fields.len();
+                }
+                None => {}
+            }
+        }
+        if let Some(fields) = self.source_fields {
+            output[offset..offset + fields.len()].copy_from_slice(fields);
+            offset += fields.len();
+        } else {
+            output[offset..offset + 2].copy_from_slice(&origin_network.get().to_be_bytes());
+            offset += 2;
+            output[offset] = origin_address.as_slice().len() as u8;
+            offset += 1;
+            output[offset..offset + origin_address.as_slice().len()]
+                .copy_from_slice(origin_address.as_slice());
+            offset += origin_address.as_slice().len();
+        }
+        if !final_delivery {
+            if let Some(hop) = self.hop_count {
+                output[offset] = hop.saturating_sub(1);
+                offset += 1;
+            }
+        }
+        output[offset..offset + self.remainder.len()].copy_from_slice(self.remainder);
     }
 }
 

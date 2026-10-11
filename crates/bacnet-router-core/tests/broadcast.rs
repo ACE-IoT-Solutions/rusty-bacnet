@@ -1,9 +1,10 @@
 //! Routed-broadcast policy, fanout, and loop-suppression tests.
 
 use bacnet_router_core::{
-    AdmissionOutcome, BroadcastDestination, BroadcastFanoutOutcome, BroadcastFanoutResult,
-    BroadcastPolicy, BroadcastPolicyConfig, BroadcastRequest, BroadcastTarget, Egress,
-    EgressRequest, LinkAddress, NetworkNumber, PortCapabilities, PortId, PortKind, TrafficClass,
+    AdmissionOutcome, BroadcastDestination, BroadcastError, BroadcastFanoutOutcome,
+    BroadcastFanoutResult, BroadcastPolicy, BroadcastPolicyConfig, BroadcastRequest,
+    BroadcastTarget, Egress, EgressRequest, LinkAddress, NetworkNumber, PortCapabilities, PortId,
+    PortKind, TrafficClass,
 };
 
 #[derive(Default)]
@@ -56,7 +57,11 @@ fn request<'a>(
         origin_address: address(0x42),
         destination,
         npdu,
-        hop_count_offset: Some(3),
+        hop_count_offset: if npdu.get(1).is_some_and(|control| control & 0x20 != 0) {
+            Some(5)
+        } else {
+            None
+        },
         packet_fingerprint: fingerprint,
         class: TrafficClass::Data,
         priority: 2,
@@ -84,7 +89,7 @@ fn results(len: usize) -> Vec<BroadcastFanoutResult> {
 
 #[test]
 fn default_policy_is_fail_closed_and_remote_selects_only_its_network() {
-    let npdu = [1, 0, 0, 5, 0xaa];
+    let npdu = [1, 0x20, 0, 200, 0, 5, 0xaa];
     let targets = [
         target(1, 100, 501),
         target(2, 200, 501),
@@ -111,8 +116,52 @@ fn default_policy_is_fail_closed_and_remote_selects_only_its_network() {
 }
 
 #[test]
+fn malformed_or_undersized_final_npdu_is_rejected_before_cache_or_egress() {
+    let targets = [target(2, 200, 10)];
+    let mut output = results(1);
+    let mut scratch = [0; 16];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<4>(100);
+
+    let malformed = [1, 0x20, 0, 200, 0];
+    assert_eq!(
+        policy.forward(
+            request(
+                1,
+                BroadcastDestination::Remote(network(200)),
+                &malformed,
+                1,
+                1,
+            ),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(BroadcastError::InvalidNpdu)
+    );
+
+    let routed = [1, 0x20, 0xff, 0xff, 0, 5, 0xaa];
+    let mut small_scratch = [0; 10];
+    assert_eq!(
+        policy.forward(
+            request(1, BroadcastDestination::Global, &routed, 2, 1),
+            &targets,
+            &mut output,
+            &mut small_scratch,
+            &mut egress,
+        ),
+        Err(BroadcastError::ScratchTooSmall {
+            needed: 11,
+            available: 10,
+        })
+    );
+    assert!(egress.calls.is_empty());
+}
+
+#[test]
 fn global_fanout_excludes_ingress_preserves_mixed_outcomes_and_decrements_once() {
-    let npdu = [1, 0, 0, 5, 0xaa];
+    let npdu = [1, 0x20, 0xff, 0xff, 0, 5, 0xaa];
     let targets = [
         target(1, 100, 501),
         target(2, 200, 501),
@@ -154,12 +203,78 @@ fn global_fanout_excludes_ingress_preserves_mixed_outcomes_and_decrements_once()
         BroadcastFanoutOutcome::Oversize { .. }
     ));
     assert_eq!(output[5].outcome, BroadcastFanoutOutcome::Invalid);
-    assert_eq!(egress.calls[0].1[3], 4);
+    assert_eq!(egress.calls[0].1[9], 4);
+}
+
+#[test]
+fn remote_broadcast_strips_route_header_and_inserts_origin_exactly() {
+    let npdu = [1, 0x20, 0, 200, 0, 5, 0xaa];
+    let targets = [target(2, 200, 501)];
+    let mut output = results(1);
+    let mut scratch = [0; 16];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<4>(100);
+
+    policy
+        .forward(
+            request(1, BroadcastDestination::Remote(network(200)), &npdu, 7, 1),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        )
+        .unwrap();
+
+    assert_eq!(egress.calls[0].0, PortId(2));
+    assert_eq!(egress.calls[0].1, [1, 0x08, 0, 10, 1, 0x42, 0xaa]);
+}
+
+#[test]
+fn remote_broadcast_preserves_existing_origin_exactly() {
+    let npdu = [1, 0x28, 0, 200, 0, 0, 20, 1, 9, 5, 0xaa];
+    let targets = [target(2, 200, 501)];
+    let mut output = results(1);
+    let mut scratch = [0; 16];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<4>(100);
+    let mut request = request(1, BroadcastDestination::Remote(network(200)), &npdu, 17, 1);
+    request.hop_count_offset = Some(9);
+
+    policy
+        .forward(request, &targets, &mut output, &mut scratch, &mut egress)
+        .unwrap();
+
+    assert_eq!(egress.calls[0].1, [1, 0x08, 0, 20, 1, 9, 0xaa]);
+}
+
+#[test]
+fn global_broadcast_preserves_route_header_inserts_origin_and_decrements_once() {
+    let npdu = [1, 0x20, 0xff, 0xff, 0, 5, 0xaa];
+    let targets = [target(2, 200, 501)];
+    let mut output = results(1);
+    let mut scratch = [0; 16];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<4>(100);
+
+    policy
+        .forward(
+            request(1, BroadcastDestination::Global, &npdu, 8, 1),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        )
+        .unwrap();
+
+    assert_eq!(
+        egress.calls[0].1,
+        [1, 0x28, 0xff, 0xff, 0, 0, 10, 1, 0x42, 4, 0xaa]
+    );
 }
 
 #[test]
 fn alternate_ingress_is_suppressed_but_repeat_after_expiry_is_admitted() {
-    let npdu = [1, 0, 0, 2, 0xaa];
+    let npdu = [1, 0x20, 0xff, 0xff, 0, 2, 0xaa];
     let targets = [target(1, 100, 501), target(2, 200, 501)];
     let mut output = results(targets.len());
     let mut scratch = [0; 16];
@@ -198,18 +313,18 @@ fn alternate_ingress_is_suppressed_but_repeat_after_expiry_is_admitted() {
         .unwrap();
     assert_eq!(
         output[0].outcome,
-        BroadcastFanoutOutcome::Accepted { final_npdu_len: 5 }
+        BroadcastFanoutOutcome::Accepted { final_npdu_len: 11 }
     );
     assert_eq!(
         output[1].outcome,
-        BroadcastFanoutOutcome::Accepted { final_npdu_len: 5 }
+        BroadcastFanoutOutcome::Accepted { final_npdu_len: 11 }
     );
     assert_eq!(egress.calls.len(), 3);
 }
 
 #[test]
 fn cache_saturation_replaces_deterministically_and_remains_bounded() {
-    let npdu = [1, 0, 0, 4];
+    let npdu = [1, 0x20, 0xff, 0xff, 0, 4];
     let targets = [target(2, 200, 501)];
     let mut output = results(1);
     let mut scratch = [0; 16];
@@ -262,5 +377,52 @@ fn hopless_control_is_forwarded_once_and_alternate_ingress_cannot_loop_it() {
     assert_eq!(output[0].outcome, BroadcastFanoutOutcome::Duplicate);
     assert_eq!(output[1].outcome, BroadcastFanoutOutcome::IngressExcluded);
     assert_eq!(output[2].outcome, BroadcastFanoutOutcome::Duplicate);
+    assert_eq!(egress.calls.len(), 2);
+}
+
+#[test]
+fn hopless_cache_saturation_fails_closed_without_a_b_c_churn_loop() {
+    let npdu = [1, 0x80, 0, 0x01];
+    let targets = [target(2, 200, 501)];
+    let mut output = results(1);
+    let mut scratch = [0; 16];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<2>(100);
+
+    for fingerprint in 1..=2 {
+        policy
+            .forward(
+                request(1, BroadcastDestination::Global, &npdu, fingerprint, 1),
+                &targets,
+                &mut output,
+                &mut scratch,
+                &mut egress,
+            )
+            .unwrap();
+        assert_eq!(
+            output[0].outcome,
+            BroadcastFanoutOutcome::Accepted { final_npdu_len: 8 }
+        );
+    }
+    policy
+        .forward(
+            request(1, BroadcastDestination::Global, &npdu, 3, 1),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        )
+        .unwrap();
+    assert_eq!(output[0].outcome, BroadcastFanoutOutcome::CacheUntracked);
+    policy
+        .forward(
+            request(1, BroadcastDestination::Global, &npdu, 1, 1),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        )
+        .unwrap();
+    assert_eq!(output[0].outcome, BroadcastFanoutOutcome::CacheUntracked);
     assert_eq!(egress.calls.len(), 2);
 }
