@@ -305,6 +305,69 @@ fn mstp_delivery_becomes_bip_original_unicast_and_binds_reply_id() {
 }
 
 #[test]
+fn mstp_broadcast_delivery_becomes_bip_original_broadcast() {
+    let mut router = RouterCore::<2, 2>::new();
+    router.routes_mut().add_direct(net(300), PortId(3)).unwrap();
+    let broadcast = Ipv4SocketAddress {
+        ip: [192, 0, 2, 255],
+        port: 47_808,
+    };
+    let npdu = routed_npdu(20, 300, &[]);
+    let action = Action::DeliverNpdu {
+        source: 7,
+        destination: 0xff,
+        npdu: &npdu,
+        request_id: None,
+    };
+    let mut sink = Sink::accepting();
+    let mut bip_scratch = [0; 1600];
+    let mut bip = BipEgress::new(
+        &mut sink,
+        &mut bip_scratch,
+        PortId(3),
+        broadcast,
+        Instant::ZERO,
+    );
+    let mut bindings = RequestBindings::<1>::new(100, 0);
+    let mut scratch = [0; 512];
+    let outcome = forward_mstp_action_to_bip(
+        &mut router,
+        action,
+        net(100),
+        bip_caps(3, 300),
+        &mut scratch,
+        &mut bip,
+        &mut bindings,
+        1,
+    )
+    .unwrap();
+    assert!(matches!(
+        outcome,
+        bacnet_router_core::ForwardOutcome::Forwarded { .. }
+    ));
+    drop(bip);
+    assert_eq!(sink.destination, broadcast);
+    let decoded = bip::decode_ingress(
+        &sink.frame[..sink.len],
+        metadata(
+            Ipv4SocketAddress {
+                ip: [192, 0, 2, 1],
+                port: 47_808,
+            },
+            true,
+        ),
+        Instant::ZERO,
+    )
+    .unwrap();
+    assert_eq!(
+        decoded.ingress.function,
+        bacnet_router_core::BvlcFunction::OriginalBroadcastNpdu
+    );
+    assert_eq!(&decoded.ingress.npdu[2..4], &[0, 100]);
+    assert_eq!(&decoded.ingress.npdu[4..6], &[1, 7]);
+}
+
+#[test]
 fn binding_full_expired_invalid_and_timeout_are_explicit() {
     let id = bacnet_mstp_core::RequestId::new(4);
     let mut bindings = RequestBindings::<1>::new(10, 10);
