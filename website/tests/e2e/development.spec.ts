@@ -31,6 +31,6 @@ test('search discovers development Network Port guidance and retains its scope',
   const raw = await request.get(base + 'raw/development/network-number.md');
   const text = await raw.text();
   expect(text).toContain('A Network Port object, a transport');
-  expect(text).toContain('Register a NORMAL B/IP receiving port');
+  expect(text).toContain('Register a B/IP receiving port');
   expect(text).toContain('https://jscott3201.github.io/rusty-bacnet/development/overview/');
 });

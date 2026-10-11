@@ -35,12 +35,13 @@ step "file-size cap";    bash scripts/ci/check-file-size.sh
 step "no-secret scan";   bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh
 step "MSRV script regressions"; python3 scripts/ci/test-check-msrv.py
 step "changelog fragments"; python3 -m unittest discover -s scripts -p 'test_changelog.py' && python3 scripts/changelog.py check
-features=bacnet-types/serde,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
+features=bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
 step "clippy (every macOS feature)"
 cargo clippy --workspace --exclude rusty-bacnet --all-targets --locked --features "$features" -- -D warnings
 step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
 step "clippy and rustdoc (each published crate, default features; no_std bacnet-types)"
 bash scripts/ci/check-default-features.sh
+step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
 step "rustdoc (every macOS feature, private items)"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$features"
 step "rustdoc (PyO3 bindings, private items)"

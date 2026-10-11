@@ -23,7 +23,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
 | Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins) | ✓ | ✓ | ✓ | ✓ |
-| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples) | ✓ | ✓ | ✓ | ✓ |
+| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples) | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`) | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`) |  | ✓ |  | ✓ |
@@ -62,9 +62,9 @@ too.
 
 Rust caches are keyed per job on the toolchain, `Cargo.lock`, the manifests,
 and, for Clippy and Test, `LINUX_FEATURES` (Clippy also on
-`DEFAULT_FEATURES_TARGETS`). Only a job that succeeded on `dev` saves its
-cache, so a failed or cancelled run can't leave a partial cache that later runs
-restore by exact key. The MSRV job's cache comes from the weekly run, the Heavy run on
+`DEFAULT_FEATURES_TARGETS` and `NO_STD_TARGETS`). Only a job that succeeded
+on `dev` saves its cache, so a failed or cancelled run can't leave a partial
+cache that later runs restore by exact key. The MSRV job's cache comes from the weekly run, the Heavy run on
 `dev`. A new push to a PR cancels its superseded run.
 
 The workflow sets `CARGO_INCREMENTAL=0` and drops native debug info from dev and
@@ -183,6 +183,7 @@ image.
   key, and the image's `stable` moves with image updates, which would start
   the jobs cold each time. The Clippy job adds the `x86_64-pc-windows-msvc` and
   `aarch64-apple-darwin` standard libraries for the per-crate default-features
+  check, and the bare-metal targets in `NO_STD_TARGETS` for the `no_std`
   check (neither clippy nor rustdoc links, so nothing else is needed). The
   MSRV job adds the MSRV toolchain and sets `RUSTUP_TOOLCHAIN` to it.
 - **Tools.** [`.github/ci-pins.env`](../.github/ci-pins.env) pins
@@ -556,11 +557,18 @@ the shared library.
 
 Clippy and rustdoc deny warnings (#902). Every public item must be documented:
 `missing_docs` is `deny`, and only the unpublished `bacnet-benchmarks` opts out.
-Clippy runs four ways:
+Clippy runs five ways:
 
 - the workspace with every feature;
 - the PyO3 crate on its own;
 - `bacnet-cli` with no default features (without the TUI);
+- the `no_std` crates (`bacnet-mstp-codec`, and `bacnet-types` without its
+  default features) on bare-metal targets, once per feature set
+  (`scripts/ci/check-no-std.sh`). A host build always has `std` and an
+  allocator, so only a target without them shows that a crate needs neither.
+  CI's Clippy job passes `NO_STD_TARGETS`: `thumbv6m-none-eabi`,
+  `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf`. The script lists
+  the combinations it skips, and why;
 - each published crate alone with default features, plus the `no_std` build of
   `bacnet-types` (`scripts/ci/check-default-features.sh`). This also runs
   rustdoc, which is how docs.rs builds, and a rustdoc-only run of `bacnet-cli`
@@ -597,6 +605,7 @@ cargo clippy --workspace --exclude rusty-bacnet --all-targets --locked --feature
 cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
 cargo clippy -p bacnet-cli --no-default-features --all-targets --locked -- -D warnings
 bash scripts/ci/check-default-features.sh   # the host; or pass target triples, as CI does
+bash scripts/ci/check-no-std.sh             # needs the bare-metal targets (rustup target add)
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$FEATURES"
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusty-bacnet --no-deps --locked --document-private-items
 cargo nextest run -p bacnet-cli --locked   # the CLI's feature-off tests
