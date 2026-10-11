@@ -861,6 +861,17 @@ group destination at any port, is malformed for the same reason as on B/IP:
 it is dropped before the network layer sees it and counted in
 `forwarded_group_origin_drops()` (#1493).
 
+The transport is never a B/IPv6 BBMD. A Register-Foreign-Device,
+Delete-Foreign-Device-Table-Entry or Distribute-Broadcast-To-Network sent to
+its own address gets that request's BVLC-Result NAK, at the datagram's source
+(Annex U.4.4, U.4.5.3, U.4.5.4). A foreign device also answers a
+Forwarded-Address-Resolution for its VMAC with an Address-Resolution-ACK, but
+only one its configured BBMD sends it, and only when the asker's address in
+the message is a usable unicast one; any other is dropped (U.5). Those replies
+count against a per-address and overall quota, so forged requests can't turn
+the node into a reflector. Address-Resolution and Virtual-Address-Resolution
+answers stay outside it (#1632).
+
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is
 compile-checked; its runtime remains unqualified. Unique link-local selection has
