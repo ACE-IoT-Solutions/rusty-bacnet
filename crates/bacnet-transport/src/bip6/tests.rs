@@ -5,7 +5,7 @@ use bytes::BytesMut;
 use tokio::net::UdpSocket;
 
 use super::frame::encoded;
-use super::ingress::{original_destination_matches, LocalBinding};
+use super::ingress::{destination_vmac_matches, original_destination_matches, LocalBinding};
 use super::vmac_table::derive_vmac_from_device_instance;
 use super::*;
 use crate::port::TransportPort;
@@ -128,6 +128,56 @@ fn original_function_requires_matching_ip_destination_and_vmac() {
         &binding(local_ip, local_vmac, &[local_ip], false),
         Some(false),
     ));
+}
+
+/// U.3: the three messages that name a recipient's VMAC pass only when it
+/// is this node's. Address-Resolution's target is not a destination, and a
+/// message that names none passes.
+#[test]
+fn destination_vmac_filter_admits_only_this_nodes_vmac() {
+    let local = vmac([1, 2, 3]);
+    let other = vmac([9, 9, 9]);
+    let unicast = |destination| Bvll6::OriginalUnicastNpdu {
+        source: other,
+        destination,
+        npdu: &[0x01, 0x00],
+    };
+    let ar_ack = |destination| Bvll6::AddressResolutionAck {
+        source: other,
+        destination,
+    };
+    let var_ack = |destination| Bvll6::VirtualAddressResolutionAck {
+        source: other,
+        destination,
+    };
+    for (message, admitted) in [
+        (unicast(local), true),
+        (unicast(other), false),
+        (ar_ack(local), true),
+        (ar_ack(other), false),
+        (var_ack(local), true),
+        (var_ack(other), false),
+        (
+            Bvll6::AddressResolution {
+                source: other,
+                target: other,
+            },
+            true,
+        ),
+        (
+            Bvll6::OriginalBroadcastNpdu {
+                source: other,
+                npdu: &[0x01, 0x00],
+            },
+            true,
+        ),
+    ] {
+        assert_eq!(
+            destination_vmac_matches(&message, local),
+            admitted,
+            "{message:?}"
+        );
+    }
 }
 
 #[tokio::test]
