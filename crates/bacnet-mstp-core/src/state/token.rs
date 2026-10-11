@@ -1,6 +1,7 @@
 //! Token ownership, maintenance polling, and queue scheduling.
 
 use super::*;
+use crate::queue::QueueClass;
 
 impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     pub(super) fn enter_no_token(&mut self, now: Instant) -> Result<(), CoreError> {
@@ -114,6 +115,26 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     fn dequeue_and_send(&mut self, now: Instant) -> Result<bool, CoreError> {
         self.queues.expire(now.as_micros());
+        let has_data = self
+            .queues
+            .peek_class(QueueClass::Data, now.as_micros())
+            .is_some();
+        let has_control = self
+            .queues
+            .peek_class(QueueClass::NetworkControl, now.as_micros())
+            .is_some();
+        let class = match (has_data, has_control) {
+            (false, false) => return Ok(false),
+            (true, false) => QueueClass::Data,
+            (false, true) => QueueClass::NetworkControl,
+            (true, true) if self.consecutive_network_control < self.config.starvation_limit => {
+                QueueClass::NetworkControl
+            }
+            (true, true) => QueueClass::Data,
+        };
+        if class == QueueClass::NetworkControl {
+            return self.dequeue_network_control_and_send(now);
+        }
         let has_u = self
             .queues
             .peek_kind(QueueKind::Unicast, now.as_micros())
@@ -144,8 +165,38 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         } else {
             0
         };
+        self.consecutive_network_control = 0;
         self.frame_count = self.frame_count.saturating_add(1);
         let expecting = kind == QueueKind::Unicast && item.len >= 2 && npdu[1] & 0x04 != 0;
+        let (frame_type, post) = if expecting {
+            (
+                FrameType::BACnetDataExpectingReply,
+                PostTransmit::WaitForReply {
+                    source: item.destination,
+                },
+            )
+        } else {
+            (
+                FrameType::BACnetDataNotExpectingReply,
+                PostTransmit::ContinueToken,
+            )
+        };
+        self.queue_frame(frame_type, item.destination, &npdu[..item.len], post, now)?;
+        Ok(true)
+    }
+
+    fn dequeue_network_control_and_send(&mut self, now: Instant) -> Result<bool, CoreError> {
+        let mut npdu = [0; MAX_STANDARD_MPDU_DATA];
+        let Some(item) = self
+            .queues
+            .dequeue_class_into(QueueClass::NetworkControl, now.as_micros(), &mut npdu)
+            .map_err(|_| CoreError::ActionCapacity)?
+        else {
+            return Ok(false);
+        };
+        self.consecutive_network_control = self.consecutive_network_control.saturating_add(1);
+        self.frame_count = self.frame_count.saturating_add(1);
+        let expecting = item.kind == QueueKind::Unicast && item.len >= 2 && npdu[1] & 0x04 != 0;
         let (frame_type, post) = if expecting {
             (
                 FrameType::BACnetDataExpectingReply,

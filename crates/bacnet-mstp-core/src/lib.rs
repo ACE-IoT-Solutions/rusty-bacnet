@@ -25,5 +25,7 @@ pub use counters::{MstpCounters, QueueCounters};
 pub use queue::AllocQueues;
 #[cfg(feature = "heapless")]
 pub use queue::HeaplessQueues;
-pub use queue::{DequeuedNpdu, NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
+pub use queue::{
+    DequeuedNpdu, NetworkPriority, QueueClass, QueueKind, QueueRejectReason, QueueStorage,
+};
 pub use state::{CoreError, MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision};

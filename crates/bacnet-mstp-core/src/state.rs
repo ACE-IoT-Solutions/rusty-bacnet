@@ -11,7 +11,7 @@ use crate::actions::{
 use crate::clock::{Duration, Instant};
 use crate::config::{ConfigError, MstpCoreConfig};
 use crate::counters::MstpCounters;
-use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
+use crate::queue::{NetworkPriority, QueueClass, QueueKind, QueueRejectReason, QueueStorage};
 
 mod receive;
 mod token;
@@ -192,6 +192,7 @@ pub struct MasterCore<'rx, Q: QueueStorage> {
     parser_partial: bool,
     last_now: Instant,
     consecutive_broadcast: u8,
+    consecutive_network_control: u8,
     counters: MstpCounters,
 }
 
@@ -230,6 +231,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             parser_partial: false,
             last_now: now,
             consecutive_broadcast: 0,
+            consecutive_network_control: 0,
             counters: MstpCounters::default(),
         })
     }
@@ -263,6 +265,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         let mut counters = self.counters;
         counters.unicast = self.queues.stats(QueueKind::Unicast);
         counters.broadcast = self.queues.stats(QueueKind::Broadcast);
+        counters.network_control = self.queues.stats_class(QueueClass::NetworkControl);
         counters
     }
 
@@ -280,6 +283,29 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         let expires = now.saturating_add(self.config.queue_max_age).as_micros();
         self.queues
             .enqueue_npdu(destination, npdu, priority, now.as_micros(), Some(expires))
+    }
+
+    /// Queue a network-control NPDU in the independently reserved control
+    /// capacity.  The payload is copied by the queue on successful admission.
+    pub fn enqueue_network_control_npdu(
+        &mut self,
+        destination: u8,
+        npdu: &[u8],
+        priority: NetworkPriority,
+        now: Instant,
+    ) -> Result<(), QueueRejectReason> {
+        if now < self.last_now {
+            return Err(QueueRejectReason::Expired);
+        }
+        let expires = now.saturating_add(self.config.queue_max_age).as_micros();
+        self.queues.enqueue_npdu_class(
+            QueueClass::NetworkControl,
+            destination,
+            npdu,
+            priority,
+            now.as_micros(),
+            Some(expires),
+        )
     }
 
     /// Feed one wire-timestamped octet through the incremental codec.
@@ -311,6 +337,15 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             DecodeEvent::Frame { frame, .. } => {
                 self.parser_partial = false;
                 complete = Some(Self::copy_frame(frame));
+            }
+            DecodeEvent::ExtendedFrame { .. } => {
+                // Extended COBS frames are decoded by the codec but are not
+                // yet admitted by the standard MS/TP master state machine.
+                // Treat one as an invalid frame so callers get bounded,
+                // observable rejection rather than accidental delivery.
+                self.parser_partial = false;
+                self.counters.record_parser_error();
+                self.invalid_frame_event(now)?;
             }
         }
         if let Some(frame) = complete {

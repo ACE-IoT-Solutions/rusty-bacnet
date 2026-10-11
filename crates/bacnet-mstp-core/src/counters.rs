@@ -96,6 +96,8 @@ pub struct MstpCounters {
     pub unicast: QueueCounters,
     /// Broadcast queue counters.
     pub broadcast: QueueCounters,
+    /// Reserved network-control queue counters.
+    pub network_control: QueueCounters,
 }
 
 impl MstpCounters {
