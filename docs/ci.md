@@ -562,8 +562,9 @@ Clippy runs five ways:
 - the workspace with every feature;
 - the PyO3 crate on its own;
 - `bacnet-cli` with no default features (without the TUI);
-- the `no_std` crates (`bacnet-mstp-codec`, and `bacnet-types` without its
-  default features) on bare-metal targets, once per feature set
+- the `no_std` crates (`bacnet-mstp-codec`, `bacnet-mstp-core`, and
+  `bacnet-types` without its default features) on bare-metal targets, once per
+  feature set
   (`scripts/ci/check-no-std.sh`). A host build always has `std` and an
   allocator, so only a target without them shows that a crate needs neither.
   CI's Clippy job passes `NO_STD_TARGETS`: `thumbv6m-none-eabi`,
