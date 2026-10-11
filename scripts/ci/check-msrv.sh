@@ -98,6 +98,7 @@ FEATURES="$FEATURES,bacnet-server/sc-tls"
 FEATURES="$FEATURES,bacnet-cli/sc-tls,bacnet-cli/tui"
 FEATURES="$FEATURES,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless"
 FEATURES="$FEATURES,bacnet-mstp-core/alloc,bacnet-mstp-core/heapless"
+FEATURES="$FEATURES,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless"
 
 echo "MSRV gate covers:"
 for p in $PKGS; do echo "  - $p"; done

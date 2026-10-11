@@ -7,10 +7,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use bacnet_types::enums::BvlcFunction;
+use bacnet_bip_codec::{BvlcFunction, BvllFrame};
 use tracing::{debug, warn};
 
-use crate::bvll::decode_bvll;
 use crate::udp_metadata::{DestinationReceiver, IpVersion, ReceivedDatagram};
 
 use super::io::{handle_bvll_message, RecvContext};
@@ -289,15 +288,15 @@ pub(super) async fn handle_datagram(
     if !ctx.group_sources.admits_sender(peer) {
         return;
     }
-    let msg = match decode_bvll(data) {
-        Ok(msg) => msg,
+    let frame = match BvllFrame::decode(data) {
+        Ok(frame) => frame,
         Err(e) => {
             warn!(error = %e, "Failed to decode BVLL frame");
             return;
         }
     };
     let Some(delivery) = admitted_delivery(
-        msg.function,
+        frame.function,
         received.destination,
         local.local_ip,
         ctx.broadcast_addr,
@@ -306,7 +305,7 @@ pub(super) async fn handle_datagram(
         received.os_group_delivery,
     ) else {
         debug!(
-            function = msg.function.to_raw(),
+            function = frame.function.to_raw(),
             destination = %received.destination,
             "Dropping BVLL/IP destination mismatch"
         );
@@ -345,5 +344,5 @@ pub(super) async fn handle_datagram(
         }
         return;
     }
-    handle_bvll_message(&msg, (peer.ip().octets(), peer.port()), delivery, ctx).await;
+    handle_bvll_message(frame, (peer.ip().octets(), peer.port()), delivery, ctx).await;
 }

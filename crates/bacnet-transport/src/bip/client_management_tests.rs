@@ -72,8 +72,6 @@ fn message(function: BvlcFunction, payload: &[u8]) -> BvllMessage {
     BvllMessage {
         function,
         payload: bytes::Bytes::copy_from_slice(payload),
-        originating_ip: None,
-        originating_port: None,
     }
 }
 

@@ -3,7 +3,7 @@
 use std::net::SocketAddrV4;
 use std::time::Duration;
 
-use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
+use bacnet_bip_codec::{BvlcFunction, BvlcResultCode};
 
 /// One management function's locally observed exchanges, cumulative across
 /// stop/start on the same transport. Counts saturate at `u64::MAX`.

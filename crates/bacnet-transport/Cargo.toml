@@ -12,6 +12,7 @@ categories = ["network-programming"]
 [dependencies]
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
+bacnet-bip-codec = { workspace = true, features = ["bytes"] }
 bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }

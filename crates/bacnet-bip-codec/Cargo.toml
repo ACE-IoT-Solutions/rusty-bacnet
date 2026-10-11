@@ -1,0 +1,27 @@
+[package]
+name = "bacnet-bip-codec"
+description = "Portable no-std BACnet/IP (Annex J) BVLL codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["bacnet", "bip", "bvll", "embedded", "no-std"]
+categories = ["embedded", "network-programming", "no-std"]
+
+# No feature needs std: each one only adds a BvllSink impl.
+[features]
+default = []
+alloc = []
+bytes = ["alloc", "dep:bytes"]
+heapless = ["dep:heapless"]
+
+[dependencies]
+bytes = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

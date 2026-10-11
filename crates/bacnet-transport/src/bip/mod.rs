@@ -19,15 +19,15 @@ use tracing::{debug, warn};
 
 use crate::bbmd::{self, BbmdState, BdtEntry, FdtEntryWire};
 pub use crate::bbmd::{FdtCounters, ForeignDevicePolicy};
-#[cfg(test)]
-use crate::bvll::decode_bvll;
 use crate::bvll::{decode_bip_mac, encode_bip_mac, encode_bvll, BvllMessage};
+#[cfg(test)]
+use crate::bvll::{decode_bvll, forwarded_message, forwarded_wire, origin_of, raw_frame};
 use crate::port::{BipPort, ReceivedNpdu, TransportPort};
 #[cfg(test)]
 use crate::udp_metadata::{DestinationReceiver, IpVersion};
+use bacnet_bip_codec::{self as codec, BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_types::bip_port::{BbmdTables, BipPortMode};
 use bacnet_types::constructed::BACnetHostNPort;
-use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
 use bacnet_types::error::Error;
 
 mod access;
@@ -48,9 +48,7 @@ use bbmd_start::{
     initial_bbmd_state, refresh_own_address, warn_if_broadcast_may_leave_another_interface,
     BbmdConfig, OwnAddressContext,
 };
-use bvlc_response::{
-    bvlc_result_error, decode_bvlc_result_code, expect_bvlc_function, BvlcResponseKind,
-};
+use bvlc_response::{decode_bvlc_result_code, unexpected_response, BvlcResponseKind};
 use socket::BipSocket;
 mod ingress;
 mod io;
@@ -63,9 +61,18 @@ use ingress::{admitted_delivery, Delivery};
 use ingress::{broadcast_is_own_address, receive_loop, IngressAddresses, Listeners};
 #[cfg(test)]
 use ingress::{handle_datagram, Arrival};
-#[cfg(test)]
-use io::handle_bvll_message;
 use io::RecvContext;
+
+/// Run a received message through the receive path, for tests.
+#[cfg(test)]
+async fn handle_bvll_message(
+    msg: &BvllMessage,
+    sender: ([u8; 4], u16),
+    delivery: Delivery,
+    ctx: &RecvContext,
+) {
+    io::handle_bvll_message(msg.frame(), sender, delivery, ctx).await;
+}
 use own_broadcast::OwnBroadcastForwarder;
 pub use rate_limit::ManagementCounters;
 use rate_limit::ManagementRateLimiter;
@@ -418,21 +425,19 @@ impl BipTransport {
         tasks
     }
 
-    /// Send a raw BVLC management request and await the response.
+    /// Send a BVLC management request and await the response.
     async fn bvlc_request(
         &self,
         target: &[u8],
-        function: BvlcFunction,
+        request: Bvll<'_>,
         expected_response: BvlcResponseKind,
-        payload: &[u8],
     ) -> Result<BvllMessage, Error> {
         self.client_management
             .request(
                 self.require_socket()?,
                 target,
-                function,
+                request,
                 expected_response,
-                payload,
                 Self::BVLC_RESPONSE_TIMEOUT,
             )
             .await
@@ -452,16 +457,18 @@ impl BipTransport {
         let msg = self
             .bvlc_request(
                 target,
-                BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
+                Bvll::ReadBroadcastDistributionTable,
                 BvlcResponseKind::ReadBroadcastDistributionTableAck,
-                &[],
             )
             .await?;
-        if msg.function == BvlcFunction::BVLC_RESULT {
-            return Err(bvlc_result_error(&msg));
+        match msg.message()? {
+            Bvll::BvlcResult(code) => Err(Error::Encoding(format!("BVLC-Result: {code:?}"))),
+            Bvll::ReadBroadcastDistributionTableAck(table) => bbmd::bdt_from_wire(table),
+            other => Err(unexpected_response(
+                BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK,
+                other.function(),
+            )),
         }
-        expect_bvlc_function(&msg, BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK)?;
-        BbmdState::decode_bdt(&msg.payload)
     }
 
     /// Send Write-Broadcast-Distribution-Table and return the result code.
@@ -473,14 +480,12 @@ impl BipTransport {
         target: &[u8],
         entries: &[BdtEntry],
     ) -> Result<BvlcResultCode, Error> {
-        let mut payload = BytesMut::with_capacity(entries.len() * bbmd::BDT_ENTRY_SIZE);
-        bbmd::encode_bdt_entries(entries, &mut payload);
+        let rows: Vec<codec::BdtEntry> = entries.iter().map(codec::BdtEntry::from).collect();
         let msg = self
             .bvlc_request(
                 target,
-                BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE,
+                Bvll::WriteBroadcastDistributionTable(BdtEntries::from_entries(&rows)),
                 BvlcResponseKind::Result,
-                &payload,
             )
             .await?;
         decode_bvlc_result_code(&msg)
@@ -491,16 +496,18 @@ impl BipTransport {
         let msg = self
             .bvlc_request(
                 target,
-                BvlcFunction::READ_FOREIGN_DEVICE_TABLE,
+                Bvll::ReadForeignDeviceTable,
                 BvlcResponseKind::ReadForeignDeviceTableAck,
-                &[],
             )
             .await?;
-        if msg.function == BvlcFunction::BVLC_RESULT {
-            return Err(bvlc_result_error(&msg));
+        match msg.message()? {
+            Bvll::BvlcResult(code) => Err(Error::Encoding(format!("BVLC-Result: {code:?}"))),
+            Bvll::ReadForeignDeviceTableAck(table) => bbmd::fdt_from_wire(table),
+            other => Err(unexpected_response(
+                BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK,
+                other.function(),
+            )),
         }
-        expect_bvlc_function(&msg, BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK)?;
-        bbmd::decode_fdt(&msg.payload)
     }
 
     /// Send Delete-Foreign-Device-Table-Entry and return the result code.
@@ -510,15 +517,12 @@ impl BipTransport {
         ip: [u8; 4],
         port: u16,
     ) -> Result<BvlcResultCode, Error> {
-        let mut payload = BytesMut::with_capacity(6);
-        payload.extend_from_slice(&ip);
-        payload.extend_from_slice(&port.to_be_bytes());
+        let entry = SocketAddrV4::new(Ipv4Addr::from(ip), port);
         let msg = self
             .bvlc_request(
                 target,
-                BvlcFunction::DELETE_FOREIGN_DEVICE_TABLE_ENTRY,
+                Bvll::DeleteForeignDeviceTableEntry(entry),
                 BvlcResponseKind::Result,
-                &payload,
             )
             .await?;
         decode_bvlc_result_code(&msg)
@@ -536,13 +540,11 @@ impl BipTransport {
         target: &[u8],
         ttl: u16,
     ) -> Result<BvlcResultCode, Error> {
-        let payload = ttl.to_be_bytes();
         let msg = self
             .bvlc_request(
                 target,
-                BvlcFunction::REGISTER_FOREIGN_DEVICE,
+                Bvll::RegisterForeignDevice { ttl },
                 BvlcResponseKind::Result,
-                &payload,
             )
             .await?;
         decode_bvlc_result_code(&msg)
@@ -771,7 +773,7 @@ impl TransportPort for BipTransport {
         let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
 
         let mut buf = BytesMut::with_capacity(4 + npdu.len());
-        encode_bvll(&mut buf, BvlcFunction::ORIGINAL_UNICAST_NPDU, npdu)?;
+        encode_bvll(&mut buf, &Bvll::OriginalUnicastNpdu(npdu))?;
 
         socket.send_to(&buf, dest).await.map_err(Error::Transport)?;
 
@@ -791,11 +793,7 @@ impl TransportPort for BipTransport {
         if let Some(fd) = &self.foreign_device {
             let bbmd_addr = SocketAddrV4::new(fd.bbmd_ip, fd.bbmd_port);
             let mut buf = BytesMut::with_capacity(4 + npdu.len());
-            encode_bvll(
-                &mut buf,
-                BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
-                npdu,
-            )?;
+            encode_bvll(&mut buf, &Bvll::DistributeBroadcastToNetwork(npdu))?;
             socket
                 .send_to(&buf, bbmd_addr)
                 .await
@@ -806,7 +804,7 @@ impl TransportPort for BipTransport {
         let dest = SocketAddrV4::new(self.broadcast_address, self.port);
 
         let mut buf = BytesMut::with_capacity(4 + npdu.len());
-        encode_bvll(&mut buf, BvlcFunction::ORIGINAL_BROADCAST_NPDU, npdu)?;
+        encode_bvll(&mut buf, &Bvll::OriginalBroadcastNpdu(npdu))?;
 
         // A BBMD also forwards its own broadcast to the other BDT subnets and
         // its foreign devices (Annex J.4.5). The fanout is queued first, so its
@@ -835,9 +833,8 @@ impl TransportPort for BipTransport {
         // IP (every host bit set) together with this port's UDP
         // port — a broadcast IP at a different port belongs to a different
         // B/IP network and must not be folded into this link's broadcast.
-        mac.len() == 6
-            && mac[..4] == self.broadcast_address.octets()
-            && mac[4..] == self.port.to_be_bytes()
+        matches!(codec::address_from_slice(mac), Ok(address)
+            if *address.ip() == self.broadcast_address && address.port() == self.port)
     }
 
     fn is_group_destination(&self, mac: &[u8]) -> bool {
@@ -874,6 +871,8 @@ mod forwarded_tests;
 mod group_delivery_tests;
 #[cfg(test)]
 mod group_source_tests;
+#[cfg(test)]
+mod malformed_bvll_tests;
 #[cfg(test)]
 mod management_ack_tests;
 #[cfg(test)]

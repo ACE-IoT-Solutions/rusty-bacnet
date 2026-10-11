@@ -8,8 +8,9 @@ use super::*;
 use bacnet_encoding::constructed::{decode_bdt_entry_list, decode_fdt_entry_list};
 use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
 use bacnet_transport::bip::ForeignDeviceConfig;
+use bacnet_transport::bvll::BvlcResultCode;
 use bacnet_types::constructed::BACnetBDTEntry;
-use bacnet_types::enums::{BvlcResultCode, PropertyIdentifier as P};
+use bacnet_types::enums::PropertyIdentifier as P;
 
 fn database() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();

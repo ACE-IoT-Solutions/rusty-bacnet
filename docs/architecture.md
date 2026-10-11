@@ -15,7 +15,8 @@ Foundations
   bacnet-services       Service request/response structures (no_std + alloc)
   bacnet-mstp-codec     MS/TP frame codec (no_std; by default no allocator, no deps)
   bacnet-mstp-core      MS/TP master state machine (no_std; by default no allocator)
-  bacnet-transport      Data-link transports and framing
+  bacnet-bip-codec      BACnet/IP BVLL codec (no_std; by default no allocator, no deps)
+  bacnet-transport      Data-link transports and framing (B/IP BVLL via bacnet-bip-codec)
   bacnet-network        Network layer, BACnetRouter, RouterTable
   bacnet-objects        BACnetObject, ObjectDatabase, object implementations
 

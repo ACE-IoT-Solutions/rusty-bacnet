@@ -9,12 +9,10 @@ use tokio::time::{timeout, Duration};
 
 async fn send_register(socket: &UdpSocket, dest: SocketAddrV4, ttl: u16) -> Option<BvllMessage> {
     let mut buf = BytesMut::new();
-    encode_bvll(
-        &mut buf,
+    buf.extend_from_slice(&raw_frame(
         BvlcFunction::REGISTER_FOREIGN_DEVICE,
         &ttl.to_be_bytes(),
-    )
-    .unwrap();
+    ));
     socket.send_to(&buf, dest).await.unwrap();
     let mut recv_buf = [0u8; 2048];
     match timeout(Duration::from_millis(300), socket.recv_from(&mut recv_buf)).await {
@@ -29,8 +27,7 @@ async fn send_raw(
     function: BvlcFunction,
     payload: &[u8],
 ) -> Option<BvllMessage> {
-    let mut buf = BytesMut::new();
-    encode_bvll(&mut buf, function, payload).unwrap();
+    let buf = raw_frame(function, payload);
     socket.send_to(&buf, dest).await.unwrap();
     let mut recv_buf = [0u8; 2048];
     match timeout(Duration::from_millis(300), socket.recv_from(&mut recv_buf)).await {
@@ -345,8 +342,6 @@ async fn rate_limit_discards_malformed_and_unauthorized_before_normal_handling()
         let msg = BvllMessage {
             function,
             payload: Bytes::copy_from_slice(payload),
-            originating_ip: None,
-            originating_port: None,
         };
         handle_bvll_message(&msg, sender, Delivery::Unicast, server).await;
     }
@@ -486,8 +481,6 @@ async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
         let msg = BvllMessage {
             function: BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
             payload: Bytes::new(),
-            originating_ip: None,
-            originating_port: None,
         };
         handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;
         // Drain each admitted Read-BDT-ACK from the peer.
@@ -501,8 +494,6 @@ async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
     let over = BvllMessage {
         function: BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
         payload: Bytes::new(),
-        originating_ip: None,
-        originating_port: None,
     };
     handle_bvll_message(&over, sender, Delivery::Unicast, &ctx).await;
     {
@@ -519,8 +510,6 @@ async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
     let npdu = BvllMessage {
         function: BvlcFunction::ORIGINAL_UNICAST_NPDU,
         payload: Bytes::from_static(&[0x01, 0x04, 0xAA]),
-        originating_ip: None,
-        originating_port: None,
     };
     handle_bvll_message(&npdu, sender, Delivery::Unicast, &ctx).await;
     let received = timeout(Duration::from_secs(2), npdu_rx.recv())
@@ -534,8 +523,6 @@ async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
     let dbtn = BvllMessage {
         function: BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
         payload: Bytes::from_static(&[0x01, 0x20, 0xAA]),
-        originating_ip: None,
-        originating_port: None,
     };
     handle_bvll_message(&dbtn, sender, Delivery::Unicast, &ctx).await;
     {

@@ -6,10 +6,10 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
 use bacnet_transport::bip::{AsBip, ManagementCounters};
 use bacnet_transport::bvll::decode_bip_mac;
+use bacnet_transport::bvll::BvlcResultCode;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::NoSerial;
 use bacnet_types::data_link::DataLink;
-use bacnet_types::enums::BvlcResultCode;
 
 /// A remote BBMD row the in-process BBMD starts with.
 const PEER_ROW: BdtEntry = BdtEntry {

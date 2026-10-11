@@ -43,9 +43,7 @@ async fn context(broadcast_addr: Ipv4Addr) -> (RecvContext, mpsc::Receiver<Recei
 }
 
 fn frame(function: BvlcFunction) -> BytesMut {
-    let mut buf = BytesMut::new();
-    encode_bvll(&mut buf, function, CONFIRMED_REQUEST).unwrap();
-    buf
+    raw_frame(function, CONFIRMED_REQUEST)
 }
 
 /// Feed one datagram to the receive path as though the OS reported it sent
@@ -109,8 +107,6 @@ async fn original_unicast_takes_its_group_flag_from_the_delivery() {
     let msg = BvllMessage {
         function: BvlcFunction::ORIGINAL_UNICAST_NPDU,
         payload: Bytes::from_static(CONFIRMED_REQUEST),
-        originating_ip: None,
-        originating_port: None,
     };
     let sender = (SENDER.ip().octets(), SENDER.port());
     for (delivery, group) in [(Delivery::Broadcast, true), (Delivery::Unicast, false)] {

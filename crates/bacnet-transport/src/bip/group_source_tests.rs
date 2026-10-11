@@ -11,7 +11,6 @@
 use super::groups::{BipGroups, GroupSources};
 use super::*;
 use crate::udp_metadata::ReceivedDatagram;
-use bytes::Bytes;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::time::{timeout, Duration};
 
@@ -37,12 +36,7 @@ const GROUP_ORIGINS: [([u8; 4], u16); 5] = [
 ];
 
 fn forwarded(origin: ([u8; 4], u16)) -> BvllMessage {
-    BvllMessage {
-        function: BvlcFunction::FORWARDED_NPDU,
-        payload: Bytes::from_static(I_AM),
-        originating_ip: Some(origin.0),
-        originating_port: Some(origin.1),
-    }
+    forwarded_message(origin, I_AM)
 }
 
 async fn loopback_socket() -> (Arc<super::BipSocket>, u16) {
@@ -178,7 +172,7 @@ async fn a_bbmd_forwards_a_group_origin_nowhere() {
             .unwrap();
         let frame = decode_bvll(&buf[..len]).unwrap();
         assert_eq!(frame.function, BvlcFunction::FORWARDED_NPDU, "{label}");
-        assert_eq!(frame.originating_ip, Some(STATION.0), "{label}");
+        assert_eq!(origin_of(&frame).map(|o| o.0), Some(STATION.0), "{label}");
     }
 }
 
@@ -193,13 +187,11 @@ async fn a_running_transport_counts_group_origins() {
         .unwrap();
 
     for (ip, origin_port) in [([255, 255, 255, 255], port), ([224, 0, 0, 1], 0xBAC0)] {
-        let mut frame = BytesMut::new();
-        crate::bvll::encode_bvll_forwarded(&mut frame, ip, origin_port, I_AM).unwrap();
+        let frame = forwarded_wire((ip, origin_port), I_AM);
         peer.send_to(&frame, to).await.unwrap();
     }
     let station = [127, 0, 0, 1];
-    let mut frame = BytesMut::new();
-    crate::bvll::encode_bvll_forwarded(&mut frame, station, 0xBAC1, I_AM).unwrap();
+    let frame = forwarded_wire((station, 0xBAC1), I_AM);
     peer.send_to(&frame, to).await.unwrap();
 
     let received = timeout(Duration::from_secs(2), rx.recv())
@@ -253,9 +245,7 @@ async fn receive_from(
 }
 
 fn frame(function: BvlcFunction, payload: &[u8]) -> BytesMut {
-    let mut buf = BytesMut::new();
-    encode_bvll(&mut buf, function, payload).unwrap();
-    buf
+    raw_frame(function, payload)
 }
 
 #[tokio::test]
@@ -264,8 +254,7 @@ async fn a_datagram_from_a_group_source_is_dropped_before_its_bvlc_function() {
     let (ctx, mut rx) = context(None, 0xBAC0, &drops).await;
     let unicast = frame(BvlcFunction::ORIGINAL_UNICAST_NPDU, I_AM);
     let broadcast = frame(BvlcFunction::ORIGINAL_BROADCAST_NPDU, I_AM);
-    let mut forwarded = BytesMut::new();
-    crate::bvll::encode_bvll_forwarded(&mut forwarded, STATION.0, STATION.1, I_AM).unwrap();
+    let forwarded = forwarded_wire(STATION, I_AM);
     // Each would otherwise hand an I-Am up from the group source, or from
     // the station that the group source claims to forward for.
     let datagrams = [
@@ -344,7 +333,7 @@ async fn a_bbmd_registers_and_forwards_nothing_from_a_group_source() {
         let (len, _) = received.expect(label).unwrap();
         let frame = decode_bvll(&buf[..len]).unwrap();
         assert_eq!(frame.function, BvlcFunction::FORWARDED_NPDU, "{label}");
-        assert_eq!(frame.originating_ip, Some(SENDER.0), "{label}");
+        assert_eq!(origin_of(&frame).map(|o| o.0), Some(SENDER.0), "{label}");
     }
 }
 

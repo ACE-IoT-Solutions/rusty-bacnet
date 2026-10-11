@@ -44,9 +44,8 @@ fn assert_local_broadcast(frame: &BvllMessage) {
 
 pub(super) fn assert_own_forwarded(frame: &BvllMessage, origin: ([u8; 4], u16), label: &str) {
     assert_eq!(frame.function, BvlcFunction::FORWARDED_NPDU, "{label}");
-    assert_eq!(frame.originating_ip, Some(origin.0), "{label}");
-    assert_eq!(frame.originating_port, Some(origin.1), "{label}");
-    assert_eq!(frame.payload.as_ref(), NPDU, "{label}");
+    assert_eq!(origin_of(frame), Some(origin), "{label}");
+    assert_eq!(frame.npdu().unwrap().as_ref(), NPDU, "{label}");
 }
 
 fn bdt_entry(ip: [u8; 4], port: u16, broadcast_mask: [u8; 4]) -> BdtEntry {
@@ -301,12 +300,10 @@ async fn started_bbmd_forwards_its_own_broadcasts_across_restart() {
         let origin = decode_bip_mac(bbmd.local_mac()).unwrap();
 
         let mut register = BytesMut::new();
-        encode_bvll(
-            &mut register,
+        register.extend_from_slice(&raw_frame(
             BvlcFunction::REGISTER_FOREIGN_DEVICE,
             &60u16.to_be_bytes(),
-        )
-        .unwrap();
+        ));
         foreign
             .send_to(
                 &register,

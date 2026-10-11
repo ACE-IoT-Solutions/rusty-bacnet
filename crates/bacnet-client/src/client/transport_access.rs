@@ -2,7 +2,7 @@
 
 use bacnet_transport::bbmd::{BdtEntry, FdtEntryWire};
 use bacnet_transport::bip::AsBip;
-use bacnet_types::enums::BvlcResultCode;
+use bacnet_transport::bvll::BvlcResultCode;
 
 use super::*;
 

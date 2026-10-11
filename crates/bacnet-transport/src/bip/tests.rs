@@ -1,13 +1,11 @@
 use super::*;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use tokio::time::{timeout, Duration};
 
 fn test_bvll_message(function: BvlcFunction, payload: &[u8]) -> BvllMessage {
     BvllMessage {
         function,
         payload: Bytes::copy_from_slice(payload),
-        originating_ip: None,
-        originating_port: None,
     }
 }
 
@@ -18,8 +16,7 @@ async fn raw_bvlc_request(target: &[u8], function: BvlcFunction, payload: &[u8])
     let (ip, port) = decode_bip_mac(target).unwrap();
     let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
 
-    let mut buf = BytesMut::new();
-    encode_bvll(&mut buf, function, payload).unwrap();
+    let buf = raw_frame(function, payload);
     socket.send_to(&buf, dest).await.unwrap();
 
     let mut recv_buf = [0u8; 2048];
@@ -71,21 +68,27 @@ fn decode_bvlc_result_code_rejects_malformed_payload_lengths() {
         let err = decode_bvlc_result_code(&msg).unwrap_err();
 
         assert!(
-            format!("{err}").contains("BVLC-Result payload must be 2 bytes"),
+            format!("{err}").contains(&format!(
+                "BVLC_RESULT cannot carry a {}-octet payload",
+                payload.len()
+            )),
             "unexpected error: {err}"
         );
     }
 }
 
 #[test]
-fn expect_bvlc_function_rejects_unexpected_response_function() {
-    let msg = test_bvll_message(BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK, &[]);
-    let err = expect_bvlc_function(&msg, BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK)
-        .unwrap_err();
+fn unexpected_response_names_both_functions() {
+    let err = unexpected_response(
+        BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK,
+        BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK,
+    );
 
     assert!(
-        format!("{err}")
-            .contains("expected BVLC response BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK"),
+        format!("{err}").contains(
+            "expected BVLC response BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK, \
+             got BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK"
+        ),
         "unexpected error: {err}"
     );
 }
@@ -395,7 +398,7 @@ async fn write_bdt_rejects_malformed_payload_and_preserves_table() {
     let response = raw_bvlc_request(
         &bbmd_mac,
         BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE,
-        &[0; bbmd::BDT_ENTRY_SIZE - 1],
+        &[0; bacnet_bip_codec::BDT_ENTRY_LENGTH - 1],
     )
     .await;
     assert_eq!(
@@ -434,7 +437,7 @@ async fn write_bdt_to_non_bbmd_surfaces_typed_nak() {
     let response = raw_bvlc_request(
         &server_mac,
         BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE,
-        &[0; bbmd::BDT_ENTRY_SIZE - 1],
+        &[0; bacnet_bip_codec::BDT_ENTRY_LENGTH - 1],
     )
     .await;
     assert_eq!(
@@ -812,6 +815,7 @@ fn is_broadcast_mac_requires_configured_ip_and_port() {
     assert!(!transport.is_broadcast_mac(&[255, 255, 255, 255, 0xBA, 0xC0]));
     assert!(!transport.is_broadcast_mac(&[192, 168, 1, 7, 0xBA, 0xC0]));
     assert!(!transport.is_broadcast_mac(&[192, 168, 1, 255]));
+    assert!(!transport.is_broadcast_mac(&[192, 168, 1, 255, 0xBA, 0xC0, 0x00]));
 }
 
 /// #1479: a group destination is any address that reaches more than one
@@ -837,6 +841,7 @@ fn group_destinations_cover_every_broadcast_and_multicast_address() {
         assert_eq!(owned.contains(&mac), group, "{mac:?}");
     }
     assert!(!transport.is_group_destination(&[255, 255, 255, 255]));
+    assert!(!transport.is_group_destination(&[255, 255, 255, 255, 0xBA, 0xC0, 0x00]));
     assert!(!transport.is_broadcast_mac(&[255, 255, 255, 255, 0xBA, 0xC0]));
 
     // Loopback tests name a unicast address as the broadcast one; it stays a
