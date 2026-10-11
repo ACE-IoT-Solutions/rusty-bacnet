@@ -157,12 +157,15 @@ link.
     action, and records each frame sent with its destination. Then it fills
     the unicast queue and offers an NPDU too long for a standard frame.
   - `bip::run` encodes one message of each `Bvll` variant into a slice and
-    into a `heapless::Vec` sink and decodes each back, reads the decoded BDT
-    and FDT tables from both ends, takes a Forwarded-NPDU's origin, asks a
-    few functions for their payload shape and NAK, and takes the rejection
+    into a `heapless::Vec` sink and decodes each back, and decodes three
+    datagrams written by hand from the Annex J.2 layouts, so a fault that
+    encode and decode share can't cancel out. It reads the decoded BDT and
+    FDT tables from both ends, takes a Forwarded-NPDU's origin, asks a few
+    functions for their payload shape and NAK, and takes the rejection
     paths: a Length field that disagrees with the datagram, a table that
-    isn't whole entries, an undefined result code on encode and an unknown
-    function.
+    isn't whole entries, an undefined result code on encode, an unknown
+    function, and a message too long for a fixed slice and for a nearly
+    full sink.
 
   The host tests `firmware/link/tests/mstp.rs` and `tests/bip.rs` run them
   and compare each whole summary, so the behaviour is checked natively, in
@@ -177,11 +180,13 @@ link.
   layout, `firmware/link/memory.x`: 256 KiB of flash at `0x08000000` and 64
   KiB of RAM at `0x20000000`. The startup code comes from `cortex-m-rt` and
   `riscv-rt`, bare-metal dependencies only; `firmware/link/build.rs` hands
-  the linker `memory.x` and `link.x`. `memory.x` also discards `.eh_frame`:
-  riscv-rt's script leaves the unwind tables in flash (2.6 KB in the MS/TP
-  image), the images abort on panic and have no unwinder, and lld refuses
-  a link that refers to a discarded section. cortex-m-rt already drops ARM's
-  unwind tables. The images' only `unsafe` code is in the runtimes' entry
+  the linker `memory.x` and `link.x`. `memory.x` also discards `.eh_frame`,
+  the unwind tables riscv-rt's script would leave in flash (2.6 KB in the
+  MS/TP image). Only unwinding reads them, and the images never unwind:
+  they build with `panic = "abort"`, which is both the `firmware` profile's
+  setting and these targets' default. Were that ever to change, the worst
+  case is a panic that aborts, which is what happens today. cortex-m-rt
+  already drops ARM's unwind tables. The images' only `unsafe` code is in the runtimes' entry
   macros and, on RISC-V, one block per image that borrows its statics, which
   cortex-m-rt's macro does safely.
 - **Workspace.** The crate is a workspace member outside `default-members`,
@@ -201,9 +206,13 @@ link.
   - `.text`, `.rodata`, `.data`, `.bss` and two totals against their
     budgets. **flash** is every loaded section with contents: the vector
     table on Cortex-M, `.init.rust` on RISC-V, and `.data`'s initial image
-    included. **RAM** is every loaded writable section, `.data` included,
-    but not riscv-rt's `.stack` and `.heap`, which fill whatever RAM is
-    left. Neither counts the stack used at run time;
+    included. **RAM** is every loaded writable section, `.data` and
+    riscv-rt's `.heap` (`_heap_size` octets, 0 here) included, but not its
+    `.stack`, which fills whatever RAM is left. Neither counts the stack
+    used at run time. Both go by section flags, not by memory region, so
+    code placed in RAM would count toward flash only, and the alignment
+    gaps between sections (at most 4 octets of flash per image today)
+    count toward neither;
   - the count of `core::fmt` functions linked in, the largest objects in
     RAM, and `.text` by crate.
 

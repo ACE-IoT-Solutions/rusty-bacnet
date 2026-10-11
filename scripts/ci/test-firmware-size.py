@@ -39,40 +39,56 @@ FMT_WRITE = "_RNvNtCs2_4core3fmt5write"
 CORE = "_RNvNtCs1_13firmware_link5image4CORE"
 
 
-def elf(symbols=((SCENARIO, 100, FUNC, ".text"), (CORE, 300, OBJECT, ".bss")), symtab=True):
-    """A 32-bit little-endian ELF with the LOADED sections and, unless
-    `symtab` is false, a symbol table holding `symbols`, given as (name,
-    size, type, section name)."""
-    names = [s[0] for s in LOADED] + ([".symtab", ".strtab"] if symtab else []) + [".shstrtab"]
+def elf(
+    symbols=((SCENARIO, 100, FUNC, ".text"), (CORE, 300, OBJECT, ".bss")),
+    symtab=True,
+    loaded=LOADED,
+    wide=False,
+):
+    """A little-endian ELF, 64-bit if `wide`, with the `loaded` sections
+    and, unless `symtab` is false, a symbol table holding `symbols`, given
+    as (name, size, type, section name)."""
+    names = [s[0] for s in loaded] + ([".symtab", ".strtab"] if symtab else []) + [".shstrtab"]
     shstrtab = b"\0"
     offsets = {}
     for name in names:
         offsets[name] = len(shstrtab)
         shstrtab += name.encode() + b"\0"
     index = {name: i + 1 for i, name in enumerate(names)}
-    strtab, entries = b"\0", [bytes(16)]
-    for name, size, kind, section in symbols:
-        entries.append(struct.pack("<IIIBBH", len(strtab), 0, size, kind, 0, index[section]))
+    # Symbol and section-header layouts, and the ELF header's size, by class.
+    if wide:
+        symbol, section, header_size = "<IBBHQQ", "<IIQQQQIIQQ", 64
+    else:
+        symbol, section, header_size = "<IIIBBH", "<IIIIIIIIII", 52
+    strtab, entries = b"\0", [bytes(struct.calcsize(symbol))]
+    for name, size, kind, where in symbols:
+        if wide:
+            entries.append(struct.pack(symbol, len(strtab), kind, 0, index[where], 0, size))
+        else:
+            entries.append(struct.pack(symbol, len(strtab), 0, size, kind, 0, index[where]))
         strtab += name.encode() + b"\0"
     # (name, type, link, entsize, contents) of the sections with contents,
-    # laid out after the 52-octet ELF header, then the section headers.
+    # laid out after the ELF header, then the section headers.
     tables = [(".shstrtab", SHT_STRTAB, 0, 0, shstrtab)]
     if symtab:
         tables[:0] = [
-            (".symtab", SHT_SYMTAB, index[".strtab"], 16, b"".join(entries)),
+            (".symtab", SHT_SYMTAB, index[".strtab"], struct.calcsize(symbol), b"".join(entries)),
             (".strtab", SHT_STRTAB, 0, 0, strtab),
         ]
-    layout = "<IIIIIIIIII"
-    headers, contents, at = [bytes(40)], b"", 52
-    for name, kind, flags, size in LOADED:
-        headers.append(struct.pack(layout, offsets[name], kind, flags, 0, 0, size, 0, 0, 4, 0))
+    headers, contents, at = [bytes(struct.calcsize(section))], b"", header_size
+    for name, kind, flags, size in loaded:
+        headers.append(struct.pack(section, offsets[name], kind, flags, 0, 0, size, 0, 0, 4, 0))
     for name, kind, link, entsize, data in tables:
-        headers.append(struct.pack(layout, offsets[name], kind, 0, 0, at, len(data), link, 0, 1, entsize))
+        headers.append(struct.pack(section, offsets[name], kind, 0, 0, at, len(data), link, 0, 1, entsize))
         contents += data
         at += len(data)
-    ident = b"\x7fELF" + bytes([1, 1, 1]) + bytes(9)
+    ident = b"\x7fELF" + bytes([2 if wide else 1, 1, 1]) + bytes(9)
+    # e_type, e_machine, e_version, e_entry, e_phoff, e_shoff, e_flags,
+    # e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx.
+    layout = "<HHIQQQIHHHHHH" if wide else "<HHIIIIIHHHHHH"
     header = ident + struct.pack(
-        "<HHIIIIIHHHHHH", 2, 40, 1, 0, 0, at, 0, 52, 0, 0, 40, len(headers), len(headers) - 1)
+        layout, 2, 40, 1, 0, 0, at, 0, header_size, 0, 0, struct.calcsize(section),
+        len(headers), len(headers) - 1)
     return header + contents + b"".join(headers)
 
 
@@ -125,6 +141,25 @@ class FirmwareSizeTests(unittest.TestCase):
         self.assertEqual(totals[".text.dummy"], ())
         self.assertEqual(totals[".stack"], ())
         self.assertEqual(fmt, [])
+
+    def test_heap_and_uninit_count_toward_ram(self):
+        # riscv-rt's .heap is `_heap_size` octets reserved on purpose, and
+        # cortex-m-rt's .uninit holds statics left uninitialized: both are
+        # RAM the image takes. Only .stack, which fills what is left, isn't.
+        loaded = LOADED + [(".heap", SHT_NOBITS, WA, 4096), (".uninit", SHT_NOBITS, WA, 64)]
+        listing, sizes, _, _ = fs.measure(self.write("image", elf(loaded=loaded)))
+        self.assertEqual(sizes["ram"], 16 + 400 + 4096 + 64)
+        self.assertEqual(sizes["flash"], 1024 + 3000 + 200 + 16)
+        totals = {name: totals for name, _, totals in listing}
+        self.assertEqual(totals[".heap"], ("ram",))
+        self.assertEqual(totals[".uninit"], ("ram",))
+
+    def test_64_bit_elf(self):
+        symbols = ((SCENARIO, 100, FUNC, ".text"), (FMT_WRITE, 40, FUNC, ".text"))
+        _, sizes, read, fmt = fs.measure(self.write("image", elf(symbols, wide=True)))
+        self.assertEqual((sizes["text"], sizes["flash"], sizes["ram"]), (3000, 4240, 416))
+        self.assertEqual([s[:2] for s in read[1:]], [(SCENARIO, 100), (FMT_WRITE, 40)])
+        self.assertEqual(fmt, ["core::fmt::write"])
 
     def test_within_budget_passes(self):
         status, out, err = self.run_main(

@@ -4,12 +4,26 @@
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
-use bacnet_bip_codec::{BdtEntry, BvlcFunction, BvlcResultCode, BvllError, FdtEntry, PayloadShape};
+use bacnet_bip_codec::{
+    BdtEntry, BvlcFunction, BvlcResultCode, Bvll, BvllError, FdtEntries, FdtEntry, PayloadShape,
+};
 use firmware_link::bip::{run, Memory, Summary};
 
 fn address(octets: [u8; 4], port: u16) -> SocketAddrV4 {
     SocketAddrV4::new(Ipv4Addr::from(octets), port)
 }
+
+/// The FNV-1a hash of every octet the scenario encodes. It was worked out
+/// apart from the codec, from the twelve datagrams written out by hand from
+/// the Annex J.2 layouts (156 octets).
+const ENCODED_FNV: u32 = 0xCDF7_F4BE;
+
+/// The one entry of the golden FDT acknowledgement.
+const GOLDEN_FDT: [FdtEntry; 1] = [FdtEntry::new(
+    SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 5), 47808),
+    60,
+    45,
+)];
 
 #[test]
 fn scenario_summary() {
@@ -23,10 +37,25 @@ fn scenario_summary() {
         // 6, the deletion 10, the three tables 24, the Forwarded-NPDU 18 and
         // the three other NPDU carriers 12.
         encoded_octets: 4 * 2 + 6 * 2 + 10 + 24 * 3 + 18 + 12 * 3,
+        // Locks every octet the encoder wrote, in order. The golden
+        // datagrams below check the layout itself.
+        encoded_fnv: ENCODED_FNV,
         sink_matches: 12,
         round_trips: 12,
         // Function codes 0x00 through 0x0B.
         functions: 0x0FFF,
+        // The hand-written datagrams decode to the field values their
+        // comments give.
+        goldens: [
+            Some(Bvll::RegisterForeignDevice { ttl: 300 }),
+            Some(Bvll::ForwardedNpdu {
+                origin: address([192, 168, 1, 20], 47809),
+                npdu: &[0x01, 0x00],
+            }),
+            Some(Bvll::ReadForeignDeviceTableAck(FdtEntries::from_entries(
+                &GOLDEN_FDT,
+            ))),
+        ],
         bdt_ends: [
             Some(BdtEntry::new(
                 address([192, 168, 1, 10], 47808),
@@ -69,6 +98,16 @@ fn scenario_summary() {
             }),
             Some(BvllError::UndefinedResultCode { code: 0x0070 }),
             Some(BvllError::UnknownFunction { function: 0x0C }),
+            // The 24-octet BDT acknowledgement into 10 octets of slice, and
+            // into the sink with 14 of its 64 octets free.
+            Some(BvllError::BufferExhausted {
+                needed: 24,
+                available: 10,
+            }),
+            Some(BvllError::BufferExhausted {
+                needed: 24,
+                available: 14,
+            }),
         ],
         errors: 0,
     };

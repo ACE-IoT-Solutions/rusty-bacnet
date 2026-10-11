@@ -49,11 +49,13 @@ mod image {
     #[riscv_rt::entry]
     fn main() -> ! {
         // SAFETY: this `&mut` is the only reference to the static for the
-        // rest of the program. riscv-rt's startup code calls `main` once and
-        // `main` never returns; with the `single-hart` feature no other hart
-        // runs it; and no interrupt handler can run, because the startup
-        // code writes 0 to `mie`, `mstatus.MIE` is clear at reset, and
-        // nothing here enables either. Nothing else names the static.
+        // rest of the program. The image targets single-hart parts (which is
+        // why riscv-rt's `single-hart` feature, which only drops its
+        // multi-hart gate, is on), so one hart exists, its startup code
+        // calls `main` once, and `main` never returns. No interrupt handler
+        // can run either: the startup code writes 0 to `mie`, `mstatus.MIE`
+        // is clear at reset, and nothing here enables either. Nothing else
+        // names the static.
         #[allow(unsafe_code)]
         let memory = unsafe { &mut *addr_of_mut!(MEMORY) };
         black_box(run(black_box(memory)));

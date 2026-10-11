@@ -20,11 +20,14 @@ failure. --suggest prints a budget table for the image instead, each size
 plus 12%. Used by check-firmware-link.sh; see docs/ci.md, "Firmware link
 test".
 
-Totals: flash is every loaded section that has contents (SHF_ALLOC, not
-NOBITS), .data's initial image included; RAM is every loaded writable
-section, .data included. riscv-rt's .stack and .heap are left out of RAM:
-the linker script sizes them to fill what RAM is left, so they say nothing
-about the image.
+Totals go by section flags, not by memory region: flash is every loaded
+section that has contents (SHF_ALLOC, not NOBITS), .data's initial image
+included; RAM is every loaded writable section, .data included. So code
+placed in RAM would count toward flash only, and the alignment gaps
+between sections count toward neither. riscv-rt's .stack is left out of
+RAM: its link.x sizes it to fill whatever RAM is left, so it says nothing
+about the image. Its .heap does count: that is `_heap_size` octets reserved
+on purpose (0 by default).
 
 The script reads the ELF's section headers and symbol table itself, so it
 needs only Python 3.9 or later, no binutils. The budget file is the subset
@@ -51,7 +54,7 @@ HEADROOM = 0.12
 TIGHTEN = 0.20
 TOKEN = 64
 # Sections the linker script sizes to fill free RAM.
-RESERVATIONS = (".stack", ".heap")
+RESERVATIONS = (".stack",)
 # Section types and flags, and symbol types, from the ELF specification.
 SHT_SYMTAB = 2
 SHT_NOBITS = 8

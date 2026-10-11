@@ -7,9 +7,12 @@
 # - text, rodata, data, bss: those sections.
 # - flash: every loaded section with contents, .data's initial image
 #   included (on Cortex-M, also the 1 KB or 192 B vector table).
-# - ram: every loaded writable section; riscv-rt's .stack and .heap, which
-#   fill whatever RAM is left, don't count. The stack the code uses at run
-#   time isn't measured.
+# - ram: every loaded writable section; riscv-rt's .stack, which fills
+#   whatever RAM is left, doesn't count, but its .heap (`_heap_size`, 0
+#   here) does. The stack the code uses at run time isn't measured.
+#
+# The totals go by section flags, not memory regions, and leave out the
+# alignment gaps between sections (at most 4 octets of flash per image today).
 #
 # Each budget is the size measured when it was set plus 12%, rounded up to
 # 16 octets: what `check-firmware-link.sh --suggest` prints. .data is empty,
@@ -23,11 +26,11 @@
 # flash / ram:
 #
 #   thumbv7m mstp     18304 / 1004 / 0 / 14504   20332 / 14504
-#   thumbv7m bip       4404 /  284 / 0 /   132    5712 /   132
+#   thumbv7m bip       4952 /  392 / 0 /   132    6368 /   132
 #   thumbv6m mstp     19012 / 1004 / 0 / 14504   20208 / 14504
-#   thumbv6m bip       5248 /  284 / 0 /   132    5724 /   132
+#   thumbv6m bip       5740 /  392 / 0 /   132    6324 /   132
 #   riscv32imc mstp   19704 / 1292 / 0 / 14502   21018 / 14502
-#   riscv32imc bip     5808 /  636 / 0 /   132    6466 /   132
+#   riscv32imc bip     6616 /  744 / 0 /   132    7382 /   132
 
 [thumbv7m-none-eabi.mstp]
 text = 20512
@@ -39,11 +42,11 @@ ram = 16256
 fmt_functions = 0
 
 [thumbv7m-none-eabi.bip]
-text = 4944
-rodata = 320
+text = 5552
+rodata = 448
 data = 64
 bss = 160
-flash = 6400
+flash = 7136
 ram = 160
 fmt_functions = 0
 
@@ -57,11 +60,11 @@ ram = 16256
 fmt_functions = 0
 
 [thumbv6m-none-eabi.bip]
-text = 5888
-rodata = 320
+text = 6432
+rodata = 448
 data = 64
 bss = 160
-flash = 6416
+flash = 7088
 ram = 160
 fmt_functions = 0
 
@@ -75,10 +78,10 @@ ram = 16256
 fmt_functions = 0
 
 [riscv32imc-unknown-none-elf.bip]
-text = 6512
-rodata = 720
+text = 7424
+rodata = 848
 data = 64
 bss = 160
-flash = 7248
+flash = 8272
 ram = 160
 fmt_functions = 0

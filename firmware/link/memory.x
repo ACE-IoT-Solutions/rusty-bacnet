@@ -18,10 +18,11 @@ REGION_ALIAS("REGION_HEAP", RAM);
 REGION_ALIAS("REGION_STACK", RAM);
 
 /* Unwind tables. riscv-rt's link.x doesn't place .eh_frame, so the linker
-   would put it in flash: 2.6 KB for the MS/TP image. Nothing reads it: the
-   images abort on panic and contain no unwinder, and lld refuses a link in
-   which anything refers to a discarded section. cortex-m-rt already drops
-   ARM's unwind tables (.ARM.exidx) the same way. */
+   would put it in flash: 2.6 KB for the MS/TP image. Only unwinding reads
+   it, and these images never unwind: they build with panic = "abort", the
+   `firmware` profile's setting and these targets' default. If that ever
+   changed, a panic would still abort, as it does now. cortex-m-rt already
+   drops ARM's unwind tables (.ARM.exidx) the same way. */
 SECTIONS
 {
   /DISCARD/ : { *(.eh_frame) *(.eh_frame_hdr) }

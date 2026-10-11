@@ -6,14 +6,18 @@
 //!
 //! - **Messages:** encode one message of each [`Bvll`] variant into a slice
 //!   and into a `heapless::Vec` sink, and decode each back.
+//! - **Golden octets:** decode three datagrams written by hand from the
+//!   Annex J.2 layouts, so a fault that encode and decode share (a field in
+//!   the wrong byte order, say) can't cancel out.
 //! - **Tables:** read the decoded BDT and FDT acknowledgements through their
 //!   borrowed [`Entries`] views, from both ends.
 //! - **Forwarded-NPDU:** take its originator's address and its NPDU.
 //! - **Functions:** the payload shape of a few functions, and which NAK
 //!   answers a few others.
 //! - **Rejections:** a Length field that disagrees with the datagram, a table
-//!   that isn't whole entries, an undefined result code on encode and an
-//!   unknown function.
+//!   that isn't whole entries, an undefined result code on encode, an
+//!   unknown function, and a message too long for a fixed slice and for a
+//!   nearly full sink.
 //!
 //! `tests/bip.rs` runs it natively and compares the whole summary; the `bip`
 //! image (`src/bin/bip.rs`) links it.
@@ -102,6 +106,26 @@ pub const MESSAGES: [Bvll<'static>; 12] = [
     Bvll::OriginalBroadcastNpdu(&NPDU),
 ];
 
+/// Datagrams written by hand from the format subclauses of Annex J.2,
+/// rather than by the encoder: the 4-octet BVLL header (type 0x81, the
+/// function, then the whole message's length, high octet first), then the
+/// function's fields. Field values whose two octets differ catch a swapped
+/// byte order.
+pub const GOLDEN: [&[u8]; 3] = [
+    // Register-Foreign-Device (J.2.6.1): a time-to-live of 300 s, 0x012C.
+    &[0x81, 0x05, 0x00, 0x06, 0x01, 0x2C],
+    // Forwarded-NPDU (J.2.5.1): the originator's address, 192.168.1.20 on
+    // UDP port 47809 (0xBAC1), then the NPDU 01 00.
+    &[
+        0x81, 0x04, 0x00, 0x0C, 192, 168, 1, 20, 0xBA, 0xC1, 0x01, 0x00,
+    ],
+    // Read-Foreign-Device-Table-Ack (J.2.8.1) with one entry: 10.0.0.5 on
+    // port 47808, registered for 60 s (0x003C) with 45 s left (0x002D).
+    &[
+        0x81, 0x07, 0x00, 0x0E, 10, 0, 0, 5, 0xBA, 0xC0, 0x00, 0x3C, 0x00, 0x2D,
+    ],
+];
+
 /// Functions whose payload shape the scenario asks for; 0x0C is unknown.
 pub const SHAPED: [BvlcFunction; 4] = [
     BvlcFunction::BVLC_RESULT,
@@ -116,7 +140,7 @@ pub const NAKED: [BvlcFunction; 3] = [
     BvlcFunction::ORIGINAL_UNICAST_NPDU,
 ];
 /// The rejection paths the scenario takes.
-pub const REJECTIONS: usize = 5;
+pub const REJECTIONS: usize = 7;
 
 /// What [`run`] saw. Every field is plain data, so the host test can compare
 /// the whole summary at once.
@@ -126,12 +150,17 @@ pub struct Summary {
     pub encoded: u8,
     /// Octets those messages took, in all.
     pub encoded_octets: u16,
+    /// 32-bit FNV-1a over those octets in order, so any change to what the
+    /// encoder writes changes it.
+    pub encoded_fnv: u32,
     /// Messages the sink took with the same octets as the slice.
     pub sink_matches: u8,
     /// Messages that decoded back equal to what was encoded.
     pub round_trips: u8,
     /// One bit per function code decoded: bit `n` for code `n`.
     pub functions: u16,
+    /// What each datagram in [`GOLDEN`] decodes to.
+    pub goldens: [Option<Bvll<'static>>; GOLDEN.len()],
     /// The decoded BDT acknowledgement's first and last entries, read from
     /// the front and from the back.
     pub bdt_ends: [Option<BdtEntry>; 2],
@@ -147,7 +176,8 @@ pub struct Summary {
     pub naks: [Option<BvlcResultCode>; NAKED.len()],
     /// The error each rejection path produced: a trailing octet, a table
     /// payload of 9 octets (decoded, then read directly), the result code
-    /// 0x0070 on encode, and function 0x0C.
+    /// 0x0070 on encode, function 0x0C, and a 24-octet message encoded into
+    /// a 10-octet slice and into a sink with 14 octets left.
     pub rejections: [Option<BvllError>; REJECTIONS],
     /// Calls that failed where the scenario expects success. Zero in a good
     /// run.
@@ -159,9 +189,11 @@ impl Summary {
         Self {
             encoded: 0,
             encoded_octets: 0,
+            encoded_fnv: FNV_OFFSET,
             sink_matches: 0,
             round_trips: 0,
             functions: 0,
+            goldens: [None; GOLDEN.len()],
             bdt_ends: [None; 2],
             fdt_ends: [None; 2],
             origin: None,
@@ -189,14 +221,28 @@ pub fn run(memory: &mut Memory) -> Summary {
     for message in &MESSAGES {
         round_trip(message, wire, sink, &mut summary);
     }
+    for (golden, datagram) in summary.goldens.iter_mut().zip(GOLDEN) {
+        *golden = decode(datagram).ok();
+    }
     for (shape, function) in summary.shapes.iter_mut().zip(SHAPED) {
         *shape = function.payload_shape();
     }
     for (nak, function) in summary.naks.iter_mut().zip(NAKED) {
         *nak = function.nak();
     }
-    summary.rejections = rejections(wire);
+    summary.rejections = rejections(wire, sink);
     summary
+}
+
+/// FNV-1a's 32-bit offset basis and prime.
+const FNV_OFFSET: u32 = 0x811C_9DC5;
+const FNV_PRIME: u32 = 0x0100_0193;
+
+/// Fold `octets` into a running 32-bit FNV-1a hash.
+fn fnv1a(hash: u32, octets: &[u8]) -> u32 {
+    octets.iter().fold(hash, |hash, &octet| {
+        (hash ^ u32::from(octet)).wrapping_mul(FNV_PRIME)
+    })
 }
 
 /// Encode `message` into `wire` and into `sink`, decode it from `wire`, and
@@ -214,6 +260,7 @@ fn round_trip(message: &Bvll<'_>, wire: &mut [u8], sink: &mut Sink, summary: &mu
     summary.encoded_octets = summary
         .encoded_octets
         .saturating_add(u16::try_from(length).unwrap_or(u16::MAX));
+    summary.encoded_fnv = fnv1a(summary.encoded_fnv, octets);
     sink.clear();
     match message.encode_to_sink(sink) {
         Ok(written) if written == length && sink.as_slice() == octets => {
@@ -252,7 +299,7 @@ fn ends<T: TableEntry>(table: Entries<'_, T>) -> [Option<T>; 2] {
 
 /// Take each rejection path and return the errors, `None` where a call
 /// unexpectedly succeeded.
-fn rejections(wire: &mut [u8]) -> [Option<BvllError>; REJECTIONS] {
+fn rejections(wire: &mut [u8], sink: &mut Sink) -> [Option<BvllError>; REJECTIONS] {
     // A Register-Foreign-Device followed by one octet its Length field
     // doesn't count.
     let trailing = [0x81, 0x05, 0x00, 0x06, 0x01, 0x2C, 0x00];
@@ -264,6 +311,11 @@ fn rejections(wire: &mut [u8]) -> [Option<BvllError>; REJECTIONS] {
     let undefined_result = Bvll::BvlcResult(BvlcResultCode::from_raw(0x0070));
     // Function 0x0C, whose clause this edition deletes.
     let unknown = [0x81, 0x0C, 0x00, 0x04];
+    // A Read-Broadcast-Distribution-Table-Ack of two entries: 24 octets.
+    let table = Bvll::ReadBroadcastDistributionTableAck(BdtEntries::from_entries(&BDT));
+    // The sink, 50 octets into its 64.
+    sink.clear();
+    let crowded = sink.extend_from_slice(&[0; WIRE_LENGTH - 14]).is_ok();
     [
         decode(&trailing).err(),
         decode(&partial_table).err(),
@@ -272,5 +324,8 @@ fn rejections(wire: &mut [u8]) -> [Option<BvllError>; REJECTIONS] {
             .and_then(|payload| FdtEntries::from_wire(payload).err()),
         undefined_result.encode_into(wire).err(),
         decode(&unknown).err(),
+        wire.get_mut(..10)
+            .and_then(|short| table.encode_into(short).err()),
+        table.encode_to_sink(sink).err().filter(|_| crowded),
     ]
 }
