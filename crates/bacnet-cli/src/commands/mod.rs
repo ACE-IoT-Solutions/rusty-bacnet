@@ -4,6 +4,8 @@ pub mod device;
 pub mod discover;
 pub mod file;
 pub mod read;
+pub mod read_range;
+pub mod read_range_options;
 pub mod router;
 pub mod subscribe;
 pub mod write;

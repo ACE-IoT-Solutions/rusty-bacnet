@@ -1,4 +1,5 @@
 use super::*;
+use crate::server::test_transport::TestTransport;
 use bacnet_encoding::apdu::decode_apdu;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_objects::file::FileObject;
@@ -42,19 +43,11 @@ async fn response(
     });
     let (tx, rx) = oneshot::channel();
     BACnetServer::<BipTransport>::handle_confirmed_request(
-        db,
-        &network,
-        &Arc::new(RwLock::new(CovSubscriptionTable::new())),
-        &Arc::new(segmented_send::SegmentedSendRegistry::default()),
-        &Arc::new(Semaphore::new(MAX_SEG_SENDERS)),
-        &Arc::new(Semaphore::new(1)),
-        &Arc::new(Mutex::new(ServerTsm::new())),
-        &NotificationTransactions::new(),
+        &RequestServices {
+            db: Arc::clone(db),
+            ..RequestServices::for_test(Arc::clone(&network), ServerConfig::default())
+        },
         &Arc::new(ConfirmedRequestTracker::default()),
-        &Arc::new(RwLock::new(DeviceBindingTable::new())),
-        &Arc::new(AtomicU8::new(0)),
-        &Arc::new(Mutex::new(None::<JoinHandle<()>>)),
-        &ServerConfig::default(),
         &Arc::new(crate::server::request_tasks::RequestTasks::default()).spawner(),
         &MacAddr::from_slice(&[1]),
         route.clone(),
@@ -123,27 +116,6 @@ async fn atomic_write_file_default_record_budget_refuses_without_mutation() {
     default_refusal(true).await;
 }
 
-struct NeverStart;
-impl TransportPort for NeverStart {
-    async fn start(
-        &mut self,
-    ) -> Result<mpsc::Receiver<bacnet_transport::port::ReceivedNpdu>, Error> {
-        panic!("invalid budget reached startup")
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn send_unicast(&self, _: &[u8], _: &[u8]) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn send_broadcast(&self, _: &[u8]) -> Result<(), Error> {
-        Ok(())
-    }
-    fn local_mac(&self) -> &[u8] {
-        &[1]
-    }
-}
-
 #[tokio::test]
 async fn atomic_write_file_all_builders_validate_before_start_or_dial() {
     let default = AtomicWriteFileBudget::default();
@@ -184,12 +156,12 @@ async fn atomic_write_file_all_builders_validate_before_start_or_dial() {
                 ..Default::default()
             },
             ObjectDatabase::new(),
-            NeverStart,
+            TestTransport::never_start(),
         )
         .await
         .err();
         let generic = BACnetServer::generic_builder()
-            .transport(NeverStart)
+            .transport(TestTransport::never_start())
             .atomic_write_file_budget(budget)
             .build()
             .await

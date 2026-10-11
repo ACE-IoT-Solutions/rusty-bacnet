@@ -15,6 +15,7 @@ mstp = ["bacnet-transport/serial"]
 sc = ["bacnet-client/sc-tls", "bacnet-transport/sc-tls", "dep:tokio-rustls"]
 
 [dependencies]
+bacnet-bip-codec.workspace = true
 bacnet-client.workspace = true
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-services = { workspace = true, features = ["std"] }

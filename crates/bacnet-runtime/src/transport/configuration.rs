@@ -20,15 +20,17 @@ pub(super) fn configure_sc_transport<W: WebSocketPort>(
     sc: &crate::ScConfig,
 ) -> ScTransport<InitialScWebSocket<W>> {
     ScTransport::new(ws, sc.local_vmac)
-        .with_hub_urls(&sc.primary_hub, sc.failover_hubs.first())
         .with_device_uuid(sc.device_uuid)
         .with_heartbeat_interval_ms(sc.heartbeat_interval_ms)
         .with_heartbeat_timeout_ms(sc.heartbeat_timeout_ms)
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: sc.reconnect_initial_delay_ms,
             max_delay_ms: sc.reconnect_max_delay_ms,
-            max_retries: sc.reconnect_max_retries,
-            retry_forever: sc.reconnect_forever,
+            max_retries: if sc.reconnect_forever {
+                u32::MAX
+            } else {
+                sc.reconnect_max_retries
+            },
         })
 }
 
@@ -277,10 +279,12 @@ impl RuntimeTransport {
                         bbmd_ip: *address.ip(),
                         bbmd_port: address.port(),
                         ttl,
+                        renewal_interval: None,
                     });
                     BACnetClient::generic_builder()
                         .transport(transport)
                         .cov_channel_capacity(cov_channel_capacity)
+                        .reserve_initial_observers()
                         .build()
                         .await
                 } else {
@@ -289,6 +293,7 @@ impl RuntimeTransport {
                         .port(bip.port)
                         .broadcast_address(broadcast)
                         .cov_channel_capacity(cov_channel_capacity)
+                        .reserve_initial_observers()
                         .build()
                         .await
                 }
@@ -316,6 +321,7 @@ impl RuntimeTransport {
                 let client = BACnetClient::generic_builder()
                     .transport(transport)
                     .cov_channel_capacity(cov_channel_capacity)
+                    .reserve_initial_observers()
                     .build()
                     .await
                     .map_err(|error| RuntimeError::attachment_start(config.id, error))?;
@@ -366,6 +372,7 @@ impl RuntimeTransport {
                 let client = BACnetClient::generic_builder()
                     .transport(transport)
                     .cov_channel_capacity(cov_channel_capacity)
+                    .reserve_initial_observers()
                     .build()
                     .await
                     .map_err(|error| RuntimeError::sc_connect(config.id, error))?;

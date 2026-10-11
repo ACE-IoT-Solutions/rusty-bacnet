@@ -19,7 +19,10 @@ pub struct QueueCounters {
     pub dequeued: u32,
     /// Entries rejected because the queue was full.
     pub drops_full: u32,
-    /// Entries rejected because their NPDU exceeded the storage capacity.
+    /// Entries refused or dropped as too long: refused at enqueue because the
+    /// NPDU exceeds the queue's slot or a standard frame's 501 octets (the
+    /// core's own check), or dropped at dequeue because it would not fit the
+    /// caller's scratch.
     pub drops_oversize: u32,
     /// Entries removed after exceeding their configured age.
     pub drops_expired: u32,
@@ -27,6 +30,8 @@ pub struct QueueCounters {
     pub drops_starved: u32,
 }
 
+// Only the queue backends record queue counters.
+#[cfg(any(feature = "alloc", feature = "heapless", test))]
 impl QueueCounters {
     /// Record an enqueue and the resulting depth.
     pub(crate) fn record_enqueue(&mut self, depth: usize) {
@@ -57,7 +62,7 @@ impl QueueCounters {
 
     /// Set current depth and update high-water mark.
     pub(crate) fn set_depth(&mut self, depth: usize) {
-        let depth = saturating_u32(depth);
+        let depth = u32::try_from(depth).unwrap_or(u32::MAX);
         self.depth = depth;
         if depth > self.high_water {
             self.high_water = depth;
@@ -70,7 +75,8 @@ impl QueueCounters {
 pub struct MstpCounters {
     /// Number of state-machine transitions.
     pub state_transitions: u32,
-    /// Deadlines observed after their scheduled instant.
+    /// Deadlines serviced [`LATE_DEADLINE`](crate::LATE_DEADLINE) or more
+    /// after they fell due.
     pub deadline_misses: u32,
     /// Tokens successfully rotated to a successor.
     pub token_rotations: u32,
@@ -78,8 +84,27 @@ pub struct MstpCounters {
     pub token_regenerations: u32,
     /// Token-pass retries.
     pub token_retries: u32,
-    /// Parser or frame validation errors.
+    /// Received frames counted invalid: bad headers, and frames for this
+    /// station or broadcast that were too long, undecodable or corrupt.
     pub parser_errors: u32,
+    /// Replies, Reply Postponed included, whose transmission started after
+    /// T_reply_delay. They were still sent.
+    pub late_replies: u32,
+    /// Requests dropped unanswered because the requester may already have
+    /// stopped waiting: the shortest T_reply_timeout (255 ms) less one octet
+    /// time and a 1 ms guard.
+    pub expired_requests: u32,
+    /// Frames dropped because the line became busy while they waited out
+    /// T_turnaround. A reply is not dropped: it waits a fresh turnaround.
+    pub cancelled_sends: u32,
+    /// Transmit events refused because the adapter broke the transmit
+    /// contract: confirming a start twice, or completing a transmit it never
+    /// confirmed starting.
+    pub adapter_errors: u32,
+    /// Frames for this station that wanted a prompt answer (Poll For Master,
+    /// a data request, Test_Request) but arrived while it was answering
+    /// another request, so they were dropped.
+    pub discarded_while_answering: u32,
     /// Frames abandoned by T_frame_abort.
     pub frame_aborts: u32,
     /// Valid MS/TP frames received.
@@ -109,6 +134,31 @@ impl MstpCounters {
     /// Record a missed or late deadline.
     pub(crate) fn record_deadline_miss(&mut self) {
         increment(&mut self.deadline_misses);
+    }
+
+    /// Record a reply that started after T_reply_delay.
+    pub(crate) fn record_late_reply(&mut self) {
+        increment(&mut self.late_replies);
+    }
+
+    /// Record a request dropped unanswered.
+    pub(crate) fn record_expired_request(&mut self) {
+        increment(&mut self.expired_requests);
+    }
+
+    /// Record a frame dropped while it waited out T_turnaround.
+    pub(crate) fn record_cancelled_send(&mut self) {
+        increment(&mut self.cancelled_sends);
+    }
+
+    /// Record a frame dropped because it arrived while answering a request.
+    pub(crate) fn record_discarded_while_answering(&mut self) {
+        increment(&mut self.discarded_while_answering);
+    }
+
+    /// Record a transmit event refused for breaking the transmit contract.
+    pub(crate) fn record_adapter_error(&mut self) {
+        increment(&mut self.adapter_errors);
     }
 
     /// Record a successful token rotation.
@@ -174,14 +224,6 @@ impl MstpCounters {
 
 fn increment(value: &mut u32) {
     *value = value.saturating_add(1);
-}
-
-fn saturating_u32(value: usize) -> u32 {
-    if value > u32::MAX as usize {
-        u32::MAX
-    } else {
-        value as u32
-    }
 }
 
 #[cfg(test)]

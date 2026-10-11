@@ -15,7 +15,7 @@ bacnet-network.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
 
 [dev-dependencies]
-bytes.workspace = true
+bytes = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true

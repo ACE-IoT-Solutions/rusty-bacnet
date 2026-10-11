@@ -1,5 +1,6 @@
-use super::request_tasks_tests::{fixture, HeldTransport};
+use super::request_tasks_tests::fixture;
 use super::*;
+use crate::server::test_transport::TestTransport;
 use std::future::{pending, poll_fn, Future};
 use std::task::Poll;
 use tokio::sync::oneshot;
@@ -12,7 +13,7 @@ impl Drop for Released {
     }
 }
 
-fn slots(server: &mut BACnetServer<HeldTransport>) -> [&mut Option<JoinHandle<()>>; 7] {
+fn slots(server: &mut BACnetServer<TestTransport>) -> [&mut Option<JoinHandle<()>>; 8] {
     [
         &mut server.fault_detection_task,
         &mut server.event_enrollment_task,
@@ -21,6 +22,7 @@ fn slots(server: &mut BACnetServer<HeldTransport>) -> [&mut Option<JoinHandle<()
         &mut server.intrinsic_reporting_task,
         &mut server.binary_lighting_operation_task,
         &mut server.cov_purge_task,
+        &mut server.cov_revisit_task,
     ]
 }
 

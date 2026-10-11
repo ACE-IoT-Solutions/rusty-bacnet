@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import sys
 import tempfile
 import unittest
 import uuid
@@ -61,18 +62,8 @@ MSTP_KEYWORD_ONLY = [
     "mstp_max_master",
     "mstp_max_info_frames",
 ]
-CLIENT_KEYWORD_ONLY = ["bbmd_address", "foreign_device_ttl"] + MSTP_KEYWORD_ONLY + [
-    "sc_device_uuid",
-    "apdu_observer",
-    "apdu_observer_capacity",
-]
-SERVER_KEYWORD_ONLY = ["segmentation_supported", "dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
-    "virtual_network", "virtual_mac",
-    "bbmd", "bbmd_bdt", "bbmd_bdt_persist_path",
-    "bbmd_accept_foreign_devices", "bbmd_max_fdt_entries",
-    "bbmd_management_acl", "bbmd_wire_management_enabled",
-    "bvll_policy", "bvll_policy_timeout_ms", "bvll_policy_queue_capacity",
-    "bvll_policy_failure_threshold", "bvll_policy_cooldown_ms", "reuse_port",
+CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + ["sc_device_uuid", "share_port_by_address", "min_request_interval_ms"]
+SERVER_KEYWORD_ONLY = ["mutation_policy", "dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
     "max_confirmed_in_flight", "max_unconfirmed_in_flight",
     "max_confirmed_in_flight_per_peer", "max_unconfirmed_in_flight_per_peer",
     "confirmed_recovery_reserve", "max_recovery_in_flight_per_peer",
@@ -86,9 +77,8 @@ SERVER_KEYWORD_ONLY = ["segmentation_supported", "dcc_policy", "dcc_source_restr
     "read_range_max_returned_items", "read_range_max_service_ack_bytes",
     "event_information_max_objects", "event_information_max_returned_summaries",
     "event_information_max_service_ack_bytes",
-    "vendor_name", "vendor_identifier", "model_name", "description",
-    "firmware_revision", "application_software_version",
-    "sc_device_uuid", "apdu_observer", "apdu_observer_capacity",
+    "sc_device_uuid", "registered_network_port", "cov_policy", "time_sync_policy",
+    "share_port_by_address", "segmentation_supported", "apdu_segment_timeout_ms",
 ]
 SUPPORTED_BAUD_RATES = (9_600, 19_200, 38_400, 57_600, 76_800, 115_200)
 SUPPORTED_BAUD_ERROR = (
@@ -230,6 +220,24 @@ class SignatureCompatibilityTests(unittest.TestCase):
         path = nonexistent_serial_path()
         self.assertIsInstance(make_client(path), BACnetClient)
         self.assertIsInstance(make_server(path), BACnetServer)
+
+    def test_list_serial_ports_returns_port_names(self) -> None:
+        # The runners have no serial hardware, so the list may be empty; the
+        # call still goes through the OS's port listing (IOKit on macOS).
+        ports = rusty_bacnet.list_serial_ports()
+        self.assertIsInstance(ports, list)
+        for name in ports:
+            self.assertIsInstance(name, str)
+            self.assertTrue(name)
+            if sys.platform != "win32":
+                self.assertTrue(name.startswith("/dev/"), name)
+        stub = ast.parse(Path(rusty_bacnet.__file__).with_suffix(".pyi").read_text(encoding="utf-8"))
+        function = next(
+            node for node in stub.body
+            if isinstance(node, ast.FunctionDef) and node.name == "list_serial_ports"
+        )
+        self.assertEqual(function.args.args, [])
+        self.assertEqual(ast.unparse(function.returns), "list[str]")
 
 
 class MstpRuntimeTests(unittest.IsolatedAsyncioTestCase):

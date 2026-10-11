@@ -10,11 +10,10 @@ keywords = ["bacnet", "building-automation", "transport", "bip", "mstp"]
 categories = ["network-programming"]
 
 [dependencies]
-bacnet-mstp-codec = { workspace = true, features = ["std"] }
-bacnet-mstp-core = { workspace = true, features = ["alloc"] }
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
-bytes.workspace = true
+bacnet-bip-codec = { workspace = true, features = ["bytes"] }
+bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }
 socket2 = { workspace = true, features = ["all"] }
@@ -22,6 +21,7 @@ tokio-tungstenite = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
+aws-lc-rs = { version = "1.17", default-features = false, optional = true }
 tokio-serial = { version = "5", optional = true }
 gpiocdev = { version = "0.8", optional = true }
 libc = { workspace = true }
@@ -30,6 +30,8 @@ getrandom = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_System_IO",
 ] }
@@ -37,14 +39,20 @@ windows-sys = { version = "0.61", features = [
 [features]
 default = []
 ipv6 = []
-sc-tls = ["tokio-tungstenite", "tokio-rustls", "rustls", "futures-util"]
-serial = ["tokio-serial", "tokio/io-util"]
-serial-gpio = ["serial", "gpiocdev"]
+sc-tls = [
+    "dep:tokio-tungstenite",
+    "dep:tokio-rustls",
+    "dep:rustls",
+    "dep:futures-util",
+    "dep:aws-lc-rs",
+]
+serial = ["dep:tokio-serial", "tokio/io-util"]
+serial-gpio = ["serial", "dep:gpiocdev"]
 ethernet = []
 
 [dev-dependencies]
 rcgen.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 
 [lints]
 workspace = true

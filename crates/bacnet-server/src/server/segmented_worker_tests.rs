@@ -22,21 +22,29 @@ fn oversized_request() -> Apdu {
     })
 }
 
-fn direct_worker(server: &BACnetServer<HeldTransport>) -> JoinHandle<()> {
-    let network = Arc::clone(&server.network);
+fn direct_worker(server: &BACnetServer<TestTransport>) -> JoinHandle<()> {
+    let network = Arc::clone(server.test_network());
     let senders = Arc::clone(&server.seg_ack_senders);
     let permits = Arc::clone(&server.seg_send_permits);
     tokio::spawn(async move {
-        BACnetServer::<HeldTransport>::send_segmented_complex_ack(
-            &network,
-            &senders,
-            &permits,
-            &[1],
-            None,
-            7,
-            ConfirmedServiceChoice::READ_PROPERTY,
+        BACnetServer::<TestTransport>::send_segmented_complex_ack(
+            SegmentedSendResources {
+                network: &network,
+                seg_ack_senders: &senders,
+                seg_send_permits: &permits,
+            },
+            ResponseTarget {
+                source_mac: &[1],
+                source_network: None,
+                route: &bacnet_network::response_route::ResponseRoute::unverified(),
+            },
+            ComplexAckParams {
+                invoke_id: 7,
+                service_choice: ConfirmedServiceChoice::READ_PROPERTY,
+                client_max_apdu: 50,
+                client_max_segments: None,
+            },
             &[0; 100],
-            50,
             None,
         )
         .await;
@@ -76,7 +84,7 @@ async fn segmented_worker_stop_joins_production_descendant() {
     inject(&tx, oversized_request()).await;
     let mut released = started_send(&mut started).await;
     assert!(matches!(
-        server.network.transport().frames.lock().unwrap().last(),
+        held_sends(&server).frames.lock().unwrap().last(),
         Some(Apdu::ComplexAck(ComplexAck {
             segmented: true,
             sequence_number: Some(0),
@@ -100,62 +108,14 @@ async fn segmented_worker_stop_joins_production_descendant() {
 }
 
 #[tokio::test]
-async fn exact_retransmission_stays_pending_until_segmented_child_finishes() {
-    let (mut server, tx, mut started) = fixture_with_name(&"x".repeat(100)).await;
-    let request = oversized_request();
-
-    inject(&tx, request.clone()).await;
-    let first_send = started_send(&mut started).await;
-    let key = segmented_transaction_key(&[1], None, 7);
-    let first_sender = server.seg_ack_senders.lock().get(&key).unwrap().clone();
-
-    server.network.transport().release.notify_one();
-    first_send.await.unwrap();
-
-    inject(&tx, request.clone()).await;
-    inject(
-        &tx,
-        Apdu::Abort(AbortPdu {
-            sent_by_server: false,
-            invoke_id: 7,
-            abort_reason: AbortReason::OTHER,
-        }),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !first_sender.closed.load(Ordering::Acquire) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("segmented response did not observe client Abort");
-    wait_reaped(&server).await;
-
-    assert_eq!(
-        server.network.transport().frames.lock().unwrap().len(),
-        1,
-        "an exact retransmission while awaiting SegmentACK must be silent"
-    );
-    assert!(server.seg_ack_senders.lock().is_empty());
-
-    inject(&tx, request).await;
-    let mut second_send = started_send(&mut started).await;
-    let second_sender = server.seg_ack_senders.lock().get(&key).unwrap().clone();
-    assert!(!Arc::ptr_eq(&first_sender, &second_sender));
-    assert_eq!(
-        server.network.transport().frames.lock().unwrap().len(),
-        2,
-        "the same invoke ID must be reusable after the segmented child ends"
-    );
-
-    server.stop().await.unwrap();
-    assert_eq!(second_send.try_recv(), Ok(()));
-}
-
-#[tokio::test]
 async fn segmented_worker_old_cancel_preserves_same_key_replacement() {
     let (mut server, _tx, mut started) = fixture().await;
-    let key = segmented_transaction_key(&[1], None, 7);
+    let key = segmented_transaction_key(
+        &[1],
+        None,
+        7,
+        bacnet_transport::port::TransportProvenance::unverified(),
+    );
     let old = direct_worker(&server);
     let mut old_resource = started_send(&mut started).await;
     let old_sender = server.seg_ack_senders.lock().get(&key).unwrap().clone();
@@ -198,12 +158,10 @@ async fn segmented_worker_production_panic_is_reaped_and_cleans_registry() {
     inject(&tx, oversized_request()).await;
     let released = started_send(&mut started).await;
     assert_eq!(server.seg_ack_senders.lock().len(), 1);
-    server
-        .network
-        .transport()
+    held_sends(&server)
         .panic_next
         .store(true, Ordering::Release);
-    server.network.transport().release.notify_one();
+    held_sends(&server).release.notify_one();
     released.await.unwrap();
     wait_reaped(&server).await;
     assert!(server.seg_ack_senders.lock().is_empty());
@@ -232,7 +190,12 @@ async fn segmented_worker_blocked_send_does_not_block_inline_ack_or_abort() {
     let handle = server
         .seg_ack_senders
         .lock()
-        .get(&segmented_transaction_key(&[1], None, 7))
+        .get(&segmented_transaction_key(
+            &[1],
+            None,
+            7,
+            bacnet_transport::port::TransportProvenance::unverified(),
+        ))
         .unwrap()
         .clone();
     assert_eq!(

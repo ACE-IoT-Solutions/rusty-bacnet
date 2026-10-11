@@ -1,27 +1,23 @@
-//! Frame headers and one-shot encode/decode operations.
+//! Frame types, headers, and one-shot encode and decode.
 
-use crate::error::ExtendedField;
 use crate::{
-    cobs_decode_xor55, cobs_decode_xor55_in_place, cobs_encode_xor55, cobs_encoded_len, crc16,
-    crc16_valid, crc32k, crc8, crc8_valid, FrameError, BROADCAST_MAC, HEADER_LENGTH,
+    crc16, crc16_valid, crc8, crc8_valid, FrameError, FrameSink, BROADCAST_MAC, HEADER_LENGTH,
     MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 
-/// Smallest decoded NPDU accepted by a BACnet Extended MS/TP frame.
-pub const MIN_EXTENDED_MPDU_DATA: usize = 502;
-/// Largest decoded NPDU accepted by a BACnet Extended MS/TP frame.
-pub const MAX_EXTENDED_MPDU_DATA: usize = 1497;
-/// Smallest generic COBS frame Length value accepted by this codec.
-pub const MIN_EXTENDED_LENGTH: usize = 5;
-/// Largest generic COBS frame Length value accepted by this codec.
-pub const MAX_EXTENDED_LENGTH: usize = 1506;
-/// Number of encoded octets occupied by an Extended MS/TP CRC field.
-pub const EXTENDED_CRC_LENGTH: usize = 5;
-/// Largest encoded Extended MS/TP data field.
-pub const MAX_EXTENDED_ENCODED_DATA: usize = MAX_EXTENDED_LENGTH - 3;
-/// Largest complete Extended MS/TP frame without optional padding.
-pub const MAX_EXTENDED_FRAME_LENGTH: usize =
-    PREAMBLE.len() + HEADER_LENGTH + MAX_EXTENDED_LENGTH + 2;
+/// Octets before the data field: the preamble and the header with its CRC.
+pub(crate) const DATA_OFFSET: usize = PREAMBLE.len() + HEADER_LENGTH;
+/// The data CRC that follows a non-empty data field.
+const DATA_CRC_LENGTH: usize = 2;
+
+/// Wire length of a standard frame whose data field is `data_length` octets.
+pub(crate) const fn wire_length(data_length: usize) -> usize {
+    if data_length == 0 {
+        DATA_OFFSET
+    } else {
+        DATA_OFFSET + data_length + DATA_CRC_LENGTH
+    }
+}
 
 /// MS/TP frame type octet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +43,13 @@ pub enum FrameType {
     ExtendedDataExpectingReply = 0x20,
     /// BACnet Extended Data Not Expecting Reply frame.
     ExtendedDataNotExpectingReply = 0x21,
-    /// A currently unassigned standard frame type.
+    /// Any other type octet: reserved (8-31), COBS-encoded (32-127) or
+    /// proprietary (128-255).
+    ///
+    /// [`FrameType::from_raw`] never returns it for 0-7. If one is built by
+    /// hand, the codec's checks still treat it as the named type, because they
+    /// look at the raw value; `==` does not, since equality is structural
+    /// (`Unknown(0) != Token`).
     Unknown(u8),
 }
 
@@ -86,530 +88,244 @@ impl FrameType {
         }
     }
 
-    /// Whether this frame type carries a data payload.
-    pub const fn has_data(self) -> bool {
-        matches!(
-            self,
-            Self::TestRequest
-                | Self::TestResponse
-                | Self::BACnetDataExpectingReply
-                | Self::BACnetDataNotExpectingReply
-                | Self::ExtendedDataExpectingReply
-                | Self::ExtendedDataNotExpectingReply
-        )
+    /// Whether a frame of this type may carry a data field.
+    ///
+    /// False only for the four types defined without data: [`Token`](Self::Token),
+    /// [`PollForMaster`](Self::PollForMaster),
+    /// [`ReplyToPollForMaster`](Self::ReplyToPollForMaster) and
+    /// [`ReplyPostponed`](Self::ReplyPostponed) (Clauses 9.3.1-9.3.3, 9.3.8).
+    /// Every other type may, including the reserved types 8-31, which the
+    /// codec passes through without policing their content.
+    pub const fn allows_data(self) -> bool {
+        !matches!(self.to_raw(), 0 | 1 | 2 | 7)
     }
 
-    /// Whether this raw type belongs to the reserved COBS/CRC-32K range.
+    /// Whether this type is in the COBS-encoded range, 32-127 (Clause 9.3).
     pub const fn is_cobs(self) -> bool {
         let raw = self.to_raw();
         raw >= 0x20 && raw <= 0x7F
     }
+
+    /// Whether this type is in the vendor-proprietary range, 128-255. Such a
+    /// frame's data opens with a 2-octet vendor identifier (Clause 9.3.11).
+    pub const fn is_proprietary(self) -> bool {
+        self.to_raw() >= 0x80
+    }
 }
 
-/// The allocation-free header fields of an MS/TP frame.
+/// The addressing fields of an MS/TP frame header.
+///
+/// The length field is not stored: it is always the length of the data that
+/// goes with the header, [`Frame::data`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameHeader {
     /// Frame type.
     pub frame_type: FrameType,
-    /// Destination station address.
+    /// Destination station address; 255 is broadcast.
     pub destination: u8,
     /// Source station address.
     pub source: u8,
-    /// Number of data bytes following the header.
-    pub data_length: usize,
 }
 
 impl FrameHeader {
-    /// Construct a header for a payload of `data_length` bytes.
-    pub const fn new(
-        frame_type: FrameType,
-        destination: u8,
-        source: u8,
-        data_length: usize,
-    ) -> Self {
+    /// Construct a header.
+    pub const fn new(frame_type: FrameType, destination: u8, source: u8) -> Self {
         Self {
             frame_type,
             destination,
             source,
-            data_length,
         }
     }
 }
 
-/// A decoded frame borrowing its data from the input or stream buffer.
+/// A frame whose data borrows from the caller or from decoder storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame<'a> {
     /// Header fields.
     pub header: FrameHeader,
-    /// Borrowed NPDU or test payload.
-    pub data: &'a [u8],
-}
-
-/// A decoded BACnet DER or DNER frame with its COBS envelope removed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExtendedFrame<'a> {
-    /// Header fields. `data_length` is the decoded NPDU length.
-    pub header: FrameHeader,
-    /// Borrowed, decoded NPDU bytes.
+    /// The data field: an NPDU, test data or proprietary content. Its length
+    /// is the frame's length field.
     pub data: &'a [u8],
 }
 
 impl<'a> Frame<'a> {
-    /// Construct a borrowed frame and derive its header length from `data`.
+    /// Construct a frame.
     pub const fn new(frame_type: FrameType, destination: u8, source: u8, data: &'a [u8]) -> Self {
         Self {
-            header: FrameHeader::new(frame_type, destination, source, data.len()),
+            header: FrameHeader::new(frame_type, destination, source),
             data,
         }
     }
 
-    /// Encode this frame into caller-owned storage.
+    /// Encode this frame at the start of `output` and return its wire length.
+    ///
+    /// The frame is checked first, as described in the [crate docs](crate):
+    /// no COBS type, at most [`MAX_STANDARD_MPDU_DATA`] octets of data, a
+    /// source other than 255, no data on a type that never carries any, and
+    /// at least a vendor identifier's two octets on a proprietary type.
+    /// Nothing is written unless the frame passes and fits.
+    ///
+    /// ```
+    /// use bacnet_mstp_codec::{Frame, FrameError, FrameType};
+    ///
+    /// let mut wire = [0u8; 8];
+    /// let length = Frame::new(FrameType::Token, 0x10, 0x05, &[]).encode_into(&mut wire)?;
+    /// assert_eq!(wire[..length], [0x55, 0xFF, 0x00, 0x10, 0x05, 0x00, 0x00, 0x8C]);
+    ///
+    /// // A Token never carries data.
+    /// assert_eq!(
+    ///     Frame::new(FrameType::Token, 0x10, 0x05, &[1]).encode_into(&mut wire),
+    ///     Err(FrameError::UnexpectedData { raw_type: 0, length: 1 }),
+    /// );
+    /// # Ok::<(), FrameError>(())
+    /// ```
     pub fn encode_into(self, output: &mut [u8]) -> Result<usize, FrameError> {
-        encode_into(output, &self.header, self.data)
+        let mut sink = output;
+        self.encode_to_sink(&mut sink)
+    }
+
+    /// Encode this frame into `sink` and return its wire length.
+    ///
+    /// The checks are those of [`Frame::encode_into`]. When the sink reports a
+    /// fixed capacity, a frame that does not fit fails before anything is
+    /// written. A growable sink is written directly, so if one of its writes
+    /// fails, the octets written before it stay in the sink; see
+    /// [`FrameSink`].
+    pub fn encode_to_sink<S: FrameSink + ?Sized>(self, sink: &mut S) -> Result<usize, FrameError> {
+        let total = self.checked_wire_length()?;
+        if let Some(available) = sink.remaining_capacity() {
+            if available < total {
+                return Err(FrameError::BufferExhausted {
+                    needed: total,
+                    available,
+                });
+            }
+        }
+        let length = self.data.len();
+        let fields = [
+            self.header.frame_type.to_raw(),
+            self.header.destination,
+            self.header.source,
+            (length >> 8) as u8,
+            length as u8,
+        ];
+        let mut head = [0u8; DATA_OFFSET];
+        head[..PREAMBLE.len()].copy_from_slice(&PREAMBLE);
+        head[PREAMBLE.len()..DATA_OFFSET - 1].copy_from_slice(&fields);
+        head[DATA_OFFSET - 1] = crc8(&fields);
+        sink.write(&head)?;
+        if length != 0 {
+            sink.write(self.data)?;
+            sink.write(&crc16(self.data).to_le_bytes())?;
+        }
+        Ok(total)
+    }
+
+    /// Apply the encode checks and return the frame's wire length.
+    fn checked_wire_length(&self) -> Result<usize, FrameError> {
+        let frame_type = self.header.frame_type;
+        let length = self.data.len();
+        if frame_type.is_cobs() {
+            return Err(FrameError::UnsupportedCobsFrame {
+                raw_type: frame_type.to_raw(),
+            });
+        }
+        if length > MAX_STANDARD_MPDU_DATA {
+            return Err(FrameError::Oversize {
+                length,
+                maximum: MAX_STANDARD_MPDU_DATA,
+            });
+        }
+        if self.header.source == BROADCAST_MAC {
+            return Err(FrameError::BroadcastSource);
+        }
+        if length != 0 && !frame_type.allows_data() {
+            return Err(FrameError::UnexpectedData {
+                raw_type: frame_type.to_raw(),
+                length,
+            });
+        }
+        if length < 2 && frame_type.is_proprietary() {
+            return Err(FrameError::MissingVendorId {
+                raw_type: frame_type.to_raw(),
+                length,
+            });
+        }
+        Ok(wire_length(length))
     }
 }
 
-/// Encode a frame into caller-owned storage, returning its wire length.
-pub fn encode_into(
-    output: &mut [u8],
-    header: &FrameHeader,
-    data: &[u8],
-) -> Result<usize, FrameError> {
-    let data_length = data.len();
-    let raw_type = header.frame_type.to_raw();
-    if (0x20..=0x7F).contains(&raw_type) {
-        return Err(FrameError::EncodeUnsupportedCobsFrame { raw_type });
-    }
-    if data_length > MAX_STANDARD_MPDU_DATA {
-        return Err(FrameError::EncodeOversize {
-            length: data_length,
-            maximum: MAX_STANDARD_MPDU_DATA,
-        });
-    }
-    if header.data_length != data_length {
-        return Err(FrameError::HeaderLengthMismatch {
-            declared: header.data_length,
-            actual: data_length,
-        });
-    }
-    let total = PREAMBLE.len() + HEADER_LENGTH + data_length + if data_length == 0 { 0 } else { 2 };
-    if output.len() < total {
-        return Err(FrameError::BufferExhausted {
-            needed: total,
-            available: output.len(),
-        });
-    }
-    output[..2].copy_from_slice(&PREAMBLE);
-    let fields = [
-        raw_type,
-        header.destination,
-        header.source,
-        (data_length >> 8) as u8,
-        data_length as u8,
-    ];
-    output[2..7].copy_from_slice(&fields);
-    output[7] = crc8(&fields);
-    if data_length != 0 {
-        output[8..8 + data_length].copy_from_slice(data);
-        let crc = crc16(data).to_le_bytes();
-        output[8 + data_length..10 + data_length].copy_from_slice(&crc);
-    }
-    Ok(total)
-}
-
-/// Decode one frame from bytes beginning with its preamble.
-pub fn decode_frame(data: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
-    if data.len() < 2 + HEADER_LENGTH {
+/// Decode one frame from `input`, which must start with the preamble.
+///
+/// Returns the frame and the number of octets it occupies; anything after
+/// them is ignored. The checks, in order: preamble, header CRC, COBS type,
+/// source 255, length limit, completeness, data CRC. The [crate docs](crate)
+/// explain what is deliberately not checked.
+///
+/// ```
+/// use bacnet_mstp_codec::{decode_frame, FrameError, FrameType};
+///
+/// // Data Not Expecting Reply from slave 200 to station 1, data 01 00.
+/// let wire = [0x55, 0xFF, 0x06, 0x01, 0xC8, 0x00, 0x02, 0xEF, 0x01, 0x00, 0x9F, 0x16];
+/// let (frame, consumed) = decode_frame(&wire)?;
+/// assert_eq!(frame.header.frame_type, FrameType::BACnetDataNotExpectingReply);
+/// assert_eq!((frame.header.destination, frame.header.source), (1, 200));
+/// assert_eq!(frame.data, [0x01, 0x00]);
+/// assert_eq!(consumed, wire.len());
+///
+/// // Without its data CRC the frame is incomplete.
+/// assert!(matches!(decode_frame(&wire[..10]), Err(FrameError::Truncated { .. })));
+/// # Ok::<(), FrameError>(())
+/// ```
+pub fn decode_frame(input: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
+    if input.len() < DATA_OFFSET {
         return Err(FrameError::TooShort {
-            needed: 2 + HEADER_LENGTH,
-            available: data.len(),
+            needed: DATA_OFFSET,
+            available: input.len(),
         });
     }
-    if data[0] != PREAMBLE[0] || data[1] != PREAMBLE[1] {
+    if input[..PREAMBLE.len()] != PREAMBLE {
         return Err(FrameError::InvalidPreamble {
-            first: data[0],
-            second: data[1],
+            first: input[0],
+            second: input[1],
         });
     }
-    if !crc8_valid(&data[2..8]) {
+    if !crc8_valid(&input[PREAMBLE.len()..DATA_OFFSET]) {
         return Err(FrameError::HeaderCrcMismatch);
     }
-    let raw_type = data[2];
-    if (0x20..=0x7F).contains(&raw_type) {
-        return Err(FrameError::UnsupportedCobsFrame { raw_type });
+    let frame_type = FrameType::from_raw(input[2]);
+    if frame_type.is_cobs() {
+        return Err(FrameError::UnsupportedCobsFrame { raw_type: input[2] });
     }
-    let source = data[4];
+    let (destination, source) = (input[3], input[4]);
     if source == BROADCAST_MAC {
-        return Err(FrameError::InvalidSource { source });
+        return Err(FrameError::BroadcastSource);
     }
-    let data_length = u16::from_be_bytes([data[5], data[6]]) as usize;
+    let data_length = usize::from(u16::from_be_bytes([input[5], input[6]]));
     if data_length > MAX_STANDARD_MPDU_DATA {
         return Err(FrameError::Oversize {
             length: data_length,
             maximum: MAX_STANDARD_MPDU_DATA,
         });
     }
-    let body_start = 2 + HEADER_LENGTH;
-    let total = body_start + if data_length == 0 { 0 } else { data_length + 2 };
-    if data.len() < total {
+    let total = wire_length(data_length);
+    if input.len() < total {
         return Err(FrameError::Truncated {
             data_length,
-            available: data.len() - body_start,
+            available: input.len() - DATA_OFFSET,
         });
     }
-    if data_length != 0 && !crc16_valid(&data[body_start..total]) {
+    if data_length != 0 && !crc16_valid(&input[DATA_OFFSET..total]) {
         return Err(FrameError::DataCrcMismatch { data_length });
     }
     let frame = Frame {
-        header: FrameHeader::new(FrameType::from_raw(raw_type), data[3], source, data_length),
-        data: &data[body_start..body_start + data_length],
+        header: FrameHeader::new(frame_type, destination, source),
+        data: &input[DATA_OFFSET..DATA_OFFSET + data_length],
     };
     Ok((frame, total))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExtendedLayout {
-    pub(crate) raw_type: u8,
-    pub(crate) destination: u8,
-    pub(crate) source: u8,
-    pub(crate) encoded_data_start: usize,
-    pub(crate) encoded_data_length: usize,
-    pub(crate) encoded_crc_start: usize,
-    pub(crate) total: usize,
-}
-
-fn extended_layout(data: &[u8]) -> Result<ExtendedLayout, FrameError> {
-    if data.len() < PREAMBLE.len() + HEADER_LENGTH {
-        return Err(FrameError::TooShort {
-            needed: PREAMBLE.len() + HEADER_LENGTH,
-            available: data.len(),
-        });
-    }
-    if data[0] != PREAMBLE[0] || data[1] != PREAMBLE[1] {
-        return Err(FrameError::InvalidPreamble {
-            first: data[0],
-            second: data[1],
-        });
-    }
-    if !crc8_valid(&data[2..8]) {
-        return Err(FrameError::HeaderCrcMismatch);
-    }
-    let raw_type = data[2];
-    if !is_cobs_raw(raw_type) {
-        return Err(FrameError::UnsupportedCobsFrame { raw_type });
-    }
-    let source = data[4];
-    if source == BROADCAST_MAC {
-        return Err(FrameError::InvalidSource { source });
-    }
-    let length = u16::from_be_bytes([data[5], data[6]]) as usize;
-    if !(MIN_EXTENDED_LENGTH..=MAX_EXTENDED_LENGTH).contains(&length) {
-        return Err(FrameError::ExtendedLengthOutOfRange {
-            length,
-            minimum: MIN_EXTENDED_LENGTH,
-            maximum: MAX_EXTENDED_LENGTH,
-        });
-    }
-    let total = PREAMBLE.len() + HEADER_LENGTH + length + 2;
-    if data.len() < total {
-        return Err(FrameError::ExtendedTruncated {
-            needed: total,
-            available: data.len(),
-        });
-    }
-    let encoded_data_length = length - 3;
-    let encoded_data_start = PREAMBLE.len() + HEADER_LENGTH;
-    let encoded_crc_start = encoded_data_start + encoded_data_length;
-    debug_assert_eq!(encoded_crc_start + EXTENDED_CRC_LENGTH, total);
-    Ok(ExtendedLayout {
-        raw_type,
-        destination: data[3],
-        source,
-        encoded_data_start,
-        encoded_data_length,
-        encoded_crc_start,
-        total,
-    })
-}
-
-fn validate_extended_envelope(data: &[u8], layout: ExtendedLayout) -> Result<(), FrameError> {
-    let encoded_data =
-        &data[layout.encoded_data_start..layout.encoded_data_start + layout.encoded_data_length];
-    let encoded_crc = &data[layout.encoded_crc_start..layout.total];
-    let mut decoded_crc = [0u8; EXTENDED_CRC_LENGTH];
-    let decoded_crc_length = cobs_decode_xor55(encoded_crc, &mut decoded_crc).map_err(|error| {
-        FrameError::ExtendedCobs {
-            field: ExtendedField::Crc,
-            error,
-        }
-    })?;
-    if decoded_crc_length != 4 {
-        return Err(FrameError::ExtendedCrcLength {
-            length: decoded_crc_length,
-        });
-    }
-    if decoded_crc[..4] != crc32k(encoded_data).to_le_bytes() {
-        return Err(FrameError::ExtendedCrcMismatch);
-    }
-    Ok(())
-}
-
-fn validate_extended_type(raw_type: u8) -> Result<(), FrameError> {
-    if raw_type == FrameType::ExtendedDataExpectingReply.to_raw()
-        || raw_type == FrameType::ExtendedDataNotExpectingReply.to_raw()
-    {
-        Ok(())
-    } else {
-        Err(FrameError::UnsupportedCobsFrame { raw_type })
-    }
-}
-
-/// Encode one BACnet Extended DER or DNER frame into caller-owned storage.
-pub fn encode_extended_into(
-    output: &mut [u8],
-    header: &FrameHeader,
-    data: &[u8],
-) -> Result<usize, FrameError> {
-    let raw_type = header.frame_type.to_raw();
-    validate_extended_type(raw_type)?;
-    if data.len() < MIN_EXTENDED_MPDU_DATA || data.len() > MAX_EXTENDED_MPDU_DATA {
-        return Err(FrameError::ExtendedPayloadOutOfRange {
-            length: data.len(),
-            minimum: MIN_EXTENDED_MPDU_DATA,
-            maximum: MAX_EXTENDED_MPDU_DATA,
-        });
-    }
-    if header.data_length != data.len() {
-        return Err(FrameError::HeaderLengthMismatch {
-            declared: header.data_length,
-            actual: data.len(),
-        });
-    }
-    let encoded_data_length = cobs_encoded_len(data);
-    let encoded_crc_length = cobs_encoded_len(&[0u8; 4]);
-    debug_assert_eq!(encoded_crc_length, EXTENDED_CRC_LENGTH);
-    let length = encoded_data_length + encoded_crc_length - 2;
-    debug_assert_eq!(length, encoded_data_length + 3);
-    if length > MAX_EXTENDED_LENGTH {
-        return Err(FrameError::ExtendedLengthOutOfRange {
-            length,
-            minimum: MIN_EXTENDED_LENGTH,
-            maximum: MAX_EXTENDED_LENGTH,
-        });
-    }
-    let total = PREAMBLE.len() + HEADER_LENGTH + encoded_data_length + encoded_crc_length;
-    if output.len() < total {
-        return Err(FrameError::BufferExhausted {
-            needed: total,
-            available: output.len(),
-        });
-    }
-    output[..2].copy_from_slice(&PREAMBLE);
-    let fields = [
-        raw_type,
-        header.destination,
-        header.source,
-        (length >> 8) as u8,
-        length as u8,
-    ];
-    output[2..7].copy_from_slice(&fields);
-    output[7] = crc8(&fields);
-    let data_start = PREAMBLE.len() + HEADER_LENGTH;
-    let data_end = data_start + encoded_data_length;
-    let written = cobs_encode_xor55(data, &mut output[data_start..data_end]).map_err(|error| {
-        FrameError::ExtendedCobs {
-            field: ExtendedField::Data,
-            error,
-        }
-    })?;
-    debug_assert_eq!(written, encoded_data_length);
-    let crc_bytes = crc32k(&output[data_start..data_end]).to_le_bytes();
-    let crc_written =
-        cobs_encode_xor55(&crc_bytes, &mut output[data_end..total]).map_err(|error| {
-            FrameError::ExtendedCobs {
-                field: ExtendedField::Crc,
-                error,
-            }
-        })?;
-    debug_assert_eq!(crc_written, encoded_crc_length);
-    Ok(total)
-}
-
-/// Decode a BACnet Extended DER or DNER frame into caller-owned scratch.
-pub fn decode_extended_frame<'a>(
-    data: &[u8],
-    scratch: &'a mut [u8],
-) -> Result<(ExtendedFrame<'a>, usize), FrameError> {
-    let layout = extended_layout(data)?;
-    validate_extended_envelope(data, layout)?;
-    validate_extended_type(layout.raw_type)?;
-    let encoded_data =
-        &data[layout.encoded_data_start..layout.encoded_data_start + layout.encoded_data_length];
-    let decoded_length =
-        cobs_decode_xor55(encoded_data, scratch).map_err(|error| FrameError::ExtendedCobs {
-            field: ExtendedField::Data,
-            error,
-        })?;
-    if !(MIN_EXTENDED_MPDU_DATA..=MAX_EXTENDED_MPDU_DATA).contains(&decoded_length) {
-        return Err(FrameError::ExtendedPayloadOutOfRange {
-            length: decoded_length,
-            minimum: MIN_EXTENDED_MPDU_DATA,
-            maximum: MAX_EXTENDED_MPDU_DATA,
-        });
-    }
-    let frame = ExtendedFrame {
-        header: FrameHeader::new(
-            FrameType::from_raw(layout.raw_type),
-            layout.destination,
-            layout.source,
-            decoded_length,
-        ),
-        data: &scratch[..decoded_length],
-    };
-    Ok((frame, layout.total))
-}
-
-/// Decode an Extended DER or DNER frame in place in a caller-owned buffer.
-pub fn decode_extended_frame_in_place(
-    data: &mut [u8],
-) -> Result<(ExtendedFrame<'_>, usize), FrameError> {
-    let (layout, decoded_length) = decode_extended_in_place_fields(data)?;
-    let frame = ExtendedFrame {
-        header: FrameHeader::new(
-            FrameType::from_raw(layout.raw_type),
-            layout.destination,
-            layout.source,
-            decoded_length,
-        ),
-        data: &data[layout.encoded_data_start..layout.encoded_data_start + decoded_length],
-    };
-    Ok((frame, layout.total))
-}
-
-pub(crate) fn decode_extended_in_place_fields(
-    data: &mut [u8],
-) -> Result<(ExtendedLayout, usize), FrameError> {
-    let layout = extended_layout(data)?;
-    validate_extended_envelope(data, layout)?;
-    validate_extended_type(layout.raw_type)?;
-    let data_end = layout.encoded_data_start + layout.encoded_data_length;
-    let decoded_length = cobs_decode_xor55_in_place(&mut data[layout.encoded_data_start..data_end])
-        .map_err(|error| FrameError::ExtendedCobs {
-            field: ExtendedField::Data,
-            error,
-        })?;
-    if !(MIN_EXTENDED_MPDU_DATA..=MAX_EXTENDED_MPDU_DATA).contains(&decoded_length) {
-        return Err(FrameError::ExtendedPayloadOutOfRange {
-            length: decoded_length,
-            minimum: MIN_EXTENDED_MPDU_DATA,
-            maximum: MAX_EXTENDED_MPDU_DATA,
-        });
-    }
-    Ok((layout, decoded_length))
-}
-
-/// Return the first offset containing the MS/TP preamble.
+/// Return the offset of the first preamble in `data`, if it holds one.
 pub fn find_preamble(data: &[u8]) -> Option<usize> {
     data.windows(2).position(|pair| pair == PREAMBLE)
-}
-
-/// Keep a trailing first preamble octet while discarding other bytes.
-pub fn retain_lone_preamble_byte(buffer: &mut [u8], length: &mut usize) {
-    if *length != 0 && buffer[*length - 1] == PREAMBLE[0] {
-        buffer[0] = PREAMBLE[0];
-        *length = 1;
-    } else {
-        *length = 0;
-    }
-}
-
-/// Return whether a raw frame type is reserved for COBS/CRC-32K framing.
-pub const fn is_cobs_raw(raw: u8) -> bool {
-    raw >= 0x20 && raw <= 0x7F
-}
-
-/// Any master or slave address can be a source; broadcast never can.
-pub const fn is_valid_source(source: u8) -> bool {
-    source != BROADCAST_MAC
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extended_boundaries_round_trip_in_place() {
-        for length in [MIN_EXTENDED_MPDU_DATA, MAX_EXTENDED_MPDU_DATA] {
-            let payload = [0xA5; MAX_EXTENDED_MPDU_DATA];
-            let header = FrameHeader::new(
-                FrameType::ExtendedDataNotExpectingReply,
-                BROADCAST_MAC,
-                1,
-                length,
-            );
-            let mut wire = [0u8; MAX_EXTENDED_FRAME_LENGTH];
-            let used = encode_extended_into(&mut wire, &header, &payload[..length]).unwrap();
-            assert_eq!(
-                used,
-                PREAMBLE.len()
-                    + HEADER_LENGTH
-                    + cobs_encoded_len(&payload[..length])
-                    + EXTENDED_CRC_LENGTH
-            );
-            let (frame, consumed) = decode_extended_frame_in_place(&mut wire[..used]).unwrap();
-            assert_eq!(consumed, used);
-            assert_eq!(
-                frame.header.frame_type,
-                FrameType::ExtendedDataNotExpectingReply
-            );
-            assert_eq!(frame.data, &payload[..length]);
-        }
-    }
-
-    #[test]
-    fn extended_rejects_standard_boundaries_and_bad_crc() {
-        let payload = [0xA5; MAX_EXTENDED_MPDU_DATA + 1];
-        let mut output = [0u8; MAX_EXTENDED_FRAME_LENGTH];
-        for length in [MIN_EXTENDED_MPDU_DATA - 1, MAX_EXTENDED_MPDU_DATA + 1] {
-            let header = FrameHeader::new(FrameType::ExtendedDataExpectingReply, 0, 1, length);
-            assert!(matches!(
-                encode_extended_into(&mut output, &header, &payload[..length]),
-                Err(FrameError::ExtendedPayloadOutOfRange { .. })
-            ));
-        }
-        let header = FrameHeader::new(
-            FrameType::ExtendedDataExpectingReply,
-            0,
-            1,
-            MIN_EXTENDED_MPDU_DATA,
-        );
-        let used =
-            encode_extended_into(&mut output, &header, &payload[..MIN_EXTENDED_MPDU_DATA]).unwrap();
-        output[8] ^= 1;
-        assert_eq!(
-            decode_extended_frame(&output[..used], &mut [0u8; MAX_EXTENDED_MPDU_DATA]),
-            Err(FrameError::ExtendedCrcMismatch)
-        );
-    }
-
-    #[test]
-    fn only_der_and_dner_are_delivered_as_bacnet_extended_frames() {
-        let payload = [0xA5; MIN_EXTENDED_MPDU_DATA];
-        let header = FrameHeader::new(
-            FrameType::ExtendedDataNotExpectingReply,
-            BROADCAST_MAC,
-            1,
-            payload.len(),
-        );
-        let mut wire = [0u8; MAX_EXTENDED_FRAME_LENGTH];
-        let used = encode_extended_into(&mut wire, &header, &payload).unwrap();
-        for raw_type in 0x22..=0x7f {
-            wire[2] = raw_type;
-            wire[7] = crc8(&wire[2..7]);
-            assert_eq!(
-                decode_extended_frame(&wire[..used], &mut [0u8; MAX_EXTENDED_MPDU_DATA]),
-                Err(FrameError::UnsupportedCobsFrame { raw_type })
-            );
-        }
-    }
 }

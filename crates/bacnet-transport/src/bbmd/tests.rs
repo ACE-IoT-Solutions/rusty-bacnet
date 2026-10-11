@@ -140,7 +140,7 @@ fn fdt_encode() {
     bbmd.register_foreign_device([10, 0, 0, 5], 0xBAC0, 60);
     let mut buf = BytesMut::new();
     bbmd.encode_fdt(&mut buf);
-    assert_eq!(buf.len(), FDT_ENTRY_SIZE);
+    assert_eq!(buf.len(), bacnet_bip_codec::FDT_ENTRY_LENGTH);
     // IP
     assert_eq!(&buf[0..4], &[10, 0, 0, 5]);
     // Port
@@ -162,7 +162,7 @@ fn fdt_encode_caps_max_ttl_remaining_time() {
     let mut buf = BytesMut::new();
     bbmd.encode_fdt(&mut buf);
 
-    assert_eq!(buf.len(), FDT_ENTRY_SIZE);
+    assert_eq!(buf.len(), bacnet_bip_codec::FDT_ENTRY_LENGTH);
     assert_eq!(u16::from_be_bytes([buf[6], buf[7]]), u16::MAX);
     assert_eq!(u16::from_be_bytes([buf[8], buf[9]]), u16::MAX);
 }
@@ -295,6 +295,79 @@ fn set_bdt_does_not_duplicate_self() {
     }];
     state.set_bdt(entries).unwrap();
     assert_eq!(state.bdt().len(), 1); // self already present, no duplicate
+}
+
+fn unicast_row(ip: [u8; 4]) -> BdtEntry {
+    BdtEntry {
+        ip,
+        port: 0xBAC0,
+        broadcast_mask: [255, 255, 255, 255],
+    }
+}
+
+#[test]
+fn set_local_address_moves_the_appended_self_row_and_keeps_both_tables() {
+    let mut bbmd = make_bbmd();
+    let peer = unicast_row([192, 168, 2, 1]);
+    bbmd.set_bdt(vec![peer.clone()]).unwrap();
+    assert_eq!(
+        bbmd.register_foreign_device([10, 0, 0, 5], 47809, 60),
+        BvlcResultCode::SUCCESSFUL_COMPLETION
+    );
+
+    bbmd.set_local_address([192, 168, 1, 2], 0xBAC0).unwrap();
+
+    assert_eq!(bbmd.local_address(), ([192, 168, 1, 2], 0xBAC0));
+    assert_eq!(
+        bbmd.bdt(),
+        &[peer.clone(), unicast_row([192, 168, 1, 2])],
+        "the old appended self row is gone"
+    );
+    assert_eq!(bbmd.configured_bdt(), &[peer]);
+    assert_eq!(
+        bbmd.forwarding_targets([0; 4], 0),
+        vec![([192, 168, 2, 1], 0xBAC0), ([10, 0, 0, 5], 47809)],
+        "the new self row is skipped and the FDT is kept"
+    );
+}
+
+#[test]
+fn set_local_address_keeps_a_listed_self_row() {
+    let mut bbmd = make_bbmd();
+    let listed = unicast_row([192, 168, 1, 1]);
+    bbmd.set_bdt(vec![listed.clone()]).unwrap();
+    assert_eq!(bbmd.bdt(), std::slice::from_ref(&listed));
+
+    // The listed row stays, now as a peer, and the new address gets a row.
+    bbmd.set_local_address([192, 168, 1, 2], 0xBAC0).unwrap();
+    assert_eq!(bbmd.bdt(), &[listed.clone(), unicast_row([192, 168, 1, 2])]);
+    assert_eq!(
+        bbmd.forwarding_targets([0; 4], 0),
+        vec![([192, 168, 1, 1], 0xBAC0)]
+    );
+
+    // Back to the listed address: its row is the self row again and the
+    // appended one goes.
+    bbmd.set_local_address([192, 168, 1, 1], 0xBAC0).unwrap();
+    assert_eq!(bbmd.bdt(), std::slice::from_ref(&listed));
+    assert_eq!(bbmd.configured_bdt(), &[listed]);
+}
+
+#[test]
+fn set_local_address_refuses_to_overflow_the_bdt() {
+    let mut bbmd = make_bbmd();
+    let mut entries: Vec<BdtEntry> = (1..BbmdState::MAX_BDT_ENTRIES)
+        .map(|i| unicast_row([10, 0, 0, i as u8]))
+        .collect();
+    entries.push(unicast_row([192, 168, 1, 1]));
+    bbmd.set_bdt(entries).unwrap();
+    let before = bbmd.bdt().to_vec();
+    assert_eq!(before.len(), BbmdState::MAX_BDT_ENTRIES);
+
+    assert!(bbmd.set_local_address([192, 168, 1, 2], 0xBAC0).is_err());
+
+    assert_eq!(bbmd.local_address(), ([192, 168, 1, 1], 0xBAC0));
+    assert_eq!(bbmd.bdt(), before.as_slice());
 }
 
 #[test]

@@ -12,8 +12,11 @@ categories = ["network-programming"]
 [dependencies]
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
-bytes.workspace = true
+bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [lints]
 workspace = true

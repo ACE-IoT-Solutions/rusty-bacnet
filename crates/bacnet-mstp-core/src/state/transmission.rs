@@ -23,7 +23,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         data: &[u8],
         post: PostTransmit,
         now: Instant,
-        expires: Option<Instant>,
+        reply: Option<ReplyWindow>,
     ) -> Result<(), CoreError> {
         let mut encoded = [0; FRAME];
         let length = if data.len() > MAX_STANDARD_MPDU_DATA {
@@ -47,7 +47,6 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
                 extended_type,
                 destination,
                 self.config.station,
-                data.len(),
             );
             bacnet_mstp_codec::encode_extended_into(&mut encoded, &header, data)?
         } else {
@@ -57,40 +56,39 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         };
         let earliest = self.last_activity + self.config.t_turnaround;
         if now < earliest {
-            self.pending_send = Some(PendingSend {
+            let pending = PendingSend {
                 length,
                 frame: encoded,
                 post,
                 earliest,
-                expires,
-            });
-            self.protocol_deadline = Some(earliest);
+                reply,
+            };
+            self.protocol_deadline = Some(pending.deadline());
+            self.pending_send = Some(pending);
             return Ok(());
         }
-        if expires.is_some_and(|deadline| now > deadline) {
-            self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
-            return Ok(());
-        }
-        self.dispatch_frame(&encoded[..length], post, expires, now)
+        self.dispatch_frame(&encoded[..length], post, reply, now)
     }
 
     pub(super) fn dispatch_pending_send(&mut self, now: Instant) -> Result<(), CoreError> {
         let pending = self.pending_send.ok_or(CoreError::ActionCapacity)?;
-        if now < pending.earliest {
-            self.protocol_deadline = Some(pending.earliest);
-            return Ok(());
-        }
-        if pending.expires.is_some_and(|deadline| now > deadline) {
+        // The reply window first: under steady line activity the turnaround
+        // keeps moving, and the window must still close.
+        if pending.reply.is_some_and(|reply| now >= reply.give_up) {
+            // The requester may have stopped waiting; sending now could
+            // collide with it.
             self.pending_send = None;
-            self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
+            self.counters.record_expired_request();
+            return self.enter_idle(now);
+        }
+        if now < pending.earliest {
+            self.protocol_deadline = Some(pending.deadline());
             return Ok(());
         }
         self.dispatch_frame(
             &pending.frame[..pending.length],
             pending.post,
-            pending.expires,
+            pending.reply,
             now,
         )?;
         self.pending_send = None;
@@ -101,7 +99,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         &mut self,
         frame: &[u8],
         post: PostTransmit,
-        expires: Option<Instant>,
+        reply: Option<ReplyWindow>,
         now: Instant,
     ) -> Result<(), CoreError> {
         if self.active_transmit.is_some() {
@@ -117,7 +115,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             asserted_at: now,
             started: false,
             post,
-            expires,
+            reply,
         });
         self.protocol_deadline = None;
         Ok(())

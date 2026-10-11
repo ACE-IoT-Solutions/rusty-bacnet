@@ -6,12 +6,15 @@
 //! available.  The alloc implementation reserves all of its item storage in
 //! its constructor; enqueue and dequeue do not grow a vector.
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 use core::cmp::Ordering;
+
+#[cfg(any(feature = "alloc", feature = "heapless"))]
+use bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA;
 
 use crate::counters::QueueCounters;
 
-/// The largest NPDU accepted by the MS/TP core queue.
-pub const MAX_NPDU_LEN: usize = 501;
+const MAX_NPDU_LEN: usize = MAX_STANDARD_MPDU_DATA;
 
 /// Destination class used by the two independently bounded queues.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,7 +94,10 @@ impl NetworkPriority {
 pub enum QueueRejectReason {
     /// The destination queue has no free slot.
     Full,
-    /// The payload is larger than the queue's owned slot.
+    /// The payload is too long: larger than the queue's owned slot or, from
+    /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than a
+    /// standard frame's 501 octets. A dequeue also returns it when it dropped
+    /// an item too long for the caller's scratch.
     Oversize,
     /// The supplied expiry is at or before the enqueue time, or an item
     /// reached its expiry boundary while waiting.
@@ -141,6 +147,7 @@ pub struct QueueItemInfo {
     pub service_wait: u8,
 }
 
+#[cfg(feature = "heapless")]
 const EMPTY_QUEUE_COUNTERS: QueueCounters = QueueCounters {
     depth: 0,
     high_water: 0,
@@ -215,8 +222,10 @@ pub trait QueueStorage {
 
     /// Copy the selected payload into `scratch` and remove it atomically.
     ///
-    /// If `scratch` is too small, the item remains queued and
-    /// [`QueueRejectReason::Oversize`] is returned.
+    /// If `scratch` is too small, the item is dropped, counted in
+    /// `drops_oversize`, and [`QueueRejectReason::Oversize`] is returned. The
+    /// core's scratch holds a standard frame's data, so such an item could
+    /// never be sent; leaving it queued would keep it at the head.
     fn dequeue_into(
         &mut self,
         now: u64,
@@ -241,7 +250,8 @@ pub trait QueueStorage {
         }
     }
 
-    /// Copy and remove the next item from one destination class.
+    /// Copy and remove the next item from one destination class, with the
+    /// oversize rule of [`Self::dequeue_into`].
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
@@ -277,6 +287,10 @@ pub trait QueueStorage {
     }
 }
 
+// The item type and selection policy below are shared by the two queue
+// backends, so they build only when one of them does.
+
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 #[derive(Clone, Copy, Debug)]
 struct Item<const N: usize> {
     destination: u8,
@@ -289,6 +303,7 @@ struct Item<const N: usize> {
     payload: [u8; N],
 }
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 impl<const N: usize> Item<N> {
     fn info(self, kind: QueueKind, class: QueueClass) -> QueueItemInfo {
         QueueItemInfo {
@@ -305,10 +320,12 @@ impl<const N: usize> Item<N> {
     }
 }
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 fn expired(expires_at: Option<u64>, now: u64) -> bool {
     expires_at.is_some_and(|deadline| now >= deadline)
 }
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 fn is_older(left: u64, right: u64) -> bool {
     // Sequence numbers are only compared while both entries are live.  This
     // half-range comparison remains FIFO-correct across a u64 wrap unless a
@@ -316,6 +333,7 @@ fn is_older(left: u64, right: u64) -> bool {
     left != right && left.wrapping_sub(right) > (u64::MAX / 2)
 }
 
+#[cfg(any(feature = "alloc", feature = "heapless"))]
 fn better(candidate: QueueItemInfo, current: Option<QueueItemInfo>, starvation_limit: u8) -> bool {
     let Some(current) = current else { return true };
     let candidate_starved = candidate.service_wait >= starvation_limit;
@@ -638,13 +656,17 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> QueueStorag
         let Some((index, info)) = self.select_kind(kind, now) else {
             return Ok(None);
         };
-        if scratch.len() < info.len {
-            return Err(QueueRejectReason::Oversize);
-        }
         let item = match kind {
             QueueKind::Unicast => self.unicast.remove(index),
             QueueKind::Broadcast => self.broadcast.remove(index),
         };
+        if scratch.len() < info.len {
+            let depth = self.depth(kind);
+            let counters = self.counters_mut(kind);
+            counters.record_dequeue(depth);
+            counters.record_drop_oversize();
+            return Err(QueueRejectReason::Oversize);
+        }
         let depth = self.depth(kind);
         self.counters_mut(kind).record_dequeue(depth);
         self.bump_waits();
@@ -757,5 +779,5 @@ mod alloc;
 
 #[cfg(feature = "alloc")]
 pub use alloc::{AllocQueues, AllocQueuesProfile, ExtendedAllocQueues};
-#[cfg(test)]
+#[cfg(all(test, any(feature = "alloc", feature = "heapless")))]
 mod tests;

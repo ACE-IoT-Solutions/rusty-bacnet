@@ -33,9 +33,6 @@ RequirePassword with absent or empty configuration fails before startup/dial
 (Python constructor: `ValueError`; Rust startup/build: configuration error).
 DenyAll and LegacyPermissive introduce no password-length restrictions.
 
-The public unconfigured Rust
-`handlers::handle_device_communication_control` keeps its legacy optional-password
-API and behavior. It does not inherit the configured server default.
 ReinitializeDevice's separate password and handler are unchanged.
 
 ## Ordering and side effects
@@ -47,8 +44,11 @@ policy behavior. Generic, B/IP and SC builders expose `.dcc_source_restriction(.
 Use `Some(DccSourceRestriction::new(entries)?)` with `DccSource::Direct(Vec<u8>)`
 or `DccSource::Routed { network, address: Vec<u8> }`. Exhaustive Rust config
 literals need `dcc_source_restriction: None` (or a suitable default update).
-The validated list permits at most 256 entries and 1–255 octets per address;
-routed networks must be 1–65534. These are static local limits, not transport
+The validated list permits at most 256 entries and 1–18 octets per address
+(`BACnetAddress::MAX_MAC_LEN`, #1157); routed networks must be 1–65534. The
+network layer delivers no longer source address (#1141), and no built-in
+transport's MAC is longer, so a longer entry could never match and is refused
+rather than kept as a dead entry. These are static local limits, not transport
 support promises. No CIDR, prefixes, ranges or dynamic callbacks are supported.
 
 Python's keyword-only `dcc_source_restriction` accepts `None` or a list of
@@ -64,6 +64,14 @@ nonempty password. Other policies reject configuration before transport startup
 or SC dialing (Python constructor, Rust build/start), never silently ignoring it.
 Direct entries only match requests without a routed source. Routed entries match
 the exact network and full source address, not the immediate router's MAC.
+Once the server knows its own network's number, a routed entry naming that number
+also matches a request with no routed source from the link MAC equal to the
+entry's address (#1458): network numbers are unique, so the entry names a station
+on this link. While the number is unknown, such an entry matches only the routed
+form it spells out. This widening goes one way only, unlike a Device binding,
+which also takes such a relayed request as its direct station (#1404): a direct
+entry still matches no routed source, because any node on the link can claim this
+network's number and the station's MAC as SNET and SADR.
 Malformed routed identities fail closed rather than falling back to direct matching.
 All address bytes participate, independently of the 32-byte DEBUG truncation.
 Claimed addresses are spoofable and unauthenticated, **including SC VMACs**.
@@ -148,7 +156,7 @@ completed bounded #521 acceptance remain unchanged, not reopened.
 
 ### Standalone SC loopback evidence
 
-`cargo test -p bacnet-server --locked --features sc-tls sc_dcc_mtls` exercises
+`cargo nextest run -p bacnet-server --locked --features sc-tls sc_dcc_mtls` exercises
 the real standalone `BACnetServer::sc_builder`, TLS WebSocket transport and SC
 hub on `127.0.0.1:0`. Test-only certificates and distinct endpoint keys are
 generated in memory. The hub requires client certificates; clients verify the
@@ -180,6 +188,26 @@ nonempty startup requirement, deny-all default and optional rate limits are oper
 normative claims. This does not expand authenticated-SC, physical-transport,
 full-conformance, Audit/#125, EventLog integration, additional #181 fault-family
 or GATE0007 qualification.
+
+## Audit records
+
+With target Audit configured (see [target Audit Reporters](target-audit-reporters.md)),
+each DeviceCommunicationControl change the server carries out is reported, as
+Clause 19.6 and Table 19-5 map the service (#1387). An accepted DISABLE_INITIATION
+writes one DEVICE_DISABLE_COMM record, and an accepted ENABLE one DEVICE_ENABLE_COMM
+record, both naming the requester as source with its invoke ID. A timed disable
+that runs out writes one DEVICE_ENABLE_COMM record with this device as its source
+and no invoke ID; an ENABLE's own duration changes nothing when it ends, so it
+writes none. Each record names this Device as its target, with no target object,
+property or value, and no Result. A refused request (password, DISABLE, policy,
+source or rate denial) writes nothing.
+
+The record goes through the Reporter that monitors the local Device object, and
+needs its DEVICE_DISABLE_COMM or DEVICE_ENABLE_COMM operation bit. It honours
+`Maximum_Send_Delay`, and a record dropped for want of a send slot is summarized
+as AUDITING_FAILURE. The record is admitted with the change, under the timer
+owner, so records follow the order changes take effect in. The disable's record
+goes out under DISABLE_INITIATION, which exempts audit notifications.
 
 ## Completed-handler observability
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort};
+use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort, TransportProvenance};
 use bacnet_types::enums::NetworkPriority;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -76,8 +76,17 @@ impl TransportPort for TestTransport {
         Ok(())
     }
 
+    fn local_receive_apdu_capacity(&self) -> u16 {
+        1476
+    }
+
     fn local_mac(&self) -> &[u8] {
         &self.local_mac
+    }
+
+    /// MAC 0xFF reaches a group of nodes.
+    fn is_group_destination(&self, mac: &[u8]) -> bool {
+        mac == [0xFF]
     }
 }
 
@@ -135,6 +144,10 @@ impl TransportPort for BlockingTransport {
         Ok(())
     }
 
+    fn local_receive_apdu_capacity(&self) -> u16 {
+        1476
+    }
+
     fn local_mac(&self) -> &[u8] {
         &self.local_mac
     }
@@ -155,11 +168,12 @@ fn npdu_bytes(apdu: &[u8]) -> Bytes {
 
 fn received_npdu(apdu: &[u8]) -> ReceivedNpdu {
     ReceivedNpdu {
+        direct_response: None,
         npdu: npdu_bytes(apdu),
         source_mac: MacAddr::from_slice(&[0x11]),
         link_layer_group: false,
         data_attributes: Vec::new(),
-        transport_meta: None,
+        provenance: TransportProvenance::unverified(),
         reply_tx: None,
     }
 }
@@ -343,12 +357,46 @@ async fn malformed_and_unsupported_apdus_have_policy_outcomes() {
     endpoint.stop().await.unwrap();
 }
 
+/// A confirmed request from a group address goes to policy, not to the
+/// server role, whose answer would reach every node in the group (#1504).
+#[tokio::test]
+async fn a_confirmed_request_from_a_group_source_goes_to_policy() {
+    let (transport, handle) = test_transport();
+    let mut endpoint = EndpointIngress::new(transport, 4);
+    let mut ingress = endpoint.start().await.unwrap();
+    // ReadProperty, and Who-Is.
+    let confirmed = [
+        0x00, 0x05, 0x01, 0x0C, 0x0C, 0x02, 0x00, 0x00, 0x01, 0x19, 0x4D,
+    ];
+    let unconfirmed = [0x10, 0x08];
+    for apdu in [&confirmed[..], &unconfirmed] {
+        let mut from_group = received_npdu(apdu);
+        from_group.source_mac = MacAddr::from_slice(&[0xFF]);
+        handle.sender.send(from_group).await.unwrap();
+    }
+    inject(&handle, &confirmed).await;
+
+    let refused = receive(&mut ingress.policy_outcomes).await;
+    assert_eq!(refused.reason, PolicyReason::GroupSource);
+    assert_eq!(refused.received.source_mac[..], [0xFF]);
+    // The group's unconfirmed request, and a station's confirmed one, still
+    // reach the role.
+    let who_is = receive(&mut ingress.inbound_requests).await;
+    assert_eq!(who_is.apdu.as_ref(), unconfirmed);
+    let request = receive(&mut ingress.inbound_requests).await;
+    assert_eq!(request.source_mac[..], [0x11]);
+    assert!(ingress.policy_outcomes.try_recv().is_err());
+
+    endpoint.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn request_route_preserves_the_complete_envelope_and_reply_sender() {
     let (transport, handle) = test_transport();
     let mut endpoint = EndpointIngress::new(transport, 2);
     let mut ingress = endpoint.start().await.unwrap();
-    let apdu = [0x00, 0x05, 0x33, 0x0c];
+    // A global broadcast carries only an Unconfirmed-Request (#1491).
+    let apdu = [0x10, 0x08];
     let source_network = NpduAddress {
         network: 77,
         mac_address: MacAddr::from_slice(&[0x44, 0x55]),
@@ -378,11 +426,12 @@ async fn request_route_preserves_the_complete_envelope_and_reply_sender() {
     handle
         .sender
         .send(ReceivedNpdu {
+            direct_response: None,
             npdu: buffer.freeze(),
             source_mac: MacAddr::from_slice(&[0xde, 0xad]),
             link_layer_group: true,
             data_attributes: attributes.clone(),
-            transport_meta: None,
+            provenance: TransportProvenance::unverified(),
             reply_tx: Some(reply_tx),
         })
         .await
@@ -505,3 +554,6 @@ async fn full_policy_route_returns_the_unrouted_envelope_on_reclaim() {
     assert_eq!(handle.stops.load(Ordering::SeqCst), 1);
     drop(ingress);
 }
+
+#[path = "endpoint_ingress_lifecycle_tests.rs"]
+mod lifecycle;

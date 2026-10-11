@@ -39,9 +39,7 @@ async fn sc_dcc_mtls_requires_client_and_server_trust() {
             .await;
             // TLS1.3 client authentication rejection may surface during the
             // WebSocket upgrade. A completed error, never a deadline, is required.
-            let error = result
-                .err()
-                .expect("unauthenticated TLS endpoint was admitted");
+            let error = result.expect_err("unauthenticated TLS endpoint was admitted");
             assert!(
                 format!("{error:?}").contains(expected),
                 "expected {expected}, got {error:?}"
@@ -77,7 +75,7 @@ async fn sc_dcc_mtls_default_denies_even_correct_password() {
                         Outcome::Policy
                     };
                     f.dcc(0, mode, Some(1), password, None, expected).await;
-                    assert_eq!(f.server().comm_state(), 0);
+                    assert_eq!(f.server().comm_state(), DccState::Enable);
                     assert!(f.server().dcc_timer.lock().await.is_none());
                 }
             }
@@ -122,7 +120,7 @@ async fn sc_dcc_mtls_exact_vmac_restriction_and_live_timer() {
             Outcome::Accepted,
         )
         .await;
-        assert_eq!(f.server().comm_state(), 2);
+        assert_eq!(f.server().comm_state(), DccState::DisableInitiation);
         let timer = f.server().dcc_timer.clone();
         let slot = bounded(timer.lock()).await;
         let task = slot.as_ref().unwrap();
@@ -133,7 +131,7 @@ async fn sc_dcc_mtls_exact_vmac_restriction_and_live_timer() {
             for mode in [ENABLE, DISABLE_INITIATION] {
                 f.dcc(1, mode, duration, Some(PASSWORD), None, Outcome::Policy)
                     .await;
-                assert_eq!(f.server().comm_state(), 2);
+                assert_eq!(f.server().comm_state(), DccState::DisableInitiation);
                 assert_eq!(slot.as_ref().unwrap().id(), id);
                 assert!(!task.is_finished());
             }
@@ -156,14 +154,14 @@ async fn sc_dcc_mtls_exact_vmac_restriction_and_live_timer() {
             Outcome::Policy,
         )
         .await;
-        assert_eq!(f.server().comm_state(), 2);
+        assert_eq!(f.server().comm_state(), DccState::DisableInitiation);
         assert!(!task.is_finished());
         let old = task.abort_handle();
         drop(slot);
         f.read_property(1).await; // DISABLE_INITIATION still executes normal requests.
         f.dcc(0, ENABLE, None, Some(PASSWORD), None, Outcome::Accepted)
             .await;
-        assert_eq!(f.server().comm_state(), 0);
+        assert_eq!(f.server().comm_state(), DccState::Enable);
         assert!(old.is_finished());
         assert!(timer.lock().await.is_none());
         f.dcc(
@@ -175,7 +173,7 @@ async fn sc_dcc_mtls_exact_vmac_restriction_and_live_timer() {
             Outcome::Policy,
         )
         .await;
-        assert_eq!(f.server().comm_state(), 0);
+        assert_eq!(f.server().comm_state(), DccState::Enable);
         assert!(timer.lock().await.is_none());
     })
     .await;
@@ -198,7 +196,7 @@ async fn sc_dcc_mtls_empty_restriction_denies_trusted_peers() {
             for mode in [ENABLE, DISABLE_INITIATION] {
                 f.dcc(peer, mode, Some(1), Some(PASSWORD), None, Outcome::Policy)
                     .await;
-                assert_eq!(f.server().comm_state(), 0);
+                assert_eq!(f.server().comm_state(), DccState::Enable);
                 assert!(f.server().dcc_timer.lock().await.is_none());
             }
             f.read_property(peer).await;
@@ -243,17 +241,13 @@ async fn sc_dcc_mtls_global_burst_enable_exemption_and_uncharged_failures() {
                     None,
                 )
                 .await;
-            let Apdu::Error(error) = response else {
-                panic!("expected malformed DCC Error")
+            // An empty DCC is missing its enable-disable (#1446).
+            let Apdu::Reject(reject) = response else {
+                panic!("expected malformed DCC Reject")
             };
-            assert_eq!(error.invoke_id, id);
             assert_eq!(
-                error.service_choice,
-                ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL
-            );
-            assert_eq!(
-                (error.error_class, error.error_code),
-                (ErrorClass::SERVICES, ErrorCode::OTHER)
+                (reject.invoke_id, reject.reject_reason),
+                (id, RejectReason::MISSING_REQUIRED_PARAMETER)
             );
             assert_eq!(
                 f.server().dcc_outcome_counters(),
@@ -314,7 +308,7 @@ async fn sc_dcc_mtls_global_burst_enable_exemption_and_uncharged_failures() {
             .await;
             f.dcc(1, ENABLE, None, Some(PASSWORD), None, Outcome::Accepted)
                 .await;
-            assert_eq!(f.server().comm_state(), 0);
+            assert_eq!(f.server().comm_state(), DccState::Enable);
             f.dcc(
                 1,
                 DISABLE_INITIATION,
@@ -348,7 +342,7 @@ async fn sc_dcc_mtls_global_burst_enable_exemption_and_uncharged_failures() {
                         Outcome::Policy,
                     )
                     .await;
-                    assert_eq!(f.server().comm_state(), 2);
+                    assert_eq!(f.server().comm_state(), DccState::DisableInitiation);
                     assert_eq!(slot.as_ref().unwrap().id(), id);
                     assert!(!old.is_finished());
                 }
@@ -370,7 +364,7 @@ async fn sc_dcc_mtls_global_burst_enable_exemption_and_uncharged_failures() {
             for peer in 0..2 {
                 f.dcc(peer, ENABLE, None, Some(PASSWORD), None, Outcome::Accepted)
                     .await;
-                assert_eq!(f.server().comm_state(), 0);
+                assert_eq!(f.server().comm_state(), DccState::Enable);
                 assert!(old.is_finished());
                 assert!(timer.lock().await.is_none());
                 f.dcc(
@@ -382,7 +376,7 @@ async fn sc_dcc_mtls_global_burst_enable_exemption_and_uncharged_failures() {
                     Outcome::Policy,
                 )
                 .await;
-                assert_eq!(f.server().comm_state(), 0);
+                assert_eq!(f.server().comm_state(), DccState::Enable);
                 assert!(timer.lock().await.is_none());
                 f.read_property(peer).await;
             }
@@ -463,7 +457,7 @@ async fn sc_dcc_mtls_routed_source_and_existing_duration_semantics() {
             Outcome::Accepted,
         )
         .await;
-        assert_eq!(f.server().comm_state(), 2);
+        assert_eq!(f.server().comm_state(), DccState::DisableInitiation);
         assert!(f.server().dcc_timer.lock().await.is_none());
         // Matching routed claims through different TLS peers are not principals.
         f.dcc(
@@ -475,7 +469,7 @@ async fn sc_dcc_mtls_routed_source_and_existing_duration_semantics() {
             Outcome::Accepted,
         )
         .await;
-        assert_eq!(f.server().comm_state(), 0);
+        assert_eq!(f.server().comm_state(), DccState::Enable);
         assert!(f.server().dcc_timer.lock().await.is_some());
         f.dcc(
             0,
@@ -498,7 +492,7 @@ async fn sc_dcc_mtls_routed_source_and_existing_duration_semantics() {
         completed
             .expect("zero-duration timer did not finish")
             .unwrap();
-        assert_eq!(f.server().comm_state(), 0);
+        assert_eq!(f.server().comm_state(), DccState::Enable);
         f.read_property(0).await;
     })
     .await;

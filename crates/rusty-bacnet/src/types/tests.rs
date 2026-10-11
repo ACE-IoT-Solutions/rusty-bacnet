@@ -44,6 +44,7 @@ fn parse_address_mstp_peer_boundaries() {
 
 #[test]
 fn parse_address_rejects_mstp_broadcast_and_out_of_range_peers() {
+    Python::initialize();
     for address in ["255", "mstp:255"] {
         let err = parse_address(address).unwrap_err();
         assert_eq!(
@@ -62,6 +63,7 @@ fn parse_address_rejects_mstp_broadcast_and_out_of_range_peers() {
 
 #[test]
 fn parse_address_rejects_malformed_and_negative_mstp_peers_explicitly() {
+    Python::initialize();
     for address in ["mstp:", "mstp:not-a-number"] {
         let err = parse_address(address).unwrap_err();
         assert_eq!(
@@ -86,51 +88,4 @@ fn parse_address_rejects_garbage() {
 #[test]
 fn parse_address_ipv6_missing_bracket() {
     assert!(parse_address("[::1").is_err());
-}
-
-#[test]
-fn direct_target_preserves_non_default_bip_port() {
-    let target = PyDirectTarget::new("192.0.2.10:47809".to_owned()).unwrap();
-    assert_eq!(target.address, "192.0.2.10:47809");
-    assert_eq!(target.mac, vec![192, 0, 2, 10, 0xba, 0xc1]);
-}
-
-#[test]
-fn direct_target_rejects_non_unicast_or_non_bip_addresses() {
-    for address in [
-        "0.0.0.0:47808",
-        "224.0.0.1:47808",
-        "255.255.255.255:47808",
-        "01:02:03:04:05:06",
-        "[::1]:47808",
-    ] {
-        assert!(
-            PyDirectTarget::new(address.to_owned()).is_err(),
-            "{address}"
-        );
-    }
-}
-
-#[test]
-fn routed_target_preserves_router_dnet_and_multibyte_dadr() {
-    let target = PyRoutedTarget::new(
-        "192.0.2.1:47810".to_owned(),
-        200,
-        vec![0xde, 0xad, 0xbe, 0xef],
-    )
-    .unwrap();
-    assert_eq!(target.router, "192.0.2.1:47810");
-    assert_eq!(target.router_mac, vec![192, 0, 2, 1, 0xba, 0xc2]);
-    assert_eq!(target.network, 200);
-    assert_eq!(target.address, vec![0xde, 0xad, 0xbe, 0xef]);
-}
-
-#[test]
-fn routed_target_validates_dnet_and_dadr_bounds() {
-    for network in [0, u16::MAX] {
-        assert!(PyRoutedTarget::new("192.0.2.1:47808".to_owned(), network, vec![1],).is_err());
-    }
-    for address in [Vec::new(), vec![1; 256]] {
-        assert!(PyRoutedTarget::new("192.0.2.1:47808".to_owned(), 1, address,).is_err());
-    }
 }

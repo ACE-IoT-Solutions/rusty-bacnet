@@ -128,6 +128,9 @@ fn regeneration_forgets_a_stale_successor_and_restarts_at_ts_plus_one() {
     assert_eq!(core.counters().token_regenerations, 2);
 }
 
+// With the request at 1 ms, the decision deadline is 226 ms (T_reply_delay
+// 250 ms less the 25 ms transmit margin), and the requester may stop waiting
+// from 256 ms (the shortest T_reply_timeout, 255 ms).
 #[test]
 fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     let mut rx = [0; 1024];
@@ -147,7 +150,8 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
         } => id,
         other => panic!("expected request delivery, got {other:?}"),
     };
-    let due = ms(251);
+    let due = ms(226);
+    assert_eq!(core.next_deadline(), Some(due));
     assert_eq!(
         core.complete_request(request, ReplyDecision::Data(&[9]), due),
         Err(CoreError::RequestExpired)
@@ -158,6 +162,8 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     assert_eq!(header.frame_type, FrameType::ReplyPostponed);
     assert_eq!(header.destination, 7);
     assert!(core.counters().state_transitions > 0);
+    assert_eq!(core.counters().deadline_misses, 0);
+    assert_eq!(core.counters().late_replies, 0);
 
     let mut rx = [0; 1024];
     let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
@@ -177,11 +183,12 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
         other => panic!("expected request delivery, got {other:?}"),
     };
     assert_eq!(
-        core.complete_request(request, ReplyDecision::Data(&[9]), ms(252)),
+        core.complete_request(request, ReplyDecision::Data(&[9]), ms(256)),
         Err(CoreError::RequestExpired)
     );
     assert_eq!(core.snapshot().request_id, None);
     assert_eq!(core.poll_action(), Action::Idle);
+    assert_eq!(core.counters().expired_requests, 1);
 
     let mut rx = [0; 1024];
     let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
@@ -200,8 +207,12 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
         } => id,
         other => panic!("expected request delivery, got {other:?}"),
     };
-    core.complete_request(request, ReplyDecision::Data(&[9]), ms(250))
-        .unwrap();
+    core.complete_request(
+        request,
+        ReplyDecision::Data(&[9]),
+        ms(226) - Duration::from_micros(1),
+    )
+    .unwrap();
     assert_eq!(core.snapshot().request_id, None);
     assert!(core.counters().npdus_delivered > 0);
 }
@@ -227,17 +238,21 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
     };
     // Intervening token traffic cannot transfer ownership away from the
     // request, but it also cannot justify a response after Treply_timeout.
+    // The Token is kept for when the request ends: then it is used, here to
+    // poll for a successor, and no Reply Postponed goes out.
     validated(&mut core, FrameType::Token, 1, 3, &[], ms(100));
     assert_eq!(core.snapshot().request_id, Some(request));
     core.on_deadline(ms(302)).unwrap();
     assert_eq!(core.snapshot().request_id, None);
-    assert_eq!(core.state(), MasterState::Idle);
-    assert_eq!(core.poll_action(), Action::Idle);
+    assert_eq!(core.state(), MasterState::PollForMaster);
+    let (_poll, header) = take_transmit(&mut core, ms(302));
+    assert_eq!(header.frame_type, FrameType::PollForMaster);
     assert_eq!(
         core.complete_request(request, ReplyDecision::Postponed, ms(303)),
         Err(CoreError::NoPendingRequest)
     );
     assert!(core.counters().deadline_misses > 0);
+    assert_eq!(core.counters().expired_requests, 1);
 
     let mut rx = [0; 1024];
     let mut cfg = config(1, 3);
@@ -252,9 +267,12 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
         Instant::ZERO,
     );
     let _ = core.poll_action();
+    // The requester's own reply timeout doesn't matter: any requester may
+    // stop waiting from 255 ms.
     core.on_deadline(ms(280)).unwrap();
     assert_eq!(core.snapshot().request_id, None);
     assert_eq!(core.poll_action(), Action::Idle);
+    assert_eq!(core.counters().expired_requests, 1);
 }
 
 #[test]
@@ -283,6 +301,7 @@ fn deferred_application_reply_is_not_dispatched_after_its_deadline() {
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.poll_action(), Action::Idle);
     assert!(core.counters().deadline_misses > 0);
+    assert_eq!(core.counters().expired_requests, 1);
 }
 
 #[test]
@@ -332,6 +351,8 @@ fn every_receive_ingress_cancels_a_deferred_token_owned_send() {
     assert!(matches!(core.poll_action(), Action::DeliverNpdu { .. }));
     core.on_deadline(stale_due).unwrap();
     assert_eq!(core.poll_action(), Action::Idle);
+    // The dropped frame is counted, not lost silently.
+    assert_eq!(core.counters().cancelled_sends, 1);
 
     let mut rx = [0; 1024];
     let mut core = MasterCore::new(config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
@@ -348,6 +369,7 @@ fn every_receive_ingress_cancels_a_deferred_token_owned_send() {
     core.on_deadline(stale_due).unwrap();
     assert_eq!(core.poll_action(), Action::Idle);
     assert!(core.counters().state_transitions > 0);
+    assert_eq!(core.counters().cancelled_sends, 1);
 }
 
 #[test]

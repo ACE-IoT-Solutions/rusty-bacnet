@@ -6,6 +6,12 @@ use bacnet_mstp_codec::MAX_EXTENDED_FRAME_LENGTH;
 const MAX_MASTER_ADDRESS: u8 = 127;
 const DEFAULT_BAUD_RATE: u32 = 9_600;
 const MAX_FRAME_ABORT: Duration = Duration::from_millis(100);
+/// The shortest T_reply_timeout a station may use (Clause 9.5.3). No requester
+/// stops waiting for a reply sooner, so it bounds how late a reply may start.
+pub(crate) const MIN_REPLY_TIMEOUT: Duration = Duration::from_millis(255);
+/// Default for [`MstpCoreConfig::reply_transmit_margin`], the value the host
+/// MS/TP transport reserves.
+const DEFAULT_REPLY_TRANSMIT_MARGIN: Duration = Duration::from_millis(25);
 
 /// A configuration value that violates a protocol or local safety bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,17 +22,17 @@ pub enum ConfigError {
     TimingOverflow,
     /// Clause 9 fixes Npoll at 50 token uses.
     InvalidPollCount {
-        /// Supplied Npoll value.
+        /// Supplied poll count.
         value: u8,
     },
     /// Clause 9 fixes Nretry_token at one retry.
     InvalidTokenRetryCount {
-        /// Supplied Nretry_token value.
+        /// Supplied token retry count.
         value: u8,
     },
     /// Clause 9 fixes Nmin_octets at four octets.
     InvalidMinimumOctets {
-        /// Supplied Nmin_octets value.
+        /// Supplied minimum idle-octet count.
         value: u8,
     },
     /// Max_Master is a seven-bit station address.
@@ -36,9 +42,9 @@ pub enum ConfigError {
     },
     /// This station cannot be beyond Max_Master.
     StationExceedsMaxMaster {
-        /// Configured station address.
+        /// Local station address.
         station: u8,
-        /// Configured Max_Master address.
+        /// Configured Max_Master value.
         max_master: u8,
     },
     /// Max_Info_Frames must be in the inclusive 1..=255 range.
@@ -48,81 +54,89 @@ pub enum ConfigError {
     },
     /// T_frame_abort is outside the 60-bit-time through 100 ms range.
     FrameAbortOutOfRange {
-        /// Configured T_frame_abort value.
+        /// Supplied frame-abort duration.
         value: Duration,
-        /// Minimum permitted T_frame_abort value.
+        /// Minimum permitted duration.
         minimum: Duration,
-        /// Maximum permitted T_frame_abort value.
+        /// Maximum permitted duration.
         maximum: Duration,
     },
     /// T_frame_gap is longer than 20 bit times.
     FrameGapTooLong {
-        /// Configured T_frame_gap value.
+        /// Supplied frame-gap duration.
         value: Duration,
-        /// Maximum permitted T_frame_gap value.
+        /// Maximum permitted duration.
         maximum: Duration,
     },
     /// T_postdrive is longer than 15 bit times.
     PostdriveTooLong {
-        /// Configured T_postdrive value.
+        /// Supplied postdrive duration.
         value: Duration,
-        /// Maximum permitted T_postdrive value.
+        /// Maximum permitted duration.
         maximum: Duration,
     },
     /// T_no_token is the fixed 500 ms lost-token deadline.
     InvalidNoToken {
-        /// Configured T_no_token value.
+        /// Supplied no-token duration.
         value: Duration,
     },
     /// T_reply_delay cannot exceed 250 ms.
     ReplyDelayTooLong {
-        /// Configured T_reply_delay value.
+        /// Supplied reply-delay duration.
         value: Duration,
-        /// Maximum permitted T_reply_delay value.
+        /// Maximum permitted duration.
         maximum: Duration,
+    },
+    /// The reply transmit margin must leave part of T_reply_delay for the
+    /// application to answer.
+    ReplyMarginTooLong {
+        /// Supplied margin.
+        margin: Duration,
+        /// Configured T_reply_delay.
+        reply_delay: Duration,
     },
     /// T_reply_timeout must be between 255 and 300 ms.
     ReplyTimeoutOutOfRange {
-        /// Configured T_reply_timeout value.
+        /// Supplied reply-timeout duration.
         value: Duration,
-        /// Minimum permitted T_reply_timeout value.
+        /// Minimum permitted duration.
         minimum: Duration,
-        /// Maximum permitted T_reply_timeout value.
+        /// Maximum permitted duration.
         maximum: Duration,
     },
     /// T_slot is the ten-millisecond maintenance slot.
     InvalidSlot {
-        /// Configured T_slot value.
+        /// Supplied maintenance-slot duration.
         value: Duration,
     },
     /// T_turnaround must cover at least 40 bit times.
     TurnaroundTooShort {
-        /// Configured T_turnaround value.
+        /// Supplied turnaround duration.
         value: Duration,
-        /// Minimum permitted T_turnaround value.
+        /// Minimum permitted duration.
         minimum: Duration,
     },
     /// T_turnaround cannot exceed the maximum T_usage_delay response window.
     TurnaroundExceedsUsageDelay {
-        /// Configured T_turnaround value.
+        /// Supplied turnaround duration.
         turnaround: Duration,
-        /// Configured T_usage_delay value.
+        /// Configured usage-delay duration.
         usage_delay: Duration,
     },
     /// T_usage_delay cannot exceed 15 ms.
     UsageDelayTooLong {
-        /// Configured T_usage_delay value.
+        /// Supplied usage-delay duration.
         value: Duration,
-        /// Maximum permitted T_usage_delay value.
+        /// Maximum permitted duration.
         maximum: Duration,
     },
     /// T_usage_timeout must be between 20 and 35 ms.
     UsageTimeoutOutOfRange {
-        /// Configured T_usage_timeout value.
+        /// Supplied usage-timeout duration.
         value: Duration,
-        /// Minimum permitted T_usage_timeout value.
+        /// Minimum permitted duration.
         minimum: Duration,
-        /// Maximum permitted T_usage_timeout value.
+        /// Maximum permitted duration.
         maximum: Duration,
     },
     /// A local queue age or watchdog of zero would disable the safety bound.
@@ -140,7 +154,7 @@ pub enum ConfigError {
     },
     /// A local scheduling ratio or starvation limit of zero is invalid.
     ZeroLocalLimit {
-        /// Local limit setting that was zero.
+        /// Local count or ratio setting that was zero.
         field: LocalLimitField,
     },
     /// Multiple-frame ratio is a percentage and cannot exceed 100.
@@ -153,15 +167,20 @@ pub enum ConfigError {
 /// Names of local duration settings used by [`ConfigError::ZeroLocalDuration`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalDurationField {
+    /// [`MstpCoreConfig::queue_max_age`].
     QueueMaxAge,
+    /// [`MstpCoreConfig::transmit_watchdog`].
     TransmitWatchdog,
 }
 
 /// Names of local count/ratio settings used by [`ConfigError::ZeroLocalLimit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalLimitField {
+    /// [`MstpCoreConfig::broadcast_unicast_ratio`].
     BroadcastUnicastRatio,
+    /// [`MstpCoreConfig::multiple_frame_ratio`].
     MultipleFrameRatio,
+    /// [`MstpCoreConfig::starvation_limit`].
     StarvationLimit,
 }
 
@@ -198,7 +217,8 @@ pub struct MstpCoreConfig {
     pub t_no_token: Duration,
     /// T_postdrive.
     pub t_postdrive: Duration,
-    /// T_reply_delay.
+    /// T_reply_delay: the longest a reply to a data-expecting-reply frame may
+    /// take to start.
     pub t_reply_delay: Duration,
     /// T_reply_timeout.
     pub t_reply_timeout: Duration,
@@ -211,6 +231,14 @@ pub struct MstpCoreConfig {
     /// T_usage_timeout.
     pub t_usage_timeout: Duration,
 
+    /// Time kept back from T_reply_delay for the platform to get a reply onto
+    /// the wire.
+    ///
+    /// The core waits for the application's answer until T_reply_delay less
+    /// this margin, then sends Reply Postponed itself, so that adapter and
+    /// UART latency still lets the frame start within T_reply_delay. It must
+    /// be shorter than T_reply_delay. Default 25 ms.
+    pub reply_transmit_margin: Duration,
     /// Maximum time an item may remain in a local transmit queue.
     pub queue_max_age: Duration,
     /// Number of broadcast frames scheduled per unicast frame while both
@@ -250,6 +278,12 @@ impl MstpCoreConfig {
         Self::for_baud_rate_unchecked(DEFAULT_BAUD_RATE)
     }
 
+    /// The time one octet takes on the wire: ten bit times, rounded up.
+    #[must_use]
+    pub const fn octet_time(&self) -> Duration {
+        or_max(ceil_bit_times(self.baud_rate, 10))
+    }
+
     /// Validate all protocol and local bounds.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.baud_rate == 0 {
@@ -285,10 +319,11 @@ impl MstpCoreConfig {
             });
         }
 
-        let frame_abort_min = ceil_bit_times(self.baud_rate, 60)?;
-        let frame_gap_max = floor_bit_times(self.baud_rate, 20)?;
-        let postdrive_max = floor_bit_times(self.baud_rate, 15)?;
-        let turnaround_min = ceil_bit_times(self.baud_rate, 40)?;
+        let bit_times = |bound: Option<Duration>| bound.ok_or(ConfigError::TimingOverflow);
+        let frame_abort_min = bit_times(ceil_bit_times(self.baud_rate, 60))?;
+        let frame_gap_max = bit_times(floor_bit_times(self.baud_rate, 20))?;
+        let postdrive_max = bit_times(floor_bit_times(self.baud_rate, 15))?;
+        let turnaround_min = bit_times(ceil_bit_times(self.baud_rate, 40))?;
         if self.t_frame_abort < frame_abort_min || self.t_frame_abort > MAX_FRAME_ABORT {
             return Err(ConfigError::FrameAbortOutOfRange {
                 value: self.t_frame_abort,
@@ -319,12 +354,17 @@ impl MstpCoreConfig {
                 value: self.t_no_token,
             });
         }
-        let reply_timeout_min = Duration::from_millis(255);
+        if self.reply_transmit_margin >= self.t_reply_delay {
+            return Err(ConfigError::ReplyMarginTooLong {
+                margin: self.reply_transmit_margin,
+                reply_delay: self.t_reply_delay,
+            });
+        }
         let reply_timeout_max = Duration::from_millis(300);
-        if self.t_reply_timeout < reply_timeout_min || self.t_reply_timeout > reply_timeout_max {
+        if self.t_reply_timeout < MIN_REPLY_TIMEOUT || self.t_reply_timeout > reply_timeout_max {
             return Err(ConfigError::ReplyTimeoutOutOfRange {
                 value: self.t_reply_timeout,
-                minimum: reply_timeout_min,
+                minimum: MIN_REPLY_TIMEOUT,
                 maximum: reply_timeout_max,
             });
         }
@@ -395,7 +435,7 @@ impl MstpCoreConfig {
         self.validate()?;
         let octets = u64::try_from(frame_capacity).map_err(|_| ConfigError::TimingOverflow)?;
         let bits = octets.checked_mul(10).ok_or(ConfigError::TimingOverflow)?;
-        let minimum = ceil_bit_times(self.baud_rate, bits)?;
+        let minimum = ceil_bit_times(self.baud_rate, bits).ok_or(ConfigError::TimingOverflow)?;
         if self.transmit_watchdog < minimum {
             return Err(ConfigError::TransmitWatchdogTooShort {
                 value: self.transmit_watchdog,
@@ -414,70 +454,58 @@ impl MstpCoreConfig {
             n_poll: 50,
             n_retry_token: 1,
             n_min_octets: 4,
-            t_frame_abort: ceil_bit_times_const(baud_rate, 60),
-            t_frame_gap: floor_bit_times_const(baud_rate, 20),
+            t_frame_abort: or_max(ceil_bit_times(baud_rate, 60)),
+            t_frame_gap: or_max(floor_bit_times(baud_rate, 20)),
             t_no_token: Duration::from_millis(500),
-            t_postdrive: floor_bit_times_const(baud_rate, 15),
+            t_postdrive: or_max(floor_bit_times(baud_rate, 15)),
             t_reply_delay: Duration::from_millis(250),
-            t_reply_timeout: Duration::from_millis(255),
+            t_reply_timeout: MIN_REPLY_TIMEOUT,
             t_slot: Duration::from_millis(10),
-            t_turnaround: ceil_bit_times_const(baud_rate, 40),
+            t_turnaround: or_max(ceil_bit_times(baud_rate, 40)),
             t_usage_delay: Duration::from_millis(15),
             t_usage_timeout: Duration::from_millis(20),
+            reply_transmit_margin: DEFAULT_REPLY_TRANSMIT_MARGIN,
             queue_max_age: Duration::from_secs(5),
             broadcast_unicast_ratio: 1,
             multiple_frame_ratio: 100,
             starvation_limit: 8,
-            transmit_watchdog: ceil_bit_times_const(
+            transmit_watchdog: or_max(ceil_bit_times(
                 baud_rate,
                 MAX_EXTENDED_FRAME_LENGTH as u64 * 10,
-            )
+            ))
             .saturating_add(Duration::from_millis(100)),
         }
     }
 }
 
-/// Return the ceiling of `bits / baud` in microseconds.
-fn ceil_bit_times(baud_rate: u32, bits: u64) -> Result<Duration, ConfigError> {
-    if baud_rate == 0 {
-        return Err(ConfigError::ZeroBaudRate);
-    }
-    let numerator = bits
-        .checked_mul(1_000_000)
-        .ok_or(ConfigError::TimingOverflow)?;
-    let baud = u64::from(baud_rate);
-    let micros = numerator
-        .checked_add(baud - 1)
-        .ok_or(ConfigError::TimingOverflow)?
-        / baud;
-    Ok(Duration::from_micros(micros))
-}
-
-/// Return the floor of `bits / baud` in microseconds for maximum bounds.
-fn floor_bit_times(baud_rate: u32, bits: u64) -> Result<Duration, ConfigError> {
-    if baud_rate == 0 {
-        return Err(ConfigError::ZeroBaudRate);
-    }
-    let numerator = bits
-        .checked_mul(1_000_000)
-        .ok_or(ConfigError::TimingOverflow)?;
-    Ok(Duration::from_micros(numerator / u64::from(baud_rate)))
-}
-
-const fn ceil_bit_times_const(baud_rate: u32, bits: u64) -> Duration {
-    let numerator = bits * 1_000_000;
+/// `bits` bit times at `baud_rate` in microseconds, rounded up, for minimum
+/// bounds. `None` for a zero baud rate or on overflow.
+const fn ceil_bit_times(baud_rate: u32, bits: u64) -> Option<Duration> {
     let baud = baud_rate as u64;
-    match baud {
-        0 => Duration::MAX,
-        _ => Duration::from_micros(numerator.div_ceil(baud)),
+    match bits.checked_mul(1_000_000) {
+        Some(numerator) if baud != 0 => Some(Duration::from_micros(numerator.div_ceil(baud))),
+        _ => None,
     }
 }
 
-const fn floor_bit_times_const(baud_rate: u32, bits: u64) -> Duration {
-    let baud = baud_rate as u64;
-    match baud {
-        0 => Duration::MAX,
-        _ => Duration::from_micros((bits * 1_000_000) / baud),
+/// `bits` bit times at `baud_rate` in microseconds, rounded down, for maximum
+/// bounds. `None` for a zero baud rate or on overflow.
+const fn floor_bit_times(baud_rate: u32, bits: u64) -> Option<Duration> {
+    match bits.checked_mul(1_000_000) {
+        Some(numerator) => match numerator.checked_div(baud_rate as u64) {
+            Some(micros) => Some(Duration::from_micros(micros)),
+            None => None,
+        },
+        None => None,
+    }
+}
+
+/// A bit-time default for [`MstpCoreConfig::for_baud_rate_unchecked`]: a
+/// zero baud rate gives [`Duration::MAX`], which `validate` then rejects.
+const fn or_max(duration: Option<Duration>) -> Duration {
+    match duration {
+        Some(duration) => duration,
+        None => Duration::MAX,
     }
 }
 
@@ -498,15 +526,17 @@ mod tests {
 
     #[test]
     fn validation_rejects_zero_baud_and_bad_addresses() {
-        let mut config = MstpCoreConfig {
+        let config = MstpCoreConfig {
             baud_rate: 0,
             ..MstpCoreConfig::default()
         };
         assert_eq!(config.validate(), Err(ConfigError::ZeroBaudRate));
 
-        config = MstpCoreConfig::default();
-        config.max_master = 127;
-        config.station = 128;
+        let config = MstpCoreConfig {
+            max_master: 127,
+            station: 128,
+            ..MstpCoreConfig::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::StationExceedsMaxMaster { .. })
@@ -515,7 +545,7 @@ mod tests {
 
     #[test]
     fn validation_enforces_bit_time_edges_without_overflow() {
-        let mut config = MstpCoreConfig {
+        let config = MstpCoreConfig {
             t_frame_abort: Duration::from_millis(1),
             ..MstpCoreConfig::default()
         };
@@ -524,8 +554,10 @@ mod tests {
             Err(ConfigError::FrameAbortOutOfRange { .. })
         ));
 
-        config = MstpCoreConfig::default();
-        config.baud_rate = 1;
+        let config = MstpCoreConfig {
+            baud_rate: 1,
+            ..MstpCoreConfig::default()
+        };
         assert!(matches!(
             config.validate(),
             Err(ConfigError::FrameAbortOutOfRange { .. })
@@ -541,7 +573,7 @@ mod tests {
 
     #[test]
     fn validation_rejects_infeasible_response_and_ratio_policies() {
-        let mut config = MstpCoreConfig {
+        let config = MstpCoreConfig {
             t_turnaround: Duration::from_millis(16),
             ..MstpCoreConfig::default()
         };
@@ -550,11 +582,38 @@ mod tests {
             Err(ConfigError::TurnaroundExceedsUsageDelay { .. })
         ));
 
-        config = MstpCoreConfig::default();
-        config.multiple_frame_ratio = 101;
+        let config = MstpCoreConfig {
+            multiple_frame_ratio: 101,
+            ..MstpCoreConfig::default()
+        };
         assert_eq!(
             config.validate(),
             Err(ConfigError::MultipleFrameRatioOutOfRange { value: 101 })
         );
+    }
+
+    #[test]
+    fn reply_margin_must_leave_part_of_the_reply_delay() {
+        let config = MstpCoreConfig::default();
+        assert_eq!(config.reply_transmit_margin, Duration::from_millis(25));
+
+        let config = MstpCoreConfig {
+            reply_transmit_margin: Duration::from_millis(250),
+            ..MstpCoreConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::ReplyMarginTooLong {
+                margin: Duration::from_millis(250),
+                reply_delay: Duration::from_millis(250),
+            })
+        );
+
+        let config = MstpCoreConfig {
+            t_reply_delay: Duration::from_millis(100),
+            reply_transmit_margin: Duration::from_micros(99_999),
+            ..MstpCoreConfig::default()
+        };
+        assert_eq!(config.validate(), Ok(()));
     }
 }

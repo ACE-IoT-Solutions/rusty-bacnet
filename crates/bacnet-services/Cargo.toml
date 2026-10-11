@@ -7,28 +7,21 @@ license.workspace = true
 repository.workspace = true
 description = "BACnet service request/response encode/decode per ASHRAE 135-2020"
 keywords = ["bacnet", "building-automation", "ashrae", "services", "protocol"]
-categories = ["network-programming"]
+categories = ["network-programming", "no-std"]
 
+# One of `std` or `alloc` is required; with neither the crate refuses to build.
+# Leaving both off is reserved for a future allocation-free subset.
 [features]
-# Keep the host-facing API unchanged by default while allowing the complete
-# service codec to be built on targets that provide `alloc` but not `std`.
 default = ["std"]
-alloc = ["bacnet-encoding/alloc"]
-std = [
-    "alloc",
-    "bacnet-types/std",
-    "bacnet-encoding/std",
-    "bytes/std",
-    "dep:tracing",
-    "tracing/std",
-    "tracing/attributes",
-]
+# Hosted builds: std in the dependencies.
+std = ["alloc", "bacnet-types/std", "bacnet-encoding/std", "bytes/std"]
+# no_std with a global allocator.
+alloc = ["bacnet-types/alloc", "bacnet-encoding/alloc"]
 
 [dependencies]
-bacnet-types = { workspace = true, default-features = false }
-bacnet-encoding = { workspace = true, default-features = false }
-bytes = { workspace = true, default-features = false }
-tracing = { workspace = true, optional = true }
+bacnet-types = { workspace = true }
+bacnet-encoding = { workspace = true }
+bytes = { workspace = true }
 
 [lints]
 workspace = true

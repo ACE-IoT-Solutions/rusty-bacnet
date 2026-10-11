@@ -9,6 +9,11 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadPropertyMultipleBudget {
     /// Maximum aggregate expanded result occurrences (default 256).
+    ///
+    /// ReadProperty, ReadRange and `read_local` charge a Group's Present_Value
+    /// to this limit as well. The shared endpoint (`bacnet-endpoint`) has no
+    /// `ServerConfig`: its ReadProperty uses the session's `read_work_limit`,
+    /// which has the same default and the same abort.
     pub max_result_elements: usize,
     /// Maximum encoded service parameters, excluding APDU/NPDU (default 16384).
     pub max_service_ack_bytes: usize,
@@ -66,27 +71,7 @@ impl ScServerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct NeverStart;
-    impl TransportPort for NeverStart {
-        async fn start(
-            &mut self,
-        ) -> Result<tokio::sync::mpsc::Receiver<bacnet_transport::port::ReceivedNpdu>, Error>
-        {
-            panic!("invalid RPM budget reached transport startup")
-        }
-        async fn stop(&mut self) -> Result<(), Error> {
-            Ok(())
-        }
-        async fn send_unicast(&self, _: &[u8], _: &[u8]) -> Result<(), Error> {
-            Ok(())
-        }
-        async fn send_broadcast(&self, _: &[u8]) -> Result<(), Error> {
-            Ok(())
-        }
-        fn local_mac(&self) -> &[u8] {
-            &[1]
-        }
-    }
+    use crate::server::test_transport::TestTransport;
 
     #[tokio::test]
     async fn rpm_defaults_builders_and_validation_before_start() {
@@ -122,11 +107,11 @@ mod tests {
                     ..Default::default()
                 },
                 ObjectDatabase::new(),
-                NeverStart,
+                TestTransport::never_start(),
             )
             .await;
             let generic = BACnetServer::generic_builder()
-                .transport(NeverStart)
+                .transport(TestTransport::never_start())
                 .read_property_multiple_budget(budget)
                 .build()
                 .await;
@@ -143,10 +128,11 @@ mod tests {
                 read_property_multiple_budget: budget,
                 ..Default::default()
             };
-            let error = BACnetServer::start(config, ObjectDatabase::new(), NeverStart)
-                .await
-                .err()
-                .unwrap();
+            let error =
+                BACnetServer::start(config, ObjectDatabase::new(), TestTransport::never_start())
+                    .await
+                    .err()
+                    .unwrap();
             assert!(
                 !error.to_string().contains("rpm_max_"),
                 "preserve existing APDU validation priority"

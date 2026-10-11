@@ -76,7 +76,7 @@ fn annex_x4_complete_wire_image_decodes_without_encoder() {
     );
     assert_eq!(frame.header.destination, 0xFF);
     assert_eq!(frame.header.source, 1);
-    assert_eq!(frame.header.data_length, 507);
+    assert_eq!(frame.data.len(), 507);
 
     let expected = annex_x4_npdu();
     assert_eq!(frame.data, expected);
@@ -85,12 +85,7 @@ fn annex_x4_complete_wire_image_decodes_without_encoder() {
 #[test]
 fn annex_x4_complete_wire_image_is_an_exact_encoder_oracle() {
     let npdu = annex_x4_npdu();
-    let header = FrameHeader::new(
-        FrameType::ExtendedDataNotExpectingReply,
-        0xFF,
-        1,
-        npdu.len(),
-    );
+    let header = FrameHeader::new(FrameType::ExtendedDataNotExpectingReply, 0xFF, 1);
     let mut encoded = [0; MAX_EXTENDED_FRAME_LENGTH];
     let used = encode_extended_into(&mut encoded, &header, &npdu).unwrap();
     assert_eq!(&encoded[..used], ANNEX_X4_FRAME);

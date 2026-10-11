@@ -36,6 +36,34 @@ fn priority_and_destination_selection() {
     exercise(AllocQueues::new(4, 4));
 }
 
+/// An item too long for the caller's scratch is dropped and counted, so it
+/// can't stay at the head of its queue.
+fn drop_item_too_long_for_scratch<Q: QueueStorage>(mut queue: Q) {
+    queue
+        .enqueue_npdu(1, &[1, 2, 3], NetworkPriority::Urgent, 0, None)
+        .unwrap();
+    queue
+        .enqueue_npdu(1, &[4], NetworkPriority::Normal, 0, None)
+        .unwrap();
+    let mut scratch = [0; 2];
+    assert_eq!(
+        queue.dequeue_into(0, &mut scratch),
+        Err(QueueRejectReason::Oversize)
+    );
+    let stats = queue.stats(QueueKind::Unicast);
+    assert_eq!((stats.depth, stats.drops_oversize), (1, 1));
+    let next = queue.dequeue_into(0, &mut scratch).unwrap().unwrap();
+    assert_eq!((next.len, scratch[0]), (1, 4));
+}
+
+#[test]
+fn an_item_too_long_for_the_scratch_is_dropped() {
+    #[cfg(feature = "heapless")]
+    drop_item_too_long_for_scratch(HeaplessQueues::<4, 4>::new());
+    #[cfg(feature = "alloc")]
+    drop_item_too_long_for_scratch(AllocQueues::new(4, 4));
+}
+
 #[test]
 fn exact_expiry_boundary_and_atomic_oversize() {
     #[cfg(feature = "heapless")]

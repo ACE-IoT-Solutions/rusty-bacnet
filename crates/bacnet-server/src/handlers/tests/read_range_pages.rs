@@ -15,7 +15,7 @@ fn page(
         range,
     };
     let mut input = BytesMut::new();
-    request.encode(&mut input);
+    request.encode(&mut input).unwrap();
     let mut output = BytesMut::from(&b"sentinel"[..]);
     let result = handle_read_range_budgeted(
         db,
@@ -38,7 +38,7 @@ fn page(
 fn directional_pages_preserve_sparse_wrapped_resident_identity() {
     let items = unsigned_items(&[10, 20, 30, 40, 50]);
     let ids = vec![
-        identity(u32::MAX, 1),
+        identity(u64::from(u32::MAX), 1),
         identity(1, 2),
         identity(255, 3),
         identity(65536, 4),
@@ -65,7 +65,8 @@ fn directional_pages_preserve_sparse_wrapped_resident_identity() {
                 };
                 let n = cap.min(4);
                 let expected = if backwards { 4 - n..4 } else { 1..1 + n };
-                let first = (kind != 0).then(|| [u32::MAX, 1, 255, 65536, 9][expected.start]);
+                let first =
+                    (kind != 0).then(|| [u64::from(u32::MAX), 1, 255, 65536, 9][expected.start]);
                 let ack = page(&db, oid, Some(range), cap, 16384).unwrap();
                 assert_ack(
                     &ack,
@@ -82,6 +83,59 @@ fn directional_pages_preserve_sparse_wrapped_resident_identity() {
             (true, n == 5, n < 5),
             None,
         );
+    }
+}
+
+/// Every page the server serves keeps the rules a client checks
+/// (`ReadRangeAck::violations`, #1531): each range form, both directions,
+/// references at either end, in the middle and missing, whole and cut.
+#[test]
+fn every_page_keeps_the_rules_a_client_checks() {
+    let items = unsigned_items(&[10, 20, 30, 40, 50]);
+    let ids = vec![
+        identity(u64::from(u32::MAX), 1),
+        identity(1, 2),
+        identity(255, 3),
+        identity(65536, 4),
+        identity(9, 5),
+    ];
+    let sequences = [u64::from(u32::MAX), 1, 255, 65536, 9, 7];
+    let (db, oid) = list_db(PropertyIdentifier::LOG_BUFFER, items, Some(ids));
+    let mut ranges = vec![None];
+    for count in [1, 2, 5, 9, -1, -2, -5, -9] {
+        for reference in 0..=6u8 {
+            ranges.push(Some(RangeSpec::ByPosition {
+                reference_index: u64::from(reference),
+                count,
+            }));
+            ranges.push(Some(RangeSpec::ByTime {
+                reference_time: (DATE, time(reference)),
+                count,
+            }));
+        }
+        for reference_seq in sequences {
+            ranges.push(Some(RangeSpec::BySequenceNumber {
+                reference_seq,
+                count,
+            }));
+        }
+    }
+    for range in ranges {
+        for cap in [1, 2, 3, 256] {
+            let request = ReadRangeRequest {
+                object_identifier: oid,
+                property_identifier: PropertyIdentifier::LOG_BUFFER,
+                property_array_index: None,
+                range: range.clone(),
+            };
+            let ack = page(&db, oid, range.clone(), cap, 16384).unwrap();
+            assert_eq!(
+                ack.violations(&request),
+                [],
+                "{range:?} cap {cap}: {:?}",
+                ack.result_flags
+            );
+        }
     }
 }
 
@@ -177,19 +231,27 @@ fn missing_references_empty_lists_and_validation_precede_tiny_budget() {
             ));
         }
     }
-    for count in [0, 32768, -32769] {
+    for signed_count in [
+        vec![0x31, 0],
+        vec![0x33, 0, 0x80, 0],
+        vec![0x33, 0xff, 0x7f, 0xff],
+    ] {
+        let mut request = BytesMut::new();
+        bacnet_encoding::primitives::encode_ctx_object_id(&mut request, 0, &oid);
+        request.extend_from_slice(&[0x19, 131, 0x3e, 0x21, 1]);
+        request.extend_from_slice(&signed_count);
+        request.extend_from_slice(&[0x3f]);
         assert!(matches!(
-            page(
+            handle_read_range_budgeted(
                 &db,
-                oid,
-                Some(RangeSpec::ByPosition {
-                    reference_index: 1,
-                    count
-                }),
-                1,
-                1
+                &request,
+                &mut BytesMut::new(),
+                ReadRangeBudget {
+                    max_returned_items: 1,
+                    max_service_ack_bytes: 1
+                }
             ),
-            Err(ReadRangeFailure::Service(Error::Decoding { .. }))
+            Err(ReadRangeFailure::Service(Error::Reject { .. }))
         ));
     }
     assert!(matches!(
@@ -206,30 +268,22 @@ fn missing_references_empty_lists_and_validation_precede_tiny_budget() {
 #[test]
 fn read_range_error_precedence_matches_legacy_before_pagination() {
     let (db, oid) = list_db(PropertyIdentifier::LOG_BUFFER, unsigned_items(&[1]), None);
-    for (property, index, range) in [
-        (PropertyIdentifier::LOG_BUFFER, Some(0), None),
-        (PropertyIdentifier::LOG_BUFFER, Some(1), None),
-        (PropertyIdentifier::ALL, None, None),
-        (PropertyIdentifier::REQUIRED, None, None),
-        (PropertyIdentifier::OPTIONAL, None, None),
-        (PropertyIdentifier::PRESENT_VALUE, None, None),
-        (
-            PropertyIdentifier::LOG_BUFFER,
-            None,
-            Some(RangeSpec::ByTime {
-                reference_time: (DATE, time(24)),
-                count: 1,
-            }),
-        ),
+    // Independent malformed/unsupported wire suffixes; the typed encoder now
+    // rejects invalid selectors, index zero and nonconcrete ByTime before output.
+    for suffix in [
+        vec![0x19, 131, 0x29, 0],
+        vec![0x19, 131, 0x29, 1],
+        vec![0x19, 8],   // ALL
+        vec![0x19, 105], // REQUIRED
+        vec![0x19, 80],  // OPTIONAL
+        vec![0x19, 85],  // PRESENT_VALUE
+        vec![
+            0x19, 131, 0x7e, 0xa4, 126, 8, 31, 1, 0xb4, 24, 0, 0, 0, 0x31, 1, 0x7f,
+        ],
     ] {
         let mut request = BytesMut::new();
-        ReadRangeRequest {
-            object_identifier: oid,
-            property_identifier: property,
-            property_array_index: index,
-            range,
-        }
-        .encode(&mut request);
+        bacnet_encoding::primitives::encode_ctx_object_id(&mut request, 0, &oid);
+        request.extend_from_slice(&suffix);
         let legacy = handle_read_range(&db, &request, &mut BytesMut::new()).unwrap_err();
         let mut output = BytesMut::from(&b"old"[..]);
         let ReadRangeFailure::Service(error) = handle_read_range_budgeted(
@@ -258,7 +312,8 @@ fn read_range_error_precedence_matches_legacy_before_pagination() {
         property_array_index: None,
         range: None,
     }
-    .encode(&mut request);
+    .encode(&mut request)
+    .unwrap();
     assert!(
         matches!(handle_read_range_budgeted(&scalar_db, &request, &mut BytesMut::new(),
         ReadRangeBudget { max_returned_items:1, max_service_ack_bytes:1 }),
@@ -344,7 +399,7 @@ async fn read_range_client_pages_all_matches_forward_and_backward() {
                 .await
                 .unwrap();
             assert!(ack.item_count > 0 && ack.item_count <= 2);
-            remaining -= ack.item_count;
+            remaining -= u64::from(ack.item_count);
             assert_eq!(ack.result_flags.2, remaining > 0);
             pieces.push(ack.item_data);
         }

@@ -1,5 +1,5 @@
-use bacnet_services::common::PropertyReference;
-use bacnet_services::rpm::{ReadAccessSpecification, ReadPropertyMultipleRequest};
+use bacnet_services::rpm::ReadPropertyMultipleRequest;
+use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
@@ -182,7 +182,9 @@ fn build_batch(reads: &[PropertyRead]) -> Result<RpmBatch, RuntimeError> {
         list_of_read_access_specs: specifications.clone(),
     };
     let mut encoded = BytesMut::new();
-    request.encode(&mut encoded);
+    request
+        .encode(&mut encoded)
+        .map_err(|error| RuntimeError::invalid_config(error.to_string()))?;
     Ok(RpmBatch {
         specifications,
         properties,

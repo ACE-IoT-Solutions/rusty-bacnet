@@ -315,6 +315,7 @@ async fn topology_walk_reads_real_bdt_and_fdt_from_seed_bbmd() {
         bbmd_ip: Ipv4Addr::LOCALHOST,
         bbmd_port,
         ttl: 4,
+        renewal_interval: None,
     });
     let _foreign_rx = foreign.start().await.unwrap();
     let foreign_mac = foreign.local_mac().to_vec();

@@ -2,6 +2,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
+use bacnet_bip_codec::BvlcFunction;
 use bacnet_client::client::{COVNotificationDelivery, ReceivedCOVNotification};
 use bacnet_encoding::apdu::{
     self, encode_apdu, Apdu, ComplexAck, RejectPdu, SimpleAck, UnconfirmedRequest,
@@ -20,8 +21,8 @@ use bacnet_transport::bbmd::BdtEntry;
 use bacnet_transport::bip::{BipTransport, ForeignDeviceConfig};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{
-    BvlcFunction, ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
-    RejectReason, Segmentation, UnconfirmedServiceChoice,
+    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, RejectReason,
+    Segmentation, UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;

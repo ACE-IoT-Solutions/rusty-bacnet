@@ -4,25 +4,35 @@ use super::*;
 #[path = "dcc_disable_rate_tests.rs"]
 mod rate_tests;
 
-#[allow(clippy::too_many_arguments)]
+/// Answer one DeviceCommunicationControl request. `local_network` is this
+/// network's number as read for the request (#1458), and `audit` reports
+/// the change it carries out (#1387).
 pub(super) async fn response<T: TransportPort + 'static>(
-    timer: &Arc<Mutex<Option<JoinHandle<()>>>>,
-    comm_state: &Arc<AtomicU8>,
-    outcomes: &dcc_outcomes::DccOutcomes,
-    config: &ServerConfig,
+    services: &RequestServices<T>,
     req: &ConfirmedRequestPdu,
     source_mac: &[u8],
     source: Option<&NpduAddress>,
+    local_network: Option<u16>,
     request_tasks: &super::super::request_tasks::RequestTaskSpawner,
+    audit: &mut super::super::audit_reporter::WriteAudit<'_, T>,
 ) -> Apdu {
+    let RequestServices {
+        dcc_outcomes: outcomes,
+        cov_table,
+        ..
+    } = services;
+    let cov_resume = cov_table.read().await.timed().clone();
     let result = super::super::dcc_timer::replace(
-        timer,
-        comm_state,
-        &req.service_request,
-        config,
-        source_mac,
-        source,
+        services,
+        super::super::dcc_timer::DccRequest {
+            service_data: &req.service_request,
+            source_mac,
+            source,
+            local_network,
+        },
         request_tasks,
+        &cov_resume,
+        audit,
     )
     .await;
     // No await between validation failure/live commit and completion telemetry.

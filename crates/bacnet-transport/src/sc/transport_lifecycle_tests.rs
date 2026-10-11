@@ -1,3 +1,17 @@
+//! Connect, heartbeat, failover and reconnect lifecycle.
+//!
+//! Every async test here runs on tokio's paused clock: the heartbeat tests
+//! since #1017, the rest since #1549. The connect timeout, heartbeat, reconnect
+//! backoff and restore interval all read tokio's clock, and so do the tests'
+//! deadlines and polls. On real time a runner stall could make a test's
+//! deadline and the transport's next timer fall due in one driver turn; the
+//! test future is polled first, so it saw a timeout or a stale state before
+//! the transport got to act. On the paused clock time moves only when every
+//! task is idle, so timers fire in deadline order. The connect tests whose
+//! hub answers straight away, and those that only validate settings, never
+//! race a timer; they run paused too, so nothing here depends on the
+//! runner's speed and the expected 200 ms connect timeouts take no real time.
+
 use super::*;
 use bacnet_types::error::Error;
 
@@ -57,7 +71,7 @@ async fn wait_for_hub_vmac(conn: &Arc<Mutex<ScConnection>>, expected: Vmac, time
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_connect_timeout() {
     let (ws_client, _ws_server) = LoopbackWebSocket::pair();
     let vmac = [0x01; 6];
@@ -75,7 +89,7 @@ async fn sc_connect_timeout() {
     assert_eq!(c.pending_connect_message_id, None);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_connect_rejects_mismatched_accept_message_id() {
     let (ws_client, ws_server) = LoopbackWebSocket::pair();
     let vmac = [0x01; 6];
@@ -127,7 +141,7 @@ async fn sc_connect_rejects_mismatched_accept_message_id() {
     hub_task.await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_connect_decode_error_clears_pending_request() {
     let (ws_client, ws_server) = LoopbackWebSocket::pair();
     let vmac = [0x01; 6];
@@ -160,7 +174,7 @@ async fn sc_connect_decode_error_clears_pending_request() {
     hub_task.await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_connect_send_error_clears_pending_request() {
     let (ws_client, ws_server) = LoopbackWebSocket::pair();
     drop(ws_server);
@@ -182,7 +196,7 @@ async fn sc_connect_send_error_clears_pending_request() {
     assert_eq!(c.pending_connect_message_id, None);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_connect_recv_error_clears_pending_request() {
     let (ws_client, ws_server) = LoopbackWebSocket::pair();
     let vmac = [0x01; 6];
@@ -210,7 +224,7 @@ async fn sc_connect_recv_error_clears_pending_request() {
     hub_task.await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_heartbeat_sent_periodically() {
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let client_vmac = [0x01; 6];
@@ -258,7 +272,7 @@ async fn sc_heartbeat_sent_periodically() {
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_heartbeat_ack_requires_matching_message_id() {
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let client_vmac = [0x01; 6];
@@ -297,18 +311,22 @@ async fn sc_heartbeat_ack_requires_matching_message_id() {
     encode_sc_message(&mut buf, &ack);
     ws_hub.send(&buf).await.unwrap();
 
+    // An ignored ack leaves the link idle since start, so it drops on the
+    // first tick past the 300 ms timeout, 300 ms after this heartbeat. An
+    // accepted ack would hold it up one more 100 ms interval: check halfway.
     assert!(
         wait_for_connection_state(
             &conn,
             ScConnectionState::Disconnected,
-            Duration::from_millis(500)
+            Duration::from_millis(350)
         )
-        .await
+        .await,
+        "a mismatched Heartbeat-ACK must not count as activity"
     );
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_heartbeat_ack_rejects_vmac_fields() {
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let client_vmac = [0x01; 6];
@@ -347,18 +365,22 @@ async fn sc_heartbeat_ack_rejects_vmac_fields() {
     encode_sc_message(&mut buf, &ack);
     ws_hub.send(&buf).await.unwrap();
 
+    // An ignored ack leaves the link idle since start, so it drops on the
+    // first tick past the 300 ms timeout, 300 ms after this heartbeat. An
+    // accepted ack would hold it up one more 100 ms interval: check halfway.
     assert!(
         wait_for_connection_state(
             &conn,
             ScConnectionState::Disconnected,
-            Duration::from_millis(500)
+            Duration::from_millis(350)
         )
-        .await
+        .await,
+        "a Heartbeat-ACK carrying VMACs must not count as activity"
     );
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_inbound_bvlc_activity_defers_client_heartbeat() {
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let client_vmac = [0x01; 6];
@@ -408,7 +430,7 @@ async fn sc_inbound_bvlc_activity_defers_client_heartbeat() {
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_inbound_bvlc_activity_resets_heartbeat_timeout() {
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let client_vmac = [0x01; 6];
@@ -466,7 +488,7 @@ async fn sc_inbound_bvlc_activity_resets_heartbeat_timeout() {
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_heartbeat_timeout_disconnects() {
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let client_vmac = [0x01; 6];
@@ -497,7 +519,7 @@ async fn sc_heartbeat_timeout_disconnects() {
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_start_rejects_heartbeat_interval_below_annex_ab_range() {
     let (ws_client, _ws_hub) = LoopbackWebSocket::pair();
     let mut transport = ScTransport::new(ws_client, [0x01; 6])
@@ -515,7 +537,7 @@ async fn sc_start_rejects_heartbeat_interval_below_annex_ab_range() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_start_rejects_heartbeat_disconnect_timeout_at_interval() {
     let (ws_client, _ws_hub) = LoopbackWebSocket::pair();
     let mut transport = ScTransport::new(ws_client, [0x01; 6])
@@ -533,7 +555,7 @@ async fn sc_start_rejects_heartbeat_disconnect_timeout_at_interval() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn sc_connect_succeeds_within_timeout() {
     let (ws_client, ws_server) = LoopbackWebSocket::pair();
     let vmac = [0x01; 6];
@@ -579,7 +601,7 @@ async fn sc_connect_succeeds_within_timeout() {
     let _ = hub_task.await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_failover_on_primary_timeout() {
     // Primary pair: hub side will NOT respond, causing a timeout.
     let (primary_client, _primary_hub) = LoopbackWebSocket::pair();
@@ -613,7 +635,7 @@ async fn test_failover_on_primary_timeout() {
     let _ = hub_task.await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_no_failover_without_config() {
     // Primary pair: hub side will NOT respond.
     let (primary_client, _primary_hub) = LoopbackWebSocket::pair();
@@ -630,7 +652,7 @@ async fn test_no_failover_without_config() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_failover_primary_succeeds_no_failover_used() {
     // Primary pair: hub side WILL respond.
     let (primary_client, primary_hub) = LoopbackWebSocket::pair();
@@ -664,7 +686,7 @@ async fn test_failover_primary_succeeds_no_failover_used() {
     let _ = hub_task.await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_reconnect_exhaustion_uses_failover_and_send_path() {
     let (primary_client, primary_hub) = LoopbackWebSocket::pair();
     let (failover_client, failover_hub) = LoopbackWebSocket::pair();
@@ -681,7 +703,6 @@ async fn test_reconnect_exhaustion_uses_failover_and_send_path() {
             initial_delay_ms: 25,
             max_delay_ms: 25,
             max_retries: 1,
-            retry_forever: false,
         })
         .with_failover(failover_client);
 
@@ -729,7 +750,7 @@ async fn test_reconnect_exhaustion_uses_failover_and_send_path() {
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn test_failover_restores_primary_and_send_path() {
     let (primary_client, primary_hub) = LoopbackWebSocket::pair();
     let (failover_client, failover_hub) = LoopbackWebSocket::pair();
@@ -746,7 +767,6 @@ async fn test_failover_restores_primary_and_send_path() {
             initial_delay_ms: 25,
             max_delay_ms: 25,
             max_retries: 1,
-            retry_forever: false,
         })
         .with_failover(failover_client);
 
@@ -814,7 +834,6 @@ fn reconnect_exponential_backoff_sequence() {
         initial_delay_ms: 100,
         max_delay_ms: 1000,
         max_retries: 5,
-        retry_forever: false,
     };
     let mut delay = config.initial_delay_ms;
     let delays: Vec<u64> = (0..5)

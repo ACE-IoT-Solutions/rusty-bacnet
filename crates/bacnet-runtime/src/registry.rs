@@ -544,7 +544,7 @@ mod registration_health_tests {
         AttachmentHealth, AttachmentId, AttachmentState, ErrorCode, ForeignDeviceRegistrationState,
         ForeignDeviceRegistrationStatus,
     };
-    use bacnet_types::enums::BvlcResultCode;
+    use bacnet_bip_codec::BvlcResultCode;
 
     fn attachment(id: u128, label: &str) -> AttachmentHealth {
         AttachmentHealth {

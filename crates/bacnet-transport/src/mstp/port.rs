@@ -1,341 +1,116 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use bacnet_mstp_codec::Frame;
-use bacnet_mstp_core::{
-    Action, Direction, MasterSnapshot, NetworkPriority, ReplyDecision, RequestId, TransmitFailure,
-    TransmitId,
-};
 use bacnet_types::error::Error;
-use bytes::Bytes;
-use tokio::sync::{mpsc, oneshot, Mutex, Notify};
-use tracing::warn;
+use bytes::{Bytes, BytesMut};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tracing::{debug, warn};
 
 use crate::mstp_frame::{
-    decode_frame_stream_with_scratch, find_preamble, retain_lone_preamble_byte, MstpFrame,
-    StreamDecode, BROADCAST_MAC, MAX_EXTENDED_MPDU_DATA,
+    decode_frame_stream, encode_frame, find_preamble, retain_lone_preamble_byte, FrameType,
+    MstpFrame, StreamDecode, BROADCAST_MAC,
 };
 use crate::port::{ReceivedNpdu, TransportPort};
 
-pub(super) use super::core_adapter::CoreAdapter;
 use super::{
-    calculate_host_stale_partial_timeout_us, MasterNode, MasterState, MstpConfig, SerialDirection,
-    SerialPort, MSTP_MAX_FRAME_BUF,
+    calculate_host_stale_partial_timeout_us, calculate_t_turnaround_us, increment, next_addr,
+    Counters, DedicatedRuntime, MasterNode, MasterState, MstpConfig, MstpDiagnostics,
+    MstpExecutionMode, SerialPort, MSTP_MAX_FRAME_BUF, T_NO_TOKEN_MS, T_REPLY_DELAY_MS,
+    T_REPLY_TIMEOUT_MS, T_REPLY_TRANSMIT_MARGIN_MS, T_USAGE_TIMEOUT_MS,
 };
 
-/// Assemble host serial reads and return only complete, CRC-validated frames.
-fn assemble_host_chunk(frame_buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<MstpFrame> {
-    let mut scratch = vec![0u8; MAX_EXTENDED_MPDU_DATA];
-    assemble_host_chunk_with_scratch(frame_buf, chunk, &mut scratch)
-}
-
-/// Assemble host serial reads using caller-owned decoded extended-payload
-/// storage. The encoded receive buffer and transformed COBS payload workspace
-/// are independently bounded.
-fn assemble_host_chunk_with_scratch(
-    frame_buf: &mut Vec<u8>,
-    chunk: &[u8],
-    scratch: &mut [u8],
-) -> Vec<MstpFrame> {
+/// Add one host read to the persistent receive buffer and drain all complete frames.
+///
+/// The persistent buffer never exceeds one maximum standard frame. A host read may
+/// contain any number of coalesced frames; complete frames are drained before more
+/// bytes from that same read are appended.
+fn assemble_host_chunk(frame_buf: &mut Vec<u8>, chunk: &[u8], counts: &Counters) -> Vec<MstpFrame> {
     let mut frames = Vec::new();
     let mut remaining = chunk;
+
     while !remaining.is_empty() {
         let available = MSTP_MAX_FRAME_BUF.saturating_sub(frame_buf.len());
         if available == 0 {
+            // A valid standard frame is decidable at this size. This fallback
+            // guarantees progress if malformed input somehow remains NeedMore.
             warn!("MS/TP: full incomplete host assembly, discarding one byte");
+            increment(&counts.invalid_frame_discards);
             frame_buf.drain(..1);
             continue;
         }
+
         let take = available.min(remaining.len());
         frame_buf.extend_from_slice(&remaining[..take]);
         remaining = &remaining[take..];
+
         loop {
             let preamble_pos = match find_preamble(frame_buf) {
                 Some(pos) => pos,
                 None => {
+                    let before = frame_buf.len();
                     retain_lone_preamble_byte(frame_buf);
+                    if frame_buf.len() < before {
+                        increment(&counts.invalid_frame_discards);
+                    }
                     break;
                 }
             };
+
             if preamble_pos > 0 {
+                increment(&counts.invalid_frame_discards);
                 frame_buf.drain(..preamble_pos);
             }
-            match decode_frame_stream_with_scratch(frame_buf, scratch) {
+
+            match decode_frame_stream(frame_buf) {
                 StreamDecode::Complete { frame, consumed } => {
+                    counts.received(frame.frame_type);
                     frame_buf.drain(..consumed);
                     frames.push(frame);
                 }
                 StreamDecode::NeedMore => break,
                 StreamDecode::Invalid { discard } => {
-                    frame_buf.drain(..discard.min(frame_buf.len()).max(1));
+                    increment(&counts.invalid_frame_discards);
+                    let discard = discard.min(frame_buf.len()).max(1);
+                    frame_buf.drain(..discard);
                 }
             }
         }
     }
+
     debug_assert!(frame_buf.len() <= MSTP_MAX_FRAME_BUF);
     frames
 }
 
-fn mirror_legacy_enqueue(legacy: &mut MasterNode, destination: u8, npdu: Bytes) {
-    if legacy.tx_queue.len() >= super::MAX_TX_QUEUE_DEPTH {
-        legacy.tx_queue.pop_front();
+fn finish_data_request_at_transport_boundary(
+    node: &mut MasterNode,
+    reply_data: Option<Bytes>,
+    counts: &Counters,
+) -> Option<MstpFrame> {
+    if reply_data
+        .as_ref()
+        .is_some_and(|data| data.len() > super::MAX_STANDARD_MPDU_DATA)
+    {
+        increment(&counts.outbound_oversize);
     }
-    legacy.tx_queue.push_back((destination, npdu));
-}
-
-fn mirror_legacy_transmit(legacy: &mut MasterNode, frame: &[u8]) {
-    let Ok((sent, _)) = bacnet_mstp_codec::decode_frame(frame) else {
-        return;
-    };
-    if !matches!(
-        sent.header.frame_type,
-        bacnet_mstp_codec::FrameType::BACnetDataExpectingReply
-            | bacnet_mstp_codec::FrameType::BACnetDataNotExpectingReply
-    ) {
-        return;
-    }
-    if let Some(index) = legacy.tx_queue.iter().position(|(destination, npdu)| {
-        *destination == sent.header.destination && npdu.as_ref() == sent.data
-    }) {
-        legacy.tx_queue.remove(index);
-    }
-}
-
-struct Runtime<S: SerialPort> {
-    core: Arc<Mutex<CoreAdapter>>,
-    legacy: Arc<Mutex<MasterNode>>,
-    serial: Arc<S>,
-    write_lock: Mutex<()>,
-    npdu_tx: mpsc::Sender<ReceivedNpdu>,
-    wake: Notify,
-    transmit_direction_ready: AtomicBool,
-    receive_faulted: AtomicBool,
-    reply_tasks: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
-}
-
-#[derive(Debug)]
-enum OwnedAction {
-    Transmit {
-        id: TransmitId,
-        frame: Vec<u8>,
-    },
-    Deliver {
-        source: u8,
-        destination: u8,
-        npdu: Bytes,
-        request_id: Option<RequestId>,
-    },
-    Direction(Direction),
-    Idle,
-}
-
-async fn poll_owned_action<S: SerialPort>(runtime: &Runtime<S>) -> OwnedAction {
-    let mut core = runtime.core.lock().await;
-    match core.core.poll_action() {
-        Action::Transmit { id, frame } => OwnedAction::Transmit {
-            id,
-            frame: frame.to_vec(),
-        },
-        Action::DeliverNpdu {
-            source,
-            destination,
-            npdu,
-            request_id,
-        } => OwnedAction::Deliver {
-            source,
-            destination,
-            npdu: Bytes::copy_from_slice(npdu),
-            request_id,
-        },
-        Action::SetDirection(direction) => OwnedAction::Direction(direction),
-        Action::Idle => OwnedAction::Idle,
-    }
-}
-
-async fn restore_receive<S: SerialPort>(serial: &S) -> Result<(), Error> {
-    let mut last_error = None;
-    for _ in 0..3 {
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(100),
-            serial.set_direction(SerialDirection::Receive),
-        )
-        .await
-        {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(error)) => last_error = Some(error),
-            Err(_) => {
-                last_error = Some(Error::Encoding(
-                    "MS/TP receive-direction watchdog expired".into(),
-                ));
-            }
-        }
-    }
-    Err(last_error.expect("receive restoration always attempts at least once"))
-}
-
-async fn drive_actions<S: SerialPort>(runtime: Arc<Runtime<S>>) {
-    loop {
-        match poll_owned_action(&runtime).await {
-            OwnedAction::Idle => break,
-            OwnedAction::Direction(direction) => {
-                let serial_direction = match direction {
-                    Direction::Receive => SerialDirection::Receive,
-                    Direction::Transmit => SerialDirection::Transmit,
-                };
-                let timeout = {
-                    let core = runtime.core.lock().await;
-                    core.hard_deadline().unwrap_or_else(|| {
-                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(1)
-                    })
-                };
-                let result = if direction == Direction::Receive {
-                    restore_receive(runtime.serial.as_ref()).await
-                } else {
-                    tokio::time::timeout_at(timeout, runtime.serial.set_direction(serial_direction))
-                        .await
-                        .unwrap_or_else(|_| {
-                            Err(Error::Encoding(
-                                "MS/TP direction transition watchdog expired".into(),
-                            ))
-                        })
-                };
-                runtime.transmit_direction_ready.store(
-                    direction == Direction::Transmit && result.is_ok(),
-                    Ordering::Release,
-                );
-                if let Err(error) = result {
-                    if direction == Direction::Receive {
-                        runtime.receive_faulted.store(true, Ordering::Release);
-                    }
-                    warn!("MS/TP direction change failed: {error}");
-                }
-            }
-            OwnedAction::Transmit { id, frame } => {
-                if !runtime
-                    .transmit_direction_ready
-                    .swap(false, Ordering::AcqRel)
-                {
-                    let mut core = runtime.core.lock().await;
-                    let now = core.now();
-                    if let Err(error) = core.core.on_transmit_aborted(id, TransmitFailure::Io, now)
-                    {
-                        warn!("MS/TP direction-failed transmit abort rejected: {error:?}");
-                    }
-                    let mut legacy = runtime.legacy.lock().await;
-                    core.sync_legacy(&mut legacy);
-                    continue;
-                }
-                let started = {
-                    let mut core = runtime.core.lock().await;
-                    let now = core.now();
-                    core.core.on_transmit_started(id, now)
-                };
-                if let Err(error) = started {
-                    warn!("MS/TP transmit start rejected: {error:?}");
-                    continue;
-                }
-                let watchdog = {
-                    let core = runtime.core.lock().await;
-                    core.hard_deadline().unwrap_or_else(|| {
-                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(1)
-                    })
-                };
-                let _write_guard = runtime.write_lock.lock().await;
-                let result = tokio::time::timeout_at(watchdog, async {
-                    runtime.serial.write(&frame).await?;
-                    runtime.serial.drain().await
-                })
-                .await
-                .unwrap_or_else(|_| Err(Error::Encoding("MS/TP transmit watchdog expired".into())));
-                drop(_write_guard);
-                let mut core = runtime.core.lock().await;
-                let now = core.now();
-                let completion = match result {
-                    Ok(()) => core.core.on_transmit_complete(id, now),
-                    Err(_) => core.core.on_transmit_aborted(id, TransmitFailure::Io, now),
-                };
-                if let Err(error) = completion {
-                    warn!("MS/TP transmit completion rejected: {error:?}");
-                }
-                let mut legacy = runtime.legacy.lock().await;
-                mirror_legacy_transmit(&mut legacy, &frame);
-                core.sync_legacy(&mut legacy);
-            }
-            OwnedAction::Deliver {
-                source,
-                destination,
-                npdu,
-                request_id,
-            } => {
-                let (reply_tx, reply_rx) = if request_id.is_some() {
-                    let (tx, rx) = oneshot::channel();
-                    (Some(tx), Some(rx))
-                } else {
-                    (None, None)
-                };
-                let received = ReceivedNpdu {
-                    npdu: npdu.clone(),
-                    source_mac: bacnet_types::MacAddr::from_slice(&[source]),
-                    link_layer_group: destination == BROADCAST_MAC,
-                    data_attributes: Vec::new(),
-                    transport_meta: None,
-                    reply_tx,
-                };
-                let _ = runtime.npdu_tx.try_send(received);
-                if let (Some(id), Some(reply_rx)) = (request_id, reply_rx) {
-                    let deadline = {
-                        let core = runtime.core.lock().await;
-                        core.hard_deadline().unwrap_or_else(|| {
-                            tokio::time::Instant::now() + tokio::time::Duration::from_millis(250)
-                        })
-                    };
-                    let reply_runtime = runtime.clone();
-                    let task = tokio::spawn(async move {
-                        let reply = match tokio::time::timeout_at(deadline, reply_rx).await {
-                            Ok(reply) => reply,
-                            Err(_) => return,
-                        };
-                        let mut core = reply_runtime.core.lock().await;
-                        let now = core.now();
-                        let result = match reply {
-                            Ok(data) => core.core.complete_request(
-                                id,
-                                ReplyDecision::Data(data.as_ref()),
-                                now,
-                            ),
-                            Err(_) => core
-                                .core
-                                .complete_request(id, ReplyDecision::Cancelled, now),
-                        };
-                        if let Err(error) = result {
-                            if matches!(error, bacnet_mstp_core::CoreError::ReplyOversize { .. }) {
-                                let abandoned =
-                                    core.core
-                                        .complete_request(id, ReplyDecision::Abandoned, now);
-                                if let Err(abandon_error) = abandoned {
-                                    warn!("MS/TP oversized reply abandonment failed: {abandon_error:?}");
-                                }
-                            } else {
-                                warn!("MS/TP application reply rejected: {error:?}");
-                            }
-                        }
-                        let mut legacy = reply_runtime.legacy.lock().await;
-                        core.sync_legacy(&mut legacy);
-                        drop(legacy);
-                        drop(core);
-                        reply_runtime.wake.notify_one();
-                    });
-                    let mut tasks = runtime
-                        .reply_tasks
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    tasks.retain(|task| !task.is_finished());
-                    tasks.push(task.abort_handle());
-                }
-            }
+    match node.finish_data_request(reply_data) {
+        Ok(frame) => Some(frame),
+        Err(error) => {
+            warn!("MS/TP application reply rejected: {error}");
+            node.abandon_data_request();
+            None
         }
     }
 }
+
+/// Wait only for the unelapsed part of receive-to-transmit turnaround silence.
+async fn wait_for_turnaround(earliest_tx: tokio::time::Instant) {
+    if earliest_tx > tokio::time::Instant::now() {
+        tokio::time::sleep_until(earliest_tx).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MS/TP Transport
+// ---------------------------------------------------------------------------
 
 /// MS/TP transport implementing [`TransportPort`].
 pub struct MstpTransport<S: SerialPort> {
@@ -343,12 +118,14 @@ pub struct MstpTransport<S: SerialPort> {
     config: MstpConfig,
     local_mac: [u8; 1],
     node: Option<Arc<Mutex<MasterNode>>>,
-    core: Option<Arc<Mutex<CoreAdapter>>>,
-    runtime: Option<Arc<Runtime<S>>>,
     recv_task: Option<tokio::task::JoinHandle<()>>,
+    execution_mode: MstpExecutionMode,
+    dedicated_runtime: Option<DedicatedRuntime>,
+    diagnostics: MstpDiagnostics,
 }
 
 impl<S: SerialPort> MstpTransport<S> {
+    /// Create an MS/TP transport over `serial`; the node starts when the transport is started.
     pub fn new(serial: S, config: MstpConfig) -> Self {
         let mac = config.this_station;
         Self {
@@ -356,181 +133,432 @@ impl<S: SerialPort> MstpTransport<S> {
             config,
             local_mac: [mac],
             node: None,
-            core: None,
-            runtime: None,
             recv_task: None,
+            execution_mode: MstpExecutionMode::default(),
+            dedicated_runtime: None,
+            diagnostics: MstpDiagnostics::new(),
         }
     }
 
-    /// Get the deprecated compatibility node state for existing callers.
-    #[deprecated(note = "use snapshot() and counters() on MstpTransport instead")]
-    pub fn node_state(&self) -> Option<&Arc<Mutex<MasterNode>>> {
+    /// Configure execution placement for the next `start`; call before starting.
+    /// The default is [`MstpExecutionMode::Tokio`]. No serial or master-node
+    /// settings change, and an already-running loop is not migrated.
+    ///
+    /// Dedicated execution isolates MAC polling and backend blocking work from
+    /// the application pool, not from OS scheduling delays. Async serial resources
+    /// opened on another reactor still require that reactor to remain running.
+    /// `stop` waits for teardown; `abort`/drop request cancellation without waiting.
+    /// Neither can interrupt an in-progress blocking syscall or undo queued bytes.
+    pub fn with_execution_mode(mut self, mode: MstpExecutionMode) -> Self {
+        self.execution_mode = mode;
+        self
+    }
+
+    /// The live master node. Test-only: its lock is the one the token loop
+    /// takes, so holding it across an await stalls token passing.
+    #[cfg(test)]
+    pub(crate) fn node_state(&self) -> Option<&Arc<Mutex<MasterNode>>> {
         self.node.as_ref()
     }
 
-    /// Return a copyable snapshot of the platform-neutral state machine.
-    pub async fn snapshot(&self) -> Option<MasterSnapshot> {
-        let core = self.core.as_ref()?.lock().await;
-        Some(core.core.snapshot())
+    /// Obtain a cloneable, counts-only handle before transferring transport ownership.
+    /// Cloning retains no serial or runtime ownership; snapshots remain readable
+    /// after stop/drop. See [`MstpDiagnostics`] for lifecycle and coherence limits.
+    /// The counters see only traffic that goes through the transport API.
+    ///
+    /// ```
+    /// use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
+    /// let (serial, _peer) = LoopbackSerial::pair();
+    /// let transport = MstpTransport::new(serial, MstpConfig::default());
+    /// let diagnostics = transport.diagnostics();
+    /// let observer = diagnostics.clone();
+    /// let before = diagnostics.snapshot();
+    /// // Move `transport` into your BACnetRouter/endpoint here. The observer
+    /// // remains independent; no second serial open or TransportPort API needed.
+    /// let owned_transport = transport;
+    /// drop(owned_transport);
+    /// assert_eq!(observer.snapshot(), before);
+    /// ```
+    pub fn diagnostics(&self) -> MstpDiagnostics {
+        self.diagnostics.clone()
     }
 
-    /// Return protocol and queue counters from the platform-neutral core.
-    pub async fn counters(&self) -> Option<bacnet_mstp_core::MstpCounters> {
-        let core = self.core.as_ref()?.lock().await;
-        Some(core.core.counters())
-    }
-
-    fn release_resources(&mut self) {
+    fn abort_receive_task_and_release_state(&mut self) {
         if let Some(task) = self.recv_task.take() {
             task.abort();
         }
-        if let Some(runtime) = self.runtime.take() {
-            for task in runtime
-                .reply_tasks
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .drain(..)
-            {
-                task.abort();
-            }
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    if let Err(error) = restore_receive(runtime.serial.as_ref()).await {
-                        warn!("MS/TP abort could not restore receive direction: {error}");
-                    }
-                });
-            }
-        }
+        self.dedicated_runtime.take();
         self.serial.take();
         self.node.take();
-        self.core.take();
     }
 }
 
 impl<S: SerialPort> TransportPort for MstpTransport<S> {
-    fn transport_kind(&self) -> &'static str {
-        "mstp"
+    fn supports_local_nonrouter_number_controls(&self) -> bool {
+        true
     }
 
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
+        /// NPDU receive channel capacity — smaller than BIP/Ethernet for low-bandwidth serial.
         const NPDU_CHANNEL_CAPACITY: usize = 64;
+
         let (npdu_tx, npdu_rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
-        let origin = tokio::time::Instant::now();
-        let core = Arc::new(Mutex::new(CoreAdapter::new(&self.config, origin)?));
-        let legacy = Arc::new(Mutex::new(MasterNode::new(self.config.clone())?));
-        let serial = Arc::new(
-            self.serial
-                .take()
-                .ok_or_else(|| Error::Encoding("MS/TP transport already started".into()))?,
-        );
-        let runtime = Arc::new(Runtime {
-            core: core.clone(),
-            legacy: legacy.clone(),
-            serial: serial.clone(),
-            write_lock: Mutex::new(()),
-            npdu_tx,
-            wake: Notify::new(),
-            transmit_direction_ready: AtomicBool::new(false),
-            receive_faulted: AtomicBool::new(false),
-            reply_tasks: std::sync::Mutex::new(Vec::new()),
-        });
-        let host_stale_timeout = calculate_host_stale_partial_timeout_us(self.config.baud_rate);
-        let task_runtime = runtime.clone();
-        let task = tokio::spawn(async move {
+
+        let node = Arc::new(Mutex::new(MasterNode::new(self.config.clone())?));
+        self.node = Some(node.clone());
+
+        let serial = self
+            .serial
+            .take()
+            .ok_or_else(|| Error::Encoding("MS/TP transport already started".into()))?;
+
+        let dedicated_runtime = match self.execution_mode {
+            MstpExecutionMode::Tokio => None,
+            MstpExecutionMode::DedicatedThread => Some(DedicatedRuntime::new().await?),
+        };
+
+        let serial = Arc::new(serial);
+        let serial_clone = serial.clone();
+        let counts = self.diagnostics.counters.clone();
+        let t_turnaround_us = calculate_t_turnaround_us(self.config.baud_rate);
+        // Host reassembly policy: tolerate USB read chunk gaps, not wire T_frame_abort.
+        let host_stale_partial_timeout_us =
+            calculate_host_stale_partial_timeout_us(self.config.baud_rate);
+        let reply_decision_delay_ms = T_REPLY_DELAY_MS
+            .saturating_sub(t_turnaround_us.div_ceil(1_000) + T_REPLY_TRANSMIT_MARGIN_MS);
+
+        // Receive loop using tokio::select! with timer
+        let mac_loop = async move {
             let mut recv_buf = vec![0u8; 2048];
             let mut frame_buf = Vec::with_capacity(MSTP_MAX_FRAME_BUF);
-            let mut decode_scratch = vec![0u8; MAX_EXTENDED_MPDU_DATA];
-            let mut last_byte_time = None;
+            let mut last_byte_time = tokio::time::Instant::now();
+            let mut earliest_tx = last_byte_time;
+
+            // Start with T_NO_TOKEN timeout — if we don't see anything, claim the token
+            let sleep = tokio::time::sleep(tokio::time::Duration::from_millis(T_NO_TOKEN_MS));
+            tokio::pin!(sleep);
+
+            let mut encode_buf = BytesMut::with_capacity(1024);
+            // Reuse both storage and frame boundaries; no per-frame byte Vecs.
+            let mut pending_write_ends = Vec::new();
+            let mut pending_reply_rx: Option<oneshot::Receiver<Bytes>> = None;
+            let mut pending_reply_deadline: Option<tokio::time::Instant> = None;
+
             loop {
-                if task_runtime.receive_faulted.swap(false, Ordering::AcqRel) {
-                    if let Err(error) = restore_receive(task_runtime.serial.as_ref()).await {
-                        warn!("MS/TP receive-direction recovery failed: {error}");
-                        task_runtime.receive_faulted.store(true, Ordering::Release);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                        continue;
-                    }
-                }
-                let deadline = {
-                    let core = task_runtime.core.lock().await;
-                    core.deadline().unwrap_or_else(|| {
-                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(3600)
-                    })
-                };
                 tokio::select! {
-                    result = task_runtime.serial.read(&mut recv_buf) => {
-                        let count = match result {
-                            Ok(count) => count,
-                            Err(error) => { warn!("MS/TP serial read error: {error}"); break; }
+                    biased;
+                    // A DataExpectingReply application response must wake the
+                    // loop immediately; waiting for T_reply_delay would begin
+                    // transmission after the Standard's deadline.
+                    reply = async {
+                        pending_reply_rx
+                            .as_mut()
+                            .expect("reply branch is guarded")
+                            .await
+                    }, if pending_reply_rx.is_some() => {
+                        pending_reply_rx = None;
+                        pending_reply_deadline = None;
+                        let mut node_guard = node.lock().await;
+                        let response = finish_data_request_at_transport_boundary(
+                            &mut node_guard,
+                            reply.ok(),
+                            &counts,
+                        );
+                        drop(node_guard);
+
+                        if let Some(response) = response {
+                            encode_buf.clear();
+                            if encode_frame(&mut encode_buf, &response).is_ok() {
+                                wait_for_turnaround(earliest_tx).await;
+                                if let Err(e) = serial_clone.write(&encode_buf).await {
+                                    increment(&counts.serial_write_errors);
+                                    warn!("MS/TP write error: {}", e);
+                                } else {
+                                    counts.transmitted(&encode_buf, true);
+                                }
+                            }
+                        }
+                        sleep.as_mut().reset(
+                            tokio::time::Instant::now()
+                                + tokio::time::Duration::from_millis(T_USAGE_TIMEOUT_MS),
+                        );
+                    }
+                    // Branch 1: serial data arrives
+                    result = serial_clone.read(&mut recv_buf) => {
+                        let frames = match result {
+                            Ok(0) => continue,
+                            Ok(n) => {
+                                // Host stale-partial timeout: drop abandoned assembly if no
+                                // bytes arrive for a long host-side gap (USB scheduling, not
+                                // wire inter-byte silence).
+                                let now = tokio::time::Instant::now();
+                                if !frame_buf.is_empty() {
+                                    let gap = now.duration_since(last_byte_time);
+                                    if gap
+                                        > tokio::time::Duration::from_micros(
+                                            host_stale_partial_timeout_us,
+                                        )
+                                    {
+                                        debug!(
+                                            "MS/TP: host stale partial frame timeout ({gap:?}), discarding partial assembly"
+                                        );
+                                        frame_buf.clear();
+                                        increment(&counts.stale_partial_resets);
+                                    }
+                                }
+                                last_byte_time = now;
+                                // Host arrival is no earlier than wire reception.
+                                // Anchor to the latest chunk, including a late tail,
+                                // without estimating backwards through USB batching.
+                                earliest_tx = now
+                                    + tokio::time::Duration::from_micros(t_turnaround_us);
+                                assemble_host_chunk(&mut frame_buf, &recv_buf[..n], &counts)
+                            }
+                            Err(e) => {
+                                increment(&counts.serial_read_errors);
+                                warn!("MS/TP serial read error: {}", e);
+                                break;
+                            }
                         };
-                        if count == 0 { continue; }
-                        let now = tokio::time::Instant::now();
-                        if !frame_buf.is_empty()
-                            && last_byte_time.is_some_and(|last| {
-                                now.duration_since(last).as_micros() as u64 > host_stale_timeout
-                            })
-                        {
-                            frame_buf.clear();
+
+                        for frame in frames {
+                                    // Process through state machine — collect
+                                    // frames under lock, drop before writing.
+                                    let mut node_guard = node.lock().await;
+                                    let response =
+                                        node_guard.handle_received_frame_observed(&frame, &npdu_tx, Some(&counts));
+                                    let mut started_reply = false;
+                                    if pending_reply_rx.is_none()
+                                        && node_guard.state == MasterState::AnswerDataRequest
+                                    {
+                                        pending_reply_rx = node_guard.reply_rx.take();
+                                        started_reply = pending_reply_rx.is_some();
+                                    }
+                                    if started_reply {
+                                        pending_reply_deadline = Some(
+                                            last_byte_time
+                                                + tokio::time::Duration::from_millis(
+                                                    reply_decision_delay_ms,
+                                                ),
+                                        );
+                                    }
+                                    encode_buf.clear();
+                                    pending_write_ends.clear();
+                                    if let Some(response) = response {
+                                        if let Err(e) = encode_frame(&mut encode_buf, &response) {
+                                            warn!("MS/TP encode error: {}", e);
+                                            drop(node_guard);
+                                            continue;
+                                        }
+                                        pending_write_ends.push(encode_buf.len());
+                                    }
+
+                                    // If we got the token, use it
+                                    while node_guard.state == MasterState::UseToken
+                                        || node_guard.state == MasterState::DoneWithToken
+                                    {
+                                        let frame_to_send =
+                                            if node_guard.state == MasterState::DoneWithToken {
+                                                node_guard.done_with_token()
+                                            } else {
+                                                node_guard.use_token()
+                                            };
+                                        if let Err(e) = encode_frame(&mut encode_buf, &frame_to_send)
+                                        {
+                                            warn!("MS/TP encode error: {}", e);
+                                            break;
+                                        }
+                                        pending_write_ends.push(encode_buf.len());
+                                        // After sending DataExpectingReply, enter WaitForReply
+                                        if frame_to_send.frame_type
+                                            == FrameType::BACnetDataExpectingReply
+                                        {
+                                            node_guard.state = MasterState::WaitForReply;
+                                            break;
+                                        }
+                                        // After Token or PFM, leave the use/done loop
+                                        if matches!(
+                                            frame_to_send.frame_type,
+                                            FrameType::Token | FrameType::PollForMaster
+                                        ) {
+                                            break;
+                                        }
+                                        // SoleMaster may return to UseToken with no wire
+                                        // progress; break if still UseToken after empty cycle
+                                        if node_guard.state == MasterState::UseToken
+                                            && node_guard.tx_queue.is_empty()
+                                            && node_guard.frame_count
+                                                >= node_guard.config.max_info_frames
+                                        {
+                                            break;
+                                        }
+                                    }
+
+                                    // Capture timeout before dropping lock
+                                    let timeout_ms = match node_guard.state {
+                                        MasterState::Idle => T_NO_TOKEN_MS,
+                                        MasterState::NoToken => T_NO_TOKEN_MS,
+                                        MasterState::PollForMaster => node_guard.t_slot_ms,
+                                        MasterState::WaitForReply => T_REPLY_TIMEOUT_MS,
+                                        MasterState::AnswerDataRequest => reply_decision_delay_ms,
+                                        MasterState::PassToken => T_USAGE_TIMEOUT_MS,
+                                        MasterState::UseToken
+                                        | MasterState::DoneWithToken => T_USAGE_TIMEOUT_MS,
+                                    };
+                                    drop(node_guard);
+
+                                    if !pending_write_ends.is_empty() {
+                                        wait_for_turnaround(earliest_tx).await;
+                                    }
+                                    let mut start = 0;
+                                    for &end in &pending_write_ends {
+                                        if let Err(e) = serial_clone.write(&encode_buf[start..end]).await {
+                                            increment(&counts.serial_write_errors);
+                                            warn!("MS/TP write error: {}", e);
+                                            break;
+                                        }
+                                        counts.transmitted(&encode_buf[start..end], false);
+                                        start = end;
+                                    }
+
+                                    sleep.as_mut().reset(
+                                        pending_reply_deadline.unwrap_or_else(|| {
+                                            tokio::time::Instant::now()
+                                                + tokio::time::Duration::from_millis(timeout_ms)
+                                        }),
+                                    );
                         }
-                        last_byte_time = Some(now);
-                        {
-                            let mut core = task_runtime.core.lock().await;
-                            let timestamp = core.now();
-                            if let Err(error) = core.core.on_host_activity(count, timestamp) {
-                                warn!("MS/TP host activity rejected by core: {error:?}");
-                            }
-                        }
-                        for frame in assemble_host_chunk_with_scratch(
-                            &mut frame_buf,
-                            &recv_buf[..count],
-                            &mut decode_scratch,
-                        ) {
-                            // The hosted state machine and its action storage
-                            // remain standard-frame sized until X3. Decode and
-                            // resynchronize extended frames here without
-                            // passing them into a standard-only core.
-                            if frame.frame_type.is_cobs() {
-                                warn!(
-                                    frame_type = frame.frame_type.to_raw(),
-                                    "MS/TP extended frame requires an extended core profile"
-                                );
-                                continue;
-                            }
-                            let mut core = task_runtime.core.lock().await;
-                            let timestamp = core.now();
-                            let validated = Frame::new(
-                                frame.frame_type,
-                                frame.destination,
-                                frame.source,
-                                &frame.data,
-                            );
-                            if let Err(error) = core.core.on_validated_frame(validated, timestamp) {
-                                warn!("MS/TP frame rejected by core: {error:?}");
-                            }
-                            let mut legacy = task_runtime.legacy.lock().await;
-                            core.sync_legacy(&mut legacy);
-                        }
-                        drive_actions(task_runtime.clone()).await;
                     }
-                    _ = tokio::time::sleep_until(deadline) => {
-                        let mut core = task_runtime.core.lock().await;
-                        if let Err(error) = core.service_deadline() {
-                            warn!("MS/TP deadline rejected by core: {error:?}");
+                    // Branch 2: timeout
+                    () = &mut sleep => {
+                        let mut node_guard = node.lock().await;
+                        encode_buf.clear();
+                        let was_answering_data_request =
+                            node_guard.pending_reply_source.is_some();
+                        let timeout_ms = match node_guard.state {
+                            MasterState::Idle => {
+                                node_guard.state = MasterState::NoToken;
+                                node_guard.retry_token_count = 0;
+                                let ts = node_guard.config.this_station as u64;
+                                T_NO_TOKEN_MS + node_guard.t_slot_ms * ts
+                            }
+                            MasterState::NoToken => {
+                                // GenerateToken: send PFM to discover successor.
+                                let ts = node_guard.config.this_station;
+                                let pfm = MstpFrame {
+                                    frame_type: FrameType::PollForMaster,
+                                    destination: next_addr(ts, node_guard.config.max_master),
+                                    source: ts,
+                                    data: Bytes::new(),
+                                };
+                                let _ = encode_frame(&mut encode_buf, &pfm);
+                                node_guard.poll_station =
+                                    next_addr(ts, node_guard.config.max_master);
+                                node_guard.state = MasterState::PollForMaster;
+                                node_guard.poll_count = 0;
+                                node_guard.t_slot_ms
+                            }
+                            MasterState::PollForMaster => {
+                                // No reply to PFM — try next
+                                let frame_to_send = node_guard.poll_timeout();
+                                let _ = encode_frame(&mut encode_buf, &frame_to_send);
+                                if node_guard.state == MasterState::PollForMaster {
+                                    node_guard.t_slot_ms
+                                } else {
+                                    T_USAGE_TIMEOUT_MS
+                                }
+                            }
+                            MasterState::WaitForReply => {
+                                increment(&counts.wait_for_reply_timeouts);
+                                // ReplyTimeout: enter DoneWithToken then run transitions.
+                                node_guard.expected_reply_source = None;
+                                node_guard.frame_count = node_guard.config.max_info_frames;
+                                node_guard.state = MasterState::DoneWithToken;
+                                let frame_to_send = node_guard.done_with_token();
+                                let _ = encode_frame(&mut encode_buf, &frame_to_send);
+                                match node_guard.state {
+                                    MasterState::PassToken => T_USAGE_TIMEOUT_MS,
+                                    MasterState::PollForMaster => node_guard.t_slot_ms,
+                                    MasterState::UseToken => T_USAGE_TIMEOUT_MS,
+                                    _ => T_USAGE_TIMEOUT_MS,
+                                }
+                            }
+                            MasterState::AnswerDataRequest => {
+                                // The timer fires early enough to include
+                                // turnaround and scheduling before the first
+                                // octet's T_reply_delay deadline. Prefer a
+                                // response that became ready at the boundary.
+                                let reply_data = pending_reply_rx
+                                    .take()
+                                    .and_then(|mut rx| rx.try_recv().ok());
+                                if let Some(reply_frame) = finish_data_request_at_transport_boundary(
+                                    &mut node_guard,
+                                    reply_data,
+                                    &counts,
+                                ) {
+                                    let _ = encode_frame(&mut encode_buf, &reply_frame);
+                                }
+                                T_USAGE_TIMEOUT_MS
+                            }
+                            MasterState::PassToken => {
+                                if let Some(frame) = node_guard.pass_token_timeout() {
+                                    let _ = encode_frame(&mut encode_buf, &frame);
+                                }
+                                match node_guard.state {
+                                    MasterState::PassToken => T_USAGE_TIMEOUT_MS,
+                                    MasterState::NoToken => {
+                                        // Per spec Clause 9.5.6: T_no_token + T_slot * TS
+                                        let ts = node_guard.config.this_station as u64;
+                                        T_NO_TOKEN_MS + node_guard.t_slot_ms * ts
+                                    }
+                                    MasterState::UseToken => T_USAGE_TIMEOUT_MS,
+                                    _ => T_USAGE_TIMEOUT_MS,
+                                }
+                            }
+                            MasterState::UseToken
+                            | MasterState::DoneWithToken => {
+                                // Should not typically timeout here; run DONE_WITH_TOKEN
+                                // transitions (never unconditional pass_token).
+                                node_guard.state = MasterState::DoneWithToken;
+                                let frame_to_send = node_guard.done_with_token();
+                                let _ = encode_frame(&mut encode_buf, &frame_to_send);
+                                match node_guard.state {
+                                    MasterState::PassToken => T_USAGE_TIMEOUT_MS,
+                                    MasterState::PollForMaster => node_guard.t_slot_ms,
+                                    MasterState::UseToken => T_USAGE_TIMEOUT_MS,
+                                    _ => T_USAGE_TIMEOUT_MS,
+                                }
+                            }
+                        };
+                        if was_answering_data_request {
+                            pending_reply_deadline = None;
                         }
-                        let mut legacy = task_runtime.legacy.lock().await;
-                        core.sync_legacy(&mut legacy);
-                        drop(legacy);
-                        drop(core);
-                        drive_actions(task_runtime.clone()).await;
-                    }
-                    _ = task_runtime.wake.notified() => {
-                        drive_actions(task_runtime.clone()).await;
+                        drop(node_guard);
+
+                        if !encode_buf.is_empty() {
+                            wait_for_turnaround(earliest_tx).await;
+                            if let Err(e) = serial_clone.write(&encode_buf).await {
+                                increment(&counts.serial_write_errors);
+                                warn!("MS/TP write error: {}", e);
+                            } else {
+                                counts.transmitted(&encode_buf, was_answering_data_request);
+                            }
+                        }
+
+                        sleep.as_mut().reset(
+                            tokio::time::Instant::now()
+                                + tokio::time::Duration::from_millis(timeout_ms),
+                        );
                     }
                 }
             }
-        });
-        self.node = Some(legacy);
-        self.core = Some(core);
-        self.runtime = Some(runtime);
+        };
+
+        let task = match &dedicated_runtime {
+            Some(runtime) => runtime.handle.spawn(mac_loop),
+            None => tokio::spawn(mac_loop),
+        };
+        self.dedicated_runtime = dedicated_runtime;
         self.recv_task = Some(task);
         Ok(npdu_rx)
     }
@@ -540,29 +568,21 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
             task.abort();
             let _ = task.await;
         }
-        if let Some(runtime) = self.runtime.take() {
-            for task in runtime
-                .reply_tasks
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .drain(..)
-            {
-                task.abort();
-            }
-            restore_receive(runtime.serial.as_ref()).await?;
+        if let Some(runtime) = self.dedicated_runtime.take() {
+            runtime.stop().await;
         }
-        if let Some(node) = &self.node {
-            let mut node = node.lock().await;
-            node.tx_queue.clear();
-            node.state = MasterState::Idle;
-            node.expected_reply_source = None;
+        // Clear the node's queue to prevent stale sends after stop
+        if let Some(ref node) = self.node {
+            let mut n = node.lock().await;
+            n.tx_queue.clear();
+            n.state = MasterState::Idle;
+            n.expected_reply_source = None;
         }
-        self.core.take();
         Ok(())
     }
 
     fn abort(&mut self) {
-        self.release_resources();
+        self.abort_receive_task_and_release_state();
     }
 
     async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
@@ -572,57 +592,81 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
                 mac.len()
             )));
         }
-        let core = self.core.as_ref().ok_or_else(|| {
-            Error::Transport(std::io::Error::new(
+        let dest = mac[0];
+        if let Some(ref node) = self.node {
+            let mut node = node.lock().await;
+            node.queue_npdu_observed(
+                dest,
+                Bytes::copy_from_slice(npdu),
+                Some(&self.diagnostics.counters),
+            )?;
+            Ok(())
+        } else {
+            Err(Error::Transport(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "MS/TP transport not started",
-            ))
-        })?;
-        let mut core = core.lock().await;
-        let now = core.now();
-        core.core
-            .enqueue_npdu(mac[0], npdu, NetworkPriority::Normal, now)
-            .map_err(|error| Error::Encoding(format!("MS/TP queue rejected NPDU: {error:?}")))?;
-        let mut legacy = self
-            .node
-            .as_ref()
-            .expect("core and legacy start together")
-            .lock()
-            .await;
-        mirror_legacy_enqueue(&mut legacy, mac[0], Bytes::copy_from_slice(npdu));
-        core.sync_legacy(&mut legacy);
-        Ok(())
+            )))
+        }
     }
 
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.send_unicast(npdu, &[BROADCAST_MAC]).await
+        if let Some(ref node) = self.node {
+            let mut node = node.lock().await;
+            node.queue_npdu_observed(
+                BROADCAST_MAC,
+                Bytes::copy_from_slice(npdu),
+                Some(&self.diagnostics.counters),
+            )?;
+            Ok(())
+        } else {
+            Err(Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "MS/TP transport not started",
+            )))
+        }
+    }
+
+    fn local_receive_apdu_capacity(&self) -> u16 {
+        480
     }
 
     fn local_mac(&self) -> &[u8] {
         &self.local_mac
     }
-    fn max_apdu_length(&self) -> u16 {
+
+    fn egress_apdu_limit(&self) -> u16 {
         480
     }
+
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
         mac == [BROADCAST_MAC]
+    }
+
+    fn group_destinations(&self) -> crate::port::GroupDestinations {
+        crate::port::GroupDestinations::new(|mac| mac == [BROADCAST_MAC])
     }
 }
 
 impl<S: SerialPort> Drop for MstpTransport<S> {
     fn drop(&mut self) {
-        self.release_resources();
+        self.abort_receive_task_and_release_state();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Loopback serial port for testing
+// ---------------------------------------------------------------------------
 
 /// In-memory loopback serial port for unit testing.
 pub struct LoopbackSerial {
     rx: Mutex<mpsc::Receiver<Vec<u8>>>,
     tx: mpsc::Sender<Vec<u8>>,
+    /// Leftover bytes from a previous read that didn't fit in the caller's buffer.
     leftover: Mutex<Vec<u8>>,
 }
 
 impl LoopbackSerial {
+    /// Create a pair of connected loopback serial ports.
     pub fn pair() -> (Self, Self) {
         let (tx_a, rx_b) = mpsc::channel(64);
         let (tx_b, rx_a) = mpsc::channel(64);
@@ -648,7 +692,14 @@ impl SerialPort for LoopbackSerial {
             .await
             .map_err(|_| Error::Encoding("loopback write failed".into()))
     }
+
+    async fn drain(&self) -> Result<(), Error> {
+        // In-memory writes are delivered before returning; there is no UART.
+        Ok(())
+    }
+
     async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        // Serve leftover bytes first
         let mut leftover = self.leftover.lock().await;
         if !leftover.is_empty() {
             let len = leftover.len().min(buf.len());
@@ -657,16 +708,16 @@ impl SerialPort for LoopbackSerial {
             return Ok(len);
         }
         drop(leftover);
+
         let mut rx = self.rx.lock().await;
         match rx.recv().await {
             Some(data) => {
                 let len = data.len().min(buf.len());
                 buf[..len].copy_from_slice(&data[..len]);
+                // Buffer excess bytes for next read
                 if data.len() > buf.len() {
-                    self.leftover
-                        .lock()
-                        .await
-                        .extend_from_slice(&data[buf.len()..]);
+                    let mut leftover = self.leftover.lock().await;
+                    leftover.extend_from_slice(&data[buf.len()..]);
                 }
                 Ok(len)
             }
@@ -675,18 +726,102 @@ impl SerialPort for LoopbackSerial {
     }
 }
 
+// ---------------------------------------------------------------------------
+// NoSerial: zero-sized SerialPort for non-MS/TP contexts
+// ---------------------------------------------------------------------------
+
 /// A serial port implementation that always errors.
+///
+/// Used to satisfy the `AnyTransport<S>` generic when MS/TP is not needed
+/// (e.g., in Python bindings where serial access isn't exposed).
 pub struct NoSerial;
 
 impl SerialPort for NoSerial {
     async fn write(&self, _data: &[u8]) -> Result<(), Error> {
         Err(Error::Encoding("NoSerial: MS/TP not available".into()))
     }
+
     async fn read(&self, _buf: &mut [u8]) -> Result<usize, Error> {
         Err(Error::Encoding("NoSerial: MS/TP not available".into()))
     }
 }
 
 #[cfg(test)]
-#[path = "port_assembly_tests.rs"]
+#[path = "assembly_tests.rs"]
 mod assembly_tests;
+
+#[cfg(test)]
+mod abort_tests {
+    use std::future::pending;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use super::*;
+
+    struct ExclusiveSerial(Arc<AtomicBool>);
+
+    impl ExclusiveSerial {
+        fn open(in_use: Arc<AtomicBool>) -> Option<Self> {
+            in_use
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .ok()
+                .map(|_| Self(in_use))
+        }
+    }
+
+    impl Drop for ExclusiveSerial {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+
+    impl SerialPort for ExclusiveSerial {
+        async fn write(&self, _data: &[u8]) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn read(&self, _buf: &mut [u8]) -> Result<usize, Error> {
+            pending().await
+        }
+    }
+
+    async fn reopen(in_use: &Arc<AtomicBool>) -> ExclusiveSerial {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(serial) = ExclusiveSerial::open(in_use.clone()) {
+                    break serial;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("aborted receive task retained the serial resource")
+    }
+
+    #[tokio::test]
+    async fn abort_takes_task_and_releases_serial_for_reopen() {
+        let in_use = Arc::new(AtomicBool::new(false));
+        let serial = ExclusiveSerial::open(in_use.clone()).unwrap();
+        let mut transport = MstpTransport::new(serial, MstpConfig::default());
+        let _rx = transport.start().await.unwrap();
+        assert!(ExclusiveSerial::open(in_use.clone()).is_none());
+
+        transport.abort();
+        assert!(transport.recv_task.is_none());
+        assert!(transport.node.is_none());
+        drop(reopen(&in_use).await);
+        assert!(!in_use.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn drop_aborts_task_and_releases_serial_for_reopen() {
+        let in_use = Arc::new(AtomicBool::new(false));
+        let serial = ExclusiveSerial::open(in_use.clone()).unwrap();
+        let mut transport = MstpTransport::new(serial, MstpConfig::default());
+        let _rx = transport.start().await.unwrap();
+
+        drop(transport);
+        drop(reopen(&in_use).await);
+        assert!(!in_use.load(Ordering::SeqCst));
+    }
+}

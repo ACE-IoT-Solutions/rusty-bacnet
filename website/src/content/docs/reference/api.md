@@ -1,40 +1,38 @@
 ---
 title: "API and example library"
-description: "Use the website for tasks and the versioned APIs for exact signatures."
+description: "Find exact signatures for the release, and where unreleased changes are described."
 ---
 
-The website explains how to complete a task. The source-level references explain the exact methods, parameters, types, and feature gates. Both are needed, but they should not become two competing handwritten API inventories.
+Use the website for tasks and the canonical references for exact methods, parameters, types and feature gates. The references below describe **v0.12.0**.
 
-## Rust
+## Release references
 
-[The v0.11.0 Rust API guide](https://github.com/jscott3201/rusty-bacnet/blob/v0.11.0/docs/rust-api.md) covers the crate-level surfaces and examples. The workspace manifest is the release version and Rust-minimum reference.
+Start with the [integration overview](/rusty-bacnet/development/overview/) and [engineering documentation map](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/docs/README.md).
 
-For a local source checkout, generate API documentation with the selected features appropriate to your use case. Verify any published rustdoc link and version before adding it to the site; do not assume every internal workspace crate has a published documentation page.
+| Reference | Use it for |
+|---|---|
+| [Rust API](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/docs/rust-api.md) | Crate APIs, feature gates, shared endpoint contracts, transport ownership and migration details |
+| [Python API](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/docs/python-api.md) | Constructors, native Awaitable results, endpoint lifecycle and binding-specific limits |
+| [Python type stub](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/crates/rusty-bacnet/rusty_bacnet.pyi) | Editor-facing signatures for the matching native build |
+| [CLI reference](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/docs/CLI.md) | Flags and transport prerequisites |
+| [Architecture](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/docs/architecture.md) | Crate composition, packet paths and lifecycle ownership |
 
-## Python
+For source checkout rustdoc, select the features used by your application. Do not assume every workspace crate is published or that a published documentation page matches the current checkout. Use the [shared endpoint guide](/rusty-bacnet/development/shared-endpoints/) to compare requester, responder and source Audit scope before choosing that owner.
 
-[The Python API guide](https://github.com/jscott3201/rusty-bacnet/blob/v0.11.0/docs/python-api.md) explains asynchronous clients, servers, object values, exceptions, and SC hubs. [The distributed type stub](https://github.com/jscott3201/rusty-bacnet/blob/v0.11.0/crates/rusty-bacnet/rusty_bacnet.pyi) provides editor-facing signatures.
+A type constant alone does not prove that a bundled server implements an object family.
 
-The release's Python documentation has an abbreviated transport constructor summary that omits MS/TP; use the mini-device example and implementation for that path. A type constant alone does not prove that the bundled server implements that object family.
+## Unreleased changes
 
-## Examples
+The same documents on the [`dev` branch](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/README.md) describe changes merged after the release. A `dev` checkout may differ from the release while its version still reads 0.12.0, so record the commit; pending changelog entries are in [`changelog.d/`](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d).
+
+## Examples by task
 
 | Example | Read it for | Review before running |
 |---|---|---|
 | `bip_client_server.py` | Client/server lifecycle, reads and RPM | Socket exposure and demonstration writes |
 | `cov_subscriptions.py` | Subscriptions and consumption | Remote subscription state and cleanup |
-| `sc_secure_connect.py` | Hub and node configuration | Certificate roles and example trust settings |
-| `mstp_mini_device.py` | Standalone serial device | Adapter, MAC, baud, and token participation |
+| `sc_secure_connect.py` | Hub and node configuration | Credentials and identity rules at the chosen revision |
+| `mstp_mini_device.py` | Serial MS/TP device | Adapter, MAC, baud and token participation |
 | `device_management.py` | Management services and errors | Control-changing operations |
 
-[Browse the versioned Python examples](https://github.com/jscott3201/rusty-bacnet/tree/v0.11.0/examples/python).
-
-## Companion projects
-
-The repository points to separate HTTP/MCP gateway and external test-harness projects. They are not installed by this website, and their authentication, APIs, deployment, and certification status must be documented in their own context. Keep ecosystem links separate from the core CLI/Python/Rust installation flow.
-
-## Sources and release scope
-
-These instructions target **v0.11.0**. Source review is not a claim of hardware qualification.
-
-[Rust API](https://github.com/jscott3201/rusty-bacnet/blob/v0.11.0/docs/rust-api.md) · [Python API](https://github.com/jscott3201/rusty-bacnet/blob/v0.11.0/docs/python-api.md) · [Example index](https://github.com/jscott3201/rusty-bacnet/blob/v0.11.0/examples/python/README.md) · [Companion project boundaries](https://github.com/jscott3201/rusty-bacnet/blob/v0.11.0/README.md).
+Browse the [v0.12.0 examples](https://github.com/jscott3201/rusty-bacnet/tree/v0.12.0/examples/python). The site's [local lab](/rusty-bacnet/start/local-lab/) keeps its tested release source and download together.

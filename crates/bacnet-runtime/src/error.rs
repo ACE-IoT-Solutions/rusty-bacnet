@@ -112,12 +112,6 @@ impl RuntimeError {
             bacnet_types::error::Error::Transport(_) => (ErrorCode::DeviceUnavailable, true),
             bacnet_types::error::Error::Timeout(_) => (ErrorCode::Timeout, true),
             bacnet_types::error::Error::Decoding { .. } => (ErrorCode::Decode, false),
-            bacnet_types::error::Error::Bvlc { result_code }
-                if *result_code
-                    == bacnet_types::enums::BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK =>
-            {
-                (ErrorCode::ForeignDeviceRegistrationFailed, true)
-            }
             _ => (ErrorCode::Internal, false),
         };
         Self {
@@ -287,27 +281,5 @@ impl RuntimeError {
             attachment_id: None,
             message: message.into(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ErrorCode, RuntimeError};
-    use crate::AttachmentId;
-    use bacnet_types::enums::BvlcResultCode;
-
-    #[test]
-    fn foreign_device_nak_has_stable_retryable_attachment_error() {
-        let attachment_id = AttachmentId::from(7);
-        let error = RuntimeError::attachment_start(
-            attachment_id,
-            bacnet_types::error::Error::Bvlc {
-                result_code: BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK,
-            },
-        );
-
-        assert_eq!(error.code, ErrorCode::ForeignDeviceRegistrationFailed);
-        assert!(error.retryable);
-        assert_eq!(error.attachment_id, Some(attachment_id));
     }
 }

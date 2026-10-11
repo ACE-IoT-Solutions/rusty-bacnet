@@ -37,6 +37,7 @@ async fn make_server_with_dcc_policy(
         name: "Integration Test Device".into(),
         vendor_name: "Rusty BACnet".into(),
         vendor_id: 555,
+        segmentation_supported: Segmentation::BOTH,
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -92,15 +93,40 @@ async fn make_client() -> BACnetClient<BipTransport> {
 mod atomic_write_file_budget;
 #[path = "server/basic.rs"]
 mod basic;
+#[path = "server/bbmd_discovery.rs"]
+mod bbmd_discovery;
+#[cfg(feature = "ipv6")]
+#[path = "server/bip6_group_confirmed.rs"]
+mod bip6_group_confirmed;
+#[cfg(all(feature = "ipv6", unix))]
+#[path = "server/bip6_group_unicast.rs"]
+mod bip6_group_unicast;
+#[cfg(unix)]
+#[path = "server/bip_group_confirmed.rs"]
+mod bip_group_confirmed;
+#[path = "server/channel_remote.rs"]
+mod channel_remote;
+#[path = "server/command_remote.rs"]
+mod command_remote;
 #[path = "server/dcc.rs"]
 mod dcc;
+#[path = "server/duplicate_name.rs"]
+mod duplicate_name;
 #[path = "server/error_cov.rs"]
 mod error_cov;
+#[path = "server/forwarder_subscriptions.rs"]
+mod forwarder_subscriptions;
+#[path = "server/list_elements.rs"]
+mod list_elements;
 #[path = "server/local_write_cov.rs"]
 mod local_write_cov;
+#[path = "server/notification_forwarder.rs"]
+mod notification_forwarder;
 #[path = "server/routing_alarm.rs"]
 mod routing_alarm;
 #[path = "server/segmentation_rx.rs"]
 mod segmentation_rx;
 #[path = "server/segmentation_tx.rs"]
 mod segmentation_tx;
+#[path = "server/structured_errors.rs"]
+mod structured_errors;

@@ -28,13 +28,26 @@ impl RuntimeTransport {
         attachment_id: crate::AttachmentId,
         request: &crate::DiscoveryRequest,
     ) -> AttachmentDiscovery {
+        let range = match bacnet_services::who_is::DeviceInstanceRange::from_limits(
+            request.low_limit,
+            request.high_limit,
+        ) {
+            Ok(range) => range,
+            Err(error) => {
+                return AttachmentDiscovery {
+                    devices: Vec::new(),
+                    routers: Vec::new(),
+                    errors: vec![RuntimeError::operation(attachment_id, error)],
+                };
+            }
+        };
         match self {
             Self::Bip(client) => {
                 if request.clear_existing {
                     client.clear_devices().await;
                 }
                 let devices = async {
-                    client.who_is(request.low_limit, request.high_limit).await?;
+                    client.who_is(range).await?;
                     tokio::time::sleep(request.observation_window).await;
                     Ok::<_, bacnet_types::error::Error>(client.discovered_devices().await)
                 };
@@ -72,7 +85,7 @@ impl RuntimeTransport {
                     client.clear_devices().await;
                 }
                 let devices = async {
-                    client.who_is(request.low_limit, request.high_limit).await?;
+                    client.who_is(range).await?;
                     tokio::time::sleep(request.observation_window).await;
                     Ok::<_, bacnet_types::error::Error>(client.discovered_devices().await)
                 };
@@ -110,7 +123,7 @@ impl RuntimeTransport {
                     client.clear_devices().await;
                 }
                 let devices = async {
-                    client.who_is(request.low_limit, request.high_limit).await?;
+                    client.who_is(range).await?;
                     tokio::time::sleep(request.observation_window).await;
                     Ok::<_, bacnet_types::error::Error>(client.discovered_devices().await)
                 };

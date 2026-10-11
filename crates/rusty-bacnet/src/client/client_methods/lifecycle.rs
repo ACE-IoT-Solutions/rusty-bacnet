@@ -18,18 +18,15 @@ impl BACnetClient {
         sc_heartbeat_timeout_ms=None,
         ipv6_interface=None,
         *,
-        bbmd_address=None,
-        foreign_device_ttl=None,
         serial_port=None,
         mstp_baud=38400,
         mstp_mac=1,
         mstp_max_master=127,
         mstp_max_info_frames=1,
         sc_device_uuid=None,
-        apdu_observer=false,
-        apdu_observer_capacity=64
+        share_port_by_address=false,
+        min_request_interval_ms=0
     ))]
-    #[allow(clippy::too_many_arguments)]
     fn new(
         interface: &str,
         port: u16,
@@ -44,17 +41,16 @@ impl BACnetClient {
         sc_heartbeat_interval_ms: Option<u64>,
         sc_heartbeat_timeout_ms: Option<u64>,
         ipv6_interface: Option<String>,
-        bbmd_address: Option<String>,
-        foreign_device_ttl: Option<u16>,
         serial_port: Option<String>,
         mstp_baud: u32,
         mstp_mac: u8,
         mstp_max_master: u8,
         mstp_max_info_frames: u8,
         sc_device_uuid: Option<Vec<u8>>,
-        apdu_observer: bool,
-        apdu_observer_capacity: usize,
+        share_port_by_address: bool,
+        min_request_interval_ms: u64,
     ) -> PyResult<Self> {
+        crate::bip_options::only_on_bip(share_port_by_address, transport)?;
         if transport == "sc" {
             crate::tls::required_sc_credentials(
                 sc_ca_cert.as_deref(),
@@ -64,57 +60,15 @@ impl BACnetClient {
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         }
         let sc_device_uuid = crate::sc_identity::device_uuid(transport, sc_device_uuid)?;
-        let apdu_observer = PyApduObserverState::configured(apdu_observer, apdu_observer_capacity)?;
-        let foreign_device_config = match (bbmd_address, foreign_device_ttl) {
-            (None, None) => None,
-            (Some(_), None) | (None, Some(_)) => {
-                return Err(PyValueError::new_err(
-                    "bbmd_address and foreign_device_ttl must be provided together",
-                ));
-            }
-            (Some(address), Some(ttl)) => {
-                if transport != "bip" {
-                    return Err(PyValueError::new_err(
-                        "managed foreign-device registration requires transport='bip'",
-                    ));
-                }
-                if ttl == 0 {
-                    return Err(PyValueError::new_err(
-                        "foreign_device_ttl must be in 1..=65535",
-                    ));
-                }
-                let endpoint = address.parse::<std::net::SocketAddrV4>().map_err(|_| {
-                    PyValueError::new_err(
-                        "bbmd_address must be a unicast IPv4 BACnet/IP address in 'ip:port' form",
-                    )
-                })?;
-                if endpoint.ip().is_unspecified()
-                    || endpoint.ip().is_multicast()
-                    || endpoint.ip().is_broadcast()
-                    || endpoint.port() == 0
-                {
-                    return Err(PyValueError::new_err(
-                        "bbmd_address must be a unicast IPv4 address with a nonzero port",
-                    ));
-                }
-                Some(bacnet_transport::bip::ForeignDeviceConfig {
-                    bbmd_ip: *endpoint.ip(),
-                    bbmd_port: endpoint.port(),
-                    ttl,
-                })
-            }
-        };
+        let min_request_interval_ms = parse_min_request_interval_ms(min_request_interval_ms)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
-            apdu_observer,
-            managed_cov: Arc::new(std::sync::Mutex::new(Vec::new())),
             transport_type: transport.to_string(),
             interface: interface.to_string(),
             port,
             broadcast_address: broadcast_address.to_string(),
+            share_port_by_address,
             apdu_timeout_ms,
-            foreign_device_config,
-            foreign_device_registration: Arc::new(std::sync::Mutex::new(None)),
             sc_hub,
             sc_vmac,
             sc_device_uuid,
@@ -129,6 +83,7 @@ impl BACnetClient {
             mstp_mac,
             mstp_max_master,
             mstp_max_info_frames,
+            min_request_interval_ms,
         })
     }
 
@@ -140,9 +95,8 @@ impl BACnetClient {
         let interface_str = slf.borrow().interface.clone();
         let port = slf.borrow().port;
         let broadcast_str = slf.borrow().broadcast_address.clone();
+        let share_port_by_address = slf.borrow().share_port_by_address;
         let timeout_ms = slf.borrow().apdu_timeout_ms;
-        let foreign_device_config = slf.borrow().foreign_device_config.clone();
-        let foreign_device_registration = Arc::clone(&slf.borrow().foreign_device_registration);
         let sc_hub = slf.borrow().sc_hub.clone();
         let sc_vmac = slf.borrow().sc_vmac.clone();
         let sc_device_uuid = slf.borrow().sc_device_uuid;
@@ -157,13 +111,10 @@ impl BACnetClient {
         let mstp_mac = slf.borrow().mstp_mac;
         let mstp_max_master = slf.borrow().mstp_max_master;
         let mstp_max_info_frames = slf.borrow().mstp_max_info_frames;
-        let apdu_observer = slf.borrow().apdu_observer.clone();
+        let min_request_interval_ms = slf.borrow().min_request_interval_ms;
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (transport, registration): (
-                AnyTransport<crate::mstp_py::PySerial>,
-                Option<bacnet_transport::bip::ForeignDeviceRegistrationHandle>,
-            ) = match transport_type.as_str() {
+        crate::py_async::future_into_py(py, async move {
+            let transport: AnyTransport<crate::mstp_py::PySerial> = match transport_type.as_str() {
                 "bip" => {
                     let interface: Ipv4Addr = interface_str
                         .parse()
@@ -171,22 +122,16 @@ impl BACnetClient {
                     let broadcast: Ipv4Addr = broadcast_str
                         .parse()
                         .map_err(|e| PyRuntimeError::new_err(format!("invalid broadcast: {e}")))?;
-                    let mut transport = BipTransport::new(interface, port, broadcast);
-                    if let Some(config) = foreign_device_config {
-                        transport.register_as_foreign_device(config);
-                    }
-                    let registration = transport.foreign_device_registration();
-                    (AnyTransport::Bip(transport), registration)
+                    let mut bip = BipTransport::new(interface, port, broadcast);
+                    bip.set_share_port_by_address(share_port_by_address);
+                    AnyTransport::Bip(Box::new(bip))
                 }
                 "ipv6" => {
                     let iface_str = ipv6_interface.as_deref().unwrap_or("::");
                     let interface: std::net::Ipv6Addr = iface_str.parse().map_err(|e| {
                         PyRuntimeError::new_err(format!("invalid IPv6 interface: {e}"))
                     })?;
-                    (
-                        AnyTransport::Bip6(Bip6Transport::new(interface, port, None)),
-                        None,
-                    )
+                    AnyTransport::Bip6(Bip6Transport::new(interface, port, None))
                 }
                 "sc" => {
                     let hub_url = sc_hub.ok_or_else(|| {
@@ -220,18 +165,15 @@ impl BACnetClient {
                     if let Some(ms) = sc_heartbeat_timeout_ms {
                         sc = sc.with_heartbeat_timeout_ms(ms);
                     }
-                    (AnyTransport::Sc(Box::new(sc)), None)
+                    AnyTransport::Sc(Box::new(sc))
                 }
-                "mstp" => (
-                    crate::mstp_py::build_mstp_transport(
-                        serial_port.as_deref(),
-                        mstp_baud,
-                        mstp_mac,
-                        mstp_max_master,
-                        mstp_max_info_frames,
-                    )?,
-                    None,
-                ),
+                "mstp" => crate::mstp_py::build_mstp_transport(
+                    serial_port.as_deref(),
+                    mstp_baud,
+                    mstp_mac,
+                    mstp_max_master,
+                    mstp_max_info_frames,
+                )?,
                 other => {
                     return Err(PyRuntimeError::new_err(format!(
                         "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', or 'mstp'"
@@ -239,40 +181,16 @@ impl BACnetClient {
                 }
             };
 
-            let mut observer_start_guard = PyApduObserverStartGuard::new(apdu_observer.clone());
-            let mut builder = client::BACnetClient::generic_builder()
+            let c = client::BACnetClient::generic_builder()
                 .transport(transport)
-                .apdu_timeout_ms(timeout_ms);
-            if let Some(state) = apdu_observer.as_ref() {
-                builder = builder.apdu_observer(state.observer()?);
-            }
-            let c = match builder.build().await {
-                Ok(client) => client,
-                Err(error) => return Err(to_py_err(error)),
-            };
+                .apdu_timeout_ms(timeout_ms)
+                .min_request_interval_ms(min_request_interval_ms)
+                .build()
+                .await
+                .map_err(to_py_err)?;
 
             *inner.lock().await = Some(Arc::new(c));
-            *foreign_device_registration
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("foreign-device status lock is poisoned"))? =
-                registration;
-            observer_start_guard.commit();
             Ok(self_ref)
-        })
-    }
-
-    /// Return the managed BACnet/IP foreign-device registration snapshot.
-    fn foreign_device_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let registration = Arc::clone(&self.foreign_device_registration);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            registration
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("foreign-device status lock is poisoned"))
-                .map(|handle| {
-                    handle
-                        .as_ref()
-                        .map(|handle| PyForeignDeviceStatus::from_rust(handle.status().into()))
-                })
         })
     }
 
@@ -286,10 +204,7 @@ impl BACnetClient {
         _exc_tb: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        let managed_cov = Arc::clone(&self.managed_cov);
-        let apdu_observer = self.apdu_observer.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            super::managed_cov::stop_managed_cov_subscriptions(&managed_cov).await;
+        let future = async move {
             let arc = {
                 let mut guard = inner.lock().await;
                 guard.take()
@@ -299,7 +214,11 @@ impl BACnetClient {
                 match Arc::try_unwrap(arc) {
                     Ok(mut c) => {
                         if let Err(e) = c.stop().await {
-                            eprintln!("BACnetClient stop error in __aexit__: {e}");
+                            #[allow(clippy::print_stderr)]
+                            // no logging path in this crate; __aexit__ cannot raise here
+                            {
+                                eprintln!("BACnetClient stop error in __aexit__: {e}");
+                            }
                         }
                     }
                     Err(_arc) => {
@@ -308,40 +227,31 @@ impl BACnetClient {
                     }
                 }
             }
-            if let Some(state) = apdu_observer.as_ref() {
-                state.close_and_reset();
-            }
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
     /// Explicitly stop the client.
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        let managed_cov = Arc::clone(&self.managed_cov);
-        let apdu_observer = self.apdu_observer.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            super::managed_cov::stop_managed_cov_subscriptions(&managed_cov).await;
+        let future = async move {
             let arc = {
                 let mut guard = inner.lock().await;
                 guard.take()
             };
-            let stop_result = if let Some(arc) = arc {
+            if let Some(arc) = arc {
                 match Arc::try_unwrap(arc) {
-                    Ok(mut c) => c.stop().await.map_err(to_py_err),
+                    Ok(mut c) => {
+                        c.stop().await.map_err(to_py_err)?;
+                    }
                     Err(_arc) => {
                         // Other async operations still hold references;
                         // cleanup will happen when they complete and drop the Arc.
-                        Ok(())
                     }
                 }
-            } else {
-                Ok(())
-            };
-            if let Some(state) = apdu_observer.as_ref() {
-                state.close_and_reset();
             }
-            stop_result?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 }

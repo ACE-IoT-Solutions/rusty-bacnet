@@ -44,8 +44,8 @@ fn crc16_clause9_data_vector_01_00() {
 
 #[test]
 fn crc16_annex_g_data_vector() {
-    // Annex G: data 01 22 30 has complemented CRC 0xBD10,
-    // transmitted least-significant octet first as 10 BD.
+    // Annex G: data 01 22 30 has complemented CRC 0xBD10, which goes on
+    // the wire low octet first: 10 BD.
     assert_eq!(crc16(&[0x01, 0x22, 0x30]), 0xBD10);
     let with_crc = [0x01, 0x22, 0x30, 0x10, 0xBD];
     assert!(crc16_valid(&with_crc));
@@ -421,38 +421,6 @@ fn decode_standard_data_length_boundary() {
 }
 
 #[test]
-fn extended_data_boundaries_round_trip_through_hosted_api() {
-    for length in [MAX_STANDARD_MPDU_DATA + 1, MAX_EXTENDED_MPDU_DATA] {
-        let frame = MstpFrame {
-            frame_type: FrameType::ExtendedDataNotExpectingReply,
-            destination: BROADCAST_MAC,
-            source: 7,
-            data: Bytes::from(vec![0xA5; length]),
-        };
-        let mut wire = BytesMut::new();
-        encode_frame(&mut wire, &frame).unwrap();
-        assert!(wire.len() <= MAX_EXTENDED_FRAME_LENGTH);
-        let (decoded, consumed) = decode_frame(&wire).unwrap();
-        assert_eq!(consumed, wire.len());
-        assert_eq!(decoded, frame);
-        assert_eq!(
-            decode_frame_stream(&wire),
-            StreamDecode::Complete { frame, consumed }
-        );
-    }
-}
-
-#[test]
-fn extended_frame_rejects_reserved_type_above_der_and_dner() {
-    let wire = header_only_wire(0x22, MIN_EXTENDED_LENGTH);
-    assert!(decode_frame(&wire).is_err());
-    assert_eq!(
-        decode_frame_stream(&wire),
-        StreamDecode::Invalid { discard: 1 }
-    );
-}
-
-#[test]
 fn stream_decode_standard_data_length_boundary() {
     let frame = data_frame_with_length(MAX_STANDARD_MPDU_DATA);
     let mut wire = BytesMut::new();
@@ -538,7 +506,8 @@ fn encode_oversized_data_returns_error() {
 }
 
 #[test]
-fn decode_accepts_slave_sources_above_max_master() {
+fn decode_rejects_source_above_max_master() {
+    // Encode a valid frame then patch the source to 128 (above MAX_MASTER=127)
     let frame = MstpFrame {
         frame_type: FrameType::Token,
         destination: 1,
@@ -548,11 +517,13 @@ fn decode_accepts_slave_sources_above_max_master() {
     let mut buf = BytesMut::new();
     encode_frame(&mut buf, &frame).unwrap();
 
-    for source in [128, 254] {
-        buf[4] = source;
-        buf[7] = crc8(&buf[2..7]);
-        assert_eq!(decode_frame(&buf).unwrap().0.source, source);
-    }
+    // Patch source byte (offset 4) to 128
+    buf[4] = 128;
+    // Recompute header CRC (bytes 2..7, CRC at byte 7)
+    let header_crc = crc8(&buf[2..7]);
+    buf[7] = header_crc;
+
+    assert!(decode_frame(&buf).is_err());
 }
 
 #[test]

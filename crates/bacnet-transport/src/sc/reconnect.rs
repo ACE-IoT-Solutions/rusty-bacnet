@@ -1,18 +1,30 @@
 use bacnet_types::error::Error;
 
-/// Configuration for SC transport reconnection with exponential backoff.
+/// Configuration for SC transport reconnection with jittered exponential backoff.
+///
+/// The nominal backoff starts at `initial_delay_ms` and doubles after each failed
+/// active-hub retry, capped at `max_delay_ms`. Each reconnect sleep uses fresh OS
+/// randomness between `max(initial_delay_ms, backoff / 2)` and
+/// `min(max_delay_ms, backoff + backoff / 2)`, inclusive. Thus the initial delay
+/// remains a floor and the maximum remains a cap, including at the capped step.
+/// Equal initial and maximum delays leave no room for jitter. If OS randomness
+/// is unavailable, the nominal backoff is used. Jitter applies only to active-hub
+/// retries, not the separate failover attempt or primary-restoration timer.
+/// While the failover hub is active, each attempt to restore the primary
+/// starts `initial_delay_ms` after the failover connected or the previous
+/// attempt ended.
 #[derive(Debug, Clone)]
 pub struct ScReconnectConfig {
-    /// Initial delay before first reconnect attempt (ms).
+    /// Initial nominal backoff and minimum reconnect sleep (ms), nonzero and
+    /// no greater than `max_delay_ms`.
     pub initial_delay_ms: u64,
-    /// Maximum delay between reconnect attempts (ms).
+    /// Maximum delay between reconnect attempts (ms), nonzero and at most
+    /// 86_400_000 (24 hours). This is a local defensive cap, not a conformance limit.
     pub max_delay_ms: u64,
     /// Maximum reconnect attempts on the active hub after a disconnect.
     /// Zero skips these retries, not the initial connection, eligible failover,
     /// or primary restoration while connected to failover.
     pub max_retries: u32,
-    /// Retry without a count limit. Retry-forbidden protocol outcomes still stop.
-    pub retry_forever: bool,
 }
 
 impl Default for ScReconnectConfig {
@@ -21,25 +33,16 @@ impl Default for ScReconnectConfig {
             initial_delay_ms: 10_000,
             max_delay_ms: 600_000,
             max_retries: 10,
-            retry_forever: false,
         }
     }
 }
 
 impl ScReconnectConfig {
-    /// Construct an unbounded reconnect policy with capped exponential backoff.
-    pub fn unbounded(initial_delay_ms: u64, max_delay_ms: u64) -> Self {
-        Self {
-            initial_delay_ms,
-            max_delay_ms,
-            max_retries: 0,
-            retry_forever: true,
-        }
-    }
-    /// Check that delays are nonzero and the initial delay does not exceed the maximum.
+    /// Check that delays are nonzero, the initial delay does not exceed the
+    /// maximum, and `max_delay_ms` is at most 86_400_000 (24 hours).
     ///
     /// This defensive guard applies even when `max_retries` is zero. It does not
-    /// impose a production minimum delay, timeout cap, or retry-count policy;
+    /// impose a production minimum delay or retry-count policy;
     /// acceptance does not establish deployment safety or Annex AB.6.1 conformance.
     /// Call this before dialing if supplying a socket to a raw SC transport.
     pub fn validate(&self) -> Result<(), Error> {
@@ -58,6 +61,13 @@ impl ScReconnectConfig {
                 "BACnet/SC reconnect initial_delay_ms must not exceed max_delay_ms, \
                  got initial_delay_ms={} max_delay_ms={}",
                 self.initial_delay_ms, self.max_delay_ms
+            )));
+        }
+        if self.max_delay_ms > 86_400_000 {
+            return Err(Error::OutOfRange(format!(
+                "BACnet/SC reconnect max_delay_ms must not exceed 86400000 (24 hours), \
+                 got max_delay_ms={}",
+                self.max_delay_ms
             )));
         }
         Ok(())
@@ -88,7 +98,6 @@ mod tests {
                     initial_delay_ms,
                     max_delay_ms,
                     max_retries,
-                    retry_forever: false,
                 };
                 assert!(
                     matches!(config.validate(), Err(Error::OutOfRange(message))
@@ -100,48 +109,57 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_validation_accepts_positive_ordered_delays_without_timer_or_retry_caps() {
+    fn reconnect_validation_rejects_over_cap_delays_for_all_retry_counts() {
+        for max_retries in [0, 1, 10, u32::MAX] {
+            for max_delay_ms in [86_400_001, u64::MAX] {
+                for initial_delay_ms in [1, max_delay_ms] {
+                    let config = ScReconnectConfig {
+                        initial_delay_ms,
+                        max_delay_ms,
+                        max_retries,
+                    };
+                    match config.validate() {
+                        Err(Error::OutOfRange(message)) => assert_eq!(
+                            message,
+                            format!(
+                                "BACnet/SC reconnect max_delay_ms must not exceed 86400000 (24 hours), \
+                                 got max_delay_ms={max_delay_ms}"
+                            )
+                        ),
+                        result => panic!("expected delay-cap rejection for {config:?}, got {result:?}"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reconnect_validation_accepts_positive_ordered_delays_through_cap_without_retry_cap() {
         let default = ScReconnectConfig::default();
         assert_eq!(default.initial_delay_ms, 10_000);
         assert_eq!(default.max_delay_ms, 600_000);
         assert_eq!(default.max_retries, 10);
-        assert!(!default.retry_forever);
         default.validate().unwrap();
 
-        // Validate only: accepted extreme values are not safe timer/deployment promises.
+        // Validate only: accepted values are not safe timer/deployment promises.
         for max_retries in [0, 1, 10, u32::MAX] {
             for (initial_delay_ms, max_delay_ms) in [
                 (1, 1),
                 (1, 2),
                 (10_000, 600_000),
                 (600_001, 600_001),
-                (1, u64::MAX),
-                (u64::MAX - 1, u64::MAX),
-                (u64::MAX, u64::MAX),
+                (1, 86_400_000),
+                (86_399_999, 86_400_000),
+                (86_400_000, 86_400_000),
             ] {
                 ScReconnectConfig {
                     initial_delay_ms,
                     max_delay_ms,
                     max_retries,
-                    retry_forever: false,
                 }
                 .validate()
                 .unwrap();
             }
         }
-    }
-
-    #[test]
-    fn unbounded_helper_preserves_zero_as_a_bounded_only_semantic() {
-        let config = ScReconnectConfig::unbounded(25, 1_000);
-        assert!(config.retry_forever);
-        assert_eq!(config.max_retries, 0);
-        config.validate().unwrap();
-
-        let bounded = ScReconnectConfig {
-            max_retries: 0,
-            ..ScReconnectConfig::default()
-        };
-        assert!(!bounded.retry_forever);
     }
 }

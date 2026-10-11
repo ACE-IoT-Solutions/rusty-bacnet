@@ -31,6 +31,15 @@ HUB_VMAC = b"\x02\0\0\0\0\1"
 
 class MtlsFixture(unittest.IsolatedAsyncioTestCase):
     """Shared fixture only: no inherited test methods or duplicate discovery."""
+    @staticmethod
+    async def close_raw(writer):
+        """Close a raw test socket. The hub may already have reset it after its Close frame."""
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), 3)
+        except ConnectionResetError:
+            pass  # Terminal cleanup only, never a protocol-read failure.
+
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(prefix="bacnet-hub-mtls-")
@@ -211,11 +220,28 @@ class HubMtlsTests(MtlsFixture):
 
     async def test_constructor_signature_and_required_ca(self):
         parameters = inspect.signature(ScHub).parameters
-        self.assertEqual(list(parameters), ["listen", "cert", "key", "vmac", "ca_cert", "device_uuid"])
+        self.assertEqual(list(parameters), ["listen", "cert", "key", "vmac", "ca_cert", "device_uuid",
+                                            "max_clients", "max_handshakes", "admission_policy",
+                                            "graceful_disconnect_ack_ms", "graceful_ws_close_ms",
+                                            "graceful_overall_ms", "handshake_tls_ms",
+                                            "handshake_websocket_upgrade_ms",
+                                            "handshake_connect_request_ms",
+                  'probe_scan_interval_ms', 'probe_idle_age_ms', 'probe_ack_age_ms', 'probe_send_budget_ms', 'broadcast_sender_burst', 'broadcast_sender_per_second', 'broadcast_global_burst', 'broadcast_global_per_second', 'relay_send_budget_ms', 'certificate_bindings'])
         self.assertIsNone(parameters["ca_cert"].default)
         self.assertEqual(parameters["ca_cert"].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         self.assertIsNone(parameters["device_uuid"].default)
         self.assertEqual(parameters["device_uuid"].kind, inspect.Parameter.KEYWORD_ONLY)
+        for name, default in [("max_clients", 256), ("max_handshakes", 256),
+                              ("admission_policy", "allow_all"),
+                              ("graceful_disconnect_ack_ms", 5000),
+                              ("graceful_ws_close_ms", 5000), ("graceful_overall_ms", 15000),
+                              ("handshake_tls_ms", 10000),
+                              ("handshake_websocket_upgrade_ms", 10000),
+                              ("handshake_connect_request_ms", 10000),
+                              ('probe_scan_interval_ms', 30000), ('probe_idle_age_ms', 60000), ('probe_ack_age_ms', 5000), ('probe_send_budget_ms', 5000), ('broadcast_sender_burst', 1024), ('broadcast_sender_per_second', 128), ('broadcast_global_burst', 4096), ('broadcast_global_per_second', 512), ('relay_send_budget_ms', 5000), ('certificate_bindings', None)]:
+            with self.subTest(name=name):
+                self.assertEqual(parameters[name].default, default)
+                self.assertEqual(parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
         args = ("127.0.0.1:0", self.path("hub.pem"), self.path("hub.key"), b"\x02\0\0\0\0\1")
         for extra in [(), (None,), ("",)]:
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, "ca_cert"):
@@ -569,7 +595,7 @@ class NodeIdentityMtlsTests(MtlsFixture):
                     self.assertEqual(connect[:4], b"\x06\0\0\1")
                     self.assertEqual(connect[4:10], vmac)
                     self.assertEqual(connect[10:26], uuid)
-                    self.assertEqual(connect[26:], b"\x16\x49\x05\xc4")
+                    self.assertEqual(connect[26:], b"\x16\x49\x05\xc6")
                     observed.append(connect[10:26])
                     await self.send_frame(writer, b"\x07\0\0\1" + b"\x02\0\0\0\0\x09" +
                                           bytes.fromhex("4a015cf2ec394d58ac2d11e1761ce86d") + b"\x05\xc4\x05\xc4")
@@ -580,8 +606,7 @@ class NodeIdentityMtlsTests(MtlsFixture):
                             pass
                     await asyncio.wait_for(drain_until_closed(), 3)
                 finally:
-                    writer.close()
-                    await asyncio.wait_for(writer.wait_closed(), 3)
+                    await self.close_raw(writer)
 
             listener = await asyncio.start_server(peer, "127.0.0.1", 0, ssl=context)
             url = f"wss://localhost:{listener.sockets[0].getsockname()[1]}"
@@ -627,8 +652,7 @@ class NodeIdentityMtlsTests(MtlsFixture):
             self.assertEqual(accepted[10:26], hub_uuid)
             return reader, writer
         except BaseException:
-            writer.close()
-            await asyncio.wait_for(writer.wait_closed(), 3)
+            await self.close_raw(writer)
             raise
 
     async def test_hub_owned_identity_survives_stop_start_and_fresh_object(self):
@@ -653,14 +677,20 @@ class NodeIdentityMtlsTests(MtlsFixture):
                     await self.stop_hub(hub)
                     self.assertEqual(await asyncio.wait_for(reader.read(1), 3), b"")
                 finally:
-                    writer.close()
-                    await asyncio.wait_for(writer.wait_closed(), 3)
+                    await self.close_raw(writer)
             finally:
                 await self.stop_hub(hub)
             with socket.socket() as probe:
-                # Match Tokio's listener reuse policy; established TCP teardown
-                # may retain TIME_WAIT, which is not a live hub listener.
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if os.name == "nt":
+                    # On Windows SO_REUSEADDR would bind over a live listener,
+                    # proving nothing; exclusive use fails while anything
+                    # still holds the port.
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                else:
+                    # Match Tokio's listener reuse policy; established TCP
+                    # teardown may retain TIME_WAIT, which is not a live hub
+                    # listener.
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(("127.0.0.1", int(address.rsplit(":", 1)[1])))
                 probe.listen()
 
@@ -701,8 +731,7 @@ class NodeIdentityMtlsTests(MtlsFixture):
                             self.fail("same-identity incumbent did not close")
                         await self.read_value(node if api is BACnetClient else other)
                     finally:
-                        writer.close()
-                        await asyncio.wait_for(writer.wait_closed(), 3)
+                        await self.close_raw(writer)
                         await self.stop_server(node)
             finally:
                 await self.stop_server(node)

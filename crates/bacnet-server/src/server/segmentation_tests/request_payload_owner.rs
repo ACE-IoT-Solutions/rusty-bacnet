@@ -2,6 +2,7 @@
 //! not incoming storage or an unrelated lifetime sentinel. Only test builds.
 
 use super::*;
+use bacnet_transport::port::TransportProvenance;
 use std::{cell::RefCell, sync::atomic::AtomicUsize};
 
 thread_local! {
@@ -73,7 +74,11 @@ fn state(now: Instant, first: &[u8]) -> SegmentedRequestState {
     let mut payload = RequestPayload::new(&req);
     payload.save_new(0, req.service_request, Some(0)).unwrap();
     SegmentedRequestState {
+        source_mac: MacAddr::new(),
+        source_network: None,
+        direct_response: None,
         payload,
+        provenance: TransportProvenance::unverified(),
         last_activity: now,
         last_progress: now,
         expected_seq: 1,
@@ -182,14 +187,20 @@ fn request_payload_owner_checked_aggregate_and_charge_fail_closed() {
     assert!(!payload_fits(None, 0));
     let now = Instant::now();
     let mut receivers = HashMap::from([
-        ((MacAddr::new(), None, 0), state(now, b"abc")),
-        ((MacAddr::new(), None, 1), state(now, b"defgh")),
+        (
+            (MacAddr::new(), None, 0, TransportProvenance::unverified()),
+            state(now, b"abc"),
+        ),
+        (
+            (MacAddr::new(), None, 1, TransportProvenance::unverified()),
+            state(now, b"defgh"),
+        ),
     ]);
     assert_eq!(saved_request_payload_bytes(&receivers), Some(8));
     // Deliberately corrupt only private counts to reach arithmetic errors that
     // the production 128 x 256 x 1476 bounds otherwise make unreachable.
     let payload = &mut receivers
-        .get_mut(&(MacAddr::new(), None, 0))
+        .get_mut(&(MacAddr::new(), None, 0, TransportProvenance::unverified()))
         .unwrap()
         .payload;
     payload.saved_payload_bytes = usize::MAX;
@@ -223,7 +234,7 @@ fn request_payload_owner_expiry_returns_capacity_without_refund_bookkeeping() {
         let old = if progress {
             Duration::from_secs(16)
         } else {
-            Duration::from_secs(4)
+            Duration::from_secs(4) + Duration::from_nanos(1)
         };
         let mut stale = state(now, b"stale");
         if progress {
@@ -231,17 +242,20 @@ fn request_payload_owner_expiry_returns_capacity_without_refund_bookkeeping() {
         } else {
             stale.last_activity = now - old;
         }
-        let fresh_key = (MacAddr::new(), None, 1);
+        let fresh_key = (MacAddr::new(), None, 1, TransportProvenance::unverified());
         let mut receivers = HashMap::from([
-            ((MacAddr::new(), None, 0), stale),
+            (
+                (MacAddr::new(), None, 0, TransportProvenance::unverified()),
+                stale,
+            ),
             (fresh_key.clone(), state(now, b"fresh")),
         ]);
         assert_eq!(saved_request_payload_bytes(&receivers), Some(10));
-        expire_segmented_requests(&mut receivers, now);
+        expire_segmented_requests(&mut receivers, now, Duration::from_secs(4));
         assert_eq!(saved_request_payload_bytes(&receivers), Some(5));
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert!(receivers.contains_key(&fresh_key));
-        expire_segmented_requests(&mut receivers, now);
+        expire_segmented_requests(&mut receivers, now, Duration::from_secs(4));
         assert_eq!(saved_request_payload_bytes(&receivers), Some(5));
         receivers.clear();
         assert_eq!(saved_request_payload_bytes(&receivers), Some(0));

@@ -6,17 +6,17 @@
 //! and global packet and byte rate limits.
 
 use std::collections::HashMap;
-use std::net::SocketAddrV4;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bacnet_bip_codec::Bvll;
 use bytes::Bytes;
-use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use crate::bvll::encode_bvll_forwarded;
+use crate::bvll::encode_bvll;
 
 /// Policy governing broadcast forwarding fanout limits, rate budgets, and work queue capacity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,11 +171,9 @@ impl FanoutRateLimiter {
             .policy
             .max_bytes_per_sec_global
             .saturating_sub(self.global_bytes_in_window);
-        let global_packets_by_bytes = if packet_bytes > 0 {
-            global_bytes_remaining / packet_bytes
-        } else {
-            usize::MAX
-        };
+        let global_packets_by_bytes = global_bytes_remaining
+            .checked_div(packet_bytes)
+            .unwrap_or(usize::MAX);
 
         // 4. Per-origin packet budget remaining
         let current_origin = self
@@ -316,7 +314,11 @@ impl FanoutDispatcher {
             return true;
         }
         let mut buf = bytes::BytesMut::with_capacity(10 + npdu.len());
-        if let Err(e) = encode_bvll_forwarded(&mut buf, orig_ip, orig_port, npdu) {
+        let message = Bvll::ForwardedNpdu {
+            origin: SocketAddrV4::new(Ipv4Addr::from(orig_ip), orig_port),
+            npdu,
+        };
+        if let Err(e) = encode_bvll(&mut buf, &message) {
             warn!(error = %e, "Failed to encode Forwarded-NPDU for fanout");
             return false;
         }
@@ -327,7 +329,7 @@ impl FanoutDispatcher {
 
 /// Background worker loop dequeuing fanout jobs and sending them asynchronously.
 pub(crate) async fn run_fanout_worker(
-    socket: Arc<UdpSocket>,
+    socket: Arc<super::BipSocket>,
     mut rx: mpsc::Receiver<FanoutJob>,
     counters: Arc<AtomicFanoutCounters>,
 ) {

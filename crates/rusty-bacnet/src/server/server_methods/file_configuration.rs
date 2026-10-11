@@ -180,27 +180,17 @@ mod tests {
 
     fn test_server() -> BACnetServer {
         BACnetServer {
+            registered_network_port: None,
             inner: Arc::new(Mutex::new(None)),
-            apdu_observer: None,
-            device_identity: DeviceIdentityConfig {
-                instance: 1,
-                name: "Test Device".into(),
-                description: String::new(),
-                vendor_name: "Rusty BACnet".into(),
-                vendor_id: 555,
-                model_name: "rusty-bacnet".into(),
-                firmware_revision: "0.1.0".into(),
-                application_software_version: "0.1.0".into(),
-            },
-            segmentation_supported: Segmentation::NONE,
+            device_instance: 1,
+            segmentation_supported: bacnet_types::enums::Segmentation::NONE,
+            apdu_segment_timeout_ms: 5000,
+            device_name: "Test Device".into(),
             transport_type: "bip".into(),
             interface: "0.0.0.0".into(),
             port: 0,
             broadcast_address: "255.255.255.255".into(),
-            reuse_port: false,
-            pending_bbmd_transport: Arc::new(std::sync::Mutex::new(None)),
-            bbmd_transport_config: None,
-            bbmd_control: Arc::new(std::sync::Mutex::new(None)),
+            share_port_by_address: false,
             sc_hub: None,
             sc_vmac: None,
             sc_device_uuid: [0; 16],
@@ -215,9 +205,8 @@ mod tests {
             mstp_mac: 1,
             mstp_max_master: 127,
             mstp_max_info_frames: 1,
-            virtual_network: None,
-            virtual_mac: None,
             dcc_password: None,
+            mutation_policy: bacnet_server::mutation::MutationPolicy::default(),
             dcc_policy: server::DccPolicy::default(),
             dcc_source_restriction: None,
             dcc_disable_rate_limit: None,
@@ -230,8 +219,17 @@ mod tests {
             atomic_write_file_budget: server::AtomicWriteFileBudget::default(),
             read_range_budget: server::ReadRangeBudget::default(),
             get_event_information_budget: server::GetEventInformationBudget::default(),
+            cov_policy: server::CovPolicy::default(),
+            time_sync_policy: server::TimeSyncPolicy::default(),
+            audit_notification_sink: None,
+            audit_reporters: None,
+            audit_recipient: std::sync::Mutex::new(None),
+            device_bindings: std::collections::BTreeMap::new(),
+            forwarding_configuration_started: AtomicBool::new(false),
             started: Arc::new(AtomicBool::new(false)),
             pending_objects: std::sync::Mutex::new(Vec::new()),
+            pending_forwarder_save_counters: std::sync::Mutex::new(Vec::new()),
+            forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -286,6 +284,7 @@ mod tests {
 
     #[test]
     fn pending_lookup_uses_file_identity_and_reverse_replacement_order() {
+        Python::initialize();
         let server = test_server();
         server
             .push_pending(Box::new(file(4, "FIRST", b"first")))
@@ -324,6 +323,7 @@ mod tests {
 
     #[test]
     fn missing_wrong_capability_invalid_method_and_mode_errors_are_atomic() {
+        Python::initialize();
         let server = test_server();
         server
             .push_pending(Box::new(BinaryValueObject::new(5, "NON-FILE").unwrap()))
@@ -390,6 +390,7 @@ mod tests {
 
     #[test]
     fn started_and_drained_states_reject_without_mutation() {
+        Python::initialize();
         let started = test_server();
         started
             .push_pending(Box::new(file(8, "STARTED", b"kept")))

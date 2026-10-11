@@ -32,58 +32,24 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Handle a DeviceCommunicationControl request.
-///
-/// Updates the communication state and returns the requested state plus
-/// optional duration (minutes) for auto-revert.
-/// This unconfigured helper retains legacy optional-password authorization;
-/// configured servers apply their separate local DCC policy.
-pub fn handle_device_communication_control(
-    service_data: &[u8],
-    comm_state: &AtomicU8,
-    dcc_password: &Option<String>,
-) -> Result<(EnableDisable, Option<u16>), Error> {
-    handle_device_communication_control_with_policy(
-        service_data,
-        comm_state,
-        dcc_password,
-        crate::server::DccPolicy::LegacyPermissive,
-    )
-}
-
-pub(crate) fn handle_device_communication_control_with_policy(
-    service_data: &[u8],
-    comm_state: &AtomicU8,
-    dcc_password: &Option<String>,
-    policy: crate::server::DccPolicy,
-) -> Result<(EnableDisable, Option<u16>), Error> {
-    let validated = validate_dcc(service_data, dcc_password, policy).map_err(|f| f.error)?;
-    let (mode, duration, new_state) = validated;
-    comm_state.store(new_state, Ordering::Release);
-    tracing::debug!(
-        "DeviceCommunicationControl: state set to {:?} ({}), duration={:?} min",
-        mode,
-        new_state,
-        duration
-    );
-    Ok((mode, duration))
-}
-
 pub(crate) struct DccFailure {
     pub error: Error,
     pub outcome: crate::server::dcc_outcomes::DccOutcome,
     pub metadata: crate::server::dcc_outcomes::DccMetadata,
 }
 
+/// Decode a DeviceCommunicationControl request and check its password, mode
+/// and the local policy, returning the state to commit and the duration in
+/// minutes. Nothing is stored here: `dcc_timer::replace` commits the result.
 pub(crate) fn validate_dcc(
     service_data: &[u8],
     dcc_password: &Option<String>,
     policy: crate::server::DccPolicy,
-) -> Result<(EnableDisable, Option<u16>, u8), DccFailure> {
+) -> Result<(crate::server::DccState, Option<u16>), DccFailure> {
     use crate::server::dcc_outcomes::{DccMetadata, DccOutcome};
     let request =
         DeviceCommunicationControlRequest::decode(service_data).map_err(|error| DccFailure {
-            error,
+            error: error.into_request_reject(),
             outcome: DccOutcome::Malformed,
             metadata: DccMetadata::default(),
         })?;
@@ -98,11 +64,12 @@ pub(crate) fn validate_dcc(
     };
     validate_password(dcc_password, &request.password)
         .map_err(|e| failure(e, DccOutcome::PasswordFailure))?;
-    let new_state = if request.enable_disable == EnableDisable::ENABLE {
-        0u8
+    let state = if request.enable_disable == EnableDisable::ENABLE {
+        crate::server::DccState::Enable
     } else if request.enable_disable == EnableDisable::DISABLE {
         // ASHRAE 135-2020 Clause 16.1: reject deprecated DISABLE after
         // password validation, without changing state or the caller's timer.
+        // No DccPolicy admits it, so DccState has no DISABLE.
         return Err(failure(
             Error::Protocol {
                 class: ErrorClass::SERVICES.to_raw() as u32,
@@ -111,7 +78,7 @@ pub(crate) fn validate_dcc(
             DccOutcome::DeprecatedDenied,
         ));
     } else if request.enable_disable == EnableDisable::DISABLE_INITIATION {
-        2u8
+        crate::server::DccState::DisableInitiation
     } else {
         return Err(failure(
             Error::Encoding("unknown EnableDisable value".into()),
@@ -127,17 +94,27 @@ pub(crate) fn validate_dcc(
             DccOutcome::PolicyDenied,
         ));
     }
-    Ok((request.enable_disable, request.time_duration, new_state))
+    Ok((state, request.time_duration))
 }
 
-/// Handle a ReinitializeDevice request.
-///
-/// Returns the requested state. The caller decides what action to take.
+/// Handle a ReinitializeDevice request: decode it, check the password, and return the
+/// requested state. A state Clause 16.4 does not define is refused, after the password
+/// check, with SERVICES / SERVICE_REQUEST_DENIED.
 pub fn handle_reinitialize_device(
     service_data: &[u8],
     reinit_password: &Option<String>,
-) -> Result<(), Error> {
-    let request = ReinitializeDeviceRequest::decode(service_data)?;
+) -> Result<bacnet_types::enums::ReinitializedState, Error> {
+    use bacnet_types::enums::ReinitializedState;
+
+    let request =
+        ReinitializeDeviceRequest::decode(service_data).map_err(Error::into_request_reject)?;
     validate_password(reinit_password, &request.password)?;
-    Ok(())
+    // ACTIVATE_CHANGES (7) is the highest state Clause 16.4 defines.
+    if request.reinitialized_state.to_raw() > ReinitializedState::ACTIVATE_CHANGES.to_raw() {
+        return Err(Error::Protocol {
+            class: ErrorClass::SERVICES.to_raw() as u32,
+            code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
+        });
+    }
+    Ok(request.reinitialized_state)
 }

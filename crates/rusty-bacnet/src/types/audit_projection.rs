@@ -1,19 +1,21 @@
 //! Projection of decoded Audit Log query ACKs into Python-owned mappings.
 
 use bacnet_services::audit::{
-    AuditLogQueryAck, AuditPropertyReference, BACnetAuditLogDatum, BACnetAuditNotification,
+    AuditLogQueryAck, AuditPropertyReference, BACnetAuditLogDatum, BACnetAuditLogRecord,
+    BACnetAuditNotification,
 };
 use bacnet_types::constructed::BACnetRecipient;
-use bacnet_types::primitives::Date;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
+use super::date::date_value;
+use super::timestamp::time_value;
 use super::{
     PyAuditOperation, PyBACnetTimeStamp, PyErrorClass, PyErrorCode, PyObjectIdentifier,
     PyPropertyIdentifier,
 };
 
-fn recipient_to_py<'py>(
+pub(super) fn recipient_to_py<'py>(
     py: Python<'py>,
     recipient: &BACnetRecipient,
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -127,16 +129,13 @@ fn notification_to_py<'py>(
     Ok(result)
 }
 
-fn actual_year(date: &Date) -> u16 {
-    date.actual_year().unwrap_or(u16::from(Date::UNSPECIFIED))
-}
-
 fn datum_to_py<'py>(py: Python<'py>, datum: &BACnetAuditLogDatum) -> PyResult<Bound<'py, PyDict>> {
     let result = PyDict::new(py);
     match datum {
         BACnetAuditLogDatum::LogStatus(status) => {
             result.set_item("kind", "log_status")?;
-            result.set_item("log_status", status)?;
+            // Bit 0 log-disabled, bit 1 buffer-purged, bit 2 log-interrupted.
+            result.set_item("log_status", status.bits())?;
         }
         BACnetAuditLogDatum::AuditNotification(notification) => {
             result.set_item("kind", "audit_notification")?;
@@ -161,20 +160,23 @@ pub(crate) fn audit_log_query_ack_to_py(
     for item in &ack.records {
         let record_result = PyDict::new(py);
         record_result.set_item("sequence_number", item.sequence_number)?;
-        let record = PyDict::new(py);
-        let (date, time) = &item.record.timestamp;
-        record.set_item(
-            "timestamp",
-            (
-                (actual_year(date), date.month, date.day, date.day_of_week),
-                (time.hour, time.minute, time.second, time.hundredths),
-            ),
-        )?;
-        record.set_item("datum", datum_to_py(py, &item.record.datum)?)?;
-        record_result.set_item("record", record)?;
+        record_result.set_item("record", audit_log_record_to_py(py, &item.record)?)?;
         records.append(record_result)?;
     }
     result.set_item("records", records)?;
     result.set_item("no_more_items", ack.no_more_items)?;
     Ok(result.into_any().unbind())
+}
+
+/// One Audit Log record: its `timestamp` as a `(date, time)` pair and its
+/// `datum`, as AuditLogQuery and a ReadRange of the Log_Buffer show it.
+pub(crate) fn audit_log_record_to_py<'py>(
+    py: Python<'py>,
+    record: &BACnetAuditLogRecord,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new(py);
+    let (date, time) = &record.timestamp;
+    result.set_item("timestamp", (date_value(date), time_value(time)))?;
+    result.set_item("datum", datum_to_py(py, &record.datum)?)?;
+    Ok(result)
 }

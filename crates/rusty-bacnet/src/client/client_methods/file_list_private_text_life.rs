@@ -1,5 +1,4 @@
 use super::super::*;
-use crate::types::PyTarget;
 
 #[pymethods]
 impl BACnetClient {
@@ -11,11 +10,10 @@ impl BACnetClient {
     ///
     /// `access_method` is `"stream"` or `"record"`.
     #[pyo3(signature = (address, file_identifier, access_method, start_position=0, requested_octet_count=0, start_record=0, requested_record_count=0))]
-    #[allow(clippy::too_many_arguments)]
     fn atomic_read_file<'py>(
         &self,
         py: Python<'py>,
-        address: PyTarget,
+        address: String,
         file_identifier: PyObjectIdentifier,
         access_method: String,
         start_position: i32,
@@ -42,22 +40,19 @@ impl BACnetClient {
             }
         };
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (mac, routing) = address.into_parts()?;
+        crate::py_async::future_into_py(py, async move {
+            let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            let raw = if let Some((dnet, dadr)) = routing {
-                c.atomic_read_file_routed(&mac, dnet, &dadr, fid, access)
-                    .await
-            } else {
-                c.atomic_read_file(&mac, fid, access).await
-            }
-            .map_err(to_py_err)?;
-            Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
+            let raw = c
+                .atomic_read_file(&mac, fid, access)
+                .await
+                .map_err(to_py_err)?;
+            crate::py_async::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
         })
     }
 
@@ -65,11 +60,10 @@ impl BACnetClient {
     ///
     /// `access_method` is `"stream"` or `"record"`.
     #[pyo3(signature = (address, file_identifier, access_method, start_position=0, file_data=vec![], start_record=0, record_count=0, file_record_data=None))]
-    #[allow(clippy::too_many_arguments)]
     fn atomic_write_file<'py>(
         &self,
         py: Python<'py>,
-        address: PyTarget,
+        address: String,
         file_identifier: PyObjectIdentifier,
         access_method: String,
         start_position: i32,
@@ -98,22 +92,19 @@ impl BACnetClient {
             }
         };
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (mac, routing) = address.into_parts()?;
+        crate::py_async::future_into_py(py, async move {
+            let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            let raw = if let Some((dnet, dadr)) = routing {
-                c.atomic_write_file_routed(&mac, dnet, &dadr, fid, access)
-                    .await
-            } else {
-                c.atomic_write_file(&mac, fid, access).await
-            }
-            .map_err(to_py_err)?;
-            Python::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
+            let raw = c
+                .atomic_write_file(&mac, fid, access)
+                .await
+                .map_err(to_py_err)?;
+            crate::py_async::attach(|py| Ok(PyBytes::new(py, &raw).into_any().unbind()))
         })
     }
 
@@ -123,7 +114,6 @@ impl BACnetClient {
 
     /// Add elements to a list property.
     #[pyo3(signature = (address, object_id, property_id, list_of_elements, array_index=None))]
-    #[allow(clippy::too_many_arguments)]
     fn add_list_element<'py>(
         &self,
         py: Python<'py>,
@@ -134,10 +124,17 @@ impl BACnetClient {
         array_index: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        let oid = object_id.to_rust();
-        let pid = property_id.to_rust();
+        let request = bacnet_services::list_manipulation::ListElementRequest {
+            object_identifier: object_id.to_rust(),
+            property_identifier: property_id.to_rust(),
+            property_array_index: array_index,
+            list_of_elements,
+        };
+        request
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
@@ -145,16 +142,22 @@ impl BACnetClient {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.add_list_element(&mac, oid, pid, array_index, list_of_elements)
-                .await
-                .map_err(to_py_err)?;
+            c.add_list_element(
+                &mac,
+                request.object_identifier,
+                request.property_identifier,
+                request.property_array_index,
+                request.list_of_elements,
+            )
+            .await
+            .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
     /// Remove elements from a list property.
     #[pyo3(signature = (address, object_id, property_id, list_of_elements, array_index=None))]
-    #[allow(clippy::too_many_arguments)]
     fn remove_list_element<'py>(
         &self,
         py: Python<'py>,
@@ -165,10 +168,17 @@ impl BACnetClient {
         array_index: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        let oid = object_id.to_rust();
-        let pid = property_id.to_rust();
+        let request = bacnet_services::list_manipulation::ListElementRequest {
+            object_identifier: object_id.to_rust(),
+            property_identifier: property_id.to_rust(),
+            property_array_index: array_index,
+            list_of_elements,
+        };
+        request
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
@@ -176,11 +186,18 @@ impl BACnetClient {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.remove_list_element(&mac, oid, pid, array_index, list_of_elements)
-                .await
-                .map_err(to_py_err)?;
+            c.remove_list_element(
+                &mac,
+                request.object_identifier,
+                request.property_identifier,
+                request.property_array_index,
+                request.list_of_elements,
+            )
+            .await
+            .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
     // -----------------------------------------------------------------------
@@ -200,7 +217,7 @@ impl BACnetClient {
         service_parameters: Option<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_async::future_into_py(py, async move {
             let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
@@ -224,7 +241,7 @@ impl BACnetClient {
                 .await
                 .map_err(to_py_err)?;
             let ack = PrivateTransferAck::decode(&resp).map_err(to_py_err)?;
-            Python::attach(|py| {
+            crate::py_async::attach(|py| {
                 let dict = PyDict::new(py);
                 dict.set_item("vendor_id", ack.vendor_id)?;
                 dict.set_item("service_number", ack.service_number)?;
@@ -252,7 +269,7 @@ impl BACnetClient {
         service_parameters: Option<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
@@ -275,7 +292,8 @@ impl BACnetClient {
             .await
             .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
     // -----------------------------------------------------------------------
@@ -287,7 +305,6 @@ impl BACnetClient {
     /// `message_class_type` is `"numeric"` or `"text"` (or None for no class).
     /// `message_class_value` is the numeric value or text string.
     #[pyo3(signature = (address, source_device, message_priority, message, message_class_type=None, message_class_value=None))]
-    #[allow(clippy::too_many_arguments)]
     fn confirmed_text_message<'py>(
         &self,
         py: Python<'py>,
@@ -303,7 +320,7 @@ impl BACnetClient {
         let priority = message_priority.to_rust();
         let mc = build_message_class(message_class_type, message_class_value)?;
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
@@ -323,12 +340,12 @@ impl BACnetClient {
                 .await
                 .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
     /// Send an UnconfirmedTextMessage request.
     #[pyo3(signature = (address, source_device, message_priority, message, message_class_type=None, message_class_value=None))]
-    #[allow(clippy::too_many_arguments)]
     fn unconfirmed_text_message<'py>(
         &self,
         py: Python<'py>,
@@ -344,7 +361,7 @@ impl BACnetClient {
         let priority = message_priority.to_rust();
         let mc = build_message_class(message_class_type, message_class_value)?;
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
@@ -368,7 +385,8 @@ impl BACnetClient {
             .await
             .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
     // -----------------------------------------------------------------------
@@ -377,7 +395,6 @@ impl BACnetClient {
 
     /// Send a LifeSafetyOperation request.
     #[pyo3(signature = (address, requesting_process_identifier, requesting_source, operation, object_identifier=None))]
-    #[allow(clippy::too_many_arguments)]
     fn life_safety_operation<'py>(
         &self,
         py: Python<'py>,
@@ -391,7 +408,7 @@ impl BACnetClient {
         let op = operation.to_rust();
         let oid = object_identifier.map(|o| o.to_rust());
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
@@ -411,6 +428,7 @@ impl BACnetClient {
                 .await
                 .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 }

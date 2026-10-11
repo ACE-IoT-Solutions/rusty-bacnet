@@ -2,12 +2,14 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
+use super::color_link::{self, ColorLink};
 use crate::common::{self, read_common_properties, read_priority_array};
-use crate::traits::{BACnetObject, MonotonicClock, WritePropertyRollback};
+use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
+use crate::traits::{BACnetObject, MonotonicClock};
 
 const OFF: u32 = 0;
 const ON: u32 = 1;
@@ -34,22 +36,14 @@ enum PresentValueCommand {
     Stop,
 }
 
-#[derive(Clone)]
-struct CommandRollback {
-    present_value: u32,
-    blink_warn_enable: bool,
-    egress_time: u32,
-    priority_array: [Option<u32>; 16],
-    relinquish_default: u32,
-    active_operation: Option<ActiveOperation>,
-    blink_request_count: u64,
-    logical_now: Duration,
-}
-
 /// BACnet Binary Lighting Output object.
 ///
 /// The priority array stores only steady OFF/ON values. WARN, WARN_OFF,
 /// WARN_RELINQUISH, and STOP are command operations interpreted at write time.
+///
+/// Cloning copies served state into an in-memory object. Tags persistence and
+/// pending saves remain solely with the original; cloning or dropping the copy
+/// never saves, corrects, settles, or waits on the original writer.
 #[derive(Clone)]
 pub struct BinaryLightingOutputObject {
     oid: ObjectIdentifier,
@@ -64,10 +58,15 @@ pub struct BinaryLightingOutputObject {
     logical_now: Duration,
     out_of_service: bool,
     status_flags: StatusFlags,
-    /// Reliability: 0 = NO_FAULT_DETECTED.
-    reliability: u32,
+    /// Reliability; NO_FAULT_DETECTED until a fault is evaluated or simulated.
+    reliability: Reliability,
     priority_array: [Option<u32>; 16],
     relinquish_default: u32,
+    /// Color_Reference, with Color_Override and Override_Color_Reference
+    /// when overridable; absent until set.
+    color_link: Option<ColorLink>,
+    /// Tags, Profile_Location and Profile_Name, once provisioned (#1553).
+    profile: ProfileState,
 }
 
 impl BinaryLightingOutputObject {
@@ -86,10 +85,56 @@ impl BinaryLightingOutputObject {
             logical_now: Duration::ZERO,
             out_of_service: false,
             status_flags: StatusFlags::empty(),
-            reliability: 0,
+            reliability: Reliability::NO_FAULT_DETECTED,
             priority_array: [None; 16],
             relinquish_default: OFF,
+            color_link: None,
+            profile: ProfileState::default(),
         })
+    }
+
+    /// Link the output to the colour objects that set its colour, or take
+    /// the link away with `None`, as a Lighting Output's
+    /// [`set_color_link`](super::LightingOutputObject::set_color_link) does
+    /// (#1527).
+    pub fn set_color_link(&mut self, link: Option<ColorLink>) -> Result<(), Error> {
+        self.color_link = link.map(ColorLink::checked).transpose()?;
+        Ok(())
+    }
+
+    /// The colour link, if one is set.
+    pub fn color_link(&self) -> Option<&ColorLink> {
+        self.color_link.as_ref()
+    }
+
+    /// Build with application-owned Tags storage. Saved Tags override configured
+    /// Tags only while `set_profile` provisions the row. Loaded data must satisfy
+    /// the normal Tags rules and the opt-in 1 MiB snapshot limit.
+    pub fn with_tags_persistence(
+        instance: u32,
+        name: impl Into<String>,
+        persistence: Arc<dyn TagsPersistence>,
+    ) -> Result<Self, Error> {
+        let mut object = Self::new(instance, name)?;
+        object.profile = ProfileState::persistent(object.oid, persistence)?;
+        Ok(object)
+    }
+
+    /// Wait for queued save attempts to finish. This is not a success receipt;
+    /// writes report their own save outcomes. Unstaged local writes block.
+    pub fn wait_for_tag_saves(&self) {
+        self.profile.wait_for_saves();
+    }
+
+    /// Provision the optional Tags, Profile_Location and Profile_Name rows
+    /// before registration (#1553), as a Color object's
+    /// [`set_profile`](crate::color::ColorObject::set_profile) does.
+    pub fn set_profile(&mut self, profile: ObjectProfile) -> Result<(), Error> {
+        self.profile.provision(profile)
+    }
+
+    pub(super) fn profile(&self) -> &ObjectProfile {
+        self.profile.profile()
     }
 
     /// Set the description string.
@@ -132,24 +177,6 @@ impl BinaryLightingOutputObject {
             _ => return Err(common::invalid_data_type_error()),
         };
         Ok((priority, command))
-    }
-
-    fn validate_priority_array_write(
-        array_index: Option<u32>,
-        value: PropertyValue,
-    ) -> Result<(usize, Option<u32>), Error> {
-        let index = match array_index {
-            Some(index) if (1..=16).contains(&index) => (index - 1) as usize,
-            Some(_) => return Err(common::invalid_array_index_error()),
-            None => return Err(common::write_access_denied_error()),
-        };
-        let value = match value {
-            PropertyValue::Null => None,
-            PropertyValue::Enumerated(value @ (OFF | ON)) => Some(value),
-            PropertyValue::Enumerated(_) => return Err(common::value_out_of_range_error()),
-            _ => return Err(common::invalid_data_type_error()),
-        };
-        Ok((index, value))
     }
 
     fn highest_active_priority(&self) -> Option<u8> {
@@ -263,19 +290,6 @@ impl BinaryLightingOutputObject {
         }
     }
 
-    fn command_rollback(&self) -> CommandRollback {
-        CommandRollback {
-            present_value: self.present_value,
-            blink_warn_enable: self.blink_warn_enable,
-            egress_time: self.egress_time,
-            priority_array: self.priority_array,
-            relinquish_default: self.relinquish_default,
-            active_operation: self.active_operation,
-            blink_request_count: self.blink_request_count,
-            logical_now: self.logical_now,
-        }
-    }
-
     fn monotonic_now(&self) -> Duration {
         self.monotonic_clock
             .as_ref()
@@ -330,7 +344,12 @@ impl BACnetObject for BinaryLightingOutputObject {
             PropertyIdentifier::RELINQUISH_DEFAULT => {
                 Ok(PropertyValue::Enumerated(self.relinquish_default))
             }
-            _ => Err(common::unknown_property_error()),
+            PropertyIdentifier::CURRENT_COMMAND_PRIORITY => {
+                Ok(common::current_command_priority(&self.priority_array))
+            }
+            p => color_link::read(self.color_link.as_ref(), p)
+                .or_else(|| self.profile.read(p, array_index))
+                .unwrap_or_else(|| Err(common::unknown_property_error())),
         }
     }
 
@@ -341,13 +360,6 @@ impl BACnetObject for BinaryLightingOutputObject {
         value: PropertyValue,
         priority: Option<u8>,
     ) -> Result<(), Error> {
-        if property == PropertyIdentifier::PRIORITY_ARRAY {
-            let (index, value) = Self::validate_priority_array_write(array_index, value)?;
-            self.complete_active_operation_for_write(index as u8 + 1);
-            self.priority_array[index] = value;
-            self.recalculate_present_value();
-            return Ok(());
-        }
         if property == PropertyIdentifier::PRESENT_VALUE {
             let (priority, command) = Self::validate_present_value_command(value, priority)?;
             self.write_present_value(priority, command);
@@ -373,6 +385,12 @@ impl BACnetObject for BinaryLightingOutputObject {
             }
             return Err(common::invalid_data_type_error());
         }
+        if let Some(result) = color_link::write(&mut self.color_link, property, &value) {
+            return result;
+        }
+        if let Some(result) = self.profile.write(property, array_index, &value) {
+            return result;
+        }
         if let Some(result) =
             common::write_out_of_service(&mut self.out_of_service, property, &value)
         {
@@ -381,75 +399,27 @@ impl BACnetObject for BinaryLightingOutputObject {
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
-        Err(common::write_access_denied_error())
+        Err(crate::common::unhandled_write_error(
+            self.property_metadata().as_ref(),
+            property,
+            array_index,
+        ))
+    }
+
+    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.profile.capability()
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        static PROPS: &[PropertyIdentifier] = &[
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
-            PropertyIdentifier::DESCRIPTION,
-            PropertyIdentifier::OBJECT_TYPE,
-            PropertyIdentifier::PRESENT_VALUE,
-            PropertyIdentifier::BLINK_WARN_ENABLE,
-            PropertyIdentifier::EGRESS_TIME,
-            PropertyIdentifier::EGRESS_ACTIVE,
-            PropertyIdentifier::STATUS_FLAGS,
-            PropertyIdentifier::OUT_OF_SERVICE,
-            PropertyIdentifier::RELIABILITY,
-            PropertyIdentifier::PRIORITY_ARRAY,
-            PropertyIdentifier::RELINQUISH_DEFAULT,
-        ];
-        Cow::Borrowed(PROPS)
+        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    }
+
+    fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
+        super::metadata::for_binary_lighting_output_object(self)
     }
 
     fn supports_cov(&self) -> bool {
         true
-    }
-
-    fn is_writable_property(&self, property: PropertyIdentifier) -> bool {
-        matches!(
-            property,
-            PropertyIdentifier::PRIORITY_ARRAY
-                | PropertyIdentifier::PRESENT_VALUE
-                | PropertyIdentifier::RELINQUISH_DEFAULT
-                | PropertyIdentifier::BLINK_WARN_ENABLE
-                | PropertyIdentifier::EGRESS_TIME
-                | PropertyIdentifier::OUT_OF_SERVICE
-                | PropertyIdentifier::DESCRIPTION
-        )
-    }
-
-    fn capture_write_property_rollback(
-        &mut self,
-        property: PropertyIdentifier,
-        _value: &PropertyValue,
-    ) -> Option<WritePropertyRollback> {
-        matches!(
-            property,
-            PropertyIdentifier::PRESENT_VALUE
-                | PropertyIdentifier::PRIORITY_ARRAY
-                | PropertyIdentifier::RELINQUISH_DEFAULT
-                | PropertyIdentifier::BLINK_WARN_ENABLE
-                | PropertyIdentifier::EGRESS_TIME
-        )
-        .then(|| WritePropertyRollback::new(self.command_rollback()))
-    }
-
-    fn restore_write_property_rollback(
-        &mut self,
-        rollback: WritePropertyRollback,
-    ) -> Result<(), Error> {
-        let rollback = rollback.downcast::<CommandRollback>()?;
-        self.present_value = rollback.present_value;
-        self.blink_warn_enable = rollback.blink_warn_enable;
-        self.egress_time = rollback.egress_time;
-        self.priority_array = rollback.priority_array;
-        self.relinquish_default = rollback.relinquish_default;
-        self.active_operation = rollback.active_operation;
-        self.blink_request_count = rollback.blink_request_count;
-        self.logical_now = rollback.logical_now;
-        Ok(())
     }
 
     fn advance_time_internal(&mut self, elapsed: Duration) -> bool {
@@ -462,6 +432,7 @@ impl BACnetObject for BinaryLightingOutputObject {
     }
 
     fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
+        self.profile.expire(now);
         self.expire_at(now)
     }
 
@@ -473,7 +444,7 @@ impl BACnetObject for BinaryLightingOutputObject {
         Some(Box::new(self.clone()))
     }
 
-    fn binary_lighting_blink_count_internal(&self) -> u64 {
+    fn lighting_blink_count_internal(&self) -> u64 {
         self.blink_request_count
     }
 }

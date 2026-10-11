@@ -1,4 +1,3 @@
-use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
@@ -6,20 +5,21 @@ use bytes::BytesMut;
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
-use bacnet_services::common::PropertyReference;
 use bacnet_services::cov::SubscribeCOVRequest;
 use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
 };
+use bacnet_types::constructed::PropertyReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
 
-use super::cov_notifications_tests::RecordingTransport;
+use super::cov_notifications_tests::recording_transport;
 use super::*;
 use crate::cov::{CovNotificationKind, CovPolicy, CovSubscription};
 use crate::handlers::{handle_subscribe_cov, handle_subscribe_cov_property_multiple_with_initial};
+use crate::server::test_transport::TestTransport;
 
 fn ai(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
@@ -47,7 +47,6 @@ fn create_database_with_ais(count: u32) -> ObjectDatabase {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn peer_quota_isolation() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
     let db = create_database_with_ais(10);
     let policy = CovPolicy {
         max_subscriptions_per_peer: 2,
@@ -58,7 +57,7 @@ async fn peer_quota_isolation() {
 
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(recording_transport().0)
         .cov_policy(policy)
         .build()
         .await
@@ -76,7 +75,7 @@ async fn peer_quota_isolation() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         handle_subscribe_cov(&mut table, &db, &peer_a, &buf).unwrap();
@@ -91,7 +90,7 @@ async fn peer_quota_isolation() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, &peer_a, &buf).unwrap_err();
@@ -119,7 +118,7 @@ async fn peer_quota_isolation() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         handle_subscribe_cov(&mut table, &db, &peer_b, &buf).unwrap();
@@ -136,7 +135,6 @@ async fn peer_quota_isolation() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn reserved_capacity_preservation() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
     let db = create_database_with_ais(10);
     let reserved_mac = MacAddr::from_slice(&[192, 168, 1, 99]);
     let policy = CovPolicy {
@@ -149,7 +147,7 @@ async fn reserved_capacity_preservation() {
 
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(recording_transport().0)
         .cov_policy(policy)
         .build()
         .await
@@ -166,7 +164,7 @@ async fn reserved_capacity_preservation() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         handle_subscribe_cov(&mut table, &db, &unreserved_peer, &buf).unwrap();
@@ -181,7 +179,7 @@ async fn reserved_capacity_preservation() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, &unreserved_peer, &buf).unwrap_err();
@@ -207,7 +205,7 @@ async fn reserved_capacity_preservation() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         handle_subscribe_cov(&mut table, &db, reserved_mac.as_slice(), &buf).unwrap();
@@ -223,7 +221,7 @@ async fn reserved_capacity_preservation() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, reserved_mac.as_slice(), &buf).unwrap_err();
@@ -246,7 +244,6 @@ async fn reserved_capacity_preservation() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn indefinite_subscription_policy() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
     let db = create_database_with_ais(10);
     let policy = CovPolicy {
         allow_indefinite_subscriptions: false,
@@ -255,7 +252,7 @@ async fn indefinite_subscription_policy() {
 
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(recording_transport().0)
         .cov_policy(policy)
         .build()
         .await
@@ -272,7 +269,7 @@ async fn indefinite_subscription_policy() {
             lifetime: None,
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, &peer, &buf).unwrap_err();
@@ -300,7 +297,7 @@ async fn indefinite_subscription_policy() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         handle_subscribe_cov(&mut table, &db, &peer, &buf).unwrap();
@@ -308,7 +305,6 @@ async fn indefinite_subscription_policy() {
     assert_eq!(server.cov_counters().subscriptions_active, 1);
 
     // Now test max_indefinite_per_peer when allow_indefinite is true
-    let sent2 = StdArc::new(StdMutex::new(Vec::new()));
     let db2 = create_database_with_ais(10);
     let policy2 = CovPolicy {
         allow_indefinite_subscriptions: true,
@@ -317,7 +313,7 @@ async fn indefinite_subscription_policy() {
     };
     let server2 = BACnetServer::generic_builder()
         .database(db2)
-        .transport(RecordingTransport::new(StdArc::clone(&sent2)))
+        .transport(recording_transport().0)
         .cov_policy(policy2)
         .build()
         .await
@@ -332,7 +328,7 @@ async fn indefinite_subscription_policy() {
             lifetime: None,
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server2.cov_table.write().await;
         let db = server2.db.read().await;
         handle_subscribe_cov(&mut table, &db, &peer, &buf).unwrap();
@@ -347,7 +343,7 @@ async fn indefinite_subscription_policy() {
             lifetime: None,
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server2.cov_table.write().await;
         let db = server2.db.read().await;
         let err = handle_subscribe_cov(&mut table, &db, &peer, &buf).unwrap_err();
@@ -370,7 +366,6 @@ async fn indefinite_subscription_policy() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn disconnect_and_expiry_cleanup_releases_quota() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
     let db = create_database_with_ais(10);
     let policy = CovPolicy {
         max_subscriptions_per_peer: 2,
@@ -379,7 +374,7 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
 
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(recording_transport().0)
         .cov_policy(policy)
         .build()
         .await
@@ -396,7 +391,7 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         handle_subscribe_cov(&mut table, &db, &peer, &buf).unwrap();
@@ -412,7 +407,7 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         assert!(handle_subscribe_cov(&mut table, &db, &peer, &buf).is_err());
@@ -433,7 +428,7 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
             lifetime: Some(300),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let mut table = server.cov_table.write().await;
         let db = server.db.read().await;
         handle_subscribe_cov(&mut table, &db, &peer, &buf).unwrap();
@@ -453,34 +448,38 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
 
     {
         let mut table = server.cov_table.write().await;
-        table.subscribe(CovSubscription {
-            subscriber_mac: MacAddr::from_slice(&router_mac),
-            subscriber_network: Some(routed_a.clone()),
-            subscriber_process_identifier: 1,
-            monitored_object_identifier: ai(1),
-            issue_confirmed_notifications: false,
-            expires_at: None,
-            last_notified_value: None,
-            monitored_property: None,
-            monitored_property_array_index: None,
-            cov_increment: None,
-            notification_kind: CovNotificationKind::Single,
-            timestamped: false,
-        });
-        table.subscribe(CovSubscription {
-            subscriber_mac: MacAddr::from_slice(&router_mac),
-            subscriber_network: Some(routed_b.clone()),
-            subscriber_process_identifier: 1,
-            monitored_object_identifier: ai(1),
-            issue_confirmed_notifications: false,
-            expires_at: None,
-            last_notified_value: None,
-            monitored_property: None,
-            monitored_property_array_index: None,
-            cov_increment: None,
-            notification_kind: CovNotificationKind::Single,
-            timestamped: false,
-        });
+        table
+            .subscribe(CovSubscription {
+                subscriber_mac: MacAddr::from_slice(&router_mac),
+                subscriber_network: Some(routed_a.clone()),
+                subscriber_process_identifier: 1,
+                monitored_object_identifier: ai(1),
+                issue_confirmed_notifications: false,
+                expires_at: None,
+                last_notified_observation: None,
+                monitored_property: None,
+                monitored_property_array_index: None,
+                cov_increment: None,
+                notification_kind: CovNotificationKind::Single,
+                timestamped: false,
+            })
+            .unwrap();
+        table
+            .subscribe(CovSubscription {
+                subscriber_mac: MacAddr::from_slice(&router_mac),
+                subscriber_network: Some(routed_b.clone()),
+                subscriber_process_identifier: 1,
+                monitored_object_identifier: ai(1),
+                issue_confirmed_notifications: false,
+                expires_at: None,
+                last_notified_observation: None,
+                monitored_property: None,
+                monitored_property_array_index: None,
+                cov_increment: None,
+                notification_kind: CovNotificationKind::Single,
+                timestamped: false,
+            })
+            .unwrap();
     }
 
     // Removing routed_a removes only routed_a, preserving routed_b
@@ -492,13 +491,14 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
     // Verify routed_b remains active
     {
         let table = server.cov_table.read().await;
-        assert!(table.contains(
-            &MacAddr::from_slice(&router_mac),
-            Some(&routed_b),
-            1,
-            ai(1),
-            None
-        ));
+        assert!(table.contains(&crate::cov::CovSubscriptionKey::Object {
+            recipient: crate::cov::CovRecipient::from_endpoint(
+                &MacAddr::from_slice(&router_mac),
+                Some(&routed_b)
+            ),
+            process_id: 1,
+            object: ai(1)
+        }));
     }
 
     // Test expiry cleanup via purge_expired
@@ -511,14 +511,14 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
             monitored_object_identifier: ai(5),
             issue_confirmed_notifications: false,
             expires_at: Some(Instant::now() - Duration::from_secs(5)),
-            last_notified_value: None,
+            last_notified_observation: None,
             monitored_property: None,
             monitored_property_array_index: None,
             cov_increment: None,
             notification_kind: CovNotificationKind::Single,
             timestamped: false,
         };
-        table.subscribe(sub);
+        table.subscribe(sub).unwrap();
         let purged = table.purge_expired();
         assert_eq!(purged, 1);
         assert_eq!(server.cov_counters().subscriptions_purged, 1);
@@ -530,7 +530,6 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn fanout_and_work_budgets_enforced() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
     let db = create_database_with_ais(2);
     let policy = CovPolicy {
         max_notifications_per_event: 3,
@@ -541,7 +540,7 @@ async fn fanout_and_work_budgets_enforced() {
 
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(recording_transport().0)
         .cov_policy(policy)
         .build()
         .await
@@ -551,32 +550,36 @@ async fn fanout_and_work_budgets_enforced() {
     {
         let mut table = server.cov_table.write().await;
         for i in 1..=6 {
-            table.subscribe(CovSubscription {
-                subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i, 0xBA, 0xC0]),
-                subscriber_network: None,
-                subscriber_process_identifier: 1,
-                monitored_object_identifier: ai(1),
-                issue_confirmed_notifications: false,
-                expires_at: None,
-                last_notified_value: None,
-                monitored_property: None,
-                monitored_property_array_index: None,
-                cov_increment: None,
-                notification_kind: CovNotificationKind::Single,
-                timestamped: false,
-            });
+            table
+                .subscribe(CovSubscription {
+                    subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i, 0xBA, 0xC0]),
+                    subscriber_network: None,
+                    subscriber_process_identifier: 1,
+                    monitored_object_identifier: ai(1),
+                    issue_confirmed_notifications: false,
+                    expires_at: None,
+                    last_notified_observation: None,
+                    monitored_property: None,
+                    monitored_property_array_index: None,
+                    cov_increment: None,
+                    notification_kind: CovNotificationKind::Single,
+                    timestamped: false,
+                })
+                .unwrap();
         }
     }
 
     // Fire notifications for AI:1
-    BACnetServer::<RecordingTransport>::fire_cov_notifications(
-        &server.db,
-        &server.network,
-        &server.cov_table,
-        &server.cov_in_flight,
-        &server.notification_transactions,
-        &server.comm_state,
-        &server.config,
+    BACnetServer::<TestTransport>::fire_cov_notifications(
+        &crate::server::cov_notify_context::CovNotifyContext {
+            db: &server.db,
+            network: server.test_network(),
+            cov_table: &server.cov_table,
+            cov_in_flight: &server.cov_in_flight,
+            notification_transactions: &server.notification_transactions,
+            comm_state: &server.comm_state,
+            config: &server.config,
+        },
         &ai(1),
     )
     .await;
@@ -594,7 +597,6 @@ async fn fanout_and_work_budgets_enforced() {
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn in_flight_confirmed_per_peer_throttled() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
     let db = create_database_with_ais(2);
     let policy = CovPolicy {
         max_notifications_per_event: 64,
@@ -604,7 +606,7 @@ async fn in_flight_confirmed_per_peer_throttled() {
 
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(recording_transport().0)
         .cov_policy(policy)
         .build()
         .await
@@ -616,31 +618,35 @@ async fn in_flight_confirmed_per_peer_throttled() {
     {
         let mut table = server.cov_table.write().await;
         for i in 1..=4 {
-            table.subscribe(CovSubscription {
-                subscriber_mac: peer.clone(),
-                subscriber_network: None,
-                subscriber_process_identifier: i,
-                monitored_object_identifier: ai(1),
-                issue_confirmed_notifications: true,
-                expires_at: None,
-                last_notified_value: None,
-                monitored_property: None,
-                monitored_property_array_index: None,
-                cov_increment: None,
-                notification_kind: CovNotificationKind::Single,
-                timestamped: false,
-            });
+            table
+                .subscribe(CovSubscription {
+                    subscriber_mac: peer.clone(),
+                    subscriber_network: None,
+                    subscriber_process_identifier: i,
+                    monitored_object_identifier: ai(1),
+                    issue_confirmed_notifications: true,
+                    expires_at: None,
+                    last_notified_observation: None,
+                    monitored_property: None,
+                    monitored_property_array_index: None,
+                    cov_increment: None,
+                    notification_kind: CovNotificationKind::Single,
+                    timestamped: false,
+                })
+                .unwrap();
         }
     }
 
-    BACnetServer::<RecordingTransport>::fire_cov_notifications(
-        &server.db,
-        &server.network,
-        &server.cov_table,
-        &server.cov_in_flight,
-        &server.notification_transactions,
-        &server.comm_state,
-        &server.config,
+    BACnetServer::<TestTransport>::fire_cov_notifications(
+        &crate::server::cov_notify_context::CovNotifyContext {
+            db: &server.db,
+            network: server.test_network(),
+            cov_table: &server.cov_table,
+            cov_in_flight: &server.cov_in_flight,
+            notification_transactions: &server.notification_transactions,
+            comm_state: &server.comm_state,
+            config: &server.config,
+        },
         &ai(1),
     )
     .await;
@@ -652,11 +658,10 @@ async fn in_flight_confirmed_per_peer_throttled() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Existing atomic multi-property capacity behavior remains intact
+// 7. Multi-property admission stops at the reference past the peer quota
 // ---------------------------------------------------------------------------
 #[tokio::test]
-async fn subscribe_cov_property_multiple_atomic_rejection() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
+async fn subscribe_cov_property_multiple_quota_names_the_overflowing_reference() {
     let db = create_database_with_ais(5);
     let policy = CovPolicy {
         max_subscriptions_per_peer: 3,
@@ -666,7 +671,7 @@ async fn subscribe_cov_property_multiple_atomic_rejection() {
 
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(recording_transport().0)
         .cov_policy(policy)
         .build()
         .await
@@ -678,24 +683,30 @@ async fn subscribe_cov_property_multiple_atomic_rejection() {
     {
         let mut table = server.cov_table.write().await;
         for i in 1..=2 {
-            table.subscribe(CovSubscription {
-                subscriber_mac: MacAddr::from_slice(&peer),
-                subscriber_network: None,
-                subscriber_process_identifier: 1,
-                monitored_object_identifier: ai(i),
-                issue_confirmed_notifications: false,
-                expires_at: None,
-                last_notified_value: None,
-                monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
-                monitored_property_array_index: None,
-                cov_increment: None,
-                notification_kind: CovNotificationKind::Multiple,
-                timestamped: false,
-            });
+            table
+                .admit_for_test(
+                    CovSubscription {
+                        subscriber_mac: MacAddr::from_slice(&peer),
+                        subscriber_network: None,
+                        subscriber_process_identifier: 1,
+                        monitored_object_identifier: ai(i),
+                        issue_confirmed_notifications: false,
+                        expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+                        last_notified_observation: None,
+                        monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
+                        monitored_property_array_index: None,
+                        cov_increment: None,
+                        notification_kind: CovNotificationKind::Multiple,
+                        timestamped: false,
+                    },
+                    0,
+                )
+                .unwrap();
         }
     }
 
-    // Now request 2 more properties in a batch (2 + 2 = 4 > max_subscriptions_per_peer = 3)
+    // Now request 2 more properties in a batch: the first takes the peer's
+    // third and last slot, and the second is past max_subscriptions_per_peer.
     let request = SubscribeCOVPropertyMultipleRequest {
         subscriber_process_identifier: 1,
         issue_confirmed_notifications: false,
@@ -724,24 +735,40 @@ async fn subscribe_cov_property_multiple_atomic_rejection() {
         }],
     };
     let mut buf = BytesMut::new();
-    request.encode(&mut buf);
+    request.encode(&mut buf).unwrap();
 
     let mut table = server.cov_table.write().await;
     let db = server.db.read().await;
-    let err = handle_subscribe_cov_property_multiple_with_initial(&mut table, &db, &peer, &buf)
+    let refusal = handle_subscribe_cov_property_multiple_with_initial(&mut table, &db, &peer, &buf)
         .unwrap_err();
 
-    match err {
-        Error::Protocol { class, code } => {
+    match refusal.error {
+        Error::Structured {
+            class,
+            code,
+            detail,
+        } => {
             assert_eq!(class, ErrorClass::RESOURCES.to_raw() as u32);
             assert_eq!(
                 code,
                 ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT.to_raw() as u32
             );
+            assert_eq!(
+                *detail,
+                bacnet_types::error::ErrorDetail::FirstFailedSubscription(
+                    bacnet_types::constructed::BACnetObjectPropertyReference::new(
+                        ai(3),
+                        PropertyIdentifier::STATUS_FLAGS.to_raw()
+                    )
+                )
+            );
         }
         other => panic!("expected RESOURCES / NO_SPACE_TO_ADD_LIST_ELEMENT, got {other:?}"),
     }
 
-    // ATOMIC: Still exactly 2 subscriptions in the table (0 added from the failed batch)
-    assert_eq!(table.len(), 2);
+    // Present_Value, admitted before the quota ran out, stays (#1058, #1059).
+    assert_eq!(refusal.refused, Some(1));
+    assert_eq!(refusal.committed.len(), 1);
+    assert_eq!(table.len(), 3);
+    assert_eq!(table.counters().snapshot().subscriptions_rejected_quota, 1);
 }

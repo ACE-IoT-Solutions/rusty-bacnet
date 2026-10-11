@@ -1,8 +1,7 @@
-use bacnet_mstp_core::{Action, Direction, Instant as CoreInstant};
 use bytes::{Bytes, BytesMut};
-use std::sync::{Arc, Mutex as StdMutex};
+use tokio::sync::mpsc;
+use tokio::time::{advance, Duration, Instant};
 
-use super::port::CoreAdapter;
 use super::*;
 use crate::mstp_frame::{decode_frame, encode_frame, FrameType, MstpFrame};
 use crate::port::TransportPort;
@@ -22,175 +21,6 @@ fn timing_config() -> MstpConfig {
         max_master: 127,
         max_info_frames: 1,
         baud_rate: 9600,
-    }
-}
-
-struct DirectionRecordingSerial {
-    inner: LoopbackSerial,
-    events: Arc<StdMutex<Vec<&'static str>>>,
-}
-
-struct StallingWriteSerial {
-    inner: LoopbackSerial,
-    events: Arc<StdMutex<Vec<&'static str>>>,
-}
-
-struct FailingReceiveSerial {
-    inner: LoopbackSerial,
-    events: Arc<StdMutex<Vec<&'static str>>>,
-    fail_receive_once: Arc<StdMutex<bool>>,
-}
-
-struct HardwareBusySerial {
-    inner: LoopbackSerial,
-    events: Arc<StdMutex<Vec<&'static str>>>,
-    transmitter_empty: Arc<tokio::sync::Notify>,
-}
-
-struct StallingDirectionSerial {
-    inner: LoopbackSerial,
-    writes: Arc<StdMutex<usize>>,
-}
-
-struct DelayedDirectionSerial {
-    inner: LoopbackSerial,
-    transmit_started: Arc<StdMutex<bool>>,
-    writes: Arc<StdMutex<usize>>,
-}
-
-impl SerialPort for DelayedDirectionSerial {
-    async fn set_direction(&self, direction: SerialDirection) -> Result<(), Error> {
-        if direction == SerialDirection::Transmit {
-            *self.transmit_started.lock().unwrap() = true;
-            tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
-        }
-        Ok(())
-    }
-
-    async fn write(&self, _data: &[u8]) -> Result<(), Error> {
-        *self.writes.lock().unwrap() += 1;
-        Ok(())
-    }
-
-    async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.inner.read(buf).await
-    }
-}
-
-impl SerialPort for StallingDirectionSerial {
-    async fn set_direction(&self, _direction: SerialDirection) -> Result<(), Error> {
-        std::future::pending().await
-    }
-
-    async fn write(&self, _data: &[u8]) -> Result<(), Error> {
-        *self.writes.lock().unwrap() += 1;
-        Ok(())
-    }
-
-    async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.inner.read(buf).await
-    }
-}
-
-impl SerialPort for StallingWriteSerial {
-    async fn set_direction(&self, direction: SerialDirection) -> Result<(), Error> {
-        self.events.lock().unwrap().push(match direction {
-            SerialDirection::Transmit => "tx",
-            SerialDirection::Receive => "rx",
-        });
-        Ok(())
-    }
-
-    async fn write(&self, _data: &[u8]) -> Result<(), Error> {
-        std::future::pending().await
-    }
-
-    async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.inner.read(buf).await
-    }
-}
-
-impl SerialPort for FailingReceiveSerial {
-    async fn set_direction(&self, direction: SerialDirection) -> Result<(), Error> {
-        if direction == SerialDirection::Receive {
-            let mut fail = self.fail_receive_once.lock().unwrap();
-            if *fail {
-                *fail = false;
-                self.events.lock().unwrap().push("rx-fail");
-                return Err(Error::Encoding(
-                    "injected receive transition failure".into(),
-                ));
-            }
-        }
-        self.events.lock().unwrap().push(match direction {
-            SerialDirection::Transmit => "tx",
-            SerialDirection::Receive => "rx",
-        });
-        Ok(())
-    }
-
-    async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        self.events.lock().unwrap().push("write");
-        self.inner.write(data).await
-    }
-
-    async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.inner.read(buf).await
-    }
-
-    async fn drain(&self) -> Result<(), Error> {
-        self.events.lock().unwrap().push("drain");
-        Ok(())
-    }
-}
-
-impl SerialPort for HardwareBusySerial {
-    async fn set_direction(&self, direction: SerialDirection) -> Result<(), Error> {
-        self.events.lock().unwrap().push(match direction {
-            SerialDirection::Transmit => "tx",
-            SerialDirection::Receive => "rx",
-        });
-        Ok(())
-    }
-
-    async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        self.events.lock().unwrap().push("write");
-        self.inner.write(data).await
-    }
-
-    async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.inner.read(buf).await
-    }
-
-    async fn drain(&self) -> Result<(), Error> {
-        self.events.lock().unwrap().push("hardware-busy");
-        self.transmitter_empty.notified().await;
-        self.events.lock().unwrap().push("hardware-empty");
-        Ok(())
-    }
-}
-
-impl SerialPort for DirectionRecordingSerial {
-    async fn set_direction(&self, direction: SerialDirection) -> Result<(), Error> {
-        self.events.lock().unwrap().push(match direction {
-            SerialDirection::Transmit => "tx",
-            SerialDirection::Receive => "rx",
-        });
-        Ok(())
-    }
-
-    async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        self.events.lock().unwrap().push("write");
-        self.inner.write(data).await
-    }
-
-    async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        self.inner.read(buf).await
-    }
-
-    async fn drain(&self) -> Result<(), Error> {
-        self.events.lock().unwrap().push("drain");
-        Ok(())
     }
 }
 
@@ -217,307 +47,6 @@ async fn ready_data_reply_does_not_wait_for_reply_delay() {
     assert_eq!(response.frame_type, FrameType::BACnetDataNotExpectingReply);
     assert_eq!(response.destination, 7);
     assert!(started.elapsed() < tokio::time::Duration::from_millis(50));
-    transport.stop().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn core_direction_actions_bracket_write_and_physical_drain() {
-    let (serial_inner, serial_peer) = LoopbackSerial::pair();
-    let events = Arc::new(StdMutex::new(Vec::new()));
-    let serial_transport = DirectionRecordingSerial {
-        inner: serial_inner,
-        events: events.clone(),
-    };
-    let mut transport = MstpTransport::new(serial_transport, timing_config());
-    let mut npdu_rx = transport.start().await.unwrap();
-    let mut encoded = BytesMut::new();
-    encode_frame(&mut encoded, &expecting_reply_frame()).unwrap();
-    serial_peer.write(&encoded).await.unwrap();
-
-    npdu_rx
-        .recv()
-        .await
-        .unwrap()
-        .reply_tx
-        .unwrap()
-        .send(Bytes::from_static(&[0x01, 0x00, 0x30, 0x01]))
-        .unwrap();
-    let mut response_buf = [0u8; 64];
-    serial_peer.read(&mut response_buf).await.unwrap();
-    tokio::task::yield_now().await;
-
-    assert_eq!(&*events.lock().unwrap(), &["tx", "write", "drain", "rx"]);
-    transport.stop().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn receive_transition_waits_for_hardware_transmitter_empty() {
-    let (serial_inner, serial_peer) = LoopbackSerial::pair();
-    let events = Arc::new(StdMutex::new(Vec::new()));
-    let transmitter_empty = Arc::new(tokio::sync::Notify::new());
-    let serial_transport = HardwareBusySerial {
-        inner: serial_inner,
-        events: events.clone(),
-        transmitter_empty: transmitter_empty.clone(),
-    };
-    let mut transport = MstpTransport::new(serial_transport, timing_config());
-    let mut npdu_rx = transport.start().await.unwrap();
-    let mut encoded = BytesMut::new();
-    encode_frame(&mut encoded, &expecting_reply_frame()).unwrap();
-    serial_peer.write(&encoded).await.unwrap();
-    npdu_rx
-        .recv()
-        .await
-        .unwrap()
-        .reply_tx
-        .unwrap()
-        .send(Bytes::from_static(&[0x01, 0x00, 0x30, 0x01]))
-        .unwrap();
-    tokio::time::advance(tokio::time::Duration::from_millis(10)).await;
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-        if events.lock().unwrap().contains(&"hardware-busy") {
-            break;
-        }
-    }
-    assert_eq!(&*events.lock().unwrap(), &["tx", "write", "hardware-busy"]);
-
-    transmitter_empty.notify_one();
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-        if events.lock().unwrap().last() == Some(&"rx") {
-            break;
-        }
-    }
-    assert_eq!(
-        &*events.lock().unwrap(),
-        &["tx", "write", "hardware-busy", "hardware-empty", "rx"]
-    );
-    transport.stop().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn late_reply_scheduler_wake_still_precedes_hard_wire_expiry() {
-    let origin = tokio::time::Instant::now();
-    let mut adapter = CoreAdapter::new(&timing_config(), origin).unwrap();
-    adapter
-        .core
-        .on_validated_frame(
-            bacnet_mstp_codec::Frame::new(
-                bacnet_mstp_codec::FrameType::BACnetDataExpectingReply,
-                3,
-                7,
-                &[0x01, 0x04, 0x10],
-            ),
-            CoreInstant::ZERO,
-        )
-        .unwrap();
-    assert!(matches!(
-        adapter.core.poll_action(),
-        Action::DeliverNpdu {
-            request_id: Some(_),
-            ..
-        }
-    ));
-    tokio::time::advance(tokio::time::Duration::from_millis(226)).await;
-
-    adapter.service_deadline().unwrap();
-    let turnaround = adapter.core.next_deadline().unwrap();
-    adapter.core.on_deadline(turnaround).unwrap();
-
-    assert_eq!(
-        adapter.core.poll_action(),
-        Action::SetDirection(Direction::Transmit)
-    );
-    assert!(matches!(
-        adapter.core.poll_action(),
-        Action::Transmit { .. }
-    ));
-}
-
-#[tokio::test(start_paused = true)]
-async fn stalled_serial_write_is_aborted_by_the_transmit_watchdog() {
-    let (serial_inner, serial_peer) = LoopbackSerial::pair();
-    let events = Arc::new(StdMutex::new(Vec::new()));
-    let serial_transport = StallingWriteSerial {
-        inner: serial_inner,
-        events: events.clone(),
-    };
-    let mut transport = MstpTransport::new(serial_transport, timing_config());
-    let mut npdu_rx = transport.start().await.unwrap();
-    let mut encoded = BytesMut::new();
-    encode_frame(&mut encoded, &expecting_reply_frame()).unwrap();
-    serial_peer.write(&encoded).await.unwrap();
-    npdu_rx
-        .recv()
-        .await
-        .unwrap()
-        .reply_tx
-        .unwrap()
-        .send(Bytes::from_static(&[0x01, 0x00, 0x30, 0x01]))
-        .unwrap();
-    tokio::time::advance(tokio::time::Duration::from_millis(10)).await;
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-        if !events.lock().unwrap().is_empty() {
-            break;
-        }
-    }
-    assert_eq!(&*events.lock().unwrap(), &["tx"]);
-
-    tokio::time::advance(tokio::time::Duration::from_secs(2)).await;
-    for _ in 0..3 {
-        tokio::task::yield_now().await;
-    }
-
-    assert_eq!(&*events.lock().unwrap(), &["tx", "rx"]);
-    assert_eq!(
-        transport.snapshot().await.unwrap().state,
-        bacnet_mstp_core::MasterState::Idle
-    );
-    transport.stop().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn stop_during_stalled_write_restores_receive_direction() {
-    let (serial_inner, serial_peer) = LoopbackSerial::pair();
-    let events = Arc::new(StdMutex::new(Vec::new()));
-    let serial_transport = StallingWriteSerial {
-        inner: serial_inner,
-        events: events.clone(),
-    };
-    let mut transport = MstpTransport::new(serial_transport, timing_config());
-    let mut npdu_rx = transport.start().await.unwrap();
-    let mut encoded = BytesMut::new();
-    encode_frame(&mut encoded, &expecting_reply_frame()).unwrap();
-    serial_peer.write(&encoded).await.unwrap();
-    npdu_rx
-        .recv()
-        .await
-        .unwrap()
-        .reply_tx
-        .unwrap()
-        .send(Bytes::from_static(&[0x01, 0x00, 0x30, 0x01]))
-        .unwrap();
-    tokio::time::advance(tokio::time::Duration::from_millis(10)).await;
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
-        if events.lock().unwrap().as_slice() == ["tx"] {
-            break;
-        }
-    }
-
-    transport.stop().await.unwrap();
-    assert_eq!(&*events.lock().unwrap(), &["tx", "rx"]);
-}
-
-#[tokio::test(start_paused = true)]
-async fn transient_receive_direction_failure_is_retried() {
-    let (serial_inner, serial_peer) = LoopbackSerial::pair();
-    let events = Arc::new(StdMutex::new(Vec::new()));
-    let serial_transport = FailingReceiveSerial {
-        inner: serial_inner,
-        events: events.clone(),
-        fail_receive_once: Arc::new(StdMutex::new(true)),
-    };
-    let mut transport = MstpTransport::new(serial_transport, timing_config());
-    let mut npdu_rx = transport.start().await.unwrap();
-    let mut encoded = BytesMut::new();
-    encode_frame(&mut encoded, &expecting_reply_frame()).unwrap();
-    serial_peer.write(&encoded).await.unwrap();
-    npdu_rx
-        .recv()
-        .await
-        .unwrap()
-        .reply_tx
-        .unwrap()
-        .send(Bytes::from_static(&[0x01, 0x00, 0x30, 0x01]))
-        .unwrap();
-    let mut response = [0; 64];
-    serial_peer.read(&mut response).await.unwrap();
-    tokio::task::yield_now().await;
-
-    assert_eq!(
-        &*events.lock().unwrap(),
-        &["tx", "write", "drain", "rx-fail", "rx"]
-    );
-    transport.stop().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn stalled_direction_change_is_bounded_and_prevents_the_write() {
-    let (serial_inner, serial_peer) = LoopbackSerial::pair();
-    let writes = Arc::new(StdMutex::new(0));
-    let serial_transport = StallingDirectionSerial {
-        inner: serial_inner,
-        writes: writes.clone(),
-    };
-    let mut transport = MstpTransport::new(serial_transport, timing_config());
-    let mut npdu_rx = transport.start().await.unwrap();
-    let mut encoded = BytesMut::new();
-    encode_frame(&mut encoded, &expecting_reply_frame()).unwrap();
-    serial_peer.write(&encoded).await.unwrap();
-    npdu_rx
-        .recv()
-        .await
-        .unwrap()
-        .reply_tx
-        .unwrap()
-        .send(Bytes::from_static(&[0x01, 0x00, 0x30, 0x01]))
-        .unwrap();
-    tokio::time::advance(tokio::time::Duration::from_millis(10)).await;
-    for _ in 0..10 {
-        tokio::task::yield_now().await;
-    }
-    tokio::time::advance(tokio::time::Duration::from_secs(2)).await;
-    for _ in 0..10 {
-        tokio::task::yield_now().await;
-    }
-
-    assert_eq!(*writes.lock().unwrap(), 0);
-    assert_eq!(
-        transport.snapshot().await.unwrap().state,
-        bacnet_mstp_core::MasterState::Idle
-    );
-    assert!(transport.stop().await.is_err());
-}
-
-#[tokio::test(start_paused = true)]
-async fn direction_delay_crossing_reply_expiry_suppresses_the_write() {
-    let (serial_inner, serial_peer) = LoopbackSerial::pair();
-    let transmit_started = Arc::new(StdMutex::new(false));
-    let writes = Arc::new(StdMutex::new(0));
-    let serial_transport = DelayedDirectionSerial {
-        inner: serial_inner,
-        transmit_started: transmit_started.clone(),
-        writes: writes.clone(),
-    };
-    let mut transport = MstpTransport::new(serial_transport, timing_config());
-    let mut npdu_rx = transport.start().await.unwrap();
-    let mut encoded = BytesMut::new();
-    encode_frame(&mut encoded, &expecting_reply_frame()).unwrap();
-    serial_peer.write(&encoded).await.unwrap();
-    let received = npdu_rx.recv().await.unwrap();
-    let _reply_tx = received.reply_tx.unwrap();
-
-    tokio::time::advance(tokio::time::Duration::from_millis(225)).await;
-    for _ in 0..10 {
-        tokio::task::yield_now().await;
-        if *transmit_started.lock().unwrap() {
-            break;
-        }
-    }
-    assert!(*transmit_started.lock().unwrap());
-    tokio::time::advance(tokio::time::Duration::from_millis(30)).await;
-    for _ in 0..10 {
-        tokio::task::yield_now().await;
-    }
-
-    assert_eq!(*writes.lock().unwrap(), 0);
-    assert_eq!(
-        transport.snapshot().await.unwrap().state,
-        bacnet_mstp_core::MasterState::Idle
-    );
     transport.stop().await.unwrap();
 }
 
@@ -577,4 +106,531 @@ async fn second_data_request_does_not_extend_first_reply_deadline() {
     assert_eq!(response.destination, 7);
     assert!(started.elapsed() < tokio::time::Duration::from_millis(T_REPLY_DELAY_MS));
     transport.stop().await.unwrap();
+}
+
+struct ObservedSerial {
+    inner: LoopbackSerial,
+    reads: mpsc::UnboundedSender<Instant>,
+    writes: mpsc::UnboundedSender<(Instant, MstpFrame)>,
+}
+
+impl SerialPort for ObservedSerial {
+    async fn read(&self, buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
+        let count = self.inner.read(buf).await?;
+        self.reads.send(Instant::now()).unwrap();
+        Ok(count)
+    }
+
+    async fn write(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
+        let (frame, consumed) = decode_frame(data).unwrap();
+        // Each borrowed slice must contain exactly one complete frame, even
+        // when multiple frames share reusable transmit storage.
+        assert_eq!(consumed, data.len());
+        self.writes.send((Instant::now(), frame)).unwrap();
+        Ok(())
+    }
+}
+
+struct TimingHarness {
+    transport: MstpTransport<ObservedSerial>,
+    peer: LoopbackSerial,
+    reads: mpsc::UnboundedReceiver<Instant>,
+    writes: mpsc::UnboundedReceiver<(Instant, MstpFrame)>,
+    npdus: mpsc::Receiver<crate::port::ReceivedNpdu>,
+}
+
+impl TimingHarness {
+    async fn new(baud_rate: u32) -> Self {
+        let (inner, peer) = LoopbackSerial::pair();
+        let (read_tx, reads) = mpsc::unbounded_channel();
+        let (write_tx, writes) = mpsc::unbounded_channel();
+        let mut transport = MstpTransport::new(
+            ObservedSerial {
+                inner,
+                reads: read_tx,
+                writes: write_tx,
+            },
+            MstpConfig {
+                baud_rate,
+                ..timing_config()
+            },
+        );
+        let npdus = transport.start().await.unwrap();
+        Self {
+            transport,
+            peer,
+            reads,
+            writes,
+            npdus,
+        }
+    }
+
+    async fn receive(&mut self, frame: &MstpFrame) -> Instant {
+        let mut encoded = BytesMut::new();
+        encode_frame(&mut encoded, frame).unwrap();
+        self.peer.write(&encoded).await.unwrap();
+        self.reads.recv().await.unwrap()
+    }
+}
+
+// Independent, rounded-up microsecond expectations for forty bit times.
+const TURNAROUNDS: [(u32, u64); 3] = [(9600, 4167), (38400, 1042), (76800, 521)];
+
+#[tokio::test(start_paused = true)]
+async fn turnaround_deadlines_cover_token_poll_and_data_paths() {
+    for (baud, turnaround_us) in TURNAROUNDS {
+        // Force processing to finish both before and after the absolute deadline.
+        for processing_us in [0, turnaround_us / 2, 8_000] {
+            for scenario in 0..5 {
+                let mut harness = TimingHarness::new(baud).await;
+                let node = harness.transport.node_state().unwrap().clone();
+                let mut guard = node.lock().await;
+                guard.next_station = 7;
+                guard.token_count = 0;
+                let (incoming_type, expected_type) = match scenario {
+                    0 => (FrameType::PollForMaster, FrameType::ReplyToPollForMaster),
+                    1 => (FrameType::Token, FrameType::Token),
+                    2 => {
+                        guard.next_station = guard.config.this_station;
+                        (FrameType::Token, FrameType::PollForMaster)
+                    }
+                    3 => {
+                        guard
+                            .queue_npdu(7, Bytes::from_static(&[1, 4, 0x10]))
+                            .unwrap();
+                        (FrameType::Token, FrameType::BACnetDataExpectingReply)
+                    }
+                    _ => {
+                        guard.config.max_info_frames = 2;
+                        guard
+                            .queue_npdu(7, Bytes::from_static(&[1, 0, 0x10]))
+                            .unwrap();
+                        guard
+                            .queue_npdu(8, Bytes::from_static(&[1, 0, 0x20]))
+                            .unwrap();
+                        (FrameType::Token, FrameType::BACnetDataNotExpectingReply)
+                    }
+                };
+                let received_at = harness
+                    .receive(&MstpFrame {
+                        frame_type: incoming_type,
+                        source: 7,
+                        destination: 3,
+                        data: Bytes::new(),
+                    })
+                    .await;
+                advance(Duration::from_micros(processing_us)).await;
+                let released_at = Instant::now();
+                drop(guard);
+                tokio::task::yield_now().await;
+                let (sent_at, frame) = if processing_us > turnaround_us {
+                    // A fresh relative sleep would leave this empty.
+                    harness
+                        .writes
+                        .try_recv()
+                        .expect("elapsed processing was not credited")
+                } else {
+                    advance(Duration::from_micros(turnaround_us - processing_us - 1)).await;
+                    tokio::task::yield_now().await;
+                    assert!(harness.writes.try_recv().is_err(), "TX before turnaround");
+                    harness.writes.recv().await.unwrap()
+                };
+                assert_eq!(frame.frame_type, expected_type);
+                assert!(sent_at >= received_at + Duration::from_micros(turnaround_us));
+                if processing_us > turnaround_us {
+                    assert_eq!(sent_at, released_at);
+                } else {
+                    // Permit timer quantization, but not a restarted full wait.
+                    assert!(sent_at < received_at + Duration::from_micros(turnaround_us + 1_000));
+                }
+                if scenario == 4 {
+                    assert_eq!(frame.data.as_ref(), &[1, 0, 0x10]);
+                    let (_, second) = harness.writes.recv().await.unwrap();
+                    assert_eq!(second.frame_type, FrameType::BACnetDataNotExpectingReply);
+                    assert_eq!(second.destination, 8);
+                    assert_eq!(second.data.as_ref(), &[1, 0, 0x20]);
+                    let (_, token) = harness.writes.recv().await.unwrap();
+                    assert_eq!(token.frame_type, FrameType::Token);
+                }
+                harness.transport.stop().await.unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn application_reply_and_postponement_credit_elapsed_turnaround() {
+    for (baud, _) in TURNAROUNDS {
+        for ready in [true, false] {
+            let mut harness = TimingHarness::new(baud).await;
+            harness.receive(&expecting_reply_frame()).await;
+            let reply_tx = harness.npdus.recv().await.unwrap().reply_tx.unwrap();
+            advance(Duration::from_millis(10)).await;
+            let ready_at = Instant::now();
+            if ready {
+                reply_tx.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
+            } else {
+                drop(reply_tx);
+            }
+            tokio::task::yield_now().await;
+            let (sent_at, frame) = harness
+                .writes
+                .try_recv()
+                .expect("unnecessary reply turnaround sleep");
+            assert_eq!(sent_at, ready_at);
+            assert_eq!(frame.destination, 7);
+            assert_eq!(
+                frame.frame_type,
+                if ready {
+                    FrameType::BACnetDataNotExpectingReply
+                } else {
+                    FrameType::ReplyPostponed
+                }
+            );
+            harness.transport.stop().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn reply_postponed_timer_does_not_add_another_turnaround() {
+    for (baud, turnaround_us) in TURNAROUNDS {
+        let mut harness = TimingHarness::new(baud).await;
+        let received_at = harness.receive(&expecting_reply_frame()).await;
+        let _reply_tx = harness.npdus.recv().await.unwrap().reply_tx.unwrap();
+        let (sent_at, frame) = harness.writes.recv().await.unwrap();
+        assert_eq!(frame.frame_type, FrameType::ReplyPostponed);
+        let decision_ms =
+            T_REPLY_DELAY_MS - turnaround_us.div_ceil(1_000) - T_REPLY_TRANSMIT_MARGIN_MS;
+        assert!(sent_at >= received_at + Duration::from_millis(decision_ms));
+        assert!(sent_at < received_at + Duration::from_millis(decision_ms + 2));
+        harness.transport.stop().await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_usb_tail_anchors_turnaround_to_last_chunk_not_frame_start() {
+    for (baud, turnaround_us) in TURNAROUNDS {
+        let mut harness = TimingHarness::new(baud).await;
+        let mut encoded = BytesMut::new();
+        encode_frame(
+            &mut encoded,
+            &MstpFrame {
+                frame_type: FrameType::PollForMaster,
+                source: 7,
+                destination: 3,
+                data: Bytes::new(),
+            },
+        )
+        .unwrap();
+        let split = encoded.len() - 1;
+        harness.peer.write(&encoded[..split]).await.unwrap();
+        let first_chunk_at = harness.reads.recv().await.unwrap();
+        advance(Duration::from_millis(40)).await;
+        assert!(harness.writes.try_recv().is_err());
+        harness.peer.write(&encoded[split..]).await.unwrap();
+        let last_chunk_at = harness.reads.recv().await.unwrap();
+        assert!(last_chunk_at >= first_chunk_at + Duration::from_millis(40));
+        advance(Duration::from_micros(turnaround_us - 1)).await;
+        tokio::task::yield_now().await;
+        assert!(harness.writes.try_recv().is_err());
+        let (sent_at, frame) = harness.writes.recv().await.unwrap();
+        assert_eq!(frame.frame_type, FrameType::ReplyToPollForMaster);
+        assert!(sent_at >= last_chunk_at + Duration::from_micros(turnaround_us));
+        harness.transport.stop().await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn later_host_traffic_refreshes_pending_application_reply_turnaround() {
+    for (baud, turnaround_us) in TURNAROUNDS {
+        let mut harness = TimingHarness::new(baud).await;
+        harness.receive(&expecting_reply_frame()).await;
+        let reply_tx = harness.npdus.recv().await.unwrap().reply_tx.unwrap();
+        advance(Duration::from_millis(40)).await;
+        let latest = harness
+            .receive(&MstpFrame {
+                frame_type: FrameType::BACnetDataNotExpectingReply,
+                source: 8,
+                destination: 9,
+                data: Bytes::from_static(&[1, 0, 0x20]),
+            })
+            .await;
+        reply_tx.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
+        tokio::task::yield_now().await;
+        advance(Duration::from_micros(turnaround_us - 1)).await;
+        tokio::task::yield_now().await;
+        assert!(harness.writes.try_recv().is_err());
+        let (sent_at, frame) = harness.writes.recv().await.unwrap();
+        assert_eq!(frame.destination, 7);
+        assert_eq!(frame.frame_type, FrameType::BACnetDataNotExpectingReply);
+        assert!(sent_at >= latest + Duration::from_micros(turnaround_us));
+        harness.transport.stop().await.unwrap();
+    }
+}
+
+// Real-clock harness: unlike the paused-clock tests above, this can cross runtime
+// boundaries and exercise the native serial backend as well as chunked loopback.
+struct ExecutionObserved<S> {
+    inner: S,
+    reads: mpsc::UnboundedSender<(Instant, std::thread::ThreadId, usize)>,
+    writes: mpsc::UnboundedSender<(Instant, std::thread::ThreadId, Vec<u8>)>,
+}
+
+impl<S: SerialPort> SerialPort for ExecutionObserved<S> {
+    async fn read(&self, buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
+        let count = self.inner.read(buf).await?;
+        if count > 0 {
+            self.reads
+                .send((Instant::now(), std::thread::current().id(), count))
+                .unwrap();
+        }
+        Ok(count)
+    }
+
+    async fn write(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
+        self.writes
+            .send((Instant::now(), std::thread::current().id(), data.to_vec()))
+            .unwrap();
+        self.inner.write(data).await
+    }
+}
+
+/// Shared host-timing/byte-order harness, also used by native serial tests.
+/// Whole reads and USB-like late tails use the same assertions in both modes.
+pub(crate) async fn execution_timing_harness<S: SerialPort, P: SerialPort>(
+    serial: S,
+    peer: P,
+    mode: Option<MstpExecutionMode>,
+    baud: u32,
+    chunked: bool,
+) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let app_thread = std::thread::current().id();
+        let (read_tx, mut reads) = mpsc::unbounded_channel();
+        let (write_tx, mut writes) = mpsc::unbounded_channel();
+        let mut transport = MstpTransport::new(
+            ExecutionObserved {
+                inner: serial,
+                reads: read_tx,
+                writes: write_tx,
+            },
+            MstpConfig {
+                baud_rate: baud,
+                max_info_frames: 2,
+                ..timing_config()
+            },
+        );
+        if let Some(mode) = mode {
+            transport = transport.with_execution_mode(mode);
+        }
+        let mut npdus = transport.start().await.unwrap();
+        assert_eq!(npdus.max_capacity(), 64);
+        let node = transport.node_state().unwrap().clone();
+        {
+            let mut node = node.lock().await;
+            node.next_station = 7;
+            node.token_count = 0;
+        }
+        transport.send_unicast(&[1, 0, 0x10], &[7]).await.unwrap();
+        transport.send_unicast(&[1, 0, 0x20], &[8]).await.unwrap();
+        let mut incoming = BytesMut::new();
+        encode_frame(
+            &mut incoming,
+            &MstpFrame {
+                frame_type: FrameType::Token,
+                destination: 3,
+                source: 7,
+                data: Bytes::new(),
+            },
+        )
+        .unwrap();
+        let split = if chunked {
+            incoming.len() - 1
+        } else {
+            incoming.len()
+        };
+        peer.write(&incoming[..split]).await.unwrap();
+        let mut received = 0;
+        let (last_read, worker_thread) = loop {
+            let (at, thread, count) = reads.recv().await.unwrap();
+            received += count;
+            if received == incoming.len() {
+                break (at, thread);
+            }
+            if received == split {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                assert!(
+                    writes.try_recv().is_err(),
+                    "partial token must not transmit"
+                );
+                peer.write(&incoming[split..]).await.unwrap();
+            }
+        };
+        assert_eq!(
+            worker_thread == app_thread,
+            mode.unwrap_or_default() == MstpExecutionMode::Tokio
+        );
+        let mut expected_wire = BytesMut::new();
+        let mut wire = Vec::new();
+        for (index, (kind, destination, data)) in [
+            (FrameType::BACnetDataNotExpectingReply, 7, &[1, 0, 0x10][..]),
+            (FrameType::BACnetDataNotExpectingReply, 8, &[1, 0, 0x20][..]),
+            (FrameType::Token, 7, &[][..]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (at, thread, bytes) = writes.recv().await.unwrap();
+            assert_eq!(thread, worker_thread);
+            if index == 0 {
+                let turnaround = TURNAROUNDS
+                    .iter()
+                    .find(|(rate, _)| *rate == baud)
+                    .unwrap()
+                    .1;
+                assert!(at >= last_read + Duration::from_micros(turnaround));
+            }
+            let (frame, consumed) = decode_frame(&bytes).unwrap();
+            assert_eq!(consumed, bytes.len(), "one frame per write");
+            let expected = MstpFrame {
+                frame_type: kind,
+                destination,
+                source: 3,
+                data: Bytes::copy_from_slice(data),
+            };
+            assert_eq!(frame, expected);
+            encode_frame(&mut expected_wire, &expected).unwrap();
+            wire.extend_from_slice(&bytes);
+        }
+        assert_eq!(wire, expected_wire);
+        let mut received_wire = Vec::new();
+        while received_wire.len() < wire.len() {
+            let mut buf = [0; 128];
+            // Read only this exchange; later token retries remain valid traffic.
+            let remaining = (wire.len() - received_wire.len()).min(buf.len());
+            let count = peer.read(&mut buf[..remaining]).await.unwrap();
+            assert!(count > 0);
+            received_wire.extend_from_slice(&buf[..count]);
+        }
+        assert_eq!(received_wire, wire, "actual backend output differs");
+        transport.send_broadcast(&[1, 0, 0x30]).await.unwrap();
+        transport.stop().await.unwrap();
+        let node = node.lock().await;
+        assert!(node.tx_queue.is_empty());
+        assert_eq!(node.state, MasterState::Idle);
+        assert_eq!(node.expected_reply_source, None);
+        assert!(npdus.recv().await.is_none());
+        wire
+    })
+    .await
+    .expect("execution harness stalled")
+}
+
+#[tokio::test]
+async fn disabled_mode_byte_parity_and_dedicated_timing_share_harness() {
+    for (baud, _) in TURNAROUNDS {
+        for chunked in [false, true] {
+            let mut baseline = None;
+            for mode in [
+                None,
+                Some(MstpExecutionMode::Tokio),
+                Some(MstpExecutionMode::DedicatedThread),
+            ] {
+                let (serial, peer) = LoopbackSerial::pair();
+                let wire = execution_timing_harness(serial, peer, mode, baud, chunked).await;
+                match &baseline {
+                    None => baseline = Some(wire),
+                    Some(expected) => assert_eq!(&wire, expected),
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn execution_modes_preserve_application_reply_and_deadline() {
+    for mode in [MstpExecutionMode::Tokio, MstpExecutionMode::DedicatedThread] {
+        for ready in [true, false] {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let (serial, peer) = LoopbackSerial::pair();
+                let (read_tx, mut reads) = mpsc::unbounded_channel();
+                let (write_tx, mut writes) = mpsc::unbounded_channel();
+                let mut transport = MstpTransport::new(
+                    ExecutionObserved {
+                        inner: serial,
+                        reads: read_tx,
+                        writes: write_tx,
+                    },
+                    timing_config(),
+                )
+                .with_execution_mode(mode);
+                let mut npdus = transport.start().await.unwrap();
+                let mut incoming = BytesMut::new();
+                encode_frame(&mut incoming, &expecting_reply_frame()).unwrap();
+                peer.write(&incoming).await.unwrap();
+                let (received_at, _, _) = reads.recv().await.unwrap();
+                let reply_tx = npdus.recv().await.unwrap().reply_tx.unwrap();
+                if ready {
+                    reply_tx.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
+                }
+                // In the other case the sender remains alive until the deadline.
+                let (sent_at, _, bytes) = writes.recv().await.unwrap();
+                let (frame, _) = decode_frame(&bytes).unwrap();
+                assert_eq!(frame.destination, 7);
+                assert_eq!(
+                    frame.frame_type,
+                    if ready {
+                        FrameType::BACnetDataNotExpectingReply
+                    } else {
+                        FrameType::ReplyPostponed
+                    }
+                );
+                let minimum = if ready {
+                    Duration::from_micros(4167)
+                } else {
+                    Duration::from_millis(T_REPLY_DELAY_MS - 5 - T_REPLY_TRANSMIT_MARGIN_MS)
+                };
+                assert!(sent_at >= received_at + minimum);
+                transport.stop().await.unwrap();
+            })
+            .await
+            .expect("application reply stalled");
+        }
+    }
+}
+
+#[tokio::test]
+async fn dedicated_abort_and_drop_release_serial_and_pending_reply() {
+    for abort in [true, false] {
+        for pending_reply in [true, false] {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                let (serial, peer) = LoopbackSerial::pair();
+                let mut transport = MstpTransport::new(serial, timing_config())
+                    .with_execution_mode(MstpExecutionMode::DedicatedThread);
+                let mut npdus = transport.start().await.unwrap();
+                let reply_tx = if pending_reply {
+                    let mut incoming = BytesMut::new();
+                    encode_frame(&mut incoming, &expecting_reply_frame()).unwrap();
+                    peer.write(&incoming).await.unwrap();
+                    npdus.recv().await.unwrap().reply_tx
+                } else {
+                    None
+                };
+                if abort {
+                    transport.abort();
+                    assert!(transport.node_state().is_none());
+                    assert!(transport.send_broadcast(&[1, 0]).await.is_err());
+                }
+                drop(transport);
+                assert!(npdus.recv().await.is_none());
+                assert!(peer.read(&mut [0; 64]).await.is_err());
+                if let Some(reply) = reply_tx {
+                    assert!(reply.send(Bytes::from_static(&[1, 0, 0x30])).is_err());
+                }
+            })
+            .await
+            .expect("dedicated task retained resources");
+        }
+    }
 }

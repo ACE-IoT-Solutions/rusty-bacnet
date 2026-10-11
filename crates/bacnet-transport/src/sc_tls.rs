@@ -7,66 +7,55 @@
 mod tls_config;
 pub use tls_config::ScNodeTlsConfig;
 
-use std::time::Duration;
+pub(crate) mod direct_accept;
+pub use direct_accept::{DirectAcceptConfig, DirectListener, DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::Mutex;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::WebSocketStream;
 
 use bacnet_types::error::Error;
 
 use crate::sc::{ScConnectError, ScWebSocketErrorKind, WebSocketPort};
-use crate::sc_frame::BACNET_SC_HUB_SUBPROTOCOL;
+use crate::sc_frame::{BACNET_SC_DIRECT_SUBPROTOCOL, BACNET_SC_HUB_SUBPROTOCOL};
 
-type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type WsStream = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
+
+/// Turn off Nagle's algorithm on an SC TCP stream before TLS. SC traffic is
+/// small WebSocket messages; with Nagle on, a message written before the
+/// previous one is acknowledged waits for that ACK, which a peer with nothing
+/// to send back can delay by tens to hundreds of milliseconds, depending on the
+/// peer's OS (#900). A failure only costs latency, so it is logged and the
+/// connection proceeds.
+pub(crate) fn disable_nagle(stream: &TcpStream) {
+    if let Err(error) = stream.set_nodelay(true) {
+        let peer = stream.peer_addr().ok();
+        tracing::debug!(%error, ?peer, "SC TCP stream keeps Nagle's algorithm");
+    }
+}
 
 /// A TLS-secured WebSocket connection implementing [`WebSocketPort`].
 ///
 /// Created via [`TlsWebSocket::connect`], which performs the TLS handshake and
 /// WebSocket upgrade in one step.
 pub struct TlsWebSocket {
-    inner: TlsWebSocketInner,
-}
-
-enum TlsWebSocketInner {
-    Connected {
-        write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
-        read: Mutex<futures_util::stream::SplitStream<WsStream>>,
-    },
-    Deferred {
-        url: String,
-        tls_config: ScNodeTlsConfig,
-        connect_timeout: Duration,
-        connected: OnceCell<std::sync::Arc<TlsWebSocket>>,
-    },
-    Unavailable(Mutex<Option<Error>>),
+    pub(crate) verified_leaf: [u8; 32],
+    pub(crate) peer_address: std::net::SocketAddr,
+    write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
+    read: Mutex<futures_util::stream::SplitStream<WsStream>>,
 }
 
 impl TlsWebSocket {
-    /// Create a WebSocket whose network connection is established on first I/O.
-    ///
-    /// The URL is validated immediately, and the deferred connection is bounded by
-    /// `connect_timeout`. Deferring only the network operation lets callers assemble
-    /// several BACnet/SC transports without opening an earlier hub connection before
-    /// that transport can send its Connect-Request.
-    pub fn deferred(
-        url: &str,
-        tls_config: ScNodeTlsConfig,
-        connect_timeout: Duration,
-    ) -> Result<Self, Error> {
-        parse_wss_uri(url)?;
-        Ok(Self {
-            inner: TlsWebSocketInner::Deferred {
-                url: url.to_owned(),
-                tls_config,
-                connect_timeout,
-                connected: OnceCell::new(),
-            },
-        })
+    // One physical WebSocket frame per worker turn, including controls. The
+    // worker owns application/control writes; this adapter never takes write.
+    pub(crate) async fn direct_frame(
+        &self,
+    ) -> Result<crate::sc::direct_socket::DirectFrame, Error> {
+        direct_frame(&mut *self.read.lock().await).await
     }
 
     /// Connect to a WebSocket endpoint with TLS.
@@ -90,23 +79,53 @@ impl TlsWebSocket {
     /// }
     /// ```
     pub async fn connect(url: &str, tls_config: ScNodeTlsConfig) -> Result<Self, Error> {
+        boxed(|| Self::connect_with_subprotocol(url, tls_config, BACNET_SC_HUB_SUBPROTOCOL)).await
+    }
+
+    /// Dial a direct-connection peer `wss` URI with node operational credentials.
+    ///
+    /// This is the dial-out half of an optional direct connection: the caller
+    /// supplies a peer URI (statically configured or previously discovered),
+    /// and this performs the TCP dial, mutual-TLS handshake, and WebSocket
+    /// upgrade offering only the direct subprotocol. Peer validation reuses
+    /// the [`ScNodeTlsConfig`] policy — explicit CA trust, operational
+    /// certificate checks during TLS, TLS 1.3 only, and URI-host server-name
+    /// binding — exactly as for hub dial. No BACnet identity (VMAC/UUID)
+    /// binding is performed here; that belongs to the later connection
+    /// exchange. Discovery triggering, routing over the connection, inbound
+    /// (accept-side) paths, and hub/failover interaction are out of scope.
+    pub async fn connect_direct(url: &str, tls_config: ScNodeTlsConfig) -> Result<Self, Error> {
+        boxed(|| Self::connect_with_subprotocol(url, tls_config, BACNET_SC_DIRECT_SUBPROTOCOL))
+            .await
+    }
+
+    // Each stage's future is boxed: the tokio-tungstenite handshake below
+    // already takes about 125 KB of stack in a debug build, and unboxed, these
+    // futures made this frame and connect's 51 KB rather than 24 KB (#953).
+    async fn connect_with_subprotocol(
+        url: &str,
+        tls_config: ScNodeTlsConfig,
+        subprotocol: &'static str,
+    ) -> Result<Self, Error> {
         let uri = parse_wss_uri(url)?;
         let addr = tcp_addr_from_uri(&uri)?;
         let server_name = tls_server_name_from_uri(&uri)?;
         let request = tokio_tungstenite::tungstenite::ClientRequestBuilder::new(uri)
-            .with_sub_protocol(BACNET_SC_HUB_SUBPROTOCOL);
+            .with_sub_protocol(subprotocol);
 
-        let socket = TcpStream::connect(&addr).await.map_err(|e| {
-            ScConnectError::WebSocket {
-                kind: ScWebSocketErrorKind::TcpDial,
-                message: format!("WebSocket TCP dial to {addr} failed: {e}"),
-            }
-            .into_bacnet_error_with_io_kind(e.kind())
-        })?;
+        let socket = boxed(|| crate::tcp_connect::connect(&addr))
+            .await
+            .map_err(|e| {
+                ScConnectError::WebSocket {
+                    kind: ScWebSocketErrorKind::TcpDial,
+                    message: format!("WebSocket TCP dial to {addr} failed: {e}"),
+                }
+                .into_bacnet_error_with_io_kind(e.kind())
+            })?;
 
-        let tls_stream = tls_config
-            .into_connector()
-            .connect(server_name, socket)
+        disable_nagle(&socket);
+        let peer_address = socket.peer_addr().map_err(Error::Transport)?;
+        let tls_stream = boxed(|| tls_config.into_connector().connect(server_name, socket))
             .await
             .map_err(|e| {
                 ScConnectError::WebSocket {
@@ -116,111 +135,61 @@ impl TlsWebSocket {
                 .into_bacnet_error()
             })?;
 
-        let stream = MaybeTlsStream::Rustls(tls_stream);
-        let (ws_stream, response) = tokio_tungstenite::client_async_with_config(
-            request,
-            stream,
-            // Public local capacities remain mutable u16 values. The adapter
-            // bounds its first Vec copy; protocol layers apply current limits.
-            Some(crate::sc_limits::websocket(u16::MAX as usize)),
-        )
+        let verified_leaf =
+            direct_accept::verified_leaf_sha256(tls_stream.get_ref().1.peer_certificates())
+                .ok_or_else(|| {
+                    Error::Encoding("verified TLS peer has no leaf certificate".into())
+                })?;
+        let (ws_stream, response) = boxed(|| {
+            tokio_tungstenite::client_async_with_config(
+                request,
+                tls_stream,
+                // Public local capacities remain mutable u16 values. The adapter
+                // bounds its first Vec copy; protocol layers apply current limits.
+                Some(crate::sc_limits::websocket(u16::MAX as usize)),
+            )
+        })
         .await
         .map_err(map_websocket_upgrade_error)?;
-        verify_hub_subprotocol(&response)?;
+        if subprotocol == BACNET_SC_DIRECT_SUBPROTOCOL {
+            verify_direct_subprotocol(&response)?;
+        } else {
+            verify_hub_subprotocol(&response)?;
+        }
 
         let (write, read) = ws_stream.split();
         Ok(Self {
-            inner: TlsWebSocketInner::Connected {
-                write: Mutex::new(write),
-                read: Mutex::new(read),
-            },
+            verified_leaf,
+            peer_address,
+            write: Mutex::new(write),
+            read: Mutex::new(read),
         })
     }
+}
 
-    /// Preserve an initial dial failure as a transport value so SC startup can
-    /// execute its normal, policy-aware failover handshake path.
-    pub fn from_initial_error(error: Error) -> Self {
-        Self {
-            inner: TlsWebSocketInner::Unavailable(Mutex::new(Some(error))),
-        }
-    }
+/// Create the future `make` returns and move it to the heap, so awaiting it
+/// costs the caller's state and debug-build poll frame a pointer rather than
+/// the whole future (#953). For connection setup and per-connection tasks,
+/// not per-frame paths.
+pub(crate) fn boxed<F: std::future::Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
 
-    async fn unavailable_error(error: &Mutex<Option<Error>>) -> Error {
-        error.lock().await.take().unwrap_or_else(|| {
-            Error::Encoding("initial BACnet/SC WebSocket remains unavailable".into())
-        })
-    }
-
-    async fn send_connected(&self, data: &[u8]) -> Result<(), Error> {
-        let TlsWebSocketInner::Connected { write, .. } = &self.inner else {
-            unreachable!("deferred WebSocket resolved to a connected WebSocket")
-        };
-        let mut write = write.lock().await;
-        write
-            .send(Message::Binary(data.to_vec().into()))
-            .await
-            .map_err(|e| {
-                ScConnectError::WebSocket {
-                    kind: ScWebSocketErrorKind::Send,
-                    message: format!("WebSocket send failed: {e}"),
-                }
-                .into_bacnet_error()
-            })
-    }
-
-    async fn recv_connected(&self) -> Result<Vec<u8>, Error> {
-        let TlsWebSocketInner::Connected { read, write } = &self.inner else {
-            unreachable!("deferred WebSocket resolved to a connected WebSocket")
-        };
-        loop {
-            // Read one message under the read lock, then drop it before
-            // acquiring write (avoids read→write lock ordering deadlock).
-            let msg = {
-                let mut read = read.lock().await;
-                read.next().await
-            };
-            match msg {
-                Some(Ok(Message::Binary(data))) => return Ok(data.to_vec()),
-                Some(Ok(Message::Close(_))) => {
-                    return Err(ScConnectError::WebSocket {
-                        kind: ScWebSocketErrorKind::Closed,
-                        message: "WebSocket closed".into(),
-                    }
-                    .into_bacnet_error());
-                }
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
-                Some(Ok(_)) => {
-                    let mut write = write.lock().await;
-                    let _ = write
-                        .send(Message::Close(Some(
-                            tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Unsupported,
-                                reason: "BACnet/SC requires binary frames".into(),
-                            },
-                        )))
-                        .await;
-                    return Err(ScConnectError::WebSocket {
-                        kind: ScWebSocketErrorKind::NonBinaryFrame,
-                        message: "non-binary WebSocket frame received".into(),
-                    }
-                    .into_bacnet_error());
-                }
-                Some(Err(e)) => {
-                    return Err(ScConnectError::WebSocket {
-                        kind: ScWebSocketErrorKind::Receive,
-                        message: format!("WebSocket recv error: {e}"),
-                    }
-                    .into_bacnet_error());
-                }
-                None => {
-                    return Err(ScConnectError::WebSocket {
-                        kind: ScWebSocketErrorKind::StreamEnded,
-                        message: "WebSocket stream ended".into(),
-                    }
-                    .into_bacnet_error());
-                }
-            }
-        }
+// A finite unit of receive scheduling, shared with deterministic frame tests.
+async fn direct_frame<S, E>(read: &mut S) -> Result<crate::sc::direct_socket::DirectFrame, Error>
+where
+    S: futures_util::Stream<Item = Result<Message, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    use crate::sc::direct_socket::DirectFrame;
+    match read.next().await {
+        Some(Ok(Message::Binary(data))) => Ok(DirectFrame::Binary(data.to_vec())),
+        Some(Ok(Message::Ping(_) | Message::Pong(_))) => Ok(DirectFrame::Control),
+        Some(Err(error)) => Err(Error::Transport(std::io::Error::other(error.to_string()))),
+        _ => Err(Error::Transport(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "direct WebSocket ended or carried non-binary data",
+        ))),
     }
 }
 
@@ -335,19 +304,42 @@ fn map_websocket_handshake_error(error: TungsteniteError) -> Error {
 fn verify_hub_subprotocol(
     response: &tokio_tungstenite::tungstenite::handshake::client::Response,
 ) -> Result<(), Error> {
+    verify_selected_subprotocol(
+        response,
+        BACNET_SC_HUB_SUBPROTOCOL,
+        "hub",
+        ScWebSocketErrorKind::HubSubprotocol,
+    )
+}
+
+fn verify_direct_subprotocol(
+    response: &tokio_tungstenite::tungstenite::handshake::client::Response,
+) -> Result<(), Error> {
+    verify_selected_subprotocol(
+        response,
+        BACNET_SC_DIRECT_SUBPROTOCOL,
+        "direct",
+        ScWebSocketErrorKind::DirectSubprotocol,
+    )
+}
+
+fn verify_selected_subprotocol(
+    response: &tokio_tungstenite::tungstenite::handshake::client::Response,
+    expected: &str,
+    role: &str,
+    kind: ScWebSocketErrorKind,
+) -> Result<(), Error> {
     let selected = response
         .headers()
         .get("Sec-WebSocket-Protocol")
         .and_then(|value| value.to_str().ok());
 
-    if selected == Some(BACNET_SC_HUB_SUBPROTOCOL) {
+    if selected == Some(expected) {
         Ok(())
     } else {
         Err(ScConnectError::WebSocket {
-            kind: ScWebSocketErrorKind::HubSubprotocol,
-            message: format!(
-                "BACnet/SC hub WebSocket subprotocol {BACNET_SC_HUB_SUBPROTOCOL} was not accepted"
-            ),
+            kind,
+            message: format!("BACnet/SC {role} WebSocket subprotocol {expected} was not accepted"),
         }
         .into_bacnet_error())
     }
@@ -355,54 +347,71 @@ fn verify_hub_subprotocol(
 
 impl WebSocketPort for TlsWebSocket {
     async fn send(&self, data: &[u8]) -> Result<(), Error> {
-        match &self.inner {
-            TlsWebSocketInner::Connected { .. } => self.send_connected(data).await,
-            TlsWebSocketInner::Deferred {
-                url,
-                tls_config,
-                connect_timeout,
-                connected,
-            } => {
-                let websocket = connected
-                    .get_or_try_init(|| async {
-                        tokio::time::timeout(
-                            *connect_timeout,
-                            TlsWebSocket::connect(url, tls_config.clone()),
-                        )
-                        .await
-                        .unwrap_or_else(|_| Err(Error::Timeout(*connect_timeout)))
-                        .map(std::sync::Arc::new)
-                    })
-                    .await?;
-                websocket.send_connected(data).await
-            }
-            TlsWebSocketInner::Unavailable(error) => Err(Self::unavailable_error(error).await),
-        }
+        let mut write = self.write.lock().await;
+        write
+            .send(Message::Binary(data.to_vec().into()))
+            .await
+            .map_err(|e| {
+                ScConnectError::WebSocket {
+                    kind: ScWebSocketErrorKind::Send,
+                    message: format!("WebSocket send failed: {e}"),
+                }
+                .into_bacnet_error()
+            })
     }
 
     async fn recv(&self) -> Result<Vec<u8>, Error> {
-        match &self.inner {
-            TlsWebSocketInner::Connected { .. } => self.recv_connected().await,
-            TlsWebSocketInner::Deferred {
-                url,
-                tls_config,
-                connect_timeout,
-                connected,
-            } => {
-                let websocket = connected
-                    .get_or_try_init(|| async {
-                        tokio::time::timeout(
-                            *connect_timeout,
-                            TlsWebSocket::connect(url, tls_config.clone()),
-                        )
-                        .await
-                        .unwrap_or_else(|_| Err(Error::Timeout(*connect_timeout)))
-                        .map(std::sync::Arc::new)
-                    })
-                    .await?;
-                websocket.recv_connected().await
+        loop {
+            // Read one message under the read lock, then drop it before
+            // acquiring write (avoids read→write lock ordering deadlock).
+            let msg = {
+                let mut read = self.read.lock().await;
+                read.next().await
+            };
+            match msg {
+                Some(Ok(Message::Binary(data))) => return Ok(data.to_vec()),
+                Some(Ok(Message::Close(_))) => {
+                    return Err(ScConnectError::WebSocket {
+                        kind: ScWebSocketErrorKind::Closed,
+                        message: "WebSocket closed".into(),
+                    }
+                    .into_bacnet_error());
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
+                    continue;
+                }
+                Some(Ok(_)) => {
+                    // Non-binary data frames: close with 1003
+                    let mut w = self.write.lock().await;
+                    let _ = w
+                        .send(Message::Close(Some(
+                            tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Unsupported,
+                                reason: "BACnet/SC requires binary frames".into(),
+                            },
+                        )))
+                        .await;
+                    return Err(ScConnectError::WebSocket {
+                        kind: ScWebSocketErrorKind::NonBinaryFrame,
+                        message: "non-binary WebSocket frame received".into(),
+                    }
+                    .into_bacnet_error());
+                }
+                Some(Err(e)) => {
+                    return Err(ScConnectError::WebSocket {
+                        kind: ScWebSocketErrorKind::Receive,
+                        message: format!("WebSocket recv error: {e}"),
+                    }
+                    .into_bacnet_error());
+                }
+                None => {
+                    return Err(ScConnectError::WebSocket {
+                        kind: ScWebSocketErrorKind::StreamEnded,
+                        message: "WebSocket stream ended".into(),
+                    }
+                    .into_bacnet_error());
+                }
             }
-            TlsWebSocketInner::Unavailable(error) => Err(Self::unavailable_error(error).await),
         }
     }
 }
@@ -412,106 +421,30 @@ impl WebSocketPort for TlsWebSocket {
 mod node_tls_tests;
 
 #[cfg(test)]
+#[path = "sc_tls/direct_dial_tests.rs"]
+mod direct_dial_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::rustls::pki_types::pem::PemObject;
     use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
     use tokio_rustls::TlsAcceptor;
 
     #[tokio::test]
-    async fn unavailable_websocket_returns_initial_error_once_then_stable_error() {
-        let ws = TlsWebSocket::from_initial_error(Error::Encoding("primary dial failed".into()));
-        assert!(ws
-            .recv()
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("primary dial failed"));
-        assert!(ws
-            .send(b"ignored")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("remains unavailable"));
-    }
-
-    #[tokio::test]
-    async fn deferred_websockets_dial_in_first_io_order() {
-        let first_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let second_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let first = Arc::new(
-            TlsWebSocket::deferred(
-                &format!("wss://{}", first_listener.local_addr().unwrap()),
-                test_tls_config(),
-                Duration::from_secs(1),
-            )
-            .unwrap(),
-        );
-        let second = Arc::new(
-            TlsWebSocket::deferred(
-                &format!("wss://{}", second_listener.local_addr().unwrap()),
-                test_tls_config(),
-                Duration::from_secs(1),
-            )
-            .unwrap(),
-        );
-
-        assert!(
-            tokio::time::timeout(Duration::from_millis(25), first_listener.accept())
-                .await
-                .is_err()
-        );
-
-        let first_send = tokio::spawn({
-            let first = Arc::clone(&first);
-            async move { first.send(b"first connect request").await }
-        });
-        let (socket, _) = tokio::time::timeout(Duration::from_secs(1), first_listener.accept())
-            .await
-            .expect("first I/O should initiate the TCP dial")
-            .unwrap();
-        drop(socket);
-        assert!(first_send.await.unwrap().is_err());
-
-        assert!(
-            tokio::time::timeout(Duration::from_millis(25), second_listener.accept())
-                .await
-                .is_err()
-        );
-        let second_send = tokio::spawn({
-            let second = Arc::clone(&second);
-            async move { second.send(b"second connect request").await }
-        });
-        let (socket, _) = tokio::time::timeout(Duration::from_secs(1), second_listener.accept())
-            .await
-            .expect("second I/O should initiate its TCP dial")
-            .unwrap();
-        drop(socket);
-        assert!(second_send.await.unwrap().is_err());
-    }
-
-    #[tokio::test]
-    async fn deferred_websocket_bounds_a_stalled_tls_handshake() {
+    async fn disable_nagle_sets_tcp_nodelay_on_both_ends() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let connect_timeout = Duration::from_millis(25);
-        let websocket = TlsWebSocket::deferred(
-            &format!("wss://{}", listener.local_addr().unwrap()),
-            test_tls_config(),
-            connect_timeout,
-        )
-        .unwrap();
-        let stalled_peer = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            drop(socket);
-        });
-
-        let error = websocket.send(b"connect request").await.unwrap_err();
-        assert!(matches!(error, Error::Timeout(value) if value == connect_timeout));
-        stalled_peer.abort();
+        let dialed = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (accepted, _) = listener.accept().await.unwrap();
+        for stream in [&dialed, &accepted] {
+            assert!(!stream.nodelay().unwrap(), "Nagle is on by default");
+            disable_nagle(stream);
+            assert!(stream.nodelay().unwrap());
+        }
     }
 
     #[test]

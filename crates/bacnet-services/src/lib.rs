@@ -1,5 +1,3 @@
-#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
-
 //! BACnet service request/response encode/decode per ASHRAE 135-2020.
 //!
 //! Each module covers one or more related BACnet services with request/response
@@ -7,30 +5,29 @@
 //! remains as raw bytes (`Vec<u8>`) — the application layer interprets
 //! property values, not the service codec.
 //!
-//! The service codecs require allocation for decoded sequences and owned text,
-//! but do not require an operating system. They can be used with
-//! `--no-default-features --features alloc` on a `no_std` target:
+//! # Features
 //!
-//! ```
-//! extern crate alloc;
+//! Decoded lists and text are owned, so the codecs need an allocator, and one
+//! of these features to say so:
 //!
-//! use bacnet_services::who_is::WhoIsRequest;
-//! use bytes::BytesMut;
+//! - `std` (default): hosted builds.
+//! - `alloc`: `no_std` with a global allocator, for bare-metal targets:
+//!   `default-features = false, features = ["alloc"]`. As for
+//!   `bacnet-encoding`, `bytes` must build for the target.
 //!
-//! let request = WhoIsRequest::all();
-//! let mut wire = BytesMut::new();
-//! request.encode(&mut wire);
-//! assert!(wire.is_empty());
-//! ```
+//! A build with neither fails; that combination is reserved for a future
+//! allocation-free subset.
 
-extern crate alloc;
-
-pub(crate) use alloc::format;
-pub(crate) use alloc::string::{String, ToString};
-pub(crate) use alloc::vec::Vec;
+// Tests always build with std, so feature-off test runs need no imports of
+// their own.
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 #[cfg(not(any(feature = "std", feature = "alloc")))]
-compile_error!("bacnet-services requires either the `std` or `alloc` feature");
+compile_error!("bacnet-services needs the `std` or the `alloc` feature");
+
+// `format!` and `vec!` without std's prelude.
+#[macro_use]
+extern crate alloc;
 
 pub mod alarm_event;
 pub mod alarm_summary;
@@ -49,7 +46,7 @@ pub mod private_transfer;
 pub mod read_property;
 pub mod read_range;
 pub mod rpm;
-pub mod schedule;
+pub mod structured_error;
 pub mod text_message;
 pub mod virtual_terminal;
 pub mod who_am_i;
@@ -58,3 +55,10 @@ pub mod who_is;
 pub mod wpm;
 pub mod write_group;
 pub mod write_property;
+
+#[cfg(test)]
+mod malformed_member_tests;
+#[cfg(test)]
+mod reject_reason_tests;
+#[cfg(test)]
+mod truncated_member_tests;

@@ -29,12 +29,16 @@ impl Files {
             NEXT.fetch_add(1, Ordering::Relaxed),
             rand::random::<u64>()
         ));
-        let mut builder = fs::DirBuilder::new();
+        // Owner-only where the OS has Unix modes.
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt;
+            let mut builder = fs::DirBuilder::new();
             builder.mode(0o700);
-        }
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = fs::DirBuilder::new();
         builder.create(&path).unwrap();
         Self(path)
     }
@@ -180,6 +184,35 @@ impl Process {
                 self.child.try_wait().unwrap().is_none(),
                 "child exited: {stderr}"
             );
+            assert!(Instant::now() < end, "no readiness barrier: {stderr}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Like [`hub_url`](Self::hub_url), but `None` when the hub exited because
+    /// another socket held its listen address; any other exit still fails. The
+    /// hub reports the bind error's kind: `AddrInUse`, or on Windows
+    /// `PermissionDenied` (WSAEACCES) for a port held without sharing, the
+    /// kinds `port_retry`'s `lost_to_another_socket` accepts.
+    pub async fn hub_url_unless_bind_lost(&mut self) -> Option<String> {
+        let end = Instant::now() + DEADLINE;
+        loop {
+            let (_, stderr) = self.output();
+            if let Some(line) = stderr
+                .split_inclusive('\n')
+                .find(|line| line.ends_with('\n') && line.contains("BACnet/SC hub listening on "))
+            {
+                let address = line.split("listening on ").nth(1).unwrap().trim_end();
+                return Some(format!("wss://{address}"));
+            }
+            if self.child.try_wait().unwrap().is_some() {
+                let (_, stderr) = self.output();
+                let lost = stderr.contains("Hub bind failed on ")
+                    && (stderr.contains("(AddrInUse)")
+                        || (cfg!(windows) && stderr.contains("(PermissionDenied)")));
+                assert!(lost, "hub exited: {stderr}");
+                return None;
+            }
             assert!(Instant::now() < end, "no readiness barrier: {stderr}");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

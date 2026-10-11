@@ -26,7 +26,11 @@ macro_rules! bacnet_enum {
 
         impl $Name {
             $(
+                // Hand-written docs come first and stay the summary; the wire
+                // value follows as its own paragraph (#902).
                 $(#[$vmeta])*
+                #[doc = ""]
+                #[doc = concat!("Wire value `", stringify!($val), "`.")]
                 pub const $VARIANT: Self = Self($val);
             )*
 
@@ -113,8 +117,7 @@ impl core::fmt::Display for ParseEnumError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for ParseEnumError {}
+impl core::error::Error for ParseEnumError {}
 
 /// Compare two enum names for equality, ignoring `_`/`-` separators and ASCII
 /// case. Dropping separators and folding case collapses every supported spelling

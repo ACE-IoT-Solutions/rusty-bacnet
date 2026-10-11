@@ -16,7 +16,7 @@ bacnet-services = { workspace = true, features = ["std"] }
 bacnet-transport.workspace = true
 bacnet-network.workspace = true
 bacnet-endpoint-core.workspace = true
-bytes.workspace = true
+bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }
 tokio-rustls = { workspace = true, optional = true }
@@ -24,7 +24,7 @@ futures-util = { workspace = true }
 
 [features]
 ipv6 = ["bacnet-transport/ipv6"]
-sc-tls = ["bacnet-transport/sc-tls", "tokio-rustls"]
+sc-tls = ["bacnet-transport/sc-tls", "dep:tokio-rustls"]
 
 [dev-dependencies]
 bacnet-objects.workspace = true

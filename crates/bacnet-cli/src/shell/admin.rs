@@ -1,5 +1,6 @@
 use super::*;
 
+use bacnet_types::enums::EventState;
 use bacnet_types::primitives::BACnetTimeStamp;
 
 const ACK_ALARM_USAGE: &str = "Usage: ack-alarm <target> <object> --state N \
@@ -106,12 +107,14 @@ pub(super) async fn handle_ack_alarm<T: TransportPort + 'static>(
     if let Err(e) = commands::device::acknowledge_alarm_cmd(
         client,
         &mac,
-        object_type,
-        instance,
-        arguments.state,
-        &arguments.source,
-        arguments.timestamp,
-        arguments.time_of_acknowledgment,
+        commands::device::AcknowledgeAlarmArgs {
+            object_type,
+            instance,
+            event_state: EventState::from_raw(arguments.state),
+            source: &arguments.source,
+            timestamp: arguments.timestamp,
+            time_of_acknowledgment: arguments.time_of_acknowledgment,
+        },
         format,
     )
     .await
@@ -216,8 +219,18 @@ pub(super) async fn handle_read_range<T: TransportPort + 'static>(
     args: &[String],
     format: OutputFormat,
 ) {
+    let (range, args) = match commands::read_range::RangeOptions::from_words(args) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            output::print_error(&e);
+            return;
+        }
+    };
     if args.len() < 2 {
-        output::print_error("Usage: read-range <target> <object> [property]");
+        output::print_error(
+            "Usage: read-range <target> <object> [property] \
+             [--position N | --sequence N | --time T] [--count N] [--all]",
+        );
         return;
     }
 
@@ -250,9 +263,17 @@ pub(super) async fn handle_read_range<T: TransportPort + 'static>(
         }
     };
 
-    if let Err(e) =
-        commands::read::read_range_cmd(client, &mac, object_type, instance, property, index, format)
-            .await
+    if let Err(e) = commands::read_range::read_range_cmd(
+        client,
+        &mac,
+        object_type,
+        instance,
+        property,
+        index,
+        &range,
+        format,
+    )
+    .await
     {
         output::print_error(&e.to_string());
     }

@@ -1,5 +1,24 @@
 use super::*;
 
+/// The handles a segmented ComplexAck transfer runs on: the network it sends
+/// through, the registry that routes SegmentAcks to it and the permits that
+/// bound live senders.
+pub(super) struct SegmentedSendResources<'a, T: TransportPort + 'static> {
+    pub(super) network: &'a Arc<NetworkLayer<T>>,
+    pub(super) seg_ack_senders: &'a Arc<segmented_send::SegmentedSendRegistry>,
+    pub(super) seg_send_permits: &'a Arc<Semaphore>,
+}
+
+/// Identity of the confirmed request a ComplexAck answers and the limits the
+/// client advertised for the response.
+#[derive(Clone, Copy)]
+pub(super) struct ComplexAckParams {
+    pub(super) invoke_id: u8,
+    pub(super) service_choice: ConfirmedServiceChoice,
+    pub(super) client_max_apdu: u16,
+    pub(super) client_max_segments: Option<u8>,
+}
+
 #[derive(Debug)]
 enum SegmentedSendWaitResult {
     SegmentAck(SegmentAckPdu),
@@ -11,42 +30,42 @@ enum SegmentedSendWaitResult {
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Register without awaiting the transfer: parent notifications stay concurrent.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn_segmented_complex_ack(
-        network: &Arc<NetworkLayer<T>>,
-        seg_ack_senders: &Arc<segmented_send::SegmentedSendRegistry>,
-        seg_send_permits: &Arc<Semaphore>,
+        resources: SegmentedSendResources<'_, T>,
         request_tasks: &super::request_tasks::RequestTaskSpawner,
-        pending_request: Option<super::confirmed_request_tracker::PendingConfirmedRequest>,
-        source_mac: &[u8],
-        source_network: Option<NpduAddress>,
-        invoke_id: u8,
-        service_choice: ConfirmedServiceChoice,
+        target: ResponseTarget<'_>,
+        ack: ComplexAckParams,
         service_ack_data: Bytes,
-        client_max_apdu: u16,
-        client_max_segments: Option<u8>,
+        pending: Option<PendingConfirmedRequest>,
+        segment_timeout: Duration,
     ) {
-        let network = Arc::clone(network);
-        let seg_ack_senders = Arc::clone(seg_ack_senders);
-        let seg_send_permits = Arc::clone(seg_send_permits);
-        let source_mac = MacAddr::from_slice(source_mac);
+        let route = target.route.clone();
+        let network = Arc::clone(resources.network);
+        let seg_ack_senders = Arc::clone(resources.seg_ack_senders);
+        let seg_send_permits = Arc::clone(resources.seg_send_permits);
+        let source_mac = MacAddr::from_slice(target.source_mac);
+        let source_network = target.source_network.cloned();
         request_tasks.spawn(async move {
-            Self::send_segmented_complex_ack(
-                &network,
-                &seg_ack_senders,
-                &seg_send_permits,
-                &source_mac,
-                source_network.as_ref(),
-                invoke_id,
-                service_choice,
+            Self::send_segmented_complex_ack_with_options(
+                SegmentedSendResources {
+                    network: &network,
+                    seg_ack_senders: &seg_ack_senders,
+                    seg_send_permits: &seg_send_permits,
+                },
+                ResponseTarget {
+                    source_mac: &source_mac,
+                    source_network: source_network.as_ref(),
+                    route: &route,
+                },
+                ack,
                 &service_ack_data,
-                client_max_apdu,
-                client_max_segments,
+                SegmentedSendOptions {
+                    segment_timeout,
+                    ..Default::default()
+                },
+                pending,
             )
             .await;
-            if let Some(pending) = pending_request {
-                pending.complete();
-            }
         });
     }
 
@@ -55,49 +74,49 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Splits the service ack data into segments that fit within the client's
     /// max APDU length, sends each segment, and waits for SegmentAck from
     /// the client before sending the next (window size 1).
-    #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(super) async fn send_segmented_complex_ack(
-        network: &Arc<NetworkLayer<T>>,
-        seg_ack_senders: &Arc<segmented_send::SegmentedSendRegistry>,
-        seg_send_permits: &Arc<Semaphore>,
-        source_mac: &[u8],
-        source_network: Option<&NpduAddress>,
-        invoke_id: u8,
-        service_choice: ConfirmedServiceChoice,
+        resources: SegmentedSendResources<'_, T>,
+        target: ResponseTarget<'_>,
+        ack: ComplexAckParams,
         service_ack_data: &[u8],
-        client_max_apdu: u16,
-        client_max_segments: Option<u8>,
+        pending: Option<PendingConfirmedRequest>,
     ) {
         Self::send_segmented_complex_ack_with_options(
-            network,
-            seg_ack_senders,
-            seg_send_permits,
-            source_mac,
-            source_network,
-            invoke_id,
-            service_choice,
+            resources,
+            target,
+            ack,
             service_ack_data,
-            client_max_apdu,
-            client_max_segments,
             SegmentedSendOptions::default(),
+            pending,
         )
         .await;
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn send_segmented_complex_ack_with_options(
-        network: &Arc<NetworkLayer<T>>,
-        seg_ack_senders: &Arc<segmented_send::SegmentedSendRegistry>,
-        seg_send_permits: &Arc<Semaphore>,
-        source_mac: &[u8],
-        source_network: Option<&NpduAddress>,
-        invoke_id: u8,
-        service_choice: ConfirmedServiceChoice,
+        resources: SegmentedSendResources<'_, T>,
+        target: ResponseTarget<'_>,
+        ack: ComplexAckParams,
         service_ack_data: &[u8],
-        client_max_apdu: u16,
-        client_max_segments: Option<u8>,
         options: SegmentedSendOptions,
+        mut pending: Option<PendingConfirmedRequest>,
     ) {
+        let SegmentedSendResources {
+            network,
+            seg_ack_senders,
+            seg_send_permits,
+        } = resources;
+        let ResponseTarget {
+            source_mac,
+            source_network,
+            route,
+        } = target;
+        let ComplexAckParams {
+            invoke_id,
+            service_choice,
+            client_max_apdu,
+            client_max_segments,
+        } = ack;
         let max_seg_size = max_segment_payload(client_max_apdu, SegmentedPduType::ComplexAck);
         let segments = match split_payload(service_ack_data, max_seg_size) {
             Ok(segments) => segments,
@@ -110,9 +129,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 });
                 let mut buf = BytesMut::new();
                 encode_apdu(&mut buf, &abort).expect("valid APDU encoding");
-                let _ =
-                    Self::send_confirmed_response_apdu(network, &buf, source_mac, source_network)
-                        .await;
+                let _ = Self::issue_terminal_response(
+                    network,
+                    &buf,
+                    source_mac,
+                    source_network,
+                    route,
+                    pending.take(),
+                )
+                .await;
                 return;
             }
         };
@@ -131,9 +156,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 });
                 let mut buf = BytesMut::new();
                 encode_apdu(&mut buf, &abort).expect("valid APDU encoding");
-                let _ =
-                    Self::send_confirmed_response_apdu(network, &buf, source_mac, source_network)
-                        .await;
+                let _ = Self::issue_terminal_response(
+                    network,
+                    &buf,
+                    source_mac,
+                    source_network,
+                    route,
+                    pending.take(),
+                )
+                .await;
                 return;
             }
         }
@@ -150,8 +181,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             });
             let mut buf = BytesMut::new();
             encode_apdu(&mut buf, &abort).expect("valid APDU encoding");
-            let _ =
-                Self::send_confirmed_response_apdu(network, &buf, source_mac, source_network).await;
+            let _ = Self::issue_terminal_response(
+                network,
+                &buf,
+                source_mac,
+                source_network,
+                route,
+                pending.take(),
+            )
+            .await;
             return;
         }
 
@@ -170,9 +208,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 });
                 let mut buf = BytesMut::new();
                 encode_apdu(&mut buf, &abort).expect("valid APDU encoding");
-                let _ =
-                    Self::send_confirmed_response_apdu(network, &buf, source_mac, source_network)
-                        .await;
+                let _ = Self::issue_terminal_response(
+                    network,
+                    &buf,
+                    source_mac,
+                    source_network,
+                    route,
+                    pending.take(),
+                )
+                .await;
                 return;
             }
         };
@@ -192,7 +236,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             control_tx,
             total_segments,
         ));
-        let key = segmented_transaction_key(source_mac, source_network, invoke_id);
+        let key =
+            segmented_transaction_key(source_mac, source_network, invoke_id, route.provenance());
         let insert_result = {
             let mut senders = seg_ack_senders.lock();
             if !senders.contains_key(&key) && senders.len() >= MAX_SEG_SENDERS {
@@ -216,9 +261,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 });
                 let mut buf = BytesMut::new();
                 encode_apdu(&mut buf, &abort).expect("valid APDU encoding");
-                let _ =
-                    Self::send_confirmed_response_apdu(network, &buf, source_mac, source_network)
-                        .await;
+                let _ = Self::issue_terminal_response(
+                    network,
+                    &buf,
+                    source_mac,
+                    source_network,
+                    route,
+                    pending.take(),
+                )
+                .await;
                 return;
             }
         };
@@ -265,6 +316,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 &buf,
                 source_mac,
                 source_network,
+                route,
                 true,
             )
             .await
@@ -373,11 +425,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 });
                                 let mut abort_buf = BytesMut::new();
                                 encode_apdu(&mut abort_buf, &abort).expect("valid APDU encoding");
-                                let _ = Self::send_confirmed_response_apdu(
+                                let _ = Self::issue_terminal_response(
                                     network,
                                     &abort_buf,
                                     source_mac,
                                     source_network,
+                                    route,
+                                    pending.take(),
                                 )
                                 .await;
                                 break 'send_segments;

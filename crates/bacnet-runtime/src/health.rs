@@ -19,32 +19,41 @@ pub struct ForeignDeviceRegistrationStatus {
     /// Registration state.
     pub state: ForeignDeviceRegistrationState,
     /// Most recent BVLC result, if available.
-    pub last_result_code: Option<bacnet_types::enums::BvlcResultCode>,
+    pub last_result_code: Option<bacnet_bip_codec::BvlcResultCode>,
     /// Whole seconds until the next renewal, if available.
     pub seconds_to_renewal: Option<u64>,
 }
 
-impl From<bacnet_transport::bip::ForeignDeviceRegistrationStatus>
-    for ForeignDeviceRegistrationStatus
-{
-    fn from(status: bacnet_transport::bip::ForeignDeviceRegistrationStatus) -> Self {
+impl From<bacnet_transport::bip::ForeignRegistrationSnapshot> for ForeignDeviceRegistrationStatus {
+    fn from(status: bacnet_transport::bip::ForeignRegistrationSnapshot) -> Self {
+        use bacnet_transport::bip::ForeignRegistrationOutcome;
+
         Self {
-            state: match status.state {
-                bacnet_transport::bip::ForeignDeviceRegistrationState::Pending => {
-                    ForeignDeviceRegistrationState::Pending
+            state: match status.last_outcome {
+                None => ForeignDeviceRegistrationState::Pending,
+                Some(ForeignRegistrationOutcome::Pending) => {
+                    match status.accepted_lease_remaining {
+                        Some(remaining) if !remaining.is_zero() => {
+                            ForeignDeviceRegistrationState::Registered
+                        }
+                        Some(_) => ForeignDeviceRegistrationState::Expired,
+                        None => ForeignDeviceRegistrationState::Pending,
+                    }
                 }
-                bacnet_transport::bip::ForeignDeviceRegistrationState::Registered => {
+                Some(ForeignRegistrationOutcome::Accepted) => {
                     ForeignDeviceRegistrationState::Registered
                 }
-                bacnet_transport::bip::ForeignDeviceRegistrationState::Rejected => {
+                Some(ForeignRegistrationOutcome::Refused) => {
                     ForeignDeviceRegistrationState::Rejected
                 }
-                bacnet_transport::bip::ForeignDeviceRegistrationState::Expired => {
-                    ForeignDeviceRegistrationState::Expired
-                }
+                Some(
+                    ForeignRegistrationOutcome::TimedOut
+                    | ForeignRegistrationOutcome::LocalError
+                    | ForeignRegistrationOutcome::Cancelled,
+                ) => ForeignDeviceRegistrationState::Expired,
             },
-            last_result_code: status.last_result_code,
-            seconds_to_renewal: status.seconds_to_renewal,
+            last_result_code: status.last_result,
+            seconds_to_renewal: status.next_attempt_in.map(|remaining| remaining.as_secs()),
         }
     }
 }

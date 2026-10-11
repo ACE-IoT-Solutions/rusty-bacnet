@@ -1,25 +1,4 @@
 use super::*;
-
-#[test]
-fn sc_identity_normalizes_authority_without_changing_case_sensitive_path() {
-    let (client, _hub) = LoopbackWebSocket::pair();
-    let transport = ScTransport::new(client, [1; 6]).with_hub_urls(
-        " WSS://PRIMARY.Example/HubPath/ ",
-        Some("wss://FAILOVER.example/OtherPath/"),
-    );
-    assert_eq!(transport.transport_kind(), "sc");
-    assert_eq!(
-        transport.topology_id().as_deref(),
-        Some("wss://primary.example/HubPath|wss://failover.example/OtherPath")
-    );
-    assert_eq!(
-        transport.topology_collision_ids(),
-        [
-            "wss://primary.example/HubPath",
-            "wss://failover.example/OtherPath"
-        ]
-    );
-}
 use std::sync::atomic::AtomicUsize;
 
 // Deliberately sparse/non-RFC-shaped TEST identity and non-Random-48 VMAC.
@@ -120,7 +99,7 @@ fn assert_untouched(
     assert!(transport.ws_shared.is_none());
     assert!(transport.recv_task.is_none());
     assert!(transport.restore_disconnect_task.lock().unwrap().is_none());
-    assert_eq!(transport.max_apdu_length(), DEFAULT_MAX_APDU_LENGTH);
+    assert_eq!(transport.egress_apdu_limit(), DEFAULT_MAX_APDU_LENGTH);
     assert_eq!(transport.local_mac(), vmac);
     assert_eq!(transport.device_uuid, uuid);
 }
@@ -216,7 +195,6 @@ async fn reconnect_then_heartbeat_then_identity_error_precedence() {
             initial_delay_ms: 0,
             max_delay_ms: 1,
             max_retries: 1,
-            retry_forever: false,
         });
     let states = transport.connection_state_changes();
     let error = transport.start().await.unwrap_err();
@@ -251,7 +229,7 @@ async fn accept_identity(ws: &impl WebSocketPort, vmac: Vmac, uuid: [u8; 16]) {
     let wire = recv(ws).await;
     assert_request_uuid(&wire, uuid);
     assert_eq!(&wire[4..10], &vmac);
-    assert_eq!(&wire[26..], &[0x16, 0x49, 0x05, 0xc4]); // local budgets: 5705/1476
+    assert_eq!(&wire[26..], &[0x16, 0x49, 0x05, 0xc6]); // local budgets: 5705/1478
     let mut accept = vec![7, 0, wire[2], wire[3]];
     accept.extend_from_slice(&[0x10; 6]);
     accept.extend_from_slice(&[0x48; 16]);

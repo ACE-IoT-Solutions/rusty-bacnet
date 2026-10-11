@@ -13,82 +13,110 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
 use crate::mstp_frame::{
-    FrameType, MstpFrame, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_MASTER,
+    FrameType, MstpFrame, BROADCAST_MAC, MAX_MASTER, MAX_STANDARD_FRAME_LENGTH,
     MAX_STANDARD_MPDU_DATA,
 };
-use crate::port::ReceivedNpdu;
+use crate::port::{ReceivedNpdu, TransportProvenance};
 
-/// Convert the historical transport configuration into the platform-neutral
-/// MS/TP core configuration.
-impl MstpConfig {
-    pub(crate) fn to_core_config(&self) -> Result<bacnet_mstp_core::MstpCoreConfig, Error> {
-        let mut config =
-            bacnet_mstp_core::MstpCoreConfig::for_baud_rate(self.baud_rate).map_err(|error| {
-                Error::Encoding(format!("invalid MS/TP core configuration: {error:?}"))
-            })?;
-        config.station = self.this_station;
-        config.max_master = self.max_master;
-        config.max_info_frames = self.max_info_frames;
-        config.validate().map_err(|error| {
-            Error::Encoding(format!("invalid MS/TP core configuration: {error:?}"))
-        })?;
-        Ok(config)
-    }
-}
+mod diagnostics;
+use diagnostics::{increment, Counters};
+pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot};
 
 // ---------------------------------------------------------------------------
 // Serial port abstraction
 // ---------------------------------------------------------------------------
-
-/// Requested RS-485 transceiver direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SerialDirection {
-    /// Disable the driver and listen on the bus.
-    Receive,
-    /// Enable the driver for transmission.
-    Transmit,
-}
 
 /// Abstraction over an RS-485 serial port.
 ///
 /// Implementations wrap the platform serial driver (e.g. `tokio-serial`).
 /// A loopback implementation is provided for testing.
 pub trait SerialPort: Send + Sync + 'static {
-    /// Set the external RS-485 transceiver direction.
-    ///
-    /// Auto-direction and kernel-managed adapters may keep this default.
-    fn set_direction(
-        &self,
-        _direction: SerialDirection,
-    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
-        async { Ok(()) }
-    }
-
-    /// Write bytes to the serial port.
+    /// Write bytes to the serial port. Success may mean only driver acceptance,
+    /// not that the final stop bit has left the UART; use [`Self::drain`] for that.
     fn write(&self, data: &[u8]) -> impl std::future::Future<Output = Result<(), Error>> + Send;
+    /// Wait until all accepted output has finished transmission, including the
+    /// UART shift register. Required for software-controlled RS-485 direction.
+    ///
+    /// Call even after a write error, which may have accepted a partial frame.
+    /// An error leaves transmit completion unknown. The default is unsupported,
+    /// rather than falsely reporting completion for existing custom backends.
+    fn drain(&self) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async {
+            Err(Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Serial transmit-complete drain is not supported by this backend",
+            )))
+        }
+    }
     /// Read available bytes into `buf`. Returns the number of bytes read.
     /// Should block until at least 1 byte is available or timeout.
     fn read(
         &self,
         buf: &mut [u8],
     ) -> impl std::future::Future<Output = Result<usize, Error>> + Send;
+}
 
-    /// Wait until the final stop bit of the last write has left the UART.
-    ///
-    /// Drivers that already make [`Self::write`] physically drained may keep
-    /// this default. Hardware-backed drivers must override it when their write
-    /// future only means that bytes were accepted by a driver buffer.
-    fn drain(&self) -> impl std::future::Future<Output = Result<(), Error>> + Send {
-        async { Ok(()) }
+/// Execution placement for an MS/TP transport, independent of master-node settings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MstpExecutionMode {
+    /// Spawn the MAC loop on the caller's Tokio runtime (the existing default).
+    #[default]
+    Tokio,
+    /// Poll the same MAC loop on a dedicated OS thread with its own Tokio runtime.
+    /// Blocking drain work uses that runtime's blocking pool, not the application's.
+    /// This does not configure real-time scheduling or guarantee wire timing.
+    DedicatedThread,
+}
+
+/// Owns the isolated reactor. Dropping the shutdown sender also handles cancelled
+/// startup and abort; only `stop` waits for runtime and blocking-I/O completion.
+struct DedicatedRuntime {
+    handle: tokio::runtime::Handle,
+    shutdown: oneshot::Sender<()>,
+    finished: oneshot::Receiver<()>,
+}
+
+impl DedicatedRuntime {
+    async fn new() -> Result<Self, Error> {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (shutdown, shutdown_rx) = oneshot::channel();
+        let (finished_tx, finished) = oneshot::channel();
+        std::thread::Builder::new()
+            .name("bacnet-mstp".into())
+            .spawn(move || {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => {
+                        if started_tx.send(Ok(runtime.handle().clone())).is_ok() {
+                            let _ = runtime.block_on(shutdown_rx);
+                        }
+                        // Drop on the OS thread, never in the caller's async context.
+                        // This waits for any already-started blocking drain calls.
+                        drop(runtime);
+                    }
+                    Err(error) => {
+                        let _ = started_tx.send(Err(error));
+                    }
+                }
+                let _ = finished_tx.send(());
+            })
+            .map_err(Error::Transport)?;
+        let handle = started_rx
+            .await
+            .map_err(|_| Error::Encoding("MS/TP execution thread failed to start".into()))?
+            .map_err(Error::Transport)?;
+        Ok(Self {
+            handle,
+            shutdown,
+            finished,
+        })
     }
 
-    /// Explicit physical-drain hook for userspace direction wrappers.
-    ///
-    /// Implementations without a distinct hardware queue may keep this
-    /// default. UART adapters should fail closed if they cannot prove that the
-    /// final stop bit has left the transmitter.
-    fn drain_physical(&self) -> impl std::future::Future<Output = Result<(), Error>> + Send {
-        self.drain()
+    async fn stop(self) {
+        drop(self.shutdown);
+        let _ = self.finished.await;
     }
 }
 
@@ -102,7 +130,7 @@ const T_NO_TOKEN_MS: u64 = 500;
 const T_REPLY_TIMEOUT_MS: u64 = 255;
 /// Time to wait for another node to begin using the token after it was passed (ms).
 const T_USAGE_TIMEOUT_MS: u64 = 20;
-/// The width of the time slot within which a node may generate a token (ms).
+/// Length of each station's turn for regenerating a lost token (T_slot, ms).
 fn calculate_t_slot_ms(_baud_rate: u32) -> u64 {
     10
 }
@@ -117,8 +145,8 @@ fn calculate_t_turnaround_us(baud_rate: u32) -> u64 {
 }
 /// Number of retries for token pass before declaring token lost.
 const N_RETRY_TOKEN: u8 = 1;
-/// Maximum hosted assembly buffer: the larger extended encoded frame.
-pub(crate) const MSTP_MAX_FRAME_BUF: usize = MAX_EXTENDED_FRAME_LENGTH;
+/// Maximum standard frame buffer size: preamble + header + data + data CRC.
+pub(crate) const MSTP_MAX_FRAME_BUF: usize = MAX_STANDARD_FRAME_LENGTH;
 /// Host-side stale partial-frame timeout for USB/chunked serial reassembly.
 ///
 /// This is **not** Clause 9 `T_frame_abort` (wire inter-byte silence). Host async reads
@@ -181,11 +209,10 @@ impl Default for MstpConfig {
 }
 
 /// Internal state for the master node state machine.
-#[deprecated(
-    note = "MasterNode is a compatibility adapter; new code should use bacnet_mstp_core::MasterCore"
-)]
 pub struct MasterNode {
+    /// Timing and addressing configuration this node runs with.
     pub config: MstpConfig,
+    /// Current state of the master-node state machine.
     pub state: MasterState,
     /// Next station to receive the token.
     pub next_station: u8,
@@ -221,6 +248,8 @@ pub struct MasterNode {
 const NPOLL: u8 = 50;
 
 impl MasterNode {
+    /// Create a master node in the `Idle` state; fails if `max_master` exceeds `MAX_MASTER` or
+    /// `this_station` exceeds `max_master`.
     pub fn new(config: MstpConfig) -> Result<Self, Error> {
         if config.max_master > MAX_MASTER {
             return Err(Error::Encoding(format!(
@@ -261,6 +290,15 @@ impl MasterNode {
         &mut self,
         frame: &MstpFrame,
         npdu_tx: &mpsc::Sender<ReceivedNpdu>,
+    ) -> Option<MstpFrame> {
+        self.handle_received_frame_observed(frame, npdu_tx, None)
+    }
+
+    fn handle_received_frame_observed(
+        &mut self,
+        frame: &MstpFrame,
+        npdu_tx: &mpsc::Sender<ReceivedNpdu>,
+        diagnostics: Option<&Counters>,
     ) -> Option<MstpFrame> {
         self.event_count = self.event_count.saturating_add(1);
 
@@ -316,20 +354,24 @@ impl MasterNode {
                 }
                 None
             }
-            FrameType::BACnetDataNotExpectingReply | FrameType::ExtendedDataNotExpectingReply => {
+            FrameType::BACnetDataNotExpectingReply => {
                 if self.state == MasterState::WaitForReply
                     && frame.destination == self.config.this_station
                 {
                     // ReceivedReply or ReceivedUnexpectedFrame — validate source
                     if self.expected_reply_source == Some(frame.source) {
-                        let _ = npdu_tx.try_send(ReceivedNpdu {
+                        let result = npdu_tx.try_send(ReceivedNpdu {
+                            direct_response: None,
                             npdu: frame.data.clone(),
                             source_mac: MacAddr::from_slice(&[frame.source]),
                             link_layer_group: false,
                             data_attributes: Vec::new(),
-                            transport_meta: None,
+                            provenance: TransportProvenance::unverified(),
                             reply_tx: None,
                         });
+                        if let Some(counts) = diagnostics {
+                            counts.delivery(&result);
+                        }
                     }
                     // Both cases → DoneWithToken per spec Clause 9.5.6
                     self.expected_reply_source = None;
@@ -337,18 +379,22 @@ impl MasterNode {
                 } else if frame.destination == self.config.this_station
                     || frame.destination == BROADCAST_MAC
                 {
-                    let _ = npdu_tx.try_send(ReceivedNpdu {
+                    let result = npdu_tx.try_send(ReceivedNpdu {
+                        direct_response: None,
                         npdu: frame.data.clone(),
                         source_mac: MacAddr::from_slice(&[frame.source]),
                         link_layer_group: frame.destination == BROADCAST_MAC,
                         data_attributes: Vec::new(),
-                        transport_meta: None,
+                        provenance: TransportProvenance::unverified(),
                         reply_tx: None,
                     });
+                    if let Some(counts) = diagnostics {
+                        counts.delivery(&result);
+                    }
                 }
                 None
             }
-            FrameType::BACnetDataExpectingReply | FrameType::ExtendedDataExpectingReply => {
+            FrameType::BACnetDataExpectingReply => {
                 if frame.destination == self.config.this_station {
                     if self.pending_reply_source.is_some() {
                         return None;
@@ -357,14 +403,18 @@ impl MasterNode {
                     self.pending_reply_source = Some(frame.source);
                     let (tx, rx) = oneshot::channel();
                     self.reply_rx = Some(rx);
-                    let _ = npdu_tx.try_send(ReceivedNpdu {
+                    let result = npdu_tx.try_send(ReceivedNpdu {
+                        direct_response: None,
                         npdu: frame.data.clone(),
                         source_mac: MacAddr::from_slice(&[frame.source]),
                         link_layer_group: false,
                         data_attributes: Vec::new(),
-                        transport_meta: None,
+                        provenance: TransportProvenance::unverified(),
                         reply_tx: Some(tx),
                     });
+                    if let Some(counts) = diagnostics {
+                        counts.delivery(&result);
+                    }
                 }
                 None
             }
@@ -668,9 +718,21 @@ impl MasterNode {
     /// Queue an NPDU for transmission.
     ///
     /// Returns an error if the NPDU exceeds the supported standard-frame limit
-    /// or the TX queue has reached [`MAX_TX_QUEUE_DEPTH`].
+    /// or the TX queue has reached `MAX_TX_QUEUE_DEPTH`.
     pub fn queue_npdu(&mut self, dest: u8, npdu: Bytes) -> Result<(), Error> {
+        self.queue_npdu_observed(dest, npdu, None)
+    }
+
+    fn queue_npdu_observed(
+        &mut self,
+        dest: u8,
+        npdu: Bytes,
+        diagnostics: Option<&Counters>,
+    ) -> Result<(), Error> {
         if npdu.len() > MAX_STANDARD_MPDU_DATA {
+            if let Some(counts) = diagnostics {
+                increment(&counts.outbound_oversize);
+            }
             return Err(Error::Encoding(format!(
                 "MS/TP NPDU length {} exceeds standard-frame maximum {}",
                 npdu.len(),
@@ -678,6 +740,9 @@ impl MasterNode {
             )));
         }
         if self.tx_queue.len() >= MAX_TX_QUEUE_DEPTH {
+            if let Some(counts) = diagnostics {
+                increment(&counts.outbound_queue_full);
+            }
             return Err(Error::Transport(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "MS/TP TX queue full",
@@ -710,14 +775,15 @@ fn next_addr(current: u8, max_master: u8) -> u8 {
     }
 }
 
-mod core_adapter;
 mod port;
 pub use port::{LoopbackSerial, MstpTransport, NoSerial};
 
 #[cfg(test)]
 mod clause956_tests;
 #[cfg(test)]
-mod port_timing_tests;
+mod diagnostics_tests;
+#[cfg(test)]
+pub(crate) mod port_timing_tests;
 #[cfg(test)]
 mod reply_tests;
 #[cfg(test)]

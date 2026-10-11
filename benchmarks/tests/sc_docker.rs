@@ -1,6 +1,7 @@
 //! Opt-in read-only smoke peer for an explicitly provisioned, isolated SC pair.
 //! Build natively on the Docker builder; mount this test executable and the
 //! peer's three credential files read-only into a transient client container.
+#![allow(clippy::print_stderr)] // this opt-in peer reports its outcome on the console
 #[path = "sc_binary/peer.rs"]
 mod peer;
 #[path = "sc_binary/support.rs"]
@@ -21,7 +22,9 @@ async fn docker_pair_read_property() {
         assert!(text.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_eq!(text.len() % 2, 0);
         text.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>()
     };

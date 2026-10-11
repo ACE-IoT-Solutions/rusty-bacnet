@@ -158,7 +158,7 @@ async fn dispatch(
     client_max_apdu: u16,
     local_max_apdu: u32,
 ) -> (
-    SentFrames,
+    SendLog,
     Arc<segmented_send::SegmentedSendRegistry>,
     MacAddr,
     Arc<crate::server::request_tasks::RequestTasks>,
@@ -180,26 +180,15 @@ async fn dispatch_with_budget(
     local_max_apdu: u32,
     budget: GetEventInformationBudget,
 ) -> (
-    SentFrames,
+    SendLog,
     Arc<segmented_send::SegmentedSendRegistry>,
     MacAddr,
     Arc<crate::server::request_tasks::RequestTasks>,
 ) {
-    let sent = SentFrames::default();
-    let network = Arc::new(NetworkLayer::new(RecordingTransport::new(Arc::clone(
-        &sent,
-    ))));
+    let (network, sent) = recording_network();
     let db = Arc::new(RwLock::new(database()));
-    let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::new()));
     let seg_ack_senders = Arc::new(segmented_send::SegmentedSendRegistry::default());
-    let seg_send_permits = Arc::new(Semaphore::new(MAX_SEG_SENDERS));
-    let cov_in_flight = Arc::new(Semaphore::new(1));
-    let server_tsm = Arc::new(Mutex::new(ServerTsm::new()));
-    let notification_transactions = NotificationTransactions::new();
     let confirmed_request_tracker = Arc::new(ConfirmedRequestTracker::default());
-    let device_bindings = Arc::new(RwLock::new(DeviceBindingTable::new()));
-    let comm_state = Arc::new(AtomicU8::new(0));
-    let dcc_timer = Arc::new(Mutex::new(None::<JoinHandle<()>>));
     let config = ServerConfig {
         get_event_information_budget: budget,
         max_apdu_length: local_max_apdu,
@@ -209,20 +198,13 @@ async fn dispatch_with_budget(
     let source_mac = test_mac(41);
     let request_tasks = Arc::new(crate::server::request_tasks::RequestTasks::default());
 
-    BACnetServer::<RecordingTransport>::handle_confirmed_request(
-        &db,
-        &network,
-        &cov_table,
-        &seg_ack_senders,
-        &seg_send_permits,
-        &cov_in_flight,
-        &server_tsm,
-        &notification_transactions,
+    BACnetServer::<TestTransport>::handle_confirmed_request(
+        &RequestServices {
+            db: Arc::clone(&db),
+            seg_ack_senders: Arc::clone(&seg_ack_senders),
+            ..RequestServices::for_test(Arc::clone(&network), config.clone())
+        },
         &confirmed_request_tracker,
-        &device_bindings,
-        &comm_state,
-        &dcc_timer,
-        &config,
         &request_tasks.spawner(),
         source_mac.as_slice(),
         None,
@@ -296,7 +278,12 @@ async fn segmentation_capable_dispatch_retains_the_complete_service_ack() {
     )
     .await
     .expect("parent must return without awaiting segmented response ACKs");
-    let key = segmented_transaction_key(&source_mac, None, INVOKE_ID);
+    let key = segmented_transaction_key(
+        &source_mac,
+        None,
+        INVOKE_ID,
+        bacnet_transport::port::TransportProvenance::unverified(),
+    );
     let mut reconstructed = BytesMut::new();
     let mut index = 0usize;
 

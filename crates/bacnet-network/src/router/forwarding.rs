@@ -1,22 +1,11 @@
 use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
 use bacnet_transport::port::DataAttribute;
-use bacnet_types::enums::{NetworkMessageType, RejectMessageReason};
 use bacnet_types::MacAddr;
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use tokio::sync::mpsc;
 use tracing::warn;
 
 use super::SendRequest;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ForwardOutcome {
-    Queued,
-    HopExhausted,
-    EncodeFailed,
-    InvalidRoute,
-    OutputFull { port: usize },
-    OutputClosed { port: usize },
-}
 
 /// Build the source NpduAddress for a forwarded message.
 fn build_source(npdu: &Npdu, source_network: u16, source_mac: &[u8]) -> NpduAddress {
@@ -35,10 +24,10 @@ pub(super) fn forward_unicast(
     npdu: Npdu,
     _source_port_idx: usize,
     data_attributes: &[DataAttribute],
-) -> ForwardOutcome {
+) {
     if npdu.hop_count == 0 {
         warn!("Discarding NPDU with hop_count=0");
-        return ForwardOutcome::HopExhausted;
+        return;
     }
 
     let payload_len = npdu.payload.len();
@@ -69,15 +58,19 @@ pub(super) fn forward_unicast(
         destination: forwarded_dest,
         source: Some(source),
         hop_count: forwarded_hop_count,
-        message_type: None,
-        vendor_id: None,
+        // RB-03: routed network-layer messages (including proprietary and
+        // other directed controls) keep their identity opaquely. Clearing
+        // these corrupted unicast-routed controls while broadcast preserved
+        // them; APDUs carry None here, so this is a no-op for APDU traffic.
+        message_type: npdu.message_type,
+        vendor_id: npdu.vendor_id,
         payload: npdu.payload,
     };
 
     let mut buf = BytesMut::with_capacity(32 + payload_len);
     if let Err(e) = encode_npdu(&mut buf, &forwarded) {
         warn!("Failed to encode forwarded NPDU: {e}");
-        return ForwardOutcome::EncodeFailed;
+        return;
     }
 
     if route.port_index >= send_txs.len() {
@@ -85,47 +78,28 @@ pub(super) fn forward_unicast(
             port = route.port_index,
             "Route references invalid port index"
         );
-        return ForwardOutcome::InvalidRoute;
+        return;
     }
     if dest_mac.is_empty() {
-        match send_txs[route.port_index].try_send(SendRequest::Broadcast {
+        if let Err(e) = send_txs[route.port_index].try_send(SendRequest::Broadcast {
             npdu: buf.freeze(),
             data_attributes: data_attributes.to_vec(),
-            count_forward: true,
         }) {
-            Ok(()) => ForwardOutcome::Queued,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!("Router dropped message: output channel full");
-                ForwardOutcome::OutputFull {
-                    port: route.port_index,
-                }
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => ForwardOutcome::OutputClosed {
-                port: route.port_index,
-            },
+            warn!(%e, "Router dropped message: output channel full");
         }
-    } else {
-        match send_txs[route.port_index].try_send(SendRequest::Unicast {
-            npdu: buf.freeze(),
-            mac: dest_mac,
-            data_attributes: data_attributes.to_vec(),
-            count_forward: true,
-        }) {
-            Ok(()) => ForwardOutcome::Queued,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!("Router dropped message: output channel full");
-                ForwardOutcome::OutputFull {
-                    port: route.port_index,
-                }
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => ForwardOutcome::OutputClosed {
-                port: route.port_index,
-            },
-        }
+    } else if let Err(e) = send_txs[route.port_index].try_send(SendRequest::Unicast {
+        npdu: buf.freeze(),
+        mac: dest_mac,
+        data_attributes: data_attributes.to_vec(),
+    }) {
+        warn!(%e, "Router dropped message: output channel full");
     }
 }
 
 /// Forward a global broadcast to all ports except the source port.
+///
+/// The destination is copied as it arrived. Ingress has already dropped a
+/// DNET 0xFFFF that carries a DADR (#1379), so what goes out is DLEN 0.
 pub(super) fn forward_broadcast(
     send_txs: &[mpsc::Sender<SendRequest>],
     source_port: usize,
@@ -133,10 +107,16 @@ pub(super) fn forward_broadcast(
     source_mac: &[u8],
     npdu: &Npdu,
     data_attributes: &[DataAttribute],
-) -> Vec<ForwardOutcome> {
+) {
+    debug_assert!(
+        npdu.destination
+            .as_ref()
+            .is_some_and(|destination| destination.mac_address.is_empty()),
+        "ingress drops a global broadcast with a DADR before forwarding"
+    );
     if npdu.hop_count == 0 {
         warn!("Discarding NPDU with hop_count=0");
-        return vec![ForwardOutcome::HopExhausted];
+        return;
     }
 
     let forwarded = Npdu {
@@ -154,63 +134,19 @@ pub(super) fn forward_broadcast(
     let mut buf = BytesMut::with_capacity(32 + npdu.payload.len());
     if let Err(e) = encode_npdu(&mut buf, &forwarded) {
         warn!("Failed to encode forwarded broadcast NPDU: {e}");
-        return vec![ForwardOutcome::EncodeFailed];
+        return;
     }
 
     let encoded = buf.freeze();
-    let mut outcomes = Vec::with_capacity(send_txs.len().saturating_sub(1));
     for (idx, tx) in send_txs.iter().enumerate() {
         if idx == source_port {
             continue;
         }
-        outcomes.push(
-            match tx.try_send(SendRequest::Broadcast {
-                npdu: encoded.clone(),
-                data_attributes: data_attributes.to_vec(),
-                count_forward: true,
-            }) {
-                Ok(()) => ForwardOutcome::Queued,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    warn!("Router dropped broadcast: output channel full");
-                    ForwardOutcome::OutputFull { port: idx }
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    ForwardOutcome::OutputClosed { port: idx }
-                }
-            },
-        );
-    }
-    outcomes
-}
-
-/// Send a Reject-Message-To-Network.
-pub(super) fn send_reject(
-    send_tx: &mpsc::Sender<SendRequest>,
-    source_mac: &[u8],
-    rejected_network: u16,
-    reason: RejectMessageReason,
-) {
-    let mut payload = BytesMut::with_capacity(3);
-    payload.put_u8(reason.to_raw());
-    payload.put_u16(rejected_network);
-
-    let reject = Npdu {
-        is_network_message: true,
-        message_type: Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw()),
-        payload: payload.freeze(),
-        ..Npdu::default()
-    };
-
-    let mut buf = BytesMut::with_capacity(8);
-    if let Err(e) = encode_npdu(&mut buf, &reject) {
-        warn!("Failed to encode Reject-Message NPDU: {e}");
-        return;
-    }
-
-    if let Err(e) = send_tx.try_send(SendRequest::unicast(
-        buf.freeze(),
-        MacAddr::from_slice(source_mac),
-    )) {
-        warn!(%e, "Router dropped reject message: output channel full");
+        if let Err(e) = tx.try_send(SendRequest::Broadcast {
+            npdu: encoded.clone(),
+            data_attributes: data_attributes.to_vec(),
+        }) {
+            warn!(%e, "Router dropped broadcast: output channel full");
+        }
     }
 }

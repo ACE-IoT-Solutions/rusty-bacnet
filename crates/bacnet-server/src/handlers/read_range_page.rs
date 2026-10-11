@@ -10,6 +10,24 @@ mod tests;
 pub(crate) enum ReadRangeFailure {
     Service(Error),
     Bytes,
+    /// Rebuilding a Group's Present_Value would pass the work limit (#1172).
+    Work,
+}
+
+impl From<Error> for ReadRangeFailure {
+    fn from(error: Error) -> Self {
+        Self::Service(error)
+    }
+}
+
+impl From<super::ReadFailure> for ReadRangeFailure {
+    fn from(failure: super::ReadFailure) -> Self {
+        match failure {
+            super::ReadFailure::Service(error) => Self::Service(error),
+            super::ReadFailure::Work => Self::Work,
+            super::ReadFailure::Bytes => Self::Bytes,
+        }
+    }
 }
 
 fn negative(range: &Option<RangeSpec>) -> bool {
@@ -43,7 +61,7 @@ fn envelope(
             .identities
             .as_ref()
             .filter(|_| count != 0)
-            .map(|ids| ids[range.start].sequence_number()),
+            .map(|ids| ids.sequence_number(range.start)),
     })
 }
 
@@ -95,7 +113,10 @@ where
             break;
         }
         let mut item = BytesMut::new();
-        encode_item(&mut item, &selected.items[index]).map_err(ReadRangeFailure::Service)?;
+        selected
+            .items
+            .encode_with(index, &mut item, &mut encode_item)
+            .map_err(ReadRangeFailure::Service)?;
         let Some(bytes) = accepted_bytes.checked_add(item.len()) else {
             break;
         };

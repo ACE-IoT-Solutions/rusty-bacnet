@@ -1,5 +1,6 @@
 use super::*;
 use crate::server::request_admission::{Class, Rejection};
+use crate::server::test_transport::{SendMode, StartMode};
 
 #[path = "peer_admission_tests.rs"]
 mod peer_admission_tests;
@@ -9,8 +10,21 @@ mod dcc_outcome_admission_tests;
 #[path = "recovery_admission_tests.rs"]
 mod recovery_admission_tests;
 
+// Exercise sealed admission before final transport retirement; after successful
+// stop there is deliberately no network owner left for direct private dispatch.
+async fn begin_stop(server: &mut BACnetServer<TestTransport>) {
+    use std::future::Future;
+    let stop = server.stop();
+    tokio::pin!(stop);
+    std::future::poll_fn(|cx| {
+        assert!(stop.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+}
+
 async fn small_fixture() -> (
-    BACnetServer<HeldTransport>,
+    BACnetServer<TestTransport>,
     mpsc::Sender<ReceivedNpdu>,
     mpsc::UnboundedReceiver<oneshot::Receiver<()>>,
 ) {
@@ -32,39 +46,26 @@ async fn small_fixture() -> (
 }
 
 async fn dispatch(
-    server: &BACnetServer<HeldTransport>,
+    server: &BACnetServer<TestTransport>,
     apdu: Apdu,
     source: Option<NpduAddress>,
     reply_tx: Option<oneshot::Sender<Bytes>>,
 ) {
     BACnetServer::dispatch(
-        &server.db,
-        &server.network,
-        &server.cov_table,
-        &server.seg_ack_senders,
-        &server.seg_send_permits,
-        &server.cov_in_flight,
-        &server.server_tsm,
-        &server.notification_transactions,
-        &server.confirmed_request_tracker,
-        &server.device_bindings,
-        &server.comm_state,
-        &server.dcc_timer,
-        &server.dcc_outcomes,
-        &Arc::new(server.config.clone()),
-        &server._clock,
-        &server.discovery_limiter,
-        &server.request_tasks,
+        &server.test_dispatch_context(),
         &[1],
         apdu,
         bacnet_network::layer::ReceivedApdu {
+            direct_response: None,
             apdu: Bytes::new(),
             source_mac: MacAddr::from_slice(&[1]),
+            ingress_network: None,
             source_network: source,
             link_layer_group: false,
             is_group: false,
+            global_broadcast: false,
             data_attributes: Vec::new(),
-            transport_meta: None,
+            provenance: bacnet_transport::port::TransportProvenance::unverified(),
             reply_tx,
         },
     )
@@ -117,7 +118,7 @@ async fn admission_default_confirmed_limit_rejects_before_handler() {
             .unwrap();
     }
     {
-        let frames = server.network.transport().frames.lock().unwrap();
+        let frames = held_sends(&server).frames.lock().unwrap();
         assert_eq!(frames.len(), 65);
         assert!(
             matches!(&frames[64], Apdu::Abort(abort)
@@ -183,7 +184,7 @@ async fn admission_independent_handlers_and_eight_owned_abort_workers_never_queu
             }),
             _ => Apdu::Abort(AbortPdu {
                 invoke_id,
-                sent_by_server: false,
+                sent_by_server: true,
                 abort_reason: AbortReason::OTHER,
             }),
         };
@@ -195,23 +196,27 @@ async fn admission_independent_handlers_and_eight_owned_abort_workers_never_queu
         .unwrap();
         assert_eq!(
             completed.try_recv(),
-            Ok(if kind == 0 {
-                CovAckResult::Ack
-            } else {
-                CovAckResult::Error
+            Ok(match kind {
+                0 => CovAckResult::Ack,
+                1 => CovAckResult::Error(Refusal::Error {
+                    class: ErrorClass::SERVICES,
+                    code: ErrorCode::OTHER,
+                }),
+                2 => CovAckResult::Error(Refusal::Reject(RejectReason::OTHER)),
+                _ => CovAckResult::Error(Refusal::Abort(AbortReason::OTHER)),
             })
         );
         drop(operation);
     }
     assert_eq!(server.request_admission_counters(), counters);
     assert!(started.try_recv().is_err());
-    assert_eq!(server.network.transport().frames.lock().unwrap().len(), 10);
-    server.network.transport().release.notify_waiters();
+    assert_eq!(held_sends(&server).frames.lock().unwrap().len(), 10);
+    held_sends(&server).release.notify_waiters();
     original.await.unwrap();
     unconfirmed.await.unwrap();
     wait_reaped(&server).await;
     // Denied work never starts after release. All ten prior frames are final.
-    assert_eq!(server.network.transport().frames.lock().unwrap().len(), 10);
+    assert_eq!(held_sends(&server).frames.lock().unwrap().len(), 10);
     assert_eq!(server.request_admission_counters().confirmed_active, 0);
     assert_eq!(server.request_admission_counters().unconfirmed_active, 0);
     assert_eq!(server.request_admission_counters().abort_active, 0);
@@ -226,106 +231,48 @@ async fn admission_independent_handlers_and_eight_owned_abort_workers_never_queu
 }
 
 #[tokio::test]
-async fn admission_suppresses_pending_duplicate_but_admits_exact_request_after_completion() {
+async fn admission_pending_duplicate_precedes_capacity_but_issued_reuse_overloads() {
     let (mut server, _tx, mut started) = small_fixture().await;
+    let db = server.db.clone();
+    let held = db.write().await;
     dispatch(&server, request(1), None, None).await;
-    let original = observed(&mut started).await;
-    // Exact duplicate detection already works before another task is polled.
     dispatch(&server, request(1), None, None).await;
+    assert_eq!(
+        server.request_admission_counters().confirmed_admitted_total,
+        1
+    );
     assert_eq!(
         server
             .request_admission_counters()
             .confirmed_overloaded_total,
         0
     );
-    server.network.transport().release.notify_one();
+    assert!(started.try_recv().is_err());
+    drop(held);
+    let original = observed(&mut started).await;
+    dispatch(&server, request(1), None, None).await;
+    let overloaded = observed(&mut started).await;
+    assert_eq!(
+        server.request_admission_counters().confirmed_admitted_total,
+        1
+    );
+    assert_eq!(
+        server
+            .request_admission_counters()
+            .confirmed_overloaded_total,
+        1
+    );
+    assert_eq!(server.request_admission_counters().abort_admitted_total, 1);
+    held_sends(&server).release.notify_waiters();
     original.await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while server.request_admission_counters().confirmed_active != 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("completed request did not release its admission");
-    // Once the first response has completed, the same peer may legally reuse
-    // the same Invoke ID for a byte-identical subsequent transaction.
+    overloaded.await.unwrap();
+    wait_reaped(&server).await;
     dispatch(&server, request(1), None, None).await;
-    let reused = observed(&mut started).await;
-    // It is still suppressed while that new transaction is active.
-    dispatch(&server, request(1), None, None).await;
+    observed(&mut started).await;
     assert_eq!(
         server.request_admission_counters().confirmed_admitted_total,
         2
     );
-    assert_eq!(
-        server
-            .request_admission_counters()
-            .confirmed_overloaded_total,
-        0
-    );
-    assert_eq!(server.request_admission_counters().abort_admitted_total, 0);
-    assert_eq!(server.network.transport().frames.lock().unwrap().len(), 2);
-    server.network.transport().release.notify_one();
-    reused.await.unwrap();
-    server.stop().await.unwrap();
-}
-
-#[tokio::test]
-async fn bip_read_property_survives_two_invoke_id_wraps_and_returns_changed_value() {
-    use bacnet_client::client::BACnetClient;
-    use bacnet_encoding::primitives::encode_property_value;
-    use bacnet_objects::analog::AnalogInputObject;
-
-    let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
-    let mut database = ObjectDatabase::new();
-    database
-        .add(Box::new(
-            AnalogInputObject::new(1, "invoke-wrap", 62).unwrap(),
-        ))
-        .unwrap();
-    let mut server = BACnetServer::bip_builder()
-        .interface(Ipv4Addr::LOCALHOST)
-        .port(0)
-        .database(database)
-        .build()
-        .await
-        .unwrap();
-    let mut client = BACnetClient::bip_builder()
-        .interface(Ipv4Addr::LOCALHOST)
-        .port(0)
-        .build()
-        .await
-        .unwrap();
-
-    for _ in 0..512 {
-        client
-            .read_property(
-                server.local_mac(),
-                oid,
-                PropertyIdentifier::PRESENT_VALUE,
-                None,
-            )
-            .await
-            .unwrap();
-    }
-    server
-        .set_present_value_local(&oid, PropertyValue::Real(42.0))
-        .await
-        .unwrap();
-    let wrapped = client
-        .read_property(
-            server.local_mac(),
-            oid,
-            PropertyIdentifier::PRESENT_VALUE,
-            None,
-        )
-        .await
-        .unwrap();
-    let mut expected = bytes::BytesMut::new();
-    encode_property_value(&mut expected, &PropertyValue::Real(42.0)).unwrap();
-    assert_eq!(wrapped.property_value, expected);
-
-    client.stop().await.unwrap();
     server.stop().await.unwrap();
 }
 
@@ -355,7 +302,7 @@ async fn admission_abort_reply_channel_preserves_routed_npdu_and_wire_fields() {
             if a.sent_by_server && a.invoke_id == 2 && a.abort_reason == AbortReason::OUT_OF_RESOURCES)
         );
     }
-    assert_eq!(server.network.transport().frames.lock().unwrap().len(), 1);
+    assert_eq!(held_sends(&server).frames.lock().unwrap().len(), 1);
     server.stop().await.unwrap();
     assert_eq!(server.request_admission_counters().abort_active, 0);
 }
@@ -364,12 +311,12 @@ async fn admission_abort_reply_channel_preserves_routed_npdu_and_wire_fields() {
 async fn admission_stop_seals_classes_without_overload_and_joins_abort_workers() {
     let (mut server, _tx, mut started) = small_fixture().await;
     dispatch(&server, request(1), None, None).await;
-    let mut original = observed(&mut started).await;
+    let original = observed(&mut started).await;
     dispatch(&server, request(2), None, None).await;
-    let mut abort = observed(&mut started).await;
-    server.stop().await.unwrap();
-    assert_eq!(original.try_recv(), Ok(()));
-    assert_eq!(abort.try_recv(), Ok(()));
+    let abort = observed(&mut started).await;
+    begin_stop(&mut server).await;
+    original.await.unwrap();
+    abort.await.unwrap();
     dispatch(&server, request(3), None, None).await;
     dispatch(&server, who_is(), None, None).await;
     let c = server.request_admission_counters();
@@ -381,6 +328,7 @@ async fn admission_stop_seals_classes_without_overload_and_joins_abort_workers()
     assert_eq!(c.unconfirmed_overloaded_total, 0);
     assert_eq!(c.confirmed_shutdown_rejected_total, 1);
     assert_eq!(c.unconfirmed_shutdown_rejected_total, 1);
+    server.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -389,12 +337,10 @@ async fn admission_panic_releases_real_handler_and_abort_and_allows_retry() {
     for id in [1, 1] {
         inject(&tx, request(id)).await;
         let released = observed(&mut started).await;
-        server
-            .network
-            .transport()
+        held_sends(&server)
             .panic_next
             .store(true, Ordering::Release);
-        server.network.transport().release.notify_one();
+        held_sends(&server).release.notify_one();
         released.await.unwrap();
         wait_reaped(&server).await;
         assert_eq!(server.request_admission_counters().confirmed_active, 0);
@@ -514,27 +460,16 @@ async fn admission_direct_and_routed_abort_send_release_on_error_and_panic() {
         dispatch(&server, request(id), route.clone(), None).await;
         let released = observed(&mut started).await;
         assert_eq!(
-            server
-                .network
-                .transport()
-                .routes
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap(),
+            held_sends(&server).routes.lock().unwrap().last().unwrap(),
             &(route, MacAddr::from_slice(&[1]))
         );
-        server
-            .network
-            .transport()
+        held_sends(&server)
             .panic_next
             .store(panic, Ordering::Release);
-        server
-            .network
-            .transport()
+        held_sends(&server)
             .fail_next
             .store(!panic, Ordering::Release);
-        server.network.transport().release.notify_one();
+        held_sends(&server).release.notify_one();
         released.await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             while server.request_admission_counters().abort_active != 0 {
@@ -551,59 +486,17 @@ async fn admission_direct_and_routed_abort_send_release_on_error_and_panic() {
     assert_eq!(server.request_admission_counters().abort_active, 0);
 }
 
-#[tokio::test]
-async fn admission_dcc_prechecks_and_duplicate_before_first_poll() {
-    let (mut server, _tx, mut started) = small_fixture().await;
-    dispatch(&server, request(1), None, None).await;
-    dispatch(&server, request(1), None, None).await;
-    assert_eq!(
-        server.request_admission_counters().confirmed_admitted_total,
-        1
-    );
-    assert_eq!(
-        server
-            .request_admission_counters()
-            .confirmed_overloaded_total,
-        0
-    );
-    observed(&mut started).await;
-    server.comm_state.store(1, Ordering::Release);
-    dispatch(&server, request(2), None, None).await;
-    dispatch(&server, who_is(), None, None).await;
-    assert_eq!(
-        server
-            .request_admission_counters()
-            .confirmed_overloaded_total,
-        0
-    );
-    assert_eq!(
-        server
-            .request_admission_counters()
-            .unconfirmed_admitted_total,
-        0
-    );
-    assert_eq!(server.request_admission_counters().abort_active, 0);
-    server.stop().await.unwrap();
-}
-
-struct NeverStart(Arc<AtomicBool>);
-impl TransportPort for NeverStart {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.0.store(true, Ordering::Release);
-        panic!("invalid admission must not start transport");
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn send_unicast(&self, _: &[u8], _: &[u8]) -> Result<(), Error> {
-        unreachable!()
-    }
-    async fn send_broadcast(&self, _: &[u8]) -> Result<(), Error> {
-        unreachable!()
-    }
-    fn local_mac(&self) -> &[u8] {
-        &[1]
-    }
+/// Records that startup was reached, then panics; its sends are unreachable.
+fn never_start(started: &Arc<AtomicBool>) -> TestTransport {
+    let started = Arc::clone(started);
+    TestTransport::builder()
+        .on_start(move || started.store(true, Ordering::Release))
+        .start(StartMode::Panic(
+            "invalid admission must not start transport",
+        ))
+        .unicast(SendMode::Panic("unreachable send"))
+        .broadcast(SendMode::Panic("unreachable send"))
+        .build()
 }
 
 #[tokio::test]
@@ -621,14 +514,14 @@ async fn admission_invalid_direct_generic_bip_before_transport_start() {
                 ..Default::default()
             },
             ObjectDatabase::new(),
-            NeverStart(Arc::clone(&started)),
+            never_start(&started),
         )
         .await
         .err()
         .unwrap();
         assert!(matches!(error, Error::Encoding(m) if m.contains("max_confirmed_in_flight")));
         let error = BACnetServer::generic_builder()
-            .transport(NeverStart(Arc::clone(&started)))
+            .transport(never_start(&started))
             .request_admission_policy(policy)
             .build()
             .await
@@ -708,23 +601,4 @@ async fn admission_every_class_releases_on_panic_and_before_first_poll_cancellat
             0
         );
     }
-}
-
-#[tokio::test]
-async fn admission_abort_rechecks_dcc_when_first_polled() {
-    let (mut server, _tx, mut started) = small_fixture().await;
-    dispatch(&server, request(1), None, None).await;
-    observed(&mut started).await;
-    dispatch(&server, request(2), None, None).await;
-    server.comm_state.store(1, Ordering::Release);
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while server.request_admission_counters().abort_active != 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(started.try_recv().is_err());
-    assert_eq!(server.request_admission_counters().abort_admitted_total, 1);
-    server.stop().await.unwrap();
 }

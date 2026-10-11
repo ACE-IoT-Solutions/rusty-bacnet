@@ -10,7 +10,8 @@ use pyo3::types::{PyBytes, PyDict};
 use tokio::sync::Mutex;
 
 use bacnet_client::client;
-use bacnet_encoding::primitives::{decode_application_value, encode_property_value};
+use bacnet_client::client::WriteGroupDestination;
+use bacnet_encoding::primitives::encode_property_value;
 use bacnet_services::alarm_event::AcknowledgeAlarmRequest;
 use bacnet_services::alarm_summary::GetAlarmSummaryAck;
 type ClientInner =
@@ -26,51 +27,61 @@ use bacnet_services::file::{FileAccessMethod, FileWriteAccessMethod};
 use bacnet_services::life_safety::LifeSafetyOperationRequest;
 use bacnet_services::object_mgmt::ObjectSpecifier;
 use bacnet_services::private_transfer::{PrivateTransferAck, PrivateTransferRequest};
-use bacnet_services::read_range::RangeSpec;
 use bacnet_services::text_message::{MessageClass, TextMessageRequest};
 use bacnet_services::virtual_terminal::{
     VTCloseRequest, VTDataAck, VTDataRequest, VTOpenAck, VTOpenRequest,
 };
 use bacnet_services::who_am_i::WhoAmIRequest;
 use bacnet_services::who_has::WhoHasObject;
+use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_services::write_group::{GroupChannelValue, WriteGroupRequest};
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
-use bacnet_types::enums::{ConfirmedServiceChoice, UnconfirmedServiceChoice};
+use bacnet_types::enums::{AcknowledgmentFilter, ConfirmedServiceChoice, UnconfirmedServiceChoice};
 use bacnet_types::primitives::BACnetTimeStamp;
 
 use crate::errors::to_py_err;
 use crate::types::{
     audit_log_query_ack_to_py, audit_log_query_request_from_py, audit_notification_request_from_py,
-    parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py, PyApduObserverStartGuard,
-    PyApduObserverState, PyBACnetTimeStamp, PyCovNotificationIterator, PyDiscoveredDevice,
-    PyEnableDisable, PyEnrollmentSummaryEventStateFilter, PyEventState, PyEventType,
-    PyForeignDeviceStatus, PyIAmEventIterator, PyLifeSafetyOperation, PyMessagePriority,
-    PyObjectIdentifier, PyObjectType, PyPropertyIdentifier, PyPropertyValue, PyReinitializedState,
+    decode_read_ack, parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
+    PyAcknowledgmentFilter, PyBACnetTimeStamp, PyCovNotificationIterator, PyDeviceWrite,
+    PyDiscoveredDevice, PyEnableDisable, PyEnrollmentSummaryEventStateFilter, PyEventState,
+    PyEventType, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier, PyObjectType,
+    PyPropertyIdentifier, PyPropertyValue, PyPropertyWrite, PyReadAccessSpec, PyReinitializedState,
+    PyWriteAccessSpec,
 };
 
-/// Decode the complete ReadProperty value production. BACnet list-valued
-/// properties place zero or more application values inside the ACK's property
-/// value wrapper, so decoding only the first element loses every later row.
-fn decode_read_property_value(
-    property: bacnet_types::enums::PropertyIdentifier,
-    encoded: &[u8],
-) -> Result<bacnet_types::primitives::PropertyValue, bacnet_types::error::Error> {
-    let mut values = Vec::new();
-    let mut offset = 0;
-    while offset < encoded.len() {
-        let (value, next) = decode_application_value(encoded, offset)?;
-        values.push(value);
-        offset = next;
+fn validate_write_priority(priority: Option<u8>) -> PyResult<()> {
+    bacnet_services::write_property::validate_priority(priority)
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+/// The `min_request_interval_ms` keyword, as `BACnetClient` and the endpoint
+/// owners take it (#1535, #1542): more than an hour raises `ValueError` at
+/// construction, before any I/O.
+pub(crate) fn parse_min_request_interval_ms(interval_ms: u64) -> PyResult<u64> {
+    if interval_ms > client::MAX_MIN_REQUEST_INTERVAL_MS {
+        return Err(PyValueError::new_err(format!(
+            "min_request_interval_ms must be 0..={}, got {interval_ms}",
+            client::MAX_MIN_REQUEST_INTERVAL_MS
+        )));
     }
-    let network_port_table = property
-        == bacnet_types::enums::PropertyIdentifier::BBMD_BROADCAST_DISTRIBUTION_TABLE
-        || property == bacnet_types::enums::PropertyIdentifier::BBMD_FOREIGN_DEVICE_TABLE;
-    Ok(if values.len() == 1 && !network_port_table {
-        values.pop().expect("one decoded property value")
-    } else {
-        bacnet_types::primitives::PropertyValue::List(values)
+    Ok(interval_ms)
+}
+
+/// The Who-Is or Who-Has range the `low_limit` and `high_limit` keywords
+/// give: both or neither, each from 0 to 4194303 (Clauses 16.9 and 16.10).
+/// One alone, a low limit above the high one, or a limit past 4194303 raises
+/// `ValueError` before anything is sent, where one limit used to go out as a
+/// request for every device (#1483).
+fn device_range(
+    low_limit: Option<u32>,
+    high_limit: Option<u32>,
+) -> PyResult<Option<DeviceInstanceRange>> {
+    DeviceInstanceRange::from_limits(low_limit, high_limit).map_err(|error| match error {
+        bacnet_types::error::Error::OutOfRange(message) => PyValueError::new_err(message),
+        other => PyValueError::new_err(other.to_string()),
     })
 }
 
@@ -93,20 +104,17 @@ fn decode_read_property_value(
 /// SC credential paths must be nonempty at construction (ValueError otherwise).
 /// Files are loaded on async entry; invalid TLS configuration raises RuntimeError
 /// before dialing. No system trust or unauthenticated-client fallback is used.
-#[pyclass(name = "BACnetClient")]
+#[pyclass(name = "BACnetClient", module = "rusty_bacnet")]
 pub struct BACnetClient {
     inner: ClientInner,
-    apdu_observer: Option<Arc<PyApduObserverState>>,
-    managed_cov: client_methods::managed_cov::ManagedCOVRegistry,
     transport_type: String,
     // BIP config
     interface: String,
     port: u16,
     broadcast_address: String,
+    /// See `BipTransport::set_share_port_by_address` (#1538).
+    share_port_by_address: bool,
     apdu_timeout_ms: u64,
-    foreign_device_config: Option<bacnet_transport::bip::ForeignDeviceConfig>,
-    foreign_device_registration:
-        Arc<std::sync::Mutex<Option<bacnet_transport::bip::ForeignDeviceRegistrationHandle>>>,
     // SC config
     sc_hub: Option<String>,
     sc_vmac: Option<Vec<u8>>,
@@ -124,19 +132,18 @@ pub struct BACnetClient {
     mstp_mac: u8,
     mstp_max_master: u8,
     mstp_max_info_frames: u8,
+    /// Least time between confirmed requests to one destination (#1535).
+    min_request_interval_ms: u64,
 }
 
 mod client_methods {
-    mod apdu_observer;
     mod cov_discovery;
     mod enrollment_alarm_covmulti_who_writegroup;
     mod file_list_private_text_life;
     mod lifecycle;
-    pub(super) mod managed_cov;
-    mod management;
+    mod log_read;
     mod object_device_alarm;
     mod read_write;
-    mod router_discovery;
     mod vt_audit_time_directed;
 }
 

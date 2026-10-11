@@ -1,7 +1,9 @@
 use super::*;
+use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
 use crate::property_metadata::{
     PropertyConformance, PropertyMetadata, PropertyPresenceCondition, PropertyWriteCapability,
 };
+use std::sync::Arc;
 
 const BINARY_INPUT_PROPERTY_METADATA: &[PropertyMetadata] = &[
     PropertyMetadata::new(
@@ -49,57 +51,61 @@ const BINARY_INPUT_PROPERTY_METADATA: &[PropertyMetadata] = &[
     PropertyMetadata::new(
         PropertyIdentifier::EVENT_DETECTION_ENABLE,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
         PropertyWriteCapability::Always,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::EVENT_ENABLE,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
         PropertyWriteCapability::Always,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::TIME_DELAY,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
         PropertyWriteCapability::Always,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::TIME_DELAY_NORMAL,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingOptional),
         PropertyWriteCapability::Always,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::NOTIFY_TYPE,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
         PropertyWriteCapability::Always,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::NOTIFICATION_CLASS,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
         PropertyWriteCapability::Always,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::ACKED_TRANSITIONS,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
         PropertyWriteCapability::ReadOnly,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::EVENT_TIME_STAMPS,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
         PropertyWriteCapability::ReadOnly,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::EVENT_MESSAGE_TEXTS,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingOptional),
         PropertyWriteCapability::ReadOnly,
     ),
+    // Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair (#1329).
+    crate::event::options::REPORTING_OPTION_METADATA[0],
+    crate::event::options::REPORTING_OPTION_METADATA[1],
+    crate::event::options::REPORTING_OPTION_METADATA[2],
     PropertyMetadata::new(
         PropertyIdentifier::OUT_OF_SERVICE,
         PropertyConformance::RequiredRead,
@@ -139,7 +145,7 @@ const BINARY_INPUT_PROPERTY_METADATA: &[PropertyMetadata] = &[
     PropertyMetadata::new(
         PropertyIdentifier::ALARM_VALUE,
         PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReporting),
+        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
         PropertyWriteCapability::Always,
     ),
     PropertyMetadata::new(
@@ -159,6 +165,7 @@ const BINARY_INPUT_PROPERTY_METADATA: &[PropertyMetadata] = &[
 /// Read-only binary point. Present_Value is writable only when out-of-service.
 /// Uses Enumerated values: 0 = inactive, 1 = active.
 pub struct BinaryInputObject {
+    profile: ProfileState,
     oid: ObjectIdentifier,
     name: String,
     description: String,
@@ -167,24 +174,26 @@ pub struct BinaryInputObject {
     status_flags: StatusFlags,
     /// Polarity: 0 = normal, 1 = reverse.
     polarity: u32,
-    /// Reliability: 0 = NO_FAULT_DETECTED.
-    reliability: u32,
-    reliability_before_out_of_service: Option<u32>,
+    /// Reliability; NO_FAULT_DETECTED until a fault is evaluated or simulated.
+    reliability: Reliability,
+    reliability_before_out_of_service: Option<Reliability>,
     reliability_inhibit: common::ReliabilityInhibitState,
     active_text: String,
     inactive_text: String,
     /// CHANGE_OF_STATE event detector.
     event_detector: ChangeOfStateDetector,
-    /// Event_Detection_Enable (Clause 12.6). Clause 13.2.2.1: "If the
-    /// Event_Detection_Enable property is FALSE, then this state machine is not evaluated."
+    /// Event_Detection_Enable (Clause 12.6). A FALSE value suspends
+    /// event-state-machine evaluation under Clause 13.2.2.1.
     event_detection_enable: bool,
     pub(crate) event_history: EventHistory,
 }
 
 impl BinaryInputObject {
+    /// Create a new Binary Input object; fails if `instance` exceeds the object-identifier range.
     pub fn new(instance: u32, name: impl Into<String>) -> Result<Self, Error> {
         let oid = ObjectIdentifier::new(ObjectType::BINARY_INPUT, instance)?;
         Ok(Self {
+            profile: ProfileState::default(),
             oid,
             name: name.into(),
             description: String::new(),
@@ -192,7 +201,7 @@ impl BinaryInputObject {
             out_of_service: false,
             status_flags: StatusFlags::empty(),
             polarity: 0,
-            reliability: 0,
+            reliability: Reliability::NO_FAULT_DETECTED,
             reliability_before_out_of_service: None,
             reliability_inhibit: common::ReliabilityInhibitState::default(),
             active_text: "Active".into(),
@@ -204,6 +213,33 @@ impl BinaryInputObject {
             event_detection_enable: true,
             event_history: EventHistory::default(),
         })
+    }
+
+    /// Build with application-owned Tags storage. Saved Tags override configured
+    /// Tags only while [`Self::set_profile`] provisions the row. Loaded data must
+    /// satisfy the shared Tags rules and opt-in 1 MiB snapshot limit.
+    pub fn with_tags_persistence(
+        instance: u32,
+        name: impl Into<String>,
+        persistence: Arc<dyn TagsPersistence>,
+    ) -> Result<Self, Error> {
+        let mut object = Self::new(instance, name)?;
+        object.profile = ProfileState::persistent(object.oid, persistence)?;
+        Ok(object)
+    }
+
+    /// Provision independent optional Tags, Profile_Location and Profile_Name
+    /// rows before registration. Tags is writable in either Out_Of_Service state;
+    /// the text rows are network read-only. Invalid configuration leaves the
+    /// previous profile and its attached storage unchanged.
+    pub fn set_profile(&mut self, profile: ObjectProfile) -> Result<(), Error> {
+        self.profile.provision(profile)
+    }
+
+    /// Wait for queued save attempts to finish; writes report their own outcomes.
+    /// This is not a success receipt. Unstaged synchronous writes block their caller.
+    pub fn wait_for_tag_saves(&self) {
+        self.profile.wait_for_saves();
     }
 
     /// Mutate logical `Present_Value` on an unattached or application-owned object.
@@ -247,8 +283,21 @@ impl BACnetObject for BinaryInputObject {
         &self.name
     }
 
+    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.profile.capability()
+    }
+
+    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
+        self.profile.expire(now);
+        false
+    }
+
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
-        Cow::Borrowed(BINARY_INPUT_PROPERTY_METADATA)
+        let mut rows = Cow::Borrowed(BINARY_INPUT_PROPERTY_METADATA);
+        if self.profile.metadata().next().is_some() {
+            rows.to_mut().extend(self.profile.metadata());
+        }
+        rows
     }
 
     fn supports_cov(&self) -> bool {
@@ -262,15 +311,6 @@ impl BACnetObject for BinaryInputObject {
         reliability,
         event_detection_enable,
         ChangeOfStateDetector::ALGORITHM
-    );
-    impl_intrinsic_write_rollback!(
-        event_detector,
-        event_detection_enable,
-        event_history,
-        reliability_inhibit,
-        reliability,
-        out_of_service,
-        reliability_before_out_of_service
     );
 
     fn acknowledge_alarm_correlated_internal(
@@ -301,7 +341,7 @@ impl BACnetObject for BinaryInputObject {
                 self.status_flags,
                 self.reliability,
                 self.out_of_service,
-                self.event_detector.event_state.to_raw(),
+                self.event_detector.event_state,
             ));
         }
         if let Some(value) = self.reliability_inhibit.read(property) {
@@ -317,6 +357,9 @@ impl BACnetObject for BinaryInputObject {
             return result;
         }
         if let Some(result) = self.event_history.read(property, array_index) {
+            return result;
+        }
+        if let Some(result) = self.profile.read(property, array_index) {
             return result;
         }
         match property {
@@ -351,7 +394,7 @@ impl BACnetObject for BinaryInputObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
@@ -360,6 +403,9 @@ impl BACnetObject for BinaryInputObject {
                 return Err(common::write_access_denied_error());
             }
             return self.apply_present_value(value);
+        }
+        if let Some(result) = self.profile.write(property, array_index, &value) {
+            return result;
         }
         if property == PropertyIdentifier::ACTIVE_TEXT {
             if let PropertyValue::CharacterString(s) = value {
@@ -390,7 +436,8 @@ impl BACnetObject for BinaryInputObject {
                 self.event_detection_enable = v;
                 if !v {
                     self.event_detector.event_state = bacnet_types::enums::EventState::NORMAL;
-                    self.event_detector.acked_transitions = 0b111;
+                    self.event_detector.acked_transitions =
+                        bacnet_types::bitstring::EventTransitionBits::all();
                     self.event_detector.pending = None;
                     self.event_detector.fault_reliability = None;
                     self.event_history.reset();
@@ -398,6 +445,13 @@ impl BACnetObject for BinaryInputObject {
                 return Ok(());
             }
             return Err(common::invalid_data_type_error());
+        }
+        // Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair (#1329).
+        if let Some(result) =
+            self.event_history
+                .write(property, array_index, &value, self.event_detection_enable)
+        {
+            return result;
         }
         if let Some(result) = write_generic_event_properties!(self, property, value) {
             return result;
@@ -417,7 +471,7 @@ impl BACnetObject for BinaryInputObject {
             property,
             &value,
         ) {
-            return result;
+            return result.map(|_| ());
         }
         if let Some(result) = common::write_object_name(&mut self.name, property, &value) {
             return result;
@@ -433,7 +487,11 @@ impl BACnetObject for BinaryInputObject {
         ) {
             return result;
         }
-        Err(common::write_access_denied_error())
+        Err(crate::common::unhandled_write_error(
+            self.property_metadata().as_ref(),
+            property,
+            array_index,
+        ))
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
@@ -445,7 +503,7 @@ impl BACnetObject for BinaryInputObject {
         true
     }
 
-    fn set_reliability_internal(&mut self, reliability: u32) -> Result<(), Error> {
+    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Err(common::write_access_denied_error());
         }

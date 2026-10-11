@@ -9,12 +9,10 @@ use tokio::time::{timeout, Duration};
 
 async fn send_register(socket: &UdpSocket, dest: SocketAddrV4, ttl: u16) -> Option<BvllMessage> {
     let mut buf = BytesMut::new();
-    encode_bvll(
-        &mut buf,
+    buf.extend_from_slice(&raw_frame(
         BvlcFunction::REGISTER_FOREIGN_DEVICE,
         &ttl.to_be_bytes(),
-    )
-    .unwrap();
+    ));
     socket.send_to(&buf, dest).await.unwrap();
     let mut recv_buf = [0u8; 2048];
     match timeout(Duration::from_millis(300), socket.recv_from(&mut recv_buf)).await {
@@ -29,8 +27,7 @@ async fn send_raw(
     function: BvlcFunction,
     payload: &[u8],
 ) -> Option<BvllMessage> {
-    let mut buf = BytesMut::new();
-    encode_bvll(&mut buf, function, payload).unwrap();
+    let buf = raw_frame(function, payload);
     socket.send_to(&buf, dest).await.unwrap();
     let mut recv_buf = [0u8; 2048];
     match timeout(Duration::from_millis(300), socket.recv_from(&mut recv_buf)).await {
@@ -39,25 +36,33 @@ async fn send_raw(
     }
 }
 
+/// Pin the limiter's window clock for a quota-exhaustion test. These tests
+/// fill the quota and then wait out silence in real time, so a stalled runner
+/// could otherwise start a new window before the over-limit request (#1017).
+fn freeze_window(limiter: &std::sync::Mutex<ManagementRateLimiter>) {
+    limiter.lock().unwrap().freeze_clock(Instant::now());
+}
+
 fn test_ctx(
-    socket: Arc<UdpSocket>,
+    socket: Arc<super::BipSocket>,
     bbmd: Option<BbmdState>,
     npdu_tx: mpsc::Sender<ReceivedNpdu>,
 ) -> RecvContext {
     let local_port = socket.local_addr().unwrap().port();
+    let management_limiter = Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new()));
+    freeze_window(&management_limiter);
     RecvContext {
         local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
         socket,
         npdu_tx,
-        bbmd: bbmd.map(|s| Arc::new(Mutex::new(s))),
+        bbmd: bbmd.map(|s| Arc::new(std::sync::Mutex::new(s))),
         broadcast_addr: Ipv4Addr::LOCALHOST,
         broadcast_port: local_port,
-        pending_bvlc_response: Arc::new(std::sync::Mutex::new(None)),
-        bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
+        client_management: Arc::default(),
+        management_limiter,
         fanout: None,
-        bvll_policy: None,
         force_dbtn_forward_failure: false,
+        group_sources: super::groups::GroupSources::detached(),
     }
 }
 
@@ -182,6 +187,7 @@ async fn rate_limit_silences_17th_register_from_same_ip() {
     let mut bbmd_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     bbmd_transport.enable_bbmd(vec![]);
     let _bbmd_rx = bbmd_transport.start().await.unwrap();
+    freeze_window(&bbmd_transport.management_limiter);
     let bbmd_mac = bbmd_transport.local_mac().to_vec();
     let (bbmd_ip, bbmd_port) = decode_bip_mac(&bbmd_mac).unwrap();
     let dest = SocketAddrV4::new(Ipv4Addr::from(bbmd_ip), bbmd_port);
@@ -218,6 +224,7 @@ async fn rate_limit_source_quota_ignores_udp_port() {
         ..Default::default()
     });
     let _bbmd_rx = bbmd_transport.start().await.unwrap();
+    freeze_window(&bbmd_transport.management_limiter);
     let bbmd_mac = bbmd_transport.local_mac().to_vec();
     let (bbmd_ip, bbmd_port) = decode_bip_mac(&bbmd_mac).unwrap();
     let dest = SocketAddrV4::new(Ipv4Addr::from(bbmd_ip), bbmd_port);
@@ -243,7 +250,7 @@ async fn rate_limit_source_quota_ignores_udp_port() {
     // The evading port must not have created a second FDT entry.
     {
         let state = bbmd_transport.bbmd_state().unwrap();
-        let mut state = state.lock().await;
+        let mut state = state.lock().unwrap();
         assert_eq!(
             state.fdt().len(),
             1,
@@ -258,6 +265,7 @@ async fn rate_limit_source_quota_ignores_udp_port() {
 async fn rate_limit_bounds_non_bbmd_naks() {
     let mut server = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _rx = server.start().await.unwrap();
+    freeze_window(&server.management_limiter);
     let server_mac = server.local_mac().to_vec();
     let (ip, port) = decode_bip_mac(&server_mac).unwrap();
     let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
@@ -299,11 +307,12 @@ async fn rate_limit_bounds_non_bbmd_naks() {
 
 #[tokio::test]
 async fn rate_limit_discards_malformed_and_unauthorized_before_normal_handling() {
-    let server_socket = Arc::new(
+    let server_socket = Arc::new(super::BipSocket::new(
         UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap(),
-    );
+        None,
+    ));
     let local_port = server_socket.local_addr().unwrap().port();
     let peer = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
@@ -314,20 +323,7 @@ async fn rate_limit_discards_malformed_and_unauthorized_before_normal_handling()
 
     // Empty ACL denies every Delete-FDT-Entry sender.
     let state = BbmdState::new(Ipv4Addr::LOCALHOST.octets(), local_port);
-    let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket: Arc::clone(&server_socket),
-        npdu_tx,
-        bbmd: Some(Arc::new(Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_port,
-        pending_bvlc_response: Arc::new(std::sync::Mutex::new(None)),
-        bvlc_result_quarantine: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        bvll_policy: None,
-        force_dbtn_forward_failure: false,
-    };
+    let ctx = test_ctx(Arc::clone(&server_socket), Some(state), npdu_tx);
 
     async fn recv_one(peer: &UdpSocket) -> Option<BvllMessage> {
         let mut buf = [0u8; 2048];
@@ -346,10 +342,8 @@ async fn rate_limit_discards_malformed_and_unauthorized_before_normal_handling()
         let msg = BvllMessage {
             function,
             payload: Bytes::copy_from_slice(payload),
-            originating_ip: None,
-            originating_port: None,
         };
-        handle_bvll_message(&msg, sender, server).await;
+        handle_bvll_message(&msg, sender, Delivery::Unicast, server).await;
     }
 
     // Fill the combined quota with a mix: 8 reads + 8 deletes. Each delete
@@ -422,7 +416,7 @@ async fn rate_limit_discards_malformed_and_unauthorized_before_normal_handling()
 
     // No FDT mutation could have occurred through the discarded path.
     let bbmd = ctx.bbmd.as_ref().unwrap();
-    assert!(bbmd.lock().await.fdt().is_empty());
+    assert!(bbmd.lock().unwrap().fdt().is_empty());
 }
 
 #[tokio::test]
@@ -430,6 +424,7 @@ async fn rate_limit_write_bdt_still_naks_after_quota_exhaustion() {
     let mut bbmd_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     bbmd_transport.enable_bbmd(vec![]);
     let _rx = bbmd_transport.start().await.unwrap();
+    freeze_window(&bbmd_transport.management_limiter);
     let bbmd_mac = bbmd_transport.local_mac().to_vec();
     let (ip, port) = decode_bip_mac(&bbmd_mac).unwrap();
     let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
@@ -465,11 +460,12 @@ async fn rate_limit_write_bdt_still_naks_after_quota_exhaustion() {
 
 #[tokio::test]
 async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
-    let server_socket = Arc::new(
+    let server_socket = Arc::new(super::BipSocket::new(
         UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap(),
-    );
+        None,
+    ));
     let local_port = server_socket.local_addr().unwrap().port();
     let peer = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
@@ -485,10 +481,8 @@ async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
         let msg = BvllMessage {
             function: BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
             payload: Bytes::new(),
-            originating_ip: None,
-            originating_port: None,
         };
-        handle_bvll_message(&msg, sender, &ctx).await;
+        handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;
         // Drain each admitted Read-BDT-ACK from the peer.
         let mut buf = [0u8; 2048];
         timeout(Duration::from_millis(300), peer.recv_from(&mut buf))
@@ -500,10 +494,8 @@ async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
     let over = BvllMessage {
         function: BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
         payload: Bytes::new(),
-        originating_ip: None,
-        originating_port: None,
     };
-    handle_bvll_message(&over, sender, &ctx).await;
+    handle_bvll_message(&over, sender, Delivery::Unicast, &ctx).await;
     {
         let mut buf = [0u8; 2048];
         assert!(
@@ -518,10 +510,8 @@ async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
     let npdu = BvllMessage {
         function: BvlcFunction::ORIGINAL_UNICAST_NPDU,
         payload: Bytes::from_static(&[0x01, 0x04, 0xAA]),
-        originating_ip: None,
-        originating_port: None,
     };
-    handle_bvll_message(&npdu, sender, &ctx).await;
+    handle_bvll_message(&npdu, sender, Delivery::Unicast, &ctx).await;
     let received = timeout(Duration::from_secs(2), npdu_rx.recv())
         .await
         .expect("NPDU must bypass the management limiter")
@@ -533,10 +523,8 @@ async fn rate_limit_leaves_dbtn_and_npdu_outside_limiter() {
     let dbtn = BvllMessage {
         function: BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
         payload: Bytes::from_static(&[0x01, 0x20, 0xAA]),
-        originating_ip: None,
-        originating_port: None,
     };
-    handle_bvll_message(&dbtn, sender, &ctx).await;
+    handle_bvll_message(&dbtn, sender, Delivery::Unicast, &ctx).await;
     {
         let mut buf = [0u8; 2048];
         let (len, _) = timeout(Duration::from_secs(2), peer.recv_from(&mut buf))

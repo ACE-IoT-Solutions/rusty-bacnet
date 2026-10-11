@@ -8,11 +8,13 @@ use bacnet_types::error::Error;
 
 /// CLI-level transport arguments for constructing a BACnet client.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct TransportArgs {
     pub interface: Ipv4Addr,
     pub port: u16,
     pub broadcast: Ipv4Addr,
     pub timeout_ms: u64,
+    pub min_interval_ms: u64,
     pub sc: bool,
     pub sc_url: Option<String>,
     pub sc_ca: Option<PathBuf>,
@@ -23,6 +25,42 @@ pub struct TransportArgs {
     pub ipv6: bool,
     pub ipv6_interface: Option<Ipv6Addr>,
     pub device_instance: Option<u32>,
+}
+
+impl TransportArgs {
+    /// Collect the global transport flags, with the BACnet/IP interface and
+    /// broadcast address already chosen by the caller.
+    pub(crate) fn from_cli(
+        cli: &crate::args::Cli,
+        interface: Ipv4Addr,
+        broadcast: Ipv4Addr,
+    ) -> Result<Self, String> {
+        let ipv6_interface = cli
+            .ipv6_interface
+            .as_deref()
+            .map(|s| {
+                s.parse::<Ipv6Addr>()
+                    .map_err(|e| format!("invalid --ipv6-interface address '{s}': {e}"))
+            })
+            .transpose()?;
+        Ok(Self {
+            interface,
+            port: cli.port,
+            broadcast,
+            timeout_ms: cli.timeout,
+            min_interval_ms: cli.min_interval_ms,
+            sc: cli.sc,
+            sc_url: cli.sc_url.clone(),
+            sc_ca: cli.sc_ca.clone(),
+            sc_cert: cli.sc_cert.clone(),
+            sc_key: cli.sc_key.clone(),
+            sc_vmac: cli.sc_vmac,
+            sc_device_uuid: cli.sc_device_uuid,
+            ipv6: cli.ipv6,
+            ipv6_interface,
+            device_instance: cli.device_instance,
+        })
+    }
 }
 
 fn parse_fixed_hex_array<const N: usize>(
@@ -82,6 +120,7 @@ pub async fn build_bip_client(args: &TransportArgs) -> Result<BACnetClient<BipTr
         .port(args.port)
         .broadcast_address(args.broadcast)
         .apdu_timeout_ms(args.timeout_ms)
+        .min_request_interval_ms(args.min_interval_ms)
         .build()
         .await
 }
@@ -165,6 +204,7 @@ pub async fn build_sc_client(
         .vmac(sc_vmac)
         .device_uuid(sc_device_uuid)
         .apdu_timeout_ms(args.timeout_ms)
+        .min_request_interval_ms(args.min_interval_ms)
         .build()
         .await
 }
@@ -176,7 +216,8 @@ pub async fn build_bip6_client(args: &TransportArgs) -> Result<BACnetClient<Bip6
     let mut builder = BACnetClient::bip6_builder()
         .interface(ipv6_addr)
         .port(args.port)
-        .apdu_timeout_ms(args.timeout_ms);
+        .apdu_timeout_ms(args.timeout_ms)
+        .min_request_interval_ms(args.min_interval_ms);
 
     if let Some(instance) = args.device_instance {
         builder = builder.device_instance(instance);
@@ -196,6 +237,7 @@ mod tests {
             port: 0xBAC0,
             broadcast: Ipv4Addr::BROADCAST,
             timeout_ms: 6000,
+            min_interval_ms: 0,
             sc: true,
             sc_url: Some("wss://hub.example.com/bacnet".into()),
             sc_ca: Some(PathBuf::from("site-ca.pem")),

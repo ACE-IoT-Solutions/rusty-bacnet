@@ -14,7 +14,7 @@ const HUNDREDTHS_PER_MINUTE: i128 = 60 * HUNDREDTHS_PER_SECOND;
 const HUNDREDTHS_PER_DAY: i128 = 24 * 60 * HUNDREDTHS_PER_MINUTE;
 
 /// Validated civil-time settings for the bundled server clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClockConfig {
     utc_offset_minutes: i16,
     daylight_savings_status: bool,
@@ -45,15 +45,6 @@ impl ClockConfig {
     }
 }
 
-impl Default for ClockConfig {
-    fn default() -> Self {
-        Self {
-            utc_offset_minutes: 0,
-            daylight_savings_status: false,
-        }
-    }
-}
-
 impl<T: TransportPort + 'static> BACnetServer<T> {
     pub(super) async fn start_with_clock_mode(
         config: ServerConfig,
@@ -61,15 +52,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         transport: T,
         clock_config: Option<ClockConfig>,
     ) -> Result<Self, Error> {
-        Self::start_with_clock_mode_and_bindings(
-            config,
-            db,
-            transport,
-            clock_config,
-            Vec::new(),
-            None,
-        )
-        .await
+        Self::start_with_clock_mode_and_bindings(config, db, transport, clock_config, Vec::new())
+            .await
     }
 
     /// Start with the default system-UTC Device clock.
@@ -152,7 +136,7 @@ impl ServerClock {
             .state
             .lock()
             .map_err(|_| Error::Encoding("Device clock lock poisoned".into()))?;
-        state.synchronized_utc = Some((utc_hundredths, Instant::now()));
+        state.synchronized_utc = Some((utc_hundredths, crate::runtime_clock::now()));
         Ok(())
     }
 }
@@ -162,8 +146,8 @@ impl ClockReader for ServerClock {
         let state = *self.state.lock().ok()?;
         let utc_hundredths = match state.synchronized_utc {
             Some((anchor, monotonic_anchor)) => {
-                let elapsed_hundredths =
-                    i128::try_from(monotonic_anchor.elapsed().as_millis() / 10).ok()?;
+                let elapsed = crate::runtime_clock::now().duration_since(monotonic_anchor);
+                let elapsed_hundredths = i128::try_from(elapsed.as_millis() / 10).ok()?;
                 anchor + elapsed_hundredths
             }
             None => system_utc_hundredths(),
@@ -188,7 +172,7 @@ fn system_utc_hundredths() -> i128 {
     i128::from(elapsed.as_secs()) * HUNDREDTHS_PER_SECOND + i128::from(elapsed.subsec_millis() / 10)
 }
 
-fn date_time_to_hundredths(date: Date, time: Time) -> Result<i128, Error> {
+pub(super) fn date_time_to_hundredths(date: Date, time: Time) -> Result<i128, Error> {
     let year = date
         .actual_year()
         .ok_or_else(|| invalid_datetime("date contains an unspecified year"))?;
@@ -384,8 +368,8 @@ mod tests {
         assert_eq!(clock.state.lock().unwrap().synchronized_utc, anchor);
     }
 
-    #[test]
-    fn local_and_utc_synchronization_share_the_configured_frame() {
+    #[tokio::test(start_paused = true)]
+    async fn local_and_utc_synchronization_share_the_configured_frame() {
         let clock = ServerClock::new(ClockConfig::new(300, true).unwrap());
         clock
             .synchronize(date(2024, 7, 4, 4), time(9, 15, 0, 0), false)
@@ -404,8 +388,8 @@ mod tests {
         assert!(utc.daylight_savings_status);
     }
 
-    #[test]
-    fn device_schedule_recipient_and_cov_use_the_same_frame() {
+    #[tokio::test(start_paused = true)]
+    async fn device_schedule_recipient_and_cov_use_the_same_frame() {
         use bacnet_objects::database::ObjectDatabase;
         use bacnet_objects::device::{DeviceConfig, DeviceObject};
         use bacnet_objects::traits::BACnetObject;
@@ -434,14 +418,41 @@ mod tests {
                 .unwrap(),
             PropertyValue::Time(frame.local_time)
         );
+        let (today, now) = crate::schedule::schedule_instant(frame).unwrap();
+        assert_eq!(today.to_date(), frame.local_date);
+        assert_eq!(today.weekday(), 4);
+        assert_eq!(now, frame.local_time);
         assert_eq!(
-            crate::schedule::current_time_components(frame),
-            Some((3, 9, 15))
+            frame.day_of_week(),
+            Some(bacnet_types::bitstring::DaysOfWeek::THURSDAY)
         );
-        assert_eq!(frame.day_of_week_bit(), Some(0x08));
         assert_eq!(
             crate::server::cov_clock::cov_multiple_datetime(frame),
             (frame.local_date, frame.local_time)
         );
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn synchronized_clock_crosses_hundredths_at_second_and_minute_edges() {
+        for (anchor, after) in [
+            (time(0, 0, 0, 99), time(0, 0, 1, 0)),
+            (time(0, 0, 59, 99), time(0, 1, 0, 0)),
+        ] {
+            let clock = ServerClock::new(ClockConfig::default());
+            clock
+                .synchronize(date(2024, 7, 4, 4), anchor, true)
+                .unwrap();
+            assert_eq!(clock.read_clock().unwrap().local_time, anchor);
+            tokio::time::advance(Duration::from_millis(9)).await;
+            assert_eq!(clock.read_clock().unwrap().local_time, anchor);
+            tokio::time::advance(Duration::from_millis(1)).await;
+            let frame = clock.read_clock().unwrap();
+            assert_eq!(frame.local_date, date(2024, 7, 4, 4));
+            assert_eq!(frame.local_time, after);
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "clock_vectors.rs"]
+mod vectors;

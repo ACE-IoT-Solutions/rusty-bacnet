@@ -35,13 +35,13 @@ async fn dcc_disable_rate_validation_before_start() {
             dcc_disable_rate_limit: Some(limit),
             ..Default::default()
         };
-        let error = BACnetServer::start(config, ObjectDatabase::new(), NeverStart(started.clone()))
+        let error = BACnetServer::start(config, ObjectDatabase::new(), never_start(&started))
             .await
             .err()
             .unwrap();
         assert!(matches!(error, Error::Encoding(m) if m.contains("DCC disable rate")));
         assert!(BACnetServer::generic_builder()
-            .transport(NeverStart(started.clone()))
+            .transport(never_start(&started))
             .dcc_disable_rate_limit(Some(limit))
             .build()
             .await
@@ -97,8 +97,23 @@ async fn dcc_disable_rate_validation_before_sc_dial() {
 
 #[test]
 fn dcc_source_restriction_configuration_bounds() {
-    for length in [0, 256, 65536] {
-        assert!(DccSourceRestriction::new(vec![DccSource::Direct(vec![1; length])]).is_err());
+    // #1157: an entry holds 1 to BACnetAddress::MAX_MAC_LEN octets, the
+    // longest source address the network layer delivers (#1141).
+    let longest = bacnet_types::constructed::BACnetAddress::MAX_MAC_LEN;
+    for length in [0, longest + 1, 255, 256, 65536] {
+        for source in [
+            DccSource::Direct(vec![1; length]),
+            DccSource::Routed {
+                network: 7,
+                address: vec![1; length],
+            },
+        ] {
+            assert!(
+                matches!(DccSourceRestriction::new(vec![source]),
+                    Err(Error::Encoding(m)) if m.contains("DCC source address")),
+                "{length}-octet entry"
+            );
+        }
     }
     for network in [0, 65535] {
         assert!(DccSourceRestriction::new(vec![DccSource::Routed {
@@ -108,7 +123,15 @@ fn dcc_source_restriction_configuration_bounds() {
         .is_err());
     }
     assert!(DccSourceRestriction::new(vec![DccSource::Direct(vec![1]); 257]).is_err());
-    assert!(DccSourceRestriction::new(vec![DccSource::Direct(vec![1; 255]); 256]).is_ok());
+    assert!(DccSourceRestriction::new(vec![DccSource::Direct(vec![1; longest]); 256]).is_ok());
+    assert!(DccSourceRestriction::new(vec![
+        DccSource::Routed {
+            network: 65534,
+            address: vec![1; longest],
+        };
+        256
+    ])
+    .is_ok());
     for entries in [vec![], vec![DccSource::Direct(vec![1])]] {
         let restriction = DccSourceRestriction::new(entries).unwrap();
         assert!(restriction
@@ -121,6 +144,31 @@ fn dcc_source_restriction_configuration_bounds() {
 }
 
 #[tokio::test]
+async fn dcc_source_restriction_builds_with_the_longest_entries() {
+    // #1157: a server builds with 18-octet entries; one octet more never
+    // reaches the builder, since the restriction refuses it.
+    let longest = bacnet_types::constructed::BACnetAddress::MAX_MAC_LEN;
+    let restriction = DccSourceRestriction::new(vec![
+        DccSource::Direct(vec![0x2a; longest]),
+        DccSource::Routed {
+            network: 7,
+            address: vec![0x2b; longest],
+        },
+    ])
+    .unwrap();
+    let mut server = BACnetServer::generic_builder()
+        .transport(TestTransport::new())
+        .dcc_policy(DccPolicy::RequirePassword)
+        .dcc_password("required")
+        .dcc_source_restriction(Some(restriction))
+        .build()
+        .await
+        .unwrap();
+    server.stop().await.unwrap();
+    assert!(DccSourceRestriction::new(vec![DccSource::Direct(vec![0x2a; longest + 1])]).is_err());
+}
+
+#[tokio::test]
 async fn dcc_source_restriction_rejected_before_start() {
     for policy in [DccPolicy::DenyAll, DccPolicy::LegacyPermissive] {
         let restriction = Some(DccSourceRestriction::new(vec![]).unwrap());
@@ -130,13 +178,13 @@ async fn dcc_source_restriction_rejected_before_start() {
             dcc_source_restriction: restriction.clone(),
             ..Default::default()
         };
-        let error = BACnetServer::start(config, ObjectDatabase::new(), NeverStart(started.clone()))
+        let error = BACnetServer::start(config, ObjectDatabase::new(), never_start(&started))
             .await
             .err()
             .unwrap();
         assert!(matches!(error, Error::Encoding(m) if m.contains("source restriction")));
         assert!(BACnetServer::generic_builder()
-            .transport(NeverStart(started.clone()))
+            .transport(never_start(&started))
             .dcc_policy(policy)
             .dcc_source_restriction(restriction.clone())
             .build()
@@ -184,14 +232,14 @@ async fn dcc_source_denied_enable_still_occupies_recovery() {
         },
     )
     .await;
-    server.comm_state.store(2, Ordering::Release);
+    server.comm_state.set_for_test(DccState::DisableInitiation);
     for id in 1..=2 {
         dispatch(&server, enable(id, Some("required")), source(id), None).await;
         observed(&mut started).await;
-        assert_eq!(server.comm_state(), 2);
+        assert_eq!(server.comm_state(), DccState::DisableInitiation);
         assert!(server.dcc_timer.lock().await.is_none());
         assert!(
-            matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::Error(e))
+            matches!(held_sends(&server).frames.lock().unwrap().last(), Some(Apdu::Error(e))
             if e.error_class == ErrorClass::SERVICES && e.error_code == ErrorCode::SERVICE_REQUEST_DENIED)
         );
     }
@@ -206,26 +254,29 @@ async fn dcc_source_denied_enable_still_occupies_recovery() {
 
 #[test]
 fn dcc_configured_validation_retains_decode_password_unknown_mode_precedence() {
+    use crate::server::dcc_outcomes::DccOutcome;
     for policy in [
         DccPolicy::DenyAll,
         DccPolicy::RequirePassword,
         DccPolicy::LegacyPermissive,
     ] {
-        let state = AtomicU8::new(2);
         let password = Some("required".to_owned());
-        let invalid = handlers::handle_device_communication_control_with_policy(
-            &[0x19],
-            &state,
-            &password,
-            policy,
-        );
-        assert!(matches!(invalid, Err(Error::Decoding { .. })));
-        let unknown = &[0x19, 3];
-        let error = handlers::handle_device_communication_control_with_policy(
-            unknown, &state, &password, policy,
-        );
-        assert!(matches!(error, Err(Error::Protocol { class, code })
+        let validate = |data: &[u8]| {
+            handlers::device_mgmt::validate_dcc(data, &password, policy)
+                .expect_err("each request here is refused")
+        };
+        // `[1]` announces one contents octet and holds none (#1374): the
+        // request's Reject for a missing parameter (#1446).
+        let failure = validate(&[0x19]);
+        assert!(matches!(failure.error, Error::Reject { reason }
+            if reason == RejectReason::MISSING_REQUIRED_PARAMETER.to_raw()));
+        assert!(matches!(failure.outcome, DccOutcome::Malformed));
+        // The password is checked before the mode, so an unknown mode with
+        // no password is a password failure.
+        let failure = validate(&[0x19, 3]);
+        assert!(matches!(failure.error, Error::Protocol { class, code }
             if class == ErrorClass::SECURITY.to_raw() as u32 && code == ErrorCode::PASSWORD_FAILURE.to_raw() as u32));
+        assert!(matches!(failure.outcome, DccOutcome::PasswordFailure));
         let mut data = BytesMut::new();
         DeviceCommunicationControlRequest {
             time_duration: None,
@@ -234,16 +285,14 @@ fn dcc_configured_validation_retains_decode_password_unknown_mode_precedence() {
         }
         .encode(&mut data)
         .unwrap();
-        let error = handlers::handle_device_communication_control_with_policy(
-            &data, &state, &password, policy,
-        );
-        assert!(matches!(error, Err(Error::Encoding(m)) if m == "unknown EnableDisable value"));
-        assert_eq!(state.load(Ordering::Acquire), 2);
+        let failure = validate(&data);
+        assert!(matches!(failure.error, Error::Encoding(m) if m == "unknown EnableDisable value"));
+        assert!(matches!(failure.outcome, DccOutcome::Malformed));
     }
 }
 
 pub(super) async fn legacy_fixture() -> (
-    BACnetServer<HeldTransport>,
+    BACnetServer<TestTransport>,
     mpsc::Sender<ReceivedNpdu>,
     mpsc::UnboundedReceiver<oneshot::Receiver<()>>,
 ) {
@@ -267,17 +316,13 @@ async fn dcc_require_password_rejected_before_start() {
             dcc_password: password.clone(),
             ..Default::default()
         };
-        let error = BACnetServer::start(
-            config,
-            ObjectDatabase::new(),
-            NeverStart(Arc::clone(&started)),
-        )
-        .await
-        .err()
-        .unwrap();
+        let error = BACnetServer::start(config, ObjectDatabase::new(), never_start(&started))
+            .await
+            .err()
+            .unwrap();
         assert!(matches!(error, Error::Encoding(m) if m.contains("nonempty dcc_password")));
         let mut builder = BACnetServer::generic_builder()
-            .transport(NeverStart(Arc::clone(&started)))
+            .transport(never_start(&started))
             .dcc_policy(DccPolicy::RequirePassword);
         if let Some(password) = &password {
             builder = builder.dcc_password(password);
@@ -332,14 +377,14 @@ async fn dcc_default_recovery_admission_does_not_authorize_enable() {
             },
         )
         .await;
-        server.comm_state.store(2, Ordering::Release);
+        server.comm_state.set_for_test(DccState::DisableInitiation);
         for id in 1..=2 {
             dispatch(&server, enable(id, password), source(id), None).await;
             observed(&mut started).await;
-            assert_eq!(server.comm_state(), 2);
+            assert_eq!(server.comm_state(), DccState::DisableInitiation);
             assert!(server.dcc_timer.lock().await.is_none());
             assert!(
-                matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::Error(e))
+                matches!(held_sends(&server).frames.lock().unwrap().last(), Some(Apdu::Error(e))
                 if e.error_class == ErrorClass::SERVICES && e.error_code == ErrorCode::SERVICE_REQUEST_DENIED)
             );
         }

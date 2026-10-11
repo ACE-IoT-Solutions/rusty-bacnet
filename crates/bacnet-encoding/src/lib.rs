@@ -1,27 +1,34 @@
+//! BACnet ASN.1/BER encoding and APDU/NPDU codecs per ASHRAE 135-2020.
+//!
+//! This crate provides the wire-format encoding and decoding for BACnet:
+//! - ASN.1 tag encode/decode (Clause 20.2.1)
+//! - Application-tagged primitive codecs (Clause 20.2)
+//! - APDU encode/decode (Clause 20.1)
+//! - NPDU encode/decode (Clause 6)
+//!
+//! # Features
+//!
+//! The codecs need an allocator, and one of these features to say so:
+//!
+//! - `std` (default): hosted builds. Also logs, through `tracing`, an NPDU
+//!   whose reserved control bits are set.
+//! - `alloc`: `no_std` with a global allocator, for bare-metal targets:
+//!   `default-features = false, features = ["alloc"]`. `bytes` must build for
+//!   the target; on one without atomic compare-and-swap, such as ARMv6-M,
+//!   that means its `extra-platforms` feature and a `portable-atomic` backend
+//!   the firmware picks.
+//!
+//! A build with neither fails; that combination is reserved for a future
+//! allocation-free subset.
+
+// Tests always build with std, so feature-off test runs need no imports of
+// their own.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
-#![doc = "BACnet ASN.1/BER encoding and APDU/NPDU codecs per ASHRAE 135-2020."]
-#![doc = ""]
-#![doc = "The `alloc` feature enables the codec on no_std targets with a global allocator."]
-#![doc = "For example, an embedded application can use the primitive encoder directly:"]
-#![doc = ""]
-#![doc = "```rust"]
-#![doc = "extern crate alloc;"]
-#![doc = "use alloc::vec::Vec;"]
-#![doc = "use bacnet_encoding::primitives::encode_unsigned;"]
-#![doc = "use bytes::BytesMut;"]
-#![doc = ""]
-#![doc = "fn example() {"]
-#![doc = "let mut encoded = BytesMut::new();"]
-#![doc = "encode_unsigned(&mut encoded, 42);"]
-#![doc = "let _wire: Vec<u8> = encoded.to_vec();"]
-#![doc = "# }"]
-#![doc = "```"]
-#![deny(unsafe_code)]
 
-#[cfg(all(not(feature = "std"), not(feature = "alloc")))]
-compile_error!("bacnet-encoding requires either the `std` or `alloc` feature");
+#[cfg(not(any(feature = "std", feature = "alloc")))]
+compile_error!("bacnet-encoding needs the `std` or the `alloc` feature");
 
+// `format!` and `vec!` without std's prelude.
 #[macro_use]
 extern crate alloc;
 

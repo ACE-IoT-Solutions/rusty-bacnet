@@ -1,216 +1,150 @@
-use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::Instant;
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use bacnet_types::enums::{BvlcFunction, BvlcResultCode};
+use bacnet_bip_codec::{
+    BdtEntries, BvlcFunction, BvlcResultCode, Bvll, BvllError, BvllFrame, FdtEntries,
+};
 use bacnet_types::MacAddr;
 
-use crate::bbmd::BbmdState;
-use crate::bvll::{self, encode_bip_mac, encode_bvll, encode_bvll_forwarded};
-use crate::port::{ReceivedNpdu, TransportMeta};
+use crate::bbmd::{self, BbmdState};
+use crate::bvll::{encode_bip_mac, encode_bvll, BvllMessage};
+use crate::port::{ReceivedNpdu, TransportProvenance};
 
 use super::fanout::FanoutDispatcher;
-use super::policy_bridge::{
-    evaluate_narrowing_policy, BvllPolicy, BvllPolicyContext, EvaluatedBvllPolicy,
-};
+use super::ingress::Delivery;
 use super::rate_limit::{is_covered_management_request, ManagementRateLimiter};
-use super::{decode_bvlc_result_code, BipTransport, PendingBvlcResponse};
-
-pub(super) fn original_destination_matches(
-    function: BvlcFunction,
-    destination: IpAddr,
-    local_ip: Ipv4Addr,
-    configured_broadcast: Ipv4Addr,
-    local_unicast_ips: &[Ipv4Addr],
-    wildcard_bind: bool,
-    os_group_delivery: Option<bool>,
-) -> bool {
-    let local_unicast = match destination {
-        IpAddr::V4(ip) if wildcard_bind => {
-            ip != configured_broadcast
-                && ip != Ipv4Addr::BROADCAST
-                && !ip.is_multicast()
-                && (local_unicast_ips.contains(&ip)
-                    || (cfg!(windows) && os_group_delivery == Some(false)))
-        }
-        IpAddr::V4(ip) => ip == local_ip,
-        IpAddr::V6(_) => false,
-    } && os_group_delivery != Some(true);
-    let broadcast = matches!(destination, IpAddr::V4(ip) if ip == configured_broadcast || ip == Ipv4Addr::BROADCAST)
-        && os_group_delivery != Some(false);
-
-    match function {
-        f if f == BvlcFunction::ORIGINAL_UNICAST_NPDU => local_unicast,
-        f if f == BvlcFunction::ORIGINAL_BROADCAST_NPDU => broadcast,
-        // A Forwarded-NPDU may arrive by direct unicast or by a configured
-        // directed/limited broadcast. All BVLL management requests and
-        // responses are point-to-point and must arrive as actual unicast.
-        f if f == BvlcFunction::FORWARDED_NPDU => local_unicast || broadcast,
-        _ => local_unicast,
-    }
-}
 
 /// Context for the BIP receive loop — holds all shared state needed to
 /// process incoming BVLL messages.
 pub(super) struct RecvContext {
     pub(super) local_mac: [u8; 6],
-    pub(super) socket: Arc<UdpSocket>,
+    pub(super) socket: Arc<super::BipSocket>,
     pub(super) npdu_tx: mpsc::Sender<ReceivedNpdu>,
-    pub(super) bbmd: Option<Arc<Mutex<BbmdState>>>,
+    pub(super) bbmd: Option<Arc<std::sync::Mutex<BbmdState>>>,
     pub(super) broadcast_addr: Ipv4Addr,
     pub(super) broadcast_port: u16,
-    pub(super) pending_bvlc_response: Arc<StdMutex<Option<PendingBvlcResponse>>>,
-    pub(super) bvlc_result_quarantine: Arc<StdMutex<HashMap<([u8; 4], u16), Instant>>>,
+    pub(super) client_management: Arc<super::client_management::ManagementClient>,
     pub(super) management_limiter: Arc<std::sync::Mutex<ManagementRateLimiter>>,
     pub(super) fanout: Option<FanoutDispatcher>,
-    pub(super) bvll_policy: Option<Arc<dyn BvllPolicy>>,
+    /// Refuses a UDP source (#1504) or a Forwarded-NPDU origin (#1493)
+    /// that is a group address.
+    pub(super) group_sources: super::groups::GroupSources,
     #[cfg(test)]
     pub(super) force_dbtn_forward_failure: bool,
 }
 
-/// Evaluate the optional extension only after the caller has completed the
-/// function's native cheap hard gates. No BBMD state lock is held here.
-async fn extension_policy_admits(
-    msg: &bvll::BvllMessage,
-    sender: ([u8; 4], u16),
-    ctx: &RecvContext,
-) -> bool {
-    let Some(policy) = ctx.bvll_policy.as_deref() else {
-        return true;
-    };
-    let context = BvllPolicyContext::new(msg.function, sender.0, sender.1, &msg.payload);
-    match evaluate_narrowing_policy(true, Some(policy), &context) {
-        EvaluatedBvllPolicy::Continue => true,
-        EvaluatedBvllPolicy::Drop => false,
-        EvaluatedBvllPolicy::Reject(code) => {
-            send_bvlc_result(&ctx.socket, sender, code).await;
-            false
-        }
-    }
-}
-
+/// Hand a management response to the request waiting for it. The frame is
+/// copied, since the request outlives the receive buffer.
 fn complete_pending_bvlc_response(
-    msg: &bvll::BvllMessage,
+    frame: BvllFrame<'_>,
     sender: ([u8; 4], u16),
     ctx: &RecvContext,
 ) -> bool {
-    let mut slot = ctx
-        .pending_bvlc_response
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if slot
-        .as_ref()
-        .is_some_and(|pending| pending.matches(sender, msg))
-    {
-        let pending = slot.take().expect("pending response exists");
-        let _ = pending.tx.send(msg.clone());
-        true
-    } else {
-        false
+    ctx.client_management
+        .complete(&BvllMessage::from(frame), sender)
+}
+
+/// An NPDU this transport received, for the network layer.
+fn received_npdu(
+    npdu: &[u8],
+    source_mac: MacAddr,
+    link_layer_group: bool,
+    function: BvlcFunction,
+    udp_source: ([u8; 4], u16),
+    forwarded_from: Option<([u8; 4], u16)>,
+) -> ReceivedNpdu {
+    ReceivedNpdu {
+        direct_response: None,
+        npdu: Bytes::copy_from_slice(npdu),
+        source_mac,
+        link_layer_group,
+        data_attributes: Vec::new(),
+        provenance: TransportProvenance::unverified_bip(
+            function.to_raw(),
+            udp_source,
+            forwarded_from,
+        ),
+        reply_tx: None,
     }
 }
 
-fn quarantine_late_bvlc_result(sender: ([u8; 4], u16), ctx: &RecvContext) -> bool {
-    let now = Instant::now();
-    let mut quarantine = ctx
-        .bvlc_result_quarantine
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match quarantine.get_mut(&sender) {
-        Some(deadline) if *deadline > now => {
-            *deadline = now + BipTransport::BVLC_RESPONSE_TIMEOUT;
-            true
-        }
-        Some(_) => {
-            quarantine.remove(&sender);
-            false
-        }
-        None => false,
-    }
-}
-
-/// Handle a decoded BVLL message in the recv loop.
+/// Handle a BVLL frame whose header the codec accepted. `delivery` says how
+/// its datagram arrived.
 pub(super) async fn handle_bvll_message(
-    msg: &bvll::BvllMessage,
+    frame: BvllFrame<'_>,
     sender: ([u8; 4], u16),
+    delivery: Delivery,
     ctx: &RecvContext,
 ) {
-    let transport_meta = || TransportMeta {
-        bvlc_function: msg.function.to_raw(),
-        udp_source_ip: sender.0,
-        udp_source_port: sender.1,
-        forwarded_from_ip: msg.originating_ip,
-        forwarded_from_port: msg.originating_port,
-    };
     // Bounded inbound management quota. Excess covered requests are
     // silently discarded before payload validation, table access, ACL
     // evaluation, or any response/NAK. Write-BDT and data-plane functions
     // are excluded and fall through below.
-    if is_covered_management_request(msg.function) {
+    if is_covered_management_request(frame.function) {
         let allowed = match ctx.management_limiter.lock() {
             Ok(mut limiter) => limiter.check_now(sender.0),
             Err(poison) => poison.into_inner().check_now(sender.0),
         };
         if !allowed {
             debug!(
-                function = msg.function.to_raw(),
+                function = frame.function.to_raw(),
                 ip = %Ipv4Addr::from(sender.0),
                 "Discarding over-limit BBMD management request"
             );
             return;
         }
     }
-    match msg.function {
-        f if f == BvlcFunction::ORIGINAL_UNICAST_NPDU => {
+    let message = match frame.message() {
+        Ok(message) => message,
+        Err(error) => return handle_malformed(frame, error, sender, ctx).await,
+    };
+    match message {
+        Bvll::OriginalUnicastNpdu(npdu) => {
             let source_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
             if *source_mac == ctx.local_mac[..] {
                 return;
             }
-            if !extension_policy_admits(msg, sender, ctx).await {
-                return;
-            }
+            // From the datagram's address, not its BVLC function, so a
+            // group-addressed confirmed request is never answered as a
+            // directed one (Clause 5.4.5.1).
+            let group = delivery == Delivery::Broadcast;
             if ctx
                 .npdu_tx
-                .try_send(ReceivedNpdu {
-                    npdu: msg.payload.clone(),
+                .try_send(received_npdu(
+                    npdu,
                     source_mac,
-                    link_layer_group: false,
-                    data_attributes: Vec::new(),
-                    transport_meta: Some(transport_meta()),
-                    reply_tx: None,
-                })
+                    group,
+                    BvlcFunction::ORIGINAL_UNICAST_NPDU,
+                    sender,
+                    None,
+                ))
                 .is_err()
             {
                 warn!("BIP: NPDU channel full, dropping incoming unicast frame");
             }
         }
 
-        f if f == BvlcFunction::ORIGINAL_BROADCAST_NPDU => {
+        Bvll::OriginalBroadcastNpdu(npdu) => {
             let source_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
             if *source_mac == ctx.local_mac[..] {
-                return;
-            }
-            if !extension_policy_admits(msg, sender, ctx).await {
                 return;
             }
 
             if ctx
                 .npdu_tx
-                .try_send(ReceivedNpdu {
-                    npdu: msg.payload.clone(),
+                .try_send(received_npdu(
+                    npdu,
                     source_mac,
-                    link_layer_group: true,
-                    data_attributes: Vec::new(),
-                    transport_meta: Some(transport_meta()),
-                    reply_tx: None,
-                })
+                    true,
+                    BvlcFunction::ORIGINAL_BROADCAST_NPDU,
+                    sender,
+                    None,
+                ))
                 .is_err()
             {
                 warn!("BIP: NPDU channel full, dropping incoming broadcast frame");
@@ -219,7 +153,7 @@ pub(super) async fn handle_bvll_message(
             // If BBMD, forward as Forwarded-NPDU to BDT peers + FDT entries
             if let Some(bbmd) = &ctx.bbmd {
                 let (targets, dedup_count) = {
-                    let mut state = bbmd.lock().await;
+                    let mut state = bbmd::lock(bbmd);
                     let before = state.fdt_counters().destinations_deduplicated;
                     let targets = state.forwarding_targets(sender.0, sender.1);
                     let after = state.fdt_counters().destinations_deduplicated;
@@ -230,37 +164,31 @@ pub(super) async fn handle_bvll_message(
                         .into_iter()
                         .map(|(ip, port)| SocketAddrV4::new(Ipv4Addr::from(ip), port))
                         .collect();
-                    fanout.dispatch_forwarded_npdu(
-                        sender.0,
-                        sender.1,
-                        &msg.payload,
-                        addrs,
-                        dedup_count,
-                    );
+                    fanout.dispatch_forwarded_npdu(sender.0, sender.1, npdu, addrs, dedup_count);
                 } else {
-                    let _ =
-                        forward_npdu(&ctx.socket, &msg.payload, sender.0, sender.1, &targets).await;
+                    let _ = forward_npdu(&ctx.socket, npdu, sender.0, sender.1, &targets).await;
                 }
             }
         }
 
-        f if f == BvlcFunction::FORWARDED_NPDU => {
-            // BBMD mode: use originating_ip as source_mac (same subnet, directly reachable).
-            // Non-BBMD mode: use actual UDP sender as source_mac (originator may be behind NAT).
-            let source_mac =
-                if let (Some(ip), Some(port)) = (msg.originating_ip, msg.originating_port) {
-                    MacAddr::from(encode_bip_mac(ip, port))
-                } else {
-                    return;
-                };
-            if *source_mac == ctx.local_mac[..] {
+        Bvll::ForwardedNpdu { origin, npdu } => {
+            // The embedded origin is the NPDU's source, in BBMD mode and
+            // out of it (Annex J.2.5).
+            let (orig_ip, orig_port) = (origin.ip().octets(), origin.port());
+            let source_mac = MacAddr::from(encode_bip_mac(orig_ip, orig_port));
+            if *source_mac == ctx.local_mac[..] || !ctx.group_sources.admits_origin(&source_mac) {
                 return;
             }
 
             // BBMD mode: only accept FORWARDED_NPDU from BDT peers
             if let Some(bbmd) = &ctx.bbmd {
+                // A local rebroadcast retains the remote embedded origin. The
+                // self BDT row must not turn its UDP echo into peer traffic.
+                if encode_bip_mac(sender.0, sender.1) == ctx.local_mac {
+                    return;
+                }
                 let (is_bdt_peer, needs_local_broadcast) = {
-                    let state = bbmd.lock().await;
+                    let state = bbmd::lock(bbmd);
                     (
                         state.is_bdt_peer(sender.0, sender.1),
                         state.forwarded_npdu_needs_local_broadcast(sender.0, sender.1),
@@ -274,420 +202,393 @@ pub(super) async fn handle_bvll_message(
                     );
                     return;
                 }
-                if !extension_policy_admits(msg, sender, ctx).await {
-                    return;
-                }
 
                 if ctx
                     .npdu_tx
-                    .try_send(ReceivedNpdu {
-                        npdu: msg.payload.clone(),
+                    .try_send(received_npdu(
+                        npdu,
                         source_mac,
-                        link_layer_group: true,
-                        data_attributes: Vec::new(),
-                        transport_meta: Some(transport_meta()),
-                        reply_tx: None,
-                    })
+                        true,
+                        BvlcFunction::FORWARDED_NPDU,
+                        sender,
+                        Some((orig_ip, orig_port)),
+                    ))
                     .is_err()
                 {
                     warn!("BIP: NPDU channel full, dropping forwarded frame");
                 }
 
-                let orig_ip = msg.originating_ip.unwrap();
-                let orig_port = msg.originating_port.unwrap();
-
                 // Forward to FDT entries (BDT peers don't need it — they got it directly)
                 let (fdt_targets, dedup_count) = {
-                    let mut state = bbmd.lock().await;
+                    let mut state = bbmd::lock(bbmd);
                     let before = state.fdt_counters().destinations_deduplicated;
                     let targets = state.fdt_forwarding_targets(orig_ip, orig_port);
                     let after = state.fdt_counters().destinations_deduplicated;
                     (targets, after.saturating_sub(before))
                 };
-                if needs_local_broadcast {
+                // Annex J.4.5: one that came by broadcast already reached the
+                // local subnet, whatever the sender's BDT mask says. Never
+                // rebroadcasting it also ends any loop through a BDT row that
+                // is this BBMD under another address.
+                if needs_local_broadcast && delivery == Delivery::Broadcast {
+                    debug!("Forwarded-NPDU arrived by broadcast; skipping local rebroadcast");
+                } else if needs_local_broadcast {
                     let local_dest = SocketAddrV4::new(ctx.broadcast_addr, ctx.broadcast_port);
-                    let _ = send_forwarded_npdu(
-                        &ctx.socket,
-                        local_dest,
-                        orig_ip,
-                        orig_port,
-                        &msg.payload,
-                    )
-                    .await;
+                    let _ = send_forwarded_npdu(&ctx.socket, local_dest, orig_ip, orig_port, npdu)
+                        .await;
                 }
                 if let Some(fanout) = &ctx.fanout {
                     let addrs: Vec<SocketAddrV4> = fdt_targets
                         .into_iter()
                         .map(|(ip, port)| SocketAddrV4::new(Ipv4Addr::from(ip), port))
                         .collect();
-                    fanout.dispatch_forwarded_npdu(
-                        orig_ip,
-                        orig_port,
-                        &msg.payload,
-                        addrs,
-                        dedup_count,
-                    );
+                    fanout.dispatch_forwarded_npdu(orig_ip, orig_port, npdu, addrs, dedup_count);
                 } else {
-                    let _ =
-                        forward_npdu(&ctx.socket, &msg.payload, orig_ip, orig_port, &fdt_targets)
-                            .await;
+                    let _ = forward_npdu(&ctx.socket, npdu, orig_ip, orig_port, &fdt_targets).await;
                 }
-            } else {
-                // Non-BBMD: use originating address as source_mac (spec J.2.5).
-                if !extension_policy_admits(msg, sender, ctx).await {
-                    return;
-                }
-                if ctx
-                    .npdu_tx
-                    .try_send(ReceivedNpdu {
-                        npdu: msg.payload.clone(),
-                        source_mac,
-                        link_layer_group: true,
-                        data_attributes: Vec::new(),
-                        transport_meta: Some(transport_meta()),
-                        reply_tx: None,
-                    })
-                    .is_err()
-                {
-                    warn!("BIP: NPDU channel full, dropping forwarded frame");
-                }
-            }
-        }
-
-        f if f == BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK => {
-            let source_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
-            if *source_mac == ctx.local_mac[..] {
-                return;
-            }
-
-            // If BBMD, verify sender is a registered foreign device
-            if let Some(bbmd) = &ctx.bbmd {
-                let is_registered = {
-                    let mut state = bbmd.lock().await;
-                    state.is_registered_foreign_device(sender.0, sender.1)
-                };
-                if !is_registered {
-                    debug!("Rejecting DISTRIBUTE_BROADCAST_TO_NETWORK from non-registered sender {:?}:{}",
-                        Ipv4Addr::from(sender.0), sender.1);
-                    send_bvlc_result(
-                        &ctx.socket,
-                        sender,
-                        BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK,
-                    )
-                    .await;
-                    return;
-                }
-                if !extension_policy_admits(msg, sender, ctx).await {
-                    return;
-                }
-
-                if ctx
-                    .npdu_tx
-                    .try_send(ReceivedNpdu {
-                        npdu: msg.payload.clone(),
-                        source_mac,
-                        link_layer_group: true,
-                        data_attributes: Vec::new(),
-                        transport_meta: Some(transport_meta()),
-                        reply_tx: None,
-                    })
-                    .is_err()
-                {
-                    warn!("BIP: NPDU channel full, dropping distributed broadcast frame");
-                }
-
-                let (targets, dedup_count) = {
-                    let mut state = bbmd.lock().await;
-                    let before = state.fdt_counters().destinations_deduplicated;
-                    let targets = state.forwarding_targets(sender.0, sender.1);
-                    let after = state.fdt_counters().destinations_deduplicated;
-                    (targets, after.saturating_sub(before))
-                };
-
-                let local_dest = SocketAddrV4::new(ctx.broadcast_addr, ctx.broadcast_port);
-                let local_ok = if should_force_dbtn_forward_failure(ctx) {
-                    warn!("Forced DBTN forwarding failure");
-                    false
-                } else {
-                    send_forwarded_npdu(&ctx.socket, local_dest, sender.0, sender.1, &msg.payload)
-                        .await
-                };
-
-                let remote_ok = if let Some(fanout) = &ctx.fanout {
-                    let addrs: Vec<SocketAddrV4> = targets
-                        .into_iter()
-                        .map(|(ip, port)| SocketAddrV4::new(Ipv4Addr::from(ip), port))
-                        .collect();
-                    fanout.dispatch_forwarded_npdu(
-                        sender.0,
-                        sender.1,
-                        &msg.payload,
-                        addrs,
-                        dedup_count,
-                    )
-                } else {
-                    forward_npdu(&ctx.socket, &msg.payload, sender.0, sender.1, &targets).await
-                };
-
-                let forwarding_ok = local_ok && remote_ok;
-                if !forwarding_ok {
-                    send_bvlc_result(
-                        &ctx.socket,
-                        sender,
-                        BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK,
-                    )
-                    .await;
-                }
-            } else {
-                // Non-BBMD: reject with NAK (spec J.4.5)
-                send_bvlc_result(
-                    &ctx.socket,
+            } else if ctx
+                .npdu_tx
+                .try_send(received_npdu(
+                    npdu,
+                    source_mac,
+                    true,
+                    BvlcFunction::FORWARDED_NPDU,
                     sender,
-                    BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK,
-                )
-                .await;
+                    Some((orig_ip, orig_port)),
+                ))
+                .is_err()
+            {
+                warn!("BIP: NPDU channel full, dropping forwarded frame");
             }
         }
 
-        f if f == BvlcFunction::REGISTER_FOREIGN_DEVICE => {
-            if let Some(bbmd) = &ctx.bbmd {
-                if msg.payload.len() != 2 {
-                    send_bvlc_result(
-                        &ctx.socket,
-                        sender,
-                        BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK,
-                    )
-                    .await;
-                    return;
-                }
-                let ttl = u16::from_be_bytes([msg.payload[0], msg.payload[1]]);
-                if !extension_policy_admits(msg, sender, ctx).await {
-                    return;
-                }
-                let result = {
-                    let mut state = bbmd.lock().await;
-                    state.register_foreign_device(sender.0, sender.1, ttl)
-                };
-                debug!(
-                    ip = ?Ipv4Addr::from(sender.0),
-                    port = sender.1,
-                    ttl = ttl,
-                    "Foreign device registered"
-                );
-                send_bvlc_result(&ctx.socket, sender, result).await;
-            } else {
-                send_bvlc_result(
-                    &ctx.socket,
-                    sender,
-                    BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK,
-                )
-                .await;
-            }
+        Bvll::DistributeBroadcastToNetwork(npdu) => {
+            handle_distribute_broadcast(npdu, sender, ctx).await;
         }
 
-        f if f == BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE => {
-            if let Some(bbmd) = &ctx.bbmd {
-                if !extension_policy_admits(msg, sender, ctx).await {
-                    return;
-                }
-                let state = bbmd.lock().await;
-                let mut payload = BytesMut::new();
-                state.encode_bdt(&mut payload);
-                drop(state);
-                let resp_len = 4 + payload.len();
-                let allowed = match ctx.management_limiter.lock() {
-                    Ok(mut limiter) => limiter.check_and_record_bdt_response(sender.0, resp_len),
-                    Err(poison) => poison
-                        .into_inner()
-                        .check_and_record_bdt_response(sender.0, resp_len),
-                };
-                if !allowed {
+        Bvll::RegisterForeignDevice { ttl } => {
+            let result = match &ctx.bbmd {
+                Some(bbmd) => {
+                    let result = bbmd::lock(bbmd).register_foreign_device(sender.0, sender.1, ttl);
                     debug!(
-                        ip = %Ipv4Addr::from(sender.0),
-                        bytes = resp_len,
-                        "Throttling Read-BDT response due to amplification budget"
+                        ip = ?Ipv4Addr::from(sender.0),
+                        port = sender.1,
+                        ttl = ttl,
+                        "Foreign device registered"
                     );
-                    return;
+                    result
                 }
-                let mut buf = BytesMut::with_capacity(resp_len);
-                match encode_bvll(
-                    &mut buf,
-                    BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK,
-                    &payload,
-                ) {
-                    Ok(()) => {
-                        let dest = SocketAddrV4::new(Ipv4Addr::from(sender.0), sender.1);
-                        let _ = ctx.socket.send_to(&buf, dest).await;
-                    }
-                    Err(e) => warn!(error = %e, "Failed to encode Read-BDT-Ack"),
-                }
-            } else {
-                send_bvlc_result(
-                    &ctx.socket,
-                    sender,
-                    BvlcResultCode::READ_BROADCAST_DISTRIBUTION_TABLE_NAK,
-                )
-                .await;
-            }
+                None => BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK,
+            };
+            send_bvlc_result(&ctx.socket, sender, result).await;
         }
 
-        f if f == BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE => {
+        Bvll::ReadBroadcastDistributionTable => match &ctx.bbmd {
+            Some(bbmd) => {
+                let rows = bbmd::lock(bbmd).bdt_wire_entries();
+                let ack = Bvll::ReadBroadcastDistributionTableAck(BdtEntries::from_entries(&rows));
+                send_table_ack(ack, sender, ctx).await;
+            }
+            None => {
+                let nak = BvlcResultCode::READ_BROADCAST_DISTRIBUTION_TABLE_NAK;
+                send_bvlc_result(&ctx.socket, sender, nak).await;
+            }
+        },
+
+        Bvll::WriteBroadcastDistributionTable(_) => {
             // Annex J.4.4.2 requires receivers to answer Write-BDT with the
-            // not-supported result. No decoding, state change, or persistence.
-            send_bvlc_result(
-                &ctx.socket,
-                sender,
-                BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK,
-            )
-            .await;
+            // not-supported result. No state change or persistence.
+            let nak = BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK;
+            send_bvlc_result(&ctx.socket, sender, nak).await;
         }
 
-        f if f == BvlcFunction::READ_FOREIGN_DEVICE_TABLE => {
-            if let Some(bbmd) = &ctx.bbmd {
-                if !extension_policy_admits(msg, sender, ctx).await {
-                    return;
-                }
-                let mut state = bbmd.lock().await;
-                let mut payload = BytesMut::new();
-                state.encode_fdt(&mut payload);
-                drop(state);
-                let resp_len = 4 + payload.len();
-                let allowed = match ctx.management_limiter.lock() {
-                    Ok(mut limiter) => limiter.check_and_record_fdt_response(sender.0, resp_len),
-                    Err(poison) => poison
-                        .into_inner()
-                        .check_and_record_fdt_response(sender.0, resp_len),
-                };
-                if !allowed {
-                    debug!(
-                        ip = %Ipv4Addr::from(sender.0),
-                        bytes = resp_len,
-                        "Throttling Read-FDT response due to amplification budget"
-                    );
-                    return;
-                }
-                let mut buf = BytesMut::with_capacity(resp_len);
-                match encode_bvll(
-                    &mut buf,
-                    BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK,
-                    &payload,
-                ) {
-                    Ok(()) => {
-                        let dest = SocketAddrV4::new(Ipv4Addr::from(sender.0), sender.1);
-                        let _ = ctx.socket.send_to(&buf, dest).await;
-                    }
-                    Err(e) => warn!(error = %e, "Failed to encode Read-FDT-Ack"),
-                }
-            } else {
-                send_bvlc_result(
-                    &ctx.socket,
-                    sender,
-                    BvlcResultCode::READ_FOREIGN_DEVICE_TABLE_NAK,
-                )
-                .await;
+        Bvll::ReadForeignDeviceTable => match &ctx.bbmd {
+            Some(bbmd) => {
+                let rows = bbmd::lock(bbmd).fdt_wire_entries();
+                let ack = Bvll::ReadForeignDeviceTableAck(FdtEntries::from_entries(&rows));
+                send_table_ack(ack, sender, ctx).await;
             }
-        }
-
-        f if f == BvlcFunction::DELETE_FOREIGN_DEVICE_TABLE_ENTRY => {
-            if let Some(bbmd) = &ctx.bbmd {
-                // Check management ACL before accepting Delete-FDT-Entry
-                let allowed = {
-                    let state = bbmd.lock().await;
-                    state.is_management_allowed(&sender.0)
-                };
-                if !allowed {
-                    debug!(
-                        "Rejecting Delete-FDT-Entry from non-ACL sender {:?}:{}",
-                        Ipv4Addr::from(sender.0),
-                        sender.1
-                    );
-                    send_bvlc_result(
-                        &ctx.socket,
-                        sender,
-                        BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK,
-                    )
-                    .await;
-                } else if msg.payload.len() == 6 {
-                    if !extension_policy_admits(msg, sender, ctx).await {
-                        return;
-                    }
-                    let ip = [
-                        msg.payload[0],
-                        msg.payload[1],
-                        msg.payload[2],
-                        msg.payload[3],
-                    ];
-                    let port = u16::from_be_bytes([msg.payload[4], msg.payload[5]]);
-                    let result = {
-                        let mut state = bbmd.lock().await;
-                        state.delete_foreign_device(ip, port)
-                    };
-                    send_bvlc_result(&ctx.socket, sender, result).await;
-                } else {
-                    send_bvlc_result(
-                        &ctx.socket,
-                        sender,
-                        BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK,
-                    )
-                    .await;
-                }
-            } else {
-                send_bvlc_result(
-                    &ctx.socket,
-                    sender,
-                    BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK,
-                )
-                .await;
+            None => {
+                let nak = BvlcResultCode::READ_FOREIGN_DEVICE_TABLE_NAK;
+                send_bvlc_result(&ctx.socket, sender, nak).await;
             }
-        }
+        },
 
-        f if f == BvlcFunction::BVLC_RESULT => {
-            if !complete_pending_bvlc_response(msg, sender, ctx) {
-                if quarantine_late_bvlc_result(sender, ctx) {
-                    debug!(sender = ?sender, "Discarded late BVLC-Result during quiet interval");
-                    return;
-                }
-                match decode_bvlc_result_code(msg) {
-                    Ok(BvlcResultCode::SUCCESSFUL_COMPLETION) => {
-                        debug!("Received BVLC-Result: successful");
-                    }
-                    Ok(BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK) => {
-                        tracing::error!(
-                            "BVLC-Result NAK: foreign device registration rejected by BBMD"
+        Bvll::DeleteForeignDeviceTableEntry(entry) => {
+            let nak = BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK;
+            let result = match &ctx.bbmd {
+                Some(bbmd) => {
+                    // Check management ACL before accepting Delete-FDT-Entry
+                    let mut state = bbmd::lock(bbmd);
+                    if state.is_management_allowed(&sender.0) {
+                        state.delete_foreign_device(entry.ip().octets(), entry.port())
+                    } else {
+                        debug!(
+                            "Rejecting Delete-FDT-Entry from non-ACL sender {:?}:{}",
+                            Ipv4Addr::from(sender.0),
+                            sender.1
                         );
-                    }
-                    Ok(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK) => {
-                        tracing::error!(
-                            "BVLC-Result NAK: broadcast distribution rejected - \
-                             foreign device registration may have failed or expired"
-                        );
-                    }
-                    Ok(code) => {
-                        warn!(code = ?code, "Received BVLC-Result NAK");
-                    }
-                    Err(err) => {
-                        warn!(error = %err, "Received malformed BVLC-Result");
+                        nak
                     }
                 }
+                None => nak,
+            };
+            send_bvlc_result(&ctx.socket, sender, result).await;
+        }
+
+        Bvll::BvlcResult(code) => {
+            if !complete_pending_bvlc_response(frame, sender, ctx) {
+                debug!(code = ?code, "Received unmatched BVLC-Result");
             }
         }
 
-        f if f == BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK => {
-            if !complete_pending_bvlc_response(msg, sender, ctx) {
+        Bvll::ReadBroadcastDistributionTableAck(_) => {
+            if !complete_pending_bvlc_response(frame, sender, ctx) {
                 debug!("Received Read-BDT-ACK with no pending request");
             }
         }
 
-        f if f == BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK => {
-            if !complete_pending_bvlc_response(msg, sender, ctx) {
+        Bvll::ReadForeignDeviceTableAck(_) => {
+            if !complete_pending_bvlc_response(frame, sender, ctx) {
                 debug!("Received Read-FDT-ACK with no pending request");
             }
-        }
-
-        _ => {
-            debug!(function = msg.function.to_raw(), "Unknown BVLC function");
         }
     }
 }
 
-include!("io_helpers.rs");
+/// A frame the codec accepted whose payload doesn't fit its function, or
+/// whose function it doesn't know.
+///
+/// A malformed BBMD-only request is answered with its NAK, in every mode,
+/// so the requester isn't left waiting: J.2.1 gives no other reply for a
+/// request the receiver can't carry out. A malformed management response
+/// still reaches the request waiting for it, which counts it and, for an
+/// ACK, fails with the decode error. Anything else is dropped.
+async fn handle_malformed(
+    frame: BvllFrame<'_>,
+    error: BvllError,
+    sender: ([u8; 4], u16),
+    ctx: &RecvContext,
+) {
+    if let Some(nak) = frame.function.nak() {
+        debug!(error = %error, "Refusing a malformed BVLL management request");
+        send_bvlc_result(&ctx.socket, sender, nak).await;
+        return;
+    }
+    match frame.function {
+        BvlcFunction::BVLC_RESULT
+        | BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK
+        | BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK => {
+            if !complete_pending_bvlc_response(frame, sender, ctx) {
+                warn!(error = %error, "Received malformed BVLC response");
+            }
+        }
+        _ => debug!(
+            function = frame.function.to_raw(),
+            error = %error,
+            "Dropping unknown or malformed BVLL message"
+        ),
+    }
+}
+
+/// A Distribute-Broadcast-To-Network (Annex J.4.5): a BBMD forwards it for a
+/// registered foreign device, and every other device refuses it.
+async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &RecvContext) {
+    let nak = BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK;
+    let source_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
+    if *source_mac == ctx.local_mac[..] {
+        return;
+    }
+    // Non-BBMD: reject with NAK (spec J.4.5)
+    let Some(bbmd) = &ctx.bbmd else {
+        send_bvlc_result(&ctx.socket, sender, nak).await;
+        return;
+    };
+
+    // If BBMD, verify sender is a registered foreign device
+    if !bbmd::lock(bbmd).is_registered_foreign_device(sender.0, sender.1) {
+        debug!(
+            "Rejecting DISTRIBUTE_BROADCAST_TO_NETWORK from non-registered sender {:?}:{}",
+            Ipv4Addr::from(sender.0),
+            sender.1
+        );
+        send_bvlc_result(&ctx.socket, sender, nak).await;
+        return;
+    }
+
+    if ctx
+        .npdu_tx
+        .try_send(received_npdu(
+            npdu,
+            source_mac,
+            true,
+            BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
+            sender,
+            None,
+        ))
+        .is_err()
+    {
+        warn!("BIP: NPDU channel full, dropping distributed broadcast frame");
+    }
+
+    let (targets, dedup_count) = {
+        let mut state = bbmd::lock(bbmd);
+        let before = state.fdt_counters().destinations_deduplicated;
+        let targets = state.forwarding_targets(sender.0, sender.1);
+        let after = state.fdt_counters().destinations_deduplicated;
+        (targets, after.saturating_sub(before))
+    };
+
+    let local_dest = SocketAddrV4::new(ctx.broadcast_addr, ctx.broadcast_port);
+    let local_ok = if should_force_dbtn_forward_failure(ctx) {
+        warn!("Forced DBTN forwarding failure");
+        false
+    } else {
+        send_forwarded_npdu(&ctx.socket, local_dest, sender.0, sender.1, npdu).await
+    };
+
+    let remote_ok = if let Some(fanout) = &ctx.fanout {
+        let addrs: Vec<SocketAddrV4> = targets
+            .into_iter()
+            .map(|(ip, port)| SocketAddrV4::new(Ipv4Addr::from(ip), port))
+            .collect();
+        fanout.dispatch_forwarded_npdu(sender.0, sender.1, npdu, addrs, dedup_count)
+    } else {
+        forward_npdu(&ctx.socket, npdu, sender.0, sender.1, &targets).await
+    };
+
+    if !(local_ok && remote_ok) {
+        send_bvlc_result(&ctx.socket, sender, nak).await;
+    }
+}
+
+/// Send a Read-BDT-Ack or Read-FDT-Ack, unless it would spend more of the
+/// requester's response-amplification budget than is left.
+async fn send_table_ack(ack: Bvll<'_>, sender: ([u8; 4], u16), ctx: &RecvContext) {
+    let resp_len = match ack.encoded_len() {
+        Ok(length) => length,
+        Err(error) => {
+            warn!(error = %error, function = %ack.function(), "Failed to encode table ACK");
+            return;
+        }
+    };
+    let bdt = ack.function() == BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK;
+    let check = |limiter: &mut ManagementRateLimiter| {
+        if bdt {
+            limiter.check_and_record_bdt_response(sender.0, resp_len)
+        } else {
+            limiter.check_and_record_fdt_response(sender.0, resp_len)
+        }
+    };
+    let allowed = match ctx.management_limiter.lock() {
+        Ok(mut limiter) => check(&mut limiter),
+        Err(poison) => check(&mut poison.into_inner()),
+    };
+    if !allowed {
+        debug!(
+            ip = %Ipv4Addr::from(sender.0),
+            bytes = resp_len,
+            function = %ack.function(),
+            "Throttling table ACK due to amplification budget"
+        );
+        return;
+    }
+    let mut buf = BytesMut::with_capacity(resp_len);
+    match encode_bvll(&mut buf, &ack) {
+        Ok(()) => {
+            let dest = SocketAddrV4::new(Ipv4Addr::from(sender.0), sender.1);
+            let _ = ctx.socket.send_to(&buf, dest).await;
+        }
+        Err(e) => warn!(error = %e, "Failed to encode table ACK"),
+    }
+}
+
+/// Send a BVLC-Result to a destination.
+async fn send_bvlc_result(socket: &UdpSocket, dest: ([u8; 4], u16), code: BvlcResultCode) {
+    let mut buf = BytesMut::with_capacity(6);
+    if let Err(e) = encode_bvll(&mut buf, &Bvll::BvlcResult(code)) {
+        warn!(error = %e, "Failed to encode BVLC-Result");
+        return;
+    }
+    let addr = SocketAddrV4::new(Ipv4Addr::from(dest.0), dest.1);
+    let _ = socket.send_to(&buf, addr).await;
+}
+
+#[cfg(test)]
+fn should_force_dbtn_forward_failure(ctx: &RecvContext) -> bool {
+    ctx.force_dbtn_forward_failure
+}
+
+#[cfg(not(test))]
+fn should_force_dbtn_forward_failure(_ctx: &RecvContext) -> bool {
+    false
+}
+
+/// Encode a Forwarded-NPDU carrying `npdu` from `orig_ip:orig_port`.
+fn forwarded_npdu(orig_ip: [u8; 4], orig_port: u16, npdu: &[u8]) -> Option<BytesMut> {
+    let mut buf = BytesMut::with_capacity(10 + npdu.len());
+    let message = Bvll::ForwardedNpdu {
+        origin: SocketAddrV4::new(Ipv4Addr::from(orig_ip), orig_port),
+        npdu,
+    };
+    match encode_bvll(&mut buf, &message) {
+        Ok(()) => Some(buf),
+        Err(e) => {
+            warn!(error = %e, "Failed to encode Forwarded-NPDU");
+            None
+        }
+    }
+}
+
+async fn send_forwarded_npdu(
+    socket: &UdpSocket,
+    dest: SocketAddrV4,
+    orig_ip: [u8; 4],
+    orig_port: u16,
+    npdu: &[u8],
+) -> bool {
+    let Some(buf) = forwarded_npdu(orig_ip, orig_port, npdu) else {
+        return false;
+    };
+    match socket.send_to(&buf, dest).await {
+        Ok(_) => true,
+        Err(e) => {
+            warn!(error = %e, dest = %dest, "Failed to send Forwarded-NPDU");
+            false
+        }
+    }
+}
+
+/// Forward an NPDU as Forwarded-NPDU to a list of targets.
+///
+/// Yields between sends for large target lists to avoid starving the recv loop
+/// when there are many FDT entries (up to 512).
+async fn forward_npdu(
+    socket: &UdpSocket,
+    npdu: &[u8],
+    orig_ip: [u8; 4],
+    orig_port: u16,
+    targets: &[([u8; 4], u16)],
+) -> bool {
+    if targets.is_empty() {
+        return true;
+    }
+    let Some(buf) = forwarded_npdu(orig_ip, orig_port, npdu) else {
+        return false;
+    };
+    let frame = buf.freeze();
+    let mut all_sent = true;
+
+    for (i, &(ip, port)) in targets.iter().enumerate() {
+        let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
+        if let Err(e) = socket.send_to(&frame, dest).await {
+            all_sent = false;
+            warn!(error = %e, dest = %dest, "Failed to forward NPDU");
+        }
+        // Yield every 32 sends to let the recv loop process incoming packets
+        if i % 32 == 31 {
+            tokio::task::yield_now().await;
+        }
+    }
+    all_sent
+}

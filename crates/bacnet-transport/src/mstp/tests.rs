@@ -392,7 +392,8 @@ fn poll_timeout_sole_master() {
 fn mstp_max_apdu_length() {
     let (s1, _s2) = LoopbackSerial::pair();
     let transport = MstpTransport::new(s1, MstpConfig::default());
-    assert_eq!(transport.max_apdu_length(), 480);
+    assert_eq!(transport.egress_apdu_limit(), 480);
+    assert_eq!(transport.local_receive_apdu_capacity(), 480);
 }
 
 #[test]
@@ -706,9 +707,8 @@ fn test_poll_for_master_scan_range_adjacent() {
 
 #[test]
 fn mstp_frame_buf_max_size() {
-    // Hosted assembly reserves the largest supported standard or extended
-    // frame: 2 (preamble) + 6 (header) + 1506 (encoded body length) + 2.
-    assert_eq!(MSTP_MAX_FRAME_BUF, 1516);
+    // Standard frame: 2 (preamble) + 6 (header) + 501 (data) + 2 (CRC16).
+    assert_eq!(MSTP_MAX_FRAME_BUF, 511);
 }
 
 #[test]
@@ -760,19 +760,6 @@ fn pending_reply_source_stored_on_data_expecting_reply() {
 fn t_turnaround_rounds_up_to_full_bit_time() {
     assert_eq!(calculate_t_turnaround_us(9600), 4167);
     assert_eq!(calculate_t_turnaround_us(38_400), 1042);
-}
-
-#[test]
-fn host_stale_timeout_covers_maximum_extended_frame_at_slowest_baud() {
-    let expected_wire_us = (MSTP_MAX_FRAME_BUF as u64 * 10 * 1_000_000).div_ceil(9_600);
-    assert_eq!(
-        calculate_host_stale_partial_timeout_us(9_600),
-        expected_wire_us + 100_000
-    );
-    assert!(
-        calculate_host_stale_partial_timeout_us(9_600)
-            > calculate_host_stale_partial_timeout_us(115_200)
-    );
 }
 
 #[test]

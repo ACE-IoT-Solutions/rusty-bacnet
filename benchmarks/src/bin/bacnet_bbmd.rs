@@ -2,6 +2,7 @@
 //!
 //! Starts a BIP transport with BBMD enabled, serving as a BDT peer and
 //! accepting foreign device registrations. Also runs a minimal BACnet device.
+#![allow(clippy::print_stdout, clippy::print_stderr)] // benchmark binaries report progress and results on the console
 
 use std::net::Ipv4Addr;
 
@@ -62,12 +63,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bdt.push(parse_bdt_entry(entry_str.trim())?);
         }
     }
-    // Add ourselves to BDT
-    bdt.push(BdtEntry {
-        ip: interface.octets(),
-        port: args.port,
-        broadcast_mask: [255, 255, 255, 255],
-    });
+    // Add our own row. A 0.0.0.0 row is invalid, so a wildcard-bound BBMD
+    // instead takes its own address from a --bdt row at one of the host's
+    // addresses, or else from the default route, and adds its row itself.
+    if !interface.is_unspecified() {
+        bdt.push(BdtEntry {
+            ip: interface.octets(),
+            port: args.port,
+            broadcast_mask: [255, 255, 255, 255],
+        });
+    }
 
     let mut transport = BipTransport::new(interface, args.port, broadcast);
     transport.enable_bbmd(bdt);

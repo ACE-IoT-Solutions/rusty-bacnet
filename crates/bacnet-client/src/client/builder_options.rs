@@ -1,9 +1,24 @@
 use super::*;
 
 impl<T: TransportPort + 'static> ClientBuilder<T> {
+    /// Set the independent event notification broadcast channel capacity.
+    pub fn event_channel_capacity(mut self, capacity: usize) -> Self {
+        self.options.event_channel_capacity = capacity;
+        self
+    }
+
     /// Set the number of APDU retries before a confirmed request times out.
     pub fn apdu_retries(mut self, retries: u8) -> Self {
         self.config.apdu_retries = retries;
+        self
+    }
+
+    /// Set the least time, in milliseconds, from the latest confirmed
+    /// request to a destination finishing to the next being sent (default
+    /// 0: no pacing; at most an hour). See
+    /// [`ClientConfig::min_request_interval_ms`].
+    pub fn min_request_interval_ms(mut self, ms: u64) -> Self {
+        self.config.min_request_interval_ms = ms;
         self
     }
 
@@ -41,9 +56,24 @@ impl<T: TransportPort + 'static> ClientBuilder<T> {
 }
 
 impl BipClientBuilder {
+    /// Set the independent event notification broadcast channel capacity.
+    pub fn event_channel_capacity(mut self, capacity: usize) -> Self {
+        self.options.event_channel_capacity = capacity;
+        self
+    }
+
     /// Set the number of APDU retries before a confirmed request times out.
     pub fn apdu_retries(mut self, retries: u8) -> Self {
         self.config.apdu_retries = retries;
+        self
+    }
+
+    /// Set the least time, in milliseconds, from the latest confirmed
+    /// request to a destination finishing to the next being sent (default
+    /// 0: no pacing; at most an hour). See
+    /// [`ClientConfig::min_request_interval_ms`].
+    pub fn min_request_interval_ms(mut self, ms: u64) -> Self {
+        self.config.min_request_interval_ms = ms;
         self
     }
 
@@ -82,9 +112,24 @@ impl BipClientBuilder {
 
 #[cfg(feature = "ipv6")]
 impl Bip6ClientBuilder {
+    /// Set the independent event notification broadcast channel capacity.
+    pub fn event_channel_capacity(mut self, capacity: usize) -> Self {
+        self.options.event_channel_capacity = capacity;
+        self
+    }
+
     /// Set the number of APDU retries before a confirmed request times out.
     pub fn apdu_retries(mut self, retries: u8) -> Self {
         self.config.apdu_retries = retries;
+        self
+    }
+
+    /// Set the least time, in milliseconds, from the latest confirmed
+    /// request to a destination finishing to the next being sent (default
+    /// 0: no pacing; at most an hour). See
+    /// [`ClientConfig::min_request_interval_ms`].
+    pub fn min_request_interval_ms(mut self, ms: u64) -> Self {
+        self.config.min_request_interval_ms = ms;
         self
     }
 
@@ -123,9 +168,24 @@ impl Bip6ClientBuilder {
 
 #[cfg(feature = "sc-tls")]
 impl ScClientBuilder {
+    /// Set the independent event notification broadcast channel capacity.
+    pub fn event_channel_capacity(mut self, capacity: usize) -> Self {
+        self.options.event_channel_capacity = capacity;
+        self
+    }
+
     /// Set the number of APDU retries before a confirmed request times out.
     pub fn apdu_retries(mut self, retries: u8) -> Self {
         self.config.apdu_retries = retries;
+        self
+    }
+
+    /// Set the least time, in milliseconds, from the latest confirmed
+    /// request to a destination finishing to the next being sent (default
+    /// 0: no pacing; at most an hour). See
+    /// [`ClientConfig::min_request_interval_ms`].
+    pub fn min_request_interval_ms(mut self, ms: u64) -> Self {
+        self.config.min_request_interval_ms = ms;
         self
     }
 

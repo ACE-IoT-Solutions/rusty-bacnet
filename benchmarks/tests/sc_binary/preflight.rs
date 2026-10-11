@@ -6,32 +6,27 @@ use std::process::Command;
 const HUB: &str = env!("CARGO_BIN_EXE_bacnet-sc-hub");
 const DEVICE: &str = env!("CARGO_BIN_EXE_bacnet-device");
 
-async fn failure(cmd: &mut Command, files: &Files, expected: &str) {
+/// Run a command that must fail, and return its stderr.
+async fn failed_stderr(cmd: &mut Command, files: &Files, expected: &str) -> String {
     let mut process = Process::start(cmd, files);
     assert!(!process.wait().await.success());
     let (stdout, stderr) = process.output();
     assert!(stdout.is_empty(), "diagnostics must use stderr: {stdout}");
-    let bind_conflict = stderr.contains("Address already in use")
-        // Windows reports WSAEADDRINUSE using its localized message and
-        // numeric error code instead of the Unix wording.
-        || stderr.contains("10048")
-        || stderr.contains("Only one usage of each socket address");
-    let expected_match = if expected == "Address already in use" {
-        bind_conflict
-    } else {
-        stderr.contains(expected)
-    };
-    assert!(expected_match, "unexpected diagnostic: {stderr}");
-    if !bind_conflict {
-        assert!(
-            !stderr.contains("Hub bind failed"),
-            "preflight reached bind: {stderr}"
-        );
-        assert!(
-            !stderr.contains("WebSocket"),
-            "preflight reached networking: {stderr}"
-        );
-    }
+    assert!(stderr.contains(expected), "expected {expected}: {stderr}");
+    stderr
+}
+
+/// A preflight failure: reported before any bind or dial.
+async fn failure(cmd: &mut Command, files: &Files, expected: &str) {
+    let stderr = failed_stderr(cmd, files, expected).await;
+    assert!(
+        !stderr.contains("Hub bind failed"),
+        "preflight reached bind: {stderr}"
+    );
+    assert!(
+        !stderr.contains("WebSocket"),
+        "preflight reached networking: {stderr}"
+    );
 }
 
 #[tokio::test]
@@ -233,11 +228,15 @@ async fn files_der_ca_and_key_match_fail_before_bind_or_dial() {
         .await;
     }
     assert!(listener.accept().now_or_never().is_none());
-    // Valid hub reaches bind and reports the actually occupied address.
-    failure(
+    // Valid hub reaches bind and reports the actually occupied address, in
+    // the OS's own words for it (Windows doesn't say "Address already in use"),
+    // followed by the error kind (#1104).
+    let in_use = std::net::TcpListener::bind(&address).unwrap_err();
+    assert_eq!(in_use.kind(), std::io::ErrorKind::AddrInUse);
+    failed_stderr(
         &mut replace(&files.secure_hub(), "--listen", &address),
         &files,
-        "Address already in use",
+        &format!("Hub bind failed on {address}: {in_use} (AddrInUse)"),
     )
     .await;
 }
@@ -246,30 +245,34 @@ async fn files_der_ca_and_key_match_fail_before_bind_or_dial() {
 async fn non_sc_bip_starts_without_credentials_and_panic_reaps_child() {
     use futures_util::FutureExt;
     use std::panic::AssertUnwindSafe;
-    let files = Files::new();
-    let mut cmd = Command::new(DEVICE);
-    cmd.args([
-        "--interface=127.0.0.1",
-        "--broadcast=127.0.0.1",
-        "--port=0",
-        "--objects=1",
-    ]);
-    let mut process = Process::start(&mut cmd, &files);
-    let line = process.ready("BIP device ").await;
-    let mac = line.split_whitespace().nth(2).unwrap();
-    let bytes: Vec<u8> = mac
-        .split(':')
-        .map(|v| u8::from_str_radix(v, 16).unwrap())
-        .collect();
-    let port = u16::from_be_bytes([bytes[4], bytes[5]]);
-    assert!(std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_err());
-    let result = AssertUnwindSafe(async move {
-        let _owned = process;
-        panic!("injected child cleanup failure");
+    // The closing release probe can lose the port to another process (#1070).
+    crate::port_retry::rerun_on_lost_port(async || {
+        let files = Files::new();
+        let mut cmd = Command::new(DEVICE);
+        cmd.args([
+            "--interface=127.0.0.1",
+            "--broadcast=127.0.0.1",
+            "--port=0",
+            "--objects=1",
+        ]);
+        let mut process = Process::start(&mut cmd, &files);
+        let line = process.ready("BIP device ").await;
+        let mac = line.split_whitespace().nth(2).unwrap();
+        let bytes: Vec<u8> = mac
+            .split(':')
+            .map(|v| u8::from_str_radix(v, 16).unwrap())
+            .collect();
+        let port = u16::from_be_bytes([bytes[4], bytes[5]]);
+        assert!(std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_err());
+        let result = AssertUnwindSafe(async move {
+            let _owned = process;
+            panic!("injected child cleanup failure");
+        })
+        .catch_unwind()
+        .await;
+        assert!(result.is_err());
+        // UDP has no TIME_WAIT: a successful bind proves child teardown, not a sleep.
+        std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, port)).map(drop)
     })
-    .catch_unwind()
     .await;
-    assert!(result.is_err());
-    // UDP has no TIME_WAIT: a successful bind proves child teardown, not a sleep.
-    std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
 }

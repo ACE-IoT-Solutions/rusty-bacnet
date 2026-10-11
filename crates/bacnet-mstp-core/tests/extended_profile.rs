@@ -9,10 +9,10 @@ use bacnet_mstp_codec::{
 };
 use bacnet_mstp_core::{
     Action, ConfigError, CoreError, Direction, Duration, ExtendedMasterCore, HeaplessQueues,
-    Instant, MasterState, MstpCoreConfig, NetworkPriority, QueueStorage, StandardMasterCore,
+    Instant, MasterState, MstpCoreConfig, NetworkPriority, StandardMasterCore,
 };
 #[cfg(feature = "alloc")]
-use bacnet_mstp_core::{ExtendedAllocQueues, QueueRejectReason};
+use bacnet_mstp_core::{ExtendedAllocQueues, QueueRejectReason, QueueStorage};
 
 type StandardQueues = HeaplessQueues<2, 2, MAX_STANDARD_MPDU_DATA, 1>;
 type ExtendedQueues = HeaplessQueues<2, 2, MAX_EXTENDED_MPDU_DATA, 1>;
@@ -25,12 +25,7 @@ fn extended_frame<'a>(
     wire: &'a mut [u8; MAX_EXTENDED_FRAME_LENGTH],
     payload: &[u8],
 ) -> (ExtendedFrame<'a>, usize) {
-    let header = FrameHeader::new(
-        FrameType::ExtendedDataNotExpectingReply,
-        0,
-        7,
-        payload.len(),
-    );
+    let header = FrameHeader::new(FrameType::ExtendedDataNotExpectingReply, 0, 7);
     let used = encode_extended_into(wire, &header, payload).unwrap();
     let (frame, _) = bacnet_mstp_codec::decode_extended_frame_in_place(&mut wire[..used]).unwrap();
     (frame, used)
@@ -116,12 +111,7 @@ fn profile_rejects_1498_before_queue_mutation_and_selects_der_frame() {
 fn extended_profile_accepts_incremental_stream_delivery() {
     let payload = [0x5A; MAX_STANDARD_MPDU_DATA + 1];
     let mut wire = [0; MAX_EXTENDED_FRAME_LENGTH];
-    let header = FrameHeader::new(
-        FrameType::ExtendedDataNotExpectingReply,
-        0,
-        7,
-        payload.len(),
-    );
+    let header = FrameHeader::new(FrameType::ExtendedDataNotExpectingReply, 0, 7);
     let used = encode_extended_into(&mut wire, &header, &payload).unwrap();
     let mut rx = [0; MAX_EXTENDED_FRAME_LENGTH];
     let mut core = ExtendedMasterCore::new(
@@ -146,12 +136,7 @@ fn extended_profile_accepts_incremental_stream_delivery() {
 fn standard_profile_resynchronizes_after_an_extended_frame_exhausts_storage() {
     let extended_payload = [0x5A; MAX_STANDARD_MPDU_DATA + 1];
     let mut extended_wire = [0; MAX_EXTENDED_FRAME_LENGTH];
-    let extended_header = FrameHeader::new(
-        FrameType::ExtendedDataNotExpectingReply,
-        0,
-        7,
-        extended_payload.len(),
-    );
+    let extended_header = FrameHeader::new(FrameType::ExtendedDataNotExpectingReply, 0, 7);
     let extended_used =
         encode_extended_into(&mut extended_wire, &extended_header, &extended_payload).unwrap();
 
@@ -229,8 +214,7 @@ fn extended_dner_reply_is_delivered_while_waiting_for_reply() {
 
     let reply = [0xA5; MAX_STANDARD_MPDU_DATA + 1];
     let mut reply_wire = [0; MAX_EXTENDED_FRAME_LENGTH];
-    let reply_header =
-        FrameHeader::new(FrameType::ExtendedDataNotExpectingReply, 0, 7, reply.len());
+    let reply_header = FrameHeader::new(FrameType::ExtendedDataNotExpectingReply, 0, 7);
     let reply_used = encode_extended_into(&mut reply_wire, &reply_header, &reply).unwrap();
     let (reply_frame, _) =
         bacnet_mstp_codec::decode_extended_frame_in_place(&mut reply_wire[..reply_used]).unwrap();
@@ -257,9 +241,10 @@ fn representative_profile_storage_delta_is_measured_and_nonzero() {
     // The extended profile intentionally pays for larger queue/action slots;
     // the standard profile remains the compact 501-byte default. These exact
     // values are the checked-in memory evidence for the current target.
-    assert_eq!(standard, 13_368);
-    assert_eq!(extended, 37_432);
-    assert_eq!(extended - standard, 24_064);
+    assert_eq!(
+        (standard, extended, extended - standard),
+        (12_896, 35_944, 23_048)
+    );
 }
 
 #[test]

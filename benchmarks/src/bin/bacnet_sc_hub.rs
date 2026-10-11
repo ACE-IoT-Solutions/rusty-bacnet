@@ -1,9 +1,11 @@
 //! BACnet/SC hub for Docker stress topology with required caller-provided mTLS.
+#![allow(clippy::print_stdout, clippy::print_stderr)] // benchmark binaries report progress and results on the console
 
 #[path = "sc/credentials.rs"]
 mod credentials;
 
 use bacnet_transport::sc_hub::{ScHub, ScHubHandshakeTimeouts, ScHubTlsConfig};
+use bacnet_types::error::Error;
 use clap::Parser;
 use credentials::{required, Credentials};
 
@@ -71,14 +73,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
     // Retain the existing handshake budgets; identity is caller-provisioned.
-    let mut hub = ScHub::start_with_tls_config(
+    let mut hub = match ScHub::start_with_tls_config(
         &args.listen,
         tls,
         vmac,
         uuid,
         ScHubHandshakeTimeouts::default(),
     )
-    .await?;
+    .await
+    {
+        Ok(hub) => hub,
+        // Name the address, and keep the OS's words and the error kind, which
+        // the tests read to tell a port another process took (#1104).
+        Err(Error::Transport(err)) => {
+            return Err(format!(
+                "Hub bind failed on {}: {err} ({:?})",
+                args.listen,
+                err.kind()
+            )
+            .into())
+        }
+        Err(err) => return Err(err.into()),
+    };
     let addr = hub.local_addr().unwrap();
     eprintln!("BACnet/SC hub listening on {addr}");
 
@@ -98,7 +114,7 @@ fn hex<const N: usize>(text: &str, flag: &str) -> Result<[u8; N], String> {
         ));
     }
     let mut bytes = [0; N];
-    for (byte, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+    for (byte, pair) in bytes.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
         let digit = |b: u8| {
             if b.is_ascii_digit() {
                 b - b'0'

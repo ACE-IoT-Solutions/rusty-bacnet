@@ -1,8 +1,9 @@
 //! Local admission classification only; never authorizes or mutates DCC state.
 use super::Class;
-use bacnet_encoding::tags;
+use bacnet_encoding::constructed::tagged::{decode_ctx_primitive, decode_optional_ctx};
 use bacnet_services::device_mgmt::DeviceCommunicationControlRequest;
 use bacnet_types::enums::{ConfirmedServiceChoice, EnableDisable};
+use bacnet_types::error::Error;
 
 pub(in crate::server) fn confirmed_class(service: ConfirmedServiceChoice, data: &[u8]) -> Class {
     if service == ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL
@@ -18,47 +19,32 @@ pub(in crate::server) fn confirmed_class(service: ConfirmedServiceChoice, data: 
 
 // Mirror only the decoder's borrowed field traversal, not its accepted language.
 // Its final decode remains authoritative, including optional duration, charset
-// validity and trailing-data tolerance. Every accepted password has <=20 UTF-8
+// validity and the refusal of trailing data. Every accepted password has <=20 UTF-8
 // bytes: UTF-8/Latin-1 need <=20 wire payload bytes, UCS-2 <=40 (each code point
 // produces at least one UTF-8 byte). Thus rejecting larger content loses no
 // accepted encoding, and the authoritative decode can allocate only bounded
 // password storage. There is deliberately no total-request-length cutoff.
 fn bounded_password(data: &[u8]) -> bool {
-    let Ok((_, offset)) = tags::decode_optional_context(data, 0, 0) else {
-        return false;
+    let read = || -> Result<bool, Error> {
+        let (_, offset) = decode_optional_ctx(data, 0, 0, "", decode_ctx_primitive)?;
+        let (_, end) = decode_ctx_primitive(data, offset, 1, "")?;
+        let (password, _) = decode_optional_ctx(data, end, 2, "", decode_ctx_primitive)?;
+        Ok(match password {
+            None => true,
+            Some(content) => match content.first() {
+                Some(0 | 5) => content.len() <= 21,
+                Some(4) => content.len() <= 41,
+                _ => false,
+            },
+        })
     };
-    let Ok((tag, pos)) = tags::decode_tag(data, offset) else {
-        return false;
-    };
-    if !tag.is_context(1) {
-        return false;
-    }
-    let Some(end) = pos
-        .checked_add(tag.length as usize)
-        .filter(|end| *end <= data.len())
-    else {
-        return false;
-    };
-    if end == data.len() {
-        return true;
-    }
-    let Ok((password, _)) = tags::decode_optional_context(data, end, 2) else {
-        return false;
-    };
-    match password {
-        None => true,
-        Some(content) => match content.first() {
-            Some(0 | 5) => content.len() <= 21,
-            Some(4) => content.len() <= 41,
-            _ => false,
-        },
-    }
+    read().unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bacnet_encoding::{primitives, tags::TagClass};
+    use bacnet_encoding::{primitives, tags, tags::TagClass};
     use bytes::BytesMut;
 
     #[test]
@@ -120,7 +106,7 @@ mod tests {
                     .encode(&mut data)
                     .unwrap();
                     assert_matches_decoder(&data);
-                    data.extend_from_slice(&[0x39, 7, 0xff]); // Existing unrelated trailing tag tolerance.
+                    data.extend_from_slice(&[0x39, 7, 0xff]); // Trailing octets: never recovery.
                     assert_matches_decoder(&data);
                 }
             }
@@ -161,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_classifier_preflight_rejects_large_password_not_large_trailing_data() {
+    fn recovery_preflight_bounds_the_password_not_the_request_and_a_trailing_dcc_is_confirmed() {
         for charset in [0, 4, 5] {
             let mut data = BytesMut::from(&[0x19, 0][..]);
             tags::encode_tag(&mut data, 2, TagClass::Context, 1_000_001);
@@ -173,6 +159,8 @@ mod tests {
                 Class::Confirmed
             ));
         }
+        // The preflight has no total-length cutoff; the decoder refuses the
+        // trailing octets (#1411), so the request is not recovery.
         let mut trailing = vec![0x19, 0, 0x39, 1];
         trailing.resize(1_000_000, 0xff);
         assert!(bounded_password(&trailing));
@@ -182,7 +170,7 @@ mod tests {
                 ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL,
                 &trailing
             ),
-            Class::Recovery
+            Class::Confirmed
         ));
     }
 }

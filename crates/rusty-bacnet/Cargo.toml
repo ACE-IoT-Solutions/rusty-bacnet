@@ -3,6 +3,7 @@ name = "rusty-bacnet"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Python bindings for rusty-bacnet via PyO3"
 publish = false
 
@@ -14,16 +15,14 @@ crate-type = ["cdylib"]
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-client.workspace = true
-bacnet-runtime = { workspace = true, features = ["mstp", "sc"] }
-bacnet-network.workspace = true
 bacnet-server.workspace = true
+bacnet-endpoint = { workspace = true, features = ["sc-tls"] }
 bacnet-transport = { workspace = true, features = ["sc-tls", "ipv6", "serial"] }
 bacnet-objects.workspace = true
 bacnet-services = { workspace = true, features = ["std"] }
 pyo3.workspace = true
-pyo3-async-runtimes.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
-bytes.workspace = true
+bytes = { workspace = true, features = ["std"] }
 tokio-rustls.workspace = true
 
 [lints]

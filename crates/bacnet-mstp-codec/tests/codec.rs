@@ -1,12 +1,25 @@
-//! Standard and mixed-stream MS/TP codec regression tests.
+//! Integration tests for one-shot MS/TP frame encode and decode, CRCs and sinks.
 
 use bacnet_mstp_codec::{
     crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid, decode_frame,
-    encode_extended_into, encode_into, is_valid_source, DecodeEvent, Frame, FrameError,
-    FrameHeader, FrameSink, FrameType, StreamDecoder, StreamPhase, DATA_CRC_RESIDUAL,
-    HEADER_CRC_RESIDUAL, MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    find_preamble, Frame, FrameError, FrameHeader, FrameSink, FrameType, DATA_CRC_RESIDUAL,
+    HEADER_CRC_RESIDUAL, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 use proptest::prelude::*;
+
+/// Build a frame by hand, with valid CRCs, bypassing the encoder's checks.
+fn raw_frame(raw_type: u8, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
+    let length = u16::try_from(data.len()).unwrap().to_be_bytes();
+    let fields = [raw_type, destination, source, length[0], length[1]];
+    let mut wire = PREAMBLE.to_vec();
+    wire.extend_from_slice(&fields);
+    wire.push(crc8(&fields));
+    if !data.is_empty() {
+        wire.extend_from_slice(data);
+        wire.extend_from_slice(&crc16(data).to_le_bytes());
+    }
+    wire
+}
 
 #[test]
 fn golden_crc_vectors() {
@@ -23,6 +36,7 @@ fn golden_crc_vectors() {
         assert!(crc8_valid(&bytes));
         assert_eq!(crc8_accumulate_all(&bytes), HEADER_CRC_RESIDUAL);
     }
+    // Computed here, not taken from the standard; the frames below use it.
     assert_eq!(crc16(&[0x01, 0x00]), 0x169F);
     assert!(crc16_valid(&[0x01, 0x00, 0x9F, 0x16]));
     assert_eq!(
@@ -32,77 +46,67 @@ fn golden_crc_vectors() {
     assert!(crc8_valid(&[crc8(&[])]));
 }
 
+/// The worked header CRC example of Annex G.1: a Token from station 0x05 to
+/// station 0x10.
+#[test]
+fn annex_g_token_example() {
+    let fields = [0x00, 0x10, 0x05, 0x00, 0x00];
+    // The CRC register after each header octet, before the final complement.
+    let registers = [0x55, 0xC2, 0xBC, 0x95, 0x73];
+    for (count, register) in registers.into_iter().enumerate() {
+        assert_eq!(crc8_accumulate_all(&fields[..=count]), register);
+    }
+    assert_eq!(crc8(&fields), 0x8C);
+    assert_eq!(
+        crc8_accumulate_all(&[0x00, 0x10, 0x05, 0x00, 0x00, 0x8C]),
+        HEADER_CRC_RESIDUAL
+    );
+
+    let expected = [0x55, 0xFF, 0x00, 0x10, 0x05, 0x00, 0x00, 0x8C];
+    let token = Frame::new(FrameType::Token, 0x10, 0x05, &[]);
+    let mut wire = [0u8; 8];
+    assert_eq!(token.encode_into(&mut wire), Ok(8));
+    assert_eq!(wire, expected);
+    assert_eq!(decode_frame(&expected), Ok((token, 8)));
+}
+
+/// The worked data CRC example of Annex G.2: data octets 01 22 30.
+#[test]
+fn annex_g_data_crc_example() {
+    let data = [0x01, 0x22, 0x30];
+    // The CRC register after each data octet, before the final complement.
+    let registers = [0x1E0E, 0xEB70, 0x42EF];
+    for (count, register) in registers.into_iter().enumerate() {
+        assert_eq!(crc16_accumulate_all(&data[..=count]), register);
+    }
+    assert_eq!(crc16(&data), 0xBD10);
+    // Sent least significant octet first; the receiver's register after each.
+    let received = [0x01, 0x22, 0x30, 0x10, 0xBD];
+    assert_eq!(crc16_accumulate_all(&received[..4]), 0x0F3A);
+    assert_eq!(crc16_accumulate_all(&received), DATA_CRC_RESIDUAL);
+    assert!(crc16_valid(&received));
+
+    let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0x10, 0x05, &data);
+    let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
+    let used = frame.encode_into(&mut wire).unwrap();
+    assert_eq!(&wire[8..used], &received);
+}
+
 #[test]
 fn all_standard_types_round_trip() {
     for raw in 0..=7 {
-        let data = if (3..=6).contains(&raw) {
+        let frame_type = FrameType::from_raw(raw);
+        let data = if frame_type.allows_data() {
             &[0x01, 0x22, 0x30][..]
         } else {
             &[]
         };
-        let frame = Frame::new(FrameType::from_raw(raw), 10, 5, data);
-        let mut wire = [0u8; 511];
+        let frame = Frame::new(frame_type, 10, 5, data);
+        let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
         let used = frame.encode_into(&mut wire).unwrap();
         let (decoded, consumed) = decode_frame(&wire[..used]).unwrap();
         assert_eq!(used, consumed);
         assert_eq!(decoded, frame);
-    }
-}
-
-#[test]
-fn master_and_slave_sources_decode_but_broadcast_source_is_rejected() {
-    for source in [127, 128, 254] {
-        assert!(is_valid_source(source));
-        let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, source, &[1]);
-        let mut standard = [0; 32];
-        let used = frame.encode_into(&mut standard).unwrap();
-        assert_eq!(
-            decode_frame(&standard[..used]).unwrap().0.header.source,
-            source
-        );
-
-        let payload = [0x55; 502];
-        let header = FrameHeader::new(
-            FrameType::ExtendedDataNotExpectingReply,
-            0,
-            source,
-            payload.len(),
-        );
-        let mut extended = [0; MAX_EXTENDED_FRAME_LENGTH];
-        let used = encode_extended_into(&mut extended, &header, &payload).unwrap();
-        let decoded = bacnet_mstp_codec::decode_extended_frame_in_place(&mut extended[..used])
-            .unwrap()
-            .0;
-        assert_eq!(decoded.header.source, source);
-    }
-
-    assert!(!is_valid_source(255));
-    for extended in [false, true] {
-        let mut wire = [0; MAX_EXTENDED_FRAME_LENGTH];
-        let used = if extended {
-            let payload = [0x55; 502];
-            encode_extended_into(
-                &mut wire,
-                &FrameHeader::new(
-                    FrameType::ExtendedDataNotExpectingReply,
-                    0,
-                    255,
-                    payload.len(),
-                ),
-                &payload,
-            )
-            .unwrap()
-        } else {
-            Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 255, &[1])
-                .encode_into(&mut wire)
-                .unwrap()
-        };
-        let result = if extended {
-            bacnet_mstp_codec::decode_extended_frame_in_place(&mut wire[..used]).map(|_| ())
-        } else {
-            decode_frame(&wire[..used]).map(|_| ())
-        };
-        assert_eq!(result, Err(FrameError::InvalidSource { source: 255 }));
     }
 }
 
@@ -121,10 +125,152 @@ fn standard_golden_frames() {
     assert_eq!(frame.data, &[0x01, 0x00]);
 }
 
+/// Clause 9.3 allows slaves the addresses 128-254, so a raw decode accepts
+/// them as sources, and the encoder can produce them.
+#[test]
+fn slave_range_sources_decode_and_round_trip() {
+    // Data Not Expecting Reply from 200 (0xC8) to station 1, data 01 00.
+    let seed = [
+        0x55, 0xFF, 0x06, 0x01, 0xC8, 0x00, 0x02, 0xEF, 0x01, 0x00, 0x9F, 0x16,
+    ];
+    let (frame, used) = decode_frame(&seed).unwrap();
+    assert_eq!(used, seed.len());
+    assert_eq!(
+        frame,
+        Frame::new(
+            FrameType::BACnetDataNotExpectingReply,
+            1,
+            200,
+            &[0x01, 0x00]
+        )
+    );
+
+    for source in [128, 200, 254] {
+        let response = Frame::new(FrameType::TestResponse, 3, source, &[0xAA, 0x55]);
+        let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
+        let used = response.encode_into(&mut wire).unwrap();
+        assert_eq!(wire[4], source);
+        assert_eq!(decode_frame(&wire[..used]), Ok((response, used)));
+        let hand_built = raw_frame(0x04, 3, source, &[0xAA, 0x55]);
+        assert_eq!(&wire[..used], &hand_built[..]);
+    }
+}
+
+#[test]
+fn broadcast_source_is_refused_both_ways() {
+    for raw_type in [0x00, 0x04, 0x06] {
+        let data: &[u8] = if raw_type == 0 { &[] } else { &[1, 2] };
+        let wire = raw_frame(raw_type, 3, 0xFF, data);
+        assert_eq!(decode_frame(&wire), Err(FrameError::BroadcastSource));
+
+        let frame = Frame::new(FrameType::from_raw(raw_type), 3, 0xFF, data);
+        let mut output = [0xA5u8; MAX_STANDARD_FRAME_LENGTH];
+        assert_eq!(
+            frame.encode_into(&mut output),
+            Err(FrameError::BroadcastSource)
+        );
+        assert!(output.iter().all(|&byte| byte == 0xA5));
+        let mut sink = &mut output[..];
+        assert_eq!(
+            frame.encode_to_sink(&mut sink),
+            Err(FrameError::BroadcastSource)
+        );
+    }
+}
+
+/// Clauses 9.3.1-9.3.3 and 9.3.8: these types carry no data. Encode refuses
+/// it; a raw decode reports what arrived.
+#[test]
+fn no_data_types_refuse_data_on_encode_but_decode_it() {
+    for frame_type in [
+        FrameType::Token,
+        FrameType::PollForMaster,
+        FrameType::ReplyToPollForMaster,
+        FrameType::ReplyPostponed,
+        FrameType::Unknown(0),
+        FrameType::Unknown(7),
+    ] {
+        assert!(!frame_type.allows_data());
+        let raw_type = frame_type.to_raw();
+        let mut output = [0xA5u8; MAX_STANDARD_FRAME_LENGTH];
+        assert_eq!(
+            Frame::new(frame_type, 3, 4, &[9]).encode_into(&mut output),
+            Err(FrameError::UnexpectedData {
+                raw_type,
+                length: 1
+            })
+        );
+        assert!(output.iter().all(|&byte| byte == 0xA5));
+        assert_eq!(
+            Frame::new(frame_type, 3, 4, &[]).encode_into(&mut output),
+            Ok(8)
+        );
+
+        let wire = raw_frame(raw_type, 3, 4, &[9]);
+        let (decoded, used) = decode_frame(&wire).unwrap();
+        assert_eq!(used, wire.len());
+        assert_eq!(decoded.header.frame_type, FrameType::from_raw(raw_type));
+        assert_eq!(decoded.data, [9]);
+    }
+    for raw_type in [3, 4, 5, 6, 8, 31, 128, 255] {
+        let frame_type = FrameType::from_raw(raw_type);
+        assert!(frame_type.allows_data());
+        let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
+        let used = Frame::new(frame_type, 3, 4, &[9, 8])
+            .encode_into(&mut output)
+            .unwrap();
+        assert_eq!(&output[..used], &raw_frame(raw_type, 3, 4, &[9, 8])[..]);
+    }
+}
+
+/// Clause 9.3.11: proprietary data opens with a 2-octet vendor identifier.
+/// Encode refuses less; a raw decode reports what arrived. Reserved types
+/// 8-31 are not policed either way.
+#[test]
+fn proprietary_types_need_a_vendor_id_on_encode() {
+    for raw_type in [0x80, 0xC3, 0xFF] {
+        let frame_type = FrameType::from_raw(raw_type);
+        assert!(frame_type.is_proprietary());
+        for data in [&[][..], &[0x01][..]] {
+            let mut output = [0xA5u8; MAX_STANDARD_FRAME_LENGTH];
+            assert_eq!(
+                Frame::new(frame_type, 3, 4, data).encode_into(&mut output),
+                Err(FrameError::MissingVendorId {
+                    raw_type,
+                    length: data.len()
+                })
+            );
+            assert!(output.iter().all(|&byte| byte == 0xA5));
+            let wire = raw_frame(raw_type, 3, 4, data);
+            assert_eq!(decode_frame(&wire).unwrap().0.data, data);
+        }
+        let vendor = [0x01, 0x04];
+        let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
+        let used = Frame::new(frame_type, 3, 4, &vendor)
+            .encode_into(&mut output)
+            .unwrap();
+        assert_eq!(&output[..used], &raw_frame(raw_type, 3, 4, &vendor)[..]);
+    }
+    for raw_type in [0x08, 0x1F] {
+        let frame_type = FrameType::from_raw(raw_type);
+        assert!(!frame_type.is_proprietary());
+        let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
+        assert_eq!(
+            Frame::new(frame_type, 3, 4, &[]).encode_into(&mut output),
+            Ok(8)
+        );
+        assert_eq!(
+            Frame::new(frame_type, 3, 4, &[7]).encode_into(&mut output),
+            Ok(11)
+        );
+    }
+    assert!(!FrameType::from_raw(0x7F).is_proprietary());
+}
+
 #[test]
 fn truncation_oversize_and_corruption_are_typed() {
     let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &[1, 2, 3]);
-    let mut wire = [0u8; 511];
+    let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
     let used = frame.encode_into(&mut wire).unwrap();
     assert!(matches!(
         decode_frame(&wire[..used - 1]),
@@ -135,88 +281,51 @@ fn truncation_oversize_and_corruption_are_typed() {
         decode_frame(&wire[..used]),
         Err(FrameError::HeaderCrcMismatch)
     );
-    let too_long = [0u8; 502];
+    let too_long = [0u8; MAX_STANDARD_MPDU_DATA + 1];
     assert_eq!(
-        Frame::new(FrameType::Token, 0, 0, &too_long).encode_into(&mut wire),
-        Err(FrameError::EncodeOversize {
+        Frame::new(FrameType::TestRequest, 0, 0, &too_long).encode_into(&mut wire),
+        Err(FrameError::Oversize {
             length: 502,
             maximum: MAX_STANDARD_MPDU_DATA
         })
     );
+    let largest = [0u8; MAX_STANDARD_MPDU_DATA];
+    assert_eq!(
+        Frame::new(FrameType::TestRequest, 0, 0, &largest).encode_into(&mut wire),
+        Ok(MAX_STANDARD_FRAME_LENGTH)
+    );
 }
 
 #[test]
-fn every_reserved_type_is_rejected() {
+fn every_cobs_type_is_rejected() {
     for raw in 32..=127 {
-        let header = [raw, 0, 1, 0, 0];
-        let mut wire = [0u8; 8];
-        wire[..2].copy_from_slice(&PREAMBLE);
-        wire[2..7].copy_from_slice(&header);
-        wire[7] = crc8(&header);
+        let wire = raw_frame(raw, 0, 1, &[]);
         assert_eq!(
             decode_frame(&wire),
             Err(FrameError::UnsupportedCobsFrame { raw_type: raw })
         );
+        let mut output = [0u8; 8];
         assert_eq!(
-            Frame::new(FrameType::from_raw(raw), 0, 1, &[]).encode_into(&mut wire),
-            Err(FrameError::EncodeUnsupportedCobsFrame { raw_type: raw })
+            Frame::new(FrameType::from_raw(raw), 0, 1, &[]).encode_into(&mut output),
+            Err(FrameError::UnsupportedCobsFrame { raw_type: raw })
         );
     }
 }
 
 #[test]
-fn stream_resync_and_bad_data_crc_discard() {
-    let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &[1, 2]);
-    let mut wire = [0u8; 511];
-    let used = frame.encode_into(&mut wire).unwrap();
-    wire[used - 1] ^= 0x80;
-    let mut storage = [0u8; 32];
-    let mut decoder = StreamDecoder::new(&mut storage);
+fn cobs_error_precedes_oversize_error() {
+    let oversized = [0u8; MAX_STANDARD_MPDU_DATA + 1];
+    let frame = Frame::new(FrameType::Unknown(0x20), 0, 7, &oversized);
+    let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
     assert_eq!(
-        decoder.push_slice(&wire[..used]),
-        DecodeEvent::Malformed {
-            discard: used,
-            error: FrameError::DataCrcMismatch { data_length: 2 },
-        }
+        frame.encode_into(&mut output),
+        Err(FrameError::UnsupportedCobsFrame { raw_type: 0x20 })
     );
-    let mut valid = [0u8; 511];
-    let valid_len = frame.encode_into(&mut valid).unwrap();
+    let mut sink = &mut output[..];
     assert_eq!(
-        decoder.push_slice(&[9]),
-        DecodeEvent::Invalid { discard: 1 }
+        frame.encode_to_sink(&mut sink),
+        Err(FrameError::UnsupportedCobsFrame { raw_type: 0x20 })
     );
-    assert!(matches!(
-        decoder.push_slice(&valid[..valid_len]),
-        DecodeEvent::Frame { .. }
-    ));
-    assert_eq!(decoder.buffered_len(), valid_len);
-}
-
-#[test]
-fn stream_phase_excludes_retained_resynchronization_noise() {
-    let mut storage = [0; 64];
-    let mut decoder = StreamDecoder::new(&mut storage);
-    assert_eq!(decoder.phase(), StreamPhase::Sync);
-    assert_eq!(decoder.push(PREAMBLE[0]), DecodeEvent::NeedMore);
-    assert_eq!(decoder.phase(), StreamPhase::Preamble);
-    assert_eq!(decoder.push(PREAMBLE[1]), DecodeEvent::NeedMore);
-    assert_eq!(decoder.phase(), StreamPhase::Header);
-
-    let mut encoded = [0; 64];
-    let length = Frame::new(FrameType::BACnetDataNotExpectingReply, 1, 2, &[9])
-        .encode_into(&mut encoded)
-        .unwrap();
-    decoder.reset();
-    assert_eq!(decoder.push_slice(&encoded[..8]), DecodeEvent::NeedMore);
-    assert_eq!(decoder.phase(), StreamPhase::Data);
-
-    decoder.reset();
-    encoded[7] ^= 0x01;
-    assert!(matches!(
-        decoder.push_slice(&encoded[..length]),
-        DecodeEvent::Malformed { .. }
-    ));
-    assert_eq!(decoder.phase(), StreamPhase::Sync);
 }
 
 #[test]
@@ -224,118 +333,137 @@ fn sink_exhaustion_and_slice_sink() {
     let frame = Frame::new(FrameType::Token, 0, 7, &[]);
     let mut short = [0xA5; 7];
     let mut sink = &mut short[..];
-    assert!(matches!(
-        sink.encode(frame),
-        Err(FrameError::BufferExhausted { .. })
-    ));
+    assert_eq!(
+        frame.encode_to_sink(&mut sink),
+        Err(FrameError::BufferExhausted {
+            needed: 8,
+            available: 7
+        })
+    );
     assert_eq!(short, [0xA5; 7]);
-    let mut output = [0u8; 8];
+    let mut output = [0u8; 10];
     let mut sink = &mut output[..];
-    assert_eq!(sink.encode(frame).unwrap(), 8);
+    assert_eq!(frame.encode_to_sink(&mut sink), Ok(8));
+    // The slice sink advances past what it wrote.
+    assert_eq!(sink.len(), 2);
     assert_eq!(&output[..2], &PREAMBLE);
 }
 
 #[test]
-fn cobs_error_precedes_oversize_error() {
-    let oversized = [0u8; MAX_STANDARD_MPDU_DATA + 1];
-    let frame = Frame::new(FrameType::Unknown(0x20), 0, 7, &oversized);
-    let mut output = [0u8; 511];
-    assert_eq!(
-        frame.encode_into(&mut output),
-        Err(FrameError::EncodeUnsupportedCobsFrame { raw_type: 0x20 })
-    );
-    let mut sink = &mut output[..];
-    assert_eq!(
-        sink.encode(frame),
-        Err(FrameError::EncodeUnsupportedCobsFrame { raw_type: 0x20 })
-    );
-}
-
-#[cfg(feature = "std")]
-#[test]
-fn bytes_mut_sink_appends_without_replacing_prefix() {
-    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
-    let mut output = bytes::BytesMut::from(&b"prefix"[..]);
-    assert_eq!(output.encode(frame).unwrap(), 8);
-    assert_eq!(&output[..6], b"prefix");
-    assert_eq!(&output[6..8], &PREAMBLE);
-}
-
-#[test]
-fn header_type_can_be_encoded_directly() {
-    let header = FrameHeader::new(FrameType::Token, 0x10, 5, 0);
+fn header_and_data_build_a_frame() {
+    let header = FrameHeader::new(FrameType::Token, 0x10, 5);
+    let frame = Frame { header, data: &[] };
     let mut output = [0u8; 8];
-    assert_eq!(encode_into(&mut output, &header, &[]).unwrap(), 8);
+    assert_eq!(frame.encode_into(&mut output), Ok(8));
+    assert_eq!(decode_frame(&output).unwrap().0.header, header);
+}
+
+#[test]
+fn find_preamble_locates_the_first_pair() {
+    assert_eq!(find_preamble(&[0x00, 0x55, 0x55, 0xFF, 0x00]), Some(2));
+    assert_eq!(find_preamble(&[0x55]), None);
+    assert_eq!(find_preamble(&[]), None);
+}
+
+#[test]
+fn frame_error_is_a_core_error() {
+    fn describe(error: &dyn core::error::Error) -> String {
+        error.to_string()
+    }
+    assert_eq!(
+        describe(&FrameError::BroadcastSource),
+        "source address is broadcast (0xFF)"
+    );
+    assert!(describe(&FrameError::FrameTooLong {
+        needed: 13,
+        capacity: 12
+    })
+    .contains("13"));
+}
+
+/// A sink that accepts a fixed number of writes, then fails. It reports no
+/// capacity, like a growable sink, so encoding cannot check up front.
+struct FailingSink {
+    written: Vec<u8>,
+    writes_left: usize,
+}
+
+impl FrameSink for FailingSink {
+    fn remaining_capacity(&self) -> Option<usize> {
+        None
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
+        if self.writes_left == 0 {
+            return Err(FrameError::BufferExhausted {
+                needed: bytes.len(),
+                available: 0,
+            });
+        }
+        self.writes_left -= 1;
+        self.written.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+#[test]
+fn growable_sink_failing_mid_frame_keeps_the_prefix() {
+    let mut sink = FailingSink {
+        written: Vec::new(),
+        writes_left: 1,
+    };
+    let frame = Frame::new(FrameType::TestRequest, 1, 2, &[7, 7, 7]);
+    assert!(matches!(
+        frame.encode_to_sink(&mut sink),
+        Err(FrameError::BufferExhausted { .. })
+    ));
+    assert_eq!(sink.written.len(), 8);
+    assert_eq!(&sink.written[..2], &PREAMBLE);
 }
 
 #[cfg(feature = "alloc")]
 #[test]
-fn legacy_error_conversion_keeps_offsets_and_messages() {
-    let error: bacnet_types::error::Error = FrameError::DataCrcMismatch { data_length: 2 }.into();
-    match error {
-        bacnet_types::error::Error::Decoding { offset, message } => {
-            assert_eq!(offset, 10);
-            assert_eq!(message, "MS/TP data CRC mismatch");
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
-    let error: bacnet_types::error::Error = FrameError::EncodeOversize {
-        length: 502,
-        maximum: 501,
-    }
-    .into();
-    assert!(
-        matches!(error, bacnet_types::error::Error::Encoding(message) if message == "MS/TP data length 502 exceeds maximum 501")
-    );
+fn vec_sink_appends_without_replacing_prefix() {
+    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
+    let mut output = b"prefix".to_vec();
+    assert_eq!(frame.encode_to_sink(&mut output), Ok(8));
+    assert_eq!(&output[..6], b"prefix");
+    assert_eq!(&output[6..8], &PREAMBLE);
 }
 
+#[cfg(feature = "bytes")]
 #[test]
-fn stream_retains_suffix_after_two_frames_in_one_slice() {
-    let first = Frame::new(FrameType::Token, 0, 7, &[]);
-    let second = Frame::new(FrameType::PollForMaster, 7, 0, &[]);
-    let mut wire = [0u8; 16];
-    let first_len = first.encode_into(&mut wire[..8]).unwrap();
-    let second_len = second.encode_into(&mut wire[8..]).unwrap();
-    assert_eq!((first_len, second_len), (8, 8));
-    let mut storage = [0u8; 16];
-    let mut decoder = StreamDecoder::new(&mut storage);
-    assert!(matches!(
-        decoder.push_slice(&wire),
-        DecodeEvent::Frame { consumed: 8, .. }
-    ));
-    assert_eq!(decoder.buffered_len(), 16);
-    assert!(matches!(
-        decoder.push_slice(&[]),
-        DecodeEvent::Frame { consumed: 8, .. }
-    ));
+fn bytes_mut_sink_appends_without_replacing_prefix() {
+    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
+    let mut output = bytes::BytesMut::from(&b"prefix"[..]);
+    assert_eq!(frame.encode_to_sink(&mut output), Ok(8));
+    assert_eq!(&output[..6], b"prefix");
+    assert_eq!(&output[6..8], &PREAMBLE);
 }
 
+#[cfg(feature = "heapless")]
 #[test]
-fn stream_exhaustion_preserves_state_and_recovers() {
-    let token = Frame::new(FrameType::Token, 0, 7, &[]);
-    let mut wire = [0u8; 8];
-    token.encode_into(&mut wire).unwrap();
-    let mut storage = [0u8; 8];
-    let mut decoder = StreamDecoder::new(&mut storage);
-    assert!(matches!(
-        decoder.push_slice(&[0u8; 9]),
-        DecodeEvent::Error(FrameError::BufferExhausted {
-            needed: 9,
-            available: 8
+fn heapless_sink() {
+    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
+    let mut output = heapless::Vec::<u8, 8>::new();
+    assert_eq!(frame.encode_to_sink(&mut output), Ok(8));
+    assert_eq!(output.len(), 8);
+    let mut short = heapless::Vec::<u8, 7>::new();
+    assert_eq!(
+        frame.encode_to_sink(&mut short),
+        Err(FrameError::BufferExhausted {
+            needed: 8,
+            available: 7
         })
-    ));
-    assert_eq!(decoder.buffered_len(), 0);
-    assert!(matches!(
-        decoder.push_slice(&wire),
-        DecodeEvent::Frame { consumed: 8, .. }
-    ));
+    );
+    assert!(short.is_empty());
 }
 
 proptest! {
     #[test]
     fn encoded_frames_only_decode_when_complete(payload in prop::collection::vec(any::<u8>(), 0..=501)) {
         let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &payload);
-        let mut wire = [0u8; 511];
+        let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
         let used = frame.encode_into(&mut wire).unwrap();
         for end in 0..used {
             prop_assert!(decode_frame(&wire[..end]).is_err());
@@ -349,11 +477,28 @@ proptest! {
         index in 0usize..80,
     ) {
         let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &payload);
-        let mut wire = [0u8; 511];
+        let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
         let used = frame.encode_into(&mut wire).unwrap();
         let index = index % used;
         wire[index] ^= 1;
         prop_assert!(decode_frame(&wire[..used]).is_err());
+    }
+
+    #[test]
+    fn any_source_but_broadcast_round_trips(
+        source in any::<u8>(),
+        destination in any::<u8>(),
+        payload in prop::collection::vec(any::<u8>(), 0..32),
+    ) {
+        let frame = Frame::new(FrameType::BACnetDataExpectingReply, destination, source, &payload);
+        let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
+        let encoded = frame.encode_into(&mut wire);
+        if source == 0xFF {
+            prop_assert_eq!(encoded, Err(FrameError::BroadcastSource));
+        } else {
+            let used = encoded.unwrap();
+            prop_assert_eq!(decode_frame(&wire[..used]), Ok((frame, used)));
+        }
     }
 
     #[test]
@@ -362,7 +507,7 @@ proptest! {
         let mut storage = [0u8; 511];
         let available = capacity.min(storage.len());
         let mut sink = &mut storage[..available];
-        let result = sink.encode(frame);
+        let result = frame.encode_to_sink(&mut sink);
         if available < 8 {
             let exhausted = matches!(result, Err(FrameError::BufferExhausted { .. }));
             prop_assert!(exhausted);
@@ -392,38 +537,4 @@ proptest! {
             })
         );
     }
-
-    #[test]
-    fn byte_stream_resynchronizes_then_decodes(
-        garbage in prop::collection::vec(0u8..=0x54, 0..64),
-        payload in prop::collection::vec(any::<u8>(), 0..64),
-    ) {
-        let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &payload);
-        let mut wire = [0u8; 511];
-        let used = frame.encode_into(&mut wire).unwrap();
-        let mut storage = [0u8; 511];
-        let mut decoder = StreamDecoder::new(&mut storage);
-        for byte in garbage {
-            prop_assert_eq!(decoder.push(byte), DecodeEvent::Invalid { discard: 1 });
-        }
-        for (index, byte) in wire[..used].iter().copied().enumerate() {
-            let event = decoder.push(byte);
-            if index + 1 == used {
-                let completed =
-                    matches!(event, DecodeEvent::Frame { consumed, .. } if consumed == used);
-                prop_assert!(completed);
-            } else {
-                prop_assert_eq!(event, DecodeEvent::NeedMore);
-            }
-        }
-    }
-}
-
-#[cfg(feature = "heapless")]
-#[test]
-fn heapless_sink() {
-    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
-    let mut output = heapless::Vec::<u8, 8>::new();
-    assert_eq!(output.encode(frame).unwrap(), 8);
-    assert_eq!(output.len(), 8);
 }

@@ -1,5 +1,14 @@
-//! Real-clock rejection deadlines at the WebSocket boundary, not OS backpressure.
+//! Rejection deadlines at the WebSocket boundary, not OS backpressure.
+//!
+//! Tests that run a transport against its heartbeat budget use tokio's paused
+//! clock, which the budget and the receive loop read (#1017). On real time a
+//! runner stall can fire the budget and a test's own deadline in one turn, and
+//! the test future, polled first, sees its deadline win (#1547). The rest stay
+//! on real time: they start from an already-expired budget, never reach one,
+//! or block a poll with a thread sleep to cross a cutoff, which a paused clock
+//! would not see.
 
+use super::test_waits::until;
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use tokio::time::timeout;
@@ -106,13 +115,17 @@ impl WebSocketPort for GateSocket {
     }
 }
 
-fn expected_naks() -> [Vec<u8>; 3] {
+fn expected_naks() -> [Vec<u8>; 5] {
     let control = vec![0, 0, 0x22, 0x33, 0x0A, 1, 0, 0, 7, 0, 7];
     let source = vec![0, 0, 0x22, 0x33, 1, 1, 0, 0, 7, 0, 0x50];
     let mut mu = vec![0, 4, 0x22, 0x33];
     mu.extend_from_slice(&[0x22; 6]);
     mu.extend_from_slice(&[1, 1, 0xE2, 0, 7, 0, 0x92]);
-    [control, source, mu]
+    let mut empty = vec![0, 4, 0x22, 0x33];
+    empty.extend_from_slice(&[0x22; 6]);
+    empty.extend_from_slice(&[1, 1, 0, 0, 7, 0, 0x95]);
+    let unknown = vec![0, 0, 0x22, 0x33, 0x42, 1, 0, 0, 7, 0, 0x8F];
+    [control, source, mu, empty, unknown]
 }
 
 async fn within<F: std::future::Future>(future: F) -> F::Output {
@@ -121,12 +134,13 @@ async fn within<F: std::future::Future>(future: F) -> F::Output {
         .expect("bounded test operation timed out")
 }
 
+/// Wait until `count` reaches `expected`; see [`until`].
 async fn wait_count(count: &AtomicUsize, expected: usize) {
-    within(async {
-        while count.load(Ordering::SeqCst) < expected {
-            tokio::task::yield_now().await;
-        }
-    })
+    let what = format!("count reaching {expected}");
+    until(
+        &what,
+        || async move { count.load(Ordering::SeqCst) >= expected },
+    )
     .await;
 }
 
@@ -143,13 +157,24 @@ async fn recv_function(hub: &LoopbackWebSocket, function: u8) -> Vec<u8> {
     .await
 }
 
-fn rejection_wires() -> [Vec<u8>; 3] {
+fn rejection_wires() -> [Vec<u8>; 5] {
     let control = vec![0x0A, 0, 0x22, 0x33, 0x42]; // forbidden heartbeat payload
     let source = vec![1, 0, 0x22, 0x33, 1, 0, 0x30]; // omitted originating VMAC
     let mut mu = vec![1, 0x0A, 0x22, 0x33];
     mu.extend_from_slice(&[0x22; 6]);
     mu.extend_from_slice(&[0xE2, 0, 0, 0x1F, 1, 0, 0x30]); // raw empty-data marker
-    [control, source, mu]
+    let mut empty = vec![1, 8, 0x22, 0x33];
+    empty.extend_from_slice(&[0x22; 6]);
+    let unknown = vec![0x42, 3, 0x22, 0x33, 0xE2, 0, 0, 0x1F, 0x7E, 0, 0];
+    [control, source, mu, empty, unknown]
+}
+
+// Capability denial uses the same pre-activity budget and retirement path.
+fn transport_rejections() -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> {
+    rejection_wires().into_iter().zip(expected_naks()).chain([(
+        vec![2, 0, 0x22, 0x33],
+        vec![0, 0, 0x22, 0x33, 2, 1, 0, 0, 7, 0, 45],
+    )])
 }
 
 async fn started(
@@ -189,15 +214,15 @@ async fn abort_and_join(transport: &mut ScTransport<GateSocket>) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn rejection_deadline_held_naks_disconnect_and_drop_future() {
-    for wire in rejection_wires() {
+    for (wire, _) in transport_rejections() {
         let (client, hub, observed) = GateSocket::pair();
         let mut transport = ScTransport::new(client, [1; 6])
             .with_device_uuid([1; 16])
             .with_test_heartbeat_timing_ms(80, 240);
         let mut rx = started(&mut transport, &hub).await;
-        let start = Instant::now();
+        let start = tokio::time::Instant::now();
         observed.hold_nak.store(true, Ordering::SeqCst);
         hub.send(&wire).await.unwrap();
         let expired = wait_for_state(&transport, ScConnectionState::Disconnected).await;
@@ -225,15 +250,17 @@ async fn rejection_deadline_held_naks_disconnect_and_drop_future() {
     }
 }
 
-#[tokio::test]
+// On real time, a runner stall between the held NAK and the budget expiry
+// could also break the upper bound on `held.elapsed()` (#1017).
+#[tokio::test(start_paused = true)]
 async fn rejection_deadline_late_naks_share_original_budget_not_per_frame() {
-    for (wire, nak) in rejection_wires().into_iter().zip(expected_naks()) {
+    for (wire, nak) in transport_rejections() {
         let (client, hub, observed) = GateSocket::pair();
         let mut transport = ScTransport::new(client, [1; 6])
             .with_device_uuid([1; 16])
             .with_test_heartbeat_timing_ms(100, 1000);
         let mut rx = started(&mut transport, &hub).await;
-        let start = Instant::now();
+        let start = tokio::time::Instant::now();
         // Start from an actual pending heartbeat. Prompt rejected frames do not
         // reset activity or clear this pending identity.
         let probe = recv_function(&hub, 0x0A).await;
@@ -245,7 +272,7 @@ async fn rejection_deadline_late_naks_share_original_budget_not_per_frame() {
         assert!(start.elapsed() >= Duration::from_millis(700));
         observed.hold_nak.store(true, Ordering::SeqCst);
         hub.send(&wire).await.unwrap();
-        let held = Instant::now();
+        let held = tokio::time::Instant::now();
         wait_for_state(&transport, ScConnectionState::Disconnected)
             .await
             .unwrap();
@@ -265,10 +292,12 @@ async fn rejection_deadline_late_naks_share_original_budget_not_per_frame() {
     }
 }
 
-#[tokio::test]
+// On real time, a stall of about 450 ms after the probe would let the 600 ms
+// heartbeat timeout disconnect before the Connected check.
+#[tokio::test(start_paused = true)]
 async fn rejection_deadline_timely_completion_and_immediate_error_preserve_pending_ack() {
     for fail in [false, true] {
-        for (wire, nak) in rejection_wires().into_iter().zip(expected_naks()) {
+        for (wire, nak) in transport_rejections() {
             let (client, hub, observed) = GateSocket::pair();
             let mut transport = ScTransport::new(client, [1; 6])
                 .with_device_uuid([1; 16])
@@ -307,7 +336,7 @@ async fn rejection_deadline_timely_completion_and_immediate_error_preserve_pendi
 async fn rejection_deadline_expired_budget_never_polls_send_or_times_out_silence() {
     use super::rejection::{reject, RejectionBudget, RejectionExpired};
     let (client, _hub, observed) = GateSocket::pair();
-    let budget = RejectionBudget::new(Instant::now() - Duration::from_secs(1), 1);
+    let budget = RejectionBudget::new(tokio::time::Instant::now() - Duration::from_secs(1), 1);
     for wire in rejection_wires() {
         let msg = decode_sc_message(&wire).unwrap();
         assert_eq!(
@@ -350,7 +379,7 @@ async fn rejection_deadline_huge_valid_timeout_does_not_overflow() {
         .with_device_uuid([1; 16])
         .with_heartbeat_timeout_ms(u64::MAX);
     let _rx = started(&mut transport, &hub).await;
-    for (wire, nak) in rejection_wires().into_iter().zip(expected_naks()) {
+    for (wire, nak) in transport_rejections() {
         hub.send(&wire).await.unwrap();
         assert_eq!(recv_function(&hub, 0).await, nak);
     }
@@ -374,7 +403,7 @@ async fn rejection_deadline_checks_before_repoll_and_after_slow_completion() {
     }
     let ws = SlowReady(AtomicUsize::new(0));
     assert!(matches!(
-        RejectionBudget::new(Instant::now(), 10)
+        RejectionBudget::new(tokio::time::Instant::now(), 10)
             .send(&ws, &[])
             .await,
         Err(RejectionExpired)
@@ -399,7 +428,7 @@ async fn rejection_deadline_checks_before_repoll_and_after_slow_completion() {
     }
     let ws = BecomesReady(AtomicUsize::new(0));
     assert!(matches!(
-        RejectionBudget::new(Instant::now(), 10)
+        RejectionBudget::new(tokio::time::Instant::now(), 10)
             .send(&ws, &[])
             .await,
         Err(RejectionExpired)
@@ -409,4 +438,33 @@ async fn rejection_deadline_checks_before_repoll_and_after_slow_completion() {
         1,
         "expired send was polled as fresh"
     );
+    // Keep the direct budget tests above and exercise all five admission paths
+    // through the same strict cutoff, including unknown MU/empty payloads.
+    for wire in rejection_wires() {
+        let msg = decode_sc_message(&wire).unwrap();
+        let slow = SlowReady(AtomicUsize::new(0));
+        assert_eq!(
+            super::rejection::reject(
+                &msg,
+                &wire,
+                &slow,
+                RejectionBudget::new(tokio::time::Instant::now(), 10)
+            )
+            .await,
+            Err(RejectionExpired)
+        );
+        assert_eq!(slow.0.load(Ordering::SeqCst), 1);
+        let ready = BecomesReady(AtomicUsize::new(0));
+        assert_eq!(
+            super::rejection::reject(
+                &msg,
+                &wire,
+                &ready,
+                RejectionBudget::new(tokio::time::Instant::now(), 10)
+            )
+            .await,
+            Err(RejectionExpired)
+        );
+        assert_eq!(ready.0.load(Ordering::SeqCst), 1);
+    }
 }

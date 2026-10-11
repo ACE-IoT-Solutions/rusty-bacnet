@@ -29,35 +29,43 @@ fn request(mode: u32, password: Option<&str>, duration: Option<u16>) -> Confirme
     }
 }
 
-async fn handle(server: &BACnetServer<HeldTransport>, req: ConfirmedRequestPdu) {
+async fn handle(server: &BACnetServer<TestTransport>, req: ConfirmedRequestPdu) {
     handle_source(server, req, &[1], None).await;
 }
 
 async fn handle_source(
-    server: &BACnetServer<HeldTransport>,
+    server: &BACnetServer<TestTransport>,
     req: ConfirmedRequestPdu,
     mac: &[u8],
     source: Option<NpduAddress>,
 ) {
     BACnetServer::handle_admitted_confirmed_request(
-        &server.db,
-        &server.network,
-        &server.cov_table,
-        &server.seg_ack_senders,
-        &server.seg_send_permits,
-        &server.cov_in_flight,
-        &server.server_tsm,
-        &server.notification_transactions,
-        &server.device_bindings,
-        &server.comm_state,
-        &server.dcc_timer,
-        &server.dcc_outcomes,
-        &server.config,
+        &RequestServices {
+            db: Arc::clone(&server.db),
+            cov_table: Arc::clone(&server.cov_table),
+            seg_ack_senders: Arc::clone(&server.seg_ack_senders),
+            seg_send_permits: Arc::clone(&server.seg_send_permits),
+            cov_in_flight: Arc::clone(&server.cov_in_flight),
+            learned_routers: Arc::clone(&server.learned_routers),
+            notification_transactions: Arc::clone(&server.notification_transactions),
+            device_bindings: Arc::clone(&server.device_bindings),
+            comm_state: Arc::clone(&server.comm_state),
+            dcc_timer: Arc::clone(&server.dcc_timer),
+            dcc_outcomes: Arc::clone(&server.dcc_outcomes),
+            mutation_decisions: Arc::clone(&server.mutation_decisions),
+            ..RequestServices::for_test(Arc::clone(server.test_network()), server.config.clone())
+        },
         &server.request_tasks.spawner(),
-        None,
-        mac,
-        source,
+        RequestOrigin {
+            mac,
+            network: source,
+            route: bacnet_network::response_route::ResponseRoute::new(
+                bacnet_transport::port::TransportProvenance::unverified(),
+                None,
+            ),
+        },
         req,
+        None,
         None,
     )
     .await;
@@ -126,7 +134,7 @@ async fn dcc_source_outcomes_exactly_once_precedence_and_malformed_routing() {
                     u64::from(expected == "deprecated_denied")
                 );
                 assert_eq!(counts.malformed_total, u64::from(expected == "malformed"));
-                assert_eq!(server.comm_state(), 0);
+                assert_eq!(server.comm_state(), DccState::Enable);
                 assert!(server.dcc_timer.lock().await.is_none());
                 let events = capture.0.lock().unwrap();
                 assert_eq!(events.len(), 1);
@@ -212,12 +220,8 @@ async fn dcc_outcomes_exact_precedence_before_response_and_secret_redaction() {
             );
             assert_eq!(counts.malformed_total, u64::from(expected == "malformed"));
             assert_eq!(
-                server.comm_state(),
-                if expected == "accepted" {
-                    mode as u8
-                } else {
-                    0
-                }
+                EnableDisable::from(server.comm_state()).to_raw(),
+                if expected == "accepted" { mode } else { 0 }
             );
             {
                 let events = capture.0.lock().unwrap();
@@ -231,12 +235,8 @@ async fn dcc_outcomes_exact_precedence_before_response_and_secret_redaction() {
                 assert!(!events[0].keys().any(|key| key.contains("password")));
             }
             // Fail transport after the commit; never revise or double count it.
-            server
-                .network
-                .transport()
-                .fail_next
-                .store(true, Ordering::Release);
-            server.network.transport().release.notify_one();
+            held_sends(&server).fail_next.store(true, Ordering::Release);
+            held_sends(&server).release.notify_one();
             future.await;
             completion.await.unwrap();
             assert_eq!(server.dcc_outcome_counters(), counts);
@@ -267,7 +267,7 @@ async fn dcc_outcomes_cancellation_denial_timer_identity_and_decode_failure() {
         poll_pending(future.as_mut()).await;
     }
     assert_eq!(server.dcc_outcome_counters(), DccOutcomeCounters::default());
-    assert_eq!(server.comm_state(), 0);
+    assert_eq!(server.comm_state(), DccState::Enable);
     assert!(capture.0.lock().unwrap().is_empty());
     drop(lock);
     {
@@ -279,7 +279,7 @@ async fn dcc_outcomes_cancellation_denial_timer_identity_and_decode_failure() {
     }
     assert_eq!(server.dcc_outcome_counters().accepted_total, 1);
     tokio::task::yield_now().await; // Arm the accepted timer before advancing time.
-    server.config.dcc_policy = DccPolicy::DenyAll;
+    server.config_mut().dcc_policy = DccPolicy::DenyAll;
     let lock = server.dcc_timer.lock().await;
     let identity = lock.as_ref().unwrap().id();
     for _ in 0..2 {
@@ -295,7 +295,7 @@ async fn dcc_outcomes_cancellation_denial_timer_identity_and_decode_failure() {
         poll_pending(future.as_mut()).await;
         started.try_recv().unwrap();
         assert_eq!(lock.as_ref().unwrap().id(), identity);
-        assert_eq!(server.comm_state(), 2);
+        assert_eq!(server.comm_state(), DccState::DisableInitiation);
     }
     // Invalid UTF-8 password: no partially decoded metadata or error text logged.
     let mut malformed = request(0, None, None);
@@ -322,7 +322,7 @@ async fn dcc_outcomes_cancellation_denial_timer_identity_and_decode_failure() {
     tokio::time::advance(Duration::from_secs(601)).await;
     tokio::task::yield_now().await;
     assert_eq!(server.dcc_outcome_counters(), counts);
-    assert_eq!(server.comm_state(), 0);
+    assert_eq!(server.comm_state(), DccState::Enable);
     assert_eq!(capture.0.lock().unwrap().len(), 6);
     let (mut other, _, _) = fixture().await;
     assert_eq!(other.dcc_outcome_counters(), DccOutcomeCounters::default());

@@ -2,7 +2,7 @@
 # Cargo.toml `rust-version`). This pin sets the channel used by `cargo`
 # without an explicit override; CI uses this exact version.
 [toolchain]
-channel = "1.97.1"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
 targets = ["thumbv7em-none-eabi", "riscv32imac-unknown-none-elf"]
 profile = "default"

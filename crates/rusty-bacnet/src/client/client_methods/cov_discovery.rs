@@ -1,5 +1,4 @@
 use super::super::*;
-use crate::types::PyTarget;
 
 #[pymethods]
 impl BACnetClient {
@@ -9,11 +8,10 @@ impl BACnetClient {
 
     /// Subscribe to COV notifications for an object.
     #[pyo3(signature = (address, subscriber_process_identifier, monitored_object_identifier, confirmed, lifetime=None))]
-    #[allow(clippy::too_many_arguments)]
     fn subscribe_cov<'py>(
         &self,
         py: Python<'py>,
-        address: PyTarget,
+        address: String,
         subscriber_process_identifier: u32,
         monitored_object_identifier: PyObjectIdentifier,
         confirmed: bool,
@@ -22,38 +20,26 @@ impl BACnetClient {
         let inner = self.inner.clone();
         let oid = monitored_object_identifier.to_rust();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (mac, routing) = address.into_parts()?;
+        let future = async move {
+            let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            if let Some((dnet, dadr)) = routing {
-                c.subscribe_cov_routed(
-                    &mac,
-                    dnet,
-                    &dadr,
-                    subscriber_process_identifier,
-                    oid,
-                    confirmed,
-                    lifetime,
-                )
-                .await
-            } else {
-                c.subscribe_cov(
-                    &mac,
-                    subscriber_process_identifier,
-                    oid,
-                    confirmed,
-                    lifetime,
-                )
-                .await
-            }
+            c.subscribe_cov(
+                &mac,
+                subscriber_process_identifier,
+                oid,
+                confirmed,
+                lifetime,
+            )
+            .await
             .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
     /// Unsubscribe from COV notifications for an object.
@@ -61,37 +47,33 @@ impl BACnetClient {
     fn unsubscribe_cov<'py>(
         &self,
         py: Python<'py>,
-        address: PyTarget,
+        address: String,
         subscriber_process_identifier: u32,
         monitored_object_identifier: PyObjectIdentifier,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let oid = monitored_object_identifier.to_rust();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let (mac, routing) = address.into_parts()?;
+        let future = async move {
+            let mac = parse_address(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            if let Some((dnet, dadr)) = routing {
-                c.unsubscribe_cov_routed(&mac, dnet, &dadr, subscriber_process_identifier, oid)
-                    .await
-            } else {
-                c.unsubscribe_cov(&mac, subscriber_process_identifier, oid)
-                    .await
-            }
-            .map_err(to_py_err)?;
+            c.unsubscribe_cov(&mac, subscriber_process_identifier, oid)
+                .await
+                .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
     /// Get an async iterator yielding incoming COV notifications.
     fn cov_notifications<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_async::future_into_py(py, async move {
             let guard = inner.lock().await;
             let c = guard
                 .as_ref()
@@ -105,30 +87,10 @@ impl BACnetClient {
     // Discovery
     // -----------------------------------------------------------------------
 
-    /// Subscribe to I-Am observations, then send Who-Is and return the iterator.
-    #[pyo3(signature = (low_limit=None, high_limit=None))]
-    fn who_is_stream<'py>(
-        &self,
-        py: Python<'py>,
-        low_limit: Option<u32>,
-        high_limit: Option<u32>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
-            // Subscribe before sending so a fast local response cannot race us.
-            let rx = c.iam_events();
-            c.who_is(low_limit, high_limit).await.map_err(to_py_err)?;
-            Ok(PyIAmEventIterator::new(rx))
-        })
-    }
-
-    /// Send a WhoHas broadcast to find an object by identifier.
+    /// Send a WhoHas broadcast to find an object by identifier. Give both
+    /// limits or neither, each from 0 to 4194303; one alone, `low_limit`
+    /// above `high_limit`, or a limit past 4194303 raises `ValueError` before
+    /// anything is sent.
     #[pyo3(signature = (object_id, low_limit=None, high_limit=None))]
     fn who_has_by_id<'py>(
         &self,
@@ -137,24 +99,27 @@ impl BACnetClient {
         low_limit: Option<u32>,
         high_limit: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let range = device_range(low_limit, high_limit)?;
         let inner = self.inner.clone();
         let oid = object_id.to_rust();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.who_has(WhoHasObject::Identifier(oid), low_limit, high_limit)
+            c.who_has(WhoHasObject::Identifier(oid), range)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Send a WhoHas broadcast to find an object by name.
+    /// Send a WhoHas broadcast to find an object by name, with the same
+    /// limits rule as `who_has_by_id()`.
     #[pyo3(signature = (name, low_limit=None, high_limit=None))]
     fn who_has_by_name<'py>(
         &self,
@@ -163,27 +128,29 @@ impl BACnetClient {
         low_limit: Option<u32>,
         high_limit: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let range = device_range(low_limit, high_limit)?;
         let inner = self.inner.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
                     PyRuntimeError::new_err("client not started — use 'async with'")
                 })?)
             };
-            c.who_has(WhoHasObject::Name(name), low_limit, high_limit)
+            c.who_has(WhoHasObject::Name(name), range)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
     /// Get a list of all discovered devices.
     fn discovered_devices<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_async::future_into_py(py, async move {
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -202,7 +169,7 @@ impl BACnetClient {
     fn get_device<'py>(&self, py: Python<'py>, instance: u32) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        crate::py_async::future_into_py(py, async move {
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -219,7 +186,7 @@ impl BACnetClient {
     fn clear_devices<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let future = async move {
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -228,6 +195,7 @@ impl BACnetClient {
             };
             c.clear_devices().await;
             Ok(())
-        })
+        };
+        crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 }

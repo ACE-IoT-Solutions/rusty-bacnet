@@ -45,11 +45,15 @@ impl TransportPort for LimitedTransport {
         self.inner.send_broadcast(npdu).await
     }
 
+    fn local_receive_apdu_capacity(&self) -> u16 {
+        self.inner.local_receive_apdu_capacity()
+    }
+
     fn local_mac(&self) -> &[u8] {
         self.inner.local_mac()
     }
 
-    fn max_apdu_length(&self) -> u16 {
+    fn egress_apdu_limit(&self) -> u16 {
         self.max_apdu_length
     }
 }
@@ -338,7 +342,6 @@ async fn client_max_apdu_length_reflects_sc_failover_transport_limit() {
             initial_delay_ms: 25,
             max_delay_ms: 25,
             max_retries: 1,
-            retry_forever: false,
         })
         .with_failover(failover_client);
 

@@ -1,13 +1,12 @@
 //! Confirmed event notifications to remote-network recipients (#375).
 //!
-//! Clause 6.3 permits a confirmed PDU on a broadcast link DA when the
-//! DNET/DADR restricts the destination to one device, and Clause 6.5.3 names
-//! the broadcast DA as the send form while "the address of the router is
-//! initially unknown". What used to block this was correlation: the ack
+//! Clause 6.3 lets a confirmed PDU ride a broadcast link DA as long as the
+//! DNET/DADR names exactly one device, and Clause 6.5.3 names
+//! the broadcast DA as an initial send form before the router's MAC is
+//! known. What used to block this was correlation: the ack
 //! arrives from whichever router delivers it, so the transaction is keyed by
 //! routed identity with an empty local half, and the router's MAC is learned
-//! from the ack per Clause 6.5.3 method 4 ("noting the SA associated with any
-//! subsequent responses from the remote device").
+//! from the ack's link SA per Clause 6.5.3 method 4.
 //!
 //! The tests drive the real distribution path over a recording transport and
 //! feed acks through the same correlation entry point the dispatch loop uses.
@@ -15,66 +14,41 @@
 use super::device_bindings::{DeviceBindingTable, OBSERVED_BINDING_TTL};
 use super::event_notifications::CommittedIntrinsicTransition;
 use super::event_notifications_tests::local_broadcast_destination;
-use super::event_recipient_routing_tests::{address_recipient, destination_for};
+use super::event_recipient_routing_tests::{address_recipient, destination_for, is_who_is};
 use super::*;
+use crate::server::test_transport::{SendLog, TestTransport, BIP_LOCAL_MAC};
+use bacnet_encoding::constructed::decode_event_notification;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::event::EventStateChange;
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::traits::BACnetObject;
-use bacnet_transport::port::TransportPort;
+use bacnet_transport::port::TransportProvenance;
 use bacnet_types::constructed::{BACnetDestination, BACnetRecipient};
 use bacnet_types::enums::{EventState, EventType};
+use bacnet_types::primitives::StatusFlags;
 use bytes::Bytes;
-use std::sync::{Arc as StdArc, Mutex as StdMutex};
-use tokio::sync::mpsc;
 
-#[derive(Clone, Default)]
-struct RecordingTransport {
-    broadcasts: StdArc<StdMutex<Vec<Bytes>>>,
-    unicasts: StdArc<StdMutex<Vec<(Vec<u8>, Bytes)>>>,
-}
+mod recipient_abort;
 
-impl TransportPort for RecordingTransport {
-    async fn start(
-        &mut self,
-    ) -> Result<mpsc::Receiver<bacnet_transport::port::ReceivedNpdu>, Error> {
-        let (_tx, rx) = mpsc::channel(1);
-        Ok(rx)
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.unicasts
-            .lock()
-            .unwrap()
-            .push((mac.to_vec(), Bytes::copy_from_slice(npdu)));
-        Ok(())
-    }
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.broadcasts
-            .lock()
-            .unwrap()
-            .push(Bytes::copy_from_slice(npdu));
-        Ok(())
-    }
-    fn local_mac(&self) -> &[u8] {
-        &[127, 0, 0, 1, 0xBA, 0xC0]
-    }
-}
+mod dcc_retry;
+mod learned_router_cache;
+mod suppression_counters;
 
-/// A live distribution fixture: the same database, network and TSM across
+/// One recorded unicast send: destination MAC and NPDU bytes.
+type UnicastFrame = (Vec<u8>, Bytes);
+
+/// A live distribution fixture: the same database, network and router cache across
 /// multiple distributions, so router learning is observable between them.
 struct Harness {
     db: Arc<RwLock<ObjectDatabase>>,
-    network: Arc<NetworkLayer<RecordingTransport>>,
-    server_tsm: Arc<Mutex<ServerTsm>>,
+    network: Arc<NetworkLayer<TestTransport>>,
+    learned_routers: Arc<Mutex<LearnedRouterCache>>,
     notification_transactions: Arc<NotificationTransactions>,
     device_bindings: Arc<RwLock<DeviceBindingTable>>,
-    comm_state: Arc<AtomicU8>,
-    broadcasts: StdArc<StdMutex<Vec<Bytes>>>,
-    unicasts: StdArc<StdMutex<Vec<(Vec<u8>, Bytes)>>>,
+    comm_state: Arc<CommState>,
+    suppressions: Arc<super::event_suppression::EventSuppressions>,
+    sent: SendLog,
     retry_timeout_ms: u64,
 }
 
@@ -88,19 +62,18 @@ impl Harness {
         retry_timeout_ms: u64,
         device_bindings: DeviceBindingTable,
     ) -> Self {
-        let transport = RecordingTransport::default();
-        let broadcasts = StdArc::clone(&transport.broadcasts);
-        let unicasts = StdArc::clone(&transport.unicasts);
+        let transport = TestTransport::builder().local_mac(&BIP_LOCAL_MAC).build();
+        let sent = transport.sent();
         let network = Arc::new(NetworkLayer::new(transport));
-        let comm_state = Arc::new(AtomicU8::new(0));
-        let server_tsm = Arc::new(Mutex::new(ServerTsm::new()));
+        let comm_state = Arc::new(CommState::default());
+        let learned_routers = Arc::new(Mutex::new(LearnedRouterCache::new()));
         let notification_transactions = NotificationTransactions::new();
 
         let mut db = clocked_test_database();
         let mut nc = NotificationClass::new(0, "NC-0").unwrap();
         nc.priority = [255, 255, 255];
         for destination in destinations {
-            nc.add_destination(destination);
+            nc.add_destination(destination).unwrap();
         }
         db.add(Box::new(nc)).unwrap();
         db.add(Box::new(
@@ -125,25 +98,30 @@ impl Harness {
         Self {
             db: Arc::new(RwLock::new(db)),
             network,
-            server_tsm,
+            learned_routers,
             notification_transactions,
             device_bindings: Arc::new(RwLock::new(device_bindings)),
             comm_state,
-            broadcasts,
-            unicasts,
+            suppressions: Arc::default(),
+            sent,
             retry_timeout_ms,
         }
     }
 
     async fn distribute(&self) {
         let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
-        BACnetServer::<RecordingTransport>::build_and_send_event_notification_with_bindings(
-            &self.db,
-            &self.network,
-            &self.comm_state,
-            &self.server_tsm,
-            &self.notification_transactions,
-            &self.device_bindings,
+        BACnetServer::<TestTransport>::build_and_send_event_notification_with_bindings(
+            &EventDelivery {
+                db: &self.db,
+                network: &self.network,
+                comm_state: &self.comm_state,
+                learned_routers: &self.learned_routers,
+                notification_transactions: &self.notification_transactions,
+                device_bindings: &self.device_bindings,
+                suppressions: &self.suppressions,
+                retry_timeout_ms: self.retry_timeout_ms,
+                local_apdu_capacity: 1474,
+            },
             &oid,
             (
                 EventStateChange {
@@ -152,7 +130,6 @@ impl Harness {
                 },
                 EventType::OUT_OF_RANGE,
             ),
-            self.retry_timeout_ms,
         )
         .await;
         // The confirmed path spawns its send; yield until it reaches the
@@ -169,7 +146,7 @@ impl Harness {
     ) -> CommittedIntrinsicTransition {
         let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
         let mut db = self.db.write().await;
-        BACnetServer::<RecordingTransport>::commit_intrinsic_transition(
+        BACnetServer::<TestTransport>::commit_intrinsic_transition(
             &mut db,
             &oid,
             bacnet_objects::event::TransitionOutcome {
@@ -186,16 +163,20 @@ impl Harness {
         let committed = self
             .commit_transition(EventState::NORMAL, EventState::HIGH_LIMIT)
             .await;
-        BACnetServer::<RecordingTransport>::build_and_send_event_notification_with_bindings(
-            &self.db,
-            &self.network,
-            &self.comm_state,
-            &self.server_tsm,
-            &self.notification_transactions,
-            &self.device_bindings,
+        BACnetServer::<TestTransport>::build_and_send_event_notification_with_bindings(
+            &EventDelivery {
+                db: &self.db,
+                network: &self.network,
+                comm_state: &self.comm_state,
+                learned_routers: &self.learned_routers,
+                notification_transactions: &self.notification_transactions,
+                device_bindings: &self.device_bindings,
+                suppressions: &self.suppressions,
+                retry_timeout_ms: self.retry_timeout_ms,
+                local_apdu_capacity: 1474,
+            },
             &oid,
             committed,
-            self.retry_timeout_ms,
         )
         .await;
         for _ in 0..16 {
@@ -205,15 +186,23 @@ impl Harness {
     }
 
     fn broadcast_frames(&self) -> Vec<Bytes> {
-        self.broadcasts.lock().unwrap().clone()
+        self.sent
+            .broadcasts()
+            .into_iter()
+            .map(|frame| frame.npdu)
+            .collect()
     }
 
-    fn unicast_frames(&self) -> Vec<(Vec<u8>, Bytes)> {
-        self.unicasts.lock().unwrap().clone()
+    fn unicast_frames(&self) -> Vec<UnicastFrame> {
+        self.sent
+            .unicasts()
+            .into_iter()
+            .map(|frame| (frame.mac.to_vec(), frame.npdu))
+            .collect()
     }
 
-    /// Deliver an ack the way the dispatch loop would: through the tiered
-    /// correlation, carrying the delivering router's MAC and the recipient's
+    /// Deliver an ack through the live notification owner, carrying
+    /// the delivering router's MAC and the recipient's
     /// routed identity.
     async fn ack_routed(
         &self,
@@ -243,34 +232,29 @@ impl Harness {
         apdu: Apdu,
     ) -> bool {
         let active_before = self.notification_transactions.active_count();
-        BACnetServer::<RecordingTransport>::dispatch(
-            &self.db,
-            &self.network,
-            &Arc::new(RwLock::new(CovSubscriptionTable::new())),
-            &Arc::new(segmented_send::SegmentedSendRegistry::default()),
-            &Arc::new(Semaphore::new(MAX_SEG_SENDERS)),
-            &Arc::new(Semaphore::new(255)),
-            &self.server_tsm,
-            &self.notification_transactions,
-            &Arc::new(ConfirmedRequestTracker::default()),
-            &self.device_bindings,
-            &self.comm_state,
-            &Arc::new(Mutex::new(None::<JoinHandle<()>>)),
-            &Arc::new(dcc_outcomes::DccOutcomes::default()),
-            &Arc::new(ServerConfig::default()),
-            &None,
-            &Arc::new(DiscoveryLimiter::new(DiscoveryPolicy::default(), None)),
-            &Arc::new(super::request_tasks::RequestTasks::default()),
+        BACnetServer::<TestTransport>::dispatch(
+            &DispatchContext::for_test(RequestServices {
+                db: Arc::clone(&self.db),
+                learned_routers: Arc::clone(&self.learned_routers),
+                notification_transactions: Arc::clone(&self.notification_transactions),
+                device_bindings: Arc::clone(&self.device_bindings),
+                comm_state: Arc::clone(&self.comm_state),
+                cov_in_flight: Arc::new(Semaphore::new(255)),
+                ..RequestServices::for_test(Arc::clone(&self.network), ServerConfig::default())
+            }),
             source_mac,
             apdu,
             bacnet_network::layer::ReceivedApdu {
+                direct_response: None,
                 apdu: Bytes::new(),
                 source_mac: MacAddr::from_slice(source_mac),
+                ingress_network: None,
                 source_network,
                 link_layer_group: false,
                 is_group: false,
+                global_broadcast: false,
                 data_attributes: Vec::new(),
-                transport_meta: None,
+                provenance: TransportProvenance::unverified(),
                 reply_tx: None,
             },
         )
@@ -354,7 +338,7 @@ async fn confirmed_retry_reuses_committed_message_bytes_after_history_changes() 
     assert_eq!(first.len(), 1);
     let first_frame = first[0].1.clone();
     let (_, first_request) = decode_confirmed(&first_frame);
-    let notification = EventNotificationRequest::decode(&first_request.service_request).unwrap();
+    let notification = decode_event_notification(&first_request.service_request).unwrap();
     assert_eq!(
         notification.message_text,
         Some("ANALOG_INPUT,1: NORMAL -> HIGH_LIMIT".into())
@@ -364,7 +348,7 @@ async fn confirmed_retry_reuses_committed_message_bytes_after_history_changes() 
         Some(
             bacnet_services::alarm_event::NotificationParameters::OutOfRange {
                 exceeding_value: 0.0,
-                status_flags: 0b1000,
+                status_flags: StatusFlags::IN_ALARM,
                 deadband: 1.0,
                 exceeded_limit: 100.0,
             }
@@ -436,11 +420,18 @@ async fn confirmed_retry_reuses_committed_message_bytes_after_history_changes() 
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn observed_routed_device_stops_emitting_when_retry_reaches_expiry() {
+/// The APDU timeout [`retry_against_observed_binding`] gives its notification.
+const RETRY: Duration = Duration::from_millis(1_000);
+
+/// Send a confirmed notification to Device 91, observed through `ROUTER_A`
+/// so long ago that its binding lapses `lapses_after_retry` after the first
+/// retry falls due, and step the clock to that retry. The binding's age and
+/// the retry timer are both on tokio's clock (#1556), so the gap between
+/// them is exact and a runner stall can't change it.
+async fn retry_against_observed_binding(lapses_after_retry: Duration) -> Harness {
     let identifier = ObjectIdentifier::new(ObjectType::DEVICE, 91).unwrap();
     let mut bindings = DeviceBindingTable::new();
-    let observed_at = Instant::now() - OBSERVED_BINDING_TTL + Duration::from_millis(500);
+    let observed_at = runtime_clock::now() - OBSERVED_BINDING_TTL + RETRY + lapses_after_retry;
     let source = NpduAddress {
         network: 1001,
         mac_address: MacAddr::from_slice(RECIPIENT),
@@ -451,31 +442,72 @@ async fn observed_routed_device_stops_emitting_when_retry_reaches_expiry() {
     );
     let harness = Harness::new_with_bindings(
         vec![destination_for(BACnetRecipient::Device(identifier), true)],
-        1_000,
+        RETRY.as_millis() as u64,
         bindings,
     )
     .await;
     harness.distribute().await;
 
     assert_eq!(harness.unicast_frames().len(), 1);
-    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(harness.notification_transactions.active_count(), 1);
+    tokio::time::advance(RETRY).await;
     for _ in 0..16 {
         tokio::task::yield_now().await;
     }
+    harness
+}
 
+/// A binding that lapses 1 ms after the retry falls due still carries it.
+#[tokio::test(start_paused = true)]
+async fn observed_routed_device_retries_until_its_binding_lapses() {
+    let harness = retry_against_observed_binding(Duration::from_millis(1)).await;
+    assert_eq!(harness.unicast_frames().len(), 2, "1 ms before the lapse");
+    assert_eq!(harness.notification_transactions.active_count(), 1);
+}
+
+/// A binding that lapses exactly when the retry falls due doesn't.
+#[tokio::test(start_paused = true)]
+async fn observed_routed_device_stops_emitting_when_retry_reaches_expiry() {
+    let harness = retry_against_observed_binding(Duration::ZERO).await;
     assert_eq!(
         harness.unicast_frames().len(),
         1,
         "an observed route cannot emit at or after its expiry boundary"
     );
     assert!(harness.broadcast_frames().is_empty());
+    // The retry that finds the binding lapsed ends the notification there
+    // (#1371): its invoke ID is free at once, and it counts as a recipient
+    // with no binding, not as one that never answered.
+    assert_eq!(
+        harness.notification_transactions.active_count(),
+        0,
+        "the lease is freed at the retry, not after the last timeout"
+    );
+    let counted = |counters: super::event_suppression::EventNotificationCounters| {
+        (
+            counters.device_recipient_unbound,
+            counters.confirmed_unanswered,
+        )
+    };
+    assert_eq!(counted(harness.suppressions.snapshot()), (1, 0));
+    // Every timeout the notification would have waited out passes: nothing
+    // more is sent or counted.
+    tokio::time::advance(Duration::from_secs(5)).await;
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(harness.unicast_frames().len(), 1);
+    assert_eq!(counted(harness.suppressions.snapshot()), (1, 0));
 }
 
 /// Decode a captured frame into its NPDU and the confirmed request inside.
 fn decode_confirmed(frame: &Bytes) -> (bacnet_encoding::npdu::Npdu, ConfirmedRequestPdu) {
     let npdu = bacnet_encoding::npdu::decode_npdu(frame.clone()).expect("decode NPDU");
     match apdu::decode_apdu(npdu.payload.clone()).expect("decode APDU") {
-        Apdu::ConfirmedRequest(req) => (npdu, req),
+        Apdu::ConfirmedRequest(req) => {
+            assert_eq!(req.max_apdu_length, 1024, "raw1474 event header");
+            (npdu, req)
+        }
         other => panic!("expected ConfirmedRequest, got {other:?}"),
     }
 }
@@ -578,7 +610,7 @@ async fn two_routed_recipients_correlate_independently() {
 }
 
 /// An ack naming a different routed identity must not complete the
-/// transaction — the tiers are exact lookups, not a wildcard.
+/// transaction — terminal admission requires the exact routed identity.
 #[tokio::test]
 async fn ack_with_wrong_routed_identity_does_not_complete() {
     let harness = Harness::new(
@@ -602,7 +634,7 @@ async fn ack_with_wrong_routed_identity_does_not_complete() {
         "wrong DADR must miss"
     );
     assert_eq!(
-        harness.server_tsm.lock().await.cached_router(1000),
+        harness.learned_routers.lock().await.cached_router(1000),
         None,
         "mismatched routed traffic must not teach the router cache"
     );
@@ -622,7 +654,10 @@ async fn ack_with_wrong_routed_identity_does_not_complete() {
             .await,
         "wrong service must not complete"
     );
-    assert_eq!(harness.server_tsm.lock().await.cached_router(1000), None);
+    assert_eq!(
+        harness.learned_routers.lock().await.cached_router(1000),
+        None
+    );
     assert!(
         harness
             .ack_routed(ROUTER_A, 1000, RECIPIENT, req.invoke_id)

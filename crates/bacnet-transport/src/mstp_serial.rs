@@ -16,14 +16,14 @@
 //!   Use this for RS-485 hats (like the Seeed Studio RS-485 Shield) where
 //!   DE/RE is wired to a GPIO pin rather than the UART's RTS.
 
+use std::sync::Arc;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
-use tokio_serial::{SerialPort as TokioSerialPortTrait, SerialStream};
+use tokio_serial::SerialStream;
 
 use bacnet_types::error::Error;
 
-#[cfg(feature = "serial-gpio")]
-use crate::mstp::SerialDirection;
 use crate::mstp::SerialPort;
 
 #[cfg(any(target_os = "linux", test))]
@@ -46,6 +46,38 @@ impl Default for SerialConfig {
     }
 }
 
+/// The names of the serial ports the operating system reports, for
+/// [`SerialConfig::port_name`].
+///
+/// macOS lists them through IOKit, Windows through SetupAPI and the registry,
+/// and Linux from sysfs (`/sys/class/tty`), so a port that another program has
+/// open is listed too. An empty list means the system reports no serial port.
+///
+/// # Errors
+///
+/// [`Error::Transport`] if the operating system can't be asked, with the
+/// [`std::io::ErrorKind`] of the failure.
+pub fn available_ports() -> Result<Vec<String>, Error> {
+    // serialport panics when sysfs has no tty class (a chroot without /sys, say).
+    #[cfg(target_os = "linux")]
+    if !std::path::Path::new("/sys/class/tty").is_dir() {
+        return Err(Error::Transport(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "serial port listing failed: /sys/class/tty doesn't exist",
+        )));
+    }
+    match tokio_serial::available_ports() {
+        Ok(ports) => Ok(ports.into_iter().map(|port| port.port_name).collect()),
+        Err(error) => {
+            let error = std::io::Error::from(error);
+            Err(Error::Transport(std::io::Error::new(
+                error.kind(),
+                format!("serial port listing failed: {error}"),
+            )))
+        }
+    }
+}
+
 /// A real serial port implementing the MS/TP [`SerialPort`] trait.
 ///
 /// Wraps `tokio_serial::SerialStream` for async RS-485 I/O. By default,
@@ -53,20 +85,17 @@ impl Default for SerialConfig {
 /// RS-485 adapters). On Linux, call [`enable_kernel_rs485`](Self::enable_kernel_rs485)
 /// to use kernel-managed RTS direction control.
 pub struct TokioSerialPort {
-    inner: Mutex<SerialStream>,
+    inner: Arc<Mutex<SerialStream>>,
 }
 
 impl TokioSerialPort {
     /// Open a serial port with the given configuration.
     pub fn open(config: &SerialConfig) -> Result<Self, Error> {
-        if config.baud_rate == 0 {
-            return Err(Error::Encoding("Serial baud rate must be nonzero".into()));
-        }
         let builder = tokio_serial::new(&config.port_name, config.baud_rate);
         let stream = SerialStream::open(&builder)
             .map_err(|e| Error::Encoding(format!("Serial open failed: {e}")))?;
         Ok(Self {
-            inner: Mutex::new(stream),
+            inner: Arc::new(Mutex::new(stream)),
         })
     }
 
@@ -149,6 +178,19 @@ impl SerialPort for TokioSerialPort {
             .map_err(|e| Error::Encoding(format!("Serial write failed: {e}")))
     }
 
+    #[cfg(unix)]
+    async fn drain(&self) -> Result<(), Error> {
+        // The synchronous Write implementation reaches tcdrain on Unix and
+        // propagates its result. Do not run this blocking wait on a Tokio worker.
+        // The owned guard keeps the stream alive and exclusive even if the
+        // awaiting future is cancelled while the blocking task is running.
+        let mut stream = self.inner.clone().lock_owned().await;
+        tokio::task::spawn_blocking(move || std::io::Write::flush(&mut *stream))
+            .await
+            .map_err(|e| Error::Encoding(format!("Serial drain task failed: {e}")))?
+            .map_err(|e| Error::Encoding(format!("Serial drain failed: {e}")))
+    }
+
     async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
         let mut stream = self.inner.lock().await;
         stream
@@ -156,80 +198,88 @@ impl SerialPort for TokioSerialPort {
             .await
             .map_err(|e| Error::Encoding(format!("Serial read failed: {e}")))
     }
-
-    #[allow(unsafe_code)]
-    async fn drain(&self) -> Result<(), Error> {
-        loop {
-            let pending = {
-                let stream = self.inner.lock().await;
-                TokioSerialPortTrait::bytes_to_write(&*stream)
-                    .map_err(|e| Error::Encoding(format!("Serial drain query failed: {e}")))?
-            };
-            if pending == 0 {
-                break;
-            }
-            tokio::time::sleep(tokio::time::Duration::from_micros(100)).await;
-        }
-
-        #[cfg(target_os = "linux")]
-        loop {
-            let transmitter_empty = {
-                use std::os::fd::AsRawFd;
-
-                let stream = self.inner.lock().await;
-                let mut status: libc::c_int = 0;
-                // SAFETY: `status` is writable for the duration of this
-                // nonblocking ioctl and the mutex guard keeps the fd alive.
-                let result = unsafe {
-                    libc::ioctl(
-                        stream.as_raw_fd(),
-                        libc::TIOCSERGETLSR,
-                        &mut status as *mut libc::c_int,
-                    )
-                };
-                if result == 0 {
-                    Some(status & 1 != 0) // Linux UAPI TIOCSER_TEMT
-                } else {
-                    let error = std::io::Error::last_os_error();
-                    match error.raw_os_error() {
-                        Some(libc::ENOTTY | libc::EINVAL | libc::ENOSYS) => None,
-                        _ => {
-                            return Err(Error::Encoding(format!(
-                                "Serial transmitter status failed: {error}"
-                            )))
-                        }
-                    }
-                }
-            };
-            match transmitter_empty {
-                Some(true) => return Ok(()),
-                Some(false) => {
-                    tokio::time::sleep(tokio::time::Duration::from_micros(100)).await;
-                }
-                None => {
-                    return Err(Error::Encoding(
-                        "Serial driver cannot report physical transmitter-empty state".into(),
-                    ));
-                }
-            }
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(Error::Encoding(
-                "Physical transmitter-empty query is unsupported on this platform".into(),
-            ))
-        }
-    }
-
-    async fn drain_physical(&self) -> Result<(), Error> {
-        self.drain().await
-    }
 }
 
 // ---------------------------------------------------------------------------
 // GPIO direction control wrapper
 // ---------------------------------------------------------------------------
+
+#[cfg(any(feature = "serial-gpio", test))]
+trait DirectionControl: Send + Sync {
+    fn set_tx_mode(&self) -> Result<(), Error>;
+    fn set_rx_mode(&self) -> Result<(), Error>;
+}
+
+/// Serializes direction changes with I/O and remembers unfinished transmission
+/// across errors or cancellation. No RX transition is safe until drain succeeds.
+#[cfg(any(feature = "serial-gpio", test))]
+struct SoftwareDirection {
+    tx_pending: Mutex<bool>,
+    post_tx_delay_us: u64,
+}
+
+#[cfg(any(feature = "serial-gpio", test))]
+impl SoftwareDirection {
+    fn new(post_tx_delay_us: u64) -> Self {
+        Self {
+            tx_pending: Mutex::new(false),
+            post_tx_delay_us,
+        }
+    }
+
+    async fn finish_transmit(
+        &self,
+        inner: &impl SerialPort,
+        direction: &impl DirectionControl,
+        tx_pending: &mut bool,
+    ) -> Result<(), Error> {
+        if *tx_pending {
+            inner.drain().await?;
+            // This is a transceiver guard interval AFTER confirmed completion,
+            // never an estimate of how long queued bytes take to reach the wire.
+            if self.post_tx_delay_us > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_micros(self.post_tx_delay_us)).await;
+            }
+            direction.set_rx_mode()?;
+            *tx_pending = false;
+        }
+        Ok(())
+    }
+
+    async fn write(
+        &self,
+        inner: &impl SerialPort,
+        direction: &impl DirectionControl,
+        data: &[u8],
+    ) -> Result<(), Error> {
+        let mut tx_pending = self.tx_pending.lock().await;
+        self.finish_transmit(inner, direction, &mut tx_pending)
+            .await?;
+        if let Err(error) = direction.set_tx_mode() {
+            // No write was attempted, so restoring RX cannot truncate output.
+            direction.set_rx_mode()?;
+            return Err(error);
+        }
+        *tx_pending = true;
+        let result = inner.write(data).await;
+        // A failed write can still have queued bytes. Drain those before RX too.
+        self.finish_transmit(inner, direction, &mut tx_pending)
+            .await?;
+        result
+    }
+
+    async fn read(
+        &self,
+        inner: &impl SerialPort,
+        direction: &impl DirectionControl,
+        buf: &mut [u8],
+    ) -> Result<usize, Error> {
+        let mut tx_pending = self.tx_pending.lock().await;
+        self.finish_transmit(inner, direction, &mut tx_pending)
+            .await?;
+        inner.read(buf).await
+    }
+}
 
 /// RS-485 direction control via a GPIO pin on the Linux GPIO character device.
 ///
@@ -250,18 +300,18 @@ impl SerialPort for TokioSerialPort {
 /// let port = GpioDirectionPort::new(serial, "/dev/gpiochip0", 18, true).unwrap();
 /// ```
 ///
-/// The pin is set to receive mode (DE deasserted) on creation. The MS/TP
-/// adapter then applies the core's explicit direction actions around writes.
+/// The pin is set to receive mode (DE deasserted) on creation and after
+/// each drained write. The inner port must implement [`SerialPort::drain`].
+/// If drain fails or a write is cancelled, DE remains asserted until a later
+/// read/write can confirm completion and restore RX. Dropping the wrapper is not
+/// an asynchronous drain; finish pending I/O before releasing the GPIO resource.
 #[cfg(feature = "serial-gpio")]
 pub struct GpioDirectionPort<S: SerialPort> {
     inner: S,
     gpio: std::sync::Mutex<gpiocdev::Request>,
     line: u32,
     active_high: bool,
-    /// Baud-rate-dependent delay after flush to ensure the last byte
-    /// has left the UART shift register before switching to RX mode.
-    post_tx_delay_us: u64,
-    explicit_tx: std::sync::atomic::AtomicBool,
+    direction: SoftwareDirection,
 }
 
 #[cfg(feature = "serial-gpio")]
@@ -280,13 +330,10 @@ impl<S: SerialPort> GpioDirectionPort<S> {
 
     /// Create with an explicit post-TX delay in microseconds.
     ///
-    /// After physically draining the serial port, the wrapper waits this long before
-    /// switching back to receive mode. This covers the time for the last
-    /// byte to leave the UART's shift register. At 76800 baud, one byte
-    /// takes ~130us. A delay of 200-500us is typically safe.
-    ///
-    /// If set to 0, no additional delay is added (suitable when the UART
-    /// driver's flush fully drains the hardware FIFO).
+    /// After the inner port confirms transmit completion, the wrapper waits
+    /// this additional transceiver guard interval before switching to RX.
+    /// Zero adds no guard interval. This delay is not a substitute for drain
+    /// and must fit the link's driver-release timing budget.
     pub fn with_post_tx_delay(
         inner: S,
         gpio_chip: &str,
@@ -324,11 +371,13 @@ impl<S: SerialPort> GpioDirectionPort<S> {
             gpio: std::sync::Mutex::new(request),
             line,
             active_high,
-            post_tx_delay_us,
-            explicit_tx: std::sync::atomic::AtomicBool::new(false),
+            direction: SoftwareDirection::new(post_tx_delay_us),
         })
     }
+}
 
+#[cfg(feature = "serial-gpio")]
+impl<S: SerialPort> DirectionControl for GpioDirectionPort<S> {
     /// Set the transceiver to transmit mode (DE asserted).
     fn set_tx_mode(&self) -> Result<(), Error> {
         use gpiocdev::line::Value;
@@ -362,56 +411,21 @@ impl<S: SerialPort> GpioDirectionPort<S> {
 
 #[cfg(feature = "serial-gpio")]
 impl<S: SerialPort> SerialPort for GpioDirectionPort<S> {
-    async fn set_direction(&self, direction: SerialDirection) -> Result<(), Error> {
-        match direction {
-            SerialDirection::Receive => {
-                self.explicit_tx
-                    .store(false, std::sync::atomic::Ordering::Release);
-                self.set_rx_mode()
-            }
-            SerialDirection::Transmit => {
-                self.set_tx_mode()?;
-                self.explicit_tx
-                    .store(true, std::sync::atomic::Ordering::Release);
-                Ok(())
-            }
-        }
-    }
-
     async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        if self.explicit_tx.load(std::sync::atomic::Ordering::Acquire) {
-            return self.inner.write(data).await;
-        }
-
-        self.set_tx_mode()?;
-        let result = async {
-            self.inner.write(data).await?;
-            self.drain().await
-        }
-        .await;
-        let receive_result = self.set_rx_mode();
-        result.and(receive_result)
-    }
-
-    async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        // Already in RX mode — just delegate.
-        self.inner.read(buf).await
+        self.direction.write(&self.inner, self, data).await
     }
 
     async fn drain(&self) -> Result<(), Error> {
-        self.inner.drain_physical().await?;
-        if self.post_tx_delay_us > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_micros(self.post_tx_delay_us)).await;
-        }
-        Ok(())
+        let mut tx_pending = self.direction.tx_pending.lock().await;
+        self.direction
+            .finish_transmit(&self.inner, self, &mut tx_pending)
+            .await
+    }
+
+    async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.direction.read(&self.inner, self, buf).await
     }
 }
 
-#[cfg(feature = "serial-gpio")]
-impl<S: SerialPort> Drop for GpioDirectionPort<S> {
-    fn drop(&mut self) {
-        if let Err(error) = self.set_rx_mode() {
-            tracing::warn!("GPIO direction cleanup failed: {error}");
-        }
-    }
-}
+#[cfg(test)]
+mod tests;

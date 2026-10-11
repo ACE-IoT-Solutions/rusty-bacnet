@@ -1,21 +1,45 @@
 //! Python bindings for rusty-bacnet via PyO3.
 
+// Each #[pyo3(signature = ...)] method mirrors its Python keyword arguments, so
+// argument count is part of the Python API; a Rust parameter struct would
+// change what Python callers write (#902).
+#![allow(clippy::too_many_arguments)]
+
 use pyo3::prelude::*;
 
+mod bip_options;
 mod client;
+mod endpoint;
 mod errors;
+mod group_members;
 mod hub;
+mod hub_bindings;
+mod log_records;
 mod mstp_py;
-mod router;
-mod runtime;
+mod object_audit_policy;
+mod py_async;
+mod read_range;
 mod sc_identity;
 mod server;
 mod tls;
 mod types;
 
+/// Project a unit-only async success to Python None, after the operation future
+/// (and its Rust guards) has finished. PyO3's IntoPyObject maps Rust () to tuple(),
+/// unlike synchronous pymethod unit returns. Preserve the original PyErr on failure.
+async fn unit_result(
+    future: impl std::future::Future<Output = PyResult<()>>,
+) -> PyResult<Py<PyAny>> {
+    future.await?;
+    py_async::attach(|py| Ok(py.None()))
+}
+
 /// The `rusty_bacnet` Python module.
 #[pymodule]
 fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Keep binding threads out of the interpreter once it starts exiting (#1002).
+    py_async::register(m)?;
+
     // Register exception types
     errors::register(m)?;
 
@@ -25,46 +49,11 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register client and server classes
     m.add_class::<client::BACnetClient>()?;
     m.add_class::<server::BACnetServer>()?;
-    m.add_class::<router::PyBACnetRouter>()?;
-    m.add_class::<router::PyRouterBipPort>()?;
-    m.add_class::<router::PyRouterScPort>()?;
-    m.add_class::<router::PyRouterVirtualPort>()?;
-    m.add_class::<router::PyRouterPortCounters>()?;
-    m.add_class::<router::PyRouterPortHealth>()?;
-    m.add_class::<router::PyRouterRouteEntry>()?;
     m.add_class::<hub::PyScHub>()?;
-    m.add_class::<runtime::PyBACnetRuntime>()?;
-    m.add_class::<runtime::PyRuntimeAttachment>()?;
-    m.add_class::<runtime::PyRuntimeMstpAttachment>()?;
-    m.add_class::<runtime::PyRuntimeScAttachment>()?;
-    m.add_class::<runtime::PyRuntimeReconcileReport>()?;
-    m.add_class::<runtime::PyRuntimePersistedDevice>()?;
-    m.add_class::<runtime::PyRuntimeDeviceRestoreReport>()?;
-    m.add_class::<runtime::PyRuntimeHealth>()?;
-    m.add_class::<runtime::PyRuntimeCrossingCounters>()?;
-    m.add_class::<runtime::PyRuntimeDiscoveredDevice>()?;
-    m.add_class::<runtime::PyRuntimeDiscoveredRouter>()?;
-    m.add_class::<runtime::PyRuntimeDiscoverySnapshot>()?;
-    m.add_class::<runtime::PyRuntimeBdtEntry>()?;
-    m.add_class::<runtime::PyRuntimeFdtEntry>()?;
-    m.add_class::<runtime::PyRuntimeBbmdSnapshot>()?;
-    m.add_class::<runtime::PyRuntimeAttachmentTopology>()?;
-    m.add_class::<runtime::PyRuntimeTopologySnapshot>()?;
-    m.add_class::<runtime::PyRuntimeCovValue>()?;
-    m.add_class::<runtime::PyRuntimeEvent>()?;
-    m.add_class::<runtime::PyRuntimeEventBatch>()?;
-    m.add_class::<runtime::PyRuntimeRead>()?;
-    m.add_class::<runtime::PyRuntimeWrite>()?;
-    m.add_class::<runtime::PyRuntimeBatchOutcome>()?;
-    m.add_class::<runtime::PyRuntimeObservationReport>()?;
-    m.add_class::<runtime::PyRuntimeCancelReport>()?;
-    m.add_class::<runtime::PyRuntimeReadOperation>()?;
-    m.add_class::<runtime::PyRuntimeWriteOperation>()?;
-    m.add_class::<runtime::PyRuntimeObservation>()?;
-    m.add_class::<runtime::PyScanOutcome>()?;
-    m.add_class::<runtime::PyScanSnapshot>()?;
-    m.add_class::<runtime::PyRuntimeScannedObject>()?;
-    m.add_class::<runtime::PyRuntimeDeviceScanSnapshot>()?;
+    m.add_class::<hub_bindings::PyScHubCertificateBinding>()?;
+    endpoint::register(m)?;
+    m.add_function(wrap_pyfunction!(mstp_py::list_serial_ports, m)?)?;
+    m.add_function(wrap_pyfunction!(log_records::decode_log_records, m)?)?;
 
     Ok(())
 }

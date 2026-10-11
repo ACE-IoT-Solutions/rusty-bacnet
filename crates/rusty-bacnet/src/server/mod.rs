@@ -24,17 +24,15 @@ use bacnet_objects::elevator::{ElevatorGroupObject, EscalatorObject, LiftObject}
 use bacnet_objects::event_enrollment::{AlertEnrollmentObject, EventEnrollmentObject};
 use bacnet_objects::event_log::EventLogObject;
 use bacnet_objects::file::FileObject;
-use bacnet_objects::forwarder::NotificationForwarderObject;
-use bacnet_objects::group::{GlobalGroupObject, GroupObject, StructuredViewObject};
+use bacnet_objects::group::{GlobalGroupObject, StructuredViewObject};
 use bacnet_objects::life_safety::{LifeSafetyPointObject, LifeSafetyZoneObject};
-use bacnet_objects::lighting::{BinaryLightingOutputObject, ChannelObject, LightingOutputObject};
+use bacnet_objects::lighting::{BinaryLightingOutputObject, LightingOutputObject};
 use bacnet_objects::load_control::LoadControlObject;
 use bacnet_objects::loop_obj::LoopObject;
 use bacnet_objects::multistate::{
     MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject,
 };
-use bacnet_objects::network_port::NetworkPortObject;
-use bacnet_objects::notification_class::NotificationClass;
+use bacnet_objects::notification_class::{FileNotificationClassPersistence, NotificationClass};
 use bacnet_objects::program::ProgramObject;
 use bacnet_objects::schedule::{CalendarObject, ScheduleObject};
 use bacnet_objects::staging::{StagingConfig, StagingObject};
@@ -51,16 +49,17 @@ use bacnet_server::server;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
-use bacnet_transport::virtual_network::VirtualNetwork;
-use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
-use bacnet_types::enums::Segmentation;
+use bacnet_types::constructed::{
+    BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference, BACnetStageLimitValue,
+};
+use bacnet_types::enums::EventType;
 use bacnet_types::primitives::PropertyValue;
 
 use crate::errors::to_py_err;
-use crate::types::{
-    PyApduObserverStartGuard, PyApduObserverState, PyBbmdControl, PyBbmdTransportConfig,
-    PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue, PySegmentation,
-};
+use crate::types::{PyEventType, PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue};
+
+mod audit_configuration;
+use audit_configuration::AuditNotificationSink;
 
 /// Async BACnet server that hosts objects and responds to requests.
 ///
@@ -79,30 +78,26 @@ use crate::types::{
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
-/// - `"virtual"`: named in-process virtual network (requires
-///   `virtual_network` and one-byte `virtual_mac`)
 ///
 /// SC credential paths must be nonempty at construction (ValueError otherwise).
 /// start() loads the files before dialing or draining registrations; local TLS
 /// configuration errors raise RuntimeError and permit retry after file repair.
 /// Later startup failures retain existing behavior, not general rollback.
-#[pyclass(name = "BACnetServer")]
+#[pyclass(name = "BACnetServer", module = "rusty_bacnet")]
 pub struct BACnetServer {
     inner: Arc<Mutex<Option<server::BACnetServer<AnyTransport<crate::mstp_py::PySerial>>>>>,
-    apdu_observer: Option<Arc<PyApduObserverState>>,
-    /// Identity used for the Device object and discovery advertisements.
-    device_identity: DeviceIdentityConfig,
-    /// One validated mode shared by runtime segmentation and Device metadata.
-    segmentation_supported: Segmentation,
+    device_instance: u32,
+    segmentation_supported: bacnet_types::enums::Segmentation,
+    apdu_segment_timeout_ms: u64,
+    device_name: String,
     transport_type: String,
     // BIP config
     interface: String,
     port: u16,
     broadcast_address: String,
-    reuse_port: bool,
-    pending_bbmd_transport: Arc<std::sync::Mutex<Option<BipTransport>>>,
-    bbmd_transport_config: Option<PyBbmdTransportConfig>,
-    bbmd_control: Arc<std::sync::Mutex<Option<PyBbmdControl>>>,
+    /// See `BipTransport::set_share_port_by_address` (#1538).
+    share_port_by_address: bool,
+    registered_network_port: Option<u32>,
     // SC config
     sc_hub: Option<String>,
     sc_vmac: Option<Vec<u8>>,
@@ -120,11 +115,9 @@ pub struct BACnetServer {
     mstp_mac: u8,
     mstp_max_master: u8,
     mstp_max_info_frames: u8,
-    // In-process virtual network config
-    virtual_network: Option<String>,
-    virtual_mac: Option<u8>,
     // Passwords
     dcc_password: Option<String>,
+    mutation_policy: bacnet_server::mutation::MutationPolicy,
     dcc_policy: server::DccPolicy,
     dcc_source_restriction: Option<server::DccSourceRestriction>,
     dcc_disable_rate_limit: Option<server::DccDisableRateLimit>,
@@ -137,29 +130,31 @@ pub struct BACnetServer {
     atomic_write_file_budget: server::AtomicWriteFileBudget,
     read_range_budget: server::ReadRangeBudget,
     get_event_information_budget: server::GetEventInformationBudget,
+    cov_policy: server::CovPolicy,
+    time_sync_policy: server::TimeSyncPolicy,
+    audit_notification_sink: Option<AuditNotificationSink>,
+    audit_reporters: Option<server::AuditReportersConfig>,
+    audit_recipient: std::sync::Mutex<Option<bacnet_types::constructed::BACnetRecipient>>,
+    device_bindings: std::collections::BTreeMap<u32, server::DeviceBinding>,
+    /// Freeze forwarding and Reporter settings at ownership transfer, including startup in flight.
+    forwarding_configuration_started: AtomicBool,
     /// Whether the server has been started.
     started: Arc<AtomicBool>,
     /// Objects to add before starting. Cleared after start.
     pending_objects: std::sync::Mutex<Vec<Box<dyn BACnetObject + Send>>>,
+    /// Save counters of the pending Notification Forwarders, by instance,
+    /// pushed with each forwarder under the `pending_objects` lock.
+    pending_forwarder_save_counters: std::sync::Mutex<Vec<ForwarderSaveCounterEntry>>,
+    /// Save counters of the forwarders the running server holds, replaced
+    /// under the `inner` lock when a start publishes its server.
+    forwarder_save_counters: Arc<std::sync::Mutex<Vec<ForwarderSaveCounterEntry>>>,
 }
 
-/// Python-owned Device identity configuration.
-///
-/// This mirrors the identity fields supported by upstream `DeviceConfig` while
-/// retaining the Python binding's established vendor identifier default. The
-/// protocol revision remains owned by upstream (`22`) until its validated
-/// configuration model exposes that field.
-#[derive(Clone)]
-struct DeviceIdentityConfig {
-    instance: u32,
-    name: String,
-    description: String,
-    vendor_name: String,
-    vendor_id: u16,
-    model_name: String,
-    firmware_revision: String,
-    application_software_version: String,
-}
+/// One Notification Forwarder's instance and its shared save counters.
+type ForwarderSaveCounterEntry = (
+    u32,
+    bacnet_objects::notification_forwarder::ForwarderSaveCounters,
+);
 
 impl BACnetServer {
     /// Lock the pending_objects mutex, converting poison errors into PyRuntimeError.
@@ -183,13 +178,48 @@ impl BACnetServer {
         guard.push(obj);
         Ok(())
     }
+
+    /// Read a member list given to an `add_*` method, a reference tuple or
+    /// mapping per element. A member naming this server's own Device is
+    /// stored in its local form, as the server stores the same member written
+    /// over the network.
+    fn members_from_py(
+        &self,
+        members: &Bound<'_, PyAny>,
+        name: &str,
+    ) -> PyResult<Vec<BACnetDeviceObjectPropertyReference>> {
+        let mut members = crate::types::property_references_from_py(members, name)?;
+        crate::types::localize(
+            &mut members,
+            crate::types::local_device(self.device_instance),
+        );
+        Ok(members)
+    }
 }
 
 mod server_methods {
-    mod apdu_observer;
+    mod access_control_methods;
+    mod access_input_methods;
+    mod access_rights_methods;
+    mod audit_log_methods;
+    mod averaging_methods;
+    mod channel_methods;
+    mod constructor;
+    mod constructor_budgets;
+    mod cov_counters;
+    mod cov_policy;
     mod dcc_outcomes;
+    mod event_notification_counters;
     mod file_configuration;
+    mod life_safety_methods;
     mod lifecycle;
+    mod loop_methods;
+    mod network_port;
+    mod notification_forwarder;
+    mod policy_dict;
     mod registration;
     mod request_admission;
+    mod time_sync_policy;
+    mod trend_log_methods;
+    mod value_registration;
 }

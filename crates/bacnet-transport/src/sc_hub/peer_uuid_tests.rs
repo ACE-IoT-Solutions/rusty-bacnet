@@ -19,19 +19,33 @@ struct Peer {
 impl Peer {
     async fn open(tls: &TestTls, clients: Clients) -> Self {
         let (server, ws, address, accepted) = tls.pair().await;
+        let verified_leaf = super::certificate_bindings::VerifiedLeaf::from_verified_chain(
+            server.get_ref().get_ref().1.peer_certificates(),
+        );
         let (write, read) = server.split();
         let deadline = Arc::new(super::deadlines::ConnectDeadline::new(
             accepted + Duration::from_secs(5),
         ));
         let active = Arc::new(AtomicUsize::new(0));
         let admission = super::connection::Admission::new(active.clone(), Duration::from_secs(10));
+        // Direct-harness pair performs real mutual TLS with a CA-verified
+        // client certificate; only the accept-loop path is bypassed.
+        let runtime = Arc::new(super::admission::AdmissionRuntime::default());
         // Do not retain a test-owned sink: worker completion must release TLS.
         let operation = super::deadlines::serve(
-            address,
-            ([0x10; 6], [0x10; 16]),
-            read,
-            Arc::new(Mutex::new(write)),
-            clients,
+            super::context::PeerConnection {
+                addr: address,
+                read,
+                write: Arc::new(Mutex::new(write)),
+                verified_leaf,
+            },
+            super::context::HubConnectionContext {
+                hub: ([0x10; 6], [0x10; 16]),
+                clients,
+                admission: runtime,
+                graceful: super::tasks::Tasks::new().graceful_ctx(),
+                timing: super::timing::HubTiming::new(super::ScHubProbePolicy::default()),
+            },
             deadline.clone(),
             || {},
         );
@@ -216,7 +230,7 @@ async fn check_invalid_repeat_flood(cases: Vec<InvalidConnect>) {
     super::heartbeat::sweep(
         &clients,
         &AtomicU16::new(0x7788),
-        &ClockIo(AtomicU64::new(100)),
+        &ClockIo(AtomicU64::new(100_000)),
     )
     .await;
     assert_eq!(peer.binary().await, [0x0a, 0, 0x77, 0x88]);

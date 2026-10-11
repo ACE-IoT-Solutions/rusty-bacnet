@@ -149,13 +149,13 @@ async fn recovery_wire_same_peer_enable_with_sixteen_ordinary_held() {
         observed(&mut started).await; // Transport barrier: ordinary handler stays live.
     }
     assert_eq!(server.request_admission_counters().confirmed_active, 16);
-    server.comm_state.store(1, Ordering::Release);
+    server.comm_state.set_for_test(DccState::DisableInitiation);
     inject(&tx, enable(16, None)).await;
     observed(&mut started).await;
     assert!(
-        matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::SimpleAck(a)) if a.invoke_id == 16)
+        matches!(held_sends(&server).frames.lock().unwrap().last(), Some(Apdu::SimpleAck(a)) if a.invoke_id == 16)
     );
-    assert_eq!(server.comm_state.load(Ordering::Acquire), 0);
+    assert_eq!(server.comm_state.get(), DccState::Enable);
     let c = server.request_admission_counters();
     assert_eq!((c.confirmed_active, c.recovery_active), (17, 1));
     assert_eq!(
@@ -163,7 +163,7 @@ async fn recovery_wire_same_peer_enable_with_sixteen_ordinary_held() {
         (17, 1)
     );
     assert_eq!(c.confirmed_overloaded_total, 0);
-    server.network.transport().release.notify_waiters();
+    held_sends(&server).release.notify_waiters();
     wait_reaped(&server).await;
     assert_eq!(server.request_tasks.peer_entries(), [0; 3]);
     server.stop().await.unwrap();
@@ -172,7 +172,7 @@ async fn recovery_wire_same_peer_enable_with_sixteen_ordinary_held() {
 #[tokio::test]
 async fn recovery_segmented_enable_charged_once_after_reassembly() {
     let (mut server, tx, mut started) = fixture().await;
-    server.comm_state.store(1, Ordering::Release);
+    server.comm_state.set_for_test(DccState::DisableInitiation);
     let Apdu::ConfirmedRequest(mut first) = enable(42, None) else {
         unreachable!()
     };
@@ -188,7 +188,7 @@ async fn recovery_segmented_enable_charged_once_after_reassembly() {
     last.service_request = last.service_request.slice(1..);
     inject(&tx, Apdu::ConfirmedRequest(first)).await;
     tokio::time::timeout(Duration::from_secs(2), async {
-        while server.network.transport().frames.lock().unwrap().is_empty() {
+        while held_sends(&server).frames.lock().unwrap().is_empty() {
             tokio::task::yield_now().await;
         }
     })
@@ -198,7 +198,7 @@ async fn recovery_segmented_enable_charged_once_after_reassembly() {
         server.request_admission_counters().confirmed_admitted_total,
         0
     );
-    assert_eq!(server.comm_state.load(Ordering::Acquire), 1);
+    assert_eq!(server.comm_state.get(), DccState::DisableInitiation);
     inject(&tx, Apdu::ConfirmedRequest(last)).await;
     observed(&mut started).await;
     let c = server.request_admission_counters();
@@ -211,7 +211,7 @@ async fn recovery_segmented_enable_charged_once_after_reassembly() {
         ),
         (1, 1, 1, 1)
     );
-    assert_eq!(server.comm_state.load(Ordering::Acquire), 0);
+    assert_eq!(server.comm_state.get(), DccState::Enable);
     server.stop().await.unwrap();
 }
 
@@ -503,14 +503,14 @@ async fn recovery_invalid_reserve_before_direct_generic_and_bip_start() {
                 ..Default::default()
             },
             ObjectDatabase::new(),
-            NeverStart(Arc::clone(&started)),
+            never_start(&started),
         )
         .await
         .err()
         .unwrap();
         assert!(matches!(error, Error::Encoding(m) if m.contains("confirmed_recovery_reserve")));
         let error = BACnetServer::generic_builder()
-            .transport(NeverStart(Arc::clone(&started)))
+            .transport(never_start(&started))
             .request_admission_policy(policy)
             .build()
             .await
@@ -549,14 +549,14 @@ async fn recovery_wire_enable_restores_communications_at_ordinary_saturation() {
     dispatch(&server, request(60), source(4), None).await;
     observed(&mut started).await;
     assert!(
-        matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::Abort(a)) if a.invoke_id == 60 && a.abort_reason == AbortReason::OUT_OF_RESOURCES)
+        matches!(held_sends(&server).frames.lock().unwrap().last(), Some(Apdu::Abort(a)) if a.invoke_id == 60 && a.abort_reason == AbortReason::OUT_OF_RESOURCES)
     );
-    server.comm_state.store(1, Ordering::Release);
+    server.comm_state.set_for_test(DccState::DisableInitiation);
     inject(&tx, enable(61, None)).await; // Full NPDU/APDU ingress, different logical peer.
     observed(&mut started).await;
-    assert_eq!(server.comm_state.load(Ordering::Acquire), 0);
+    assert_eq!(server.comm_state.get(), DccState::Enable);
     assert!(
-        matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::SimpleAck(a)) if a.invoke_id == 61)
+        matches!(held_sends(&server).frames.lock().unwrap().last(), Some(Apdu::SimpleAck(a)) if a.invoke_id == 61)
     );
     assert_eq!(
         (
@@ -574,11 +574,8 @@ async fn recovery_protected_wire_exhaustion_duplicate_retry_and_abort_fallback()
     let (mut server, _tx, mut started) = fixture().await;
     for id in 0..4 {
         dispatch(&server, enable(id, None), source(id), None).await;
+        dispatch(&server, enable(id, None), source(id), None).await; // pending before first poll
         observed(&mut started).await;
-    }
-    // Exact duplicates are quiet even when their partition and peer are full.
-    for id in 0..4 {
-        dispatch(&server, enable(id, None), source(id), None).await;
     }
     assert_eq!(
         server
@@ -586,9 +583,13 @@ async fn recovery_protected_wire_exhaustion_duplicate_retry_and_abort_fallback()
             .confirmed_overloaded_total,
         0
     );
+    // Issued response ends duplicate ownership while its task still consumes
+    // the protected partition. Reuse therefore gets an ordinary capacity Abort.
+    dispatch(&server, enable(0, None), source(0), None).await;
+    observed(&mut started).await;
     for id in 4..13 {
         dispatch(&server, enable(id, None), source(id), None).await;
-        if id < 12 {
+        if id < 11 {
             observed(&mut started).await;
         }
     }
@@ -602,10 +603,10 @@ async fn recovery_protected_wire_exhaustion_duplicate_retry_and_abort_fallback()
             c.recovery_overloaded_total,
             c.confirmed_fallback_dropped_total
         ),
-        (9, 1)
+        (10, 2)
     );
-    assert!(server.network.transport().frames.lock().unwrap()[4..].iter().all(|p| matches!(p, Apdu::Abort(a) if a.abort_reason == AbortReason::OUT_OF_RESOURCES && a.sent_by_server)));
-    server.network.transport().release.notify_waiters();
+    assert!(held_sends(&server).frames.lock().unwrap()[4..].iter().all(|p| matches!(p, Apdu::Abort(a) if a.abort_reason == AbortReason::OUT_OF_RESOURCES && a.sent_by_server)));
+    held_sends(&server).release.notify_waiters();
     tokio::time::timeout(Duration::from_secs(2), async {
         while server.request_admission_counters().confirmed_active
             + server.request_admission_counters().abort_active
@@ -619,107 +620,10 @@ async fn recovery_protected_wire_exhaustion_duplicate_retry_and_abort_fallback()
     dispatch(&server, enable(12, None), source(12), None).await;
     observed(&mut started).await;
     assert!(
-        matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::SimpleAck(a)) if a.invoke_id == 12)
+        matches!(held_sends(&server).frames.lock().unwrap().last(), Some(Apdu::SimpleAck(a)) if a.invoke_id == 12)
     );
     server.stop().await.unwrap();
 }
 
-#[tokio::test]
-async fn recovery_classification_is_not_password_authorization() {
-    let (mut server, _tx, mut started) = fixture_with_config(
-        "recovery",
-        ServerConfig {
-            dcc_password: Some("required".into()),
-            dcc_policy: DccPolicy::RequirePassword,
-            ..Default::default()
-        },
-    )
-    .await;
-    server.comm_state.store(1, Ordering::Release);
-    for (id, password) in [(1, None), (2, Some("wrong"))] {
-        dispatch(&server, enable(id, password), source(id), None).await;
-        observed(&mut started).await;
-        assert_eq!(server.comm_state.load(Ordering::Acquire), 1);
-        assert!(
-            matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::Error(e)) if e.error_code == ErrorCode::PASSWORD_FAILURE)
-        );
-    }
-    assert_eq!(server.request_admission_counters().recovery_active, 2);
-    dispatch(&server, enable(3, Some("required")), source(3), None).await;
-    observed(&mut started).await;
-    assert_eq!(server.comm_state.load(Ordering::Acquire), 0);
-    server.stop().await.unwrap();
-}
-
-#[tokio::test]
-async fn recovery_noneligible_requests_cannot_borrow_and_password_capacity_precedes_handler() {
-    let (mut server, _tx, mut started) = fixture_with_config(
-        "recovery",
-        ServerConfig {
-            request_admission_policy: RequestAdmissionPolicy {
-                max_confirmed_in_flight: 2,
-                confirmed_recovery_reserve: 1,
-                ..Default::default()
-            },
-            dcc_password: Some("required".into()),
-            ..Default::default()
-        },
-    )
-    .await;
-    dispatch(&server, request(0), source(0), None).await;
-    observed(&mut started).await;
-    for (id, service, data) in [
-        (
-            1,
-            ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL,
-            &[0x19, 1][..],
-        ),
-        (
-            2,
-            ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL,
-            &[0x19, 2][..],
-        ),
-        (
-            3,
-            ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL,
-            &[0x19][..],
-        ),
-        (
-            4,
-            ConfirmedServiceChoice::REINITIALIZE_DEVICE,
-            &[0x09, 0][..],
-        ),
-    ] {
-        let Apdu::ConfirmedRequest(mut req) = request(id) else {
-            unreachable!()
-        };
-        req.service_choice = service;
-        req.service_request = Bytes::copy_from_slice(data);
-        dispatch(&server, Apdu::ConfirmedRequest(req), source(id), None).await;
-        observed(&mut started).await;
-        assert!(
-            matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::Abort(a)) if a.invoke_id == id)
-        );
-    }
-    assert_eq!(
-        server.request_admission_counters().recovery_admitted_total,
-        0
-    );
-    dispatch(&server, enable(5, None), source(5), None).await;
-    observed(&mut started).await;
-    assert!(
-        matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::Error(e)) if e.error_code == ErrorCode::PASSWORD_FAILURE)
-    );
-    dispatch(&server, enable(6, Some("wrong")), source(6), None).await;
-    observed(&mut started).await;
-    assert!(
-        matches!(server.network.transport().frames.lock().unwrap().last(), Some(Apdu::Abort(a)) if a.invoke_id == 6)
-    );
-    assert_eq!(
-        server
-            .request_admission_counters()
-            .recovery_overloaded_total,
-        1
-    );
-    server.stop().await.unwrap();
-}
+#[path = "recovery_password_tests.rs"]
+mod password;

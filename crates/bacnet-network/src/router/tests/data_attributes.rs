@@ -42,6 +42,7 @@ fn forward_unicast_preserves_data_attributes() {
         directly_connected: true,
         next_hop_mac: MacAddr::new(),
         last_seen: None,
+        last_used: None,
         reachability: crate::router_table::ReachabilityStatus::Reachable,
         busy_until: None,
         flap_count: 0,
@@ -124,7 +125,6 @@ fn forward_broadcast_preserves_data_attributes_on_each_output_port() {
             SendRequest::Broadcast {
                 npdu: data,
                 data_attributes: sent_attributes,
-                ..
             } => {
                 let decoded = decode_npdu(data).unwrap();
                 assert_eq!(decoded.destination.as_ref().unwrap().network, 0xFFFF);
@@ -162,7 +162,13 @@ async fn sc_to_sc_forwarding_preserves_data_attributes_as_data_options() {
         transport: ScTransport::new(ws_client_b, [0x02; 6]).with_device_uuid([1; 16]),
         network_number: 2000,
     };
-    let (mut router, _local_rx) = BACnetRouter::start(vec![port_a, port_b]).await.unwrap();
+    let StartedRouter {
+        mut router,
+        apdus: _local_rx,
+        ..
+    } = BACnetRouter::start(vec![port_a, port_b], RouterOptions::new())
+        .await
+        .unwrap();
     let ws_hub_a = accept_a.await.unwrap();
     let ws_hub_b = accept_b.await.unwrap();
 
@@ -233,10 +239,6 @@ async fn sc_to_sc_forwarding_preserves_data_attributes_as_data_options() {
     assert_eq!(msg.data_options[1].option_type, 31);
     assert!(!msg.data_options[1].must_understand);
     assert_eq!(msg.data_options[1].data, vec![0x12, 0x34, 0x56]);
-
-    let counters = router.port_counters();
-    assert_eq!(counters[0].forwarded_unicast, 0);
-    assert_eq!(counters[1].forwarded_unicast, 1);
 
     router.stop().await;
 }

@@ -70,18 +70,31 @@ async fn peer_admission_logical_identity_and_duplicate_fallback_matrix() {
         let Apdu::ConfirmedRequest(req) = request(1) else {
             unreachable!()
         };
-        let ConfirmedRequestAdmission::New(pending) =
-            tracker.begin(b"router-a", source.as_ref(), req.clone())
-        else {
+        let ConfirmedRequestAdmission::New(pending) = tracker.begin(
+            b"router-a",
+            source.as_ref(),
+            bacnet_transport::port::TransportProvenance::unverified(),
+            req.clone(),
+        ) else {
             panic!("new")
         };
         assert!(matches!(
-            tracker.begin(b"router-a", source.as_ref(), req.clone()),
+            tracker.begin(
+                b"router-a",
+                source.as_ref(),
+                bacnet_transport::port::TransportProvenance::unverified(),
+                req.clone()
+            ),
             ConfirmedRequestAdmission::Duplicate
         ));
         assert_eq!(
             matches!(
-                tracker.begin(b"router-b", source.as_ref(), req),
+                tracker.begin(
+                    b"router-b",
+                    source.as_ref(),
+                    bacnet_transport::port::TransportProvenance::unverified(),
+                    req
+                ),
                 ConfirmedRequestAdmission::Duplicate
             ),
             valid
@@ -240,8 +253,8 @@ async fn peer_admission_duplicates_denied_retry_and_shared_eight_abort_workers()
     )
     .await;
     dispatch(&server, request(1), None, None).await;
+    dispatch(&server, request(1), None, None).await; // pending before first poll
     observed(&mut started).await;
-    dispatch(&server, request(1), None, None).await;
     assert_eq!(
         server
             .request_admission_counters()
@@ -268,12 +281,12 @@ async fn peer_admission_duplicates_denied_retry_and_shared_eight_abort_workers()
     );
     assert_eq!(server.request_tasks.peer_entries(), [1, 0, 0]);
     assert!(started.try_recv().is_err());
-    server.network.transport().release.notify_waiters();
+    held_sends(&server).release.notify_waiters();
     wait_reaped(&server).await;
     assert_eq!(server.request_tasks.peer_entries(), [0; 3]);
     dispatch(&server, request(10), None, None).await;
     observed(&mut started).await;
-    dispatch(&server, request(1), None, None).await; // completed reuse still obeys peer cap
+    dispatch(&server, request(1), None, None).await; // new post-issuance operation at peer cap
     assert_eq!(
         server.request_admission_counters().confirmed_admitted_total,
         2
@@ -320,19 +333,10 @@ async fn peer_admission_direct_routed_reply_abort_fields_unchanged() {
                 dispatch(&server, request(2), source.clone(), None).await;
                 observed(&mut started).await;
                 assert_eq!(
-                    server
-                        .network
-                        .transport()
-                        .routes
-                        .lock()
-                        .unwrap()
-                        .last()
-                        .unwrap(),
+                    held_sends(&server).routes.lock().unwrap().last().unwrap(),
                     &(source.clone(), MacAddr::from_slice(&[1]))
                 );
-                server
-                    .network
-                    .transport()
+                held_sends(&server)
                     .frames
                     .lock()
                     .unwrap()
@@ -369,7 +373,7 @@ async fn peer_admission_positive_validation_generic_bip_and_tiny_global() {
             assert!(policy.validate().is_err());
             let started = Arc::new(AtomicBool::new(false));
             let error = BACnetServer::generic_builder()
-                .transport(NeverStart(Arc::clone(&started)))
+                .transport(never_start(&started))
                 .request_admission_policy(policy)
                 .build()
                 .await

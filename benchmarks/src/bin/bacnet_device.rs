@@ -1,6 +1,7 @@
 //! Configurable BACnet device for Docker stress topology.
 //!
 //! Supports BIP and SC transports. Creates a server with N AnalogInput objects.
+#![allow(clippy::print_stdout, clippy::print_stderr)] // benchmark binaries report progress and results on the console
 
 use std::net::Ipv4Addr;
 
@@ -156,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 transport.register_as_foreign_device(ForeignDeviceConfig {
                     bbmd_ip,
                     bbmd_port,
+                    renewal_interval: None,
                     ttl: args.foreign_ttl,
                 });
 

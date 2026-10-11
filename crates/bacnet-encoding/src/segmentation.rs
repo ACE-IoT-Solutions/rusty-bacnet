@@ -1,10 +1,13 @@
 //! Segmentation: split and reassemble large APDU payloads.
 //!
-//! Per ASHRAE 135-2020 Clause 9, segmented messages use 8-bit sequence
-//! numbers with windowed flow control. This module provides the basic
-//! payload splitting and reassembly primitives.
+//! Segmented messages carry 8-bit sequence numbers (ASHRAE 135-2020 Clause
+//! 5.2) and move under windowed flow control (Clause 5.3). This module
+//! provides the basic payload splitting and reassembly primitives.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
+use alloc::collections::BTreeMap;
 use bacnet_types::error::Error;
 use bytes::Bytes;
 
@@ -103,7 +106,7 @@ impl SegmentReceiver {
 
     /// Store a received segment.
     ///
-    /// Returns an error if the segment exceeds [`MAX_SEGMENT_SIZE`](Self::MAX_SEGMENT_SIZE).
+    /// Returns an error if the segment exceeds `MAX_SEGMENT_SIZE`.
     pub fn receive(&mut self, sequence_number: u8, data: Bytes) -> Result<(), Error> {
         if data.len() > Self::MAX_SEGMENT_SIZE {
             return Err(Error::Segmentation(format!(

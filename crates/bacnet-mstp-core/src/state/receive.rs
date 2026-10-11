@@ -28,6 +28,95 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         false
     }
 
+    /// Push one octet, then drain the decoder with empty pushes until it needs
+    /// more input, as its stream protocol asks, acting on each frame and each
+    /// dropped candidate on the way.
+    pub(super) fn decode_octet(&mut self, byte: u8, now: Instant) -> Result<(), CoreError> {
+        let octet = [byte];
+        let mut input: &[u8] = &octet;
+        loop {
+            let mut frame = None;
+            let mut dropped = None;
+            match self.decoder.push_slice(input) {
+                DecodeEvent::NeedMore => return Ok(()),
+                DecodeEvent::Invalid { .. } => {}
+                DecodeEvent::Frame { frame: decoded, .. } => {
+                    frame = Some(Self::copy_frame(decoded))
+                }
+                DecodeEvent::ExtendedFrame { frame: decoded, .. } => {
+                    if NPDU < MAX_EXTENDED_MPDU_DATA || decoded.data.len() > NPDU {
+                        dropped = Some((
+                            FrameError::ExtendedPayloadOutOfRange {
+                                length: decoded.data.len(),
+                                minimum: MIN_EXTENDED_MPDU_DATA,
+                                maximum: NPDU,
+                            },
+                            Some(decoded.header.destination),
+                        ));
+                    } else {
+                        frame = Some(Self::copy_extended_frame(decoded));
+                    }
+                }
+                DecodeEvent::Malformed {
+                    error, destination, ..
+                } => dropped = Some((error, destination)),
+                // Only storage too small to hold a header refuses one octet.
+                DecodeEvent::Error(error) => dropped = Some((error, None)),
+            }
+            input = &[];
+            if let Some(frame) = frame {
+                self.process_owned_frame(frame, now)?;
+            }
+            if let Some((error, destination)) = dropped {
+                if self.dropped_candidate_is_invalid(error, destination) {
+                    self.counters.record_parser_error();
+                    self.invalid_frame_event(now)?;
+                }
+            }
+        }
+    }
+
+    /// Whether a candidate the decoder dropped is an invalid frame for this
+    /// station, as the receive state machine of Clause 9.5.4 would see it.
+    ///
+    /// A header that fails the Clause 9.5.8 checks counts wherever the frame
+    /// was going. Trouble found past the header (a length beyond this
+    /// station's buffer, an encoding it can't take, a bad data CRC) counts
+    /// only on a frame for this station or broadcast (Clause 9.5.4.4); a frame
+    /// for another station is skipped without looking at its data.
+    ///
+    /// The codec refuses a COBS-encoded type before it looks at the source or
+    /// the length, so a COBS header with source 255 or a Length outside the
+    /// COBS range, which Clause 9.5.8 rejects, looks the same as a good one and
+    /// is skipped when it is for another station.
+    fn dropped_candidate_is_invalid(&self, error: FrameError, destination: Option<u8>) -> bool {
+        match error {
+            FrameError::HeaderCrcMismatch
+            | FrameError::BroadcastSource
+            | FrameError::Oversize { .. } => true,
+            // No destination means the header never completed, which the
+            // storage `new` accepts rules out; count it to be safe.
+            FrameError::FrameTooLong { .. }
+            | FrameError::UnsupportedCobsFrame { .. }
+            | FrameError::DataCrcMismatch { .. } => destination
+                .is_none_or(|address| address == self.config.station || address == BROADCAST_MAC),
+            // The stream decoder reports none of these for a dropped
+            // candidate; a refused octet (BufferExhausted) is lost input.
+            FrameError::TooShort { .. }
+            | FrameError::InvalidPreamble { .. }
+            | FrameError::UnexpectedData { .. }
+            | FrameError::MissingVendorId { .. }
+            | FrameError::Truncated { .. }
+            | FrameError::BufferExhausted { .. }
+            | FrameError::ExtendedLengthOutOfRange { .. }
+            | FrameError::ExtendedTruncated { .. }
+            | FrameError::ExtendedPayloadOutOfRange { .. }
+            | FrameError::ExtendedCobs { .. }
+            | FrameError::ExtendedCrcLength { .. }
+            | FrameError::ExtendedCrcMismatch => true,
+        }
+    }
+
     pub(super) fn copy_frame(frame: Frame<'_>) -> OwnedFrame<NPDU> {
         let mut data = [0; NPDU];
         data[..frame.data.len()].copy_from_slice(frame.data);
@@ -50,7 +139,6 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
 
     pub(super) fn invalid_frame_event(&mut self, now: Instant) -> Result<(), CoreError> {
         if self.state == MasterState::WaitForReply {
-            self.expected_reply_source = None;
             self.set_state(MasterState::DoneWithToken);
             self.drive_token(now)?;
         } else if self.state == MasterState::PollForMaster {
@@ -65,7 +153,8 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         now: Instant,
     ) -> Result<(), CoreError> {
         self.counters.record_frame_received();
-        if self.pending_request.is_some() {
+        if self.pending_request.is_some() || self.state == MasterState::AnswerDataRequest {
+            self.frame_while_answering(&frame);
             return Ok(());
         }
         // A complete valid frame proves that another station began using the
@@ -97,11 +186,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         }
         match frame.header.frame_type {
             FrameType::Token if frame.header.destination == self.config.station => {
-                self.sole_master = false;
-                self.frame_count = 0;
-                self.retry_token_count = 0;
-                self.set_state(MasterState::UseToken);
-                self.drive_token(now)
+                self.use_received_token(now)
             }
             FrameType::PollForMaster if frame.header.destination == self.config.station => self
                 .queue_frame(
@@ -111,65 +196,23 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
                     PostTransmit::Idle,
                     now,
                 ),
-            FrameType::BACnetDataNotExpectingReply
+            FrameType::BACnetDataNotExpectingReply | FrameType::ExtendedDataNotExpectingReply
                 if frame.header.destination == self.config.station
                     || frame.header.destination == BROADCAST_MAC =>
             {
                 self.deliver(&frame, None);
                 Ok(())
             }
-            FrameType::ExtendedDataNotExpectingReply
-                if frame.header.destination == self.config.station
-                    || frame.header.destination == BROADCAST_MAC =>
+            FrameType::BACnetDataExpectingReply | FrameType::ExtendedDataExpectingReply
+                if frame.header.destination == BROADCAST_MAC =>
             {
                 self.deliver(&frame, None);
                 Ok(())
             }
-            FrameType::BACnetDataExpectingReply if frame.header.destination == BROADCAST_MAC => {
-                self.deliver(&frame, None);
-                Ok(())
-            }
-            FrameType::ExtendedDataExpectingReply if frame.header.destination == BROADCAST_MAC => {
-                self.deliver(&frame, None);
-                Ok(())
-            }
-            FrameType::BACnetDataExpectingReply
+            FrameType::BACnetDataExpectingReply | FrameType::ExtendedDataExpectingReply
                 if frame.header.destination == self.config.station =>
             {
-                let id = RequestId::new(self.next_request_generation);
-                self.next_request_generation = self.next_request_generation.wrapping_add(1);
-                let deadline = now + self.config.t_reply_delay;
-                self.pending_request = Some(PendingRequest {
-                    id,
-                    source: frame.header.source,
-                    deadline,
-                });
-                self.set_state(MasterState::AnswerDataRequest);
-                self.protocol_deadline = Some(deadline);
-                if self.deliver(&frame, Some(id)) {
-                    Ok(())
-                } else {
-                    self.complete_request(id, ReplyDecision::Postponed, now)
-                }
-            }
-            FrameType::ExtendedDataExpectingReply
-                if frame.header.destination == self.config.station =>
-            {
-                let id = RequestId::new(self.next_request_generation);
-                self.next_request_generation = self.next_request_generation.wrapping_add(1);
-                let deadline = now + self.config.t_reply_delay;
-                self.pending_request = Some(PendingRequest {
-                    id,
-                    source: frame.header.source,
-                    deadline,
-                });
-                self.set_state(MasterState::AnswerDataRequest);
-                self.protocol_deadline = Some(deadline);
-                if self.deliver(&frame, Some(id)) {
-                    Ok(())
-                } else {
-                    self.complete_request(id, ReplyDecision::Postponed, now)
-                }
+                self.begin_request(&frame, now)
             }
             FrameType::TestRequest if frame.header.destination == self.config.station => self
                 .queue_frame(
@@ -183,20 +226,79 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         }
     }
 
+    /// Take up a Token addressed to this station (Clause 9.5.6.2).
+    pub(super) fn use_received_token(&mut self, now: Instant) -> Result<(), CoreError> {
+        self.sole_master = false;
+        self.frame_count = 0;
+        self.retry_token_count = 0;
+        self.set_state(MasterState::UseToken);
+        self.drive_token(now)
+    }
+
+    /// A valid frame that completes while this station answers a request.
+    ///
+    /// No transition out of ANSWER_DATA_REQUEST consumes a received frame
+    /// (Clause 9.5.6.9), so the standard leaves it pending for IDLE to act on
+    /// once the reply is out (Clause 9.5.6.2). The core keeps no second frame
+    /// buffer for that, and never lets the frame displace the pending reply:
+    ///
+    /// - Data that needs no reply from this station is delivered at once.
+    /// - A Token for this station is remembered and taken up on the way to
+    ///   IDLE.
+    /// - A Poll For Master, data request or Test_Request for this station is
+    ///   dropped and counted in [`MstpCounters::discarded_while_answering`]:
+    ///   an answer after this station's own reply would come too late, and
+    ///   could collide with the station that asked.
+    ///
+    /// Any frame but delivered data replaces a remembered Token, as a newer
+    /// frame replaces a pending one in the receive state machine.
+    fn frame_while_answering(&mut self, frame: &OwnedFrame<NPDU>) {
+        let header = frame.header;
+        let for_us = header.destination == self.config.station;
+        let broadcast = header.destination == BROADCAST_MAC;
+        match header.frame_type {
+            FrameType::BACnetDataNotExpectingReply | FrameType::ExtendedDataNotExpectingReply
+                if for_us || broadcast =>
+            {
+                self.deliver(frame, None);
+            }
+            FrameType::BACnetDataExpectingReply | FrameType::ExtendedDataExpectingReply
+                if broadcast =>
+            {
+                self.deliver(frame, None);
+            }
+            FrameType::Token if for_us => self.pending_token = true,
+            FrameType::PollForMaster
+            | FrameType::BACnetDataExpectingReply
+            | FrameType::ExtendedDataExpectingReply
+            | FrameType::TestRequest
+                if for_us =>
+            {
+                self.pending_token = false;
+                self.counters.record_discarded_while_answering();
+            }
+            _ => self.pending_token = false,
+        }
+    }
+
+    /// Clause 9.5.6.4 takes any reply-type frame addressed to this station as
+    /// the answer, whichever station sent it; the source is not compared with
+    /// the station that was asked.
     fn process_wait_for_reply(
         &mut self,
         frame: OwnedFrame<NPDU>,
         now: Instant,
     ) -> Result<(), CoreError> {
+        // A Test_Response ends the wait too. It is not delivered yet: the
+        // core has no indication for test frames.
         let is_reply = frame.header.destination == self.config.station
-            && self.expected_reply_source == Some(frame.header.source)
             && matches!(
                 frame.header.frame_type,
                 FrameType::BACnetDataNotExpectingReply
                     | FrameType::ExtendedDataNotExpectingReply
+                    | FrameType::TestResponse
                     | FrameType::ReplyPostponed
             );
-        self.expected_reply_source = None;
         if !is_reply {
             self.set_state(MasterState::Idle);
             self.protocol_deadline = Some(now + self.config.t_no_token);
@@ -212,7 +314,11 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         self.drive_token(now)
     }
 
-    fn deliver(&mut self, frame: &OwnedFrame<NPDU>, request_id: Option<RequestId>) -> bool {
+    pub(super) fn deliver(
+        &mut self,
+        frame: &OwnedFrame<NPDU>,
+        request_id: Option<RequestId>,
+    ) -> bool {
         match self.actions.enqueue_delivery(
             frame.header.source,
             frame.header.destination,

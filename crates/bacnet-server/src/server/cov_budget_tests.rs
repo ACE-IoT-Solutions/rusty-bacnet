@@ -1,62 +1,17 @@
 use super::*;
 use crate::cov::AtomicCovCounters;
+use crate::server::cov_notifications_tests::recording_transport;
+use crate::server::test_transport::TestTransport;
 use bacnet_encoding::apdu::decode_apdu;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::life_safety::LifeSafetyPointObject;
-use bacnet_services::common::PropertyReference;
 use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
 };
+use bacnet_types::constructed::PropertyReference;
 use bacnet_types::enums::ObjectType;
-use bytes::Bytes;
-use std::sync::{Arc as StdArc, Mutex as StdMutex};
-use tokio::sync::mpsc;
-
-#[derive(Clone, Default)]
-struct RecordingTransport {
-    sent_unicast: StdArc<StdMutex<Vec<(Bytes, MacAddr)>>>,
-    local_mac: Vec<u8>,
-}
-
-impl RecordingTransport {
-    fn new(sent_unicast: StdArc<StdMutex<Vec<(Bytes, MacAddr)>>>) -> Self {
-        Self {
-            sent_unicast,
-            local_mac: vec![127, 0, 0, 1, 0xBA, 0xC0],
-        }
-    }
-}
-
-impl TransportPort for RecordingTransport {
-    async fn start(
-        &mut self,
-    ) -> Result<mpsc::Receiver<bacnet_transport::port::ReceivedNpdu>, Error> {
-        let (_tx, rx) = mpsc::channel(1);
-        Ok(rx)
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.sent_unicast
-            .lock()
-            .unwrap()
-            .push((Bytes::copy_from_slice(npdu), MacAddr::from_slice(mac)));
-        Ok(())
-    }
-
-    async fn send_broadcast(&self, _npdu: &[u8]) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        &self.local_mac
-    }
-}
 
 fn test_db_with_ao() -> (Arc<RwLock<ObjectDatabase>>, ObjectIdentifier) {
     let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1234).unwrap();
@@ -77,17 +32,17 @@ fn test_db_with_ao() -> (Arc<RwLock<ObjectDatabase>>, ObjectIdentifier) {
 
 #[tokio::test]
 async fn in_flight_failure_does_not_consume_event_budget() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
+    let (transport, _sent) = recording_transport();
     let (db, ao_oid) = test_db_with_ao();
     let policy = CovPolicy {
         max_notifications_per_event: 2,
         max_confirmed_in_flight_per_peer: 1,
         ..Default::default()
     };
-    let config = ServerConfig {
+    let config = Arc::new(ServerConfig {
         cov_policy: policy,
         ..ServerConfig::default()
-    };
+    });
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::with_policy(
         config.cov_policy.clone(),
         Arc::new(AtomicCovCounters::default()),
@@ -101,35 +56,37 @@ async fn in_flight_failure_does_not_consume_event_budget() {
         let mut table = cov_table.write().await;
         // Peer 1 has 3 confirmed subscriptions (max in-flight per peer is 1)
         for i in 1..=3 {
-            table.subscribe(CovSubscription {
-                subscriber_mac: peer1_mac.clone(),
-                subscriber_network: None,
-                subscriber_process_identifier: i,
-                monitored_object_identifier: ao_oid,
-                issue_confirmed_notifications: true,
-                expires_at: None,
-                last_notified_value: None,
-                monitored_property: None,
-                monitored_property_array_index: None,
-                cov_increment: None,
-                notification_kind: CovNotificationKind::Single,
-                timestamped: false,
-            });
+            table
+                .subscribe(CovSubscription {
+                    subscriber_mac: peer1_mac.clone(),
+                    subscriber_network: None,
+                    subscriber_process_identifier: i,
+                    monitored_object_identifier: ao_oid,
+                    issue_confirmed_notifications: true,
+                    expires_at: None,
+                    last_notified_observation: None,
+                    monitored_property: None,
+                    monitored_property_array_index: None,
+                    cov_increment: None,
+                    notification_kind: CovNotificationKind::Single,
+                    timestamped: false,
+                })
+                .unwrap();
         }
     }
 
-    let network = Arc::new(NetworkLayer::new(RecordingTransport::new(StdArc::clone(
-        &sent,
-    ))));
+    let network = Arc::new(NetworkLayer::new(transport));
 
-    BACnetServer::<RecordingTransport>::fire_cov_notifications(
-        &db,
-        &network,
-        &cov_table,
-        &cov_in_flight,
-        &transactions,
-        &Arc::new(AtomicU8::new(0)),
-        &config,
+    BACnetServer::<TestTransport>::fire_cov_notifications(
+        &crate::server::cov_notify_context::CovNotifyContext {
+            db: &db,
+            network: &network,
+            cov_table: &cov_table,
+            cov_in_flight: &cov_in_flight,
+            notification_transactions: &transactions,
+            comm_state: &Arc::new(CommState::default()),
+            config: &config,
+        },
         &ao_oid,
     )
     .await;
@@ -145,16 +102,16 @@ async fn in_flight_failure_does_not_consume_event_budget() {
 
 #[tokio::test]
 async fn fair_distribution_between_single_and_multiple_notifications() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
+    let (transport, sent) = recording_transport();
     let (db, ao_oid) = test_db_with_ao();
     let policy = CovPolicy {
         max_notifications_per_event: 2,
         ..Default::default()
     };
-    let config = ServerConfig {
+    let config = Arc::new(ServerConfig {
         cov_policy: policy,
         ..ServerConfig::default()
-    };
+    });
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::with_policy(
         config.cov_policy.clone(),
         Arc::new(AtomicCovCounters::default()),
@@ -166,62 +123,69 @@ async fn fair_distribution_between_single_and_multiple_notifications() {
         let mut table = cov_table.write().await;
         // 2 Single subscriptions
         for i in 1..=2 {
-            table.subscribe(CovSubscription {
-                subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i]),
-                subscriber_network: None,
-                subscriber_process_identifier: i as u32,
-                monitored_object_identifier: ao_oid,
-                issue_confirmed_notifications: false,
-                expires_at: None,
-                last_notified_value: None,
-                monitored_property: None,
-                monitored_property_array_index: None,
-                cov_increment: None,
-                notification_kind: CovNotificationKind::Single,
-                timestamped: false,
-            });
+            table
+                .subscribe(CovSubscription {
+                    subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i]),
+                    subscriber_network: None,
+                    subscriber_process_identifier: i as u32,
+                    monitored_object_identifier: ao_oid,
+                    issue_confirmed_notifications: false,
+                    expires_at: None,
+                    last_notified_observation: None,
+                    monitored_property: None,
+                    monitored_property_array_index: None,
+                    cov_increment: None,
+                    notification_kind: CovNotificationKind::Single,
+                    timestamped: false,
+                })
+                .unwrap();
         }
         // 2 Multiple subscriptions for different peers (2 groups)
         for i in 3..=4 {
-            table.subscribe(CovSubscription {
-                subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i]),
-                subscriber_network: None,
-                subscriber_process_identifier: i as u32,
-                monitored_object_identifier: ao_oid,
-                issue_confirmed_notifications: false,
-                expires_at: None,
-                last_notified_value: None,
-                monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
-                monitored_property_array_index: None,
-                cov_increment: None,
-                notification_kind: CovNotificationKind::Multiple,
-                timestamped: false,
-            });
+            table
+                .admit_for_test(
+                    CovSubscription {
+                        subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i]),
+                        subscriber_network: None,
+                        subscriber_process_identifier: i as u32,
+                        monitored_object_identifier: ao_oid,
+                        issue_confirmed_notifications: false,
+                        expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+                        last_notified_observation: None,
+                        monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
+                        monitored_property_array_index: None,
+                        cov_increment: None,
+                        notification_kind: CovNotificationKind::Multiple,
+                        timestamped: false,
+                    },
+                    0,
+                )
+                .unwrap();
         }
     }
 
-    let network = Arc::new(NetworkLayer::new(RecordingTransport::new(StdArc::clone(
-        &sent,
-    ))));
+    let network = Arc::new(NetworkLayer::new(transport));
 
-    BACnetServer::<RecordingTransport>::fire_cov_notifications(
-        &db,
-        &network,
-        &cov_table,
-        &cov_in_flight,
-        &transactions,
-        &Arc::new(AtomicU8::new(0)),
-        &config,
+    BACnetServer::<TestTransport>::fire_cov_notifications(
+        &crate::server::cov_notify_context::CovNotifyContext {
+            db: &db,
+            network: &network,
+            cov_table: &cov_table,
+            cov_in_flight: &cov_in_flight,
+            notification_transactions: &transactions,
+            comm_state: &Arc::new(CommState::default()),
+            config: &config,
+        },
         &ao_oid,
     )
     .await;
 
-    let sent_frames = sent.lock().unwrap();
+    let sent_frames = sent.lock();
     assert_eq!(sent_frames.len(), 2);
     let mut saw_single = false;
     let mut saw_multiple = false;
-    for (frame, _) in sent_frames.iter() {
-        let npdu = decode_npdu(frame.clone()).unwrap();
+    for frame in sent_frames.iter() {
+        let npdu = decode_npdu(frame.npdu.clone()).unwrap();
         if let Apdu::UnconfirmedRequest(req) = decode_apdu(npdu.payload).unwrap() {
             if req.service_choice == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION {
                 saw_single = true;
@@ -238,7 +202,7 @@ async fn fair_distribution_between_single_and_multiple_notifications() {
 
 #[tokio::test]
 async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
+    let (transport, _sent) = recording_transport();
     let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1234).unwrap();
     let ao_oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     let mut db = ObjectDatabase::new();
@@ -259,7 +223,7 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
     };
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(transport)
         .cov_policy(policy)
         .build()
         .await
@@ -270,20 +234,22 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
     // Pre-populate 1 expired subscription for this peer
     {
         let mut table = server.cov_table.write().await;
-        table.subscribe(CovSubscription {
-            subscriber_mac: MacAddr::from_slice(&peer),
-            subscriber_network: None,
-            subscriber_process_identifier: 1,
-            monitored_object_identifier: ao_oid,
-            issue_confirmed_notifications: false,
-            expires_at: Some(Instant::now() - Duration::from_secs(1)),
-            last_notified_value: None,
-            monitored_property: None,
-            monitored_property_array_index: None,
-            cov_increment: None,
-            notification_kind: CovNotificationKind::Single,
-            timestamped: false,
-        });
+        table
+            .subscribe(CovSubscription {
+                subscriber_mac: MacAddr::from_slice(&peer),
+                subscriber_network: None,
+                subscriber_process_identifier: 1,
+                monitored_object_identifier: ao_oid,
+                issue_confirmed_notifications: false,
+                expires_at: Some(Instant::now() - Duration::from_secs(1)),
+                last_notified_observation: None,
+                monitored_property: None,
+                monitored_property_array_index: None,
+                cov_increment: None,
+                notification_kind: CovNotificationKind::Single,
+                timestamped: false,
+            })
+            .unwrap();
     }
 
     // Now send a subscribe request for a different process ID
@@ -294,7 +260,7 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
         lifetime: Some(300),
     };
     let mut buf = bytes::BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
     let mut table = server.cov_table.write().await;
     let db = server.db.read().await;
     let res = crate::handlers::handle_subscribe_cov(&mut table, &db, &peer, &buf);
@@ -307,7 +273,7 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
 
 #[tokio::test]
 async fn expired_subscription_purged_before_cov_property_multiple_admission() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
+    let (transport, _sent) = recording_transport();
     let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1234).unwrap();
     let ao_oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     let mut db = ObjectDatabase::new();
@@ -328,7 +294,7 @@ async fn expired_subscription_purged_before_cov_property_multiple_admission() {
     };
     let server = BACnetServer::generic_builder()
         .database(db)
-        .transport(RecordingTransport::new(StdArc::clone(&sent)))
+        .transport(transport)
         .cov_policy(policy)
         .build()
         .await
@@ -339,26 +305,32 @@ async fn expired_subscription_purged_before_cov_property_multiple_admission() {
     // Pre-populate 1 expired subscription for this peer matching PRESENT_VALUE
     {
         let mut table = server.cov_table.write().await;
-        table.subscribe(CovSubscription {
-            subscriber_mac: MacAddr::from_slice(&peer),
-            subscriber_network: None,
-            subscriber_process_identifier: 1,
-            monitored_object_identifier: ao_oid,
-            issue_confirmed_notifications: false,
-            expires_at: Some(Instant::now() - Duration::from_secs(1)),
-            last_notified_value: None,
-            monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
-            monitored_property_array_index: None,
-            cov_increment: None,
-            notification_kind: CovNotificationKind::Multiple,
-            timestamped: false,
-        });
+        table
+            .admit_for_test(
+                CovSubscription {
+                    subscriber_mac: MacAddr::from_slice(&peer),
+                    subscriber_network: None,
+                    subscriber_process_identifier: 1,
+                    monitored_object_identifier: ao_oid,
+                    issue_confirmed_notifications: false,
+                    expires_at: Some(Instant::now() - Duration::from_secs(1)),
+                    last_notified_observation: None,
+                    monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
+                    monitored_property_array_index: None,
+                    cov_increment: None,
+                    notification_kind: CovNotificationKind::Multiple,
+                    timestamped: false,
+                },
+                0,
+            )
+            .unwrap();
     }
 
     // Send a SubscribeCOVPropertyMultiple request for 2 properties:
     // PRESENT_VALUE (matching the expired key) and STATUS_FLAGS.
-    // Expired subscriptions must be purged before evaluating new keys,
-    // so both properties are counted as new (2), which exceeds max_subscriptions_per_peer (1).
+    // Expired subscriptions must be purged before evaluating new keys, so
+    // PRESENT_VALUE is new and takes the one slot of
+    // max_subscriptions_per_peer, and STATUS_FLAGS is past it.
     let request = SubscribeCOVPropertyMultipleRequest {
         subscriber_process_identifier: 1,
         issue_confirmed_notifications: false,
@@ -387,29 +359,34 @@ async fn expired_subscription_purged_before_cov_property_multiple_admission() {
         }],
     };
     let mut buf = bytes::BytesMut::new();
-    request.encode(&mut buf);
+    request.encode(&mut buf).unwrap();
 
     let mut table = server.cov_table.write().await;
     let db = server.db.read().await;
     let res = crate::handlers::handle_subscribe_cov_property_multiple_with_initial(
         &mut table, &db, &peer, &buf,
     );
-    assert!(
-        res.is_err(),
-        "expected admission rejection when new keys exceed peer quota, got {res:?}"
-    );
-    // Expired subscription was purged and over-quota request rejected
-    assert_eq!(table.len(), 0);
+    let Err(refusal) = res else {
+        panic!("expected admission rejection when new keys exceed peer quota, got {res:?}");
+    };
+    // The expired subscription was purged, so the request's Present_Value is
+    // a new one that fits and Status_Flags is the reference refused.
+    assert_eq!(refusal.refused, Some(1));
+    assert_eq!(refusal.committed.len(), 1);
+    assert_eq!(table.len(), 1);
+    let counters = table.counters().snapshot();
+    assert_eq!(counters.subscriptions_purged, 1);
+    assert_eq!(counters.subscriptions_created, 2);
 }
 
 #[tokio::test]
 async fn unlimited_policy_half_cap_computation_does_not_overflow() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
+    let (transport, sent) = recording_transport();
     let (db, ao_oid) = test_db_with_ao();
-    let config = ServerConfig {
+    let config = Arc::new(ServerConfig {
         cov_policy: CovPolicy::unlimited(),
         ..ServerConfig::default()
-    };
+    });
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::with_policy(
         config.cov_policy.clone(),
         Arc::new(AtomicCovCounters::default()),
@@ -419,61 +396,68 @@ async fn unlimited_policy_half_cap_computation_does_not_overflow() {
 
     {
         let mut table = cov_table.write().await;
-        table.subscribe(CovSubscription {
-            subscriber_mac: MacAddr::from_slice(&[10, 0, 0, 1]),
-            subscriber_network: None,
-            subscriber_process_identifier: 1,
-            monitored_object_identifier: ao_oid,
-            issue_confirmed_notifications: false,
-            expires_at: None,
-            last_notified_value: None,
-            monitored_property: None,
-            monitored_property_array_index: None,
-            cov_increment: None,
-            notification_kind: CovNotificationKind::Single,
-            timestamped: false,
-        });
-        table.subscribe(CovSubscription {
-            subscriber_mac: MacAddr::from_slice(&[10, 0, 0, 2]),
-            subscriber_network: None,
-            subscriber_process_identifier: 2,
-            monitored_object_identifier: ao_oid,
-            issue_confirmed_notifications: false,
-            expires_at: None,
-            last_notified_value: None,
-            monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
-            monitored_property_array_index: None,
-            cov_increment: None,
-            notification_kind: CovNotificationKind::Multiple,
-            timestamped: false,
-        });
+        table
+            .subscribe(CovSubscription {
+                subscriber_mac: MacAddr::from_slice(&[10, 0, 0, 1]),
+                subscriber_network: None,
+                subscriber_process_identifier: 1,
+                monitored_object_identifier: ao_oid,
+                issue_confirmed_notifications: false,
+                expires_at: None,
+                last_notified_observation: None,
+                monitored_property: None,
+                monitored_property_array_index: None,
+                cov_increment: None,
+                notification_kind: CovNotificationKind::Single,
+                timestamped: false,
+            })
+            .unwrap();
+        table
+            .admit_for_test(
+                CovSubscription {
+                    subscriber_mac: MacAddr::from_slice(&[10, 0, 0, 2]),
+                    subscriber_network: None,
+                    subscriber_process_identifier: 2,
+                    monitored_object_identifier: ao_oid,
+                    issue_confirmed_notifications: false,
+                    expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+                    last_notified_observation: None,
+                    monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
+                    monitored_property_array_index: None,
+                    cov_increment: None,
+                    notification_kind: CovNotificationKind::Multiple,
+                    timestamped: false,
+                },
+                0,
+            )
+            .unwrap();
     }
 
-    let network = Arc::new(NetworkLayer::new(RecordingTransport::new(StdArc::clone(
-        &sent,
-    ))));
+    let network = Arc::new(NetworkLayer::new(transport));
 
     // Under CovPolicy::unlimited(), remaining_notifications is usize::MAX.
     // The previous computation `(remaining_notifications + 1) / 2` panicked on overflow.
     // This must complete without panicking and dispatch both families.
-    BACnetServer::<RecordingTransport>::fire_cov_notifications(
-        &db,
-        &network,
-        &cov_table,
-        &cov_in_flight,
-        &transactions,
-        &Arc::new(AtomicU8::new(0)),
-        &config,
+    BACnetServer::<TestTransport>::fire_cov_notifications(
+        &crate::server::cov_notify_context::CovNotifyContext {
+            db: &db,
+            network: &network,
+            cov_table: &cov_table,
+            cov_in_flight: &cov_in_flight,
+            notification_transactions: &transactions,
+            comm_state: &Arc::new(CommState::default()),
+            config: &config,
+        },
         &ao_oid,
     )
     .await;
 
-    let sent_frames = sent.lock().unwrap();
+    let sent_frames = sent.lock();
     assert_eq!(sent_frames.len(), 2);
     let mut saw_single = false;
     let mut saw_multiple = false;
-    for (frame, _) in sent_frames.iter() {
-        let npdu = decode_npdu(frame.clone()).unwrap();
+    for frame in sent_frames.iter() {
+        let npdu = decode_npdu(frame.npdu.clone()).unwrap();
         if let Apdu::UnconfirmedRequest(req) = decode_apdu(npdu.payload).unwrap() {
             if req.service_choice == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION {
                 saw_single = true;
@@ -496,7 +480,7 @@ async fn unlimited_policy_half_cap_computation_does_not_overflow() {
 
 #[tokio::test]
 async fn life_safety_fair_budget_partitioning_between_single_and_multiple() {
-    let sent = StdArc::new(StdMutex::new(Vec::new()));
+    let (transport, sent) = recording_transport();
     let point_oid = ObjectIdentifier::new(ObjectType::LIFE_SAFETY_POINT, 1).unwrap();
     let mut db = ObjectDatabase::new();
     let lsp = LifeSafetyPointObject::new(1, "point").unwrap();
@@ -507,10 +491,10 @@ async fn life_safety_fair_budget_partitioning_between_single_and_multiple() {
         max_notifications_per_event: 2,
         ..Default::default()
     };
-    let config = ServerConfig {
+    let config = Arc::new(ServerConfig {
         cov_policy: policy,
         ..ServerConfig::default()
-    };
+    });
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::with_policy(
         config.cov_policy.clone(),
         Arc::new(AtomicCovCounters::default()),
@@ -522,63 +506,70 @@ async fn life_safety_fair_budget_partitioning_between_single_and_multiple() {
         let mut table = cov_table.write().await;
         // 2 Single subscriptions
         for i in 1..=2 {
-            table.subscribe(CovSubscription {
-                subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i]),
-                subscriber_network: None,
-                subscriber_process_identifier: i as u32,
-                monitored_object_identifier: point_oid,
-                issue_confirmed_notifications: false,
-                expires_at: None,
-                last_notified_value: None,
-                monitored_property: None,
-                monitored_property_array_index: None,
-                cov_increment: None,
-                notification_kind: CovNotificationKind::Single,
-                timestamped: false,
-            });
+            table
+                .subscribe(CovSubscription {
+                    subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i]),
+                    subscriber_network: None,
+                    subscriber_process_identifier: i as u32,
+                    monitored_object_identifier: point_oid,
+                    issue_confirmed_notifications: false,
+                    expires_at: None,
+                    last_notified_observation: None,
+                    monitored_property: None,
+                    monitored_property_array_index: None,
+                    cov_increment: None,
+                    notification_kind: CovNotificationKind::Single,
+                    timestamped: false,
+                })
+                .unwrap();
         }
         // 2 Multiple subscriptions for different peers
         for i in 3..=4 {
-            table.subscribe(CovSubscription {
-                subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i]),
-                subscriber_network: None,
-                subscriber_process_identifier: i as u32,
-                monitored_object_identifier: point_oid,
-                issue_confirmed_notifications: false,
-                expires_at: None,
-                last_notified_value: None,
-                monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
-                monitored_property_array_index: None,
-                cov_increment: None,
-                notification_kind: CovNotificationKind::Multiple,
-                timestamped: false,
-            });
+            table
+                .admit_for_test(
+                    CovSubscription {
+                        subscriber_mac: MacAddr::from_slice(&[10, 0, 0, i]),
+                        subscriber_network: None,
+                        subscriber_process_identifier: i as u32,
+                        monitored_object_identifier: point_oid,
+                        issue_confirmed_notifications: false,
+                        expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+                        last_notified_observation: None,
+                        monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
+                        monitored_property_array_index: None,
+                        cov_increment: None,
+                        notification_kind: CovNotificationKind::Multiple,
+                        timestamped: false,
+                    },
+                    0,
+                )
+                .unwrap();
         }
     }
 
-    let network = Arc::new(NetworkLayer::new(RecordingTransport::new(StdArc::clone(
-        &sent,
-    ))));
+    let network = Arc::new(NetworkLayer::new(transport));
 
-    BACnetServer::<RecordingTransport>::fire_life_safety_cov_notifications(
-        &db,
-        &network,
-        &cov_table,
-        &cov_in_flight,
-        &transactions,
-        &Arc::new(AtomicU8::new(0)),
-        &config,
+    BACnetServer::<TestTransport>::fire_life_safety_cov_notifications(
+        &crate::server::cov_notify_context::CovNotifyContext {
+            db: &db,
+            network: &network,
+            cov_table: &cov_table,
+            cov_in_flight: &cov_in_flight,
+            notification_transactions: &transactions,
+            comm_state: &Arc::new(CommState::default()),
+            config: &config,
+        },
         &point_oid,
         &[PropertyIdentifier::PRESENT_VALUE],
     )
     .await;
 
-    let sent_frames = sent.lock().unwrap();
+    let sent_frames = sent.lock();
     assert_eq!(sent_frames.len(), 2);
     let mut saw_single = false;
     let mut saw_multiple = false;
-    for (frame, _) in sent_frames.iter() {
-        let npdu = decode_npdu(frame.clone()).unwrap();
+    for frame in sent_frames.iter() {
+        let npdu = decode_npdu(frame.npdu.clone()).unwrap();
         if let Apdu::UnconfirmedRequest(req) = decode_apdu(npdu.payload).unwrap() {
             if req.service_choice == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION {
                 saw_single = true;

@@ -15,15 +15,15 @@ use bacnet_encoding::npdu::NpduAddress;
 use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
-use bacnet_services::who_is::{IAmRequest, WhoIsRequest};
+use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
 use bacnet_transport::port::TransportPort;
-use bacnet_types::enums::{NetworkPriority, ObjectType, UnconfirmedServiceChoice};
+use bacnet_types::enums::{ErrorClass, ErrorCode, NetworkPriority, UnconfirmedServiceChoice};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
 use tokio::sync::RwLock;
 
-use super::{BACnetServer, IAmBroadcaster, ServerConfig};
+use super::{BACnetServer, CommState, ServerConfig};
 
 /// Configuration policy for discovery rate limiting and duplicate suppression.
 #[derive(Debug, Clone)]
@@ -103,7 +103,12 @@ impl DiscoveryPolicy {
 }
 
 /// Operational counters for discovery requests and responses.
+///
+/// Non-exhaustive, so a counter can be added without breaking callers: read
+/// it from [`BACnetServer::discovery_counters`](crate::server::BACnetServer::discovery_counters)
+/// and its fields rather than building one.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DiscoveryCounters {
     /// Total Who-Is requests received.
     pub who_is_received: u64,
@@ -123,6 +128,10 @@ pub struct DiscoveryCounters {
     pub responses_throttled_global: u64,
     /// Total directed unicast discovery responses sent.
     pub directed_responses_sent: u64,
+    /// Who-Is and Who-Has requests dropped because they didn't decode, such
+    /// as one with a single limit or octets after its last member. They are
+    /// dropped before any other work and count in neither received total.
+    pub malformed_dropped: u64,
 }
 
 #[derive(Debug, Default)]
@@ -136,6 +145,7 @@ pub(crate) struct AtomicDiscoveryCounters {
     pub(crate) responses_throttled_source: AtomicU64,
     pub(crate) responses_throttled_global: AtomicU64,
     pub(crate) directed_responses_sent: AtomicU64,
+    pub(crate) malformed_dropped: AtomicU64,
 }
 
 impl AtomicDiscoveryCounters {
@@ -150,6 +160,7 @@ impl AtomicDiscoveryCounters {
             responses_throttled_source: self.responses_throttled_source.load(Ordering::Relaxed),
             responses_throttled_global: self.responses_throttled_global.load(Ordering::Relaxed),
             directed_responses_sent: self.directed_responses_sent.load(Ordering::Relaxed),
+            malformed_dropped: self.malformed_dropped.load(Ordering::Relaxed),
         }
     }
 
@@ -188,7 +199,7 @@ pub(crate) struct SourceKey {
 
 impl SourceKey {
     pub(crate) fn from_parts(source_mac: &MacAddr, source_network: Option<&NpduAddress>) -> Self {
-        if let Some(ref net) = source_network {
+        if let Some(net) = source_network {
             if (1..=0xFFFE).contains(&net.network) && !net.mac_address.is_empty() {
                 return Self {
                     network: net.network,
@@ -411,8 +422,11 @@ pub(crate) struct DiscoveryLimiter {
 }
 
 impl DiscoveryLimiter {
+    /// Every throttle and coalescing window here is measured on
+    /// [`runtime_clock::now`](super::runtime_clock::now), as its callers'
+    /// instants are.
     pub(crate) fn new(policy: DiscoveryPolicy, device_instance: Option<u32>) -> Self {
-        let now = Instant::now();
+        let now = super::runtime_clock::now();
         let state = DiscoveryState {
             global_tokens: policy.global_burst_capacity as f64,
             global_byte_tokens: policy.max_bytes_per_sec_global as f64,
@@ -459,12 +473,10 @@ impl DiscoveryLimiter {
             .map(|s| s.byte_tokens)
     }
 
-    fn check_instance_in_range(&self, low: Option<u32>, high: Option<u32>) -> bool {
-        match (self.device_instance.load(Ordering::Acquire), low, high) {
-            (Some(inst), Some(l), Some(h)) => inst >= l && inst <= h,
-            (Some(_), _, _) => true,
-            (None, _, _) => false,
-        }
+    fn check_instance_in_range(&self, range: Option<DeviceInstanceRange>) -> bool {
+        self.device_instance
+            .load(Ordering::Acquire)
+            .is_some_and(|instance| range.is_none_or(|range| range.contains(instance)))
     }
 
     pub(crate) fn pre_check_who_is(
@@ -473,14 +485,19 @@ impl DiscoveryLimiter {
         received: &ReceivedApdu,
         now: Instant,
     ) -> PreCheckDecision {
+        // RB-07 compat mode: provenance threaded here for RB-09, no decision.
+        let _ = received.provenance;
         let who_is = match WhoIsRequest::decode(req_bytes) {
             Ok(w) => w,
-            Err(_) => return PreCheckDecision::DecodeError,
+            Err(_) => {
+                self.counters.inc(&self.counters.malformed_dropped);
+                return PreCheckDecision::DecodeError;
+            }
         };
 
         self.counters.inc(&self.counters.who_is_received);
 
-        if !self.check_instance_in_range(who_is.low_limit, who_is.high_limit) {
+        if !self.check_instance_in_range(who_is.range) {
             return PreCheckDecision::OutOfRange;
         }
 
@@ -566,14 +583,19 @@ impl DiscoveryLimiter {
         received: &ReceivedApdu,
         now: Instant,
     ) -> PreCheckDecision {
+        // RB-07 compat mode: provenance threaded here for RB-09, no decision.
+        let _ = received.provenance;
         let who_has = match WhoHasRequest::decode(req_bytes) {
             Ok(w) => w,
-            Err(_) => return PreCheckDecision::DecodeError,
+            Err(_) => {
+                self.counters.inc(&self.counters.malformed_dropped);
+                return PreCheckDecision::DecodeError;
+            }
         };
 
         self.counters.inc(&self.counters.who_has_received);
 
-        if !self.check_instance_in_range(who_has.low_limit, who_has.high_limit) {
+        if !self.check_instance_in_range(who_has.range) {
             return PreCheckDecision::OutOfRange;
         }
 
@@ -731,28 +753,30 @@ fn ensure_source_capacity(state: &mut DiscoveryState, policy: &DiscoveryPolicy, 
     }
 }
 
+/// Broadcast this device's I-Am unless DeviceCommunicationControl restricts
+/// initiation. This call announces independently of any received Who-Is;
+/// under DISABLE_INITIATION it sends nothing and fails with
+/// `SERVICES` / `COMMUNICATION_DISABLED`, the code Clause 18.6 keeps for local
+/// work that could not initiate a service for that reason.
 pub(crate) async fn broadcast_i_am_from<T: TransportPort + 'static>(
     config: &ServerConfig,
     db: &Arc<RwLock<ObjectDatabase>>,
     network: &Arc<NetworkLayer<T>>,
+    comm_state: &CommState,
     limiter: Option<&Arc<DiscoveryLimiter>>,
 ) -> Result<(), Error> {
-    let device_oid = db
-        .read()
-        .await
-        .list_objects()
-        .into_iter()
-        .find(|oid| oid.object_type() == ObjectType::DEVICE)
-        .ok_or_else(|| Error::Encoding("no Device object in database".into()))?;
+    let guard = db.read().await;
+    let device_oid =
+        crate::local_device::validate_apdu_declaration(&guard, config.max_apdu_length)?
+            .ok_or_else(|| Error::Encoding("no Device object in database".into()))?;
 
+    // RB-16 alignment: this construction is field-for-field identical to
+    // `bacnet-endpoint`'s `DeviceIdentity::iam_request` built from
+    // `DeviceIdentity::server_config`. The endpoint session I-Am path encodes
+    // the same four fields (object id + max-apdu + segmentation + vendor) so
+    // I-Am vs Device ReadProperty vs role limits agree on one identity.
     let mut service_buf = BytesMut::new();
-    IAmRequest {
-        object_identifier: device_oid,
-        max_apdu_length: config.max_apdu_length,
-        segmentation_supported: config.segmentation_supported,
-        vendor_id: config.vendor_id,
-    }
-    .encode(&mut service_buf);
+    iam_request_for(device_oid, config).encode(&mut service_buf);
 
     let mut buf = BytesMut::new();
     encode_apdu(
@@ -763,8 +787,21 @@ pub(crate) async fn broadcast_i_am_from<T: TransportPort + 'static>(
         }),
     )?;
 
+    drop(guard);
+    if comm_state.initiation_restricted() {
+        return Err(Error::Protocol {
+            class: ErrorClass::SERVICES.to_raw() as u32,
+            code: ErrorCode::COMMUNICATION_DISABLED.to_raw() as u32,
+        });
+    }
     if let Some(limiter) = limiter {
-        limiter.record_i_am_sent(buf.len(), false, &MacAddr::new(), None, Instant::now());
+        limiter.record_i_am_sent(
+            buf.len(),
+            false,
+            &MacAddr::new(),
+            None,
+            super::runtime_clock::now(),
+        );
     }
 
     network
@@ -772,22 +809,30 @@ pub(crate) async fn broadcast_i_am_from<T: TransportPort + 'static>(
         .await
 }
 
-impl<T: TransportPort + 'static> BACnetServer<T> {
-    /// Broadcast an I-Am for this server's Device object using the bound transport socket.
-    pub async fn broadcast_i_am(&self) -> Result<(), Error> {
-        broadcast_i_am_from(
-            &self.config,
-            &self.db,
-            &self.network,
-            Some(&self.discovery_limiter),
-        )
-        .await
+/// RB-16 discovery-alignment helper: single I-Am construction shared with the
+/// endpoint identity path.
+///
+/// `bacnet-endpoint`'s `DeviceIdentity::iam_request` (via
+/// `DeviceIdentity::server_config`) builds these same four fields; any drift
+/// here breaks the I-Am ≡ ReadProperty ≡ role-capabilities matrix.
+#[doc(hidden)]
+pub fn iam_request_for(device_oid: ObjectIdentifier, config: &ServerConfig) -> IAmRequest {
+    IAmRequest {
+        object_identifier: device_oid,
+        max_apdu_length: config.max_apdu_length,
+        segmentation_supported: config.segmentation_supported,
+        vendor_id: config.vendor_id,
     }
 }
 
-impl<T: TransportPort + 'static> IAmBroadcaster<T> {
-    /// Broadcast an I-Am for this server's Device object using the bound transport socket.
+impl<T: TransportPort + 'static> BACnetServer<T> {
+    /// Broadcast I-Am through this server's bounded local-send owner.
+    /// Cancelling the waiter leaves admitted work owned until completion or stop.
+    /// While DeviceCommunicationControl restricts initiation nothing is sent
+    /// and this fails with `SERVICES` / `COMMUNICATION_DISABLED` (Clause 16.1).
     pub async fn broadcast_i_am(&self) -> Result<(), Error> {
-        broadcast_i_am_from(&self.config, &self.db, &self.network, None).await
+        self.broadcaster
+            .send(Some(Arc::clone(&self.discovery_limiter)))
+            .await
     }
 }

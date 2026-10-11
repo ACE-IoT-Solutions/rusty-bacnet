@@ -1,9 +1,15 @@
 # Rusty BACnet documentation site
 
-An **unpublished** Astro/Starlight site for **v0.11.0**. The development branch's
-newer behavior is not the release contract; SC pages link explicitly labeled
-development migration references. Root engineering docs and the canonical
-conformance ledger remain authoritative for their own scopes.
+An Astro/Starlight task guide for the release named in `src/lib/site.mjs`:
+installation, the local lab and first reads (`start/`), integration guides for
+shared endpoints, Network Port/Number controls, transport evidence and SC setup
+(`development/`), and operating guides (`guides/`). [Engineering
+docs](../docs/README.md) remain the contract authority.
+
+This content refresh is local-only. A successful build or browser check does not
+publish it or establish that a hosted site contains these changes. Historical
+publication machinery below is reference material; invoking it requires separate
+explicit authority.
 
 ## Local build and validation
 
@@ -21,7 +27,7 @@ tests or publish anything. The `Docs validation` CI job runs the same command on
 native Ubuntu with Node 24 and Chromium. Local results do not prove that a GitHub
 Actions run or Pages deployment succeeded.
 
-The build regenerates 19 plain Markdown exports, `llms.txt`, and the example
+The build regenerates plain Markdown exports for every navigation guide, `llms.txt`, and the example
 download, then forces a content-layer sync. This prevents cached Markdown HTML
 from retaining an old code-renderer configuration. Astro's optional empty-i18n
 and duplicate built-in/catch-all 404 warnings are currently nonfatal; production
@@ -62,8 +68,9 @@ screen-reader and physical-device checks remain separate lanes.
 
 `examples/python/loopback_lab.py` is the sole tutorial body: MDX imports it and
 `prepare:content` copies it to the public download. Do not edit generated copies.
-Use a fresh Python 3.11–3.13 environment with a provenance-verified **release**
-native package, not a development wheel that happens to share version 0.11.0.
+Use a fresh Python 3.11–3.14 environment with a provenance-verified **release**
+native package, not a development wheel that happens to share the release
+version. The script refuses any `rusty-bacnet` version but its `EXPECTED_VERSION`.
 
 ```sh
 python -m unittest discover -s tests/python -v
@@ -85,8 +92,10 @@ workflow `34003656261`, artifact `9980479931`, tag `v0.11.0` at
 The release `bacnet-macos-arm64` executable also read value 72.5 and units 64
 from a 30-second loopback server that then stopped. This is bounded tutorial
 evidence, not PyPI, general wheel/platform, or physical-network qualification.
+That evidence is for v0.11.0; the lab has not yet run against a later
+release's wheels.
 
-## Docs CI and manual publication
+## Retained CI and publication reference
 
 `.github/workflows/docs-pages.yml` validates pull requests targeting `dev` or
 `main` when `website/**` (including the workflow guard tests) or the workflow
@@ -127,8 +136,9 @@ Actions artifacts retained for seven days, with hidden files excluded.
 
 ### Maintainer sequence (not evidence of publication)
 
-1. Review and merge this workflow only after the actual Linux `Docs validation`
-   job and existing five lean CI gates pass. Do not infer live CI from local tests.
+1. Follow the [CI and merge-evidence policy](../docs/ci.md) for delivery. PR
+   validation is this workflow's `pull_request` run; publication is the
+   manual dispatch below. Do not infer live CI from local tests.
 2. Once the workflow is on the default branch, dispatch **validation only** from
    `dev`. `publish` defaults to false; `expected_sha` can be omitted:
 
@@ -189,3 +199,26 @@ artifact or fetch a mutable branch in the deployment job.
   settings and actual publication remain owner-operated; the workflow's presence
   does not mean this site is live. Repository README/package public links remain
   deferred until verified deployment. Do not introduce a support-status database.
+
+## Content organization
+
+- `start/`, `development/` and `guides/`: release tasks for the version in
+  `src/lib/site.mjs`, linked to the canonical repository docs at that release's
+  tag. `development/overview` keeps the source-build path for unreleased changes.
+- `src/lib/site.mjs`: `release`, which MDX pages, the download list, the footer
+  and the llms index read. To move to another release, change it and run
+  `npm test`: `tests/unit/release.test.mjs` names every page, the lab script,
+  the sidebar label and the home banner that still carry another version
+  (`project/upgrading.md` and the lab's recorded evidence may name the previous
+  one). It also checks the installation page's asset list against
+  `.github/workflows/release.yml`.
+- `reference/` and `project/`: reference entry points, support scope and the
+  upgrade guide from the previous release.
+- `src/data/navigation.json`: sidebar and test route inventory.
+- `scripts/prepare.mjs`: source-derived raw Markdown and version-aware llms index.
+
+Preserve the loopback lab's single source, generated download and recorded release
+native provenance. Tests automatically sweep navigation routes and additionally
+check development routing, search, scope in exports and representative screenshots.
+Do not turn a docs refresh into a new support database, dependency upgrade, site/base
+change or publication workflow change.

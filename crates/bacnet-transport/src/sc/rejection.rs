@@ -1,9 +1,11 @@
-//! Owner-local write budget for the three node rejection NAKs only.
+//! Owner-local budget for node control/source/MU/missing-payload/address-resolution/unknown NAKs only.
 //! Cancellation drops the send future, not bytes already buffered by the driver.
 
 use std::future::{poll_fn, Future};
 use std::task::Poll;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use bacnet_types::error::Error;
 
@@ -13,6 +15,8 @@ use crate::sc_frame::{first_must_understand_destination_option_marker, ScMessage
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct RejectionExpired;
 
+/// Heartbeat budget left for a rejection NAK send. `last_activity` is on
+/// tokio's clock, like the receive loop's heartbeat bookkeeping it comes from.
 #[derive(Clone, Copy)]
 pub(super) struct RejectionBudget {
     last_activity: Instant,
@@ -82,11 +86,37 @@ pub(super) async fn reject<W: WebSocketPort>(
     if source_admission::reject_invalid_npdu_source(msg, ws, budget).await? {
         return Ok(true);
     }
-    data_attributes::reject_unsupported_must_understand_destination_option(
+    if data_attributes::reject_unsupported_must_understand_destination_option(
         msg,
         first_must_understand_destination_option_marker(wire),
         ws,
         budget,
     )
-    .await
+    .await?
+    {
+        return Ok(true);
+    }
+    if super::empty_npdu::reject(msg, ws, budget).await? {
+        return Ok(true);
+    }
+    if super::advertisement::reject(msg, wire, ws, budget).await? {
+        return Ok(true);
+    }
+    // Proprietary 0x0C is a known unicast-or-broadcast family with its own
+    // AB.2.16 envelope rules. It precedes Unknown so the known function keeps
+    // its shape diagnostics; Unknown identity still wins for 0x0D..0xFF.
+    if super::proprietary::reject(msg, wire, ws, budget).await? {
+        return Ok(true);
+    }
+    // Address-Resolution 0x02/0x03 validates URI bodies before dispatch.
+    // Valid requests proceed to the live accepting-capability answer; malformed
+    // requests NAK locally while malformed responses stay silent per the
+    // response rule. Precedes Unknown so the known family keeps its shape
+    // diagnostics.
+    if super::address_resolution::reject(msg, wire, ws, budget).await? {
+        return Ok(true);
+    }
+    // All preceding gates exclude Unknown. Its identity wins over option or
+    // payload diagnostics without changing any known-function admission.
+    super::unknown_function::reject(msg, ws, budget).await
 }

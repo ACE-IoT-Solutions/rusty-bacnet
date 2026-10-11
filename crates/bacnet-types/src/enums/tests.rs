@@ -61,6 +61,41 @@ fn property_identifier_vendor() {
 }
 
 #[test]
+fn property_identifiers_508_to_511_are_network_port_and_color_is_extended() {
+    // Addendum 135-2020cc gives 508 to 511 to Network Port properties;
+    // Addendum 135-2020ca puts the colour properties past 4194303 (#887).
+    let cases = [
+        (508, "ADDITIONAL_REFERENCE_PORTS"),
+        (509, "CERTIFICATE_SIGNING_REQUEST_FILE"),
+        (510, "COMMAND_VALIDATION_RESULT"),
+        (511, "ISSUER_CERTIFICATE_FILES"),
+        // The lighting outputs' colour links (#1527) and the colour
+        // objects' rows, in numeric order.
+        (4_194_328, "COLOR_OVERRIDE"),
+        (4_194_329, "COLOR_REFERENCE"),
+        (4_194_330, "DEFAULT_COLOR"),
+        (4_194_331, "DEFAULT_COLOR_TEMPERATURE"),
+        (4_194_332, "OVERRIDE_COLOR_REFERENCE"),
+        (4_194_334, "COLOR_COMMAND"),
+        // Lighting Output's trims (#1528), numbered by the errata.
+        (4_194_335, "HIGH_END_TRIM"),
+        (4_194_336, "LOW_END_TRIM"),
+        (4_194_337, "TRIM_FADE_TIME"),
+    ];
+    for (raw, name) in cases {
+        let property = PropertyIdentifier::from_raw(raw);
+        assert_eq!(property.to_string(), name);
+        assert_eq!(name.parse::<PropertyIdentifier>(), Ok(property));
+    }
+    assert_eq!(PropertyIdentifier::DEFAULT_COLOR.to_raw(), 4_194_330);
+    assert_eq!(
+        PropertyIdentifier::DEFAULT_COLOR_TEMPERATURE.to_raw(),
+        4_194_331
+    );
+    assert_eq!(PropertyIdentifier::COLOR_COMMAND.to_raw(), 4_194_334);
+}
+
+#[test]
 fn pdu_type_values() {
     assert_eq!(PduType::CONFIRMED_REQUEST.to_raw(), 0);
     assert_eq!(PduType::ABORT.to_raw(), 7);
@@ -76,12 +111,6 @@ fn confirmed_service_choice_values() {
 fn unconfirmed_service_choice_values() {
     assert_eq!(UnconfirmedServiceChoice::WHO_IS.to_raw(), 8);
     assert_eq!(UnconfirmedServiceChoice::I_AM.to_raw(), 0);
-}
-
-#[test]
-fn bvlc_function_values() {
-    assert_eq!(BvlcFunction::ORIGINAL_UNICAST_NPDU.to_raw(), 0x0A);
-    assert_eq!(BvlcFunction::ORIGINAL_BROADCAST_NPDU.to_raw(), 0x0B);
 }
 
 #[test]
@@ -464,7 +493,7 @@ fn relationship_values_match_clause_21() {
         ],
     );
     // The forward/reverse pairing is structural in the production.
-    for pair in Relationship::ALL_NAMED[2..].chunks_exact(2) {
+    for pair in Relationship::ALL_NAMED[2..].as_chunks::<2>().0 {
         let (fwd_name, fwd) = pair[0];
         let (rev_name, rev) = pair[1];
         assert_eq!(fwd.to_raw() ^ 1, rev.to_raw(), "{fwd_name} / {rev_name}");
@@ -764,3 +793,5 @@ fn from_str_audit_names_are_not_swapped() {
         Ok(62)
     );
 }
+
+mod access_production;

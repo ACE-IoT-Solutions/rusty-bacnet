@@ -8,8 +8,7 @@ use super::*;
 /// should segment the response and the client should reassemble it correctly.
 #[tokio::test]
 async fn server_segments_large_rpm_response() {
-    use bacnet_services::common::PropertyReference;
-    use bacnet_services::rpm::ReadAccessSpecification;
+    use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 
     // Build a server with a Device and multiple AnalogInput objects so that
     // an RPM response reading many properties will be large.
@@ -20,6 +19,7 @@ async fn server_segments_large_rpm_response() {
         name: "Segmentation Test Device".into(),
         vendor_name: "Rusty BACnet Seg Test".into(),
         vendor_id: 555,
+        segmentation_supported: Segmentation::BOTH,
         ..DeviceConfig::default()
     })
     .unwrap();

@@ -21,7 +21,6 @@ from rusty_bacnet import (
     ObjectType,
     PropertyIdentifier,
     PropertyValue,
-    decode_raw_value,
 )
 
 
@@ -29,7 +28,7 @@ NOTIFICATION_TIMEOUT = 2.0
 SILENCE_TIMEOUT = 0.25
 
 
-def installed_stub_method() -> ast.AsyncFunctionDef:
+def installed_stub_method() -> ast.FunctionDef:
     stub_path = Path(rusty_bacnet.__file__).with_suffix(".pyi")
     tree = ast.parse(stub_path.read_text(encoding="utf-8"), filename=str(stub_path))
     server = next(
@@ -40,7 +39,7 @@ def installed_stub_method() -> ast.AsyncFunctionDef:
     method = next(
         node
         for node in server.body
-        if isinstance(node, ast.AsyncFunctionDef)
+        if isinstance(node, ast.FunctionDef)
         and node.name == "set_present_value_local"
     )
     return method
@@ -92,7 +91,7 @@ class InputPresentValueArtifactTests(unittest.TestCase):
             [annotation_text(argument.annotation) for argument in stub_args[1:]],
             ["ObjectIdentifier", "PropertyValue"],
         )
-        self.assertEqual(annotation_text(method.returns), "None")
+        self.assertEqual(annotation_text(method.returns), "Awaitable[None]")
 
         docs = ast.get_docstring(method)
         self.assertIsNotNone(docs)
@@ -162,27 +161,18 @@ class InputPresentValueArtifactTests(unittest.TestCase):
                     (msi, PropertyValue.unsigned(3)),
                 )
                 for oid, value in successful_updates:
-                    await server.set_present_value_local(oid, value)
+                    self.assertIsNone(await server.set_present_value_local(oid, value))
                     self.assertEqual(await self._read_present_value(server, oid), value)
                     notification = await asyncio.wait_for(
                         notifications.get(), timeout=NOTIFICATION_TIMEOUT
                     )
                     self.assertEqual(notification.monitored_object_identifier, oid)
-                    present_value_entries = [
-                        item
+                    present_values = [
+                        item["value"]
                         for item in notification.values
                         if item["property_id"] == PropertyIdentifier.PRESENT_VALUE
                     ]
-                    self.assertIn(
-                        value, [item["value"] for item in present_value_entries]
-                    )
-                    for item in present_value_entries:
-                        self.assertIsInstance(item["raw_value"], bytes)
-                        self.assertIsNone(item["priority"])
-                        self.assertEqual(
-                            decode_raw_value(item["raw_value"], item["value"].tag),
-                            item["value"],
-                        )
+                    self.assertIn(value, present_values)
 
                 invalid_updates = (
                     (ai, PropertyValue.enumerated(1), ErrorCode.INVALID_DATA_TYPE),
@@ -206,7 +196,7 @@ class InputPresentValueArtifactTests(unittest.TestCase):
                 await server.write_property_local(
                     ai,
                     PropertyIdentifier.OUT_OF_SERVICE,
-                    PropertyValue.boolean(True),
+                    PropertyValue.boolean(True), source_object=None,
                 )
                 oos_notification = await asyncio.wait_for(
                     notifications.get(), timeout=NOTIFICATION_TIMEOUT
