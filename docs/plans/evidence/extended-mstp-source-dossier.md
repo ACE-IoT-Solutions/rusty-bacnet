@@ -59,3 +59,15 @@ The configured `_spec/2020_ASHRAE_Standard-135-BACnet-Data-Communication-Protoco
 is absent. Before claiming consolidated 135-2020 conformance, reconcile Clause
 9.3, 9.5, 9.6, 9.10 and Annexes G/X against that edition and any later adopted
 addenda. Independent interoperability evidence also remains required.
+
+An availability check on 2026-10-11 found no licensed copy in this repository,
+its Git history, or the surrounding project workspaces. The official
+[BACnet Committee purchase page](https://bacnet.org/buy/) directs users to buy
+or download Standard 135-2020 from the ASHRAE or ISO stores. Its free read-only
+link is for Standard 135-2024, not the configured 2020 edition. The
+[ASHRAE BACnet page](https://www.ashrae.org/technical-resources/bookstore/bacnet)
+and the official addenda/errata pages remain authoritative public sources, but
+they do not supply a redistributable consolidated 135-2020 PDF. Do not replace
+the configured source with an unofficial copy. Obtaining the licensed base
+standard is therefore an external review/release input, not permission to
+weaken the wire tests derived from the official addenda.
