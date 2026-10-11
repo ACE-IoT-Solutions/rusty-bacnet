@@ -380,6 +380,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-router-core"
+version = "0.11.8"
+
+[[package]]
 name = "bacnet-runtime"
 version = "0.11.8"
 dependencies = [

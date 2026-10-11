@@ -1,0 +1,18 @@
+[package]
+name = "bacnet-router-core"
+description = "Portable bounded BACnet network router core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["bacnet", "router", "embedded", "no-std"]
+categories = ["embedded", "network-programming", "no-std"]
+
+[features]
+default = []
+
+[dependencies]
+
+[lints]
+workspace = true
