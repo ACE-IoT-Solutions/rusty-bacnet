@@ -278,9 +278,9 @@ How to configure each one:
 
 | Crate | Purpose |
 |---|---|
-| [`bacnet-types`](https://crates.io/crates/bacnet-types) | Enums, primitives, bit strings and errors (`no_std` capable) |
-| [`bacnet-encoding`](https://crates.io/crates/bacnet-encoding) | ASN.1 tags, APDU/NPDU codecs, segmentation |
-| [`bacnet-services`](https://crates.io/crates/bacnet-services) | Service request and response types |
+| [`bacnet-types`](https://crates.io/crates/bacnet-types) | Enums, primitives, bit strings and errors (`no_std` with `alloc`) |
+| [`bacnet-encoding`](https://crates.io/crates/bacnet-encoding) | ASN.1 tags, APDU/NPDU codecs, segmentation (`no_std` with `alloc`) |
+| [`bacnet-services`](https://crates.io/crates/bacnet-services) | Service request and response types (`no_std` with `alloc`) |
 | [`bacnet-mstp-codec`](crates/bacnet-mstp-codec) | MS/TP frame codec: CRCs, encode, decode and a stream decoder (`no_std`, no allocator, no dependencies) |
 | [`bacnet-transport`](https://crates.io/crates/bacnet-transport) | BACnet/IP, BACnet/IPv6, BACnet/SC, MS/TP and Ethernet data links |
 | [`bacnet-network`](https://crates.io/crates/bacnet-network) | Network layer and routing |

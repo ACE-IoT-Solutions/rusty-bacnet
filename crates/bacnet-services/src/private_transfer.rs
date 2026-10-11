@@ -1,6 +1,9 @@
 //! ConfirmedPrivateTransfer / UnconfirmedPrivateTransfer services
 //! per ASHRAE 135-2020 Clauses 16.2 and 16.3.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use bacnet_encoding::constructed::tagged::{
     decode_ctx_constructed, decode_ctx_unsigned, expect_end, next_is_opening,
 };

@@ -12,12 +12,12 @@
 //! A BBMD's tables change at run time, so they are lent as a live view,
 //! [`BbmdTables`], which the object reads on each property read. Nothing is
 //! copied, so the object cannot drift from the transport.
+//!
+//! The module exists only with the `std` feature. Both crates it joins are
+//! hosted, and the shared `Arc` needs atomic compare-and-swap, which
+//! bare-metal targets such as ARMv6-M lack (#1604).
 
 use core::fmt;
-
-#[cfg(not(feature = "std"))]
-use alloc::{sync::Arc, vec::Vec};
-#[cfg(feature = "std")]
 use std::sync::Arc;
 
 use crate::constructed::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostNPort};

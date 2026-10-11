@@ -205,7 +205,7 @@ jobs:
         run: cargo clippy -p bacnet-cli --no-default-features --all-targets --locked -- -D warnings
       # One cargo run per crate checks the targets side by side, which costs a
       # few seconds more than Linux alone did.
-      - name: Clippy and rustdoc (each published crate, default features; no_std bacnet-types; Linux, Windows, macOS)
+      - name: Clippy and rustdoc (each published crate, default features; no_std types, encoding and services; Linux, Windows, macOS)
         if: ${{ !cancelled() }}
         run: |
           # shellcheck disable=SC2086 # one argument per target

@@ -562,17 +562,21 @@ Clippy runs five ways:
 - the workspace with every feature;
 - the PyO3 crate on its own;
 - `bacnet-cli` with no default features (without the TUI);
-- the `no_std` crates (`bacnet-mstp-codec`, and `bacnet-types` without its
-  default features) on bare-metal targets, once per feature set
+- the `no_std` crates (`bacnet-mstp-codec`, and `bacnet-types`,
+  `bacnet-encoding` and `bacnet-services` with `alloc` in place of their
+  default `std`) on bare-metal targets, once per feature set
   (`scripts/ci/check-no-std.sh`). A host build always has `std` and an
   allocator, so only a target without them shows that a crate needs neither.
   CI's Clippy job passes `NO_STD_TARGETS`: `thumbv6m-none-eabi`,
   `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf`. The script lists
-  the combinations it skips, and why;
-- each published crate alone with default features, plus the `no_std` build of
-  `bacnet-types` (`scripts/ci/check-default-features.sh`). This also runs
-  rustdoc, which is how docs.rs builds, and a rustdoc-only run of `bacnet-cli`
-  without the TUI.
+  the combinations it skips, and why. It also reads each build's `cargo tree`
+  and fails if any package in it has a `std` feature on, or is `tracing`,
+  `tokio` or `socket2`: a dependency whose std leaks in through feature
+  unification is caught even where it would still compile;
+- each published crate alone with default features, plus the `no_std` builds
+  of `bacnet-types`, `bacnet-encoding` and `bacnet-services`
+  (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
+  how docs.rs builds, and a rustdoc-only run of `bacnet-cli` without the TUI.
 
 The last catches code that compiles only when another crate's feature unifies
 in. With no arguments it checks the host; given target triples, it checks
@@ -590,8 +594,8 @@ public item whose docs link to a private item
 every-feature run replaces the public-only run rather than adding a second
 one. Every module of the PyO3 crate is private, so without the flag rustdoc
 would check none of its docs. The per-crate default-features run and the
-feature-off rustdoc runs of `check-default-features.sh` (`bacnet-types` without
-`std`, `bacnet-cli` without `tui`) pass the flag too (#1192), so private items
+feature-off rustdoc runs of `check-default-features.sh` (the `no_std` crates
+with `alloc`, `bacnet-cli` without `tui`) pass the flag too (#1192), so private items
 that exist only in one feature configuration are covered; the run takes about
 2 s longer on the host.
 

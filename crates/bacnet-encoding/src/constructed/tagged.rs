@@ -84,6 +84,9 @@
 //! # Ok::<(), Error>(())
 //! ```
 
+#[cfg(not(feature = "std"))]
+use alloc::{string::String, vec::Vec};
+
 use bacnet_types::error::{DecodingKind, Error};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 

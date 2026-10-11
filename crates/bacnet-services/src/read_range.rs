@@ -2,6 +2,9 @@
 //!
 //! Reads a range of items from a list or log-buffer property.
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use bacnet_encoding::{primitives, tags};
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
