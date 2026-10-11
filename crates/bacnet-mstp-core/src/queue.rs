@@ -79,7 +79,10 @@ impl NetworkPriority {
 pub enum QueueRejectReason {
     /// The destination queue has no free slot.
     Full,
-    /// The payload is larger than the queue's owned slot.
+    /// The payload is too long: larger than the queue's owned slot or, from
+    /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than a
+    /// standard frame's 501 octets. A dequeue also returns it when it dropped
+    /// an item too long for the caller's scratch.
     Oversize,
     /// The supplied expiry is at or before the enqueue time, or an item
     /// reached its expiry boundary while waiting.

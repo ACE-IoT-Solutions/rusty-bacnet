@@ -238,12 +238,15 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
     };
     // Intervening token traffic cannot transfer ownership away from the
     // request, but it also cannot justify a response after Treply_timeout.
+    // The Token is kept for when the request ends: then it is used, here to
+    // poll for a successor, and no Reply Postponed goes out.
     validated(&mut core, FrameType::Token, 1, 3, &[], ms(100));
     assert_eq!(core.snapshot().request_id, Some(request));
     core.on_deadline(ms(302)).unwrap();
     assert_eq!(core.snapshot().request_id, None);
-    assert_eq!(core.state(), MasterState::Idle);
-    assert_eq!(core.poll_action(), Action::Idle);
+    assert_eq!(core.state(), MasterState::PollForMaster);
+    let (_poll, header) = take_transmit(&mut core, ms(302));
+    assert_eq!(header.frame_type, FrameType::PollForMaster);
     assert_eq!(
         core.complete_request(request, ReplyDecision::Postponed, ms(303)),
         Err(CoreError::NoPendingRequest)

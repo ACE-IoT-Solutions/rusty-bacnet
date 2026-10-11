@@ -19,7 +19,10 @@ pub struct QueueCounters {
     pub dequeued: u32,
     /// Entries rejected because the queue was full.
     pub drops_full: u32,
-    /// Entries rejected because their NPDU exceeded the storage capacity.
+    /// Entries refused or dropped as too long: refused at enqueue because the
+    /// NPDU exceeds the queue's slot or a standard frame's 501 octets (the
+    /// core's own check), or dropped at dequeue because it would not fit the
+    /// caller's scratch.
     pub drops_oversize: u32,
     /// Entries removed after exceeding their configured age.
     pub drops_expired: u32,
@@ -95,8 +98,13 @@ pub struct MstpCounters {
     /// T_turnaround. A reply is not dropped: it waits a fresh turnaround.
     pub cancelled_sends: u32,
     /// Transmit events refused because the adapter broke the transmit
-    /// contract, such as completing a transmit it never confirmed starting.
+    /// contract: confirming a start twice, or completing a transmit it never
+    /// confirmed starting.
     pub adapter_errors: u32,
+    /// Frames for this station that wanted a prompt answer (Poll For Master,
+    /// a data request, Test_Request) but arrived while it was answering
+    /// another request, so they were dropped.
+    pub discarded_while_answering: u32,
     /// Frames abandoned by T_frame_abort.
     pub frame_aborts: u32,
     /// Valid MS/TP frames received.
@@ -139,6 +147,11 @@ impl MstpCounters {
     /// Record a frame dropped while it waited out T_turnaround.
     pub(crate) fn record_cancelled_send(&mut self) {
         increment(&mut self.cancelled_sends);
+    }
+
+    /// Record a frame dropped because it arrived while answering a request.
+    pub(crate) fn record_discarded_while_answering(&mut self) {
+        increment(&mut self.discarded_while_answering);
     }
 
     /// Record a transmit event refused for breaking the transmit contract.

@@ -56,8 +56,13 @@ fn completion_without_a_confirmed_start_is_refused_and_counted() {
     assert_eq!(core.snapshot().transmit_id, Some(id));
     assert_eq!(core.counters().frames_transmitted, 0);
 
-    // Starting it first is accepted as usual.
+    // Starting it first is accepted as usual; starting it twice is counted.
     core.on_transmit_started(id, due).unwrap();
+    assert_eq!(
+        core.on_transmit_started(id, due),
+        Err(CoreError::TransmitAlreadyStarted)
+    );
+    assert_eq!(core.counters().adapter_errors, 2);
     core.on_transmit_complete(id, due).unwrap();
     assert_eq!(core.counters().frames_transmitted, 1);
     assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));

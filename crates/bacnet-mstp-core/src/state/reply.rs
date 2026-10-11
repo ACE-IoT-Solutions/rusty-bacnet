@@ -8,15 +8,13 @@
 //! the correct answer, so the core sends it while that is safe. It stops once
 //! the requester may have given up: its shortest T_reply_timeout (255 ms,
 //! Clause 9.5.3), less one octet, which has to arrive whole before that
-//! timeout, and less a millisecond for clock resolution. The core's request
-//! time can only be later than the requester's last octet, which is why it
-//! keeps that guard. A request dropped then is counted.
+//! timeout, and less a small fixed guard. A request dropped then is counted.
 
 use super::*;
 
-/// Kept back from the requester's shortest reply timeout for silence-timer
-/// resolution and the gap between the requester's last octet and the
-/// request time the adapter reports.
+/// A small fixed guard kept back from the requester's shortest reply
+/// timeout, against adapter and clock jitter: the request time the adapter
+/// reports can only be later than the requester's last octet.
 const REPLY_GUARD: Duration = Duration::from_millis(1);
 
 impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
@@ -30,7 +28,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         self.next_request_generation = self.next_request_generation.wrapping_add(1);
         let send_by = now + self.config.t_reply_delay;
         // Never before the end of T_reply_delay, which a reply may use in
-        // full; that only matters below the standard baud rates.
+        // full. Defensive: at the lowest baud rate validation allows, the
+        // cutoff still falls just after T_reply_delay.
         let give_up =
             (now + MIN_REPLY_TIMEOUT - self.config.octet_time() - REPLY_GUARD).max(send_by);
         let request = PendingRequest {
@@ -74,7 +73,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             return Err(CoreError::StaleRequest);
         }
         if now >= request.window.give_up {
-            self.release_unanswered_request();
+            self.release_unanswered_request(now)?;
             return Err(CoreError::RequestExpired);
         }
         let (frame_type, payload) = match decision {
@@ -93,8 +92,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             }
             ReplyDecision::Abandoned => {
                 self.pending_request = None;
-                self.enter_idle();
-                return Ok(());
+                return self.enter_idle(now);
             }
         };
         self.queue_frame_until(
@@ -113,8 +111,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Postponed, however late, unless the requester may have stopped waiting.
     pub(super) fn reply_deadline(&mut self, now: Instant) -> Result<(), CoreError> {
         let Some(request) = self.pending_request else {
-            self.enter_idle();
-            return Ok(());
+            return self.enter_idle(now);
         };
         match self.complete_request(request.id, ReplyDecision::Postponed, now) {
             // Too late to send anything; the request was dropped and counted.
@@ -125,9 +122,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     /// Drop a request unanswered because its requester may have stopped
     /// waiting, and count it.
-    pub(super) fn release_unanswered_request(&mut self) {
+    pub(super) fn release_unanswered_request(&mut self, now: Instant) -> Result<(), CoreError> {
         self.pending_request = None;
         self.counters.record_expired_request();
-        self.enter_idle();
+        self.enter_idle(now)
     }
 }

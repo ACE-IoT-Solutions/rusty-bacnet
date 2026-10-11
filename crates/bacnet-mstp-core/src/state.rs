@@ -203,6 +203,17 @@ struct PendingSend {
     reply: Option<ReplyWindow>,
 }
 
+impl PendingSend {
+    /// When the core must look at this send again: once the turnaround has
+    /// passed, or, for a reply, when its window closes if that comes first.
+    fn deadline(&self) -> Instant {
+        match self.reply {
+            Some(reply) => core::cmp::min(self.earliest, reply.give_up),
+            None => self.earliest,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct OwnedFrame {
     header: FrameHeader,
@@ -224,6 +235,9 @@ pub struct MasterCore<'rx, Q: QueueStorage> {
     retry_token_count: u8,
     event_count: u32,
     sole_master: bool,
+    /// A Token for this station arrived while it was answering a request;
+    /// it is taken up on the way back to IDLE.
+    pending_token: bool,
     pending_request: Option<PendingRequest>,
     next_request_generation: u32,
     active_transmit: Option<ActiveTransmit>,
@@ -273,6 +287,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             retry_token_count: 0,
             event_count: 0,
             sole_master: false,
+            pending_token: false,
             pending_request: None,
             next_request_generation: 0,
             active_transmit: None,
@@ -369,7 +384,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
         let timed_out_candidate = self.abort_partial_if_late(now);
         self.note_bus_activity(now);
-        self.cancel_pending_send_on_activity(now);
+        self.cancel_pending_send_on_activity(now)?;
         if timed_out_candidate {
             self.invalid_frame_event(now)?;
         }
@@ -407,7 +422,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
         self.observe_time(now)?;
         self.note_bus_activity(now);
-        self.cancel_pending_send_on_activity(now);
+        self.cancel_pending_send_on_activity(now)?;
         self.process_owned_frame(Self::copy_frame(frame), now)
     }
 
@@ -425,7 +440,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         self.event_count = self
             .event_count
             .saturating_add(u32::try_from(octets).unwrap_or(u32::MAX));
-        self.cancel_pending_send_on_activity(now);
+        self.cancel_pending_send_on_activity(now)?;
         match self.state {
             MasterState::NoToken => {
                 self.set_state(MasterState::Idle);
@@ -460,7 +475,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     ) -> Result<(), CoreError> {
         self.observe_time(now)?;
         self.note_bus_activity(now);
-        self.cancel_pending_send_on_activity(now);
+        self.cancel_pending_send_on_activity(now)?;
         let invalid_candidate = matches!(
             self.decoder.phase(),
             StreamPhase::Header | StreamPhase::Data
@@ -542,6 +557,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .filter(|tx| tx.id == id)
             .ok_or(CoreError::StaleTransmit)?;
         if tx.started {
+            self.counters.record_adapter_error();
             return Err(CoreError::TransmitAlreadyStarted);
         }
         if let Some(reply) = tx.reply {
@@ -552,7 +568,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                     .map_err(|_| CoreError::ActionCapacity)?;
                 self.active_transmit = None;
                 self.counters.record_expired_request();
-                self.enter_idle();
+                self.enter_idle(now)?;
                 return Err(CoreError::RequestExpired);
             }
             if now > reply.send_by {
@@ -566,6 +582,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     /// Report that the final stop bit for the matching generation left UART.
+    ///
+    /// Report it before feeding the core any octet or frame that arrived
+    /// after the transmission ended, so they are judged in the state the
+    /// transmission leads to.
     ///
     /// The start must have been confirmed first. Completion without it is
     /// refused with [`CoreError::TransmitNotStarted`] and counted in
@@ -590,11 +610,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
         self.counters.record_frame_transmitted();
         match tx.post {
-            PostTransmit::Idle => {
-                self.set_state(MasterState::Idle);
-                self.protocol_deadline = Some(now + self.config.t_no_token);
-                Ok(())
-            }
+            PostTransmit::Idle => self.enter_idle(now),
             PostTransmit::ContinueToken => {
                 self.set_state(MasterState::UseToken);
                 self.drive_token(now)
@@ -643,7 +659,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
         self.set_state(MasterState::Idle);
         self.protocol_deadline = Some(now + self.config.t_no_token);
-        Ok(())
+        self.take_pending_token(now)
     }
 
     /// Return the next action, or [`Action::Idle`] when no action is pending.
@@ -705,30 +721,51 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
     }
 
-    /// Line activity while a frame waits out T_turnaround. A reply waits a
-    /// fresh turnaround from this activity; its window still applies when it
-    /// is dispatched. Any other frame is dropped, counted in
-    /// [`MstpCounters::cancelled_sends`].
-    fn cancel_pending_send_on_activity(&mut self, now: Instant) {
+    /// Line activity while a frame waits out T_turnaround.
+    ///
+    /// A reply waits a fresh turnaround from this activity, unless the
+    /// requester may have stopped waiting: then the reply is dropped as
+    /// expired and the core goes idle, so the frame now arriving (perhaps the
+    /// requester passing the token on) is handled there. Any other frame is
+    /// dropped, counted in [`MstpCounters::cancelled_sends`].
+    fn cancel_pending_send_on_activity(&mut self, now: Instant) -> Result<(), CoreError> {
         let Some(pending) = self.pending_send.as_mut() else {
-            return;
+            return Ok(());
         };
-        if pending.reply.is_some() {
+        if let Some(reply) = pending.reply {
+            if now >= reply.give_up {
+                self.pending_send = None;
+                self.counters.record_expired_request();
+                return self.enter_idle(now);
+            }
             pending.earliest = self.last_activity + self.config.t_turnaround;
-            self.protocol_deadline = Some(pending.earliest);
-            return;
+            self.protocol_deadline = Some(pending.deadline());
+            return Ok(());
         }
         self.pending_send = None;
         self.counters.record_cancelled_send();
         self.set_state(MasterState::Idle);
         self.protocol_deadline = Some(now + self.config.t_no_token);
+        Ok(())
     }
 
     /// Go idle, with the token-loss timer running from the last activity on
-    /// the line (Clause 9.5.6.2).
-    fn enter_idle(&mut self) {
+    /// the line (Clause 9.5.6.2), then take up any Token that arrived while
+    /// this station was answering a request.
+    fn enter_idle(&mut self, now: Instant) -> Result<(), CoreError> {
         self.set_state(MasterState::Idle);
         self.protocol_deadline = Some(self.last_activity + self.config.t_no_token);
+        self.take_pending_token(now)
+    }
+
+    /// Act on a Token remembered while answering a request, as IDLE acts on
+    /// a received one.
+    fn take_pending_token(&mut self, now: Instant) -> Result<(), CoreError> {
+        if core::mem::take(&mut self.pending_token) {
+            self.use_received_token(now)
+        } else {
+            Ok(())
+        }
     }
 
     /// Count an NPDU refused or dropped as too long for a standard frame.

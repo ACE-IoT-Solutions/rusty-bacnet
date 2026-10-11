@@ -28,14 +28,15 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .encode_into(&mut encoded)?;
         let earliest = self.last_activity + self.config.t_turnaround;
         if now < earliest {
-            self.pending_send = Some(PendingSend {
+            let pending = PendingSend {
                 length,
                 frame: encoded,
                 post,
                 earliest,
                 reply,
-            });
-            self.protocol_deadline = Some(earliest);
+            };
+            self.protocol_deadline = Some(pending.deadline());
+            self.pending_send = Some(pending);
             return Ok(());
         }
         self.dispatch_frame(&encoded[..length], post, reply, now)
@@ -43,16 +44,17 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     pub(super) fn dispatch_pending_send(&mut self, now: Instant) -> Result<(), CoreError> {
         let pending = self.pending_send.ok_or(CoreError::ActionCapacity)?;
-        if now < pending.earliest {
-            self.protocol_deadline = Some(pending.earliest);
-            return Ok(());
-        }
+        // The reply window first: under steady line activity the turnaround
+        // keeps moving, and the window must still close.
         if pending.reply.is_some_and(|reply| now >= reply.give_up) {
             // The requester may have stopped waiting; sending now could
             // collide with it.
             self.pending_send = None;
             self.counters.record_expired_request();
-            self.enter_idle();
+            return self.enter_idle(now);
+        }
+        if now < pending.earliest {
+            self.protocol_deadline = Some(pending.deadline());
             return Ok(());
         }
         self.dispatch_frame(

@@ -293,8 +293,8 @@ How to configure each one:
 | [`bacnet-cli`](https://crates.io/crates/bacnet-cli) | The `bacnet` command-line tool (also as release binaries) |
 
 The other eleven are on crates.io at 0.12.0; `bacnet-mstp-codec` and
-`bacnet-mstp-core` are new on `dev` and ship with the next release. The Python package is built from
-[`crates/rusty-bacnet`](crates/rusty-bacnet) with
+`bacnet-mstp-core` are new on `dev` and ship with the next release. The
+Python package is built from [`crates/rusty-bacnet`](crates/rusty-bacnet) with
 [maturin](https://www.maturin.rs/). The [architecture guide](docs/architecture.md)
 shows how the layers fit together.
 
