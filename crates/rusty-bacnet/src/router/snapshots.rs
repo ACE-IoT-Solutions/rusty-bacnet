@@ -4,7 +4,12 @@ use bacnet_transport::port::TransportHealthState;
 use pyo3::prelude::*;
 
 /// Immutable current health for one configured router port.
-#[pyclass(name = "RouterPortHealth", frozen, skip_from_py_object)]
+#[pyclass(
+    name = "RouterPortHealth",
+    module = "rusty_bacnet",
+    frozen,
+    skip_from_py_object
+)]
 #[derive(Clone)]
 pub struct PyRouterPortHealth {
     #[pyo3(get)]
@@ -56,7 +61,12 @@ impl From<RouterPortHealth> for PyRouterPortHealth {
 }
 
 /// Immutable routing-table entry detached from the live native router.
-#[pyclass(name = "RouterRouteEntry", frozen, skip_from_py_object)]
+#[pyclass(
+    name = "RouterRouteEntry",
+    module = "rusty_bacnet",
+    frozen,
+    skip_from_py_object
+)]
 #[derive(Clone)]
 pub struct PyRouterRouteEntry {
     #[pyo3(get)]

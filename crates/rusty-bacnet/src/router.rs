@@ -76,7 +76,7 @@ impl Drop for StopCompletion {
 }
 
 /// A mixed BACnet/IP and BACnet/SC router.
-#[pyclass(name = "BACnetRouter")]
+#[pyclass(name = "BACnetRouter", module = "rusty_bacnet")]
 pub struct PyBACnetRouter {
     inner: Arc<Mutex<Option<NativeRouter>>>,
     configured_ports: Vec<PyRouterPortConfig>,
@@ -364,6 +364,9 @@ async fn build_router_port(
                 .broadcast_address
                 .parse()
                 .expect("validated B/IP broadcast address");
+            // Kept in the Python configuration for 0.11 adaptor compatibility.
+            // In 0.12, BipTransport enables OS port sharing for every explicit
+            // nonzero port, so there is no longer a per-instance toggle to set.
             let _reuse_port = config.reuse_port;
             let transport = BipTransport::new(interface, config.port, broadcast);
             MixedTransport::Bip(Box::new(transport))

@@ -9,7 +9,12 @@ use super::validate_network_number;
 const BROADCAST_VMAC: [u8; 6] = [0xff; 6];
 
 /// Typed BACnet/IP router-port configuration.
-#[pyclass(name = "RouterBipPort", frozen, from_py_object)]
+#[pyclass(
+    name = "RouterBipPort",
+    module = "rusty_bacnet",
+    frozen,
+    from_py_object
+)]
 #[derive(Clone)]
 pub struct PyRouterBipPort {
     #[pyo3(get)]
@@ -53,7 +58,7 @@ impl PyRouterBipPort {
 }
 
 /// Typed BACnet/SC router-port configuration.
-#[pyclass(name = "RouterScPort", frozen, from_py_object)]
+#[pyclass(name = "RouterScPort", module = "rusty_bacnet", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct PyRouterScPort {
     #[pyo3(get)]
