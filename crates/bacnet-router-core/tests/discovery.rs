@@ -117,3 +117,37 @@ fn a_full_table_is_bounded_and_learning_releases_the_exact_slot() {
     assert_eq!(discovery.pending_len(), 0);
     assert_eq!(egress.calls, 0);
 }
+
+#[test]
+fn an_unrelated_request_reclaims_expired_capacity() {
+    let npdu_300 = [0x01, 0x20, 0x01, 0x2c, 0x01, 0x09, 0xff, 0x10];
+    let npdu_301 = [0x01, 0x20, 0x01, 0x2d, 0x01, 0x09, 0xff, 0x10];
+    let mut core = RouterCore::<1, 1>::new();
+    let mut discovery = RouteDiscovery::<1>::new(10);
+    let mut egress = NoEgress::default();
+    let mut scratch = [0; 32];
+
+    let first = core.forward_unicast_with_discovery(
+        request(5, &npdu_300),
+        &mut scratch,
+        &mut egress,
+        &mut discovery,
+    );
+    assert!(matches!(
+        first.discovery,
+        Some(DiscoveryAction::WhoIsRouter(_))
+    ));
+
+    let replacement = core.forward_unicast_with_discovery(
+        request(15, &npdu_301),
+        &mut scratch,
+        &mut egress,
+        &mut discovery,
+    );
+    assert!(matches!(
+        replacement.discovery,
+        Some(DiscoveryAction::WhoIsRouter(request)) if request.network == network(301)
+    ));
+    assert_eq!(discovery.pending_len(), 1);
+    assert_eq!(egress.calls, 0);
+}

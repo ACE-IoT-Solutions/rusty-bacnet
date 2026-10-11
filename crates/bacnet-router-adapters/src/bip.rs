@@ -8,9 +8,9 @@
 
 use bacnet_mstp_core::Instant;
 use bacnet_router_core::{
-    AdmissionOutcome, BipDecodeError, BipIngress, BvlcFunction, Egress, EgressDestination,
-    EgressRequest, Ipv4SocketAddress, LinkAddress, PortId, UdpDatagramMeta, decode_bip_datagram,
-    encode_bvll,
+    decode_bip_datagram, encode_bvll, AdmissionOutcome, BipDecodeError, BipIngress, BvlcFunction,
+    Egress, EgressDestination, EgressRequest, Ipv4SocketAddress, LinkAddress, PortId,
+    UdpDatagramMeta,
 };
 
 /// A caller-provided timestamped UDP datagram sink.
@@ -220,7 +220,7 @@ mod tests {
 
     use super::*;
     use bacnet_router_core::{
-        BVLL_HEADER_LENGTH, BipDecodeError, BvlcFunction, UdpDatagramMeta, decode_bip_datagram,
+        decode_bip_datagram, BipDecodeError, BvlcFunction, UdpDatagramMeta, BVLL_HEADER_LENGTH,
     };
 
     const PORT: PortId = PortId(3);

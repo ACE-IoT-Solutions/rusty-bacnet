@@ -18,14 +18,13 @@ use crate::control::{
 };
 use crate::{
     AdmissionOutcome, LearnOutcome, LinkAddress, NetworkNumber, PortId, Reachability, RouteEntry,
-    RouteTable,
+    RouteTable, MAX_ROUTER_CONTROL_PAYLOAD,
 };
 
 /// Default duration for a Router-Busy learned state.
 pub const DEFAULT_BUSY_DURATION: u64 = 30;
 /// Default lifetime of an I-Am-Router or routing-table learned route.
 pub const DEFAULT_LEARNED_AGE: u64 = 300;
-
 /// The local interpretation of the wire `port_id` field.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PortIdSemantics {
@@ -223,6 +222,13 @@ pub enum RouterControlError {
     Codec(ControlCodecError),
     /// A learned route owner must include a non-empty immediate peer address.
     MissingPeerAddress,
+    /// The control payload exceeds the embedded router's bounded work limit.
+    PayloadTooLarge {
+        /// Supplied payload length.
+        length: usize,
+        /// Maximum accepted payload length.
+        maximum: usize,
+    },
     /// The caller's response network buffer cannot hold the response.
     ResponseBufferTooSmall {
         /// Number of network slots needed.
@@ -395,6 +401,12 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
             network_out,
             snapshot_out,
         } = request;
+        if payload.len() > MAX_ROUTER_CONTROL_PAYLOAD {
+            return Err(RouterControlError::PayloadTooLarge {
+                length: payload.len(),
+                maximum: MAX_ROUTER_CONTROL_PAYLOAD,
+            });
+        }
         let control = match decode_control(message_type, payload) {
             Ok(control) => control,
             Err(ControlCodecError::UnsupportedMessageType(message_type)) => {
@@ -449,12 +461,17 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
     ) -> Result<RouterControlOutcome<'a>, RouterControlError> {
         let mut count = 0;
         match requested {
-            Some(network) => {
-                let responds = self
-                    .routes
-                    .lookup(network)
-                    .is_some_and(|entry| entry.port != ingress);
-                if responds {
+            Some(network) => match self.routes.lookup(network) {
+                Some(entry) if entry.port == ingress => {
+                    return Ok(RouterControlOutcome {
+                        action: RouterControlAction::None,
+                        inserted: 0,
+                        updated: 0,
+                        direct_conflicts: 0,
+                        capacity_lost: 0,
+                    });
+                }
+                Some(_) => {
                     if network_out.is_empty() {
                         return Err(RouterControlError::ResponseBufferTooSmall {
                             needed: 1,
@@ -463,7 +480,8 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
                     }
                     network_out[0] = network;
                     count = 1;
-                } else {
+                }
+                None => {
                     return Ok(RouterControlOutcome {
                         action: RouterControlAction::ForwardWhoIs {
                             exclude: ingress,
@@ -473,9 +491,9 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterControl<DIRECT, LEARNED> {
                         updated: 0,
                         direct_conflicts: 0,
                         capacity_lost: 0,
-                    });
+                    })
                 }
-            }
+            },
             None => {
                 for entry in self.routes.entries() {
                     if entry.port != ingress {

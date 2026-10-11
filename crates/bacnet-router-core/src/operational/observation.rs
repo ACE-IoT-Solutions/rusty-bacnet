@@ -47,7 +47,9 @@ impl<const PORTS: usize, const ROUTES: usize, const CACHE: usize>
             Err(ForwardError::NoDirectRoute | ForwardError::NoRoute)
             | Err(ForwardError::RouteUnavailable)
             | Err(ForwardError::RouteLoopsToIngress) => DiagnosticEvent::Rejection,
-            Err(ForwardError::HopExhausted) => DiagnosticEvent::PolicyDrop,
+            Err(ForwardError::HopExhausted | ForwardError::BroadcastRequiresPolicy) => {
+                DiagnosticEvent::PolicyDrop
+            }
             Err(
                 ForwardError::Truncated
                 | ForwardError::UnsupportedVersion(_)
@@ -137,7 +139,8 @@ impl<const PORTS: usize, const ROUTES: usize, const CACHE: usize>
             }
             Err(RouterControlError::ResponseBufferTooSmall { .. })
             | Err(RouterControlError::LearnedTableFull { .. })
-            | Err(RouterControlError::SnapshotBufferTooSmall { .. }) => DiagnosticEvent::Full,
+            | Err(RouterControlError::SnapshotBufferTooSmall { .. })
+            | Err(RouterControlError::PayloadTooLarge { .. }) => DiagnosticEvent::Full,
             Err(RouterControlError::Codec(_)) | Err(RouterControlError::MissingPeerAddress) => {
                 DiagnosticEvent::Malformed
             }

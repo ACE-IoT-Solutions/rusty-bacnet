@@ -6,15 +6,15 @@ use bacnet_mstp_core::{Action, HeaplessQueues, Instant, MasterCore, MstpCoreConf
 use bacnet_router_adapters::{
     bip::{BipDatagramSink, BipEgress},
     composition::{
-        BindingAdmission, CompositionError, ObservedCompositionError, RequestBindings,
         forward_bip_datagram_to_mstp_observed, forward_mstp_action_to_bip_observed,
+        BindingAdmission, CompositionError, ObservedCompositionError, RequestBindings,
     },
     mstp::MstpEgress,
 };
 use bacnet_router_core::{
-    AdmissionOutcome, BipDecodeError, ForwardOutcome, Ipv4SocketAddress, NetworkNumber,
-    OperationalDiagnostics, PortCapabilities, PortId, PortKind, RouterCore, UdpDatagramMeta,
-    encode_forwarded_npdu,
+    encode_forwarded_npdu, AdmissionOutcome, BipDecodeError, ForwardOutcome, Ipv4SocketAddress,
+    NetworkNumber, OperationalDiagnostics, PortCapabilities, PortId, PortKind, RouterCore,
+    UdpDatagramMeta,
 };
 
 type Queues = HeaplessQueues<1, 1>;

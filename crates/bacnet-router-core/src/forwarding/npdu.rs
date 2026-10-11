@@ -92,7 +92,9 @@ impl<'a> ParsedNpdu<'a> {
 
         // Skip Hop Count. The direct egress removes it with DNET/DADR.
         let hop_count = data[offset];
-        if reject_exhausted_hop && hop_count == 0 {
+        // A router decrements before forwarding and discards when the value
+        // reaches zero, so both wire values 0 and 1 are exhausted here.
+        if reject_exhausted_hop && hop_count <= 1 {
             return Err(ForwardError::HopExhausted);
         }
         offset += 1;

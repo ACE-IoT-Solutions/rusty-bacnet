@@ -107,7 +107,7 @@ pub enum BroadcastFanoutOutcome {
     /// No cache slot/retention was available, so fail-closed policy refused
     /// to forward this packet without loop protection.
     CacheUntracked,
-    /// The input hop count was already zero.
+    /// Decrementing the input hop count would reach zero.
     HopExhausted,
     /// The egress queue owns the rewritten NPDU.
     Accepted {
@@ -296,6 +296,14 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
 
         let parsed =
             ParsedBroadcastNpdu::decode(request.npdu).map_err(|_| BroadcastError::InvalidNpdu)?;
+        let parsed_class = if parsed.control & NETWORK_MESSAGE_BIT != 0 {
+            TrafficClass::NetworkControl
+        } else {
+            TrafficClass::Data
+        };
+        if request.class != parsed_class {
+            return Err(BroadcastError::InvalidNpdu);
+        }
         if let Some(supplied) = request.hop_count_offset {
             match parsed.hop_offset {
                 Some(actual) if actual == supplied => {}
@@ -323,7 +331,14 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
             }
             BroadcastDestination::Global
                 if parsed.destination_network.is_some()
-                    && parsed.destination_network != Some(u16::MAX) =>
+                    && (parsed.destination_network != Some(u16::MAX)
+                        || !parsed.destination_is_broadcast()) =>
+            {
+                return Err(BroadcastError::InvalidNpdu);
+            }
+            BroadcastDestination::Global
+                if parsed.destination_network.is_none()
+                    && parsed.control & NETWORK_MESSAGE_BIT == 0 =>
             {
                 return Err(BroadcastError::InvalidNpdu);
             }
@@ -368,7 +383,7 @@ impl<const CACHE: usize> BroadcastPolicy<CACHE> {
         }
 
         if let Some(hop) = parsed.hop_count {
-            if hop == 0 {
+            if hop <= 1 {
                 for (index, target) in targets.iter().enumerate() {
                     if target_selected_for_request(request, target.capabilities) {
                         results[index].outcome = BroadcastFanoutOutcome::HopExhausted;

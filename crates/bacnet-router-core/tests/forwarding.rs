@@ -407,7 +407,7 @@ fn learned_unicast_preserves_final_dadr_decrements_hop_and_uses_router_next_hop(
     let input = [
         0x01, 0x20, // version, destination present
         0x01, 0x2c, 0x06, 192, 0, 2, 44, 0xba, 0xc1, // DNET/DADR
-        0x01, // hop count
+        0x02, // hop count
         0x10, 0x22, // APDU
     ];
     let mut scratch = [0u8; 64];
@@ -434,7 +434,7 @@ fn learned_unicast_preserves_final_dadr_decrements_hop_and_uses_router_next_hop(
             0x01, 0x28, // destination + source
             0x01, 0x2c, 0x06, 192, 0, 2, 44, 0xba, 0xc1, // final DNET/DADR
             0x00, 0x64, 0x06, 198, 51, 100, 7, 0xba, 0xc1, // inserted SNET/SADR
-            0x00, // 1 -> 0, without underflow
+            0x01, // 2 -> 1
             0x10, 0x22,
         ]
     );
@@ -548,28 +548,30 @@ fn learned_unicast_distinguishes_no_route_and_busy_route() {
 }
 
 #[test]
-fn learned_zero_hop_is_rejected_before_egress() {
+fn learned_zero_and_one_hop_are_rejected_before_egress() {
     let mut core = learned_core();
-    let input = [
-        0x01, 0x20, 0x01, 0x2c, 0x06, 192, 0, 2, 44, 0xba, 0xc1, 0x00, 0x10,
-    ];
     let source = LinkAddress::try_from_slice(&[198, 51, 100, 7, 0xba, 0xc1]).unwrap();
     let mut scratch = [0u8; 64];
     let mut egress = TestEgress::default();
-    assert_eq!(
-        core.forward_unicast(
-            DirectForwardRequest {
-                ingress_network: NetworkNumber::new(100).unwrap(),
-                logical_source: source,
-                npdu: &input,
-                egress_capabilities: learned_capabilities(),
-                now: 11,
-            },
-            &mut scratch,
-            &mut egress,
-        ),
-        Err(ForwardError::HopExhausted)
-    );
+    for hop in [0, 1] {
+        let input = [
+            0x01, 0x20, 0x01, 0x2c, 0x06, 192, 0, 2, 44, 0xba, 0xc1, hop, 0x10,
+        ];
+        assert_eq!(
+            core.forward_unicast(
+                DirectForwardRequest {
+                    ingress_network: NetworkNumber::new(100).unwrap(),
+                    logical_source: source,
+                    npdu: &input,
+                    egress_capabilities: learned_capabilities(),
+                    now: 11,
+                },
+                &mut scratch,
+                &mut egress,
+            ),
+            Err(ForwardError::HopExhausted)
+        );
+    }
     assert!(egress.accepted.is_empty());
 }
 
@@ -600,21 +602,24 @@ fn standard_mstp_hard_limit_and_broadcast_mac_are_enforced() {
         }
     );
 
+    let calls_before_broadcast = egress.calls;
     let mut broadcast_mac = routed_npdu(12);
     broadcast_mac[5] = 0xff;
-    core.forward_direct(
-        DirectForwardRequest {
-            ingress_network: NetworkNumber::new(100).unwrap(),
-            logical_source: source,
-            npdu: &broadcast_mac,
-            egress_capabilities: capabilities(),
-            now: 0,
-        },
-        &mut scratch,
-        &mut egress,
-    )
-    .unwrap();
-    assert_eq!(egress.destination, Some(EgressDestination::Broadcast));
+    assert_eq!(
+        core.forward_direct(
+            DirectForwardRequest {
+                ingress_network: NetworkNumber::new(100).unwrap(),
+                logical_source: source,
+                npdu: &broadcast_mac,
+                egress_capabilities: capabilities(),
+                now: 0,
+            },
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(ForwardError::BroadcastRequiresPolicy)
+    );
+    assert_eq!(egress.calls, calls_before_broadcast);
 }
 
 #[test]
@@ -640,25 +645,27 @@ fn malformed_input_has_no_refusal_and_never_reaches_egress() {
 }
 
 #[test]
-fn exhausted_hop_is_silently_discarded_without_a_refusal() {
+fn zero_and_one_hop_are_silently_discarded_without_a_refusal() {
     let mut core = configured_core();
     let source = LinkAddress::try_from_slice(&[192, 0, 2, 10, 0xba, 0xc1]).unwrap();
-    let mut npdu = routed_npdu(100);
-    npdu[6] = 0;
     let mut scratch = [0u8; 128];
     let mut egress = TestEgress::default();
-    let attempt = core.forward_direct_with_rejection(
-        DirectForwardRequest {
-            ingress_network: NetworkNumber::new(100).unwrap(),
-            logical_source: source,
-            npdu: &npdu,
-            egress_capabilities: capabilities(),
-            now: 0,
-        },
-        &mut scratch,
-        &mut egress,
-    );
-    assert_eq!(attempt.result, Err(ForwardError::HopExhausted));
-    assert!(attempt.rejection.is_none());
+    for hop in [0, 1] {
+        let mut npdu = routed_npdu(100);
+        npdu[6] = hop;
+        let attempt = core.forward_direct_with_rejection(
+            DirectForwardRequest {
+                ingress_network: NetworkNumber::new(100).unwrap(),
+                logical_source: source,
+                npdu: &npdu,
+                egress_capabilities: capabilities(),
+                now: 0,
+            },
+            &mut scratch,
+            &mut egress,
+        );
+        assert_eq!(attempt.result, Err(ForwardError::HopExhausted));
+        assert!(attempt.rejection.is_none());
+    }
     assert_eq!(egress.calls, 0);
 }

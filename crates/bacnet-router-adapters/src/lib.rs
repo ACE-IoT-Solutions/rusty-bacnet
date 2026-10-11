@@ -14,6 +14,6 @@ pub mod composition;
 pub mod mstp;
 
 pub use composition::{
-    ObservedCompositionError, forward_bip_datagram_to_mstp_observed,
-    forward_mstp_action_to_bip_observed,
+    forward_bip_datagram_to_mstp_observed, forward_mstp_action_to_bip_observed,
+    ObservedCompositionError,
 };

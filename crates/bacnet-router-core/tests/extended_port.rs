@@ -145,19 +145,20 @@ fn extended_mstp_uses_one_byte_station_addresses_and_ff_broadcast() {
 
     let mut broadcast = routed_npdu(12);
     broadcast[5] = 0xff;
-    core.forward_direct(
-        DirectForwardRequest {
-            ingress_network: NetworkNumber::new(100).unwrap(),
-            logical_source: source,
-            npdu: &broadcast,
-            egress_capabilities: extended_capabilities(),
-            now: 0,
-        },
-        &mut scratch,
-        &mut egress,
-    )
-    .unwrap();
-    assert_eq!(egress.destination, Some(EgressDestination::Broadcast));
+    assert_eq!(
+        core.forward_direct(
+            DirectForwardRequest {
+                ingress_network: NetworkNumber::new(100).unwrap(),
+                logical_source: source,
+                npdu: &broadcast,
+                egress_capabilities: extended_capabilities(),
+                now: 0,
+            },
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(ForwardError::BroadcastRequiresPolicy)
+    );
 
     let mut invalid = routed_npdu(12);
     invalid[4] = 2;

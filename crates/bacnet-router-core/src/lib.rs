@@ -49,3 +49,9 @@ pub use types::{
     LinkAddressError, NetworkNumber, NetworkNumberError, PortCapabilities, PortId, PortKind,
     TrafficClass, EXTENDED_MSTP_MAX_NPDU, STANDARD_MSTP_MAX_NPDU,
 };
+
+/// Maximum network-control payload accepted by the embedded router core.
+///
+/// This matches the largest NPDU supported by the explicit Extended MS/TP
+/// profile and bounds duplicate detection even when ingress is B/IP.
+pub const MAX_ROUTER_CONTROL_PAYLOAD: usize = 1497;

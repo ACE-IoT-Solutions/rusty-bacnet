@@ -118,6 +118,16 @@ impl<const CAPACITY: usize> RouteDiscovery<CAPACITY> {
             return DiscoveryDecision::TimedOut;
         }
 
+        // Reclaim unrelated expired attempts before applying the capacity
+        // limit. The caller is explicitly allowed to drop the original NPDU,
+        // so an expired network might never be presented again to retire its
+        // own slot.
+        for slot in &mut self.pending {
+            if slot.is_some_and(|pending| now >= pending.deadline) {
+                *slot = None;
+            }
+        }
+
         let deadline = now.saturating_add(self.timeout);
         let Some(slot) = self.pending.iter_mut().find(|slot| slot.is_none()) else {
             return DiscoveryDecision::Action(DiscoveryAction::CapacityFull { network });

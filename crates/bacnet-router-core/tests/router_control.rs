@@ -104,6 +104,72 @@ fn who_is_answers_local_routes_and_forwards_unknown_queries() {
         }
         other => panic!("unexpected action: {other:?}"),
     }
+
+    let known_on_ingress = handle(
+        &mut state,
+        PortId(1),
+        peer(7),
+        WHO_IS,
+        &[0, 100],
+        1,
+        &mut networks,
+        &mut snapshot,
+    )
+    .unwrap();
+    assert_eq!(known_on_ingress.action, RouterControlAction::None);
+}
+
+#[test]
+fn who_is_does_not_advertise_a_learned_route_back_to_its_ingress() {
+    let mut state = RouterControl::<0, 1>::new();
+    state.routes_mut().learn(net(200), PortId(2), peer(8), 1);
+    let mut networks = [net(999); 1];
+    let mut snapshot: [bacnet_router_core::RouteEntry; 0] = [];
+
+    let outcome = handle(
+        &mut state,
+        PortId(2),
+        peer(9),
+        WHO_IS,
+        &[0, 200],
+        2,
+        &mut networks,
+        &mut snapshot,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.action, RouterControlAction::None);
+}
+
+#[test]
+fn oversized_control_payload_is_rejected_before_state_mutation() {
+    let mut state = RouterControl::<1, 1>::new();
+    state.add_direct(net(100), PortId(1)).unwrap();
+    let direct_before = state.routes().direct_len();
+    let learned_before = state.routes().learned_len();
+    let payload = [0; bacnet_router_core::MAX_ROUTER_CONTROL_PAYLOAD + 1];
+    let mut networks = [net(999); 1];
+    let mut snapshot = [state.routes().entries().next().unwrap(); 1];
+
+    assert_eq!(
+        handle(
+            &mut state,
+            PortId(2),
+            peer(7),
+            I_AM,
+            &payload,
+            1,
+            &mut networks,
+            &mut snapshot,
+        ),
+        Err(RouterControlError::PayloadTooLarge {
+            length: payload.len(),
+            maximum: bacnet_router_core::MAX_ROUTER_CONTROL_PAYLOAD,
+        })
+    );
+    assert_eq!(state.routes().direct_len(), direct_before);
+    assert_eq!(state.routes().learned_len(), learned_before);
+    assert!(state.routes().lookup(net(100)).is_some());
 }
 
 #[test]

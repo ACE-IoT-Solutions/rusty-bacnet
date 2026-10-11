@@ -15,7 +15,7 @@ use bacnet_router_core::{
     PortCapabilities, PortId, RouterCore,
 };
 
-use crate::bip::{BipEgress, BipIngressContext, decode_ingress};
+use crate::bip::{decode_ingress, BipEgress, BipIngressContext};
 
 /// Failure while composing one link ingress with the router.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

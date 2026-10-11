@@ -246,6 +246,42 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
 }
 
 #[test]
+fn bip_broadcast_requires_the_explicit_broadcast_policy() {
+    let mut router = RouterCore::<2, 2>::new();
+    router.routes_mut().add_direct(net(200), PortId(2)).unwrap();
+    let origin = Ipv4SocketAddress {
+        ip: [198, 51, 100, 10],
+        port: 47_809,
+    };
+    let npdu = routed_npdu(20, 200, &[]);
+    let mut datagram = [0; 1600];
+    let datagram_len = encode_forwarded_npdu(&mut datagram, origin, &npdu).unwrap();
+    let mut rx = [0; 1024];
+    let mut mstp_core = core(&mut rx);
+    let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::ZERO);
+    let mut scratch = [0; 512];
+
+    let outcome = forward_bip_datagram_to_mstp(
+        &mut router,
+        &datagram[..datagram_len],
+        metadata(origin, false),
+        Instant::ZERO,
+        net(100),
+        mstp_caps(2, 200),
+        &mut scratch,
+        &mut mstp,
+    );
+
+    assert_eq!(
+        outcome,
+        Err(CompositionError::Forward(
+            bacnet_router_core::ForwardError::BroadcastRequiresPolicy
+        ))
+    );
+    assert_eq!(mstp.core_mut().counters().unicast.depth, 0);
+}
+
+#[test]
 fn bip_to_explicit_extended_mstp_profile_is_admitted() {
     let mut router = RouterCore::<2, 2>::new();
     router.routes_mut().add_direct(net(200), PortId(2)).unwrap();
@@ -403,7 +439,7 @@ fn mstp_delivery_becomes_bip_original_unicast_and_binds_reply_id() {
 }
 
 #[test]
-fn mstp_broadcast_delivery_becomes_bip_original_broadcast() {
+fn mstp_broadcast_requires_the_explicit_broadcast_policy() {
     let mut router = RouterCore::<2, 2>::new();
     router.routes_mut().add_direct(net(300), PortId(3)).unwrap();
     let broadcast = Ipv4SocketAddress {
@@ -437,32 +473,15 @@ fn mstp_broadcast_delivery_becomes_bip_original_broadcast() {
         &mut bip,
         &mut bindings,
         1,
-    )
-    .unwrap();
-    assert!(matches!(
-        outcome,
-        bacnet_router_core::ForwardOutcome::Forwarded { .. }
-    ));
-    drop(bip);
-    assert_eq!(sink.destination, broadcast);
-    let decoded = bip::decode_ingress(
-        &sink.frame[..sink.len],
-        metadata(
-            Ipv4SocketAddress {
-                ip: [192, 0, 2, 1],
-                port: 47_808,
-            },
-            true,
-        ),
-        Instant::ZERO,
-    )
-    .unwrap();
-    assert_eq!(
-        decoded.ingress.function,
-        bacnet_router_core::BvlcFunction::OriginalBroadcastNpdu
     );
-    assert_eq!(&decoded.ingress.npdu[2..4], &[0, 100]);
-    assert_eq!(&decoded.ingress.npdu[4..6], &[1, 7]);
+    assert_eq!(
+        outcome,
+        Err(CompositionError::Forward(
+            bacnet_router_core::ForwardError::BroadcastRequiresPolicy
+        ))
+    );
+    drop(bip);
+    assert_eq!(sink.calls, 0);
 }
 
 #[test]

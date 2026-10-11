@@ -108,6 +108,9 @@ fn oversize_refusal_uses_ingress_source_and_queue_is_not_called() {
     assert_eq!(rejection.reason as u8, 4);
     assert_eq!(rejection.source.network(), NetworkNumber::new(100).unwrap());
     assert_eq!(rejection.source.address(), ingress_source);
+    let mut output = [0u8; 16];
+    let length = rejection.encode_npdu(&mut output).unwrap();
+    assert_eq!(&output[..length], &[0x01, 0x80, 0x03, 0x04, 0x00, 0xc8]);
     assert_eq!(egress.calls, 0);
     assert_eq!(core.diagnostics().drops_oversize, 1);
 }

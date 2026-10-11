@@ -160,6 +160,104 @@ fn malformed_or_undersized_final_npdu_is_rejected_before_cache_or_egress() {
 }
 
 #[test]
+fn global_validation_rejects_nonbroadcast_dadr_local_apdu_and_class_mismatch() {
+    let targets = [target(2, 200, 501)];
+    let mut output = results(1);
+    let mut scratch = [0; 32];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<4>(100);
+
+    let nonbroadcast_dadr = [1, 0x20, 0xff, 0xff, 1, 5, 5, 0xaa];
+    let mut nonbroadcast = request(1, BroadcastDestination::Global, &nonbroadcast_dadr, 1, 0);
+    nonbroadcast.hop_count_offset = Some(6);
+    assert_eq!(
+        policy.forward(
+            nonbroadcast,
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(BroadcastError::InvalidNpdu)
+    );
+
+    let local_apdu = [1, 0x00, 0x10, 0x08];
+    assert_eq!(
+        policy.forward(
+            request(1, BroadcastDestination::Global, &local_apdu, 2, 0),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(BroadcastError::InvalidNpdu)
+    );
+
+    let global = [1, 0x20, 0xff, 0xff, 0, 5, 0xaa];
+    let mut wrong_class = request(1, BroadcastDestination::Global, &global, 3, 0);
+    wrong_class.class = TrafficClass::NetworkControl;
+    assert_eq!(
+        policy.forward(
+            wrong_class,
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        ),
+        Err(BroadcastError::InvalidNpdu)
+    );
+    assert!(egress.calls.is_empty());
+}
+
+#[test]
+fn global_hop_one_is_discarded_before_cache_or_egress() {
+    let npdu = [1, 0x20, 0xff, 0xff, 0, 1, 0xaa];
+    let targets = [target(2, 200, 501)];
+    let mut output = results(1);
+    let mut scratch = [0; 16];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<4>(100);
+
+    let report = policy
+        .forward(
+            request(1, BroadcastDestination::Global, &npdu, 1, 0),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        )
+        .unwrap();
+    assert_eq!(report.selected, 1);
+    assert_eq!(report.cache_outcome, None);
+    assert_eq!(output[0].outcome, BroadcastFanoutOutcome::HopExhausted);
+    assert!(egress.calls.is_empty());
+}
+
+#[test]
+fn remote_hop_one_is_discarded_before_cache_or_egress() {
+    let npdu = [1, 0x20, 0, 200, 0, 1, 0xaa];
+    let targets = [target(2, 200, 501)];
+    let mut output = results(1);
+    let mut scratch = [0; 16];
+    let mut egress = RecordingEgress::default();
+    let mut policy = global_policy::<4>(100);
+
+    let report = policy
+        .forward(
+            request(1, BroadcastDestination::Remote(network(200)), &npdu, 1, 0),
+            &targets,
+            &mut output,
+            &mut scratch,
+            &mut egress,
+        )
+        .unwrap();
+    assert_eq!(report.selected, 1);
+    assert_eq!(report.cache_outcome, None);
+    assert_eq!(output[0].outcome, BroadcastFanoutOutcome::HopExhausted);
+    assert!(egress.calls.is_empty());
+}
+
+#[test]
 fn global_fanout_excludes_ingress_preserves_mixed_outcomes_and_decrements_once() {
     let npdu = [1, 0x20, 0xff, 0xff, 0, 5, 0xaa];
     let targets = [
@@ -390,38 +488,26 @@ fn hopless_cache_saturation_fails_closed_without_a_b_c_churn_loop() {
     let mut policy = global_policy::<2>(100);
 
     for fingerprint in 1..=2 {
+        let mut control = request(1, BroadcastDestination::Global, &npdu, fingerprint, 1);
+        control.class = TrafficClass::NetworkControl;
         policy
-            .forward(
-                request(1, BroadcastDestination::Global, &npdu, fingerprint, 1),
-                &targets,
-                &mut output,
-                &mut scratch,
-                &mut egress,
-            )
+            .forward(control, &targets, &mut output, &mut scratch, &mut egress)
             .unwrap();
         assert_eq!(
             output[0].outcome,
             BroadcastFanoutOutcome::Accepted { final_npdu_len: 8 }
         );
     }
+    let mut third = request(1, BroadcastDestination::Global, &npdu, 3, 1);
+    third.class = TrafficClass::NetworkControl;
     policy
-        .forward(
-            request(1, BroadcastDestination::Global, &npdu, 3, 1),
-            &targets,
-            &mut output,
-            &mut scratch,
-            &mut egress,
-        )
+        .forward(third, &targets, &mut output, &mut scratch, &mut egress)
         .unwrap();
     assert_eq!(output[0].outcome, BroadcastFanoutOutcome::CacheUntracked);
+    let mut repeated = request(1, BroadcastDestination::Global, &npdu, 1, 1);
+    repeated.class = TrafficClass::NetworkControl;
     policy
-        .forward(
-            request(1, BroadcastDestination::Global, &npdu, 1, 1),
-            &targets,
-            &mut output,
-            &mut scratch,
-            &mut egress,
-        )
+        .forward(repeated, &targets, &mut output, &mut scratch, &mut egress)
         .unwrap();
     assert_eq!(output[0].outcome, BroadcastFanoutOutcome::CacheUntracked);
     assert_eq!(egress.calls.len(), 2);

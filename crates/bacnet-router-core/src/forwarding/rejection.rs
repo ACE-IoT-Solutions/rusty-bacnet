@@ -5,6 +5,7 @@ pub use crate::control::RejectReason as ForwardRejectReason;
 use crate::{LinkAddress, NetworkNumber};
 
 const BACNET_PROTOCOL_VERSION: u8 = 1;
+const NETWORK_MESSAGE: u8 = 0x80;
 const DESTINATION_AND_NETWORK_MESSAGE: u8 = 0xa0;
 const REJECT_MESSAGE_TO_NETWORK: u8 = 0x03;
 const DEFAULT_REJECTION_HOP_COUNT: u8 = 0xff;
@@ -57,10 +58,15 @@ pub struct RejectMessage {
 }
 
 impl RejectMessage {
-    /// Complete NPDU length for this action, including default hop count and
-    /// the three-byte Reject-Message-To-Network payload.
+    /// Complete NPDU length for this action. Routed returns include a default
+    /// hop count; ingress-local returns use a hopless network-message NPDU.
     pub fn encoded_len(self) -> usize {
-        2 + 2 + 1 + self.source.address().as_slice().len() + 1 + 1 + 1 + 2
+        match self.source {
+            RefusalSource::Routed { address, .. } => {
+                2 + 2 + 1 + address.as_slice().len() + 1 + 1 + 1 + 2
+            }
+            RefusalSource::Ingress { .. } => 2 + 1 + 1 + 2,
+        }
     }
 
     /// Encode the complete routed NPDU that returns this refusal to its
@@ -73,20 +79,31 @@ impl RejectMessage {
                 available: output.len(),
             });
         }
-        let address = self.source.address();
         let mut offset = 0;
         output[offset] = BACNET_PROTOCOL_VERSION;
         offset += 1;
-        output[offset] = DESTINATION_AND_NETWORK_MESSAGE;
-        offset += 1;
-        output[offset..offset + 2].copy_from_slice(&self.source.network().get().to_be_bytes());
-        offset += 2;
-        output[offset] = address.as_slice().len() as u8;
-        offset += 1;
-        output[offset..offset + address.as_slice().len()].copy_from_slice(address.as_slice());
-        offset += address.as_slice().len();
-        output[offset] = DEFAULT_REJECTION_HOP_COUNT;
-        offset += 1;
+        match self.source {
+            RefusalSource::Routed { network, address } => {
+                output[offset] = DESTINATION_AND_NETWORK_MESSAGE;
+                offset += 1;
+                output[offset..offset + 2].copy_from_slice(&network.get().to_be_bytes());
+                offset += 2;
+                output[offset] = address.as_slice().len() as u8;
+                offset += 1;
+                output[offset..offset + address.as_slice().len()]
+                    .copy_from_slice(address.as_slice());
+                offset += address.as_slice().len();
+                output[offset] = DEFAULT_REJECTION_HOP_COUNT;
+                offset += 1;
+            }
+            RefusalSource::Ingress { .. } => {
+                // The caller sends this NPDU directly to `source.address()`
+                // on the ingress data link. Including DNET/DADR would make a
+                // non-router endpoint treat it as a routed packet and drop it.
+                output[offset] = NETWORK_MESSAGE;
+                offset += 1;
+            }
+        }
         output[offset] = REJECT_MESSAGE_TO_NETWORK;
         offset += 1;
         output[offset] = self.reason as u8;
@@ -157,9 +174,10 @@ pub(super) fn classify(
             ForwardRejectReason::MessageTooLong,
             parsed.destination_network,
         ),
-        // A zero-hop NPDU is consumed as a forwarding-loop drop. BACnet does
-        // not permit a router to amplify it with a second network message.
-        Err(ForwardError::HopExhausted) => return None,
+        // An exhausted-hop NPDU and a broadcast presented to the unicast
+        // seam are consumed without amplifying them with another network
+        // message. Broadcast routing belongs to the explicit bounded policy.
+        Err(ForwardError::HopExhausted | ForwardError::BroadcastRequiresPolicy) => return None,
         Err(
             ForwardError::Truncated
             | ForwardError::UnsupportedVersion(_)

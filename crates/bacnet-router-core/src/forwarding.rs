@@ -37,6 +37,9 @@ pub enum ForwardError {
     InvalidSource,
     /// Routed NPDU hop count is already zero.
     HopExhausted,
+    /// A routed broadcast was supplied to the unicast path and requires the
+    /// explicit broadcast policy/duplicate-suppression boundary.
+    BroadcastRequiresPolicy,
     /// Network-message header is incomplete.
     InvalidNetworkMessage,
     /// No direct route exists for the destination network.
@@ -180,6 +183,10 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
                 return Err(error);
             }
         };
+        if is_broadcast_destination(&parsed, request.egress_capabilities.kind) {
+            self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
+            return Err(ForwardError::BroadcastRequiresPolicy);
+        }
         let destination_network = match NetworkNumber::new(parsed.destination_network) {
             Ok(network) => network,
             Err(_) => {
@@ -355,6 +362,10 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
                 return Err(error);
             }
         };
+        if is_broadcast_destination(&parsed, request.egress_capabilities.kind) {
+            self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
+            return Err(ForwardError::BroadcastRequiresPolicy);
+        }
         let destination_network = match NetworkNumber::new(parsed.destination_network) {
             Ok(network) => network,
             Err(_) => {
@@ -578,18 +589,16 @@ fn valid_egress_address(address: &[u8], kind: PortKind) -> bool {
     }
 }
 
+fn is_broadcast_destination(parsed: &ParsedNpdu<'_>, kind: PortKind) -> bool {
+    parsed.destination_mac.is_empty()
+        || (matches!(kind, PortKind::MstpStandard | PortKind::MstpExtended)
+            && parsed.destination_mac == [0xff])
+}
+
 fn direct_destination(
     parsed: &ParsedNpdu<'_>,
     capabilities: PortCapabilities,
 ) -> Result<EgressDestination, ForwardError> {
-    if parsed.destination_mac.is_empty()
-        || (matches!(
-            capabilities.kind,
-            PortKind::MstpStandard | PortKind::MstpExtended
-        ) && parsed.destination_mac == [0xff])
-    {
-        return Ok(EgressDestination::Broadcast);
-    }
     if !valid_egress_address(parsed.destination_mac, capabilities.kind) {
         return Err(ForwardError::InvalidEgressAddress);
     }
