@@ -17,6 +17,12 @@ pub enum CobsError {
         /// Offset of the invalid code octet in the encoded field.
         offset: usize,
     },
+    /// An encoded data octet would decode to zero instead of using a COBS
+    /// block boundary.
+    NonCanonicalZero {
+        /// Offset of the encoded data octet.
+        offset: usize,
+    },
     /// A code octet claims bytes beyond the end of the field.
     CodeExceedsInput {
         /// Offset of the code octet in the encoded field.
@@ -40,6 +46,9 @@ impl fmt::Display for CobsError {
         match self {
             Self::EmptyInput => f.write_str("COBS input is empty"),
             Self::InvalidCode { offset } => write!(f, "invalid COBS code at offset {offset}"),
+            Self::NonCanonicalZero { offset } => {
+                write!(f, "non-canonical zero-valued COBS data at offset {offset}")
+            }
             Self::CodeExceedsInput {
                 offset,
                 code,
@@ -169,6 +178,14 @@ fn decoded_len(input: &[u8]) -> Result<usize, CobsError> {
                 offset,
                 code,
                 available,
+            });
+        }
+        if let Some(relative) = input[read..read + data_len]
+            .iter()
+            .position(|octet| *octet == 0x55)
+        {
+            return Err(CobsError::NonCanonicalZero {
+                offset: read + relative,
             });
         }
         needed += data_len;

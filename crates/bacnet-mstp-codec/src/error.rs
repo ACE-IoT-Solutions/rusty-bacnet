@@ -17,32 +17,76 @@ pub enum ExtendedField {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameError {
     /// The input ended before the requested bytes were available.
-    TooShort { needed: usize, available: usize },
+    TooShort {
+        /// Minimum number of octets needed.
+        needed: usize,
+        /// Number of octets supplied.
+        available: usize,
+    },
     /// The two preamble octets were not `0x55, 0xFF`.
-    InvalidPreamble { first: u8, second: u8 },
+    InvalidPreamble {
+        /// First received preamble octet.
+        first: u8,
+        /// Second received preamble octet.
+        second: u8,
+    },
     /// The header CRC did not match.
     HeaderCrcMismatch,
     /// A raw type in the reserved COBS/CRC-32K range was received.
-    UnsupportedCobsFrame { raw_type: u8 },
+    UnsupportedCobsFrame {
+        /// Unsupported raw frame-type value.
+        raw_type: u8,
+    },
     /// The source address is not a valid MS/TP master address.
-    InvalidSource { source: u8 },
+    InvalidSource {
+        /// Invalid source station address.
+        source: u8,
+    },
     /// The data length is above the standard-frame limit.
-    Oversize { length: usize, maximum: usize },
+    Oversize {
+        /// Declared or supplied data length.
+        length: usize,
+        /// Maximum permitted standard-frame data length.
+        maximum: usize,
+    },
     /// An encoder was asked to write an unsupported COBS frame type.
-    EncodeUnsupportedCobsFrame { raw_type: u8 },
+    EncodeUnsupportedCobsFrame {
+        /// Unsupported raw frame-type value.
+        raw_type: u8,
+    },
     /// An encoder was asked to write an oversized payload.
-    EncodeOversize { length: usize, maximum: usize },
+    EncodeOversize {
+        /// Supplied payload length.
+        length: usize,
+        /// Maximum permitted payload length.
+        maximum: usize,
+    },
     /// The header's declared data length disagrees with the borrowed payload.
-    HeaderLengthMismatch { declared: usize, actual: usize },
+    HeaderLengthMismatch {
+        /// Length declared by the frame header.
+        declared: usize,
+        /// Actual borrowed payload length.
+        actual: usize,
+    },
     /// The frame ended before its data and CRC were complete.
     Truncated {
+        /// Data length declared by the header.
         data_length: usize,
+        /// Remaining octets available after the header.
         available: usize,
     },
     /// The data CRC did not match.
-    DataCrcMismatch { data_length: usize },
+    DataCrcMismatch {
+        /// Data length covered by the failed CRC.
+        data_length: usize,
+    },
     /// The destination storage could not hold the encoded frame.
-    BufferExhausted { needed: usize, available: usize },
+    BufferExhausted {
+        /// Exact number of destination octets needed.
+        needed: usize,
+        /// Destination capacity supplied by the caller.
+        available: usize,
+    },
     /// An Extended MS/TP Length value is outside the generic COBS envelope.
     ExtendedLengthOutOfRange {
         /// Header Length value, excluding the compatibility two-octet offset.
@@ -53,7 +97,12 @@ pub enum FrameError {
         maximum: usize,
     },
     /// An extended frame ended before its encoded fields were complete.
-    ExtendedTruncated { needed: usize, available: usize },
+    ExtendedTruncated {
+        /// Complete encoded frame length needed.
+        needed: usize,
+        /// Encoded octets currently available.
+        available: usize,
+    },
     /// The decoded extended NPDU is outside the DER/DNER payload range.
     ExtendedPayloadOutOfRange {
         /// Decoded payload length.
@@ -71,7 +120,10 @@ pub enum FrameError {
         error: CobsError,
     },
     /// The encoded CRC field did not decode to exactly four octets.
-    ExtendedCrcLength { length: usize },
+    ExtendedCrcLength {
+        /// Actual decoded CRC-field length.
+        length: usize,
+    },
     /// The CRC-32K over the encoded data did not match the encoded CRC field.
     ExtendedCrcMismatch,
 }

@@ -603,11 +603,13 @@ mod tests {
         );
         let mut wire = [0u8; MAX_EXTENDED_FRAME_LENGTH];
         let used = encode_extended_into(&mut wire, &header, &payload).unwrap();
-        wire[2] = 0x22;
-        wire[7] = crc8(&wire[2..7]);
-        assert_eq!(
-            decode_extended_frame(&wire[..used], &mut [0u8; MAX_EXTENDED_MPDU_DATA]),
-            Err(FrameError::UnsupportedCobsFrame { raw_type: 0x22 })
-        );
+        for raw_type in 0x22..=0x7f {
+            wire[2] = raw_type;
+            wire[7] = crc8(&wire[2..7]);
+            assert_eq!(
+                decode_extended_frame(&wire[..used], &mut [0u8; MAX_EXTENDED_MPDU_DATA]),
+                Err(FrameError::UnsupportedCobsFrame { raw_type })
+            );
+        }
     }
 }

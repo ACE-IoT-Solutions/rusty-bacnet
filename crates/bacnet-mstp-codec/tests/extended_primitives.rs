@@ -109,6 +109,10 @@ fn malformed_and_exhausted_operations_are_atomic() {
         Err(CobsError::InvalidCode { offset: 0 })
     );
     assert_eq!(
+        cobs_decode_xor55(&[0x57, 0x55], &mut [0u8; 1]),
+        Err(CobsError::NonCanonicalZero { offset: 1 })
+    );
+    assert_eq!(
         cobs_decode_xor55(&[0x57], &mut [0u8; 1]),
         Err(CobsError::CodeExceedsInput {
             offset: 0,

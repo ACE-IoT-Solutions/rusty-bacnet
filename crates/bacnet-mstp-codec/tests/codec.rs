@@ -1,3 +1,5 @@
+//! Standard and mixed-stream MS/TP codec regression tests.
+
 use bacnet_mstp_codec::{
     crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid, decode_frame,
     encode_into, DecodeEvent, Frame, FrameError, FrameHeader, FrameSink, FrameType, StreamDecoder,
@@ -32,7 +34,7 @@ fn golden_crc_vectors() {
 #[test]
 fn all_standard_types_round_trip() {
     for raw in 0..=7 {
-        let data = if raw >= 3 && raw <= 6 {
+        let data = if (3..=6).contains(&raw) {
             &[0x01, 0x22, 0x30][..]
         } else {
             &[]

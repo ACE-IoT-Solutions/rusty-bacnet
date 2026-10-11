@@ -76,7 +76,7 @@ pub fn encode_to_sink<'a, S: FrameSink>(
     sink.encode(frame)
 }
 
-impl<'a> FrameSink for &'a mut [u8] {
+impl FrameSink for &mut [u8] {
     fn remaining_capacity(&self) -> Option<usize> {
         Some(self.len())
     }

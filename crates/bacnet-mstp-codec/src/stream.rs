@@ -12,7 +12,12 @@ pub enum DecodeEvent<'a> {
     /// The input does not yet contain a complete frame.
     NeedMore,
     /// A validated frame is available. It remains borrowed until the next push.
-    Frame { frame: Frame<'a>, consumed: usize },
+    Frame {
+        /// Validated standard frame borrowing the receive buffer.
+        frame: Frame<'a>,
+        /// Number of wire octets consumed by this frame.
+        consumed: usize,
+    },
     /// A validated Extended DER or DNER frame is available.
     ExtendedFrame {
         /// Decoded frame borrowing the receive buffer.
@@ -24,9 +29,17 @@ pub enum DecodeEvent<'a> {
     ///
     /// This is synchronization noise, not a received-invalid-frame event in
     /// the Clause 9 receive state machine.
-    Invalid { discard: usize },
+    Invalid {
+        /// Number of synchronization-noise octets to discard.
+        discard: usize,
+    },
     /// A candidate frame was malformed and discarded.
-    Malformed { discard: usize, error: FrameError },
+    Malformed {
+        /// Number of candidate-frame octets to discard.
+        discard: usize,
+        /// Typed validation failure.
+        error: FrameError,
+    },
     /// The caller-owned receive buffer could not accept another octet.
     Error(FrameError),
 }
