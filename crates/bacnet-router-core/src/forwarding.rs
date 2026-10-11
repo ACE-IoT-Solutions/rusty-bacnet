@@ -1,5 +1,12 @@
 //! Direct-network NPDU rewrite and synchronous egress admission.
 
+mod npdu;
+mod rejection;
+
+use npdu::ParsedNpdu;
+#[allow(unused_imports)]
+pub use rejection::{ForwardAttempt, ForwardRejectReason, RefusalSource, RejectMessage};
+
 use crate::{
     AdmissionOutcome, Diagnostics, Egress, EgressDestination, EgressRequest, LinkAddress,
     NetworkNumber, PortCapabilities, PortKind, Reachability, RouteKind, RouteTable, TrafficClass,
@@ -276,6 +283,24 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
         }
     }
 
+    /// Rewrite and admit an NPDU while retaining a source-aware refusal
+    /// action for every valid request that cannot be forwarded.
+    ///
+    /// The returned [`RejectMessage`] is caller-buffered and is not admitted
+    /// automatically. This keeps refusal routing on the same synchronous
+    /// egress boundary as ordinary traffic while allowing the adapter to
+    /// choose the correct ingress port and queue.
+    pub fn forward_direct_with_rejection(
+        &mut self,
+        request: DirectForwardRequest<'_>,
+        scratch: &mut [u8],
+        egress: &mut impl Egress,
+    ) -> ForwardAttempt {
+        let result = self.forward_direct(request, scratch, egress);
+        let rejection = rejection::classify(request, &result);
+        ForwardAttempt { result, rejection }
+    }
+
     /// Forward a unicast NPDU through either a configured direct route or a
     /// learned next-hop route.
     ///
@@ -436,200 +461,23 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
             }
         }
     }
+
+    /// Learned-route equivalent of [`Self::forward_direct_with_rejection`].
+    pub fn forward_unicast_with_rejection(
+        &mut self,
+        request: DirectForwardRequest<'_>,
+        scratch: &mut [u8],
+        egress: &mut impl Egress,
+    ) -> ForwardAttempt {
+        let result = self.forward_unicast(request, scratch, egress);
+        let rejection = rejection::classify(request, &result);
+        ForwardAttempt { result, rejection }
+    }
 }
 
 impl<const DIRECT: usize, const LEARNED: usize> Default for RouterCore<DIRECT, LEARNED> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-struct ParsedNpdu<'a> {
-    control: u8,
-    destination_network: u16,
-    destination_mac: &'a [u8],
-    source_fields: Option<&'a [u8]>,
-    hop_count: u8,
-    remainder: &'a [u8],
-}
-
-impl<'a> ParsedNpdu<'a> {
-    fn decode(data: &'a [u8]) -> Result<Self, ForwardError> {
-        if data.len() < 2 {
-            return Err(ForwardError::Truncated);
-        }
-        if data[0] != BACNET_PROTOCOL_VERSION {
-            return Err(ForwardError::UnsupportedVersion(data[0]));
-        }
-        let control = data[1];
-        if control & DESTINATION_BIT == 0 {
-            return Err(ForwardError::MissingDestination);
-        }
-        let mut offset = 2;
-        if data.len() < offset + 3 {
-            return Err(ForwardError::Truncated);
-        }
-        let destination_network = u16::from_be_bytes([data[offset], data[offset + 1]]);
-        offset += 2;
-        let destination_len = data[offset] as usize;
-        offset += 1;
-        if destination_len > 6 || data.len() < offset + destination_len + 1 {
-            return Err(if destination_len > 6 {
-                ForwardError::AddressTooLong
-            } else {
-                ForwardError::Truncated
-            });
-        }
-        let destination_mac = &data[offset..offset + destination_len];
-        offset += destination_len;
-
-        let source_fields = if control & SOURCE_BIT != 0 {
-            let source_start = offset;
-            if data.len() < offset + 3 {
-                return Err(ForwardError::Truncated);
-            }
-            let source_network = u16::from_be_bytes([data[offset], data[offset + 1]]);
-            offset += 2;
-            let source_len = data[offset] as usize;
-            offset += 1;
-            if source_network == 0 || source_network == u16::MAX || source_len == 0 {
-                return Err(ForwardError::InvalidSource);
-            }
-            if source_len > 6 {
-                return Err(ForwardError::AddressTooLong);
-            }
-            if data.len() < offset + source_len + 1 {
-                return Err(ForwardError::Truncated);
-            }
-            offset += source_len;
-            Some(&data[source_start..offset])
-        } else {
-            None
-        };
-
-        // Skip Hop Count. The direct egress removes it with DNET/DADR.
-        let hop_count = data[offset];
-        if hop_count == 0 {
-            return Err(ForwardError::HopExhausted);
-        }
-        offset += 1;
-        if control & NETWORK_MESSAGE_BIT != 0 {
-            let Some(&message_type) = data.get(offset) else {
-                return Err(ForwardError::InvalidNetworkMessage);
-            };
-            if message_type >= 0x80 && data.len() < offset + 3 {
-                return Err(ForwardError::InvalidNetworkMessage);
-            }
-        }
-        Ok(Self {
-            control,
-            destination_network,
-            destination_mac,
-            source_fields,
-            hop_count,
-            remainder: &data[offset..],
-        })
-    }
-
-    fn rewrite_direct(
-        &self,
-        ingress_network: NetworkNumber,
-        ingress_source: LinkAddress,
-        output: &mut [u8],
-    ) -> Result<usize, ForwardError> {
-        let needed = self.rewritten_direct_len(ingress_source)?;
-        if output.len() < needed {
-            return Err(ForwardError::ScratchTooSmall {
-                needed,
-                available: output.len(),
-            });
-        }
-        output[0] = BACNET_PROTOCOL_VERSION;
-        output[1] = (self.control & !DESTINATION_BIT) | SOURCE_BIT;
-        let mut offset = 2;
-        if let Some(source_fields) = self.source_fields {
-            output[offset..offset + source_fields.len()].copy_from_slice(source_fields);
-            offset += source_fields.len();
-        } else {
-            output[offset..offset + 2].copy_from_slice(&ingress_network.get().to_be_bytes());
-            offset += 2;
-            output[offset] = ingress_source.as_slice().len() as u8;
-            offset += 1;
-            output[offset..offset + ingress_source.as_slice().len()]
-                .copy_from_slice(ingress_source.as_slice());
-            offset += ingress_source.as_slice().len();
-        }
-        output[offset..needed].copy_from_slice(self.remainder);
-        Ok(needed)
-    }
-
-    fn rewritten_direct_len(&self, ingress_source: LinkAddress) -> Result<usize, ForwardError> {
-        if self.source_fields.is_none() && ingress_source.is_empty() {
-            return Err(ForwardError::InvalidSource);
-        }
-        let source_len = self
-            .source_fields
-            .map_or(3 + ingress_source.as_slice().len(), <[u8]>::len);
-        Ok(2 + source_len + self.remainder.len())
-    }
-
-    fn rewrite_learned(
-        &self,
-        ingress_network: NetworkNumber,
-        ingress_source: LinkAddress,
-        next_hop: LinkAddress,
-        output: &mut [u8],
-    ) -> Result<usize, ForwardError> {
-        let needed = self.rewritten_learned_len(ingress_source, next_hop)?;
-        if output.len() < needed {
-            return Err(ForwardError::ScratchTooSmall {
-                needed,
-                available: output.len(),
-            });
-        }
-        output[0] = BACNET_PROTOCOL_VERSION;
-        output[1] = self.control | SOURCE_BIT;
-        let mut offset = 2;
-        output[offset..offset + 2].copy_from_slice(&self.destination_network.to_be_bytes());
-        offset += 2;
-        output[offset] = next_hop.as_slice().len() as u8;
-        offset += 1;
-        output[offset..offset + next_hop.as_slice().len()].copy_from_slice(next_hop.as_slice());
-        offset += next_hop.as_slice().len();
-        if let Some(source_fields) = self.source_fields {
-            output[offset..offset + source_fields.len()].copy_from_slice(source_fields);
-            offset += source_fields.len();
-        } else {
-            output[offset..offset + 2].copy_from_slice(&ingress_network.get().to_be_bytes());
-            offset += 2;
-            output[offset] = ingress_source.as_slice().len() as u8;
-            offset += 1;
-            output[offset..offset + ingress_source.as_slice().len()]
-                .copy_from_slice(ingress_source.as_slice());
-            offset += ingress_source.as_slice().len();
-        }
-        output[offset] = self.hop_count() - 1;
-        offset += 1;
-        output[offset..needed].copy_from_slice(self.remainder);
-        Ok(needed)
-    }
-
-    fn rewritten_learned_len(
-        &self,
-        ingress_source: LinkAddress,
-        next_hop: LinkAddress,
-    ) -> Result<usize, ForwardError> {
-        if self.source_fields.is_none() && ingress_source.is_empty() {
-            return Err(ForwardError::InvalidSource);
-        }
-        let source_len = self
-            .source_fields
-            .map_or(3 + ingress_source.as_slice().len(), <[u8]>::len);
-        Ok(2 + 2 + 1 + next_hop.as_slice().len() + source_len + 1 + self.remainder.len())
-    }
-
-    fn hop_count(&self) -> u8 {
-        self.hop_count
     }
 }
 
