@@ -1,6 +1,6 @@
 # Embedded BACnet/IP↔MS/TP router workplan
 
-Status: active closeout
+Status: ready for human library review
 
 Last updated: 2026-10-11
 
@@ -72,7 +72,7 @@ never counted as complete.
 | X3 Extended core profile | Complete | Explicit profiles, memory evidence, and strict gates pass |
 | X4 Hosted extended framing | Complete | Framing/assembly only; hosted application delivery is not claimed |
 | X5 Extended router composition | Complete | Composition and boundary gates pass; interop remains a claim gate |
-| R6 Release evidence/claim | In review | Independent review and documented packaging caveat |
+| R6 Release evidence/claim | Complete | Human review next; external claim/release gates remain open |
 
 ## Completed implementation baseline
 
@@ -240,9 +240,10 @@ or platform claims.
   UART direction control, timers, task serialization, and HIL remain
   downstream responsibilities.
 - [x] Run the full verification matrix below and retain exact command/results.
-- [ ] Run a BACnet-focused correctness/safety review and a release-readiness
-  review. Resolve blockers/high findings or record an explicit human decision.
-- [ ] Package the branch for human review as focused commits; do not publish a
+- [x] Run a BACnet-focused correctness/safety review and a release-readiness
+  review. All blocker/high findings were resolved and replacement revisions
+  were approved for human review (`677a5af6`).
+- [x] Package the branch for human review as focused commits; do not publish a
   broad modern-router claim until the external X0 and interoperability gates
   are satisfied.
 
@@ -273,9 +274,11 @@ BACnet-focused review panel before asking the human team to review the branch.
   cap router-control payload processing at 1497 bytes (`9f8e7892`).
 - [x] Close the Extended receive, watchdog, source-address, reply-delivery,
   and Annex X.4 oracle gaps listed in C2 (`da7a4eda`).
-- [ ] Re-run the correctness, Clause 6, data-link, safety, test, and release
-  reviews against the replacement commit and resolve every blocker/high
-  finding.
+- [x] Re-run the correctness, Clause 6, data-link, safety, test, and release
+  reviews against replacement commits and resolve every blocker/high finding.
+  The final Clause 6, safety, and verification passes reported no blocker/high
+  findings at `677a5af6`; the release review is ready-with-risks because the
+  publication prerequisites below remain deliberately open.
 
 Initialize-Routing-Table query, ACK, and transactional parsing are covered.
 The precise semantics of non-empty request entries and their wire `port_id`
