@@ -538,8 +538,7 @@ fn encode_oversized_data_returns_error() {
 }
 
 #[test]
-fn decode_rejects_source_above_max_master() {
-    // Encode a valid frame then patch the source to 128 (above MAX_MASTER=127)
+fn decode_accepts_slave_sources_above_max_master() {
     let frame = MstpFrame {
         frame_type: FrameType::Token,
         destination: 1,
@@ -549,13 +548,11 @@ fn decode_rejects_source_above_max_master() {
     let mut buf = BytesMut::new();
     encode_frame(&mut buf, &frame).unwrap();
 
-    // Patch source byte (offset 4) to 128
-    buf[4] = 128;
-    // Recompute header CRC (bytes 2..7, CRC at byte 7)
-    let header_crc = crc8(&buf[2..7]);
-    buf[7] = header_crc;
-
-    assert!(decode_frame(&buf).is_err());
+    for source in [128, 254] {
+        buf[4] = source;
+        buf[7] = crc8(&buf[2..7]);
+        assert_eq!(decode_frame(&buf).unwrap().0.source, source);
+    }
 }
 
 #[test]
