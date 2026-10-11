@@ -154,26 +154,46 @@ fn i_am_learns_with_local_owner_and_controlled_rebroadcast() {
 
 #[test]
 fn malformed_initialize_table_is_transactional() {
+    // count=2; both entries have empty port-info. Every strict prefix is
+    // malformed for both the request and ACK forms because the advertised
+    // count cannot be satisfied.
+    let complete = [2, 0, 200, 4, 0, 0, 201, 5, 0];
+    for message_type in [INIT, INIT_ACK] {
+        for length in 0..complete.len() {
+            assert_malformed_initialize_does_not_mutate(message_type, &complete[..length]);
+        }
+        for malformed in [
+            &[1, 0, 0, 4, 0][..],
+            &[1, 0xff, 0xff, 4, 0][..],
+            &[1, 0, 200, 4, 0, 0][..],
+        ] {
+            assert_malformed_initialize_does_not_mutate(message_type, malformed);
+        }
+    }
+}
+
+fn assert_malformed_initialize_does_not_mutate(message_type: u8, payload: &[u8]) {
     let mut state = RouterControl::<1, 2>::new();
     state.add_direct(net(100), PortId(1)).unwrap();
     let mut networks = [net(999); 2];
     let mut snapshot = [state.routes().entries().next().unwrap(); 3];
-    let before = state.routes().learned_len();
-    // count=2, second entry is truncated after its network.
-    let malformed = [2, 0, 200, 4, 0, 0, 0, 201];
+
     let error = handle(
         &mut state,
         PortId(2),
         peer(9),
-        INIT_ACK,
-        &malformed,
+        message_type,
+        payload,
         5,
         &mut networks,
         &mut snapshot,
     )
     .unwrap_err();
+
     assert!(matches!(error, RouterControlError::Codec(_)));
-    assert_eq!(state.routes().learned_len(), before);
+    assert_eq!(state.routes().direct_len(), 1);
+    assert_eq!(state.routes().learned_len(), 0);
+    assert_eq!(state.routes().lookup(net(100)).unwrap().port, PortId(1));
     assert!(state.routes().lookup(net(200)).is_none());
 }
 
