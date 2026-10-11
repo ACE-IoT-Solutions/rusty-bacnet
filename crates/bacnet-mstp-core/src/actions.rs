@@ -11,9 +11,15 @@ use bacnet_mstp_codec::{MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA};
 /// The physical direction requested for the serial transceiver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// Receive bytes from the bus.
+    /// Receive bytes from the bus: the line driver is off.
     Receive,
-    /// Drive bytes onto the bus.
+    /// Prepare to drive the bus for the [`Action::Transmit`] that follows.
+    ///
+    /// Do not enable the line driver yet: only once
+    /// [`MasterCore::on_transmit_started`](crate::MasterCore::on_transmit_started)
+    /// returns `Ok`. On a transceiver whose receiver and driver enables are
+    /// tied, enabling the driver early also turns the receiver off, and the
+    /// core stops hearing the very activity that must refuse the start.
     Transmit,
 }
 
@@ -92,15 +98,17 @@ pub enum Action<'a> {
     SetDirection(Direction),
     /// Send one complete MS/TP frame.
     ///
-    /// Before enabling the line driver for it (the
-    /// [`SetDirection`](Self::SetDirection) polled just before), confirm the
-    /// start with [`MasterCore::on_transmit_started`](crate::MasterCore::on_transmit_started)
-    /// and send only if that succeeds. Until then keep feeding the core what
-    /// the receiver hears: activity in that time can refuse the start, and
-    /// the core may take the frame back first, which it shows by queueing
-    /// `SetDirection(Direction::Receive)` before the start; drop the frame
-    /// then. After any error for this id, or an abort, send nothing more for
-    /// it.
+    /// Enable the line driver for it (prepared by the
+    /// [`SetDirection`](Self::SetDirection) polled just before) only once
+    /// [`MasterCore::on_transmit_started`](crate::MasterCore::on_transmit_started)
+    /// has returned `Ok`, and send only then. Until then keep the receiver on
+    /// and feed the core what it hears. Right before that call, drain the
+    /// receive FIFO or DMA buffer and feed the core every octet and receive
+    /// error in it: activity the core has not been given cannot refuse the
+    /// start. The core may also take the frame back first, which it shows by
+    /// queueing `SetDirection(Direction::Receive)` before the start; drop the
+    /// frame then. After any error for this id, or an abort, send nothing
+    /// more for it.
     Transmit {
         /// Generation-bound operation identifier.
         id: TransmitId,

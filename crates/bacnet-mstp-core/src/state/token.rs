@@ -82,7 +82,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             return self.drive_token(now);
         }
         self.poll_station = next;
-        self.queue_poll(Origin::Holder, now)
+        self.queue_poll(Origin::NextPoll, now)
     }
 
     pub(super) fn drive_token(&mut self, now: Instant) -> Result<(), CoreError> {

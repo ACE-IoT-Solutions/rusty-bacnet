@@ -107,8 +107,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     pub(super) fn invalid_frame_event(&mut self, now: Instant) -> Result<(), CoreError> {
         // While a frame of this station's waits, its octets were only
-        // activity for that frame (see the `pending` module).
-        if self.pending_send.is_some() {
+        // activity for that frame (see the `pending` module). While one is
+        // on the wire, nothing received can be judged: the start dropped any
+        // partial frame, so this guard is only a second line.
+        if self.pending_send.is_some() || self.active_transmit.is_some() {
             return Ok(());
         }
         if self.state == MasterState::WaitForReply {
@@ -149,12 +151,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             if frame.header.frame_type == FrameType::ReplyToPollForMaster
                 && frame.header.destination == self.config.station
             {
-                self.next_station = frame.header.source;
-                self.poll_station = self.config.station;
-                self.token_count = 0;
-                self.retry_token_count = 0;
-                self.sole_master = false;
-                return self.queue_token(self.next_station, Origin::Holder, now);
+                return self.take_successor(frame.header.source, now);
             }
             self.set_state(MasterState::Idle);
             self.protocol_deadline = Some(now + self.config.t_no_token);
@@ -206,6 +203,17 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
     }
 
+    /// A station answered this station's Poll For Master: it becomes the
+    /// successor and gets the token (ReceivedReplyToPFM, Clause 9.5.6.8).
+    pub(super) fn take_successor(&mut self, source: u8, now: Instant) -> Result<(), CoreError> {
+        self.next_station = source;
+        self.poll_station = self.config.station;
+        self.token_count = 0;
+        self.retry_token_count = 0;
+        self.sole_master = false;
+        self.queue_token(self.next_station, Origin::Holder, now)
+    }
+
     /// Take up a Token addressed to this station (Clause 9.5.6.2).
     pub(super) fn use_received_token(&mut self, now: Instant) -> Result<(), CoreError> {
         self.sole_master = false;
@@ -232,7 +240,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// - A Poll For Master, data request or Test_Request for this station is
     ///   dropped and counted in [`MstpCounters::discarded_while_busy`]: an
     ///   answer after this station's own frame would come too late, and could
-    ///   collide with the station that asked.
+    ///   collide with the station that asked. So is a Reply To Poll For
+    ///   Master for it that nothing is waiting for.
     ///
     /// Any frame but delivered data replaces a remembered Token, as a newer
     /// frame replaces a pending one in the receive state machine.
@@ -252,6 +261,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             | FrameType::PollForMaster
             | FrameType::BACnetDataExpectingReply
             | FrameType::TestRequest
+            | FrameType::ReplyToPollForMaster
                 if for_us =>
             {
                 self.pending_token = false;

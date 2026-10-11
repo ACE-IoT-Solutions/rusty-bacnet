@@ -11,6 +11,7 @@ mod support;
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, Instant, MasterState, ReceiveError, ReplyDecision,
+    TransmitFailure,
 };
 
 use support::*;
@@ -60,23 +61,30 @@ fn a_frame_heard_before_the_confirmed_start_is_received() {
     assert_eq!(core.counters().cancelled_sends, 0);
 }
 
-/// A receive error between the hand-over and the start is line activity
-/// just as an octet is.
+/// A receive error, or octets a host adapter reports, between the
+/// hand-over and the start are line activity just as an octet is.
 #[test]
-fn a_receive_error_before_the_confirmed_start_defers_it() {
-    let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
-    poll_waiting(&mut core);
-    let handed = core.next_deadline().unwrap();
-    core.on_deadline(handed).unwrap();
-    let (id, _) = handed_over(&mut core);
-    let error = handed + Duration::from_millis(1);
-    core.on_receive_error(ReceiveError::Framing, error).unwrap();
-    assert_eq!(
-        core.on_transmit_started(id, error + us(100)),
-        Err(CoreError::TransmitDeferred)
-    );
-    assert_eq!(core.next_deadline(), Some(error + turnaround(&core)));
+fn other_input_before_the_confirmed_start_defers_it() {
+    for host in [false, true] {
+        let mut rx = [0; 64];
+        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        poll_waiting(&mut core);
+        let handed = core.next_deadline().unwrap();
+        core.on_deadline(handed).unwrap();
+        let (id, _) = handed_over(&mut core);
+        let heard = handed + Duration::from_millis(1);
+        if host {
+            core.on_host_activity(2, heard).unwrap();
+        } else {
+            core.on_receive_error(ReceiveError::Framing, heard).unwrap();
+        }
+        assert_eq!(
+            core.on_transmit_started(id, heard + us(100)),
+            Err(CoreError::TransmitDeferred),
+            "host {host}"
+        );
+        assert_eq!(core.next_deadline(), Some(heard + turnaround(&core)));
+    }
 }
 
 /// Only activity within T_turnaround of the start refuses it: a start that
@@ -103,9 +111,10 @@ fn a_start_a_full_turnaround_after_the_activity_goes_ahead() {
     }
 }
 
-/// After the confirmed start, octets and receive errors are the station's
-/// own echo: they change no count, state or deadline. Here a whole Token
-/// echoes back during the station's own Token pass.
+/// After the confirmed start, octets, receive errors and host-reported
+/// octets are the station's own echo: they change no count, state or
+/// deadline. Here a whole Token echoes back during the station's own Token
+/// pass.
 #[test]
 fn input_after_the_confirmed_start_is_echo() {
     let mut rx = [0; 64];
@@ -122,6 +131,7 @@ fn input_after_the_confirmed_start_is_echo() {
         core.on_receive_error(ReceiveError::Framing, last + us(step))
             .unwrap();
     }
+    core.on_host_activity(8, last + us(6)).unwrap();
     assert_eq!(
         (core.counters(), core.state(), core.next_deadline()),
         before
@@ -189,7 +199,7 @@ fn a_reply_handed_over_waits_within_its_window() {
 }
 
 /// An adapter abort of a transmit it never started also gives up the
-/// waiting frame: nothing comes back for it.
+/// waiting frame: nothing comes back for it, and it is counted as given up.
 #[test]
 fn an_aborted_unstarted_transmit_is_not_sent_again() {
     let mut rx = [0; 64];
@@ -198,7 +208,7 @@ fn an_aborted_unstarted_transmit_is_not_sent_again() {
     let handed = core.next_deadline().unwrap();
     core.on_deadline(handed).unwrap();
     let (id, _) = handed_over(&mut core);
-    core.on_transmit_aborted(id, bacnet_mstp_core::TransmitFailure::Rejected, handed)
+    core.on_transmit_aborted(id, TransmitFailure::Rejected, handed)
         .unwrap();
     expect_receive_only(&mut core);
     assert_eq!(core.state(), MasterState::Idle);
@@ -206,4 +216,25 @@ fn an_aborted_unstarted_transmit_is_not_sent_again() {
         core.next_deadline(),
         Some(handed + Duration::from_millis(500))
     );
+    assert_eq!(core.counters().cancelled_sends, 1);
+    assert_eq!(core.counters().expired_requests, 0);
+}
+
+/// An answer the adapter aborts before starting it leaves its request
+/// unanswered, so it counts as an expired request.
+#[test]
+fn an_aborted_unstarted_answer_counts_as_expired() {
+    let mut rx = [0; 64];
+    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
+    let due = core.next_deadline().unwrap();
+    core.on_deadline(due).unwrap();
+    let (id, header) = handed_over(&mut core);
+    assert!(is(header, FrameType::ReplyToPollForMaster, 7));
+    core.on_transmit_aborted(id, TransmitFailure::Io, due)
+        .unwrap();
+    expect_receive_only(&mut core);
+    assert_eq!(core.counters().expired_requests, 1);
+    assert_eq!(core.counters().cancelled_sends, 0);
+    assert_eq!(core.state(), MasterState::Idle);
 }

@@ -7,7 +7,9 @@
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
-use bacnet_mstp_core::{Action, CoreError, Duration, Instant, MasterState, ReceiveError};
+use bacnet_mstp_core::{
+    Action, CoreError, Direction, Duration, Instant, MasterState, ReceiveError,
+};
 
 use support::*;
 
@@ -79,7 +81,8 @@ fn a_data_frame_kept_waiting_for_t_no_token_is_dropped() {
 
 /// Row "data frame", frames that complete meanwhile (Clause 9.5.5.1): data
 /// needing no answer is delivered, frames asking this station for something
-/// are dropped and counted, and the waiting frame still goes out.
+/// (and a Reply To Poll For Master nothing waits for) are dropped and
+/// counted, and the waiting frame still goes out.
 #[test]
 fn frames_that_complete_while_a_holder_frame_waits() {
     let mut rx = [0; 64];
@@ -93,6 +96,7 @@ fn frames_that_complete_while_a_holder_frame_waits() {
         (FrameType::BACnetDataExpectingReply, STATION),
         (FrameType::TestRequest, STATION),
         (FrameType::BACnetDataExpectingReply, BROADCAST_MAC),
+        (FrameType::ReplyToPollForMaster, STATION),
         (FrameType::Token, 0),
     ];
     let mut at = ms(10);
@@ -100,7 +104,7 @@ fn frames_that_complete_while_a_holder_frame_waits() {
         at += Duration::from_millis(1);
         validated(&mut core, kind, destination, 3, &[1, 4, 7], at);
     }
-    assert_eq!(core.counters().discarded_while_busy, 4);
+    assert_eq!(core.counters().discarded_while_busy, 5);
     assert_eq!(core.state(), MasterState::UseToken);
     for _ in 0..2 {
         assert!(matches!(
@@ -339,10 +343,7 @@ fn a_valid_frame_ends_a_waiting_token_retry() {
     );
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.counters().cancelled_sends, 1);
-    assert_eq!(
-        core.poll_action(),
-        Action::SetDirection(bacnet_mstp_core::Direction::Receive)
-    );
+    assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
     assert!(matches!(core.poll_action(), Action::DeliverNpdu { .. }));
     assert_eq!(
         core.on_transmit_started(id, handed + us(600)),
@@ -432,10 +433,7 @@ fn a_valid_frame_ends_a_waiting_generating_poll() {
     let id = generation_handed_over(&mut core);
     validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(511));
     assert_eq!(core.counters().cancelled_sends, 1);
-    assert_eq!(
-        core.poll_action(),
-        Action::SetDirection(bacnet_mstp_core::Direction::Receive)
-    );
+    assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
     // The Token is used: with no successor known, a poll waits its turn.
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert_eq!(core.next_deadline(), Some(ms(511) + turnaround(&core)));
@@ -443,4 +441,133 @@ fn a_valid_frame_ends_a_waiting_generating_poll() {
         core.on_transmit_started(id, ms(512)),
         Err(CoreError::StaleTransmit)
     );
+}
+
+/// Row "poll for a new successor" (Clause 9.5.6.6, FindNewSuccessor): it
+/// counts events since the retry went out, so octets heard after the retry
+/// carry over. Three then and two more while the poll waits for its adapter
+/// make five: the successor is using the token (SawTokenUser), and the poll
+/// is dropped. One more alone only defers it.
+#[test]
+fn a_new_successor_poll_yields_to_a_successor_that_uses_the_token() {
+    for (later, dropped) in [(1usize, false), (2, true)] {
+        let mut rx = [0; 64];
+        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let (handed, retry) = retry_handed_over(&mut core);
+        core.on_transmit_started(retry, handed).unwrap();
+        let sent = handed + Duration::from_millis(1);
+        core.on_transmit_complete(retry, sent).unwrap();
+        assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
+        let heard = feed(&mut core, &[0x00; 3], sent + Duration::from_millis(1));
+        assert_eq!(core.state(), MasterState::PassToken);
+        let timeout = heard + Duration::from_millis(20);
+        assert_eq!(core.next_deadline(), Some(timeout));
+        core.on_deadline(timeout).unwrap();
+        let (poll, header) = handed_over(&mut core);
+        assert!(is(header, FrameType::PollForMaster, 3));
+        let last = feed(&mut core, &vec![0x00; later], timeout + us(500));
+        if dropped {
+            assert_eq!(core.state(), MasterState::Idle);
+            assert_eq!(core.counters().cancelled_sends, 1);
+            expect_receive_only(&mut core);
+        } else {
+            assert_eq!(
+                core.on_transmit_started(poll, last + us(500)),
+                Err(CoreError::TransmitDeferred)
+            );
+            assert_eq!(core.state(), MasterState::PollForMaster);
+            assert_eq!(core.counters().cancelled_sends, 0);
+        }
+    }
+}
+
+/// Row "Token retry": the retry counts events from when it is made. Four
+/// octets heard before it, too few for SawTokenUser, do not carry over, so
+/// four more while it waits for its adapter only defer it.
+#[test]
+fn a_token_retry_counts_events_from_when_it_is_made() {
+    let mut rx = [0; 64];
+    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    pass_waiting(&mut core);
+    let (passed, _) = send_next(&mut core);
+    let heard = feed(&mut core, &[0x00; 4], passed + Duration::from_millis(2));
+    assert_eq!(core.state(), MasterState::PassToken);
+    let timeout = heard + Duration::from_millis(20);
+    assert_eq!(core.next_deadline(), Some(timeout));
+    core.on_deadline(timeout).unwrap();
+    let (retry, header) = handed_over(&mut core);
+    assert!(is(header, FrameType::Token, PEER));
+    let last = feed(&mut core, &[0x00; 4], timeout + us(500));
+    assert_eq!(
+        core.on_transmit_started(retry, last + us(500)),
+        Err(CoreError::TransmitDeferred)
+    );
+    assert_eq!(core.state(), MasterState::PassToken);
+    assert_eq!(core.counters().cancelled_sends, 0);
+}
+
+/// Row "token-generation poll": it counts events from when NO_TOKEN began
+/// (LostToken zeroes EventCount, Clause 9.5.6.2), not the octets of a frame
+/// heard long before. One octet while it waits only defers it.
+#[test]
+fn a_generating_poll_counts_events_from_no_token() {
+    let mut rx = [0; 64];
+    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let heard = feed(&mut core, &encode(FrameType::Token, 3, 0, &[]), ms(1));
+    let silent = heard + Duration::from_millis(500);
+    assert_eq!(core.next_deadline(), Some(silent));
+    core.on_deadline(silent).unwrap();
+    assert_eq!(core.state(), MasterState::NoToken);
+    let slot = silent + Duration::from_millis(10);
+    core.on_deadline(slot).unwrap();
+    let (id, header) = handed_over(&mut core);
+    assert!(is(header, FrameType::PollForMaster, PEER));
+    core.on_octet(0x00, slot + us(500)).unwrap();
+    assert_eq!(core.state(), MasterState::PollForMaster);
+    assert_eq!(
+        core.on_transmit_started(id, slot + us(600)),
+        Err(CoreError::TransmitDeferred)
+    );
+    assert_eq!(core.counters().cancelled_sends, 0);
+}
+
+/// Row "token-generation poll", its limit: an adapter that takes almost
+/// T_no_token to get to the poll, with an octet just before, defers it into
+/// its limit, T_no_token after it was made, where it is dropped.
+#[test]
+fn a_generating_poll_kept_waiting_for_t_no_token_is_dropped() {
+    let mut rx = [0; 64];
+    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let id = generation_handed_over(&mut core);
+    core.on_octet(0x00, ms(1_008)).unwrap();
+    assert_eq!(
+        core.on_transmit_started(id, ms(1_009)),
+        Err(CoreError::TransmitDeferred)
+    );
+    expect_receive_only(&mut core);
+    assert_eq!(core.next_deadline(), Some(ms(1_010)));
+    core.on_deadline(ms(1_010)).unwrap();
+    assert_eq!(core.counters().cancelled_sends, 1);
+    assert_eq!(core.state(), MasterState::Idle);
+    assert_eq!(core.poll_action(), Action::Idle);
+}
+
+/// Row "Poll For Master", an invalid frame meanwhile: a header that fails
+/// its CRC while the poll waits is activity for the poll, not an invalid
+/// answer to a poll that has not gone out (Clause 9.5.6.8).
+#[test]
+fn an_invalid_frame_while_a_poll_waits_only_delays_it() {
+    let mut rx = [0; 64];
+    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    poll_waiting(&mut core);
+    let mut bad = encode(FrameType::ReplyToPollForMaster, STATION, 3, &[]);
+    bad[7] ^= 0x01;
+    let last = feed(&mut core, &bad, ms(11));
+    assert_eq!(core.counters().parser_errors, 1);
+    assert_eq!(core.snapshot().poll_station, PEER);
+    let due = last + turnaround(&core);
+    assert_eq!(core.next_deadline(), Some(due));
+    core.on_deadline(due).unwrap();
+    let (_, header) = handed_over(&mut core);
+    assert!(is(header, FrameType::PollForMaster, PEER));
 }

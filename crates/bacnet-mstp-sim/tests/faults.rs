@@ -296,7 +296,8 @@ fn noise_in_the_turnaround_only_delays_a_pending_frame() {
     sim.run_until(ms(3_000));
     let noise_end = noise_at + sim.timing().octet();
     let next = first_after(sim.frames(), noise_end, |_| true).expect("a frame after");
-    assert_eq!(next.source(), Some(3), "{next}");
+    // Station 3's turn for a maintenance poll, which goes out late but whole.
+    assert!(next.is(FrameType::PollForMaster, 3, 7), "{next}");
     assert_eq!(next.start, noise_end + sim.timing().bits(40));
     assert_eq!(sim.core(3).unwrap().counters().cancelled_sends, 0);
     sim.assert_no_violations();

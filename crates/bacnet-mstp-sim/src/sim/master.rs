@@ -34,8 +34,8 @@ pub(crate) struct MasterNode {
     pub(super) transmitting: Option<TransmitId>,
     /// The core counted a token generation; its next frame is that poll.
     pub(super) regenerated: bool,
-    /// A frame the core took back before its start was confirmed. If the
-    /// core hands the same octets over again, it is the same frame.
+    /// A frame whose start the core deferred. When the core hands the same
+    /// octets over again, it is the same frame.
     withdrawn: Option<PendingTx>,
     /// Deadline misses already accounted for.
     misses_seen: u32,
@@ -344,13 +344,12 @@ impl Sim {
                         TraceKind::Action(format!("SetDirection({direction:?})")),
                     );
                     // Back to receive before the adapter started the frame:
-                    // the core took it back, so the adapter drops it.
+                    // the core gave the frame up, so the adapter drops it. It
+                    // never comes back, so nothing carries over to a later
+                    // frame (only a deferred start does that).
                     let master = self.master_mut(node).expect("a master");
-                    if direction == Direction::Receive {
-                        if let Some(pending) = master.pending.take() {
-                            master.withdrawn = Some(pending);
-                            self.note(who, TraceKind::Note("frame taken back".into()));
-                        }
+                    if direction == Direction::Receive && master.pending.take().is_some() {
+                        self.note(who, TraceKind::Note("frame taken back".into()));
                     }
                 }
                 Effect::Transmit(id, octets) => {

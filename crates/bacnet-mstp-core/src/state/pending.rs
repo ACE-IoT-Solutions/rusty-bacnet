@@ -27,20 +27,35 @@
 //! | Data reply or Reply Postponed, from ANSWER_DATA_REQUEST | any | waits T_turnaround again; frames that complete meanwhile are handled as while answering a request | the reply window: the asker's shortest T_reply_timeout (255 ms) less one octet and 1 ms; `expired_requests` | 9.5.6.9, 9.5.3 |
 //! | Test_Response to a Test_Request, from IDLE | any | as above | as above | 9.5.6.2, 9.5.6.9 |
 //! | Reply To Poll For Master, from IDLE | any | as above | the poller's shortest T_usage_timeout (20 ms) less one octet and 1 ms; `expired_requests` | 9.5.6.2, 9.5.6.8, 9.5.3 |
-//! | Data frame, from USE_TOKEN (sole master included) | any | waits again; data that needs no answer from this station is delivered, and a Token, Poll For Master, data request or Test_Request for it is dropped (`discarded_while_busy`) | T_no_token after the frame was made; `cancelled_sends`, then IDLE | 9.5.6.3, 9.5.5.1 |
-//! | Token, from DONE_WITH_TOKEN or POLL_FOR_MASTER (after a reply, a reply timeout or an invalid reply too) | any | as for a data frame | as for a data frame | 9.5.6.4, 9.5.6.5, 9.5.6.8 |
-//! | Poll For Master, from DONE_WITH_TOKEN or POLL_FOR_MASTER | any | as for a data frame | as for a data frame | 9.5.6.5, 9.5.6.8 |
-//! | Token retry, or Poll For Master for a new successor, from PASS_TOKEN | up to Nmin_octets events | waits again | T_usage_timeout after the frame was made; `cancelled_sends` | 9.5.6.6 |
-//! | the same | more than Nmin_octets events, or a whole valid frame: the successor uses the token (SawTokenUser) | dropped (`cancelled_sends`); IDLE takes up what follows | none | 9.5.6.6 |
+//! | Data frame, from USE_TOKEN (sole master included) | any | waits again; data that needs no answer from this station is delivered, and a Token, Poll For Master, data request, Test_Request or late Reply To Poll For Master for it is dropped (`discarded_while_busy`) | T_no_token after the frame was made; `cancelled_sends`, then IDLE | 9.5.6.3, 9.5.5.1 |
+//! | Token, from DONE_WITH_TOKEN or POLL_FOR_MASTER (after a reply, a reply timeout or an invalid reply too; DoneWithPFM's included) | any | as for a data frame | as for a data frame | 9.5.6.4, 9.5.6.5, 9.5.6.8 |
+//! | Poll For Master, from DONE_WITH_TOKEN | any | as for a data frame | as for a data frame | 9.5.6.5 |
+//! | Poll For Master for the next address, from POLL_FOR_MASTER (SendNextPFM) | any | as for a data frame | as for a data frame | 9.5.6.8 |
+//! | the same | a whole Reply To Poll For Master for this station, late from the station polled before | dropped (`cancelled_sends`); the replier becomes the successor and gets the Token (ReceivedReplyToPFM) | none | 9.5.6.8 |
+//! | Token retry, from PASS_TOKEN | up to Nmin_octets events, counted from when the retry was made | waits again | T_usage_timeout after the frame was made; `cancelled_sends` | 9.5.6.6 |
+//! | Poll For Master for a new successor, from PASS_TOKEN | up to Nmin_octets events since this station's last Token went out (up to Nmin_octets can carry over) | waits again | as for a retry | 9.5.6.6 |
+//! | either | more than Nmin_octets events, or a whole valid frame: the successor uses the token (SawTokenUser) | dropped (`cancelled_sends`); IDLE takes up what follows | none | 9.5.6.6 |
 //! | Token-generation Poll For Master, from NO_TOKEN | up to Nmin_octets events since NO_TOKEN began | waits again | T_no_token after the frame was made; `cancelled_sends` | 9.5.6.7 |
 //! | the same | more than Nmin_octets events, or a whole valid frame: another station is active (SawFrame) | dropped (`cancelled_sends`); IDLE takes up what follows | none | 9.5.6.7 |
 //!
-//! The last four rows follow a silence of at least T_usage_timeout or
-//! T_no_token, so those frames go to the adapter at once; activity can only
-//! reach them before an adapter confirms the start. Their event count bounds
-//! the wait too: at most Nmin_octets events, each worth up to T_turnaround of
-//! delay. That stays far inside T_no_token, so the generating poll's limit is
-//! only a backstop; a long T_turnaround can reach PASS_TOKEN's.
+//! EventCount is zeroed as each Token goes out (Clauses 9.5.6.5, 9.5.6.6),
+//! so the poll for a new successor counts what followed the last retry.
+//! The retry itself counts from when it is made, a local extension: the
+//! standard zeroes EventCount only once the retry is out, and evaluates
+//! nothing in PASS_TOKEN while it waits.
+//!
+//! The PASS_TOKEN and NO_TOKEN frames follow a silence of at least
+//! T_usage_timeout or T_no_token, so they go to the adapter at once;
+//! activity can only reach them before an adapter confirms the start. Their
+//! event count bounds that activity to Nmin_octets events, each worth up to
+//! T_turnaround of delay, so their time limits bind only for a slow adapter
+//! or, for PASS_TOKEN, a long T_turnaround.
+//!
+//! A frame the adapter aborts before starting it is counted as if dropped:
+//! `expired_requests` for an answer, `cancelled_sends` for any other. The
+//! confirmed start itself drops any frame part received meanwhile, counted in
+//! `frame_aborts`: the receiver is off while the driver is on (Clause
+//! 9.5.5.1), so it can never complete.
 //!
 //! An answer's limit applies to its start as well: one the adapter starts at
 //! or after it is refused with [`CoreError::RequestExpired`], since the asker
@@ -59,6 +74,10 @@ pub(super) enum Origin {
     Answer(ReplyWindow),
     /// A frame this station sends while it holds the token.
     Holder,
+    /// The poll for the next address in a successor search, from
+    /// POLL_FOR_MASTER (SendNextPFM): a late answer to the poll before it
+    /// still finds the successor.
+    NextPoll,
     /// A token retry, or a poll for a new successor, from PASS_TOKEN.
     PassToken,
     /// The poll that generates a token, from NO_TOKEN.
@@ -106,7 +125,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .encode_into(&mut frame)?;
         let limit = match origin {
             Origin::Answer(window) => window.give_up,
-            Origin::Holder | Origin::NoToken => now + self.config.t_no_token,
+            Origin::Holder | Origin::NextPoll | Origin::NoToken => now + self.config.t_no_token,
             Origin::PassToken => now + self.config.t_usage_timeout,
         };
         self.pending_send = Some(PendingSend {
@@ -171,9 +190,19 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         let Some(pending) = self.pending_send else {
             return Ok(false);
         };
+        let header = frame.header;
+        let late_poll_reply = header.frame_type == FrameType::ReplyToPollForMaster
+            && header.destination == self.config.station;
         match pending.origin {
             Origin::Answer(_) => self.frame_while_busy(frame, true),
-            Origin::Holder => self.frame_while_busy(frame, false),
+            // The station polled before answered after all: as when the
+            // answer is pending on entry to POLL_FOR_MASTER (ReceivedReplyToPFM,
+            // Clause 9.5.6.8), it becomes the successor, and this poll is moot.
+            Origin::NextPoll if late_poll_reply => {
+                self.discard_pending()?;
+                self.take_successor(header.source, now)?;
+            }
+            Origin::Holder | Origin::NextPoll => self.frame_while_busy(frame, false),
             // A whole frame is more than Nmin_octets: the successor took the
             // token (SawTokenUser) or another station is active (SawFrame).
             Origin::PassToken | Origin::NoToken => {
@@ -184,22 +213,33 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         Ok(true)
     }
 
-    /// Give up the waiting frame, taking it back from the adapter if it was
-    /// handed over, count it, and go to IDLE.
+    /// Give up the waiting frame and count it, then go to IDLE.
     pub(super) fn drop_pending(&mut self, now: Instant) -> Result<(), CoreError> {
-        let Some(pending) = self.pending_send else {
-            return Ok(());
-        };
+        self.discard_pending()?;
+        self.enter_idle(now)
+    }
+
+    /// Give up the waiting frame, taking it back from the adapter if it was
+    /// handed over, and count it.
+    fn discard_pending(&mut self) -> Result<(), CoreError> {
         if let Some(tx) = self.active_transmit.filter(|tx| !tx.started) {
             self.withdraw_transmit(tx.id)?;
         }
-        self.pending_send = None;
+        self.forget_pending();
+        Ok(())
+    }
+
+    /// Forget the waiting frame, counting it as given up: `expired_requests`
+    /// for an answer, `cancelled_sends` for any other frame.
+    pub(super) fn forget_pending(&mut self) {
+        let Some(pending) = self.pending_send.take() else {
+            return;
+        };
         match pending.origin {
             Origin::Answer(_) => self.counters.record_expired_request(),
-            Origin::Holder | Origin::PassToken | Origin::NoToken => {
+            Origin::Holder | Origin::NextPoll | Origin::PassToken | Origin::NoToken => {
                 self.counters.record_cancelled_send();
             }
         }
-        self.enter_idle(now)
     }
 }

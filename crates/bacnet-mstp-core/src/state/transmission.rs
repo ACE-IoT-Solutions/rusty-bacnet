@@ -38,7 +38,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         let pending = self.pending_send.ok_or(CoreError::StaleTransmit)?;
         let window = match pending.origin {
             Origin::Answer(window) => Some(window),
-            Origin::Holder | Origin::PassToken | Origin::NoToken => None,
+            Origin::Holder | Origin::NextPoll | Origin::PassToken | Origin::NoToken => None,
         };
         if window.is_some_and(|window| now >= window.give_up) {
             self.drop_pending(now)?;
@@ -49,6 +49,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             // T_turnaround, so the frame waits again.
             self.withdraw_transmit(id)?;
             self.counters.record_deferred_start();
+            // Waiting on would only set a deadline already due, at which
+            // the frame is dropped anyway; drop it now instead.
             if now >= pending.limit {
                 self.drop_pending(now)?;
             } else {
@@ -58,6 +60,15 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
         if window.is_some_and(|window| now > window.send_by) {
             self.counters.record_late_reply();
+        }
+        // The receiver goes off as the driver goes on (Clause 9.5.5.1), so a
+        // frame part received now can never complete. Drop it as an abort,
+        // not an invalid frame: its T_frame_abort would otherwise fall during
+        // or after this transmission and be judged in the state it leads to.
+        if self.parser_partial {
+            self.decoder.reset();
+            self.parser_partial = false;
+            self.counters.record_frame_abort();
         }
         self.pending_send = None;
         let tx = self.active_transmit.as_mut().expect("checked above");
@@ -123,7 +134,11 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Abort the matching transmit and restore logical receive direction.
     ///
     /// Its actions not yet polled are withdrawn, so the next action is the
-    /// switch back to receive.
+    /// switch back to receive. A frame aborted before its start was
+    /// confirmed never went out, so it is counted as given up: in
+    /// [`MstpCounters::expired_requests`] for an answer, which leaves its
+    /// request unanswered, and in [`MstpCounters::cancelled_sends`] for any
+    /// other frame.
     pub fn on_transmit_aborted(
         &mut self,
         id: TransmitId,
@@ -136,7 +151,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .filter(|tx| tx.id == id)
             .ok_or(CoreError::StaleTransmit)?;
         self.withdraw_transmit(id)?;
-        self.pending_send = None;
+        self.forget_pending();
         self.counters
             .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
         self.set_state(MasterState::Idle);

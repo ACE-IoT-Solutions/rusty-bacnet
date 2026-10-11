@@ -440,6 +440,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// [`CoreError::Frame`] and changes nothing, not even the core's clock:
     /// more data than a standard frame carries (501 octets), source 255, or
     /// a COBS-encoded type.
+    ///
+    /// How this host path treats the station's own echo, and frames whose
+    /// source is this station, is still open: #1617 settles both.
     pub fn on_validated_frame(&mut self, frame: Frame<'_>, now: Instant) -> Result<(), CoreError> {
         let header = frame.header;
         if frame.data.len() > MAX_STANDARD_MPDU_DATA {

@@ -14,12 +14,14 @@
 //!   comes within T_turnaround of line activity
 //!   ([`CoreError::TransmitDeferred`]), and the frame comes back later as a
 //!   new [`Action::Transmit`] (Clause 9.5.5.1).
-//! - **Echo begins at the confirmed start.** Until then, keep the receiver
-//!   on and feed the core every octet and receive error: they are line
-//!   activity. A `SetDirection(Receive)` that arrives before you confirmed a
-//!   start means the core took the frame back; drop it. From the confirmed
-//!   start to [`MasterCore::on_transmit_complete`], what the receiver hears
-//!   is the station's own echo, which the core ignores.
+//! - **Echo begins at the confirmed start.** Until then, keep the driver
+//!   off and the receiver on, and feed the core every octet and receive
+//!   error, draining the receive FIFO or DMA buffer right before the start
+//!   call: they are line activity. A `SetDirection(Receive)` that arrives
+//!   before you confirmed a start means the core took the frame back; drop
+//!   it. From the confirmed start to [`MasterCore::on_transmit_complete`],
+//!   what the receiver hears is the station's own echo, which the core
+//!   ignores; a frame it was part way through receiving is dropped then.
 //!
 //! Line activity never makes the core abandon a frame it is waiting to send
 //! on its own: the frame waits for the line to go quiet. Only the evidence
