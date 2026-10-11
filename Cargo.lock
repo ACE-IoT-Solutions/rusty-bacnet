@@ -408,6 +408,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-mstp-sim"
+version = "0.12.0"
+dependencies = [
+ "bacnet-mstp-codec",
+ "bacnet-mstp-core",
+]
+
+[[package]]
 name = "bacnet-network"
 version = "0.12.0"
 dependencies = [
