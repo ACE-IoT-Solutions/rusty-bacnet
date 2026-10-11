@@ -121,6 +121,8 @@ pub use port::{
 pub use vmac_table::generate_random_vmac;
 
 #[cfg(test)]
+mod differential_tests;
+#[cfg(test)]
 mod group_delivery_tests;
 #[cfg(test)]
 mod safety_tests;
