@@ -161,8 +161,12 @@ pub enum AdmissionOutcome {
     Full,
     /// The egress cannot carry the final NPDU length.
     Oversize,
+    /// The request expired before the egress queue could own it.
+    Expired,
     /// The port is unavailable and did not retain the NPDU.
     PortDown,
+    /// The request is invalid for the selected adapter or port.
+    Invalid,
 }
 
 /// Synchronous boundary implemented by a platform's real egress queues.
@@ -185,6 +189,8 @@ pub struct Diagnostics {
     pub drops_full: u64,
     /// NPDUs rejected because the egress port was down.
     pub drops_port_down: u64,
+    /// NPDUs that expired before the egress queue owned them.
+    pub drops_expired: u64,
     /// Malformed or unsupported NPDUs.
     pub drops_invalid: u64,
     /// NPDUs for which no usable route was installed.

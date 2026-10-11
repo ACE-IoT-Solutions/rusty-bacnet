@@ -181,6 +181,38 @@ fn actual_egress_queue_full_is_not_reported_as_forwarded() {
 }
 
 #[test]
+fn actual_egress_expiry_and_invalid_request_remain_distinct() {
+    let source = LinkAddress::try_from_slice(&[192, 0, 2, 10, 0xba, 0xc1]).unwrap();
+    let mut scratch = [0u8; 512];
+    let mut core = configured_core();
+    for (admission, expected) in [
+        (AdmissionOutcome::Expired, ForwardOutcome::Expired),
+        (AdmissionOutcome::Invalid, ForwardOutcome::EgressRejected),
+    ] {
+        let mut egress = TestEgress {
+            outcome: Some(admission),
+            ..TestEgress::default()
+        };
+        let outcome = core
+            .forward_unicast(
+                DirectForwardRequest {
+                    ingress_network: NetworkNumber::new(100).unwrap(),
+                    logical_source: source,
+                    npdu: &routed_npdu(100),
+                    egress_capabilities: capabilities(),
+                    now: 0,
+                },
+                &mut scratch,
+                &mut egress,
+            )
+            .unwrap();
+        assert_eq!(outcome, expected);
+    }
+    assert_eq!(core.diagnostics().drops_expired, 1);
+    assert_eq!(core.diagnostics().drops_invalid, 1);
+}
+
+#[test]
 fn zero_hop_and_truncated_proprietary_network_message_fail_closed() {
     let source = LinkAddress::try_from_slice(&[192, 0, 2, 10, 0xba, 0xc1]).unwrap();
     let mut scratch = [0u8; 64];

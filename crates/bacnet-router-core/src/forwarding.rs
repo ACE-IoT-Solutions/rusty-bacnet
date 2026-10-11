@@ -69,6 +69,10 @@ pub enum ForwardOutcome {
     QueueFull,
     /// Egress port was unavailable.
     PortDown,
+    /// Request expired before the egress queue owned it.
+    Expired,
+    /// Egress rejected an invalid adapter/port request.
+    EgressRejected,
 }
 
 /// Borrowed context required for one direct-network forwarding decision.
@@ -108,6 +112,7 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
                 drops_oversize: 0,
                 drops_full: 0,
                 drops_port_down: 0,
+                drops_expired: 0,
                 drops_invalid: 0,
                 drops_no_route: 0,
             },
@@ -259,6 +264,14 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
                 self.diagnostics.drops_port_down =
                     self.diagnostics.drops_port_down.saturating_add(1);
                 Ok(ForwardOutcome::PortDown)
+            }
+            AdmissionOutcome::Expired => {
+                self.diagnostics.drops_expired = self.diagnostics.drops_expired.saturating_add(1);
+                Ok(ForwardOutcome::Expired)
+            }
+            AdmissionOutcome::Invalid => {
+                self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
+                Ok(ForwardOutcome::EgressRejected)
             }
         }
     }
@@ -412,6 +425,14 @@ impl<const DIRECT: usize, const LEARNED: usize> RouterCore<DIRECT, LEARNED> {
                 self.diagnostics.drops_port_down =
                     self.diagnostics.drops_port_down.saturating_add(1);
                 Ok(ForwardOutcome::PortDown)
+            }
+            AdmissionOutcome::Expired => {
+                self.diagnostics.drops_expired = self.diagnostics.drops_expired.saturating_add(1);
+                Ok(ForwardOutcome::Expired)
+            }
+            AdmissionOutcome::Invalid => {
+                self.diagnostics.drops_invalid = self.diagnostics.drops_invalid.saturating_add(1);
+                Ok(ForwardOutcome::EgressRejected)
             }
         }
     }
