@@ -1,6 +1,6 @@
 [package]
 name = "bacnet-bip-codec"
-description = "Portable no-std BACnet/IP (Annex J) BVLL codec"
+description = "Portable no-std BACnet/IP and BACnet/IPv6 (Annexes J and U) BVLL codec"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
