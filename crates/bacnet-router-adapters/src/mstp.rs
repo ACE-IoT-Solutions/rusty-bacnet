@@ -71,8 +71,10 @@ impl<'core, 'rx, Q: QueueStorage> MstpEgress<'core, 'rx, Q> {
     }
 
     fn unicast_destination(address: LinkAddress) -> Option<u8> {
-        let bytes = address.as_slice();
-        (bytes.len() == 1).then_some(bytes[0])
+        match address.as_slice() {
+            [destination] if *destination != MSTP_BROADCAST => Some(*destination),
+            _ => None,
+        }
     }
 }
 
@@ -265,6 +267,20 @@ mod tests {
             )),
             AdmissionOutcome::Invalid
         );
+        for invalid in [
+            LinkAddress::default(),
+            LinkAddress::try_from_slice(&[0xff]).unwrap(),
+        ] {
+            assert_eq!(
+                egress.try_admit(request(
+                    PortId(2),
+                    EgressDestination::Unicast(invalid),
+                    0,
+                    &[4],
+                )),
+                AdmissionOutcome::Invalid
+            );
+        }
         assert_eq!(
             egress.try_admit(request(PortId(2), EgressDestination::Broadcast, 4, &[4])),
             AdmissionOutcome::Invalid

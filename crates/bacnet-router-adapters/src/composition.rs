@@ -229,6 +229,7 @@ impl<const CAPACITY: usize> RequestBindings<CAPACITY> {
 /// The strict decoder runs before any router diagnostic or egress mutation.
 /// Forwarded-NPDU source attribution is taken from the embedded origin through
 /// [`BipIngressContext`], never from the immediate BBMD UDP peer.
+#[allow(clippy::too_many_arguments)]
 pub fn forward_bip_datagram_to_mstp<'a, const DIRECT: usize, const LEARNED: usize>(
     router: &mut RouterCore<DIRECT, LEARNED>,
     datagram: &'a [u8],
@@ -267,6 +268,7 @@ pub fn forward_bip_datagram_to_mstp<'a, const DIRECT: usize, const LEARNED: usiz
 /// removed, so the adapter never hides a failed packet in an application
 /// backlog.  A successful `Forwarded` result leaves the request ID available
 /// to [`RequestBindings::complete`] or [`RequestBindings::timeout`].
+#[allow(clippy::too_many_arguments)]
 pub fn forward_mstp_action_to_bip<
     const DIRECT: usize,
     const LEARNED: usize,

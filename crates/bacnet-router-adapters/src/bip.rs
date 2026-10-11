@@ -26,6 +26,7 @@ pub trait BipDatagramSink {
         destination: Ipv4SocketAddress,
         datagram: &[u8],
         now: Instant,
+        class: bacnet_router_core::TrafficClass,
     ) -> AdmissionOutcome;
 }
 
@@ -204,13 +205,19 @@ where
             }
             Err(_) => return AdmissionOutcome::Invalid,
         };
-        self.sink
-            .try_send(destination, &self.scratch[..length], self.now)
+        self.sink.try_send(
+            destination,
+            &self.scratch[..length],
+            self.now,
+            request.class,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::drop_non_drop)]
+
     use super::*;
     use bacnet_router_core::{
         decode_bip_datagram, BipDecodeError, BvlcFunction, UdpDatagramMeta, BVLL_HEADER_LENGTH,
@@ -230,6 +237,7 @@ mod tests {
         frame: [u8; 64],
         length: usize,
         timestamp: Instant,
+        class: bacnet_router_core::TrafficClass,
     }
 
     impl RecordingSink {
@@ -244,6 +252,7 @@ mod tests {
                 frame: [0; 64],
                 length: 0,
                 timestamp: Instant::ZERO,
+                class: bacnet_router_core::TrafficClass::Data,
             }
         }
     }
@@ -254,10 +263,12 @@ mod tests {
             destination: Ipv4SocketAddress,
             datagram: &[u8],
             now: Instant,
+            class: bacnet_router_core::TrafficClass,
         ) -> AdmissionOutcome {
             self.calls += 1;
             self.destination = destination;
             self.timestamp = now;
+            self.class = class;
             if self.outcome == AdmissionOutcome::AcceptedOwned {
                 self.frame[..datagram.len()].copy_from_slice(datagram);
                 self.length = datagram.len();
@@ -331,6 +342,7 @@ mod tests {
         drop(egress);
         assert_eq!(sink.destination, destination);
         assert_eq!(sink.timestamp, Instant::from_micros(11));
+        assert_eq!(sink.class, bacnet_router_core::TrafficClass::Data);
         assert_eq!(
             &sink.frame[..sink.length],
             &[0x81, 0x0a, 0x00, 0x08, 0x01, 0x20, 0x00, 0xff]
@@ -459,6 +471,39 @@ mod tests {
             drop(egress);
             assert_eq!(sink.calls, 1);
         }
+    }
+
+    #[test]
+    fn traffic_class_reaches_sink_for_reserved_control_admission() {
+        struct ReservedSink;
+
+        impl BipDatagramSink for ReservedSink {
+            fn try_send(
+                &mut self,
+                _destination: Ipv4SocketAddress,
+                _datagram: &[u8],
+                _now: Instant,
+                class: bacnet_router_core::TrafficClass,
+            ) -> AdmissionOutcome {
+                match class {
+                    bacnet_router_core::TrafficClass::Data => AdmissionOutcome::Full,
+                    bacnet_router_core::TrafficClass::NetworkControl => {
+                        AdmissionOutcome::AcceptedOwned
+                    }
+                }
+            }
+        }
+
+        let mut sink = ReservedSink;
+        let mut scratch = [0; 32];
+        let mut egress = BipEgress::new(&mut sink, &mut scratch, PORT, BROADCAST, Instant::ZERO);
+        assert_eq!(
+            egress.try_admit(request(EgressDestination::Broadcast, &[1])),
+            AdmissionOutcome::Full
+        );
+        let mut control = request(EgressDestination::Broadcast, &[2]);
+        control.class = bacnet_router_core::TrafficClass::NetworkControl;
+        assert_eq!(egress.try_admit(control), AdmissionOutcome::AcceptedOwned);
     }
 
     #[test]

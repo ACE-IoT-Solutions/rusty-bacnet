@@ -1,11 +1,8 @@
-#![allow(clippy::too_many_arguments)]
+//! Bidirectional router-adapter composition tests.
 
-#[path = "../src/bip.rs"]
-mod bip;
-#[path = "../src/composition.rs"]
-mod composition;
-#[path = "../src/mstp.rs"]
-mod mstp;
+#![allow(clippy::drop_non_drop, clippy::too_many_arguments)]
+
+use bacnet_router_adapters::{bip, composition, mstp};
 
 use bip::{BipDatagramSink, BipEgress};
 use composition::{
@@ -116,6 +113,7 @@ impl BipDatagramSink for Sink {
         destination: Ipv4SocketAddress,
         datagram: &[u8],
         _now: Instant,
+        _class: bacnet_router_core::TrafficClass,
     ) -> AdmissionOutcome {
         self.calls += 1;
         self.destination = destination;

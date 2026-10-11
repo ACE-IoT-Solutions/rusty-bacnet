@@ -10,4 +10,5 @@
 #![forbid(unsafe_code)]
 
 pub mod bip;
+pub mod composition;
 pub mod mstp;
