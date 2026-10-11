@@ -14,6 +14,8 @@
 
 use crate::{AdmissionOutcome, PortCapabilities, PortId};
 
+mod observation;
+
 /// The number of independently observable operational counters.
 pub const DIAGNOSTIC_COUNTER_COUNT: usize = 9;
 
