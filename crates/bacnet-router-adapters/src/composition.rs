@@ -10,11 +10,12 @@ use bacnet_mstp_core::{
     Action, CoreError, Instant, ProfileMasterCore, QueueStorage, ReplyDecision, RequestId,
 };
 use bacnet_router_core::{
-    BipDecodeError, DirectForwardRequest, Egress, ForwardError, ForwardOutcome, Ipv4SocketAddress,
-    LinkAddress, NetworkNumber, PortCapabilities, RouterCore,
+    BipDecodeError, DiagnosticEvent, DirectForwardRequest, Egress, ForwardError, ForwardOutcome,
+    Ipv4SocketAddress, LinkAddress, NetworkNumber, OperationalDiagnostics, OperationalError,
+    PortCapabilities, PortId, RouterCore,
 };
 
-use crate::bip::{decode_ingress, BipEgress, BipIngressContext};
+use crate::bip::{BipEgress, BipIngressContext, decode_ingress};
 
 /// Failure while composing one link ingress with the router.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +54,19 @@ pub enum BindingCompletionError {
     Expired,
     /// The MS/TP core rejected the requested decision.
     Core(CoreError),
+}
+
+/// Error returned by an observed composition seam.
+///
+/// The raw composition error remains available unchanged.  A diagnostics
+/// error means the caller supplied an unregistered observation port or the
+/// bounded diagnostics state could not accept the terminal observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObservedCompositionError {
+    /// The underlying raw composition operation failed.
+    Composition(CompositionError),
+    /// The diagnostic observation could not be applied.
+    Diagnostics(OperationalError),
 }
 
 /// One fixed-capacity binding between an MS/TP request generation and the
@@ -335,6 +349,143 @@ pub fn forward_mstp_action_to_bip<
         }
     }
     Ok(outcome)
+}
+
+/// Decode and forward B/IP traffic while observing exactly one terminal
+/// forwarding result at the outer composition boundary.
+///
+/// The MS/TP egress port must already be registered in `diagnostics`; this is
+/// checked before BVLL decoding, route lookup, or queue mutation.  The raw
+/// composition function is called once.  Its concrete egress is deliberately
+/// not wrapped, so queue admission cannot be observed a second time.
+#[allow(clippy::too_many_arguments)]
+pub fn forward_bip_datagram_to_mstp_observed<
+    'a,
+    const DIRECT: usize,
+    const LEARNED: usize,
+    const PORTS: usize,
+    const ROUTES: usize,
+    const CACHE: usize,
+>(
+    router: &mut RouterCore<DIRECT, LEARNED>,
+    diagnostics: &mut OperationalDiagnostics<PORTS, ROUTES, CACHE>,
+    datagram: &'a [u8],
+    metadata: bacnet_router_core::UdpDatagramMeta,
+    received_at: Instant,
+    ingress_network: NetworkNumber,
+    egress_capabilities: PortCapabilities,
+    scratch: &mut [u8],
+    egress: &mut impl Egress,
+) -> Result<(BipIngressContext<'a>, ForwardOutcome), ObservedCompositionError> {
+    let port = egress_capabilities.id;
+    diagnostics
+        .port(port)
+        .map_err(ObservedCompositionError::Diagnostics)?;
+    let result = forward_bip_datagram_to_mstp(
+        router,
+        datagram,
+        metadata,
+        received_at,
+        ingress_network,
+        egress_capabilities,
+        scratch,
+        egress,
+    );
+    match result {
+        Ok((context, outcome)) => {
+            diagnostics
+                .observe_forwarding_result(port, Ok(outcome))
+                .map_err(ObservedCompositionError::Diagnostics)?;
+            Ok((context, outcome))
+        }
+        Err(error) => {
+            observe_composition_error(diagnostics, port, error)
+                .map_err(ObservedCompositionError::Diagnostics)?;
+            Err(ObservedCompositionError::Composition(error))
+        }
+    }
+}
+
+/// Route an MS/TP delivery action to B/IP while observing exactly one
+/// terminal forwarding or binding result at the outer boundary.
+///
+/// This wrapper validates the concrete B/IP egress registration before the
+/// raw composition path can reserve a request binding or touch a queue.
+/// Binding admission is observed as the operation's terminal result; a later
+/// response/timeout remains the separate binding-completion boundary.
+#[allow(clippy::too_many_arguments)]
+pub fn forward_mstp_action_to_bip_observed<
+    const DIRECT: usize,
+    const LEARNED: usize,
+    const CAPACITY: usize,
+    const PORTS: usize,
+    const ROUTES: usize,
+    const CACHE: usize,
+>(
+    router: &mut RouterCore<DIRECT, LEARNED>,
+    diagnostics: &mut OperationalDiagnostics<PORTS, ROUTES, CACHE>,
+    action: Action<'_>,
+    ingress_network: NetworkNumber,
+    egress_capabilities: PortCapabilities,
+    scratch: &mut [u8],
+    egress: &mut impl Egress,
+    bindings: &mut RequestBindings<CAPACITY>,
+    now: u64,
+) -> Result<ForwardOutcome, ObservedCompositionError> {
+    let port = egress_capabilities.id;
+    diagnostics
+        .port(port)
+        .map_err(ObservedCompositionError::Diagnostics)?;
+    let result = forward_mstp_action_to_bip(
+        router,
+        action,
+        ingress_network,
+        egress_capabilities,
+        scratch,
+        egress,
+        bindings,
+        now,
+    );
+    match result {
+        Ok(outcome) => {
+            diagnostics
+                .observe_forwarding_result(port, Ok(outcome))
+                .map_err(ObservedCompositionError::Diagnostics)?;
+            Ok(outcome)
+        }
+        Err(error) => {
+            observe_composition_error(diagnostics, port, error)
+                .map_err(ObservedCompositionError::Diagnostics)?;
+            Err(ObservedCompositionError::Composition(error))
+        }
+    }
+}
+
+/// Broadcast and network-control fanout are intentionally not reimplemented
+/// in this adapter crate.  Their typed core observers are the public seam for
+/// the owning serialized router task, which can observe each eligible target
+/// or response admission without inventing an adapter-side firmware loop.
+fn observe_composition_error<const PORTS: usize, const ROUTES: usize, const CACHE: usize>(
+    diagnostics: &mut OperationalDiagnostics<PORTS, ROUTES, CACHE>,
+    port: PortId,
+    error: CompositionError,
+) -> Result<(), OperationalError> {
+    match error {
+        CompositionError::Forward(error) => diagnostics.observe_forwarding_result(port, Err(error)),
+        CompositionError::BipDecode(_)
+        | CompositionError::InvalidAction
+        | CompositionError::InvalidBipPort => {
+            diagnostics.record_event(Some(port), DiagnosticEvent::Malformed)
+        }
+        CompositionError::Binding(admission) => {
+            let event = match admission {
+                BindingAdmission::Bound | BindingAdmission::Invalid => DiagnosticEvent::Malformed,
+                BindingAdmission::Full => DiagnosticEvent::Full,
+                BindingAdmission::Expired => DiagnosticEvent::Expired,
+            };
+            diagnostics.record_event(Some(port), event)
+        }
+    }
 }
 
 /// Convenience constructor for a B/IP egress used by composition callers.
