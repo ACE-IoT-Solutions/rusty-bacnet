@@ -106,6 +106,11 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     pub(super) fn invalid_frame_event(&mut self, now: Instant) -> Result<(), CoreError> {
+        // While a frame of this station's waits, its octets were only
+        // activity for that frame (see the `pending` module).
+        if self.pending_send.is_some() {
+            return Ok(());
+        }
         if self.state == MasterState::WaitForReply {
             self.set_state(MasterState::DoneWithToken);
             self.drive_token(now)?;
@@ -121,8 +126,11 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         now: Instant,
     ) -> Result<(), CoreError> {
         self.counters.record_frame_received();
+        if self.frame_while_pending(&frame, now)? {
+            return Ok(());
+        }
         if self.pending_request.is_some() || self.state == MasterState::AnswerDataRequest {
-            self.frame_while_answering(&frame);
+            self.frame_while_busy(&frame, true);
             return Ok(());
         }
         // A complete valid frame proves that another station began using the
@@ -146,7 +154,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                 self.token_count = 0;
                 self.retry_token_count = 0;
                 self.sole_master = false;
-                return self.queue_token(self.next_station, now);
+                return self.queue_token(self.next_station, Origin::Holder, now);
             }
             self.set_state(MasterState::Idle);
             self.protocol_deadline = Some(now + self.config.t_no_token);
@@ -156,14 +164,17 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             FrameType::Token if frame.header.destination == self.config.station => {
                 self.use_received_token(now)
             }
-            FrameType::PollForMaster if frame.header.destination == self.config.station => self
-                .queue_frame(
+            FrameType::PollForMaster if frame.header.destination == self.config.station => {
+                let window = self.poll_reply_window(now);
+                self.queue_frame(
                     FrameType::ReplyToPollForMaster,
                     frame.header.source,
                     &[],
                     PostTransmit::Idle,
+                    Origin::Answer(window),
                     now,
-                ),
+                )
+            }
             FrameType::BACnetDataNotExpectingReply
                 if frame.header.destination == self.config.station
                     || frame.header.destination == BROADCAST_MAC =>
@@ -180,14 +191,17 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             {
                 self.begin_request(&frame, now)
             }
-            FrameType::TestRequest if frame.header.destination == self.config.station => self
-                .queue_frame(
+            FrameType::TestRequest if frame.header.destination == self.config.station => {
+                let window = self.reply_window(now);
+                self.queue_frame(
                     FrameType::TestResponse,
                     frame.header.source,
                     &frame.data[..frame.length],
                     PostTransmit::Idle,
+                    Origin::Answer(window),
                     now,
-                ),
+                )
+            }
             _ => Ok(()),
         }
     }
@@ -201,24 +215,28 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         self.drive_token(now)
     }
 
-    /// A valid frame that completes while this station answers a request.
+    /// A valid frame that completes while this station is busy: answering a
+    /// request, or waiting to send a frame of its own (Clause 9.5.5.1).
     ///
     /// No transition out of ANSWER_DATA_REQUEST consumes a received frame
-    /// (Clause 9.5.6.9), so the standard leaves it pending for IDLE to act on
-    /// once the reply is out (Clause 9.5.6.2). The core keeps no second frame
-    /// buffer for that, and never lets the frame displace the pending reply:
+    /// (Clause 9.5.6.9), and none can fire while SendFrame waits, so the
+    /// standard leaves the frame pending for the state that follows. The core
+    /// keeps no second frame buffer for that, and never lets the frame
+    /// displace its own:
     ///
     /// - Data that needs no reply from this station is delivered at once.
-    /// - A Token for this station is remembered and taken up on the way to
-    ///   IDLE.
+    /// - A Token for this station is remembered when `keep_token` is set (the
+    ///   station answers from IDLE, and goes back there) and taken up on the
+    ///   way to IDLE. Otherwise this station already holds the token, and the
+    ///   Token is dropped and counted.
     /// - A Poll For Master, data request or Test_Request for this station is
-    ///   dropped and counted in [`MstpCounters::discarded_while_answering`]:
-    ///   an answer after this station's own reply would come too late, and
-    ///   could collide with the station that asked.
+    ///   dropped and counted in [`MstpCounters::discarded_while_busy`]: an
+    ///   answer after this station's own frame would come too late, and could
+    ///   collide with the station that asked.
     ///
     /// Any frame but delivered data replaces a remembered Token, as a newer
     /// frame replaces a pending one in the receive state machine.
-    fn frame_while_answering(&mut self, frame: &OwnedFrame) {
+    pub(super) fn frame_while_busy(&mut self, frame: &OwnedFrame, keep_token: bool) {
         let header = frame.header;
         let for_us = header.destination == self.config.station;
         let broadcast = header.destination == BROADCAST_MAC;
@@ -229,14 +247,15 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             FrameType::BACnetDataExpectingReply if broadcast => {
                 self.deliver(frame, None);
             }
-            FrameType::Token if for_us => self.pending_token = true,
-            FrameType::PollForMaster
+            FrameType::Token if for_us && keep_token => self.pending_token = true,
+            FrameType::Token
+            | FrameType::PollForMaster
             | FrameType::BACnetDataExpectingReply
             | FrameType::TestRequest
                 if for_us =>
             {
                 self.pending_token = false;
-                self.counters.record_discarded_while_answering();
+                self.counters.record_discarded_while_busy();
             }
             _ => self.pending_token = false,
         }

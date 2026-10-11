@@ -8,6 +8,9 @@ const MAX_FRAME_ABORT: Duration = Duration::from_millis(100);
 /// The shortest T_reply_timeout a station may use (Clause 9.5.3). No requester
 /// stops waiting for a reply sooner, so it bounds how late a reply may start.
 pub(crate) const MIN_REPLY_TIMEOUT: Duration = Duration::from_millis(255);
+/// The shortest T_usage_timeout a station may use (Clause 9.5.3). No poller
+/// gives up on a Reply To Poll For Master sooner.
+pub(crate) const MIN_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 /// Default for [`MstpCoreConfig::reply_transmit_margin`], the value the host
 /// MS/TP transport reserves.
 const DEFAULT_REPLY_TRANSMIT_MARGIN: Duration = Duration::from_millis(25);
@@ -380,12 +383,11 @@ impl MstpCoreConfig {
                 maximum: Duration::from_millis(15),
             });
         }
-        let usage_timeout_min = Duration::from_millis(20);
         let usage_timeout_max = Duration::from_millis(35);
-        if self.t_usage_timeout < usage_timeout_min || self.t_usage_timeout > usage_timeout_max {
+        if self.t_usage_timeout < MIN_USAGE_TIMEOUT || self.t_usage_timeout > usage_timeout_max {
             return Err(ConfigError::UsageTimeoutOutOfRange {
                 value: self.t_usage_timeout,
-                minimum: usage_timeout_min,
+                minimum: MIN_USAGE_TIMEOUT,
                 maximum: usage_timeout_max,
             });
         }
@@ -440,7 +442,7 @@ impl MstpCoreConfig {
             t_slot: Duration::from_millis(10),
             t_turnaround: or_max(ceil_bit_times(baud_rate, 40)),
             t_usage_delay: Duration::from_millis(15),
-            t_usage_timeout: Duration::from_millis(20),
+            t_usage_timeout: MIN_USAGE_TIMEOUT,
             reply_transmit_margin: DEFAULT_REPLY_TRANSMIT_MARGIN,
             queue_max_age: Duration::from_secs(5),
             broadcast_unicast_ratio: 1,

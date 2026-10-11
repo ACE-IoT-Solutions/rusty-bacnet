@@ -119,7 +119,7 @@ fn frames_wanting_a_prompt_answer_are_dropped_and_counted() {
         let id = receive_request(&mut core);
         core.on_validated_frame(frame, ms(10)).unwrap();
         assert_eq!(
-            core.counters().discarded_while_answering,
+            core.counters().discarded_while_busy,
             1,
             "{:?}",
             frame.header.frame_type
@@ -154,7 +154,7 @@ fn broadcast_data_is_delivered_while_answering() {
             }
         );
     }
-    assert_eq!(core.counters().discarded_while_answering, 0);
+    assert_eq!(core.counters().discarded_while_busy, 0);
     assert_eq!(core.snapshot().request_id, Some(id));
 }
 

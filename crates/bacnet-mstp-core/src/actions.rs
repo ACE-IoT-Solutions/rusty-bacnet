@@ -95,8 +95,12 @@ pub enum Action<'a> {
     /// Before enabling the line driver for it (the
     /// [`SetDirection`](Self::SetDirection) polled just before), confirm the
     /// start with [`MasterCore::on_transmit_started`](crate::MasterCore::on_transmit_started)
-    /// and send only if that succeeds. After any error for this id, or an
-    /// abort, send nothing more for it.
+    /// and send only if that succeeds. Until then keep feeding the core what
+    /// the receiver hears: activity in that time can refuse the start, and
+    /// the core may take the frame back first, which it shows by queueing
+    /// `SetDirection(Direction::Receive)` before the start; drop the frame
+    /// then. After any error for this id, or an abort, send nothing more for
+    /// it.
     Transmit {
         /// Generation-bound operation identifier.
         id: TransmitId,

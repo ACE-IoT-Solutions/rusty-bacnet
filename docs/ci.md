@@ -228,13 +228,13 @@ link.
   install the toolchain again for builds that take seconds.
 - **What `.text` holds.** Each image's `.text` includes its scenario, not
   just the stack it links. The check's by-crate list shows the split: on
-  `thumbv7m-none-eabi`, the MS/TP image's 18.3 KB is about 5.8 KB of
-  `bacnet-mstp-core`, 6.5 KB of the scenario (with the core code it
+  `thumbv7m-none-eabi`, the MS/TP image's 18.7 KB is about 6.3 KB of
+  `bacnet-mstp-core`, 6.4 KB of the scenario (with the core code it
   inlines), 4.3 KB of compiler-builtins and startup code (memory copies,
   64-bit division and the reset handler; the list shows the unmangled part
   separately) and 1.4 KB of `bacnet-mstp-codec`.
 - **RAM.** The scenarios' buffers and the core are statics, so `.bss`
-  measures them: the core is 13,352 octets on these targets. `.bss` doesn't
+  measures them: the core is 13,344 octets on these targets. `.bss` doesn't
   count the stack, where `MasterCore::new` builds the core before it is
   copied into place (#1618). `cargo nextest run -p firmware-link` prints the
   host sizes from the `ram_sizes` test.
