@@ -259,17 +259,27 @@
    "status": "implementation-present-needs-conformance-tests",
    "code_anchors": [
     "crates/bacnet-network/src/router",
+    "crates/bacnet-router-core/src",
+    "crates/bacnet-router-adapters/src",
     "benchmarks/src/stress/router.rs"
    ],
-   "positive_tests": [],
-   "negative_tests": [],
+   "positive_tests": [
+    "crates/bacnet-router-core/tests/router_control.rs",
+    "crates/bacnet-router-core/tests/broadcast.rs",
+    "crates/bacnet-router-adapters/tests/composition.rs"
+   ],
+   "negative_tests": [
+    "crates/bacnet-router-core/tests/rejection.rs",
+    "crates/bacnet-router-core/tests/discovery.rs",
+    "crates/bacnet-router-core/tests/forwarding.rs"
+   ],
    "benchmarks": [
     "benchmarks/src/bin/bacnet_router.rs"
    ],
    "public_claims": [
     "docs/architecture.md router model"
    ],
-   "notes": "Needs in-memory or Docker multi-network conformance evidence."
+   "notes": "Portable in-memory evidence is present. Non-empty Initialize-Routing-Table/port-id semantics need consolidated-standard reconciliation; independent interoperability and platform HIL remain open."
   },
   {
    "id": "BACNET-7-ETHERNET-LLC",

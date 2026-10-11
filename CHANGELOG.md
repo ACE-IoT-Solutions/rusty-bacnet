@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add allocation-free embedded B/IP↔MS/TP router core and bounded adapters for
+  direct/learned routing, discovery and routing-table control, routed broadcast
+  policy, duplicate suppression, queue backpressure, oversize handling,
+  diagnostics, and synchronous operational controls.
+- Add explicit Extended MS/TP codec, core, and router profiles using
+  COBS/XOR-`0x55` and CRC-32K with a 1497-byte NPDU ceiling, fail-closed peer
+  capability, official Annex X.4 wire-vector coverage, and bare-target builds.
+
+### Fixed
+
+- Require broadcast forwarding to pass through the explicit policy seam,
+  discard exhausted hop counts before side effects, reclaim expired discovery
+  capacity, suppress same-ingress route advertisements, and encode local
+  refusal messages without a routed destination.
+- Accept valid MS/TP slave source addresses 128–254, resynchronize a standard
+  profile after an oversized Extended frame, deliver Extended DNER replies,
+  and size the transmit watchdog for the selected maximum frame profile.
+
 ## [0.11.8] - 2026-10-10
 
 ### Changed

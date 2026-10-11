@@ -66,11 +66,11 @@ never counted as complete.
 | R3 Routed broadcasts/loop safety | Complete | Host, strict-lint, feature, and bare-target gates pass |
 | R4 Standard B/IP↔MS/TP adapters | Complete | Composition and both bare-target gates pass |
 | R5 Diagnostics/operational control | Complete | Exactly-once observers and bounded benchmark evidence pass |
-| X0 Normative sources/vectors | External gap | Licensed consolidated 135-2020 review; Annex X.4 full fixture |
+| X0 Normative sources/vectors | External gap | Licensed consolidated 135-2020 reconciliation |
 | X1 COBS/CRC-32K primitives | Complete | None |
 | X2 Extended codec | Complete | Independent fixtures and streaming fuzz landed in `8a3f0dd0` |
 | X3 Extended core profile | Complete | Explicit profiles, memory evidence, and strict gates pass |
-| X4 Hosted extended compatibility | Complete | Hosted transport regression passes |
+| X4 Hosted extended framing | Complete | Framing/assembly only; hosted application delivery is not claimed |
 | X5 Extended router composition | Complete | Composition and boundary gates pass; interop remains a claim gate |
 | R6 Release evidence/claim | In review | Independent review and documented packaging caveat |
 
@@ -96,8 +96,10 @@ test identifies a regression:
   memory-budget assertions.
 - X1–X4: allocation-free COBS/XOR-`0x55`, CRC-32K, extended one-shot and
   streaming codecs, explicit standard/extended storage profiles, hosted
-  assembly/timing support, reserved-type rejection, and maximum-frame split
-  tests.
+  framing/assembly/timing support, reserved-type rejection, and maximum-frame
+  split tests. The hosted adapter does not deliver Extended MS/TP NPDUs to
+  applications; end-to-end Extended delivery belongs to the explicit embedded
+  profile and router adapter.
 - X5 foundation: standard and extended MS/TP egress profiles, fail-closed peer
   capability, 501/502/1497/1498 queue limits, and extended frame composition.
 
@@ -171,14 +173,28 @@ support without treating every `0x20..=0x7f` frame as an NPDU.
 - [x] Record the measured standard-versus-extended core memory delta: standard
   profile 13,368 bytes, extended profile 37,432 bytes, delta 24,064 bytes
   (`86547c56`).
+- [x] Accept valid slave source addresses 128–254 for standard and extended
+  frames while continuing to reject source 255 (`da7a4eda`).
+- [x] Reset and resynchronize the standard profile after a valid Extended
+  frame exceeds its configured receive storage (`da7a4eda`).
+- [x] Derive the default transmit watchdog from maximum Extended-frame wire
+  time at the configured baud rate and reject undersized profile watchdogs
+  (`da7a4eda`).
+- [x] Deliver Extended DNER while waiting for a reply and compare both encoder
+  and decoder output against the complete Annex X.4 fixture (`da7a4eda`).
 
 Exit evidence:
 
-- codec, core, hosted transport, and router-adapter suites all pass;
+- codec, core, hosted framing/assembly, and router-adapter suites all pass;
 - standard golden vectors are unchanged;
 - standard ports remain capped at 501 bytes regardless of configured values;
 - extended ports are capped at 1497 bytes and require explicit peer opt-in;
 - both supported bare targets compile.
+
+The hosted `bacnet-transport` seam is evidence for framing, stream assembly,
+timing, and resynchronization only. It still drops Extended frames before
+application delivery, so this plan does not claim hosted Extended MS/TP
+endpoint support.
 
 External X0 gate: official addenda support the implementation and are recorded
 in `docs/plans/evidence/extended-mstp-source-dossier.md`. The configured
@@ -230,6 +246,60 @@ or platform claims.
   broad modern-router claim until the external X0 and interoperability gates
   are satisfied.
 
+### C5 — Resolve independent review findings
+
+Purpose: close the concrete correctness and safety findings raised by the
+BACnet-focused review panel before asking the human team to review the branch.
+
+- [x] Route all direct unicast APIs with a broadcast link destination to the
+  explicit broadcast-policy seam; neither B/IP→MS/TP nor MS/TP→B/IP can bypass
+  policy and duplicate suppression (`9f8e7892`).
+- [x] Discard routed NPDUs with hop count zero or one before egress, cache
+  insertion, discovery, or refusal generation (`9f8e7892`).
+- [x] Reclaim expired discovery slots before reporting bounded-capacity
+  exhaustion (`9f8e7892`).
+- [x] Suppress Who-Is-Router responses for direct and learned routes whose
+  egress is the request ingress (`9f8e7892`).
+- [x] Encode refusals to a local ingress source as local network messages and
+  retain routed addressing only for routed sources (`9f8e7892`).
+- [x] Validate broadcast DADR/class combinations before cache or fanout and
+  cap router-control payload processing at 1497 bytes (`9f8e7892`).
+- [x] Close the Extended receive, watchdog, source-address, reply-delivery,
+  and Annex X.4 oracle gaps listed in C2 (`da7a4eda`).
+- [ ] Re-run the correctness, Clause 6, data-link, safety, test, and release
+  reviews against the replacement commit and resolve every blocker/high
+  finding.
+
+Initialize-Routing-Table query, ACK, and transactional parsing are covered.
+The precise semantics of non-empty request entries and their wire `port_id`
+remain a consolidated-standard review item; the portable core currently treats
+the peer port identifier as opaque and learns ownership from the local ingress
+port plus immediate peer. Do not promote that behavior to a conformance claim
+until X0 is complete.
+
+## Remaining external and release phases
+
+These phases intentionally remain open after the portable library is ready for
+human review:
+
+1. **X0 consolidated-standard reconciliation:** obtain the licensed
+   Standard 135-2020 text and reconcile Clause 6 routing-table semantics plus
+   Clauses 9.3, 9.5, 9.6, 9.10 and Annexes G/X. Update tests and ledger rows for
+   any difference; do not infer consolidated wording from addenda.
+2. **I1 independent interoperability:** exercise B/IP↔standard MS/TP and
+   explicitly enabled Extended MS/TP with an independent implementation,
+   including discovery, table initialization, broadcasts, refusal paths,
+   saturation, 501/502/1497/1498 boundaries, and slave sources 128–254.
+3. **F1 downstream ESP-IDF integration/HIL:** the firmware team owns UDP
+   ancillary destination metadata, socket lifecycle, UART direction and drain,
+   monotonic timers, task serialization, device diagnostics, flashing, and HIL.
+4. **P1 publication readiness:** verify the exact declared MSRV, publish
+   dependency crates in order (`types` → `codec` → `mstp-core`; `router-core`
+   independently; adapters and transport after their dependencies), prepare
+   every package against the private registry, then build and smoke-test the
+   tagged artifacts. The current admission benchmark is a historical baseline
+   measured at `ec5046f3`, not a performance claim for later closeout commits.
+
 ## Verification matrix
 
 Minimum local gates:
@@ -264,7 +334,9 @@ all five changed publishable crates, and `bacnet-router-core` also passed
 standalone package verification. Cargo cannot prepare the four packages that
 depend on unpublished `0.11.8` sibling crates against crates.io; this is a
 release-order/registry prerequisite rather than a source-content failure and
-must remain visible to the human release review.
+must remain visible to the human release review. Exact commands, toolchains,
+results, and claim limits are recorded in
+`docs/plans/evidence/embedded-router/closeout-2026-10-11.md`.
 
 ## Claim gates and downstream handoff
 

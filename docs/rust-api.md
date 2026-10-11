@@ -1573,6 +1573,14 @@ Who-Is-Router-To-Network discovery interval before a source-aware
 Reject-Message-To-Network is produced; the library retains no pending NPDU
 bytes.
 
+Direct/unicast forwarding rejects a broadcast link destination with
+`ForwardError::BroadcastRequiresPolicy`; callers must use `BroadcastPolicy` so
+policy, ingress exclusion, hop exhaustion, and duplicate suppression cannot be
+bypassed. Router-control payloads are rejected above
+`MAX_ROUTER_CONTROL_PAYLOAD` (1497 bytes) before decoding or state mutation.
+Initialize-Routing-Table peer `port_id` values remain opaque: local learned
+route ownership uses the ingress `PortId` and immediate peer address.
+
 `OperationalDiagnostics` exposes saturating global/per-port counters, bounded
 occupancy snapshots, recent failures, and synchronous controls. Its typed
 forwarding, broadcast, and router-control observers define one terminal event
@@ -1603,6 +1611,9 @@ The configured consolidated Standard 135-2020 reference is not present in the
 repository. Extended MS/TP implementation and tests are anchored to official
 ASHRAE addenda, but no consolidated-edition conformance claim is made until
 the licensed standard and independent interoperability evidence are reviewed.
+The hosted `bacnet-transport` adapter currently provides Extended-frame
+framing, assembly, timing, and resynchronization compatibility but does not
+deliver Extended NPDUs to hosted applications.
 
 ## Embedded MS/TP
 
@@ -1618,6 +1629,11 @@ Both crates are `no_std`. The core's `heapless` feature provides fixed-capacity
 NPDU queues; its `alloc` feature provides an owned, pre-sized queue backend for
 systems that already use an allocator. Neither feature allocates while the
 core is running.
+
+MS/TP source addresses 0–254 are accepted; 255 remains invalid as a source.
+The default transmit watchdog covers the maximum Extended-frame wire time at
+the configured baud rate with margin. Profile construction rejects a custom
+watchdog shorter than that profile's maximum frame wire time.
 
 ### Bare-metal codec
 
