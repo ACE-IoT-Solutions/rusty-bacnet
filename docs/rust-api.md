@@ -25,6 +25,19 @@ bacnet-types → bacnet-encoding → bacnet-services → bacnet-transport → ba
 
 Core BACnet types, enums, and error definitions.
 
+### `no_std` builds
+
+`bacnet-types`, `bacnet-encoding` and `bacnet-services` also build without
+the standard library, for firmware that has a global allocator. Depend on them
+with `default-features = false, features = ["alloc"]`. Each crate needs `std`
+(the default) or `alloc`, and refuses to build with neither. Without `std`,
+`bacnet_types::bip_port` and `Error::Transport` don't exist, and
+`bacnet-encoding` logs nothing. `bytes` has to build for the target too: on
+one without atomic compare-and-swap, such as ARMv6-M, that takes its
+`extra-platforms` feature and a `portable-atomic` backend the firmware
+chooses. CI builds all three for ARMv7E-M and RISC-V, and `bacnet-types` for
+ARMv6-M as well (`scripts/ci/check-no-std.sh`).
+
 ### Enums (`bacnet_enum!` macro)
 
 All BACnet enums are generated with `bacnet_enum!`, which produces a newtype struct with:
