@@ -462,6 +462,25 @@ mod tests {
         assert_eq!(decoded.header.destination, 2);
         assert_eq!(decoded.data.len(), EXTENDED_MSTP_MAX_NPDU);
         assert_eq!(decoded.data, payload);
+
+        let mut receiver_rx = [0; 4096];
+        let mut receiver = extended_core(&mut receiver_rx);
+        receiver
+            .on_validated_extended_frame(decoded, at(3))
+            .unwrap();
+        match receiver.poll_action() {
+            Action::DeliverNpdu {
+                source,
+                destination,
+                npdu,
+                ..
+            } => {
+                assert_eq!(source, 1);
+                assert_eq!(destination, 2);
+                assert_eq!(npdu, payload);
+            }
+            other => panic!("expected extended delivery, got {other:?}"),
+        }
     }
 
     #[test]
@@ -535,5 +554,15 @@ mod tests {
         };
         let (decoded, _) = decode_extended_frame(frame, &mut [0; EXTENDED_MSTP_MAX_NPDU]).unwrap();
         assert_eq!(decoded.data, payload);
+
+        let mut receiver_rx = [0; 4096];
+        let mut receiver = extended_core(&mut receiver_rx);
+        receiver
+            .on_validated_extended_frame(decoded, at(3))
+            .unwrap();
+        match receiver.poll_action() {
+            Action::DeliverNpdu { npdu, .. } => assert_eq!(npdu, payload),
+            other => panic!("expected extended delivery, got {other:?}"),
+        }
     }
 }
