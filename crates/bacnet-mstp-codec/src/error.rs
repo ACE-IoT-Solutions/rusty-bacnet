@@ -2,6 +2,17 @@
 
 use core::fmt;
 
+use crate::cobs::CobsError;
+
+/// The field in an Extended MS/TP frame where COBS validation failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendedField {
+    /// The encoded NPDU field.
+    Data,
+    /// The five-octet encoded CRC field.
+    Crc,
+}
+
 /// A frame could not be encoded or decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameError {
@@ -32,6 +43,37 @@ pub enum FrameError {
     DataCrcMismatch { data_length: usize },
     /// The destination storage could not hold the encoded frame.
     BufferExhausted { needed: usize, available: usize },
+    /// An Extended MS/TP Length value is outside the generic COBS envelope.
+    ExtendedLengthOutOfRange {
+        /// Header Length value, excluding the compatibility two-octet offset.
+        length: usize,
+        /// Smallest permitted header Length.
+        minimum: usize,
+        /// Largest permitted header Length.
+        maximum: usize,
+    },
+    /// An extended frame ended before its encoded fields were complete.
+    ExtendedTruncated { needed: usize, available: usize },
+    /// The decoded extended NPDU is outside the DER/DNER payload range.
+    ExtendedPayloadOutOfRange {
+        /// Decoded payload length.
+        length: usize,
+        /// Smallest supported decoded payload length.
+        minimum: usize,
+        /// Largest supported decoded payload length.
+        maximum: usize,
+    },
+    /// A COBS field was malformed or could not fit caller-owned storage.
+    ExtendedCobs {
+        /// Field being decoded.
+        field: ExtendedField,
+        /// Detailed COBS failure.
+        error: CobsError,
+    },
+    /// The encoded CRC field did not decode to exactly four octets.
+    ExtendedCrcLength { length: usize },
+    /// The CRC-32K over the encoded data did not match the encoded CRC field.
+    ExtendedCrcMismatch,
 }
 
 impl fmt::Display for FrameError {
@@ -74,6 +116,33 @@ impl fmt::Display for FrameError {
             Self::BufferExhausted { needed, available } => {
                 write!(f, "buffer exhausted: need {needed}, have {available}")
             }
+            Self::ExtendedLengthOutOfRange {
+                length,
+                minimum,
+                maximum,
+            } => write!(
+                f,
+                "extended frame Length {length} outside {minimum}..={maximum}"
+            ),
+            Self::ExtendedTruncated { needed, available } => write!(
+                f,
+                "truncated extended frame: need {needed} encoded octets, have {available}"
+            ),
+            Self::ExtendedPayloadOutOfRange {
+                length,
+                minimum,
+                maximum,
+            } => write!(
+                f,
+                "extended payload length {length} outside {minimum}..={maximum}"
+            ),
+            Self::ExtendedCobs { field, error } => {
+                write!(f, "extended {:?} COBS error: {error}", field)
+            }
+            Self::ExtendedCrcLength { length } => {
+                write!(f, "extended CRC decoded to {length} octets, expected 4")
+            }
+            Self::ExtendedCrcMismatch => f.write_str("extended CRC-32K mismatch"),
         }
     }
 }
@@ -129,6 +198,41 @@ impl From<FrameError> for bacnet_types::error::Error {
             FrameError::BufferExhausted { needed, available } => {
                 Self::buffer_too_short(needed, available)
             }
+            FrameError::ExtendedLengthOutOfRange {
+                length,
+                minimum,
+                maximum,
+            } => Self::decoding(
+                5,
+                format!(
+                    "MS/TP extended Length {length} outside {minimum}..={maximum}"
+                ),
+            ),
+            FrameError::ExtendedTruncated { needed, available } => Self::decoding(
+                8,
+                format!(
+                    "MS/TP extended frame truncated: need {needed} encoded octets, have {available}"
+                ),
+            ),
+            FrameError::ExtendedPayloadOutOfRange {
+                length,
+                minimum,
+                maximum,
+            } => Self::decoding(
+                8,
+                format!(
+                    "MS/TP extended payload length {length} outside {minimum}..={maximum}"
+                ),
+            ),
+            FrameError::ExtendedCobs { field, error } => Self::decoding(
+                8,
+                format!("MS/TP extended {field:?} COBS error: {error}"),
+            ),
+            FrameError::ExtendedCrcLength { length } => Self::decoding(
+                8,
+                format!("MS/TP extended CRC decoded to {length} octets, expected 4"),
+            ),
+            FrameError::ExtendedCrcMismatch => Self::decoding(8, "MS/TP extended CRC-32K mismatch"),
         }
     }
 }

@@ -1,6 +1,10 @@
 //! Caller-buffered incremental decoding.
 
-use crate::{decode_frame, Frame, FrameError, PREAMBLE};
+use crate::{decode_frame, is_cobs_raw, Frame, FrameError, HEADER_LENGTH, PREAMBLE};
+use crate::frame::{
+    decode_extended_in_place_fields, ExtendedFrame, FrameType, MAX_EXTENDED_LENGTH,
+    MIN_EXTENDED_LENGTH,
+};
 
 /// Result of feeding one or more octets to [`StreamDecoder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,6 +13,13 @@ pub enum DecodeEvent<'a> {
     NeedMore,
     /// A validated frame is available. It remains borrowed until the next push.
     Frame { frame: Frame<'a>, consumed: usize },
+    /// A validated Extended DER or DNER frame is available.
+    ExtendedFrame {
+        /// Decoded frame borrowing the receive buffer.
+        frame: ExtendedFrame<'a>,
+        /// Number of wire octets consumed by this frame.
+        consumed: usize,
+    },
     /// Non-frame input was discarded while looking for the next preamble.
     ///
     /// This is synchronization noise, not a received-invalid-frame event in
@@ -44,6 +55,7 @@ pub struct StreamDecoder<'a> {
 enum InternalEvent {
     NeedMore,
     Frame { consumed: usize },
+    ExtendedFrame { consumed: usize },
     Invalid { discard: usize },
     Malformed { discard: usize, error: FrameError },
 }
@@ -112,6 +124,7 @@ impl<'a> StreamDecoder<'a> {
         match self.try_decode() {
             InternalEvent::NeedMore => DecodeEvent::NeedMore,
             InternalEvent::Frame { consumed } => self.frame_event(consumed),
+            InternalEvent::ExtendedFrame { consumed } => self.frame_event(consumed),
             InternalEvent::Invalid { discard } => DecodeEvent::Invalid { discard },
             InternalEvent::Malformed { discard, error } => {
                 DecodeEvent::Malformed { discard, error }
@@ -130,9 +143,42 @@ impl<'a> StreamDecoder<'a> {
         self.pending = 0;
     }
 
-    fn frame_event(&self, consumed: usize) -> DecodeEvent<'_> {
+    fn frame_event(&mut self, consumed: usize) -> DecodeEvent<'_> {
+        if self.length >= 3 && is_cobs_raw(self.storage[2]) {
+            let discard = self.extended_candidate_len();
+            let result = {
+                let storage = &mut self.storage[..self.length];
+                decode_extended_in_place_fields(storage)
+            };
+            match result {
+                Ok((layout, decoded_length)) => {
+                    self.pending = consumed;
+                    let frame = ExtendedFrame {
+                        header: crate::frame::FrameHeader::new(
+                            FrameType::from_raw(layout.raw_type),
+                            layout.destination,
+                            layout.source,
+                            decoded_length,
+                        ),
+                        data: &self.storage
+                            [layout.encoded_data_start..layout.encoded_data_start + decoded_length],
+                    };
+                    return DecodeEvent::ExtendedFrame { frame, consumed };
+                }
+                Err(error) => {
+                    self.discard(discard);
+                    return DecodeEvent::Malformed {
+                        discard,
+                        error,
+                    };
+                }
+            }
+        }
         match decode_frame(&self.storage[..self.length]) {
-            Ok((frame, _)) => DecodeEvent::Frame { frame, consumed },
+            Ok((frame, _)) => {
+                self.pending = consumed;
+                DecodeEvent::Frame { frame, consumed }
+            }
             Err(error) => DecodeEvent::Error(error),
         }
     }
@@ -151,6 +197,35 @@ impl<'a> StreamDecoder<'a> {
         if self.storage[1] != PREAMBLE[1] {
             self.discard(1);
             return InternalEvent::Invalid { discard: 1 };
+        }
+        if self.length >= 3 && is_cobs_raw(self.storage[2]) {
+            if self.length < 8 {
+                return InternalEvent::NeedMore;
+            }
+            if !crate::crc8_valid(&self.storage[2..8]) {
+                self.discard(1);
+                return InternalEvent::Malformed {
+                    discard: 1,
+                    error: FrameError::HeaderCrcMismatch,
+                };
+            }
+            let length = u16::from_be_bytes([self.storage[5], self.storage[6]]) as usize;
+            if !(MIN_EXTENDED_LENGTH..=MAX_EXTENDED_LENGTH).contains(&length) {
+                self.discard(1);
+                return InternalEvent::Malformed {
+                    discard: 1,
+                    error: FrameError::ExtendedLengthOutOfRange {
+                        length,
+                        minimum: MIN_EXTENDED_LENGTH,
+                        maximum: MAX_EXTENDED_LENGTH,
+                    },
+                };
+            }
+            let total = PREAMBLE.len() + HEADER_LENGTH + length + 2;
+            if self.length < total {
+                return InternalEvent::NeedMore;
+            }
+            return InternalEvent::ExtendedFrame { consumed: total };
         }
         match decode_frame(&self.storage[..self.length]) {
             Ok((_, consumed)) => {
@@ -176,10 +251,107 @@ impl<'a> StreamDecoder<'a> {
         }
     }
 
+    fn extended_candidate_len(&self) -> usize {
+        if self.length < PREAMBLE.len() + HEADER_LENGTH
+            || !crate::crc8_valid(&self.storage[2..8])
+        {
+            return 1;
+        }
+        let length = u16::from_be_bytes([self.storage[5], self.storage[6]]) as usize;
+        if !(MIN_EXTENDED_LENGTH..=MAX_EXTENDED_LENGTH).contains(&length) {
+            return 1;
+        }
+        (PREAMBLE.len() + HEADER_LENGTH + length + 2).min(self.length)
+    }
+
     fn discard(&mut self, count: usize) {
         let count = count.min(self.length);
         let remaining = self.length - count;
         self.storage.copy_within(count..self.length, 0);
         self.length = remaining;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::{
+        encode_extended_into, FrameHeader, FrameType, MAX_EXTENDED_FRAME_LENGTH,
+        MIN_EXTENDED_MPDU_DATA,
+    };
+    use crate::BROADCAST_MAC;
+
+    fn extended_wire() -> ([u8; MAX_EXTENDED_FRAME_LENGTH], usize) {
+        let payload = [0xA5; MIN_EXTENDED_MPDU_DATA];
+        let header = FrameHeader::new(
+            FrameType::ExtendedDataNotExpectingReply,
+            BROADCAST_MAC,
+            1,
+            payload.len(),
+        );
+        let mut wire = [0u8; MAX_EXTENDED_FRAME_LENGTH];
+        let used = encode_extended_into(&mut wire, &header, &payload).unwrap();
+        (wire, used)
+    }
+
+    #[test]
+    fn every_extended_stream_split_point_reassembles() {
+        let (wire, used) = extended_wire();
+        for split in 0..=used {
+            let mut storage = [0u8; MAX_EXTENDED_FRAME_LENGTH];
+            let mut decoder = StreamDecoder::new(&mut storage);
+            let event = if split == used {
+                decoder.push_slice(&wire[..split])
+            } else {
+                assert!(matches!(
+                    decoder.push_slice(&wire[..split]),
+                    DecodeEvent::NeedMore
+                ));
+                decoder.push_slice(&wire[split..])
+            };
+            assert!(matches!(
+                event,
+                DecodeEvent::ExtendedFrame { consumed, .. } if consumed == used
+            ));
+        }
+    }
+
+    #[test]
+    fn corrupted_extended_frame_is_discarded_and_resynchronizes() {
+        let (mut wire, used) = extended_wire();
+        wire[used - 1] ^= 1;
+        let mut storage = [0u8; MAX_EXTENDED_FRAME_LENGTH];
+        let mut decoder = StreamDecoder::new(&mut storage);
+        assert!(matches!(
+            decoder.push_slice(&wire[..used]),
+            DecodeEvent::Malformed {
+                discard,
+                error: FrameError::ExtendedCrcMismatch
+            } if discard == used
+        ));
+        let (valid, valid_len) = extended_wire();
+        assert!(matches!(
+            decoder.push_slice(&valid[..valid_len]),
+            DecodeEvent::ExtendedFrame { .. }
+        ));
+    }
+
+    #[test]
+    fn mixed_standard_and_extended_frames_are_streamed_in_order() {
+        let (extended, extended_len) = extended_wire();
+        let standard = Frame::new(FrameType::Token, 0, 7, &[]);
+        let mut wire = [0u8; MAX_EXTENDED_FRAME_LENGTH + 8];
+        let standard_len = standard.encode_into(&mut wire).unwrap();
+        wire[standard_len..standard_len + extended_len].copy_from_slice(&extended[..extended_len]);
+        let mut storage = [0u8; MAX_EXTENDED_FRAME_LENGTH + 8];
+        let mut decoder = StreamDecoder::new(&mut storage);
+        assert!(matches!(
+            decoder.push_slice(&wire[..standard_len + extended_len]),
+            DecodeEvent::Frame { consumed, .. } if consumed == standard_len
+        ));
+        assert!(matches!(
+            decoder.push_slice(&[]),
+            DecodeEvent::ExtendedFrame { consumed, .. } if consumed == extended_len
+        ));
     }
 }
