@@ -50,17 +50,18 @@ pub(super) struct LocalBinding<'a> {
     pub(super) wildcard_bind: bool,
 }
 
-pub(super) fn is_local_unicast_delivery(
+/// Whether a datagram was sent to this node's own unicast address, not to a
+/// group.
+fn is_local_unicast_address(
     destination: IpAddr,
-    destination_vmac: Option<Bip6Vmac>,
     local: &LocalBinding<'_>,
     os_group_delivery: Option<bool>,
 ) -> bool {
     let LocalBinding {
         ip: local_ip,
-        vmac: local_vmac,
         unicast_ips: local_unicast_ips,
         wildcard_bind,
+        ..
     } = *local;
     let ip_matches = match destination {
         IpAddr::V6(ip) if wildcard_bind => {
@@ -71,7 +72,17 @@ pub(super) fn is_local_unicast_delivery(
         IpAddr::V6(ip) => ip == local_ip,
         IpAddr::V4(_) => false,
     };
-    ip_matches && destination_vmac == Some(local_vmac) && os_group_delivery != Some(true)
+    ip_matches && os_group_delivery != Some(true)
+}
+
+pub(super) fn is_local_unicast_delivery(
+    destination: IpAddr,
+    destination_vmac: Option<Bip6Vmac>,
+    local: &LocalBinding<'_>,
+    os_group_delivery: Option<bool>,
+) -> bool {
+    is_local_unicast_address(destination, local, os_group_delivery)
+        && destination_vmac == Some(local.vmac)
 }
 
 /// Whether a datagram was sent to a group: an IPv6 multicast address, or a
@@ -87,6 +98,11 @@ pub(super) fn group_destination(destination: IpAddr, os_group_delivery: Option<b
 /// Original-Unicast-NPDU (U.2.2, U.3), and a broadcast goes to a B/IPv6
 /// multicast group in an Original-Broadcast-NPDU (U.4). A frame that mixes the
 /// two is dropped before its NPDU reaches the network layer.
+///
+/// The unicast requests this node answers (Virtual-Address-Resolution,
+/// Forwarded-Address-Resolution and the three only a BBMD serves) must come
+/// to its own address too. One sent to a group is dropped, so a single
+/// forged multicast can't draw an answer from every node in the group.
 pub(super) fn original_destination_matches(
     function: Bvlc6Function,
     destination: IpAddr,
@@ -94,40 +110,35 @@ pub(super) fn original_destination_matches(
     local: &LocalBinding<'_>,
     os_group_delivery: Option<bool>,
 ) -> bool {
-    let LocalBinding {
-        ip: local_ip,
-        unicast_ips: local_unicast_ips,
-        wildcard_bind,
-        ..
-    } = *local;
     match function {
         Bvlc6Function::ORIGINAL_UNICAST_NPDU
         | Bvlc6Function::ADDRESS_RESOLUTION_ACK
         | Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION_ACK => {
             is_local_unicast_delivery(destination, destination_vmac, local, os_group_delivery)
         }
-        Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION => {
-            let ip_matches = match destination {
-                IpAddr::V6(ip) if wildcard_bind => {
-                    !ip.is_multicast()
-                        && (local_unicast_ips.contains(&ip)
-                            || (cfg!(windows) && os_group_delivery == Some(false)))
-                }
-                IpAddr::V6(ip) => ip == local_ip,
-                IpAddr::V4(_) => false,
-            };
-            ip_matches && os_group_delivery != Some(true)
+        Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION
+        | Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION
+        | Bvlc6Function::REGISTER_FOREIGN_DEVICE
+        | Bvlc6Function::DELETE_FOREIGN_DEVICE_TABLE_ENTRY
+        | Bvlc6Function::DISTRIBUTE_BROADCAST_TO_NETWORK => {
+            is_local_unicast_address(destination, local, os_group_delivery)
         }
         Bvlc6Function::ORIGINAL_BROADCAST_NPDU | Bvlc6Function::ADDRESS_RESOLUTION => {
             matches!(destination, IpAddr::V6(ip) if is_bacnet_ipv6_multicast(ip))
                 && os_group_delivery != Some(false)
         }
-        // Forwarded-Address-Resolution is not implemented. Drop it before
-        // learning or any other state mutation. Answering one whose target
-        // is this node's VMAC is #1632.
-        Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION => false,
         _ => true,
     }
+}
+
+/// Whether `peer` is the BBMD this node registers with as a foreign device:
+/// `false` when it isn't one. A link-local BBMD never matches, since its
+/// configured address has no scope ID to tell links apart.
+pub(super) fn is_configured_bbmd(peer: SocketAddr, foreign_bbmd: Option<(Ipv6Addr, u16)>) -> bool {
+    foreign_bbmd.is_some_and(|(bbmd_ip, bbmd_port)| {
+        !bbmd_ip.is_unicast_link_local()
+            && matches!(peer, SocketAddr::V6(peer) if *peer.ip() == bbmd_ip && peer.port() == bbmd_port)
+    })
 }
 
 pub(super) fn forwarded_npdu_is_trusted(
@@ -139,9 +150,8 @@ pub(super) fn forwarded_npdu_is_trusted(
     wildcard_bind: bool,
     foreign_bbmd: Option<(Ipv6Addr, u16)>,
 ) -> bool {
-    if let Some((bbmd_ip, bbmd_port)) = foreign_bbmd {
-        let peer_matches = !bbmd_ip.is_unicast_link_local()
-            && matches!(peer, SocketAddr::V6(peer) if *peer.ip() == bbmd_ip && peer.port() == bbmd_port);
+    if foreign_bbmd.is_some() {
+        let peer_matches = is_configured_bbmd(peer, foreign_bbmd);
         let destination_matches = match destination {
             IpAddr::V6(ip) if wildcard_bind => {
                 !ip.is_multicast()
