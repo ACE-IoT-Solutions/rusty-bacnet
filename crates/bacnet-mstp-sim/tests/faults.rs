@@ -67,17 +67,15 @@ fn an_invalid_reply_ends_the_wait_at_once() {
     sim.assert_no_violations();
 }
 
-/// Clauses 9.5.4, 9.5.6.4 and 9.5.5.1, as the core behaves today.
+/// Clauses 9.5.4, 9.5.6.4 (InvalidFrame) and 9.5.5.1 (#1618 item 2).
 ///
 /// A reply whose header CRC fails is invalid as soon as the header ends, so
-/// the requester goes to pass the token then. The standard would send that
-/// Token once the line has been quiet for Tturnaround after the rest of the
-/// damaged frame. The core instead drops the pending Token when the frame's
-/// remaining octets arrive during its turnaround, so the token is lost and
-/// regenerated after Tno_token. #1618 item 2 tracks making such a frame wait
-/// for silence; this documents the current behaviour.
+/// the requester goes on to pass the token then. The rest of the damaged
+/// frame arrives while that Token waits out its turnaround, and only delays
+/// it: the Token goes out Tturnaround after the frame's last octet, and the
+/// token is not lost.
 #[test]
-fn an_invalid_reply_header_loses_the_token_today() {
+fn an_invalid_reply_header_still_passes_the_token() {
     let mut sim = with_slave(|to| {
         ScriptSend::frame(
             millis(2),
@@ -90,12 +88,13 @@ fn an_invalid_reply_header_loses_the_token_today() {
     });
     sim.run_until(ms(2_500));
     let (_, reply, next) = request_and_next(sim.frames());
-    assert!(next.is(FrameType::PollForMaster, 0, 1), "{next}");
-    assert!(next.generation);
-    assert_eq!(next.start, reply.end + millis(500));
+    assert!(next.is(FrameType::Token, 0, 3), "{next}");
+    assert_eq!(next.start, reply.end + sim.timing().bits(40));
     let counters = sim.core(0).unwrap().counters();
     assert_eq!(counters.parser_errors, 1);
-    assert_eq!(counters.cancelled_sends, 1);
+    assert_eq!(counters.cancelled_sends, 0);
+    // Only the cold start's: the token was never lost.
+    assert_eq!(counters.token_regenerations, 1);
     sim.assert_no_violations();
 }
 
@@ -282,13 +281,12 @@ fn noise_after_a_damaged_token_counts_as_the_successor_from_five_octets() {
 }
 
 /// Clause 9.5.5.1 has a frame wait until the line has been quiet for
-/// Tturnaround. The core instead drops a non-reply frame when activity
-/// arrives during that wait and goes to IDLE (counted in `cancelled_sends`);
-/// #1618 item 2 tracks changing it to wait. This documents the current
-/// behaviour: noise in station 3's turnaround after it receives the token
-/// costs a token retry by station 0.
+/// Tturnaround, and activity during that wait only delays it (#1618 item
+/// 2). One noise octet in station 3's turnaround after it receives the
+/// token pushes its frame back to Tturnaround after the noise. Nothing is
+/// dropped, and station 0 needs no retry.
 #[test]
-fn noise_in_the_turnaround_drops_a_pending_frame_today() {
+fn noise_in_the_turnaround_only_delays_a_pending_frame() {
     let mut sim = ring(BAUD, &[0, 3, 10, 30], 31);
     let token = run_until_frame(&mut sim, ms(2_000), ms(3_000), |frame| {
         frame.is(FrameType::Token, 0, 3)
@@ -298,9 +296,9 @@ fn noise_in_the_turnaround_drops_a_pending_frame_today() {
     sim.run_until(ms(3_000));
     let noise_end = noise_at + sim.timing().octet();
     let next = first_after(sim.frames(), noise_end, |_| true).expect("a frame after");
-    assert!(next.is(FrameType::Token, 0, 3), "{next}");
-    assert_eq!(next.start, noise_end + millis(20));
-    assert_eq!(sim.core(3).unwrap().counters().cancelled_sends, 1);
+    assert_eq!(next.source(), Some(3), "{next}");
+    assert_eq!(next.start, noise_end + sim.timing().bits(40));
+    assert_eq!(sim.core(3).unwrap().counters().cancelled_sends, 0);
     sim.assert_no_violations();
 }
 

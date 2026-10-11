@@ -34,12 +34,11 @@ pub(crate) struct MasterNode {
     pub(super) transmitting: Option<TransmitId>,
     /// The core counted a token generation; its next frame is that poll.
     pub(super) regenerated: bool,
+    /// A frame the core took back before its start was confirmed. If the
+    /// core hands the same octets over again, it is the same frame.
+    withdrawn: Option<PendingTx>,
     /// Deadline misses already accounted for.
     misses_seen: u32,
-    /// The latest stretch from the core handing over a frame to the adapter
-    /// starting or dropping it, while the adapter is slow; open while the
-    /// frame waits.
-    pub(super) blind: Option<(Instant, Option<Instant>)>,
     /// The master generated a token and has held it since: a collision with
     /// another master doing the same is the generation race.
     pub(super) generating: bool,
@@ -71,7 +70,7 @@ impl MasterNode {
             pending: None,
             transmitting: None,
             regenerated: false,
-            blind: None,
+            withdrawn: None,
             generating: false,
             misses_seen: 0,
             deliveries: Vec::new(),
@@ -97,14 +96,8 @@ impl MasterNode {
         self.pending = None;
         self.transmitting = None;
         self.regenerated = false;
-        self.blind = None;
+        self.withdrawn = None;
         self.generating = false;
-    }
-
-    /// Whether the core was blind to the line at any time in `from..=to`.
-    pub(super) fn blind_during(&self, from: Instant, to: Instant) -> bool {
-        self.blind
-            .is_some_and(|(start, end)| start <= to && end.is_none_or(|end| end >= from))
     }
 
     /// Drop the core, as on power loss.
@@ -115,7 +108,7 @@ impl MasterNode {
         self.pending = None;
         self.transmitting = None;
         self.regenerated = false;
-        self.blind = None;
+        self.withdrawn = None;
         self.generating = false;
     }
 }
@@ -289,8 +282,12 @@ impl Sim {
             return;
         };
         let expected = match input {
-            // A reply whose window closed before the adapter got to it.
-            Input::Started(_) => matches!(error, CoreError::RequestExpired),
+            // A reply whose window closed before the adapter got to it, or
+            // line activity within Tturnaround of the start.
+            Input::Started(_) => matches!(
+                error,
+                CoreError::RequestExpired | CoreError::TransmitDeferred
+            ),
             // The application answered late, or for a request already gone.
             Input::Decide(..) => matches!(
                 error,
@@ -346,6 +343,15 @@ impl Sim {
                         who,
                         TraceKind::Action(format!("SetDirection({direction:?})")),
                     );
+                    // Back to receive before the adapter started the frame:
+                    // the core took it back, so the adapter drops it.
+                    let master = self.master_mut(node).expect("a master");
+                    if direction == Direction::Receive {
+                        if let Some(pending) = master.pending.take() {
+                            master.withdrawn = Some(pending);
+                            self.note(who, TraceKind::Note("frame taken back".into()));
+                        }
+                    }
                 }
                 Effect::Transmit(id, octets) => {
                     self.note(
@@ -357,11 +363,11 @@ impl Sim {
                     let master = self.master_mut(node).expect("a master");
                     let replaced = master.pending.is_some();
                     let delay = master.spec.adapter.start_delay;
-                    let generation = std::mem::take(&mut master.regenerated);
+                    let again = master.withdrawn.take().is_some_and(|withdrawn| {
+                        withdrawn.generation && withdrawn.octets == octets
+                    });
+                    let generation = std::mem::take(&mut master.regenerated) || again;
                     master.generating |= generation;
-                    if delay > bacnet_mstp_core::Duration::ZERO {
-                        master.blind = Some((now, None));
-                    }
                     let answer = answering && is_answer(&octets);
                     master.pending = Some(PendingTx {
                         id,
@@ -526,7 +532,6 @@ impl Sim {
     /// The adapter gets to a frame the core handed it: confirm the start,
     /// then drive the line.
     pub(super) fn adapter_start(&mut self, node: usize, id: TransmitId) {
-        let now = self.now;
         let station = self.nodes[node].station;
         let Some(master) = self.master_mut(node) else {
             return;
@@ -537,9 +542,6 @@ impl Sim {
         if pending.id != id {
             master.pending = Some(pending);
             return;
-        }
-        if let Some((_, end)) = master.blind.as_mut() {
-            end.get_or_insert(now);
         }
         match self.master_input(node, Input::Started(id)) {
             Ok(()) => {
@@ -558,7 +560,13 @@ impl Sim {
                 self.nodes[node].listening_since = None;
                 self.octet_start(tx, 0);
             }
-            Err(_) => self.report.refused_starts += 1,
+            Err(error) => {
+                self.report.refused_starts += 1;
+                if error == CoreError::TransmitDeferred {
+                    let master = self.master_mut(node).expect("a master");
+                    master.withdrawn = Some(pending);
+                }
+            }
         }
     }
 

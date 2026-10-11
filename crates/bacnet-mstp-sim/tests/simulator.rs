@@ -195,9 +195,9 @@ fn a_late_core_that_dispatches_before_hearing_the_frame_is_the_adapters() {
 /// which would hide a core that dispatched with no turnaround at all: each
 /// start would still come 4 ms after the last activity. The simulator checks
 /// the hand-over too. With a correct core this test only shows that check
-/// raises nothing falsely, tolerances on; its failing half needs a core
-/// mutated to skip the turnaround, which then fails here even with both
-/// tolerances on (checked by hand, PR #1627).
+/// raises nothing falsely, the collision tolerance on; its failing half
+/// needs a core mutated to skip the turnaround, which then fails here even
+/// with the tolerance on (checked by hand, PR #1627).
 #[test]
 fn slow_adapters_do_not_hide_a_dispatch_inside_turnaround() {
     let slow = AdapterSpec {
@@ -205,7 +205,6 @@ fn slow_adapters_do_not_hide_a_dispatch_inside_turnaround() {
         ..AdapterSpec::default()
     };
     let mut config = SimConfig::new(BAUD);
-    config.tolerance.slow_adapter_blind_spot = true;
     config.tolerance.slow_adapter_collisions = true;
     let mut sim = Sim::new(config);
     for station in [0, 3, 10] {
