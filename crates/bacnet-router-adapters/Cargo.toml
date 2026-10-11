@@ -1,13 +1,11 @@
 [package]
 name = "bacnet-router-adapters"
 description = "Allocation-free data-link adapters for the embedded BACnet router"
-version = "0.11.8"
-edition = "2021"
-rust-version = "1.93"
-license = "MIT"
-authors = ["Justin Scott <jscott3201@gmail.com>"]
-repository = "https://github.com/jscott3201/rusty-bacnet"
-homepage = "https://github.com/jscott3201/rusty-bacnet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 keywords = ["bacnet", "router", "mstp", "embedded", "no-std"]
 categories = ["embedded", "network-programming", "no-std"]
 
@@ -15,12 +13,12 @@ categories = ["embedded", "network-programming", "no-std"]
 default = []
 
 [dependencies]
-bacnet-mstp-core = { path = "../bacnet-mstp-core", version = "0.11.8", default-features = false }
-bacnet-router-core = { path = "../bacnet-router-core", version = "0.11.8", default-features = false }
+bacnet-mstp-core = { workspace = true }
+bacnet-router-core = { workspace = true }
 
 [dev-dependencies]
-bacnet-mstp-core = { path = "../bacnet-mstp-core", version = "0.11.8", default-features = false, features = ["heapless"] }
-bacnet-mstp-codec = { path = "../bacnet-mstp-codec", version = "0.11.8", default-features = false }
+bacnet-mstp-core = { workspace = true, features = ["heapless"] }
+bacnet-mstp-codec = { workspace = true }
 
 [lints]
 workspace = true

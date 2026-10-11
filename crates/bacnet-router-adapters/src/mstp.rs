@@ -23,12 +23,24 @@ pub struct MstpEgress<'core, 'rx, Q: QueueStorage> {
     core: &'core mut MasterCore<'rx, Q>,
     port: PortId,
     now: Instant,
+    /// The greatest timestamp offered to this adapter so far.
+    ///
+    /// `MasterCore::enqueue_npdu` intentionally does not advance its event
+    /// clock: queue admission is also used by callers that have not yet
+    /// delivered a bus event.  Keep this boundary-local watermark so a clock
+    /// regression cannot be mistaken for a fresh admission.
+    last_now: Instant,
 }
 
 impl<'core, 'rx, Q: QueueStorage> MstpEgress<'core, 'rx, Q> {
     /// Bind an MS/TP core to one router port and an explicit monotonic time.
     pub const fn new(core: &'core mut MasterCore<'rx, Q>, port: PortId, now: Instant) -> Self {
-        Self { core, port, now }
+        Self {
+            core,
+            port,
+            now,
+            last_now: now,
+        }
     }
 
     /// Update the timestamp used for subsequent admissions.
@@ -75,6 +87,13 @@ impl<Q: QueueStorage> Egress for MstpEgress<'_, '_, Q> {
         let Some(priority) = NetworkPriority::from_u8(request.priority) else {
             return AdmissionOutcome::Invalid;
         };
+        if self.now < self.last_now {
+            return AdmissionOutcome::Expired;
+        }
+        // Advance the adapter watermark even when the concrete queue rejects
+        // the item.  Time is observed at this boundary independently of queue
+        // capacity, and a later call must not regress behind it.
+        self.last_now = self.now;
 
         match self
             .core
@@ -101,10 +120,11 @@ mod tests {
     type Queues = HeaplessQueues<1, 1>;
 
     fn config() -> MstpCoreConfig {
-        let mut config = MstpCoreConfig::default();
-        config.station = 1;
-        config.max_master = 2;
-        config
+        MstpCoreConfig {
+            station: 1,
+            max_master: 2,
+            ..MstpCoreConfig::default()
+        }
     }
 
     fn core<'rx>(rx: &'rx mut [u8]) -> MasterCore<'rx, Queues> {
