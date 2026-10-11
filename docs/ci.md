@@ -23,7 +23,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
 | Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins) | ✓ | ✓ | ✓ | ✓ |
-| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples) | ✓ | ✓ | ✓ | ✓ |
+| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP image built without an allocator and checked against its size budget | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`) | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`) |  | ✓ |  | ✓ |
@@ -62,7 +62,7 @@ too.
 
 Rust caches are keyed per job on the toolchain, `Cargo.lock`, the manifests,
 and, for Clippy and Test, `LINUX_FEATURES` (Clippy also on
-`DEFAULT_FEATURES_TARGETS` and `NO_STD_TARGETS`). Only a job that succeeded
+`DEFAULT_FEATURES_TARGETS`, `NO_STD_TARGETS` and `FIRMWARE_TARGETS`). Only a job that succeeded
 on `dev` saves its cache, so a failed or cancelled run can't leave a partial
 cache that later runs restore by exact key. The MSRV job's cache comes from the weekly run, the Heavy run on
 `dev`. A new push to a PR cancels its superseded run.
@@ -131,6 +131,75 @@ them; `-p` picks one, as in `cargo run -p whois-scan -- --help`. A sample
 inherits the workspace's license, which Cargo Deny checks for every member,
 but not `[workspace.lints]`, since samples print to the terminal.
 
+### Firmware link test
+
+`check-no-std.sh` runs clippy on the `no_std` crates, and clippy never links.
+The firmware link test (#1626) does: `firmware/mstp-link` (`publish = false`)
+builds a `#![no_main]` bare-metal image with no global allocator that links
+`bacnet-mstp-codec` and `bacnet-mstp-core` (default features, plus the core's
+`heapless` queues). A use of `alloc` anywhere in the image fails the build
+with "no global memory allocator found", and a symbol that only a hosted
+target provides fails the link.
+
+- **The scenario.** `mstp_link::run` is one `no_std` function: it encodes a
+  few frame types and decodes them with a `StreamDecoder`, noise and a bad
+  CRC included; drives a `MasterCore` with injected time through a token
+  pass, a queued data frame, a poll for master, a received broadcast and an
+  answered request, carrying out each action; then fills the unicast queue
+  and offers an NPDU too long for a standard frame. It returns a summary of
+  counts. The host test `firmware/mstp-link/tests/scenario.rs` runs it and
+  compares the whole summary, so the behaviour is checked natively, in every
+  `--workspace` test run on Linux, macOS and Windows. The image's reset
+  entry calls the same function and passes the summary to
+  `core::hint::black_box`. Nothing runs the image, under an emulator or
+  otherwise: building it proves that it links, and measures it.
+- **Targets.** `thumbv7m-none-eabi` (Cortex-M3), `thumbv6m-none-eabi`
+  (Cortex-M0/M0+) and `riscv32imc-unknown-none-elf` (RV32IMC, the ESP32-C3
+  class), in `FIRMWARE_TARGETS` in `ci.yml`. They share one generic memory
+  layout, `firmware/mstp-link/memory.x`: 256 KiB of flash at `0x08000000`
+  and 64 KiB of RAM at `0x20000000`. The startup code comes from
+  `cortex-m-rt` and `riscv-rt`, bare-metal dependencies only;
+  `firmware/mstp-link/build.rs` hands the linker `memory.x` and `link.x`.
+  The image's only `unsafe` code is in the runtimes' entry macros and, on
+  RISC-V, one block that borrows the statics, which cortex-m-rt's macro does
+  safely.
+- **Workspace.** The crate is a workspace member outside `default-members`,
+  like the [samples](#samples). It shares `Cargo.lock`, so Cargo Deny and
+  Cargo Audit cover the runtime crates; it follows `[workspace.lints]`; and it
+  builds with the root `Cargo.toml`'s `firmware` profile (release with
+  `opt-level = "z"`, LTO, one codegen unit and `panic = "abort"`), since
+  cargo reads profiles only from the workspace root. On a host the binary is
+  an empty stub and the runtimes aren't built, so `--workspace` builds,
+  clippy, rustdoc and tests work as before.
+- **The check.** `scripts/ci/check-firmware-link.sh` runs, per target,
+  clippy on the image's code (a host build compiles it out), the
+  `firmware`-profile build, and `scripts/ci/firmware_size.py`. The helper
+  reads the ELF itself, so it needs no binutils, and prints `.text`,
+  `.rodata`, `.data` and `.bss` next to their budgets in
+  `firmware/mstp-link/size-budget.toml`, the largest objects in RAM, and any
+  `core::fmt` functions linked in. It fails when a section is over budget or
+  when any formatting code is linked in: the panic handler never reads the
+  message, so panics cost no formatting code, and a change that adds some
+  shows up here. CI runs it in the Clippy job, after the `no_std` check,
+  which already sets up bare-metal targets, rather than in a job of its own
+  that would install the toolchain again for builds that take seconds.
+- **RAM.** The scenario's buffers and the core are statics, so `.bss`
+  measures them: the core is 13,352 octets on these targets. `.bss` doesn't
+  count the stack, where `MasterCore::new` builds the core before it is
+  copied into place (#1618). `cargo nextest run -p mstp-link` prints the host
+  sizes from its `ram_sizes` test.
+- **Raising a budget.** Each budget is the measured size plus about 12%. When
+  a change grows the image on purpose, the error suggests a new budget;
+  update it and the measured sizes in the file's comments, and say in the PR
+  why the image grew. That makes the growth a reviewed change.
+
+```bash
+rustup target add thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf
+bash scripts/ci/check-firmware-link.sh                       # every target
+bash scripts/ci/check-firmware-link.sh thumbv6m-none-eabi    # one
+cargo nextest run -p mstp-link                               # the scenario, natively
+```
+
 ### Runner
 
 Every Linux job runs on GitHub's `ubuntu-24.04` hosted runner, an x86_64 VM
@@ -184,7 +253,9 @@ image.
   the jobs cold each time. The Clippy job adds the `x86_64-pc-windows-msvc` and
   `aarch64-apple-darwin` standard libraries for the per-crate default-features
   check, and the bare-metal targets in `NO_STD_TARGETS` for the `no_std`
-  check (neither clippy nor rustdoc links, so nothing else is needed). The
+  check (neither clippy nor rustdoc links, so nothing else is needed) and in
+  `FIRMWARE_TARGETS` for the [firmware link test](#firmware-link-test), which
+  links with the `rust-lld` that rustc ships. The
   MSRV job adds the MSRV toolchain and sets `RUSTUP_TOOLCHAIN` to it.
 - **Tools.** [`.github/ci-pins.env`](../.github/ci-pins.env) pins
   cargo-nextest, cargo-deny, cargo-audit and maturin, each with the SHA-256 of
@@ -611,6 +682,7 @@ cargo clippy -p rusty-bacnet --all-targets --locked -- -D warnings
 cargo clippy -p bacnet-cli --no-default-features --all-targets --locked -- -D warnings
 bash scripts/ci/check-default-features.sh   # the host; or pass target triples, as CI does
 bash scripts/ci/check-no-std.sh             # needs the bare-metal targets (rustup target add)
+bash scripts/ci/check-firmware-link.sh      # likewise; see "Firmware link test"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$FEATURES"
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusty-bacnet --no-deps --locked --document-private-items
 cargo nextest run -p bacnet-cli --locked   # the CLI's feature-off tests

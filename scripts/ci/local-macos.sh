@@ -10,9 +10,10 @@
 #
 # serial and ethernet are Linux-only features, so macOS uses every other
 # optional feature, including those crates gate on their own features (#906).
-# Clippy and rustdoc deny warnings, as CI does. The no_std clippy step needs
-# the three bare-metal targets once: `rustup target add thumbv6m-none-eabi
-# thumbv7em-none-eabihf riscv32imac-unknown-none-elf`. Tests need cargo-nextest
+# Clippy and rustdoc deny warnings, as CI does. The no_std clippy step and the
+# firmware link test need their bare-metal targets once: `rustup target add
+# thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf
+# thumbv7m-none-eabi riscv32imc-unknown-none-elf`. Tests need cargo-nextest
 # 0.9.145 or later (`cargo install cargo-nextest --locked`). The PyO3 crate's
 # Rust tests link libpython from PYO3_PYTHON, the active venv, or `python` /
 # `python3` on PATH, in that order (#919). .github/workflows/native-tests.yml
@@ -44,6 +45,7 @@ step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --lock
 step "clippy and rustdoc (each published crate, default features; no_std types, encoding and services)"
 bash scripts/ci/check-default-features.sh
 step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
+step "firmware link test (bare-metal image, no allocator, size budget)"; bash scripts/ci/check-firmware-link.sh
 step "rustdoc (every macOS feature, private items)"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$features"
 step "rustdoc (PyO3 bindings, private items)"

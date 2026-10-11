@@ -13,7 +13,9 @@ name: CI
 #           clippy and rustdoc with warnings denied (every feature, the PyO3
 #           crate, and each published crate alone with default features, for
 #           Linux, Windows and macOS; the every-feature and PyO3 rustdoc runs
-#           include private items),
+#           include private items), the no_std crates on bare-metal targets,
+#           and the MS/TP firmware image linked without an allocator and
+#           checked against its size budget,
 #           every-feature Linux tests plus bacnet-cli's feature-off tests,
 #           and the Python bindings built with maturin, their unittest suite
 #           and the PyO3 crate's own Rust tests.
@@ -161,6 +163,9 @@ jobs:
       DEFAULT_FEATURES_TARGETS: x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin
       # Bare-metal targets for the no_std check (#1604), in the cache key too.
       NO_STD_TARGETS: thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf
+      # Targets the firmware link test builds its image for (#1626), each with
+      # a budget in firmware/mstp-link/size-budget.toml; in the cache key too.
+      FIRMWARE_TARGETS: thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf
       # pcap for bacnet-cli, whose build script loads libpcap.
       APT_PACKAGES: libpcap-dev
     steps:
@@ -189,7 +194,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-bin: false
-          env-vars: LINUX_FEATURES DEFAULT_FEATURES_TARGETS NO_STD_TARGETS
+          env-vars: LINUX_FEATURES DEFAULT_FEATURES_TARGETS NO_STD_TARGETS FIRMWARE_TARGETS
           save-if: ${{ github.ref == 'refs/heads/dev' }}
       # Warnings are errors for workspace code only; dependencies are unaffected.
       # The workspace includes the samples in examples/rust/samples (#1450).
@@ -220,6 +225,18 @@ jobs:
           rustup target add $NO_STD_TARGETS
           # shellcheck disable=SC2086
           bash scripts/ci/check-no-std.sh $NO_STD_TARGETS
+      # Clippy doesn't link, so this builds the codec and core into a
+      # bare-metal image with no allocator (firmware/mstp-link), for each
+      # target, and checks its section sizes against the budget. It links with
+      # the rust-lld that rustc ships, so the targets' core libraries are all
+      # it needs. Nothing runs the image; the scenario it links runs in Test.
+      - name: Firmware link test (bare-metal image, no allocator, size budget)
+        if: ${{ !cancelled() }}
+        run: |
+          # shellcheck disable=SC2086 # one argument per target
+          rustup target add $FIRMWARE_TARGETS
+          # shellcheck disable=SC2086
+          bash scripts/ci/check-firmware-link.sh $FIRMWARE_TARGETS
       # Private and pub(crate) items too, so their intra-doc links can't rot
       # (#1164). This run still flags public docs that link to private items
       # (rustdoc::private_intra_doc_links), so it replaces the public-only run.
