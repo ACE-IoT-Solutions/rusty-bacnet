@@ -14,8 +14,8 @@ name: CI
 #           crate, and each published crate alone with default features, for
 #           Linux, Windows and macOS; the every-feature and PyO3 rustdoc runs
 #           include private items), the no_std crates on bare-metal targets,
-#           and the MS/TP firmware image linked without an allocator and
-#           checked against its size budget,
+#           and the MS/TP and B/IP firmware images linked without an
+#           allocator and checked against their size budgets,
 #           every-feature Linux tests plus bacnet-cli's feature-off tests,
 #           and the Python bindings built with maturin, their unittest suite
 #           and the PyO3 crate's own Rust tests.
@@ -144,6 +144,8 @@ jobs:
           bash scripts/ci/check-no-secrets.sh
       - name: MSRV script regressions
         run: python3 scripts/ci/test-check-msrv.py
+      - name: Firmware size script regressions
+        run: python3 scripts/ci/test-firmware-size.py
       - name: Release script tests
         run: python3 -m unittest discover -s scripts/release
       # Entries are changelog.d/ fragments; [Unreleased] in CHANGELOG.md holds none.
@@ -163,8 +165,8 @@ jobs:
       DEFAULT_FEATURES_TARGETS: x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin
       # Bare-metal targets for the no_std check (#1604), in the cache key too.
       NO_STD_TARGETS: thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf
-      # Targets the firmware link test builds its image for (#1626), each with
-      # a budget in firmware/mstp-link/size-budget.toml; in the cache key too.
+      # Targets the firmware link test builds its images for (#1626), each with
+      # budgets in firmware/link/size-budget.toml; in the cache key too.
       FIRMWARE_TARGETS: thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf
       # pcap for bacnet-cli, whose build script loads libpcap.
       APT_PACKAGES: libpcap-dev
@@ -225,12 +227,12 @@ jobs:
           rustup target add $NO_STD_TARGETS
           # shellcheck disable=SC2086
           bash scripts/ci/check-no-std.sh $NO_STD_TARGETS
-      # Clippy doesn't link, so this builds the codec and core into a
-      # bare-metal image with no allocator (firmware/mstp-link), for each
-      # target, and checks its section sizes against the budget. It links with
+      # Clippy doesn't link, so this builds the MS/TP and B/IP stacks into
+      # bare-metal images with no allocator (firmware/link), one per stack, for
+      # each target, and checks their sizes against the budget. It links with
       # the rust-lld that rustc ships, so the targets' core libraries are all
-      # it needs. Nothing runs the image; the scenario it links runs in Test.
-      - name: Firmware link test (bare-metal image, no allocator, size budget)
+      # it needs. Nothing runs the images; the scenarios they link run in Test.
+      - name: Firmware link test (bare-metal images, no allocator, size budget)
         if: ${{ !cancelled() }}
         run: |
           # shellcheck disable=SC2086 # one argument per target

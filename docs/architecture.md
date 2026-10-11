@@ -40,9 +40,10 @@ tests and benchmarks. The CLI (`bacnet-cli`) and PyO3 binding (`rusty-bacnet`)
 are excluded from default builds: the CLI pulls in heavier application
 dependencies, and the Python extension needs its native Python build context.
 They remain workspace members and can be selected explicitly. So does the
-unpublished firmware link test, `firmware/mstp-link`, which links
-`bacnet-mstp-codec` and `bacnet-mstp-core` into a bare-metal image without an
-allocator and checks its size ([CI](ci.md#firmware-link-test)).
+unpublished firmware link test, `firmware/link`, which links the MS/TP stack
+(`bacnet-mstp-codec`, `bacnet-mstp-core`) and the B/IP codec
+(`bacnet-bip-codec`) into bare-metal images without an allocator and checks
+their size ([CI](ci.md#firmware-link-test)).
 
 ## Packet Flow
 

@@ -37,6 +37,7 @@ step "rustfmt";          cargo fmt --all --check
 step "file-size cap";    bash scripts/ci/check-file-size.sh
 step "no-secret scan";   bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh
 step "MSRV script regressions"; python3 scripts/ci/test-check-msrv.py
+step "firmware size script regressions"; python3 scripts/ci/test-firmware-size.py
 step "changelog fragments"; python3 -m unittest discover -s scripts -p 'test_changelog.py' && python3 scripts/changelog.py check
 features=bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-mstp-core/heapless,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
 step "clippy (every macOS feature)"
@@ -45,7 +46,7 @@ step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --lock
 step "clippy and rustdoc (each published crate, default features; no_std types, encoding and services)"
 bash scripts/ci/check-default-features.sh
 step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
-step "firmware link test (bare-metal image, no allocator, size budget)"; bash scripts/ci/check-firmware-link.sh
+step "firmware link test (bare-metal images, no allocator, size budgets)"; bash scripts/ci/check-firmware-link.sh
 step "rustdoc (every macOS feature, private items)"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$features"
 step "rustdoc (PyO3 bindings, private items)"

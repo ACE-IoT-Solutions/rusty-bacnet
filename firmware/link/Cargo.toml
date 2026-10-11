@@ -1,27 +1,38 @@
 [package]
-name = "mstp-link"
-description = "No-allocator firmware link test and size budget for the MS/TP codec and core"
+name = "firmware-link"
+description = "No-allocator firmware link test and size budget for the MS/TP and B/IP stacks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# The lib holds the scenario, which the host test runs and the image links.
-# The bin is the image on a bare-metal target, and a stub on a host.
+# The lib holds one scenario per stack, which the host tests run and the
+# images link. Each bin is an image on a bare-metal target, and a stub on a
+# host.
 [lib]
 test = false
 doctest = false
 
 [[bin]]
-name = "mstp-link"
+name = "mstp"
+path = "src/bin/mstp.rs"
 test = false
 bench = false
 
-# Default features, so no allocator; heapless is the core's no-alloc queue.
+[[bin]]
+name = "bip"
+path = "src/bin/bip.rs"
+test = false
+bench = false
+
+# Default features, so no allocator, plus each crate's heapless storage: the
+# core's queues and the BVLL codec's sink.
 [dependencies]
 bacnet-mstp-codec = { workspace = true }
 bacnet-mstp-core = { workspace = true, features = ["heapless"] }
+bacnet-bip-codec = { workspace = true, features = ["heapless"] }
+heapless = { workspace = true }
 
 # The runtimes only on bare-metal targets, so a host build pulls in neither.
 [target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]

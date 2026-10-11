@@ -2,7 +2,7 @@
 
 use bacnet_mstp_codec::{DecodeEvent, Frame, FrameType, StreamDecoder};
 
-use crate::{Summary, WHO_IS};
+use super::{Summary, WHO_IS};
 
 /// Test data for a Test_Request.
 const TEST_DATA: [u8; 3] = [0xA5, 0x5A, 0x00];

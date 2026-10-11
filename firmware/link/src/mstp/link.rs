@@ -9,7 +9,7 @@ use bacnet_mstp_core::{
     ReplyDecision, RequestId, TransmitId,
 };
 
-use crate::{Core, Queues, Summary, WHO_IS};
+use super::{Core, Queues, Summary, UNICAST_SLOTS, WHO_IS};
 
 /// This station.
 const STATION: u8 = 1;
@@ -112,7 +112,7 @@ pub(crate) fn run<'rx>(
 /// Fill the unicast queue until it refuses an NPDU, then offer `oversize`,
 /// which no standard frame can carry.
 fn fill_queues(core: &mut Core<'_>, oversize: &[u8], now: Instant, summary: &mut Summary) {
-    for _ in 0..=crate::UNICAST_SLOTS {
+    for _ in 0..=UNICAST_SLOTS {
         match core.enqueue_npdu(PEER, &WHO_IS, NetworkPriority::Normal, now) {
             Ok(()) => summary.queued_before_full += 1,
             Err(QueueRejectReason::Full) => break,
@@ -230,14 +230,14 @@ fn drain(core: &mut Core<'_>, clock: &mut Clock, summary: &mut Summary) {
     summary.error();
 }
 
-/// Note the type of a frame the core sends.
+/// Note the type and destination of a frame the core sends.
 fn record_sent(frame: &[u8], summary: &mut Summary) {
     let Ok((decoded, _)) = decode_frame(frame) else {
         summary.error();
         return;
     };
     match summary.sent.iter_mut().find(|slot| slot.is_none()) {
-        Some(slot) => *slot = Some(decoded.header.frame_type),
+        Some(slot) => *slot = Some((decoded.header.frame_type, decoded.header.destination)),
         None => summary.error(),
     }
 }

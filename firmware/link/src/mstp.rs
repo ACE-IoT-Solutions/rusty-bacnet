@@ -1,4 +1,4 @@
-//! The scenario that the MS/TP firmware link test runs (#1626).
+//! The MS/TP image's scenario.
 //!
 //! [`run`] drives `bacnet-mstp-codec` and `bacnet-mstp-core`, both with
 //! default features plus the core's `heapless` queues, through the paths a
@@ -13,24 +13,15 @@
 //! - **Capacity:** fill the unicast queue and offer an NPDU too long for a
 //!   standard frame.
 //!
-//! The behaviour is checked by a host test, `tests/scenario.rs`, which runs
-//! [`run`] natively and compares the summary field by field. The firmware
-//! image (`src/main.rs`) calls the same function from its reset entry, on a
-//! bare-metal target without an allocator, so building it proves that the
-//! crates link there; nothing ever runs it.
-//!
-//! The crate is `no_std` on every target and uses no allocator, so the host
-//! build compiles the same code as the image.
-
-#![no_std]
-#![forbid(unsafe_code)]
+//! `tests/mstp.rs` runs it natively and compares the whole summary; the
+//! `mstp` image (`src/bin/mstp.rs`) links it.
 
 mod codec;
 mod link;
 
 use core::mem::MaybeUninit;
 
-use bacnet_mstp_codec::{MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA};
+use bacnet_mstp_codec::{FrameType, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA};
 use bacnet_mstp_core::{HeaplessQueues, MasterCore, MasterState};
 
 /// Unicast slots in the transmit queue.
@@ -82,11 +73,14 @@ impl Default for Memory {
     }
 }
 
-/// Room for the frame types the core sends during the scenario.
+/// Room for the frames the core sends during the scenario.
 pub const SENT_FRAMES: usize = 8;
 
-/// What [`run`] saw. Every count is a plain number, so the host test can
-/// compare the whole summary at once.
+/// The type and destination of a frame the core sent.
+pub type Sent = (FrameType, u8);
+
+/// What [`run`] saw. Every field is plain data, so the host test can compare
+/// the whole summary at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Summary {
     /// Codec: frames encoded for the stream.
@@ -102,8 +96,8 @@ pub struct Summary {
     pub noise_octets: u8,
     /// Core: direction changes it asked for.
     pub direction_changes: u8,
-    /// Core: the type of each frame it sent, in order.
-    pub sent: [Option<bacnet_mstp_codec::FrameType>; SENT_FRAMES],
+    /// Core: the type and destination of each frame it sent, in order.
+    pub sent: [Option<Sent>; SENT_FRAMES],
     /// Core: NPDUs it delivered.
     pub npdus_delivered: u8,
     /// Core: requests it handed up for an answer.

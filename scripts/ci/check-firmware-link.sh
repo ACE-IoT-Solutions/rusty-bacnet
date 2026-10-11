@@ -1,32 +1,40 @@
 #!/usr/bin/env bash
-# The MS/TP firmware link test (#1626): build firmware/mstp-link as a
-# bare-metal image for each target, with no global allocator, and check its
-# section sizes against firmware/mstp-link/size-budget.toml.
+# The firmware link test (#1626): build firmware/link's images, one per
+# stack (mstp: the MS/TP codec and core; bip: the BVLL codec), as bare-metal
+# binaries with no global allocator for each target, and check their sizes
+# against firmware/link/size-budget.toml.
 #
-#   check-firmware-link.sh               for the default targets below
-#   check-firmware-link.sh <triple>...   for those targets
+#   check-firmware-link.sh [<triple>...]             check the default targets
+#                                                    below, or these
+#   check-firmware-link.sh --suggest [<triple>...]   print budget tables for
+#                                                    the images as they build
+#                                                    now, each size plus 12%
 #
 # check-no-std.sh only runs clippy, which never links. Linking is what shows
-# that nothing in the codec or the core needs an allocator, std or a symbol
-# only a hosted target provides: the build fails with "no global memory
-# allocator found" if anything uses alloc. Nothing runs the image; the
-# scenario it links is checked natively by firmware/mstp-link/tests.
+# that nothing in a stack needs an allocator, std or a symbol only a hosted
+# target provides: the build fails with "no global memory allocator found"
+# if anything uses alloc. Nothing runs the images; the scenarios they link
+# are checked natively by firmware/link/tests.
 #
-# Per target: clippy on the image's code, which a host build compiles out;
+# Per target: clippy on the images' code, which a host build compiles out;
 # the build, with the root Cargo.toml's `firmware` profile (size-optimized,
-# LTO, panic=abort); then scripts/ci/firmware_size.py, which prints .text,
-# .rodata, .data and .bss against the budget, the largest objects in RAM and
-# any core::fmt code, and fails over budget. The targets need only
-# `rustup target add`: they link with the rust-lld that rustc ships.
+# LTO, panic=abort); then, per image, scripts/ci/firmware_size.py, which
+# prints the loaded sections, the four main sections and the flash and RAM
+# totals against the budget, and any core::fmt code, and fails over budget.
+# The targets need only `rustup target add`: they link with the rust-lld
+# that rustc ships.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 default_targets=(thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf)
-budget=firmware/mstp-link/size-budget.toml
+images=(mstp bip)
+budget=firmware/link/size-budget.toml
 
+suggest=false
+if [ "${1:-}" = --suggest ]; then suggest=true; shift; fi
 if [ $# -gt 0 ]; then targets=("$@"); else targets=("${default_targets[@]}"); fi
 for triple in "${targets[@]}"; do
-  case $triple in -*|'') echo "usage: $0 [<target triple>...]" >&2; exit 2 ;; esac
+  case $triple in -*|'') echo "usage: $0 [--suggest] [<target triple>...]" >&2; exit 2 ;; esac
 done
 
 if command -v rustup >/dev/null; then
@@ -42,10 +50,22 @@ target_dir=$(cargo metadata --format-version 1 --no-deps --locked \
 
 status=0
 for triple in "${targets[@]}"; do
-  echo "==> mstp-link ($triple)"
-  cargo clippy -p mstp-link --locked --target "$triple" -- -D warnings
-  cargo build -p mstp-link --locked --target "$triple" --profile firmware
-  python3 scripts/ci/firmware_size.py "$target_dir/$triple/firmware/mstp-link" "$budget" "$triple" \
-    || status=1
+  if "$suggest"; then
+    cargo build -q -p firmware-link --locked --target "$triple" --profile firmware
+  else
+    echo "==> firmware-link ($triple)"
+    cargo clippy -p firmware-link --locked --target "$triple" -- -D warnings
+    cargo build -p firmware-link --locked --target "$triple" --profile firmware
+  fi
+  for image in "${images[@]}"; do
+    elf=$target_dir/$triple/firmware/$image
+    if "$suggest"; then
+      python3 scripts/ci/firmware_size.py --suggest "$elf" "$triple.$image"
+      echo
+    else
+      echo "--> $image"
+      python3 scripts/ci/firmware_size.py "$elf" "$budget" "$triple.$image" || status=1
+    fi
+  done
 done
 exit $status

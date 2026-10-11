@@ -19,8 +19,8 @@ members = [
     "crates/bacnet-cli",
     "benchmarks",
     # The no-allocator firmware link test (publish = false, #1626). Its runtimes
-    # are bare-metal dependencies only; on a host it builds a stub binary.
-    "firmware/mstp-link",
+    # are bare-metal dependencies only; on a host its binaries are stubs.
+    "firmware/link",
     # The sample programs (publish = false), which share this Cargo.lock (#1450).
     # Listed one by one: with a glob, a leftover directory there without a
     # Cargo.toml would break every cargo command in the workspace.
@@ -132,9 +132,9 @@ dbg_macro = "deny"
 print_stderr = "deny"
 print_stdout = "deny"
 
-# The firmware link test's image (#1626): `cargo build -p mstp-link --target
+# The firmware link test's images (#1626): `cargo build -p firmware-link --target
 # <bare-metal triple> --profile firmware`. scripts/ci/check-firmware-link.sh
-# checks its section sizes against firmware/mstp-link/size-budget.toml.
+# checks their sizes against firmware/link/size-budget.toml.
 [profile.firmware]
 inherits = "release"
 opt-level = "z"

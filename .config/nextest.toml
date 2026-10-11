@@ -42,10 +42,10 @@ filter = '''
 '''
 success-output = "immediate"
 
-# The MS/TP firmware link test's RAM sizes on the host (#1626), for the log;
+# The firmware link test's MS/TP RAM sizes on the host (#1626), for the log;
 # check-firmware-link.sh prints the bare-metal ones.
 [[profile.default.overrides]]
-filter = 'binary_id(mstp-link::scenario) & test(=ram_sizes)'
+filter = 'binary_id(firmware-link::mstp) & test(=ram_sizes)'
 success-output = "immediate"
 
 # Start the slowest tests first. nextest otherwise starts tests in binary and

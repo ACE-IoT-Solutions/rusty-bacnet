@@ -1,18 +1,35 @@
 #!/usr/bin/env python3
 """Check a firmware image's sizes against its budget (#1626).
 
-  firmware_size.py <elf> <budget.toml> <target>
+  firmware_size.py <elf> <budget.toml> <table>
+  firmware_size.py --suggest <elf> <table>
 
-Prints the image's .text, .rodata, .data and .bss sizes next to the budget
-for <target>, the largest objects in RAM, and any core::fmt functions linked
-in. Exits 1 when a section is over budget, when more core::fmt functions are
-linked in than the budget's `fmt_functions` allows, or when the budget lacks
-an entry. Used by check-firmware-link.sh; see docs/ci.md, "Firmware link
+<table> names the image's budget, `<target>.<image>`, such as
+`thumbv7m-none-eabi.mstp`. The check prints:
+
+- every section the image loads, and whether it counts toward flash, RAM
+  or both;
+- .text, .rodata, .data, .bss and the flash and RAM totals against the
+  table's budget, with the count of core::fmt functions linked in;
+- the largest objects in RAM, and .text by crate.
+
+It exits 1 when a size or the core::fmt count is over budget, when the
+budget lacks an entry, or when the image has no symbol table to look for
+core::fmt in. A size more than 20% under its budget gets a notice, not a
+failure. --suggest prints a budget table for the image instead, each size
+plus 12%. Used by check-firmware-link.sh; see docs/ci.md, "Firmware link
 test".
 
-It reads the ELF's section headers and symbol table itself, so it needs only
-Python 3.9 or later, no binutils. The budget file is the small subset of TOML
-that `read_budget` accepts: comments, `[target]` tables and `key = integer`.
+Totals: flash is every loaded section that has contents (SHF_ALLOC, not
+NOBITS), .data's initial image included; RAM is every loaded writable
+section, .data included. riscv-rt's .stack and .heap are left out of RAM:
+the linker script sizes them to fill what RAM is left, so they say nothing
+about the image.
+
+The script reads the ELF's section headers and symbol table itself, so it
+needs only Python 3.9 or later, no binutils. The budget file is the subset
+of TOML that `read_budget` accepts: comments, `[name]` tables and
+`key = integer`.
 """
 
 import re
@@ -21,15 +38,29 @@ import sys
 from pathlib import Path
 
 SECTIONS = (".text", ".rodata", ".data", ".bss")
-# What a budget suggests on failure: the measured size plus this much.
+# Each row of the budget: (label, budget key).
+ROWS = tuple((name, name.lstrip(".")) for name in SECTIONS) + (
+    ("flash", "flash"),
+    ("ram", "ram"),
+    ("core::fmt", "fmt_functions"),
+)
+# What --suggest and the over-budget error add to a measured size.
 HEADROOM = 0.12
+# A size this far under its budget gets a notice. Budgets of TOKEN octets or
+# less are allowances for an empty section and get none.
+TIGHTEN = 0.20
+TOKEN = 64
+# Sections the linker script sizes to fill free RAM.
+RESERVATIONS = (".stack", ".heap")
 # Section types and flags, and symbol types, from the ELF specification.
 SHT_SYMTAB = 2
+SHT_NOBITS = 8
+SHF_WRITE = 0x1
 SHF_ALLOC = 0x2
 STT_OBJECT = 1
 STT_FUNC = 2
-# Objects in RAM to list, largest first.
-TOP_RAM_OBJECTS = 4
+# Objects in RAM and crates in .text to list, largest first.
+TOP = 4
 # A Rust symbol in core::fmt or below, in either mangling scheme.
 FMT_MARK = "4core3fmt"
 
@@ -48,7 +79,7 @@ def cstring(data, start):
 def read_sections(data):
     """(name, type, flags, offset, size, link, entsize) for each section of
     a 32- or 64-bit little-endian ELF."""
-    if data[:4] != b"\x7fELF" or data[5] != 1 or data[4] not in (1, 2):
+    if data[:4] != b"\x7fELF" or len(data) < 64 or data[5] != 1 or data[4] not in (1, 2):
         raise InputError("not a little-endian ELF")
     if data[4] == 1:
         shoff, shentsize, shnum, shstrndx = struct.unpack_from("<32xI10xHHH", data)
@@ -65,11 +96,14 @@ def read_sections(data):
 
 
 def read_symbols(data, sections):
-    """(name, size, type, section name) for each entry of .symtab."""
+    """(name, size, type, section name) for each entry of .symtab, or None
+    when the image has no symbol table."""
     symtab = next((s for s in sections if s[1] == SHT_SYMTAB), None)
     if symtab is None:
-        return []
+        return None
     _, _, _, offset, size, link, entsize = symtab
+    if entsize == 0:
+        raise InputError("the symbol table's entry size is 0")
     strings = sections[link][3]
     wide = data[4] == 2
     symbols = []
@@ -81,6 +115,18 @@ def read_symbols(data, sections):
         where = sections[shndx][0] if 0 < shndx < len(sections) else ""
         symbols.append((cstring(data, strings + name), length, info & 0xF, where))
     return symbols
+
+
+def counted_in(name, kind, flags):
+    """Which totals a section counts toward: 'flash', 'ram', both, or none."""
+    if not flags & SHF_ALLOC:
+        return ()
+    totals = []
+    if kind != SHT_NOBITS:
+        totals.append("flash")
+    if flags & SHF_WRITE and name not in RESERVATIONS:
+        totals.append("ram")
+    return tuple(totals)
 
 
 def v0_identifier(name, i):
@@ -136,6 +182,25 @@ def demangle(name):
     return "::".join(parts)
 
 
+def crate_of(name):
+    """The crate that defines a Rust symbol: the first crate root in a v0
+    name, or the first path segment in a legacy one. A generic is credited
+    to the crate that defines it, wherever it was instantiated. Symbols that
+    aren't Rust, such as memcpy, come back as '(unmangled)'."""
+    if name.startswith("_R"):
+        root = re.search(r"C(?:s[0-9A-Za-z]*_)?(\d+)_?", name)
+        if root:
+            start = root.end()
+            return name[start : start + int(root.group(1))]
+    elif name.startswith("_ZN"):
+        first = re.match(r"_ZN(\d+)", name)
+        if first:
+            segment = name[first.end() : first.end() + int(first.group(1))]
+            # An impl, `<crate::Type as Trait>`, mangles as `_$LT$crate..Type...`.
+            return segment.removeprefix("_$LT$").split("..")[0]
+    return "(unmangled)"
+
+
 def read_budget(path):
     """{table: {key: int}} from the TOML subset described in the module docs."""
     tables, table = {}, None
@@ -150,71 +215,131 @@ def read_budget(path):
         elif entry and table is not None:
             table[entry.group(1)] = int(entry.group(2))
         else:
-            raise InputError(f"{path}:{number}: expected [target] or key = integer")
+            raise InputError(f"{path}:{number}: expected [table] or key = integer")
     return tables
 
 
-def check(elf, budget_path, target):
+def suggested(measured):
+    """The measured size plus HEADROOM, rounded up to 16 octets."""
+    return -(-int(measured * (1 + HEADROOM)) // 16) * 16
+
+
+def measure(elf):
+    """The image's loaded sections, its measured sizes by budget key, and
+    its symbols. Fails when the image has no usable symbol table."""
     data = Path(elf).read_bytes()
     sections = read_sections(data)
-    budget = read_budget(budget_path).get(target)
-    if budget is None:
-        raise InputError(f"{budget_path} has no [{target}] table")
-    sizes = dict.fromkeys(SECTIONS, 0)
-    for name, _kind, flags, _offset, size, _link, _entsize in sections:
-        if flags & SHF_ALLOC and name in sizes:
-            sizes[name] = size
     symbols = read_symbols(data, sections)
+    if not symbols or not any(s[2] == STT_FUNC for s in symbols):
+        raise InputError(
+            f"{elf} has no function symbols, so core::fmt can't be checked:"
+            " the image must not be stripped"
+        )
+    loaded = [(s[0], s[4], counted_in(s[0], s[1], s[2])) for s in sections if s[2] & SHF_ALLOC]
+    sizes = {name.lstrip("."): 0 for name in SECTIONS}
+    for name, size, _ in loaded:
+        if name in SECTIONS:
+            sizes[name.lstrip(".")] = size
+    sizes["flash"] = sum(size for _, size, totals in loaded if "flash" in totals)
+    sizes["ram"] = sum(size for _, size, totals in loaded if "ram" in totals)
     fmt = sorted({demangle(s[0]) for s in symbols if s[2] == STT_FUNC and FMT_MARK in s[0]})
+    sizes["fmt_functions"] = len(fmt)
+    return loaded, sizes, symbols, fmt
 
-    rows = [(name, sizes[name], name.lstrip(".")) for name in SECTIONS]
-    rows.append(("core::fmt", len(fmt), "fmt_functions"))
-    failed = []
-    print(f"  {'':<10}{'size':>8}{'budget':>8}")
-    for label, measured, key in rows:
-        limit = budget.get(key)
-        if limit is None:
-            raise InputError(f"{budget_path} has no {key} under [{target}]")
-        over = measured > limit
-        print(f"  {label:<10}{measured:>8}{limit:>8}{'  over budget' if over else ''}")
-        if over:
-            failed.append((key, measured))
+
+def check(elf, budget_path, table):
+    loaded, sizes, symbols, fmt = measure(elf)
+    budget = read_budget(budget_path).get(table)
+    if budget is None:
+        raise InputError(f"{budget_path} has no [{table}] table")
+    missing = [key for _, key in ROWS if key not in budget]
+    if missing:
+        raise InputError(f"{budget_path} [{table}] has no {', '.join(missing)}")
+
+    print(f"  {'loaded section':<16}{'size':>8}  counted in")
+    for name, size, totals in loaded:
+        if size:
+            print(f"  {name:<16}{size:>8}  {' and '.join(totals) or '-'}")
+    print(f"  {'':<16}{'size':>8}{'budget':>8}")
+    failed, loose = [], []
+    for label, key in ROWS:
+        measured, limit = sizes[key], budget[key]
+        mark = ""
+        if measured > limit:
+            failed.append(key)
+            mark = "  over budget"
+        elif limit > TOKEN and measured < limit * (1 - TIGHTEN):
+            loose.append(key)
+            mark = "  well under budget"
+        print(f"  {label:<16}{measured:>8}{limit:>8}{mark}")
 
     ram = [s for s in symbols if s[2] == STT_OBJECT and s[3] in (".data", ".bss")]
     print("  largest objects in RAM:")
-    for name, size, _, where in sorted(ram, key=lambda s: -s[1])[:TOP_RAM_OBJECTS]:
+    for name, size, _, where in sorted(ram, key=lambda s: -s[1])[:TOP]:
         print(f"  {size:>10}  {where:<6} {demangle(name)}")
+    by_crate = {}
+    for name, size, kind, where in symbols:
+        if kind == STT_FUNC and where == ".text":
+            by_crate[crate_of(name)] = by_crate.get(crate_of(name), 0) + size
+    print("  .text by crate:")
+    for crate, size in sorted(by_crate.items(), key=lambda item: -item[1])[:TOP + 2]:
+        print(f"  {size:>10}  {crate}")
     for name in fmt:
         print(f"  core::fmt function: {name}")
 
-    # The table first, then the errors under it, when both go to one log.
+    # The table first, then the messages under it, when both go to one log.
     sys.stdout.flush()
-    for key, measured in failed:
+    for key in loose:
+        print(
+            f"notice: {table}: {key} is {sizes[key]}, more than {TIGHTEN:.0%} under"
+            f" its budget of {budget[key]}; consider tightening it to {suggested(sizes[key])}.",
+            file=sys.stderr,
+        )
+    for key in failed:
         if key == "fmt_functions":
             advice = "find what formats, starting from the functions listed above"
         else:
-            suggestion = -(-int(measured * (1 + HEADROOM)) // 16) * 16
             advice = (
                 "if the growth is intended, raise the budget"
-                f" ({suggestion} leaves {HEADROOM:.0%} headroom)"
+                f" ({suggested(sizes[key])} leaves {HEADROOM:.0%} headroom)"
             )
         print(
-            f"error: {target}: {key} is {measured}, over its budget of"
+            f"error: {table}: {key} is {sizes[key]}, over its budget of"
             f" {budget[key]} in {budget_path}; {advice}. See docs/ci.md.",
             file=sys.stderr,
         )
     return 1 if failed else 0
 
 
+def suggest(elf, table):
+    _, sizes, _, _ = measure(elf)
+    print(f"[{table}]")
+    for _, key in ROWS:
+        if key == "fmt_functions":
+            value = sizes[key]
+        elif sizes[key] == 0:
+            value = TOKEN
+        else:
+            value = suggested(sizes[key])
+        print(f"{key} = {value}")
+    return 0
+
+
 def main(argv):
-    if len(argv) != 4:
-        print("usage: firmware_size.py <elf> <budget.toml> <target>", file=sys.stderr)
-        return 2
     try:
-        return check(*argv[1:])
+        if len(argv) == 4 and argv[1] == "--suggest":
+            return suggest(argv[2], argv[3])
+        if len(argv) == 4 and not argv[1].startswith("-"):
+            return check(*argv[1:])
     except (OSError, InputError, struct.error, IndexError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+    print(
+        "usage: firmware_size.py <elf> <budget.toml> <table>\n"
+        "       firmware_size.py --suggest <elf> <table>",
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == "__main__":
