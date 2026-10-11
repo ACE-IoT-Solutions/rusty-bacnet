@@ -160,6 +160,9 @@ pub fn decode_bip_mac(mac: &[u8]) -> Result<([u8; 4], u16), Error> {
 }
 
 #[cfg(test)]
+mod differential_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -464,6 +464,7 @@ name = "bacnet-transport"
 version = "0.12.0"
 dependencies = [
  "aws-lc-rs",
+ "bacnet-bip-codec",
  "bacnet-encoding",
  "bacnet-types",
  "bytes",
