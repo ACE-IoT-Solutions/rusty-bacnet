@@ -229,8 +229,17 @@ mod tests {
     fn extended_core<'rx>(
         rx: &'rx mut [u8],
     ) -> bacnet_mstp_core::ExtendedMasterCore<'rx, ExtendedQueues> {
+        extended_core_at_station(rx, 1)
+    }
+
+    fn extended_core_at_station<'rx>(
+        rx: &'rx mut [u8],
+        station: u8,
+    ) -> bacnet_mstp_core::ExtendedMasterCore<'rx, ExtendedQueues> {
+        let mut config = config();
+        config.station = station;
         bacnet_mstp_core::ExtendedMasterCore::new(
-            config(),
+            config,
             ExtendedQueues::new(),
             rx,
             Instant::ZERO,
@@ -456,15 +465,15 @@ mod tests {
                 other => panic!("unexpected action: {other:?}"),
             }
         };
-        let (decoded, consumed) =
-            decode_extended_frame(frame, &mut [0; EXTENDED_MSTP_MAX_NPDU]).unwrap();
+        let mut decode_scratch = [0; EXTENDED_MSTP_MAX_NPDU];
+        let (decoded, consumed) = decode_extended_frame(frame, &mut decode_scratch).unwrap();
         assert_eq!(consumed, frame.len());
         assert_eq!(decoded.header.destination, 2);
         assert_eq!(decoded.data.len(), EXTENDED_MSTP_MAX_NPDU);
         assert_eq!(decoded.data, payload);
 
         let mut receiver_rx = [0; 4096];
-        let mut receiver = extended_core(&mut receiver_rx);
+        let mut receiver = extended_core_at_station(&mut receiver_rx, 2);
         receiver
             .on_validated_extended_frame(decoded, at(3))
             .unwrap();
@@ -552,11 +561,12 @@ mod tests {
                 other => panic!("unexpected action: {other:?}"),
             }
         };
-        let (decoded, _) = decode_extended_frame(frame, &mut [0; EXTENDED_MSTP_MAX_NPDU]).unwrap();
+        let mut decode_scratch = [0; EXTENDED_MSTP_MAX_NPDU];
+        let (decoded, _) = decode_extended_frame(frame, &mut decode_scratch).unwrap();
         assert_eq!(decoded.data, payload);
 
         let mut receiver_rx = [0; 4096];
-        let mut receiver = extended_core(&mut receiver_rx);
+        let mut receiver = extended_core_at_station(&mut receiver_rx, 2);
         receiver
             .on_validated_extended_frame(decoded, at(3))
             .unwrap();

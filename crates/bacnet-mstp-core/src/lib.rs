@@ -29,6 +29,6 @@ pub use queue::{
     DequeuedNpdu, NetworkPriority, QueueClass, QueueKind, QueueRejectReason, QueueStorage,
 };
 pub use state::{
-    CoreError, ExtendedMasterCore, MasterCore, MasterSnapshot, MasterState, ReceiveError,
-    ReplyDecision, StandardMasterCore,
+    CoreError, ExtendedMasterCore, MasterCore, MasterSnapshot, MasterState, ProfileMasterCore,
+    ReceiveError, ReplyDecision, StandardMasterCore,
 };
