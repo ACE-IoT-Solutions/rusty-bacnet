@@ -127,63 +127,64 @@ pub(crate) enum ActionEnqueueError {
     NpduOversize { length: usize, maximum: usize },
 }
 
-const DEFAULT_CONTROL_CAPACITY: usize = 8;
-const DEFAULT_DELIVERY_CAPACITY: usize = 8;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ControlKind {
+enum ControlKind<const FRAME: usize> {
     Direction(Direction),
     Transmit {
         id: TransmitId,
         length: usize,
-        frame: [u8; MAX_STANDARD_FRAME_LENGTH],
+        frame: [u8; FRAME],
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ControlSlot {
+struct ControlSlot<const FRAME: usize> {
     sequence: u64,
-    kind: ControlKind,
+    kind: ControlKind<FRAME>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DeliverySlot {
+struct DeliverySlot<const NPDU: usize> {
     sequence: u64,
     source: u8,
     destination: u8,
     request_id: Option<RequestId>,
     length: usize,
-    npdu: [u8; MAX_STANDARD_MPDU_DATA],
+    npdu: [u8; NPDU],
 }
 
 /// Bounded action scheduler with independently reserved control and delivery
 /// capacity.
 ///
 /// `CONTROL` and `DELIVERY` are compile-time capacities.  The default alias
-/// used by the core is [`ActionQueue`], while tests and small embedded ports
-/// can select smaller rings.  All payload storage is inline and there is no
-/// allocation after construction.
+/// used by the core, while tests and small embedded ports can select smaller
+/// rings. All payload storage is inline and there is no allocation after
+/// construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ActionRing<const CONTROL: usize, const DELIVERY: usize> {
-    controls: [Option<ControlSlot>; CONTROL],
-    deliveries: [Option<DeliverySlot>; DELIVERY],
+pub(crate) struct ActionRing<
+    const CONTROL: usize,
+    const DELIVERY: usize,
+    const NPDU: usize = MAX_STANDARD_MPDU_DATA,
+    const FRAME: usize = MAX_STANDARD_FRAME_LENGTH,
+> {
+    controls: [Option<ControlSlot<FRAME>>; CONTROL],
+    deliveries: [Option<DeliverySlot<NPDU>>; DELIVERY],
     next_sequence: u64,
-    scratch_frame: [u8; MAX_STANDARD_FRAME_LENGTH],
-    scratch_npdu: [u8; MAX_STANDARD_MPDU_DATA],
+    scratch_frame: [u8; FRAME],
+    scratch_npdu: [u8; NPDU],
 }
 
-/// The standard scheduler capacity used by [`crate::MasterCore`].
-pub(crate) type ActionQueue = ActionRing<DEFAULT_CONTROL_CAPACITY, DEFAULT_DELIVERY_CAPACITY>;
-
-impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> {
+impl<const CONTROL: usize, const DELIVERY: usize, const NPDU: usize, const FRAME: usize>
+    ActionRing<CONTROL, DELIVERY, NPDU, FRAME>
+{
     /// Construct an empty scheduler.
     pub(crate) const fn new() -> Self {
         Self {
             controls: [None; CONTROL],
             deliveries: [None; DELIVERY],
             next_sequence: 0,
-            scratch_frame: [0; MAX_STANDARD_FRAME_LENGTH],
-            scratch_npdu: [0; MAX_STANDARD_MPDU_DATA],
+            scratch_frame: [0; FRAME],
+            scratch_npdu: [0; NPDU],
         }
     }
 
@@ -225,10 +226,10 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         id: TransmitId,
         frame: &[u8],
     ) -> Result<(), ActionEnqueueError> {
-        if frame.len() > MAX_STANDARD_FRAME_LENGTH {
+        if frame.len() > FRAME {
             return Err(ActionEnqueueError::FrameOversize {
                 length: frame.len(),
-                maximum: MAX_STANDARD_FRAME_LENGTH,
+                maximum: FRAME,
             });
         }
         let sequence = self.reserve_sequence();
@@ -237,7 +238,7 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
             .iter_mut()
             .find(|slot| slot.is_none())
             .ok_or(ActionEnqueueError::ControlFull)?;
-        let mut owned = [0; MAX_STANDARD_FRAME_LENGTH];
+        let mut owned = [0; FRAME];
         owned[..frame.len()].copy_from_slice(frame);
         *slot = Some(ControlSlot {
             sequence,
@@ -261,10 +262,10 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         id: TransmitId,
         frame: &[u8],
     ) -> Result<(), ActionEnqueueError> {
-        if frame.len() > MAX_STANDARD_FRAME_LENGTH {
+        if frame.len() > FRAME {
             return Err(ActionEnqueueError::FrameOversize {
                 length: frame.len(),
-                maximum: MAX_STANDARD_FRAME_LENGTH,
+                maximum: FRAME,
             });
         }
         let mut free = [0usize; 2];
@@ -284,7 +285,7 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
 
         let direction_sequence = self.reserve_sequence();
         let transmit_sequence = self.reserve_sequence();
-        let mut owned = [0; MAX_STANDARD_FRAME_LENGTH];
+        let mut owned = [0; FRAME];
         owned[..frame.len()].copy_from_slice(frame);
         self.controls[free[0]] = Some(ControlSlot {
             sequence: direction_sequence,
@@ -309,10 +310,10 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
         npdu: &[u8],
         request_id: Option<RequestId>,
     ) -> Result<(), ActionEnqueueError> {
-        if npdu.len() > MAX_STANDARD_MPDU_DATA {
+        if npdu.len() > NPDU {
             return Err(ActionEnqueueError::NpduOversize {
                 length: npdu.len(),
-                maximum: MAX_STANDARD_MPDU_DATA,
+                maximum: NPDU,
             });
         }
         let sequence = self.reserve_sequence();
@@ -321,7 +322,7 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
             .iter_mut()
             .find(|slot| slot.is_none())
             .ok_or(ActionEnqueueError::DeliveryFull)?;
-        let mut owned = [0; MAX_STANDARD_MPDU_DATA];
+        let mut owned = [0; NPDU];
         owned[..npdu.len()].copy_from_slice(npdu);
         *slot = Some(DeliverySlot {
             sequence,
@@ -418,7 +419,9 @@ impl<const CONTROL: usize, const DELIVERY: usize> ActionRing<CONTROL, DELIVERY> 
     }
 }
 
-impl<const CONTROL: usize, const DELIVERY: usize> Default for ActionRing<CONTROL, DELIVERY> {
+impl<const CONTROL: usize, const DELIVERY: usize, const NPDU: usize, const FRAME: usize> Default
+    for ActionRing<CONTROL, DELIVERY, NPDU, FRAME>
+{
     fn default() -> Self {
         Self::new()
     }

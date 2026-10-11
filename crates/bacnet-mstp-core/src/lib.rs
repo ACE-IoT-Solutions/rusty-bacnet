@@ -21,11 +21,14 @@ pub use actions::{Action, Direction, RequestId, TransmitFailure, TransmitId};
 pub use clock::{Duration, Instant, Monotonic, SimClock};
 pub use config::{ConfigError, MstpCoreConfig};
 pub use counters::{MstpCounters, QueueCounters};
-#[cfg(feature = "alloc")]
-pub use queue::AllocQueues;
 #[cfg(feature = "heapless")]
 pub use queue::HeaplessQueues;
+#[cfg(feature = "alloc")]
+pub use queue::{AllocQueues, AllocQueuesProfile, ExtendedAllocQueues};
 pub use queue::{
     DequeuedNpdu, NetworkPriority, QueueClass, QueueKind, QueueRejectReason, QueueStorage,
 };
-pub use state::{CoreError, MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision};
+pub use state::{
+    CoreError, ExtendedMasterCore, MasterCore, MasterSnapshot, MasterState, ReceiveError,
+    ReplyDecision, StandardMasterCore,
+};

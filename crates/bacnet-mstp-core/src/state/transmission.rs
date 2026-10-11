@@ -2,7 +2,9 @@
 
 use super::*;
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
+    ProfileMasterCore<'rx, Q, NPDU, FRAME>
+{
     pub(super) fn queue_frame(
         &mut self,
         frame_type: FrameType,
@@ -23,9 +25,37 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         now: Instant,
         expires: Option<Instant>,
     ) -> Result<(), CoreError> {
-        let mut encoded = [0; MAX_STANDARD_FRAME_LENGTH];
-        let length = Frame::new(frame_type, destination, self.config.station, data)
-            .encode_into(&mut encoded)?;
+        let mut encoded = [0; FRAME];
+        let length = if data.len() > MAX_STANDARD_MPDU_DATA {
+            if NPDU < MAX_EXTENDED_MPDU_DATA {
+                return Err(CoreError::ExtendedFrameUnsupported {
+                    length: data.len(),
+                    maximum: NPDU,
+                });
+            }
+            let extended_type = match frame_type {
+                FrameType::BACnetDataExpectingReply => FrameType::ExtendedDataExpectingReply,
+                FrameType::BACnetDataNotExpectingReply => FrameType::ExtendedDataNotExpectingReply,
+                _ => {
+                    return Err(CoreError::NpduOversize {
+                        length: data.len(),
+                        maximum: MAX_STANDARD_MPDU_DATA,
+                    })
+                }
+            };
+            let header = bacnet_mstp_codec::FrameHeader::new(
+                extended_type,
+                destination,
+                self.config.station,
+                data.len(),
+            );
+            let length = bacnet_mstp_codec::encode_extended_into(&mut encoded, &header, data)?;
+            length
+        } else {
+            let length = Frame::new(frame_type, destination, self.config.station, data)
+                .encode_into(&mut encoded)?;
+            length
+        };
         let earliest = self.last_activity + self.config.t_turnaround;
         if now < earliest {
             self.pending_send = Some(PendingSend {

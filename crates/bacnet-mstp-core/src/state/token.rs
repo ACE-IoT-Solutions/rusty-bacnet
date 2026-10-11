@@ -3,7 +3,9 @@
 use super::*;
 use crate::queue::QueueClass;
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
+    ProfileMasterCore<'rx, Q, NPDU, FRAME>
+{
     pub(super) fn enter_no_token(&mut self, now: Instant) -> Result<(), CoreError> {
         self.set_state(MasterState::NoToken);
         self.retry_token_count = 0;
@@ -152,7 +154,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             }
             (true, true) => QueueKind::Unicast,
         };
-        let mut npdu = [0; MAX_STANDARD_MPDU_DATA];
+        let mut npdu = [0; NPDU];
         let Some(item) = self
             .queues
             .dequeue_kind_into(kind, now.as_micros(), &mut npdu)
@@ -186,7 +188,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     fn dequeue_network_control_and_send(&mut self, now: Instant) -> Result<bool, CoreError> {
-        let mut npdu = [0; MAX_STANDARD_MPDU_DATA];
+        let mut npdu = [0; NPDU];
         let Some(item) = self
             .queues
             .dequeue_class_into(QueueClass::NetworkControl, now.as_micros(), &mut npdu)

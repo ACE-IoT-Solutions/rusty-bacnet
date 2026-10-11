@@ -2,6 +2,8 @@
 
 use alloc::vec::Vec;
 
+use bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA;
+
 use crate::counters::QueueCounters;
 
 use super::{
@@ -12,12 +14,12 @@ use super::{
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
 #[derive(Debug)]
-pub struct AllocQueues {
-    unicast: Vec<Item<MAX_NPDU_LEN>>,
-    broadcast: Vec<Item<MAX_NPDU_LEN>>,
+pub struct AllocQueuesProfile<const N: usize> {
+    unicast: Vec<Item<N>>,
+    broadcast: Vec<Item<N>>,
     unicast_capacity: usize,
     broadcast_capacity: usize,
-    network_control: Vec<Item<MAX_NPDU_LEN>>,
+    network_control: Vec<Item<N>>,
     network_control_capacity: usize,
     sequence: u64,
     starvation_limit: u8,
@@ -26,7 +28,13 @@ pub struct AllocQueues {
     network_control_counters: QueueCounters,
 }
 
-impl AllocQueues {
+/// Allocation-backed standard-profile queues (501-byte NPDU slots).
+pub type AllocQueues = AllocQueuesProfile<MAX_NPDU_LEN>;
+
+/// Allocation-backed Extended MS/TP queues (1497-byte NPDU slots).
+pub type ExtendedAllocQueues = AllocQueuesProfile<MAX_EXTENDED_MPDU_DATA>;
+
+impl<const N: usize> AllocQueuesProfile<N> {
     /// Construct independently bounded queues.
     pub fn new(unicast_capacity: usize, broadcast_capacity: usize) -> Self {
         Self::with_control_capacity(unicast_capacity, broadcast_capacity, 2)
@@ -173,13 +181,13 @@ impl AllocQueues {
     }
 }
 
-impl Default for AllocQueues {
+impl<const N: usize> Default for AllocQueuesProfile<N> {
     fn default() -> Self {
         Self::new(256, 256)
     }
 }
 
-impl AllocQueues {
+impl<const N: usize> AllocQueuesProfile<N> {
     fn enqueue_class(
         &mut self,
         class: QueueClass,
@@ -190,7 +198,7 @@ impl AllocQueues {
         expires_at: Option<u64>,
     ) -> Result<(), QueueRejectReason> {
         let kind = QueueKind::from_destination(destination);
-        if payload.len() > MAX_NPDU_LEN {
+        if payload.len() > N {
             self.class_counters_mut(class, kind).record_drop_oversize();
             return Err(QueueRejectReason::Oversize);
         }
@@ -225,7 +233,7 @@ impl AllocQueues {
             sequence: self.sequence,
             service_wait: 0,
             len: payload.len(),
-            payload: [0; MAX_NPDU_LEN],
+            payload: [0; N],
         };
         owned.payload[..payload.len()].copy_from_slice(payload);
         self.sequence = self.sequence.wrapping_add(1);
@@ -248,7 +256,7 @@ impl AllocQueues {
     }
 }
 
-impl QueueStorage for AllocQueues {
+impl<const N: usize> QueueStorage for AllocQueuesProfile<N> {
     fn set_starvation_limit(&mut self, limit: u8) {
         self.starvation_limit = limit;
     }

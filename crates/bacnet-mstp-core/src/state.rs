@@ -1,12 +1,13 @@
 //! Clause 9.5.6 master state machine.
 
 use bacnet_mstp_codec::{
-    DecodeEvent, Frame, FrameError, FrameHeader, FrameType, StreamDecoder, StreamPhase,
-    BROADCAST_MAC, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
+    DecodeEvent, ExtendedFrame, Frame, FrameError, FrameHeader, FrameType, StreamDecoder,
+    StreamPhase, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
+    MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
 };
 
 use crate::actions::{
-    Action, ActionEnqueueError, ActionQueue, Direction, RequestId, TransmitFailure, TransmitId,
+    Action, ActionEnqueueError, ActionRing, Direction, RequestId, TransmitFailure, TransmitId,
 };
 use crate::clock::{Duration, Instant};
 use crate::config::{ConfigError, MstpCoreConfig};
@@ -84,8 +85,20 @@ pub enum CoreError {
     StaleRequest,
     /// The request's reply-delay deadline has already arrived.
     RequestExpired,
-    /// The reply is too large for a standard MS/TP frame.
-    ReplyOversize { length: usize, maximum: usize },
+    ReplyOversize {
+        length: usize,
+        maximum: usize,
+    },
+    /// An Extended DER/DNER frame was supplied to a standard-profile core.
+    ExtendedFrameUnsupported {
+        length: usize,
+        maximum: usize,
+    },
+    /// An NPDU was larger than the active storage profile.
+    NpduOversize {
+        length: usize,
+        maximum: usize,
+    },
     /// The transmit identifier is stale or does not match the active transfer.
     StaleTransmit,
     /// A transmit-start event was reported more than once.
@@ -151,27 +164,32 @@ struct ActiveTransmit {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PendingSend {
+struct PendingSend<const FRAME: usize> {
     length: usize,
-    frame: [u8; MAX_STANDARD_FRAME_LENGTH],
+    frame: [u8; FRAME],
     post: PostTransmit,
     earliest: Instant,
     expires: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct OwnedFrame {
+struct OwnedFrame<const NPDU: usize> {
     header: FrameHeader,
     length: usize,
-    data: [u8; MAX_STANDARD_MPDU_DATA],
+    data: [u8; NPDU],
 }
 
 /// Synchronous, allocation-free MS/TP master core.
-pub struct MasterCore<'rx, Q: QueueStorage> {
+pub struct ProfileMasterCore<
+    'rx,
+    Q: QueueStorage,
+    const NPDU: usize = MAX_STANDARD_MPDU_DATA,
+    const FRAME: usize = MAX_STANDARD_FRAME_LENGTH,
+> {
     config: MstpCoreConfig,
     queues: Q,
     decoder: StreamDecoder<'rx>,
-    actions: ActionQueue,
+    actions: ActionRing<8, 8, NPDU, FRAME>,
     state: MasterState,
     next_station: u8,
     poll_station: u8,
@@ -184,7 +202,7 @@ pub struct MasterCore<'rx, Q: QueueStorage> {
     pending_request: Option<PendingRequest>,
     next_request_generation: u32,
     active_transmit: Option<ActiveTransmit>,
-    pending_send: Option<PendingSend>,
+    pending_send: Option<PendingSend<FRAME>>,
     next_transmit_generation: u32,
     protocol_deadline: Option<Instant>,
     last_activity: Instant,
@@ -196,7 +214,20 @@ pub struct MasterCore<'rx, Q: QueueStorage> {
     counters: MstpCounters,
 }
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+/// Standard BACnet MS/TP storage profile (501-byte NPDU slots).
+pub type MasterCore<'rx, Q> =
+    ProfileMasterCore<'rx, Q, MAX_STANDARD_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH>;
+
+/// Explicit spelling for the standard storage profile.
+pub type StandardMasterCore<'rx, Q> = MasterCore<'rx, Q>;
+
+/// Extended BACnet MS/TP storage profile (502..=1497-byte NPDU slots).
+pub type ExtendedMasterCore<'rx, Q> =
+    ProfileMasterCore<'rx, Q, MAX_EXTENDED_MPDU_DATA, MAX_EXTENDED_FRAME_LENGTH>;
+
+impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
+    ProfileMasterCore<'rx, Q, NPDU, FRAME>
+{
     /// Construct a core over caller-owned receive storage.
     pub fn new(
         config: MstpCoreConfig,
@@ -210,7 +241,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             config,
             queues,
             decoder: StreamDecoder::new(rx_storage),
-            actions: ActionQueue::new(),
+            actions: ActionRing::new(),
             state: MasterState::Idle,
             next_station: config.station,
             poll_station: config.station,
@@ -277,6 +308,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         priority: NetworkPriority,
         now: Instant,
     ) -> Result<(), QueueRejectReason> {
+        if npdu.len() > NPDU {
+            return Err(QueueRejectReason::Oversize);
+        }
         if now < self.last_now {
             return Err(QueueRejectReason::Expired);
         }
@@ -294,6 +328,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         priority: NetworkPriority,
         now: Instant,
     ) -> Result<(), QueueRejectReason> {
+        if npdu.len() > NPDU {
+            return Err(QueueRejectReason::Oversize);
+        }
         if now < self.last_now {
             return Err(QueueRejectReason::Expired);
         }
@@ -338,14 +375,14 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                 self.parser_partial = false;
                 complete = Some(Self::copy_frame(frame));
             }
-            DecodeEvent::ExtendedFrame { .. } => {
-                // Extended COBS frames are decoded by the codec but are not
-                // yet admitted by the standard MS/TP master state machine.
-                // Treat one as an invalid frame so callers get bounded,
-                // observable rejection rather than accidental delivery.
+            DecodeEvent::ExtendedFrame { frame, .. } => {
                 self.parser_partial = false;
-                self.counters.record_parser_error();
-                self.invalid_frame_event(now)?;
+                if NPDU < MAX_EXTENDED_MPDU_DATA || frame.data.len() > NPDU {
+                    self.counters.record_parser_error();
+                    self.invalid_frame_event(now)?;
+                } else {
+                    complete = Some(Self::copy_extended_frame(frame));
+                }
             }
         }
         if let Some(frame) = complete {
@@ -360,6 +397,28 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         self.note_bus_activity(now);
         self.cancel_pending_send_on_activity(now);
         self.process_owned_frame(Self::copy_frame(frame), now)
+    }
+
+    /// Feed an Extended DER or DNER frame after host-side validation.
+    ///
+    /// A standard-profile core rejects the frame before changing state or
+    /// queue/action storage. An extended-profile core accepts the codec's
+    /// validated 502..=1497-byte payload range.
+    pub fn on_validated_extended_frame(
+        &mut self,
+        frame: ExtendedFrame<'_>,
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        if NPDU < MAX_EXTENDED_MPDU_DATA || frame.data.len() > NPDU {
+            return Err(CoreError::ExtendedFrameUnsupported {
+                length: frame.data.len(),
+                maximum: NPDU,
+            });
+        }
+        self.observe_time(now)?;
+        self.note_bus_activity(now);
+        self.cancel_pending_send_on_activity(now);
+        self.process_owned_frame(Self::copy_extended_frame(frame), now)
     }
 
     /// Report host-observed bus octets before chunk-tolerant frame assembly.
@@ -513,10 +572,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
         let (frame_type, payload) = match decision {
             ReplyDecision::Data(data) => {
-                if data.len() > MAX_STANDARD_MPDU_DATA {
+                if data.len() > NPDU {
                     return Err(CoreError::ReplyOversize {
                         length: data.len(),
-                        maximum: MAX_STANDARD_MPDU_DATA,
+                        maximum: NPDU,
                     });
                 }
                 (FrameType::BACnetDataNotExpectingReply, data)

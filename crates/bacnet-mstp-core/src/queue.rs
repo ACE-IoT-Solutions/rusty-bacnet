@@ -756,6 +756,6 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> QueueStorag
 mod alloc;
 
 #[cfg(feature = "alloc")]
-pub use alloc::AllocQueues;
+pub use alloc::{AllocQueues, AllocQueuesProfile, ExtendedAllocQueues};
 #[cfg(test)]
 mod tests;

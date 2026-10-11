@@ -2,7 +2,9 @@
 
 use super::*;
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
+    ProfileMasterCore<'rx, Q, NPDU, FRAME>
+{
     /// Abort an expired partial receive and report whether it had progressed
     /// beyond preamble search into a candidate HEADER or DATA frame.
     pub(super) fn abort_partial_if_late(&mut self, now: Instant) -> bool {
@@ -26,8 +28,18 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         false
     }
 
-    pub(super) fn copy_frame(frame: Frame<'_>) -> OwnedFrame {
-        let mut data = [0; MAX_STANDARD_MPDU_DATA];
+    pub(super) fn copy_frame(frame: Frame<'_>) -> OwnedFrame<NPDU> {
+        let mut data = [0; NPDU];
+        data[..frame.data.len()].copy_from_slice(frame.data);
+        OwnedFrame {
+            header: frame.header,
+            length: frame.data.len(),
+            data,
+        }
+    }
+
+    pub(super) fn copy_extended_frame(frame: ExtendedFrame<'_>) -> OwnedFrame<NPDU> {
+        let mut data = [0; NPDU];
         data[..frame.data.len()].copy_from_slice(frame.data);
         OwnedFrame {
             header: frame.header,
@@ -49,7 +61,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     pub(super) fn process_owned_frame(
         &mut self,
-        frame: OwnedFrame,
+        frame: OwnedFrame<NPDU>,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.counters.record_frame_received();
@@ -106,11 +118,41 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                 self.deliver(&frame, None);
                 Ok(())
             }
+            FrameType::ExtendedDataNotExpectingReply
+                if frame.header.destination == self.config.station
+                    || frame.header.destination == BROADCAST_MAC =>
+            {
+                self.deliver(&frame, None);
+                Ok(())
+            }
             FrameType::BACnetDataExpectingReply if frame.header.destination == BROADCAST_MAC => {
                 self.deliver(&frame, None);
                 Ok(())
             }
+            FrameType::ExtendedDataExpectingReply if frame.header.destination == BROADCAST_MAC => {
+                self.deliver(&frame, None);
+                Ok(())
+            }
             FrameType::BACnetDataExpectingReply
+                if frame.header.destination == self.config.station =>
+            {
+                let id = RequestId::new(self.next_request_generation);
+                self.next_request_generation = self.next_request_generation.wrapping_add(1);
+                let deadline = now + self.config.t_reply_delay;
+                self.pending_request = Some(PendingRequest {
+                    id,
+                    source: frame.header.source,
+                    deadline,
+                });
+                self.set_state(MasterState::AnswerDataRequest);
+                self.protocol_deadline = Some(deadline);
+                if self.deliver(&frame, Some(id)) {
+                    Ok(())
+                } else {
+                    self.complete_request(id, ReplyDecision::Postponed, now)
+                }
+            }
+            FrameType::ExtendedDataExpectingReply
                 if frame.header.destination == self.config.station =>
             {
                 let id = RequestId::new(self.next_request_generation);
@@ -141,12 +183,18 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
     }
 
-    fn process_wait_for_reply(&mut self, frame: OwnedFrame, now: Instant) -> Result<(), CoreError> {
+    fn process_wait_for_reply(
+        &mut self,
+        frame: OwnedFrame<NPDU>,
+        now: Instant,
+    ) -> Result<(), CoreError> {
         let is_reply = frame.header.destination == self.config.station
             && self.expected_reply_source == Some(frame.header.source)
             && matches!(
                 frame.header.frame_type,
-                FrameType::BACnetDataNotExpectingReply | FrameType::ReplyPostponed
+                FrameType::BACnetDataNotExpectingReply
+                    | FrameType::ExtendedDataNotExpectingReply
+                    | FrameType::ReplyPostponed
             );
         self.expected_reply_source = None;
         if !is_reply {
@@ -161,7 +209,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         self.drive_token(now)
     }
 
-    fn deliver(&mut self, frame: &OwnedFrame, request_id: Option<RequestId>) -> bool {
+    fn deliver(&mut self, frame: &OwnedFrame<NPDU>, request_id: Option<RequestId>) -> bool {
         match self.actions.enqueue_delivery(
             frame.header.source,
             frame.header.destination,
