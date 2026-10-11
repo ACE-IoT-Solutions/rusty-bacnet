@@ -46,6 +46,8 @@ step "clippy (PyO3 bindings)"; cargo clippy -p rusty-bacnet --all-targets --lock
 step "clippy and rustdoc (each published crate, default features; no_std types, encoding and services)"
 bash scripts/ci/check-default-features.sh
 step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
+step "clippy (no_std types, encoding and services with alloc, all targets)"
+cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
 step "firmware link test (bare-metal images, no allocator, size budgets)"; bash scripts/ci/check-firmware-link.sh
 step "rustdoc (every macOS feature, private items)"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$features"
@@ -60,6 +62,9 @@ if ! "$quick"; then
   cargo test --doc --workspace --exclude rusty-bacnet --locked --features "$features"
   step "bacnet-cli tests (default features)"
   cargo nextest run -p bacnet-cli --locked
+  step "no_std crates' tests and doctests (alloc, without std)"
+  cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
+  cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --locked
   step "PyO3 crate Rust tests"
   cargo nextest run -p rusty-bacnet --locked
 fi
