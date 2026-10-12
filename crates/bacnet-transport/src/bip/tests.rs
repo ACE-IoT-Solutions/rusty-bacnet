@@ -102,32 +102,20 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
         None,
     ));
     let (npdu_tx, _npdu_rx) = mpsc::channel(1);
-    let management = Arc::new(client_management::ManagementClient::default());
-    management.start();
-    let (guard, mut rx) = management
+    let own = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 9), 47808);
+    let broadcast = SocketAddrV4::new(Ipv4Addr::BROADCAST, 47808);
+    let link = test_support::test_link(own, broadcast, bacnet_bip_core::node::Mode::Normal);
+    let ctx = RecvContext::on_link(socket, npdu_tx, link, None);
+    let peer = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 47808);
+    let (exchange, mut rx) = ctx
+        .node
         .begin(
-            ([127, 0, 0, 1], 47808),
-            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
-            BvlcResponseKind::ReadBroadcastDistributionTableAck,
-            None,
+            peer,
+            Bvll::ReadBroadcastDistributionTable,
+            Duration::from_secs(3),
         )
         .unwrap();
-    guard.sent(Duration::from_secs(3));
-
-    let ctx = RecvContext {
-        local_mac: [0; 6],
-        socket,
-        npdu_tx,
-        bbmd: None,
-        broadcast_addr: Ipv4Addr::BROADCAST,
-        broadcast_port: 47808,
-        client_management: management.clone(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
-    };
+    exchange.sent();
 
     let result = test_bvll_message(BvlcFunction::BVLC_RESULT, &[0x00, 0x00]);
     handle_bvll_message(&result, ([127, 0, 0, 2], 47808), Delivery::Unicast, &ctx).await;
@@ -145,9 +133,9 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
         &ctx,
     )
     .await;
-    assert_eq!(management.snapshot().read_bdt.acknowledgements, 1);
+    assert_eq!(ctx.node.snapshot().read_bdt.acknowledgements, 1);
     assert_eq!(
-        rx.await.unwrap().function,
+        rx.await.unwrap().unwrap().function,
         BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK
     );
 }
@@ -761,14 +749,15 @@ async fn bvlc_request_rejects_concurrent_calls() {
     let _rx = transport.start().await.unwrap();
 
     // Admit and retain the first request to exercise the shared slot owner.
-    let target = decode_bip_mac(transport.local_mac()).unwrap();
+    let target = codec::address_from_slice(transport.local_mac()).unwrap();
     let (_guard, _rx) = transport
-        .client_management
+        .node
+        .as_ref()
+        .unwrap()
         .begin(
             target,
-            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
-            BvlcResponseKind::ReadBroadcastDistributionTableAck,
-            None,
+            Bvll::ReadBroadcastDistributionTable,
+            Duration::from_secs(3),
         )
         .unwrap();
 

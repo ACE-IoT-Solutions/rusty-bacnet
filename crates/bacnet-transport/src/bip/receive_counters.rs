@@ -6,6 +6,7 @@ use std::net::SocketAddrV4;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_bip_codec::BvllError;
+use bacnet_bip_core::node::Discard;
 use tracing::{debug, warn};
 
 use crate::warn_throttle::WarnThrottle;
@@ -132,6 +133,29 @@ impl DropReason {
             | BvllError::UndefinedResultCode { .. }
             | BvllError::BufferExhausted { .. } => Self::MalformedPayload,
         }
+    }
+
+    /// The counter of a datagram the node engine discarded, one for one, or
+    /// `None` where another counter keeps it: a group sender, in
+    /// [`GroupDrops`](super::groups::GroupDrops).
+    pub(super) fn of_discard(discard: Discard) -> Option<Self> {
+        Some(match discard {
+            // The receive buffer cut it: reading fails before the node.
+            Discard::Truncated => Self::ReceiveError,
+            Discard::ListenerMismatch { .. } => Self::ListenerMismatch,
+            Discard::TooShort => Self::TooShort,
+            Discard::NotBip => Self::NotBip,
+            Discard::LengthMismatch => Self::LengthMismatch,
+            Discard::DestinationMismatch => Self::DestinationMismatch,
+            Discard::RateLimited => Self::RateLimited,
+            Discard::UnknownFunction => Self::UnknownFunction,
+            Discard::MalformedPayload => Self::MalformedPayload,
+            Discard::OwnEcho => Self::OwnEcho,
+            Discard::GroupSource
+            | Discard::GroupOrigin
+            | Discard::UnanswerableSource
+            | Discard::ForwardedUntrusted => return None,
+        })
     }
 }
 

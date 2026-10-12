@@ -117,7 +117,7 @@ async fn foreign_attempt_results_renewal_and_restart_are_observable() {
         accepted.foreign_registration.last_result,
         Some(BvlcResultCode::SUCCESSFUL_COMPLETION)
     );
-    let worker = transport.registration_task.as_ref().unwrap().abort_handle();
+    let worker = transport.node_task.as_ref().unwrap().abort_handle();
     transport.stop().await.unwrap();
     assert!(worker.is_finished());
     let stopped = transport.bvlc_client_snapshot();
@@ -160,35 +160,37 @@ async fn foreign_silent_attempt_times_out_then_renews_without_claiming_acceptanc
 async fn foreign_busy_worker_retries_after_manual_request_finishes() {
     let (peer, mut transport) = peer_and_transport().await;
     let _rx = transport.start().await.unwrap();
+    // The first attempt is admitted at start; answer it.
+    let source = registration(&peer).await;
+    peer.send_to(&[0x81, 0, 0, 6, 0, 0], source).await.unwrap();
+    observed(&transport, |s| s.foreign_registration.accepted == 1).await;
     let target = encode_bip_mac(
         Ipv4Addr::LOCALHOST.octets(),
         peer.local_addr().unwrap().port(),
     );
     {
+        // A manual request holds the one slot across the renewal.
         let manual = transport.read_bdt(&target);
         tokio::pin!(manual);
-        // Own the slot before the newly spawned automatic worker can run.
-        std::future::poll_fn(|cx| {
-            assert!(std::future::Future::poll(manual.as_mut(), cx).is_pending());
-            std::task::Poll::Ready(())
-        })
-        .await;
         let mut packet = [0; 64];
         let (len, source) = tokio::select! {
             result = &mut manual => panic!("manual request finished early: {result:?}"),
             received = peer.recv_from(&mut packet) => received.unwrap(),
         };
         assert_eq!(&packet[..len], &[0x81, 2, 0, 4]);
-        let busy = observed(&transport, |s| s.register_foreign_device.busy == 1).await;
-        assert_eq!(busy.register_foreign_device.sent, 0);
-        assert_eq!(busy.foreign_registration.attempts, 0);
+        let busy = tokio::select! {
+            result = &mut manual => panic!("manual request finished early: {result:?}"),
+            busy = observed(&transport, |s| s.register_foreign_device.busy == 1) => busy,
+        };
+        assert_eq!(busy.register_foreign_device.sent, 1);
+        assert_eq!(busy.foreign_registration.attempts, 1);
         assert!(busy.foreign_registration.next_attempt_in.unwrap() <= PERIOD);
         peer.send_to(&[0x81, 3, 0, 4], source).await.unwrap();
         manual.await.unwrap();
     }
     let source = registration(&peer).await;
     peer.send_to(&[0x81, 0, 0, 6, 0, 0], source).await.unwrap();
-    observed(&transport, |s| s.foreign_registration.accepted == 1).await;
+    observed(&transport, |s| s.foreign_registration.accepted == 2).await;
     transport.stop().await.unwrap();
 }
 
@@ -197,7 +199,7 @@ async fn foreign_stop_during_pending_request_resets_status_and_drop_aborts_worke
     let (peer, mut transport) = peer_and_transport().await;
     let _rx = transport.start().await.unwrap();
     registration(&peer).await;
-    let management = transport.client_management.clone();
+    let management = transport.client_record.clone();
     transport.stop().await.unwrap();
     assert_eq!(
         management.snapshot().foreign_registration.last_outcome,
@@ -206,7 +208,7 @@ async fn foreign_stop_during_pending_request_resets_status_and_drop_aborts_worke
     assert_eq!(management.snapshot().register_foreign_device.timeouts, 0);
     let _rx = transport.start().await.unwrap();
     registration(&peer).await;
-    let worker = transport.registration_task.as_ref().unwrap().abort_handle();
+    let worker = transport.node_task.as_ref().unwrap().abort_handle();
     drop(transport);
     assert_eq!(
         management.snapshot().foreign_registration.next_attempt_in,
@@ -240,26 +242,28 @@ async fn foreign_tiny_interval_local_errors_have_bounded_attempts() {
     check_tiny_interval_pacing(false, true).await;
 }
 
+/// The snapshot once the first registration attempt went out, without
+/// letting paused time move.
+async fn sent_once(transport: &BipTransport) -> BvlcClientSnapshot {
+    for _ in 0..100 {
+        let snapshot = transport.bvlc_client_snapshot();
+        if snapshot.register_foreign_device.sent == 1 {
+            return snapshot;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("the first registration attempt was not sent");
+}
+
 #[tokio::test(start_paused = true)]
 async fn foreign_tiny_interval_countdown_tracks_the_effective_schedule() {
-    let (peer, mut transport) = peer_and_transport().await;
+    let (_peer, mut transport) = peer_and_transport().await;
     transport.foreign_device.as_mut().unwrap().renewal_interval = Some(Duration::from_nanos(1));
     let _rx = transport.start().await.unwrap();
-    let (guard, _response) = transport
-        .client_management
-        .begin(
-            (
-                Ipv4Addr::LOCALHOST.octets(),
-                peer.local_addr().unwrap().port(),
-            ),
-            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
-            BvlcResponseKind::ReadBroadcastDistributionTableAck,
-            None,
-        )
-        .unwrap();
-    tokio::task::yield_now().await;
-    let first = transport.bvlc_client_snapshot();
-    assert_eq!(first.register_foreign_device.busy, 1);
+    let first = sent_once(&transport).await;
+    // The first attempt is in flight: the next is one effective interval,
+    // 100 ms, after it started.
+    assert_eq!(first.register_foreign_device.sent, 1);
     assert_eq!(
         first.foreign_registration.next_attempt_in,
         Some(Duration::from_millis(100))
@@ -267,65 +271,74 @@ async fn foreign_tiny_interval_countdown_tracks_the_effective_schedule() {
     tokio::time::advance(Duration::from_millis(99)).await;
     tokio::task::yield_now().await;
     let waiting = transport.bvlc_client_snapshot();
-    assert_eq!(waiting.register_foreign_device.busy, 1);
+    assert_eq!(waiting.register_foreign_device.sent, 1);
     assert_eq!(
         waiting.foreign_registration.next_attempt_in,
         Some(Duration::from_millis(1))
     );
+    // It times out at the interval, and the next one goes at once.
     tokio::time::advance(Duration::from_millis(1)).await;
     tokio::task::yield_now().await;
     let second = transport.bvlc_client_snapshot();
-    assert_eq!(second.register_foreign_device.busy, 2);
+    assert_eq!(second.register_foreign_device.timeouts, 1);
+    assert_eq!(second.register_foreign_device.sent, 2);
     assert_eq!(
         second.foreign_registration.next_attempt_in,
         Some(Duration::from_millis(100))
     );
-    drop(guard);
     transport.stop().await.unwrap();
 }
 
 async fn check_tiny_interval_pacing(busy: bool, local_error: bool) {
-    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    // This socket deliberately lacks broadcast permission for the local-error case.
-    let socket = Arc::new(BipSocket::new(
-        UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap(),
-        None,
-    ));
-    let management = Arc::new(client_management::ManagementClient::default());
-    management.start();
+    // The node sends to a sink that never answers, and fails each send for
+    // the local-error case.
+    let sink = send_sink::SendSink::default();
+    sink.fail_sends(local_error || busy);
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let port = socket.local_addr().unwrap().port();
+    let socket = Arc::new(BipSocket::recording(socket, sink.clone()));
     let config = ForeignDeviceConfig {
-        bbmd_ip: if local_error {
-            Ipv4Addr::BROADCAST
-        } else {
-            Ipv4Addr::LOCALHOST
-        },
-        bbmd_port: peer.local_addr().unwrap().port(),
+        bbmd_ip: Ipv4Addr::LOCALHOST,
+        bbmd_port: 47808,
         ttl: 2,
         renewal_interval: Some(Duration::from_nanos(1)),
     };
-    let held_request = busy.then(|| {
-        management
-            .begin(
-                (Ipv4Addr::LOCALHOST.octets(), config.bbmd_port),
-                BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
-                BvlcResponseKind::ReadBroadcastDistributionTableAck,
-                None,
-            )
-            .unwrap()
-    });
     let interval = config.interval().unwrap();
+    let own = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    let link = test_support::test_link(
+        own,
+        own,
+        bacnet_bip_core::node::Mode::Foreign(config.engine(interval)),
+    );
+    let record = Arc::new(client_snapshot::ClientRecord::default());
+    let node = Arc::new(node::NodeHandle::new(link, socket, Arc::clone(&record)).unwrap());
     let started = tokio::time::Instant::now();
-    let worker = tokio::spawn(foreign_device::run(
-        socket,
-        management.clone(),
-        config,
-        interval,
-    ));
+    let worker = tokio::spawn(Arc::clone(&node).drive());
+    // For the busy case, the first attempt fails at once and frees the
+    // slot, and a manual request then holds it.
+    let held_request = if busy {
+        let begun = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let target = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 47809);
+                let request = Bvll::ReadBroadcastDistributionTable;
+                if let Ok(held) = node.begin(target, request, Duration::from_secs(3)) {
+                    return held;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first attempt frees the slot");
+        sink.fail_sends(false);
+        Some(begun)
+    } else {
+        None
+    };
     tokio::time::sleep(Duration::from_millis(250)).await;
     worker.abort();
     assert!(worker.await.unwrap_err().is_cancelled());
     let elapsed = started.elapsed();
-    let snapshot = management.snapshot();
+    let snapshot = node.snapshot();
     let counters = snapshot.register_foreign_device;
     let attempts = counters.sent + counters.busy + counters.local_errors;
     eprintln!("tiny interval busy={busy} local_error={local_error}: {attempts} attempts in {elapsed:?}; counters={counters:?}");
@@ -338,15 +351,15 @@ async fn check_tiny_interval_pacing(busy: bool, local_error: bool) {
     assert_eq!(snapshot.foreign_registration.accepted, 0);
     if busy {
         assert_eq!(counters.sent, 0);
-        assert_eq!(attempts, counters.busy);
+        assert_eq!(counters.local_errors, 1);
+        assert!(counters.busy > 0);
     } else if local_error {
         assert_eq!(counters.sent, 0);
         assert_eq!(attempts, counters.local_errors);
     } else {
         assert!(counters.timeouts > 0);
-        let mut packet = [0; 64];
-        let (len, _) = peer.try_recv_from(&mut packet).unwrap();
-        assert_eq!(&packet[..len], &[0x81, 5, 0, 6, 0, 2]);
+        let sent = sink.take();
+        assert_eq!(sent[0].bytes, [0x81, 5, 0, 6, 0, 2]);
     }
     drop(held_request);
 }

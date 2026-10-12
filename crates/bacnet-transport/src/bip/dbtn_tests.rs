@@ -67,18 +67,13 @@ async fn dbtn_registered_foreign_device_fans_out_without_origin_echo() {
     );
 
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket: bbmd_socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_broadcast_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            bbmd_socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_broadcast_port),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let sender = (Ipv4Addr::LOCALHOST.octets(), origin_fd_port);
     let msg = BvllMessage {
@@ -147,18 +142,14 @@ async fn dbtn_registered_foreign_device_naks_when_forwarding_fails() {
     );
 
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket: bbmd_socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
         force_dbtn_forward_failure: true,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            bbmd_socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_port),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let sender = (Ipv4Addr::LOCALHOST.octets(), origin_fd_port);
     let msg = BvllMessage {

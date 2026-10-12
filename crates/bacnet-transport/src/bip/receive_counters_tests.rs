@@ -5,7 +5,6 @@
 //! compares the whole snapshot, so a drop counted twice, or under another
 //! reason, fails it.
 
-use super::groups::{BipGroups, GroupSources};
 use super::ingress::{receive_failed, AfterReceiveError};
 use super::rate_limit::MANAGEMENT_RATE_PER_SOURCE_IP;
 use super::receive_counters::ReceiveDrops;
@@ -39,30 +38,23 @@ impl Node {
     /// A node at 192.0.2.10, a BBMD with `bbmd` if given, whose channel to
     /// the network layer holds `capacity` NPDUs.
     async fn new(bbmd: Option<BbmdState>, capacity: usize) -> Self {
+        Self::with_broadcast(bbmd, capacity, SUBNET_BROADCAST).await
+    }
+
+    /// [`Node::new`] with `broadcast` as its subnet's broadcast IP.
+    async fn with_broadcast(bbmd: Option<BbmdState>, capacity: usize, broadcast: Ipv4Addr) -> Self {
         let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
         let (npdu_tx, rx) = mpsc::channel(capacity);
-        let ctx = RecvContext {
-            local_mac: encode_bip_mac(OWN.0, OWN.1),
-            socket: Arc::new(super::BipSocket::new(socket, None)),
+        let ctx = RecvContext::for_test(
+            Arc::new(super::BipSocket::new(socket, None)),
             npdu_tx,
-            bbmd: bbmd.map(|state| Arc::new(std::sync::Mutex::new(state))),
-            broadcast_addr: SUBNET_BROADCAST,
-            broadcast_port: OWN.1,
-            client_management: Arc::default(),
-            management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-            fanout: None,
-            group_sources: GroupSources::new(
-                BipGroups::new(SUBNET_BROADCAST, OWN.1, LOCAL),
-                Arc::default(),
-                Arc::default(),
-            ),
-            drops: Arc::default(),
-            force_dbtn_forward_failure: false,
-        };
+            SocketAddrV4::new(Ipv4Addr::from(OWN.0), OWN.1),
+            SocketAddrV4::new(broadcast, OWN.1),
+            bbmd.map(|state| Arc::new(std::sync::Mutex::new(state))),
+        );
         let local = IngressAddresses {
-            local_ip: LOCAL,
             unicast_ips: vec![LOCAL],
             wildcard_bind: false,
             listener_interface: Some(LISTENER_INTERFACE),
@@ -222,10 +214,10 @@ async fn a_broadcast_listener_drops_what_is_not_this_links_broadcast() {
 
     // Where the broadcast address is the interface's own, as in a loopback
     // test, a unicast sent to it is still not the listener's to keep.
-    node.ctx.broadcast_addr = LOCAL;
+    let mut node = Node::with_broadcast(None, 8, LOCAL).await;
     node.feed_on(listener, None, &unicast, PEER, LOCAL).await;
     node.nothing_handed_up();
-    assert_eq!(node.counters(), only(|c| c.listener_mismatch = 4));
+    assert_eq!(node.counters(), only(|c| c.listener_mismatch = 1));
 }
 
 #[tokio::test]

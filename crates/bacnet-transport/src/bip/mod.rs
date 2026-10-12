@@ -8,6 +8,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
 use bytes::BytesMut;
 #[cfg(test)]
 use tokio::net::UdpSocket;
@@ -19,23 +20,41 @@ use tracing::{debug, warn};
 
 use crate::bbmd::{self, BbmdState, BdtEntry, FdtEntryWire};
 pub use crate::bbmd::{FdtCounters, ForeignDevicePolicy};
-use crate::bvll::{decode_bip_mac, encode_bip_mac, encode_bvll, BvllMessage};
 #[cfg(test)]
-use crate::bvll::{decode_bvll, forwarded_message, forwarded_wire, origin_of, raw_frame};
+use crate::bvll::{
+    decode_bip_mac, decode_bvll, forwarded_message, forwarded_wire, origin_of, raw_frame,
+};
+use crate::bvll::{encode_bip_mac, BvllMessage};
 use crate::port::{BipPort, ReceivedNpdu, TransportPort};
 #[cfg(test)]
 use crate::udp_metadata::{DestinationReceiver, IpVersion};
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
+use bacnet_bip_core::node::{Link, Mode};
+use bacnet_bip_core::LocalSubnet;
 use bacnet_types::bip_port::{BbmdTables, BipPortMode};
 use bacnet_types::constructed::BACnetHostNPort;
 use bacnet_types::error::Error;
 
 mod access;
+mod bbmd_receive;
 mod bbmd_start;
-mod bvlc_response;
-mod client_management;
 mod client_snapshot;
+#[cfg(test)]
+mod differential_support;
+#[cfg(test)]
+mod differential_tests;
+mod exchange;
 mod foreign_device;
+mod node;
+mod send;
+// A verbatim copy, so some of it goes unused.
+#[cfg(test)]
+#[allow(dead_code)]
+mod legacy;
+#[cfg(test)]
+mod send_sink;
+#[cfg(test)]
+mod test_support;
 pub use client_snapshot::{
     BvlcClientSnapshot, BvlcRequestCounters, ForeignRegistrationOutcome,
     ForeignRegistrationSnapshot,
@@ -48,7 +67,9 @@ use bbmd_start::{
     initial_bbmd_state, refresh_own_address, subnet_mask_of,
     warn_if_broadcast_may_leave_another_interface, BbmdConfig, OwnAddressContext,
 };
-use bvlc_response::{decode_bvlc_result_code, unexpected_response, BvlcResponseKind};
+use client_snapshot::ClientRecord;
+use exchange::{decode_bvlc_result_code, unexpected_response};
+use node::NodeHandle;
 use socket::BipSocket;
 mod ingress;
 mod io;
@@ -57,28 +78,17 @@ mod rate_limit;
 mod receive_counters;
 pub use access::AsBip;
 pub use fanout::{FanoutCounters, FanoutPolicy};
-#[cfg(test)]
-use ingress::{admitted_delivery, Delivery};
 use ingress::{broadcast_is_own_address, receive_loop, IngressAddresses, Listeners};
 #[cfg(test)]
 use ingress::{handle_datagram, Arrival};
 use io::RecvContext;
-
-/// Run a received message through the receive path, for tests.
-#[cfg(test)]
-async fn handle_bvll_message(
-    msg: &BvllMessage,
-    sender: ([u8; 4], u16),
-    delivery: Delivery,
-    ctx: &RecvContext,
-) {
-    io::handle_bvll_message(msg.frame(), sender, delivery, ctx).await;
-}
 use own_broadcast::OwnBroadcastForwarder;
 pub use rate_limit::ManagementCounters;
 use rate_limit::ManagementRateLimiter;
 pub use receive_counters::ReceiveCounters;
 use receive_counters::ReceiveDrops;
+#[cfg(test)]
+use test_support::{admitted_delivery, handle_bvll_message, Delivery};
 
 /// Default BACnet/IP port (0xBAC0 = 47808).
 pub const DEFAULT_BACNET_PORT: u16 = 0xBAC0;
@@ -106,10 +116,13 @@ pub struct BipTransport {
     bbmd_fdt_purge_task: Option<JoinHandle<()>>,
     /// Foreign device config (when registered as a foreign device).
     foreign_device: Option<ForeignDeviceConfig>,
-    /// Re-registration timer task.
-    registration_task: Option<JoinHandle<()>>,
-    /// Own outgoing management exchanges, shared with registration and receive.
-    client_management: Arc<client_management::ManagementClient>,
+    /// The node engine of the running transport: its link, its own
+    /// management exchanges and a foreign device's registration.
+    node: Option<Arc<NodeHandle>>,
+    /// The task that sends what the node asks for and runs its timers.
+    node_task: Option<JoinHandle<()>>,
+    /// This transport's own management exchanges, across restarts.
+    client_record: Arc<ClientRecord>,
     /// Optional path for loading an externally provisioned persisted BDT
     /// (wire format, 10 bytes per entry) at startup. Inbound Write-BDT does
     /// not update this file.
@@ -122,10 +135,9 @@ pub struct BipTransport {
     fanout_task: Option<JoinHandle<()>>,
     /// Operational counters for broadcast forwarding fanout.
     fanout_counters: Arc<fanout::AtomicFanoutCounters>,
-    /// See [`Self::forwarded_group_origin_drops`].
-    forwarded_group_origin_drops: Arc<std::sync::atomic::AtomicU64>,
-    /// See [`Self::group_source_drops`].
-    group_source_drops: Arc<std::sync::atomic::AtomicU64>,
+    /// See [`Self::group_source_drops`] and
+    /// [`Self::forwarded_group_origin_drops`].
+    group_drops: groups::GroupDrops,
     /// See [`Self::receive_counters`].
     receive_drops: Arc<ReceiveDrops>,
     /// Rate limiter for broadcast forwarding fanout.
@@ -175,15 +187,15 @@ impl BipTransport {
             bbmd: None,
             bbmd_fdt_purge_task: None,
             foreign_device: None,
-            registration_task: None,
-            client_management: Arc::default(),
+            node: None,
+            node_task: None,
+            client_record: Arc::default(),
             bdt_persist_path: None,
             management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
             fanout_policy,
             fanout_task: None,
             fanout_counters,
-            forwarded_group_origin_drops: Arc::default(),
-            group_source_drops: Arc::default(),
+            group_drops: groups::GroupDrops::default(),
             receive_drops: Arc::default(),
             fanout_limiter,
             own_broadcast: None,
@@ -420,9 +432,12 @@ impl BipTransport {
     }
 
     fn abort_background_tasks(&mut self) -> Vec<JoinHandle<()>> {
-        self.client_management.stop();
+        self.client_record.stop();
+        if let Some(node) = self.node.take() {
+            node.stop();
+        }
         let mut tasks = Vec::new();
-        if let Some(task) = self.registration_task.take() {
+        if let Some(task) = self.node_task.take() {
             task.abort();
             tasks.push(task);
         }
@@ -443,21 +458,21 @@ impl BipTransport {
         tasks
     }
 
+    /// The running node, or the error for a transport not started.
+    fn require_node(&self) -> Result<&Arc<NodeHandle>, Error> {
+        self.require_socket()?;
+        self.node.as_ref().ok_or_else(|| {
+            Error::Transport(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Transport not started",
+            ))
+        })
+    }
+
     /// Send a BVLC management request and await the response.
-    async fn bvlc_request(
-        &self,
-        target: &[u8],
-        request: Bvll<'_>,
-        expected_response: BvlcResponseKind,
-    ) -> Result<BvllMessage, Error> {
-        self.client_management
-            .request(
-                self.require_socket()?,
-                target,
-                request,
-                expected_response,
-                Self::BVLC_RESPONSE_TIMEOUT,
-            )
+    async fn bvlc_request(&self, target: &[u8], request: Bvll<'_>) -> Result<BvllMessage, Error> {
+        let node = Arc::clone(self.require_node()?);
+        node.request(target, request, Self::BVLC_RESPONSE_TIMEOUT)
             .await
     }
 
@@ -467,17 +482,16 @@ impl BipTransport {
     /// BBMD nor proves a current remote lease. See [`BvlcClientSnapshot`] for
     /// matching limits and the meaning of each observation.
     pub fn bvlc_client_snapshot(&self) -> BvlcClientSnapshot {
-        self.client_management.snapshot()
+        let mut snapshot = self.client_record.snapshot();
+        snapshot.foreign_registration.next_attempt_in =
+            self.node.as_ref().and_then(|node| node.next_attempt_in());
+        snapshot
     }
 
     /// Send Read-Broadcast-Distribution-Table and return the response entries.
     pub async fn read_bdt(&self, target: &[u8]) -> Result<Vec<BdtEntry>, Error> {
         let msg = self
-            .bvlc_request(
-                target,
-                Bvll::ReadBroadcastDistributionTable,
-                BvlcResponseKind::ReadBroadcastDistributionTableAck,
-            )
+            .bvlc_request(target, Bvll::ReadBroadcastDistributionTable)
             .await?;
         match msg.message()? {
             Bvll::BvlcResult(code) => Err(Error::Encoding(format!("BVLC-Result: {code:?}"))),
@@ -503,7 +517,6 @@ impl BipTransport {
             .bvlc_request(
                 target,
                 Bvll::WriteBroadcastDistributionTable(BdtEntries::from_entries(&rows)),
-                BvlcResponseKind::Result,
             )
             .await?;
         decode_bvlc_result_code(&msg)
@@ -512,11 +525,7 @@ impl BipTransport {
     /// Send Read-Foreign-Device-Table and return the response entries.
     pub async fn read_fdt(&self, target: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
         let msg = self
-            .bvlc_request(
-                target,
-                Bvll::ReadForeignDeviceTable,
-                BvlcResponseKind::ReadForeignDeviceTableAck,
-            )
+            .bvlc_request(target, Bvll::ReadForeignDeviceTable)
             .await?;
         match msg.message()? {
             Bvll::BvlcResult(code) => Err(Error::Encoding(format!("BVLC-Result: {code:?}"))),
@@ -537,11 +546,7 @@ impl BipTransport {
     ) -> Result<BvlcResultCode, Error> {
         let entry = SocketAddrV4::new(Ipv4Addr::from(ip), port);
         let msg = self
-            .bvlc_request(
-                target,
-                Bvll::DeleteForeignDeviceTableEntry(entry),
-                BvlcResponseKind::Result,
-            )
+            .bvlc_request(target, Bvll::DeleteForeignDeviceTableEntry(entry))
             .await?;
         decode_bvlc_result_code(&msg)
     }
@@ -559,11 +564,7 @@ impl BipTransport {
         ttl: u16,
     ) -> Result<BvlcResultCode, Error> {
         let msg = self
-            .bvlc_request(
-                target,
-                Bvll::RegisterForeignDevice { ttl },
-                BvlcResponseKind::Result,
-            )
+            .bvlc_request(target, Bvll::RegisterForeignDevice { ttl })
             .await?;
         decode_bvlc_result_code(&msg)
     }
@@ -725,10 +726,39 @@ impl TransportPort for BipTransport {
             );
         }
 
+        // The node engine: its link decides receives and sends, and it runs
+        // this transport's own exchanges and a foreign device's registration.
+        let mode = match (&self.foreign_device, &self.bbmd) {
+            (Some(fd), _) => Mode::Foreign(
+                fd.engine(renewal_interval.expect("validated foreign-device interval")),
+            ),
+            (None, Some(_)) => Mode::Bbmd,
+            (None, None) => Mode::Normal,
+        };
+        let link = Link {
+            address: SocketAddrV4::new(local_ip, local_port),
+            subnet: LocalSubnet {
+                broadcast: SocketAddrV4::new(self.broadcast_address, local_port),
+                mask: None,
+            },
+            mode,
+            // Any NPDU the codec can carry, as before (#1622 PR 3 caps it).
+            budget: None,
+        };
+        self.client_record.start();
+        let node = match NodeHandle::new(link, Arc::clone(&socket), Arc::clone(&self.client_record))
+        {
+            Ok(node) => Arc::new(node),
+            Err(error) => {
+                self.client_record.stop();
+                return Err(error);
+            }
+        };
+
         self.port = local_port;
         self.local_mac = encode_bip_mac(local_ip.octets(), local_port);
         self.socket = Some(Arc::clone(&socket));
-        self.client_management.start();
+        self.node = Some(Arc::clone(&node));
 
         /// NPDU receive channel capacity for high-throughput UDP transports.
         const NPDU_CHANNEL_CAPACITY: usize = 256;
@@ -755,23 +785,18 @@ impl TransportPort for BipTransport {
             .map(|bbmd| OwnBroadcastForwarder::new(bbmd, fanout_dispatcher.clone()));
 
         let recv_ctx = RecvContext {
-            local_mac: self.local_mac,
-            socket: Arc::clone(&socket),
+            node: Arc::clone(&node),
             npdu_tx,
             bbmd: self.bbmd.clone(),
-            broadcast_addr: self.broadcast_address,
-            broadcast_port: self.port,
-            client_management: self.client_management.clone(),
             management_limiter: Arc::clone(&self.management_limiter),
             fanout: Some(fanout_dispatcher),
-            group_sources: self.group_sources(),
+            group_drops: self.group_drops.clone(),
             drops: Arc::clone(&self.receive_drops),
             #[cfg(test)]
             force_dbtn_forward_failure: false,
         };
 
         let ingress = IngressAddresses {
-            local_ip,
             unicast_ips: local_unicast_ips,
             wildcard_bind,
             listener_interface,
@@ -783,14 +808,7 @@ impl TransportPort for BipTransport {
             self.bbmd_fdt_purge_task = Some(Self::spawn_bbmd_fdt_purge_task(bbmd));
         }
 
-        if let Some(fd) = self.foreign_device.clone() {
-            self.registration_task = Some(tokio::spawn(foreign_device::run(
-                socket,
-                self.client_management.clone(),
-                fd,
-                renewal_interval.expect("validated foreign-device interval"),
-            )));
-        }
+        self.node_task = Some(tokio::spawn(node.drive()));
 
         Ok(rx)
     }
@@ -808,17 +826,7 @@ impl TransportPort for BipTransport {
     }
 
     async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        let socket = self.require_socket()?;
-
-        let (ip, port) = decode_bip_mac(mac)?;
-        let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
-
-        let mut buf = BytesMut::with_capacity(4 + npdu.len());
-        encode_bvll(&mut buf, &Bvll::OriginalUnicastNpdu(npdu))?;
-
-        socket.send_to(&buf, dest).await.map_err(Error::Transport)?;
-
-        Ok(())
+        self.require_node()?.send_unicast(npdu, mac).await
     }
 
     /// Broadcast `npdu` on this B/IP network.
@@ -829,36 +837,8 @@ impl TransportPort for BipTransport {
     /// (Annex J.4.5). That forward does not depend on the local send, so in
     /// BBMD mode an `Err` here can follow a forward that was already queued.
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        let socket = self.require_socket()?;
-
-        if let Some(fd) = &self.foreign_device {
-            let bbmd_addr = SocketAddrV4::new(fd.bbmd_ip, fd.bbmd_port);
-            let mut buf = BytesMut::with_capacity(4 + npdu.len());
-            encode_bvll(&mut buf, &Bvll::DistributeBroadcastToNetwork(npdu))?;
-            socket
-                .send_to(&buf, bbmd_addr)
-                .await
-                .map_err(Error::Transport)?;
-            return Ok(());
-        }
-
-        let dest = SocketAddrV4::new(self.broadcast_address, self.port);
-
-        let mut buf = BytesMut::with_capacity(4 + npdu.len());
-        encode_bvll(&mut buf, &Bvll::OriginalBroadcastNpdu(npdu))?;
-
-        // A BBMD also forwards its own broadcast to the other BDT subnets and
-        // its foreign devices (Annex J.4.5). The fanout is queued first, so its
-        // targets are fixed before the local frame is on the wire. Whatever
-        // happens to it (see OwnBroadcastForwarder::forward) never fails this
-        // send, and a failed local send does not withdraw it.
-        if let Some(forwarder) = &self.own_broadcast {
-            forwarder.forward(npdu);
-        }
-
-        socket.send_to(&buf, dest).await.map_err(Error::Transport)?;
-
-        Ok(())
+        let node = self.require_node()?;
+        node.send_broadcast(npdu, self.own_broadcast.as_ref()).await
     }
 
     fn local_receive_apdu_capacity(&self) -> u16 {
