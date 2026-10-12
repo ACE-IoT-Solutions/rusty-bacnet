@@ -1006,8 +1006,9 @@ B/IPv6 MAC went: sends, client requests, recipient lists, bindings, and COV
 subscriptions you store. Find a VMAC from an address with
 `resolve_virtual_address`, and read this node's address with `local_address()`
 instead of decoding `local_mac()`. A router and the B/IPv6 nodes it serves
-should be upgraded together. `encode_bip6_mac` and `decode_bip6_mac` still
-convert a B/IPv6 address, which is no longer a MAC.
+should be upgraded together. `encode_bip6_mac` and `decode_bip6_mac` are
+gone, since a B/IPv6 address is no longer a MAC: build and read one with
+`Bip6Address` (`Bip6Address::new(ip, port)`, `to_octets()`, `from_slice()`).
 
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is

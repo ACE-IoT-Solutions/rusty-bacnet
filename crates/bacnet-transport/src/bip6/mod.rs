@@ -70,8 +70,8 @@ mod send;
 mod socket;
 mod vmac_table;
 pub use port::{
-    decode_bip6_mac, encode_bip6_mac, Bip6BroadcastScope, Bip6ForeignDeviceConfig, Bip6Transport,
-    BACNET_IPV6_MULTICAST, BACNET_IPV6_MULTICAST_LINK_LOCAL, BACNET_IPV6_MULTICAST_ORG_LOCAL,
+    Bip6BroadcastScope, Bip6ForeignDeviceConfig, Bip6Transport, BACNET_IPV6_MULTICAST,
+    BACNET_IPV6_MULTICAST_LINK_LOCAL, BACNET_IPV6_MULTICAST_ORG_LOCAL,
     BACNET_IPV6_MULTICAST_SITE_LOCAL, DEFAULT_BACNET6_PORT,
 };
 pub use receive_counters::Bip6ReceiveCounters;

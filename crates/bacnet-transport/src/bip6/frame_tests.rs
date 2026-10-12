@@ -1,5 +1,5 @@
 //! The transport's B/IPv6 encoding and decoding, through the codec: wire
-//! layouts, rejections and the MAC helpers.
+//! layouts and rejections.
 
 use std::net::Ipv6Addr;
 
@@ -118,24 +118,6 @@ fn function_round_trip() {
         let f = Bvlc6Function::from_raw(byte);
         assert_eq!(f.to_raw(), byte);
     }
-}
-
-#[test]
-fn bip6_mac_round_trip() {
-    let ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-    let port = 47808u16;
-    let mac = encode_bip6_mac(ip, port);
-    assert_eq!(mac.len(), 18);
-    assert_eq!(mac, Bip6Address::new(ip, port).to_octets());
-    let (decoded_ip, decoded_port) = decode_bip6_mac(&mac).unwrap();
-    assert_eq!(decoded_ip, ip);
-    assert_eq!(decoded_port, port);
-}
-
-#[test]
-fn bip6_mac_rejects_wrong_length() {
-    assert!(decode_bip6_mac(&[0; 6]).is_err());
-    assert!(decode_bip6_mac(&[0; 20]).is_err());
 }
 
 #[test]

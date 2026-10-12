@@ -11,14 +11,14 @@ use tracing::{debug, warn};
 use crate::port::{ReceivedNpdu, TransportPort};
 
 use super::collision_probe::Probe;
-use super::frame::{bvll6_error, encoded};
+use super::frame::encoded;
 use super::receive::Receiver;
 use super::receive_counters::{Bip6ReceiveCounters, ReceiveDrops};
 use super::reply_limit::ReplyLimiter;
 use super::resolver::{Driver, Resolver, UnresolvedSend};
 use super::socket::Bip6Socket;
 use super::vmac_table::{generate_random_vmac, vmac_from_device_instance};
-use super::{encode_bvll6, Bip6Address, Bip6Vmac, Bvll6, MAX_VMAC_RETRIES};
+use super::{encode_bvll6, Bip6Vmac, Bvll6, MAX_VMAC_RETRIES};
 
 /// BACnet/IPv6 multicast group (link-local): FF02::BAC0.
 pub const BACNET_IPV6_MULTICAST_LINK_LOCAL: Ipv6Addr =
@@ -37,21 +37,6 @@ pub const BACNET_IPV6_MULTICAST: Ipv6Addr = BACNET_IPV6_MULTICAST_LINK_LOCAL;
 
 /// Default BACnet/IPv6 port (same as BIP: 0xBAC0 = 47808).
 pub const DEFAULT_BACNET6_PORT: u16 = 0xBAC0;
-
-/// Encode an IPv6 address + port into the 18 octets of a B/IPv6 address, IPv6
-/// address then port, both high octet first (Annex U.1.1.2). This is the
-/// address a BVLL message carries, not the transport's MAC, which is the
-/// 3-octet VMAC (U.1.3).
-pub fn encode_bip6_mac(ip: Ipv6Addr, port: u16) -> [u8; 18] {
-    Bip6Address::new(ip, port).to_octets()
-}
-
-/// Decode the 18 octets of a B/IPv6 address into an IPv6 address + port (Annex
-/// U.1.1.2). See [`encode_bip6_mac`].
-pub fn decode_bip6_mac(mac: &[u8]) -> Result<(Ipv6Addr, u16), Error> {
-    let address = Bip6Address::from_slice(mac).map_err(bvll6_error)?;
-    Ok((address.ip, address.port))
-}
 
 /// BACnet/IPv6 transport over UDP (Annex U).
 ///
