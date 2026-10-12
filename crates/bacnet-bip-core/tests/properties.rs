@@ -8,10 +8,10 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{
-    canonicalize, distribution_address, validate_entry, Arrival, Context, LocalSubnet, Tables,
+    canonicalize, distribution_address, validate_entry, Context, LocalSubnet, Reservation, Tables,
     Target, Via, TWO_HOP_MASK,
 };
-use bacnet_bip_core::Instant;
+use bacnet_bip_core::{Arrival, Instant};
 use proptest::prelude::*;
 use support::OPEN;
 
@@ -71,7 +71,7 @@ fn build(own: SocketAddrV4, rows: &[BdtEntry], regs: &[(SocketAddrV4, u16, u64)]
             *ttl,
             Instant::from_secs(*at),
             &OPEN,
-            false,
+            Reservation::Ordinary,
             || true,
         );
     }

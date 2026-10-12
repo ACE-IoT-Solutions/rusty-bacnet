@@ -10,7 +10,8 @@ use tracing::{debug, warn};
 use bacnet_bip_codec::{
     BdtEntries, BvlcFunction, BvlcResultCode, Bvll, BvllError, BvllFrame, FdtEntries,
 };
-use bacnet_bip_core::bbmd::{Arrival, ForwardedRefusal};
+use bacnet_bip_core::bbmd::ForwardRefusal;
+use bacnet_bip_core::Arrival;
 use bacnet_types::MacAddr;
 
 use crate::bbmd::{self, BbmdState, Forward};
@@ -192,9 +193,13 @@ pub(super) async fn handle_bvll_message(
                 let forward = match decision {
                     Ok(forward) => forward,
                     Err(refusal) => {
+                        // The own-echo check above makes OwnEcho unreachable;
+                        // a Forwarded-NPDU is never refused as unregistered.
                         ctx.drops.count(match refusal {
-                            ForwardedRefusal::NotFromPeer => DropReason::ForwardedNotFromPeer,
-                            ForwardedRefusal::OwnEcho => DropReason::OwnEcho,
+                            ForwardRefusal::OwnEcho => DropReason::OwnEcho,
+                            ForwardRefusal::NotFromPeer | ForwardRefusal::NotRegistered => {
+                                DropReason::ForwardedNotFromPeer
+                            }
                         });
                         debug!(
                             "Rejecting FORWARDED_NPDU from non-BDT sender {:?}:{}",
@@ -375,12 +380,13 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
     );
     let forward = match decision {
         Ok(forward) => forward,
-        Err(code) => {
+        Err(refusal) => {
             debug!(
                 "Rejecting DISTRIBUTE_BROADCAST_TO_NETWORK from non-registered sender {:?}:{}",
                 Ipv4Addr::from(sender.0),
                 sender.1
             );
+            let code = refusal.result_code().unwrap_or(nak);
             send_bvlc_result(&ctx.socket, sender, code).await;
             return;
         }

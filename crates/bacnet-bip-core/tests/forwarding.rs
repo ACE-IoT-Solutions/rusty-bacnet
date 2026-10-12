@@ -5,9 +5,9 @@ mod support;
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
-use bacnet_bip_codec::{BvlcResultCode, Bvll};
-use bacnet_bip_core::bbmd::{Arrival, Context, ForwardedRefusal, LocalSubnet, Tables, Target, Via};
-use bacnet_bip_core::Instant;
+use bacnet_bip_codec::Bvll;
+use bacnet_bip_core::bbmd::{Context, ForwardRefusal, LocalSubnet, Tables, Target, Via};
+use bacnet_bip_core::{Arrival, Instant};
 use support::{
     addr, context, destinations, register_all, row, secs, storage, tables, Small, LOCAL_BROADCAST,
     MASK_24, MASK_32, OWN, PORT, SUBNET,
@@ -423,7 +423,7 @@ fn a_forwarded_npdu_from_anyone_but_a_peer_is_refused() {
                 sender,
                 &mut out
             ),
-            Err(ForwardedRefusal::NotFromPeer),
+            Err(ForwardRefusal::NotFromPeer),
             "{sender}"
         );
     }
@@ -436,7 +436,7 @@ fn a_forwarded_npdu_from_anyone_but_a_peer_is_refused() {
             TWO_HOP,
             &mut out
         ),
-        Err(ForwardedRefusal::OwnEcho)
+        Err(ForwardRefusal::OwnEcho)
     );
 }
 
@@ -483,7 +483,7 @@ fn the_local_broadcast_is_not_deduplicated_against_peers() {
 fn only_a_live_registration_may_distribute() {
     let tables = site();
     let mut out = storage();
-    let nak = Err(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK);
+    let nak = Err(ForwardRefusal::NotRegistered);
     assert_eq!(
         tables.distribute_broadcast(&context(T0), &SUBNET, LOCAL_DEVICE, NPDU, &mut out),
         nak
@@ -559,7 +559,7 @@ fn larger_tables_work_the_same() {
             60,
             T0,
             &support::OPEN,
-            false,
+            bacnet_bip_core::bbmd::Reservation::Ordinary,
             || true,
         );
         assert!(outcome.result.is_ok());
@@ -575,4 +575,19 @@ fn larger_tables_work_the_same() {
         sent.fanout.targets[0].destination,
         addr(10, 1, 1, 255, PORT)
     );
+}
+
+#[test]
+fn refusals_carry_the_nak_annex_j_gives() {
+    for (refusal, code) in [
+        (ForwardRefusal::NotFromPeer, None),
+        (ForwardRefusal::OwnEcho, None),
+        (
+            ForwardRefusal::NotRegistered,
+            Some(bacnet_bip_codec::BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK),
+        ),
+    ] {
+        assert_eq!(refusal.result_code(), code, "{refusal:?}");
+        assert!(!refusal.to_string().is_empty());
+    }
 }

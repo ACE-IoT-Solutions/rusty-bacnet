@@ -3,10 +3,10 @@
 
 mod support;
 
-use bacnet_bip_codec::FdtEntry;
+use bacnet_bip_codec::{BvlcResultCode, FdtEntry};
 use bacnet_bip_core::bbmd::{
-    Fdt, Registered, Registration, RegistrationLimits, RegistrationRefusal, StorageFull,
-    GRACE_PERIOD_SECS,
+    Fdt, Registered, Registration, RegistrationLimits, RegistrationRefusal, Reservation,
+    StorageFull, GRACE_PERIOD_SECS,
 };
 use bacnet_bip_core::{Duration, Instant};
 use support::{addr, secs, OPEN, PORT};
@@ -19,7 +19,8 @@ fn register<const N: usize>(
     ttl: u16,
     now: Instant,
 ) -> Result<Registered, RegistrationRefusal> {
-    fdt.register(device, ttl, now, &OPEN, false, || true).result
+    fdt.register(device, ttl, now, &OPEN, Reservation::Ordinary, || true)
+        .result
 }
 
 #[test]
@@ -64,13 +65,18 @@ fn time_to_live_outside_the_limits_is_refused_without_touching_the_entry() {
     };
     let device = addr(10, 0, 0, 1, PORT);
     assert!(fdt
-        .register(device, 60, T0, &limits, false, || true)
+        .register(device, 60, T0, &limits, Reservation::Ordinary, || true)
         .result
         .is_ok());
     for ttl in [0, 10, 29, 301, u16::MAX] {
-        let outcome = fdt.register(device, ttl, T0 + secs(1), &limits, false, || {
-            panic!("not asked")
-        });
+        let outcome = fdt.register(
+            device,
+            ttl,
+            T0 + secs(1),
+            &limits,
+            Reservation::Ordinary,
+            || panic!("not asked"),
+        );
         assert_eq!(
             outcome.result,
             Err(RegistrationRefusal::TimeToLive),
@@ -85,12 +91,13 @@ fn time_to_live_outside_the_limits_is_refused_without_touching_the_entry() {
         ..limits
     };
     assert_eq!(
-        fdt.register(device, 0, T0, &zero, false, || true).result,
+        fdt.register(device, 0, T0, &zero, Reservation::Ordinary, || true)
+            .result,
         Err(RegistrationRefusal::TimeToLive)
     );
     for ttl in [30, 300] {
         assert_eq!(
-            fdt.register(device, ttl, T0, &limits, false, || true)
+            fdt.register(device, ttl, T0, &limits, Reservation::Ordinary, || true)
                 .result,
             Ok(Registered::Renewed)
         );
@@ -102,7 +109,7 @@ fn the_admission_check_runs_after_the_time_to_live_and_can_refuse() {
     let mut fdt: Fdt<4> = Fdt::new();
     let device = addr(10, 0, 0, 1, PORT);
     let mut asked = 0;
-    let outcome = fdt.register(device, 60, T0, &OPEN, false, || {
+    let outcome = fdt.register(device, 60, T0, &OPEN, Reservation::Ordinary, || {
         asked += 1;
         false
     });
@@ -111,7 +118,14 @@ fn the_admission_check_runs_after_the_time_to_live_and_can_refuse() {
     assert!(fdt.is_empty());
     // A renewal is asked too.
     register(&mut fdt, device, 60, T0).unwrap();
-    let outcome = fdt.register(device, 90, T0 + secs(1), &OPEN, false, || false);
+    let outcome = fdt.register(
+        device,
+        90,
+        T0 + secs(1),
+        &OPEN,
+        Reservation::Ordinary,
+        || false,
+    );
     assert_eq!(outcome.result, Err(RegistrationRefusal::NotAdmitted));
     assert_eq!(fdt.registrations()[0].ttl, 60);
 }
@@ -125,24 +139,33 @@ fn one_address_may_hold_its_quota_across_ports() {
     };
     let ip = |port| addr(10, 0, 0, 1, port);
     assert!(fdt
-        .register(ip(1), 60, T0, &limits, false, || true)
+        .register(ip(1), 60, T0, &limits, Reservation::Ordinary, || true)
         .result
         .is_ok());
     assert!(fdt
-        .register(ip(2), 60, T0, &limits, false, || true)
+        .register(ip(2), 60, T0, &limits, Reservation::Ordinary, || true)
         .result
         .is_ok());
     assert_eq!(
-        fdt.register(ip(3), 60, T0, &limits, false, || true).result,
+        fdt.register(ip(3), 60, T0, &limits, Reservation::Ordinary, || true)
+            .result,
         Err(RegistrationRefusal::SourceQuota)
     );
     // Renewing a held port costs nothing, and another address is unaffected.
     assert_eq!(
-        fdt.register(ip(1), 60, T0, &limits, false, || true).result,
+        fdt.register(ip(1), 60, T0, &limits, Reservation::Ordinary, || true)
+            .result,
         Ok(Registered::Renewed)
     );
     assert!(fdt
-        .register(addr(10, 0, 0, 2, 1), 60, T0, &limits, false, || true)
+        .register(
+            addr(10, 0, 0, 2, 1),
+            60,
+            T0,
+            &limits,
+            Reservation::Ordinary,
+            || true
+        )
         .result
         .is_ok());
 }
@@ -167,7 +190,7 @@ fn a_full_table_refuses_new_devices_but_renews_old_ones() {
         60,
         T0 + secs(91),
         &OPEN,
-        false,
+        Reservation::Ordinary,
         || true,
     );
     assert_eq!(outcome.purged, 2);
@@ -183,14 +206,42 @@ fn reserved_capacity_is_kept_for_reserved_sources() {
         ..OPEN
     };
     for host in 1..=3 {
-        let outcome = fdt.register(addr(10, 0, 0, host, PORT), 60, T0, &limits, false, || true);
+        let outcome = fdt.register(
+            addr(10, 0, 0, host, PORT),
+            60,
+            T0,
+            &limits,
+            Reservation::Ordinary,
+            || true,
+        );
         assert!(outcome.result.is_ok());
     }
-    let ordinary = fdt.register(addr(10, 0, 0, 4, PORT), 60, T0, &limits, false, || true);
+    let ordinary = fdt.register(
+        addr(10, 0, 0, 4, PORT),
+        60,
+        T0,
+        &limits,
+        Reservation::Ordinary,
+        || true,
+    );
     assert_eq!(ordinary.result, Err(RegistrationRefusal::TableFull));
-    let reserved = fdt.register(addr(10, 0, 0, 9, PORT), 60, T0, &limits, true, || true);
+    let reserved = fdt.register(
+        addr(10, 0, 0, 9, PORT),
+        60,
+        T0,
+        &limits,
+        Reservation::Reserved,
+        || true,
+    );
     assert_eq!(reserved.result, Ok(Registered::New));
-    let over = fdt.register(addr(10, 0, 0, 10, PORT), 60, T0, &limits, true, || true);
+    let over = fdt.register(
+        addr(10, 0, 0, 10, PORT),
+        60,
+        T0,
+        &limits,
+        Reservation::Reserved,
+        || true,
+    );
     assert_eq!(over.result, Err(RegistrationRefusal::TableFull));
     // Reserving more than the table holds leaves ordinary sources nothing.
     let mut small: Fdt<2> = Fdt::new();
@@ -198,7 +249,14 @@ fn reserved_capacity_is_kept_for_reserved_sources() {
         reserved_capacity: 5,
         ..OPEN
     };
-    let outcome = small.register(addr(10, 0, 0, 1, PORT), 60, T0, &greedy, false, || true);
+    let outcome = small.register(
+        addr(10, 0, 0, 1, PORT),
+        60,
+        T0,
+        &greedy,
+        Reservation::Ordinary,
+        || true,
+    );
     assert_eq!(outcome.result, Err(RegistrationRefusal::TableFull));
 }
 
@@ -367,6 +425,10 @@ fn refusals_say_why() {
         RegistrationRefusal::TableFull,
     ] {
         assert!(!refusal.to_string().is_empty());
+        assert_eq!(
+            refusal.result_code(),
+            BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK
+        );
     }
 }
 

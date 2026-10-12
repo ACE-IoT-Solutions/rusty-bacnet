@@ -10,6 +10,9 @@
 //!
 //! - [`bbmd`]: a BBMD's two tables (the BDT and the FDT), foreign-device
 //!   registration, and where each broadcast is forwarded (Annex J.4, J.5).
+//! - [`Arrival`]: whether a datagram was addressed to the node or to its
+//!   subnet's broadcast address, which the rules above and a node's own
+//!   both depend on.
 //!
 //! A sans-IO engine for a B/IP node in normal and foreign-device mode will
 //! join it here.
@@ -22,9 +25,11 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+mod arrival;
 pub mod bbmd;
 mod time;
 
+pub use arrival::Arrival;
 pub use time::{Duration, Instant};
 
 /// The README's example, compiled and run as a doctest.

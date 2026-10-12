@@ -15,7 +15,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcResultCode, FdtEntries};
-use bacnet_bip_core::bbmd::{self as core_bbmd, Arrival, BdtError, RegistrationRefusal};
+use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, RegistrationRefusal, Reservation};
+use bacnet_bip_core::Arrival;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 
@@ -391,7 +392,11 @@ impl BbmdState {
             max_entries_per_source: policy.max_entries_per_source,
             reserved_capacity: policy.reserved_capacity,
         };
-        let reserved = policy.reserved_sources.contains(&ip);
+        let reservation = if policy.reserved_sources.contains(&ip) {
+            Reservation::Reserved
+        } else {
+            Reservation::Ordinary
+        };
         let rate_tracker = &mut self.rate_tracker;
         let admit = || {
             policy
@@ -411,7 +416,7 @@ impl BbmdState {
             ttl,
             self.clock.to_core(now),
             &limits,
-            reserved,
+            reservation,
             admit,
         );
         self.counters.registrations_expired += outcome.purged as u64;

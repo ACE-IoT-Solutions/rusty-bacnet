@@ -5,19 +5,12 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BvlcResultCode, Bvll};
 
+use core::fmt;
+
 use super::bdt::{distribution_address, Bdt, TWO_HOP_MASK};
 use super::fdt::Fdt;
 use crate::time::Instant;
-
-/// How a datagram reached this node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arrival {
-    /// Addressed to this node.
-    Unicast,
-    /// Addressed to the subnet's broadcast address, so every node on the
-    /// subnet received it too.
-    Broadcast,
-}
+use crate::Arrival;
 
 /// What kind of destination a [`Target`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,16 +118,48 @@ impl<'n, 'o> Distribution<'n, 'o> {
     }
 }
 
-/// Why a Forwarded-NPDU isn't forwarded or delivered. Annex J.4.5 has a
-/// BBMD act only on those from its peers.
+/// Why a BBMD neither delivers nor forwards a broadcast it received (Annex
+/// J.4.5). [`ForwardRefusal::result_code`] gives the BVLC-Result to answer
+/// the sender with, where Annex J has one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ForwardedRefusal {
-    /// The sender has no BDT row.
+pub enum ForwardRefusal {
+    /// A Forwarded-NPDU from a sender with no BDT row: only peers' are
+    /// acted on. It goes unanswered.
     NotFromPeer,
-    /// The sender is this BBMD: the echo of its own local rebroadcast, which
-    /// its own row would otherwise pass as a peer's.
+    /// A Forwarded-NPDU from this BBMD's own address: the echo of its own
+    /// rebroadcast, which its own row would otherwise pass as a peer's. It
+    /// goes unanswered.
     OwnEcho,
+    /// A Distribute-Broadcast-To-Network from a sender holding no live
+    /// registration. It is answered with a NAK.
+    NotRegistered,
 }
+
+impl ForwardRefusal {
+    /// The BVLC-Result to answer the sender with, or `None` when the
+    /// message goes unanswered.
+    #[must_use]
+    pub const fn result_code(self) -> Option<BvlcResultCode> {
+        match self {
+            Self::NotFromPeer | Self::OwnEcho => None,
+            Self::NotRegistered => Some(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK),
+        }
+    }
+}
+
+impl fmt::Display for ForwardRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NotFromPeer => "Forwarded-NPDU from a sender that is no BDT peer",
+            Self::OwnEcho => "Forwarded-NPDU from this BBMD's own address",
+            Self::NotRegistered => {
+                "Distribute-Broadcast-To-Network from a sender with no live registration"
+            }
+        })
+    }
+}
+
+impl core::error::Error for ForwardRefusal {}
 
 /// A BBMD's two tables, and its forwarding decisions over them.
 ///
@@ -239,12 +264,12 @@ impl<const B: usize, const F: usize> Tables<B, F> {
         arrival: Arrival,
         origin: SocketAddrV4,
         out: &'o mut [Target],
-    ) -> Result<Fanout<'o>, ForwardedRefusal> {
+    ) -> Result<Fanout<'o>, ForwardRefusal> {
         if sender == self.bdt.own_address() {
-            return Err(ForwardedRefusal::OwnEcho);
+            return Err(ForwardRefusal::OwnEcho);
         }
         if !self.bdt.contains(sender) {
-            return Err(ForwardedRefusal::NotFromPeer);
+            return Err(ForwardRefusal::NotFromPeer);
         }
         let mut writer = Writer::new(out);
         if self.rebroadcasts_forwarded(subnet.mask, sender, arrival) {
@@ -283,7 +308,8 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     /// A Distribute-Broadcast-To-Network from `sender` (Annex J.4.5).
     ///
     /// Only a foreign device registered and live at [`Context::now`] may ask;
-    /// anyone else gets `Err` with the NAK to send it. The caller delivers
+    /// anyone else is refused with [`ForwardRefusal::NotRegistered`], whose
+    /// [`result_code`](ForwardRefusal::result_code) is the NAK to send. The caller delivers
     /// an accepted one to its own network layer. It goes out as a
     /// Forwarded-NPDU with `sender` as its origin: first to the subnet's
     /// broadcast address, then to the
@@ -295,9 +321,9 @@ impl<const B: usize, const F: usize> Tables<B, F> {
         sender: SocketAddrV4,
         npdu: &'n [u8],
         out: &'o mut [Target],
-    ) -> Result<Distribution<'n, 'o>, BvlcResultCode> {
+    ) -> Result<Distribution<'n, 'o>, ForwardRefusal> {
         if !self.fdt.is_registered_at(sender, cx.now) {
-            return Err(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK);
+            return Err(ForwardRefusal::NotRegistered);
         }
         let mut writer = Writer::new(out);
         writer.push_local(subnet.broadcast);

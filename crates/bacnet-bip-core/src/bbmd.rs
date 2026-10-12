@@ -30,7 +30,7 @@
 //! ```
 //! use core::net::{Ipv4Addr, SocketAddrV4};
 //! use bacnet_bip_codec::{BdtEntries, BdtEntry};
-//! use bacnet_bip_core::bbmd::{Context, RegistrationLimits, Tables, Target, Via};
+//! use bacnet_bip_core::bbmd::{Context, RegistrationLimits, Reservation, Tables, Target, Via};
 //! use bacnet_bip_core::Instant;
 //!
 //! let own = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 1), 47808);
@@ -43,7 +43,8 @@
 //!
 //! let now = Instant::from_secs(100);
 //! let device = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 7), 47808);
-//! let outcome = tables.fdt.register(device, 60, now, &RegistrationLimits::default(), false, || true);
+//! let limits = RegistrationLimits::default();
+//! let outcome = tables.fdt.register(device, 60, now, &limits, Reservation::Ordinary, || true);
 //! assert!(outcome.result.is_ok());
 //!
 //! let cx = Context { now, fdt_fanout: 4 };
@@ -70,8 +71,8 @@ pub use bdt::{
 };
 pub use fdt::{
     Fdt, RegisterOutcome, Registered, Registration, RegistrationLimits, RegistrationRefusal,
-    StorageFull, GRACE_PERIOD_SECS,
+    Reservation, StorageFull, GRACE_PERIOD_SECS,
 };
 pub use forward::{
-    Arrival, Context, Distribution, Fanout, ForwardedRefusal, LocalSubnet, Tables, Target, Via,
+    Context, Distribution, Fanout, ForwardRefusal, LocalSubnet, Tables, Target, Via,
 };

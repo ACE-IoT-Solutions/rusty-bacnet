@@ -9,10 +9,10 @@
 use std::net::SocketAddrV4;
 use std::time::Instant;
 
-use bacnet_bip_codec::BvlcResultCode;
 use bacnet_bip_core::bbmd::{
-    Arrival, Context, Distribution, Fanout, ForwardedRefusal, LocalSubnet, Target, Via,
+    Context, Distribution, Fanout, ForwardRefusal, LocalSubnet, Target, Via,
 };
+use bacnet_bip_core::Arrival;
 
 use super::{address, BbmdState, Tables};
 
@@ -112,7 +112,7 @@ impl BbmdState {
         origin: SocketAddrV4,
         local_broadcast: SocketAddrV4,
         now: Instant,
-    ) -> Result<Forward, ForwardedRefusal> {
+    ) -> Result<Forward, ForwardRefusal> {
         let cx = self.decision_context(now);
         let subnet = self.local_subnet(local_broadcast);
         let mut out = [Target::UNUSED; Tables::MAX_TARGETS];
@@ -123,8 +123,8 @@ impl BbmdState {
         Ok(self.forward_fanout(origin, &fanout))
     }
 
-    /// A Distribute-Broadcast-To-Network from `sender`, or the NAK to answer
-    /// it with: see
+    /// A Distribute-Broadcast-To-Network from `sender`, or why it is
+    /// refused, whose result code is the NAK to answer with: see
     /// [`Tables::distribute_broadcast`](bacnet_bip_core::bbmd::Tables::distribute_broadcast).
     pub(crate) fn forward_distribute_broadcast(
         &mut self,
@@ -132,7 +132,7 @@ impl BbmdState {
         npdu: &[u8],
         local_broadcast: SocketAddrV4,
         now: Instant,
-    ) -> Result<Forward, BvlcResultCode> {
+    ) -> Result<Forward, ForwardRefusal> {
         self.purge_expired_at(now);
         let cx = self.decision_context(now);
         let subnet = self.local_subnet(local_broadcast);

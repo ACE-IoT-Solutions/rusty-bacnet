@@ -3,7 +3,7 @@
 use core::fmt;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
-use bacnet_bip_codec::{FdtEntries, FdtEntry};
+use bacnet_bip_codec::{BvlcResultCode, FdtEntries, FdtEntry};
 
 use crate::time::{Duration, Instant};
 
@@ -99,6 +99,16 @@ impl Default for RegistrationLimits {
     }
 }
 
+/// Whether a registrant may use the slots [`RegistrationLimits::
+/// reserved_capacity`] keeps back. Which sources may is the caller's policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reservation {
+    /// An ordinary source: it may fill all but the reserved slots.
+    Ordinary,
+    /// A source the reserved slots are kept for: it may fill every slot.
+    Reserved,
+}
+
 /// An accepted registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Registered {
@@ -120,6 +130,15 @@ pub enum RegistrationRefusal {
     SourceQuota,
     /// No slot is free to this source.
     TableFull,
+}
+
+impl RegistrationRefusal {
+    /// The BVLC-Result to answer the registrant with: every refusal is a
+    /// Register-Foreign-Device NAK.
+    #[must_use]
+    pub const fn result_code(self) -> BvlcResultCode {
+        BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK
+    }
 }
 
 impl fmt::Display for RegistrationRefusal {
@@ -247,19 +266,21 @@ impl<const N: usize> Fdt<N> {
     ///    with the new time-to-live, and no limit below applies.
     /// 5. Otherwise refuse when `source`'s IPv4 address already holds
     ///    `limits.max_entries_per_source`, or when the table has no slot for
-    ///    it: an ordinary source may fill all but `limits.reserved_capacity`
-    ///    slots, a `reserved` one all of them. Then append it.
+    ///    it: an [`Ordinary`](Reservation::Ordinary) source may fill all but
+    ///    `limits.reserved_capacity` slots, a
+    ///    [`Reserved`](Reservation::Reserved) one all of them. Then append
+    ///    it.
     pub fn register(
         &mut self,
         source: SocketAddrV4,
         ttl: u16,
         now: Instant,
         limits: &RegistrationLimits,
-        reserved: bool,
+        reservation: Reservation,
         admit: impl FnOnce() -> bool,
     ) -> RegisterOutcome {
         let purged = self.purge(now);
-        let result = self.admit_and_store(source, ttl, now, limits, reserved, admit);
+        let result = self.admit_and_store(source, ttl, now, limits, reservation, admit);
         RegisterOutcome { result, purged }
     }
 
@@ -269,7 +290,7 @@ impl<const N: usize> Fdt<N> {
         ttl: u16,
         now: Instant,
         limits: &RegistrationLimits,
-        reserved: bool,
+        reservation: Reservation,
         admit: impl FnOnce() -> bool,
     ) -> Result<Registered, RegistrationRefusal> {
         if ttl == 0 || ttl < limits.min_ttl || ttl > limits.max_ttl {
@@ -298,10 +319,9 @@ impl<const N: usize> Fdt<N> {
         if from_source >= limits.max_entries_per_source {
             return Err(RegistrationRefusal::SourceQuota);
         }
-        let limit = if reserved {
-            N
-        } else {
-            N.saturating_sub(limits.reserved_capacity)
+        let limit = match reservation {
+            Reservation::Reserved => N,
+            Reservation::Ordinary => N.saturating_sub(limits.reserved_capacity),
         };
         if self.len >= limit {
             return Err(RegistrationRefusal::TableFull);

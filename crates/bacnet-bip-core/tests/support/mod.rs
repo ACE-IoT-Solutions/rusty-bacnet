@@ -5,7 +5,9 @@
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
-use bacnet_bip_core::bbmd::{Context, LocalSubnet, RegistrationLimits, Tables, Target};
+use bacnet_bip_core::bbmd::{
+    Context, LocalSubnet, RegistrationLimits, Reservation, Tables, Target,
+};
 use bacnet_bip_core::{Duration, Instant};
 
 /// The default B/IP port.
@@ -63,7 +65,7 @@ pub fn register_all(tables: &mut Small, devices: &[SocketAddrV4], ttl: u16, now:
     for device in devices {
         let outcome = tables
             .fdt
-            .register(*device, ttl, now, &OPEN, false, || true);
+            .register(*device, ttl, now, &OPEN, Reservation::Ordinary, || true);
         assert!(outcome.result.is_ok(), "{device}: {outcome:?}");
     }
 }

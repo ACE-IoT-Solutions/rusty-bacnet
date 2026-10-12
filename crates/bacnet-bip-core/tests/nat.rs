@@ -16,10 +16,10 @@ use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{
-    Arrival, BdtError, Context, ForwardedRefusal, InvalidEntry, LocalSubnet, Tables, Target, Via,
+    BdtError, Context, ForwardRefusal, InvalidEntry, LocalSubnet, Reservation, Tables, Target, Via,
     TWO_HOP_MASK,
 };
-use bacnet_bip_core::Instant;
+use bacnet_bip_core::{Arrival, Instant};
 use support::{addr, destinations};
 
 const NAT_PORT: u16 = 47809;
@@ -94,9 +94,14 @@ fn with_its_public_address_as_its_own_each_bbmd_sends_only_to_the_other_site() {
 #[test]
 fn a_peer_sites_forward_arrives_from_its_nat_and_is_rebroadcast_behind_this_one() {
     let mut bbmd1 = site(NAT_A);
-    let registered = bbmd1
-        .fdt
-        .register(ROAMING, 300, NOW, &support::OPEN, false, || true);
+    let registered = bbmd1.fdt.register(
+        ROAMING,
+        300,
+        NOW,
+        &support::OPEN,
+        Reservation::Ordinary,
+        || true,
+    );
     assert!(registered.result.is_ok());
     let mut out = [Target::UNUSED; Site::MAX_TARGETS];
     // Through port forwarding the sender is NAT B's public address, a peer.
@@ -135,16 +140,21 @@ fn a_peer_sites_forward_arrives_from_its_nat_and_is_rebroadcast_behind_this_one(
             BEHIND_B,
             &mut out
         ),
-        Err(ForwardedRefusal::NotFromPeer)
+        Err(ForwardRefusal::NotFromPeer)
     );
 }
 
 #[test]
 fn a_foreign_device_on_the_public_side_reaches_both_sites() {
     let mut bbmd1 = site(NAT_A);
-    let registered = bbmd1
-        .fdt
-        .register(ROAMING, 300, NOW, &support::OPEN, false, || true);
+    let registered = bbmd1.fdt.register(
+        ROAMING,
+        300,
+        NOW,
+        &support::OPEN,
+        Reservation::Ordinary,
+        || true,
+    );
     assert!(registered.result.is_ok());
     let mut out = [Target::UNUSED; Site::MAX_TARGETS];
     let sent = bbmd1

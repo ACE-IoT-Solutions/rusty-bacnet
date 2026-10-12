@@ -8,8 +8,8 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::{Duration, Instant};
 
-use bacnet_bip_codec::BvlcResultCode;
-use bacnet_bip_core::bbmd::{Arrival, ForwardedRefusal};
+use bacnet_bip_core::bbmd::ForwardRefusal;
+use bacnet_bip_core::Arrival;
 use proptest::prelude::*;
 
 use super::legacy;
@@ -177,12 +177,12 @@ fn legacy_forwarded(
     origin: ([u8; 4], u16),
     broadcast: bool,
     now: Instant,
-) -> Result<(bool, Vec<Pair>), ForwardedRefusal> {
+) -> Result<(bool, Vec<Pair>), ForwardRefusal> {
     if sender == old.local_address() {
-        return Err(ForwardedRefusal::OwnEcho);
+        return Err(ForwardRefusal::OwnEcho);
     }
     if !old.is_bdt_peer(sender.0, sender.1) {
-        return Err(ForwardedRefusal::NotFromPeer);
+        return Err(ForwardRefusal::NotFromPeer);
     }
     // The J.4.5 fix: this BBMD's own row, not the sender's, decides.
     let local = own_row_is_two_hop(old) && !broadcast;
@@ -207,9 +207,9 @@ fn legacy_distribute(
     old: &mut legacy::BbmdState,
     sender: ([u8; 4], u16),
     now: Instant,
-) -> Result<Vec<([u8; 4], u16)>, BvlcResultCode> {
+) -> Result<Vec<([u8; 4], u16)>, ForwardRefusal> {
     if !old.is_registered_foreign_device_at(sender.0, sender.1, now) {
-        return Err(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK);
+        return Err(ForwardRefusal::NotRegistered);
     }
     Ok(old.forwarding_targets_at(sender.0, sender.1, now))
 }
