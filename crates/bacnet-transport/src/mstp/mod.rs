@@ -269,6 +269,10 @@ pub use port::{LoopbackSerial, MstpTransport, NoSerial};
 mod test_support;
 
 #[cfg(test)]
+mod clause9_token_tests;
+#[cfg(test)]
+mod clause9_wait_tests;
+#[cfg(test)]
 mod diagnostics_tests;
 #[cfg(test)]
 mod echo_tests;
