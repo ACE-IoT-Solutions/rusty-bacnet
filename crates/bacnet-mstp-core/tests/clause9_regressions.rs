@@ -5,7 +5,7 @@
 use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,
-    MstpCoreConfig, NetworkPriority, ReplyDecision, TransmitId,
+    MstpCoreConfig, NetworkPriority, ReplyDecision, TransmitFailure, TransmitId,
 };
 
 type Queues = HeaplessQueues<16, 16>;
@@ -572,4 +572,46 @@ fn host_chunk_activity_prevents_retry_during_a_fragmented_successor_frame() {
     core.on_deadline(ms(559)).unwrap();
     assert_eq!(core.poll_action(), Action::Idle);
     assert_eq!(core.next_deadline(), Some(ms(1050)));
+}
+
+/// A frame cut short after its start still drove the line, and each octet it
+/// sent restarted the silence (Clause 9.5.5.1). So the token-generation slot
+/// (Clause 9.5.6.7) counts from the abort, not from the activity before the
+/// frame. Found by the core fuzz target (#1640).
+#[test]
+fn an_aborted_frame_restarts_the_silence_before_token_generation() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(2, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    validated(&mut core, FrameType::PollForMaster, 2, 1, &[], ms(1));
+    core.on_deadline(ms(6)).unwrap();
+    let (reply, header) = take_transmit(&mut core, ms(6));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::ReplyToPollForMaster, 1)
+    );
+    core.on_transmit_aborted(reply, TransmitFailure::Aborted, ms(100))
+        .unwrap();
+    assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
+
+    // T_no_token after the abort the station waits for its own slot, two
+    // slots in, rather than for a window counted from before the frame.
+    core.on_deadline(ms(600)).unwrap();
+    assert_eq!(core.state(), MasterState::NoToken);
+    assert_eq!(core.poll_action(), Action::Idle);
+    assert_eq!(core.next_deadline(), Some(ms(620)));
+    core.on_deadline(ms(620)).unwrap();
+    let (_poll, header) = take_transmit(&mut core, ms(620));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::PollForMaster, 3)
+    );
+    assert_eq!(core.counters().missed_generation_slots, 0);
 }
