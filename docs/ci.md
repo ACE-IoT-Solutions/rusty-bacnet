@@ -790,7 +790,10 @@ manual runs are never cancelled.
 `RUST_FUZZ_NIGHTLY` (cargo-fuzz needs nightly-only flags), with cargo-fuzz at
 `CARGO_FUZZ_VERSION` from its release archive, checked against its SHA-256
 (see [Tool pins](#tool-pins)). A prebuilt binary takes about a second to
-fetch, so there is nothing to cache.
+fetch, so there is nothing to cache. The script passes cargo-fuzz `--target`
+with the nightly's host triple: cargo-fuzz otherwise builds for the triple it
+was built for itself, which for that archive is musl, where AddressSanitizer
+can't work.
 
 - **Fuzz: check and build** lists the targets from the fuzz crates'
   `[[bin]]` entries, checks each fuzz crate's lockfile
@@ -867,8 +870,9 @@ failed. To reproduce it:
 gh run download <run id> -R jscott3201/rusty-bacnet -n fuzz-mstp_stream -D /tmp/fuzz-mstp_stream
 bash scripts/ci/fuzz.sh build mstp_stream
 cd crates/bacnet-mstp-codec
-cargo +nightly-2026-08-15 fuzz fmt mstp_stream /tmp/fuzz-mstp_stream/minimized-from-<hash>  # the input as a Rust value
-cargo +nightly-2026-08-15 fuzz run mstp_stream /tmp/fuzz-mstp_stream/minimized-from-<hash>  # replay it
+host=$(rustc +nightly-2026-08-15 -vV | sed -n 's/^host: //p')    # as fuzz.sh does
+cargo +nightly-2026-08-15 fuzz fmt --target "$host" mstp_stream /tmp/fuzz-mstp_stream/minimized-from-<hash>  # the input as a Rust value
+cargo +nightly-2026-08-15 fuzz run --target "$host" mstp_stream /tmp/fuzz-mstp_stream/minimized-from-<hash>  # replay it
 ```
 
 `fuzz fmt` prints a structure-aware target's input (frames, noise, pushes) as

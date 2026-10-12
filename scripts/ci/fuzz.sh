@@ -70,11 +70,30 @@ crate_of() {
   fail "no fuzz target $1; fuzz.sh list names them"
 }
 
-# cargo with the pinned nightly, which must be installed.
-nightly_cargo() {
+# Fail unless the pinned nightly is installed.
+need_nightly() {
   rustup toolchain list | grep "^$nightly-" >/dev/null \
     || fail "$nightly is not installed: rustup toolchain install $nightly --profile minimal"
+}
+
+# cargo with the pinned nightly.
+nightly_cargo() {
+  need_nightly
   cargo "+$nightly" "$@"
+}
+
+# cargo_fuzz SUBCOMMAND ARG...: cargo-fuzz on the pinned nightly, for the
+# nightly's host triple. cargo-fuzz defaults --target to the triple it was
+# built for itself, and the release archive CI installs is a musl build:
+# AddressSanitizer can't take a statically linked libc, and the nightly has
+# no musl standard library.
+cargo_fuzz() {
+  local subcommand=$1 host
+  shift
+  need_nightly
+  host=$(rustc "+$nightly" -vV | sed -n 's/^host: //p')
+  [ -n "$host" ] || fail "rustc +$nightly -vV names no host triple"
+  cargo "+$nightly" fuzz "$subcommand" --target "$host" "$@"
 }
 
 # locked CRATE: fail unless CRATE's fuzz lockfile is current. Any cargo can
@@ -134,12 +153,12 @@ case $command in
     if [ "$#" -eq 1 ]; then
       crate=$(crate_of "$1")
       locked "$crate"
-      (cd "$root/crates/$crate" && nightly_cargo fuzz build "$1")
+      (cd "$root/crates/$crate" && cargo_fuzz build "$1")
     else
       for crate in "${crates[@]}"; do
         echo "==> $crate"
         locked "$crate"
-        (cd "$root/crates/$crate" && nightly_cargo fuzz build)
+        (cd "$root/crates/$crate" && cargo_fuzz build)
       done
     fi ;;
   run)
@@ -153,7 +172,7 @@ case $command in
     # A positional corpus directory replaces cargo-fuzz's default one; a
     # later -artifact_prefix overrides the one cargo-fuzz passes. A single
     # input that runs 10 seconds is a hang.
-    in_crate "$crate" "$target" nightly_cargo fuzz run "$target" ${corpus:+"$corpus"} -- \
+    in_crate "$crate" "$target" cargo_fuzz run "$target" ${corpus:+"$corpus"} -- \
       -max_total_time="$seconds" -timeout=10 -print_final_stats=1 \
       ${artifacts:+"-artifact_prefix=$artifacts/"} "$@" ;;
   tmin)
@@ -174,7 +193,7 @@ case $command in
     for input in "${inputs[@]}"; do
       input=$(cd "$(dirname "$input")" && pwd)/$(basename "$input")
       echo "==> minimizing $input"
-      in_crate "$crate" "$target" nightly_cargo fuzz tmin "$target" "$input" -- -timeout=10 \
+      in_crate "$crate" "$target" cargo_fuzz tmin "$target" "$input" -- -timeout=10 \
         ${artifacts:+"-artifact_prefix=$artifacts/"} || status=1
     done
     exit "$status" ;;
@@ -187,7 +206,7 @@ case $command in
     locked "$crate"
     corpus=$(work corpus "$target")
     before=$(find "${corpus:-$root/crates/$crate/fuzz/corpus/$target}" -type f | wc -l)
-    in_crate "$crate" "$target" nightly_cargo fuzz cmin "$target" ${corpus:+"$corpus"} -- -timeout=10
+    in_crate "$crate" "$target" cargo_fuzz cmin "$target" ${corpus:+"$corpus"} -- -timeout=10
     after=$(find "${corpus:-$root/crates/$crate/fuzz/corpus/$target}" -type f | wc -l)
     echo "corpus of $target: $((before)) inputs before, $((after)) after" ;;
   lock)
