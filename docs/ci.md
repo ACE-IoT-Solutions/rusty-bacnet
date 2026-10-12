@@ -391,10 +391,10 @@ targets, so a crate that needs one builds only with a backend such as
   COBS and CRC-32K of extended frames, which its stream decoder and
   encoder can reach though the scenario sends none. Only `thumbv6m-none-eabi`,
   which has no divide instruction, also links compiler-builtins' 32-bit
-  multiply and divide routines. The apdu image's 37.5 KB on
+  multiply and divide routines. The apdu image's 37.4 KB on
   `thumbv7m-none-eabi` is about 13 KB of `bacnet-encoding`, 8.6 KB of the
   scenario with the library code it inlines, 3.7 KB of `core` (formatting
-  among it), 2.9 KB of `bacnet-services`, 2.4 KB of `bytes` and 2.1 KB of
+  among it), 2.8 KB of `bacnet-services`, 2.4 KB of `bytes` and 2.1 KB of
   compiler-builtins; about 4 KB of its 5.2 KB of `.rodata` is text, nearly
   all of it error messages and their labels.
 - **RAM.** The `mstp` and `bip` scenarios' buffers are statics, so `.bss`

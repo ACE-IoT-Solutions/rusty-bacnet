@@ -253,7 +253,8 @@ impl AtomicWriteFileRequest {
                     content,
                     inner,
                     tags::app_tag::OCTET_STRING,
-                    &format!("AtomicWriteFile record data[{i}]"),
+                    // Formatted only if the record fails to decode (#1645).
+                    format_args!("AtomicWriteFile record data[{i}]"),
                 )?;
                 file_record_data.push(record.to_vec());
                 inner = new_inner;
@@ -406,7 +407,8 @@ impl AtomicReadFileAck {
                     content,
                     inner,
                     tags::app_tag::OCTET_STRING,
-                    &format!("AtomicReadFileAck record data[{i}]"),
+                    // Formatted only if the record fails to decode (#1645).
+                    format_args!("AtomicReadFileAck record data[{i}]"),
                 )?;
                 file_record_data.push(slice.to_vec());
                 inner = new_inner;
