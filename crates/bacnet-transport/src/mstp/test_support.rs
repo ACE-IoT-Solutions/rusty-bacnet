@@ -93,10 +93,17 @@ impl SerialPort for WireSerial {
                 return Ok(count);
             }
         }
-        let chunk = self.rx.lock().await.recv().await;
-        let Some(chunk) = chunk else {
-            return Err(Error::Transport(std::io::Error::other("line closed")));
+        let mut rx = self.rx.lock().await;
+        // An empty chunk carries nothing; a read that returned nothing would
+        // be the end of the line.
+        let chunk = loop {
+            match rx.recv().await {
+                Some(chunk) if chunk.is_empty() => {}
+                Some(chunk) => break chunk,
+                None => return Err(Error::Transport(std::io::Error::other("line closed"))),
+            }
         };
+        drop(rx);
         let count = chunk.len().min(buf.len());
         buf[..count].copy_from_slice(&chunk[..count]);
         self.leftover

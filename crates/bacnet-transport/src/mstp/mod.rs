@@ -134,8 +134,17 @@ pub trait SerialPort: Send + Sync + 'static {
             )))
         }
     }
-    /// Read available bytes into `buf`. Returns the number of bytes read.
-    /// Should block until at least 1 byte is available or timeout.
+    /// Read the octets available into `buf`, which is never empty, and
+    /// return how many were read.
+    ///
+    /// Wait until at least one octet has arrived. `Ok(0)` means the end of
+    /// file: no more data will come, as when a pseudo-terminal's other end
+    /// has closed, or on some platforms a USB adapter has been unplugged. It
+    /// must not stand for "nothing yet", on a timeout or a spurious wake
+    /// say. The transport ends its task after three `Ok(0)` reads in a row,
+    /// as it does at the first read error: it counts the end in
+    /// [`MstpDiagnosticsSnapshot::serial_read_errors`] and logs it, and the
+    /// application finds the NPDU channel closed and its sends refused.
     fn read(
         &self,
         buf: &mut [u8],

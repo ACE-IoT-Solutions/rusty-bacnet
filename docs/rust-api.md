@@ -1612,6 +1612,8 @@ open for the residual RT work and full documentation.
 Most USB RS-485 adapters (FTDI, CH340, CP2102) handle direction switching in hardware — no configuration needed.
 
 ```rust
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::mstp::{MstpConfig, MstpTransport};
 use bacnet_transport::mstp_serial::{TokioSerialPort, SerialConfig};
 
 let serial = TokioSerialPort::open(&SerialConfig {
@@ -1620,9 +1622,16 @@ let serial = TokioSerialPort::open(&SerialConfig {
     baud_rate: 76800,
 })?;
 
-// Use with BACnetClient or BACnetServer via generic_builder
+// Use with BACnetClient or BACnetServer via generic_builder. The MS/TP
+// timers follow MstpConfig's baud rate, so give it the port's.
+let config = MstpConfig {
+    this_station: 1,
+    max_master: 127,
+    baud_rate: 76800,
+    ..MstpConfig::default()
+};
 let client = BACnetClient::generic_builder()
-    .transport(MstpTransport::new(serial, 1, 127))  // station 1, max_master 127
+    .transport(MstpTransport::new(serial, config))
     .build()
     .await?;
 ```
@@ -1714,7 +1723,8 @@ octet. The transport must know, or it would take its own Token, heard back,
 for its successor using the token. Declare an echoing port with
 `with_echo(Echo::full())` on `TokioSerialPort` (or `LoopbackSerial`);
 `GpioDirectionPort` reports its inner port's setting, and the default is
-`Echo::None`.
+`Echo::None`. The Python bindings declare it with `mstp_echo=True` (see
+[MS/TP serial ports](python-api.md#mstp-serial-ports)).
 
 With `Echo::Full { grace }` the transport hunts for the frame it sent in the
 octets it reads after it. Octets that could begin the echo are held back and
@@ -1773,8 +1783,13 @@ falsely claiming completion; the transport then times each frame by its
 octets at the baud rate. Custom backends used for software direction control
 must implement this operation. `read()` must be cancel safe: the transport
 drops a pending read to service a deadline, and polls one once, without
-waiting, to collect octets already there before it starts a frame. The
-loopback backend completes writes in memory and drains immediately.
+waiting, to collect octets already there before it starts a frame. It waits
+for at least one octet: `Ok(0)` means end of file, no more data will come (a
+closed pseudo-terminal, or on some platforms an unplugged USB adapter), and
+never "nothing yet". After three `Ok(0)` reads in a row the transport ends as
+it does at a read error: counted in `serial_read_errors`, logged, its NPDU
+channel closed and later sends refused. The loopback backend completes writes
+in memory and drains immediately, and its reads always return octets.
 
 ### Loopback Transport
 
@@ -6940,16 +6955,22 @@ hub.stop().await;
 ### MS/TP with USB Adapter
 
 ```rust
-use bacnet_transport::mstp::MstpTransport;
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::mstp::{MstpConfig, MstpTransport};
 use bacnet_transport::mstp_serial::{TokioSerialPort, SerialConfig};
 
 let serial = TokioSerialPort::open(&SerialConfig {
     port_name: "/dev/ttyUSB0".into(),
     baud_rate: 76800,
 })?;
+let config = MstpConfig {
+    this_station: 1,
+    baud_rate: 76800, // the port's, which the MS/TP timers follow
+    ..MstpConfig::default()
+};
 
 let client = BACnetClient::generic_builder()
-    .transport(MstpTransport::new(serial, 1, 127))
+    .transport(MstpTransport::new(serial, config))
     .build()
     .await?;
 ```
@@ -6957,7 +6978,8 @@ let client = BACnetClient::generic_builder()
 ### MS/TP with Raspberry Pi RS-485 Hat (GPIO)
 
 ```rust
-use bacnet_transport::mstp::MstpTransport;
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::mstp::{MstpConfig, MstpTransport};
 use bacnet_transport::mstp_serial::{GpioDirectionPort, TokioSerialPort, SerialConfig};
 
 let serial = TokioSerialPort::open(&SerialConfig {
@@ -6967,9 +6989,14 @@ let serial = TokioSerialPort::open(&SerialConfig {
 
 // Seeed Studio RS-485 Shield: GPIO18 for DE/RE, active-high
 let port = GpioDirectionPort::new(serial, "/dev/gpiochip0", 18, true)?;
+let config = MstpConfig {
+    this_station: 1,
+    baud_rate: 76800, // the port's, which the MS/TP timers follow
+    ..MstpConfig::default()
+};
 
 let client = BACnetClient::generic_builder()
-    .transport(MstpTransport::new(port, 1, 127))
+    .transport(MstpTransport::new(port, config))
     .build()
     .await?;
 ```
