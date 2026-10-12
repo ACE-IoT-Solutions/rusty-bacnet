@@ -9,6 +9,7 @@ use bacnet_mstp_core::{
 };
 
 type Queues = HeaplessQueues<16, 16>;
+type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn ms(value: u64) -> Instant {
     Instant::from_micros(value * 1_000)
@@ -72,7 +73,15 @@ fn discover_successor_three(core: &mut MasterCore<'_, Queues>) {
 #[test]
 fn pass_token_retries_once_then_polls_after_failed_successor() {
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     discover_successor_three(&mut core);
 
     let (token, header) = take_transmit(&mut core, ms(538));
@@ -104,7 +113,15 @@ fn pass_token_retries_once_then_polls_after_failed_successor() {
 #[test]
 fn regeneration_forgets_a_stale_successor_and_restarts_at_ts_plus_one() {
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     discover_successor_three(&mut core);
     let (token, _) = take_transmit(&mut core, ms(538));
     finish(&mut core, token, ms(539));
@@ -134,7 +151,15 @@ fn regeneration_forgets_a_stale_successor_and_restarts_at_ts_plus_one() {
 #[test]
 fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     validated(
         &mut core,
         FrameType::BACnetDataExpectingReply,
@@ -166,7 +191,15 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     assert_eq!(core.counters().late_replies, 0);
 
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     validated(
         &mut core,
         FrameType::BACnetDataExpectingReply,
@@ -191,7 +224,15 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     assert_eq!(core.counters().expired_requests, 1);
 
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     validated(
         &mut core,
         FrameType::BACnetDataExpectingReply,
@@ -220,7 +261,15 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
 #[test]
 fn request_ownership_expires_without_a_late_postponed_transmission() {
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     validated(
         &mut core,
         FrameType::BACnetDataExpectingReply,
@@ -255,9 +304,11 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
     assert_eq!(core.counters().expired_requests, 1);
 
     let mut rx = [0; 1024];
+    let mut actions = Actions::new();
     let mut cfg = config(1, 3);
     cfg.t_reply_timeout = Duration::from_millis(300);
-    let mut core = MasterCore::new(cfg, Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut core =
+        MasterCore::new(cfg, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     validated(
         &mut core,
         FrameType::BACnetDataExpectingReply,
@@ -278,7 +329,15 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
 #[test]
 fn deferred_application_reply_is_not_dispatched_after_its_deadline() {
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     validated(
         &mut core,
         FrameType::BACnetDataExpectingReply,
@@ -311,7 +370,9 @@ fn configured_ratios_preserve_max_info_frames_and_weight_broadcasts() {
     cfg.multiple_frame_ratio = 100;
     cfg.broadcast_unicast_ratio = 2;
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(cfg, Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core =
+        MasterCore::new(cfg, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     for destination in [0xff, 0xff, 2, 2] {
         core.enqueue_npdu(destination, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
             .unwrap();
@@ -334,7 +395,15 @@ fn configured_ratios_preserve_max_info_frames_and_weight_broadcasts() {
 #[test]
 fn malformed_poll_response_advances_poll_and_sole_master_resumes_queued_work() {
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(0, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(0, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_deadline(ms(500)).unwrap();
     let (poll, header) = take_transmit(&mut core, ms(500));
     assert_eq!(header.destination, 1);
@@ -352,7 +421,15 @@ fn malformed_poll_response_advances_poll_and_sole_master_resumes_queued_work() {
     );
 
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(0, 1), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(0, 1),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_deadline(ms(500)).unwrap();
     let (search, _) = take_transmit(&mut core, ms(500));
     finish(&mut core, search, ms(501));
@@ -388,7 +465,15 @@ fn malformed_poll_response_advances_poll_and_sole_master_resumes_queued_work() {
 #[test]
 fn malformed_header_resync_bytes_do_not_create_a_second_invalid_frame() {
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(0, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(0, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_deadline(ms(500)).unwrap();
     let (poll, _) = take_transmit(&mut core, ms(500));
     finish(&mut core, poll, ms(501));
@@ -418,9 +503,11 @@ fn malformed_header_resync_bytes_do_not_create_a_second_invalid_frame() {
 #[test]
 fn reply_timeout_ends_token_use_and_pass_token_event_count_is_strict() {
     let mut rx = [0; 1024];
+    let mut actions = Actions::new();
     let mut cfg = config(1, 3);
     cfg.max_info_frames = 3;
-    let mut core = MasterCore::new(cfg, Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut core =
+        MasterCore::new(cfg, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     discover_successor_three(&mut core);
     let (token, _) = take_transmit(&mut core, ms(538));
     finish(&mut core, token, ms(539));
@@ -435,7 +522,9 @@ fn reply_timeout_ends_token_use_and_pass_token_event_count_is_strict() {
     // Rebuild the known-successor path and prove a WaitForReply timeout passes
     // the token instead of consuming another queued information frame.
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(cfg, Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core =
+        MasterCore::new(cfg, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     discover_successor_three(&mut core);
     let (token, _) = take_transmit(&mut core, ms(538));
     finish(&mut core, token, ms(539));
@@ -462,7 +551,15 @@ fn reply_timeout_ends_token_use_and_pass_token_event_count_is_strict() {
 #[test]
 fn host_chunk_activity_prevents_retry_during_a_fragmented_successor_frame() {
     let mut rx = [0; 1024];
-    let mut core = MasterCore::new(config(1, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     discover_successor_three(&mut core);
     let (token, header) = take_transmit(&mut core, ms(538));
     assert_eq!(header.frame_type, FrameType::Token);

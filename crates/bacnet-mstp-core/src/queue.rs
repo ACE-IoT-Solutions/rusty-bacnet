@@ -209,6 +209,66 @@ pub trait QueueStorage {
     }
 }
 
+/// Queues kept elsewhere, such as in a static, which the core borrows rather
+/// than holds.
+impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
+    fn set_starvation_limit(&mut self, limit: u8) {
+        (**self).set_starvation_limit(limit);
+    }
+
+    fn enqueue_npdu(
+        &mut self,
+        destination: u8,
+        payload: &[u8],
+        priority: NetworkPriority,
+        now: u64,
+        expires_at: Option<u64>,
+    ) -> Result<(), QueueRejectReason> {
+        (**self).enqueue_npdu(destination, payload, priority, now, expires_at)
+    }
+
+    fn expire(&mut self, now: u64) -> usize {
+        (**self).expire(now)
+    }
+
+    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+        (**self).peek(now)
+    }
+
+    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+        (**self).peek_kind(kind, now)
+    }
+
+    fn dequeue_into(
+        &mut self,
+        now: u64,
+        scratch: &mut [u8],
+    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        (**self).dequeue_into(now, scratch)
+    }
+
+    fn dequeue_kind_into(
+        &mut self,
+        kind: QueueKind,
+        now: u64,
+        scratch: &mut [u8],
+    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        (**self).dequeue_kind_into(kind, now, scratch)
+    }
+
+    fn depth(&self, kind: QueueKind) -> usize {
+        (**self).depth(kind)
+    }
+
+    fn stats(&self, kind: QueueKind) -> QueueCounters {
+        (**self).stats(kind)
+    }
+
+    fn total_depth(&self) -> usize {
+        (**self).total_depth()
+    }
+}
+
 // The item type and selection policy below are shared by the two queue
 // backends, so they build only when one of them does.
 
@@ -271,14 +331,23 @@ fn better(candidate: QueueItemInfo, current: Option<QueueItemInfo>, starvation_l
     }
 }
 
+/// The starvation limit of [`HeaplessQueues::new`].
+#[cfg(feature = "heapless")]
+const DEFAULT_STARVATION_LIMIT: u8 = 16;
+
 #[cfg(feature = "heapless")]
 #[derive(Debug)]
 /// Heapless, independently bounded unicast and broadcast queues.
+///
+/// [`Self::new`] is a `const fn` whose result is all zero bits, so the
+/// queues can live in a zero-initialized static (`.bss`) and be lent to the
+/// core as `&mut` (see the crate docs).
 pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: heapless::Vec<Item<N>, U>,
     broadcast: heapless::Vec<Item<N>, B>,
     sequence: u64,
-    starvation_limit: u8,
+    /// `None` for [`DEFAULT_STARVATION_LIMIT`], so that `new` is all zeros.
+    starvation_limit: Option<u8>,
     unicast_counters: QueueCounters,
     broadcast_counters: QueueCounters,
 }
@@ -287,11 +356,15 @@ pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_S
 impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
     /// Construct queues with the default starvation limit of 16 time units.
     pub const fn new() -> Self {
-        Self::with_starvation_limit(16)
+        Self::with_limit(None)
     }
 
     /// Construct queues with an explicit starvation limit.
     pub const fn with_starvation_limit(starvation_limit: u8) -> Self {
+        Self::with_limit(Some(starvation_limit))
+    }
+
+    const fn with_limit(starvation_limit: Option<u8>) -> Self {
         Self {
             unicast: heapless::Vec::new(),
             broadcast: heapless::Vec::new(),
@@ -302,12 +375,16 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
         }
     }
 
+    fn starvation_limit(&self) -> u8 {
+        self.starvation_limit.unwrap_or(DEFAULT_STARVATION_LIMIT)
+    }
+
     fn select(&self, now: u64) -> Option<(QueueKind, usize, QueueItemInfo)> {
         let mut selected: Option<(QueueKind, usize, QueueItemInfo)> = None;
         for (index, item) in self.unicast.iter().copied().enumerate() {
             let info = item.info(QueueKind::Unicast);
             if !expired(info.expires_at, now)
-                && better(info, selected.map(|v| v.2), self.starvation_limit)
+                && better(info, selected.map(|v| v.2), self.starvation_limit())
             {
                 selected = Some((QueueKind::Unicast, index, info));
             }
@@ -315,7 +392,7 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
         for (index, item) in self.broadcast.iter().copied().enumerate() {
             let info = item.info(QueueKind::Broadcast);
             if !expired(info.expires_at, now)
-                && better(info, selected.map(|v| v.2), self.starvation_limit)
+                && better(info, selected.map(|v| v.2), self.starvation_limit())
             {
                 selected = Some((QueueKind::Broadcast, index, info));
             }
@@ -330,7 +407,7 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
                 for (index, item) in self.unicast.iter().copied().enumerate() {
                     let info = item.info(kind);
                     if !expired(info.expires_at, now)
-                        && better(info, selected.map(|v| v.1), self.starvation_limit)
+                        && better(info, selected.map(|v| v.1), self.starvation_limit())
                     {
                         selected = Some((index, info));
                     }
@@ -340,7 +417,7 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
                 for (index, item) in self.broadcast.iter().copied().enumerate() {
                     let info = item.info(kind);
                     if !expired(info.expires_at, now)
-                        && better(info, selected.map(|v| v.1), self.starvation_limit)
+                        && better(info, selected.map(|v| v.1), self.starvation_limit())
                     {
                         selected = Some((index, info));
                     }
@@ -387,7 +464,7 @@ impl<const U: usize, const B: usize, const N: usize> Default for HeaplessQueues<
 #[cfg(feature = "heapless")]
 impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQueues<U, B, N> {
     fn set_starvation_limit(&mut self, limit: u8) {
-        self.starvation_limit = limit;
+        self.starvation_limit = Some(limit);
     }
 
     fn enqueue_npdu(

@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 use bacnet_mstp_codec::{StreamDecoder, MAX_STANDARD_FRAME_LENGTH};
 use bacnet_mstp_core::{
-    AllocQueues, Duration, Instant, MasterCore, MasterState, NetworkPriority, QueueRejectReason,
-    RequestId, TransmitId,
+    ActionBuffers, AllocQueues, Duration, Instant, MasterCore, MasterState, NetworkPriority,
+    QueueRejectReason, RequestId, TransmitId,
 };
 
 use crate::event::{Class, Key, Queue};
@@ -592,6 +592,12 @@ impl Sim {
 /// scenario powers nodes on a bounded number of times.
 fn leak_storage(length: usize) -> &'static mut [u8] {
     Box::leak(vec![0u8; length].into_boxed_slice())
+}
+
+/// The action buffers a powered-on core borrows for its whole life, kept
+/// like [`leak_storage`]'s, with the default delivery slots.
+fn leak_action_buffers() -> &'static mut ActionBuffers {
+    Box::leak(Box::default())
 }
 
 /// Ties at one instant go to the lower station; the noise source and the line

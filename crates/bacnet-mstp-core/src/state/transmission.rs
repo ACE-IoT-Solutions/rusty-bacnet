@@ -12,9 +12,20 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// DMA buffer and feed the core every octet and receive error in it; an
     /// adapter that cannot tell when they arrived may stamp them with the
     /// drain time, which is safe because a later stamp can only defer the
-    /// start. After any error for a transmit, or once it is aborted, send
-    /// nothing more for its id.
+    /// start. After an error for a transmit, or once it is aborted, send
+    /// nothing more for its id; the one exception is
+    /// [`CoreError::TransmitNotPolled`], below.
     ///
+    /// A host assembler that was part way through a frame drops it now: the
+    /// receiver is off while the driver is on, so it can never complete, and
+    /// the core drops its own decoder's partial frame here too.
+    ///
+    /// - A start for a transmit whose [`Action::Transmit`] has not been
+    ///   polled is refused with [`CoreError::TransmitNotPolled`] and counted
+    ///   in [`MstpCounters::adapter_errors`]. It is an adapter bug: an id
+    ///   learned elsewhere, such as from [`Self::snapshot`], is no frame to
+    ///   send. Nothing changes and nothing is queued; the id stays live, and
+    ///   the fix is to poll the frame, then start it.
     /// - If the line was active within T_turnaround of `now` (activity that
     ///   reached the core after the frame was handed over), the start is
     ///   refused with [`CoreError::TransmitDeferred`] and counted in
@@ -27,7 +38,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     ///   the asker may have stopped waiting is refused with
     ///   [`CoreError::RequestExpired`] and counted as an expired request.
     ///
-    /// Each refusal queues [`Direction::Receive`].
+    /// A deferred or expired start queues
+    /// [`Direction::Receive`](crate::Direction::Receive); the other
+    /// refusals queue nothing.
     pub fn on_transmit_started(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         let tx = self
@@ -37,6 +50,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         if tx.started {
             self.counters.record_adapter_error();
             return Err(CoreError::TransmitAlreadyStarted);
+        }
+        // The control actions stay within a switch to receive and one
+        // transmit only because a transmit is polled before it starts.
+        if self.actions.transmit_queued(id) {
+            self.counters.record_adapter_error();
+            return Err(CoreError::TransmitNotPolled);
         }
         // An unconfirmed transmit is still the waiting frame.
         let pending = self.pending_send.ok_or(CoreError::StaleTransmit)?;
@@ -51,7 +70,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         if now < pending.earliest {
             // Activity since the hand-over: the line has not been quiet for
             // T_turnaround, so the frame waits again.
-            self.withdraw_transmit(id)?;
+            self.withdraw_transmit(id);
             self.counters.record_deferred_start();
             // Past its limit: drop it now, rather than leave a deadline that
             // is already due.
@@ -89,7 +108,14 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     ///
     /// Report it before feeding the core any octet or frame that arrived
     /// after the transmission ended, so they are judged in the state the
-    /// transmission leads to.
+    /// transmission leads to, and after polling every action queued before
+    /// it.
+    ///
+    /// The station's own echo must reach the core, or be dropped, before
+    /// this call, on either input path: octets for [`Self::on_octet`], and
+    /// a frame a host assembler built from the echo. Fed afterwards, the
+    /// echo is taken for another station's: its own Token heard back in
+    /// PASS_TOKEN would read as the successor using the token (SawTokenUser).
     ///
     /// The start must have been confirmed first. Completion without it is
     /// refused with [`CoreError::TransmitNotStarted`] and counted in
@@ -105,9 +131,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             self.counters.record_adapter_error();
             return Err(CoreError::TransmitNotStarted);
         }
-        self.actions
-            .enqueue_direction(Direction::Receive)
-            .map_err(|_| CoreError::ActionCapacity)?;
+        self.actions.queue_receive();
         self.active_transmit = None;
         self.last_activity = now;
         self.counters
@@ -160,7 +184,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             .active_transmit
             .filter(|tx| tx.id == id)
             .ok_or(CoreError::StaleTransmit)?;
-        self.withdraw_transmit(id)?;
+        self.withdraw_transmit(id);
         self.forget_pending();
         if tx.started {
             self.counters
@@ -177,21 +201,14 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         self.active_transmit.is_some_and(|tx| tx.started)
     }
 
-    /// Hand a frame to the adapter as a direction change and a transmit.
-    pub(super) fn dispatch_frame(
-        &mut self,
-        frame: &[u8],
-        post: PostTransmit,
-        now: Instant,
-    ) -> Result<(), CoreError> {
-        if self.active_transmit.is_some() {
-            return Err(CoreError::ActionCapacity);
-        }
+    /// Hand the encoded frame to the adapter as a direction change and a
+    /// transmit. Only the waiting frame comes here, and only while no
+    /// transmit is active.
+    pub(super) fn dispatch_frame(&mut self, post: PostTransmit, now: Instant) {
+        debug_assert!(self.active_transmit.is_none(), "a second transmit");
         let id = TransmitId::new(self.next_transmit_generation);
-        self.actions
-            .enqueue_transmission(id, frame)
-            .map_err(|error| self.action_error(error))?;
         self.next_transmit_generation = self.next_transmit_generation.wrapping_add(1);
+        self.actions.queue_transmit(id);
         self.active_transmit = Some(ActiveTransmit {
             id,
             asserted_at: now,
@@ -199,22 +216,13 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             post,
         });
         self.protocol_deadline = None;
-        Ok(())
     }
 
     /// Take a transmit back: withdraw its unpolled actions and queue the
     /// switch back to receive.
-    pub(super) fn withdraw_transmit(&mut self, id: TransmitId) -> Result<(), CoreError> {
+    pub(super) fn withdraw_transmit(&mut self, id: TransmitId) {
         self.actions.purge_transmit(id);
-        self.actions
-            .enqueue_direction(Direction::Receive)
-            .map_err(|_| CoreError::ActionCapacity)?;
+        self.actions.queue_receive();
         self.active_transmit = None;
-        Ok(())
-    }
-
-    fn action_error(&mut self, _error: ActionEnqueueError) -> CoreError {
-        self.counters.record_action_drop();
-        CoreError::ActionCapacity
     }
 }

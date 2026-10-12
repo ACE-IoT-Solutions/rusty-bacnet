@@ -2,7 +2,8 @@
 # table per target and image, `[<target>.<image>]`.
 # scripts/ci/check-firmware-link.sh builds the images with the `firmware`
 # profile and fails when a size outgrows its budget, or when more core::fmt
-# functions are linked in than `fmt_functions` allows.
+# functions are linked in than `fmt_functions` allows, or more 64-bit
+# division routines than `div64_functions` allows.
 #
 # - text, rodata, data, bss: those sections.
 # - flash: every loaded section with contents, .data's initial image
@@ -10,6 +11,10 @@
 # - ram: every loaded writable section; riscv-rt's .stack, which fills
 #   whatever RAM is left, doesn't count, but its .heap (`_heap_size`, 0
 #   here) does. The stack the code uses at run time isn't measured.
+# - fmt_functions, div64_functions: counts of functions, not octets, both
+#   0. A 64-bit division by a runtime value links compiler-builtins'
+#   routine, about 0.9 KB, which the 12% headroom would otherwise absorb;
+#   the MS/TP core divides in 32 bits (#1618).
 #
 # The totals go by section flags, not memory regions, and leave out the
 # alignment gaps between sections (at most 4 octets of flash per image today).
@@ -25,26 +30,31 @@
 # Measured 2026-10-11 with Rust 1.99.0, as text / rodata / data / bss, then
 # flash / ram:
 #
-#   thumbv7m mstp     18732 / 1004 / 0 / 14496   20760 / 14496
+#   thumbv7m mstp     16468 / 1004 / 0 /  5544   18496 /  5544
 #   thumbv7m bip       8936 /  976 / 0 /   132   10936 /   132
-#   thumbv6m mstp     19476 / 1004 / 0 / 14496   20672 / 14496
+#   thumbv6m mstp     17340 / 1004 / 0 /  5544   18536 /  5544
 #   thumbv6m bip      10468 /  980 / 0 /   132   11640 /   132
-#   riscv32imc mstp   20368 / 1292 / 0 / 14494   21682 / 14494
+#   riscv32imc mstp   17852 / 1292 / 0 /  5544   19166 /  5544
 #   riscv32imc bip    11820 / 1524 / 0 /   132   13366 /   132
 #
 # The bip rows were measured again on 2026-10-11, same toolchain, when the
 # image gained the B/IPv6 codec's scenario (#1621): about 4.6-6.0 KB more
 # flash, the RAM unchanged. The mstp rows were too, when the master core
-# began waiting for a quiet line before each send (#1618, #1625).
+# began waiting for a quiet line before each send (#1618, #1625), and again
+# when the core began borrowing its large buffers, dropped its control
+# ring and its 64-bit divisions, and the image switched to building the
+# core on the stack (#1617, #1618): 2.3-2.8 KB less text and 8,952 octets
+# less RAM.
 
 [thumbv7m-none-eabi.mstp]
-text = 20992
+text = 18448
 rodata = 1136
 data = 64
-bss = 16240
-flash = 23264
-ram = 16240
+bss = 6224
+flash = 20720
+ram = 6224
 fmt_functions = 0
+div64_functions = 0
 
 [thumbv7m-none-eabi.bip]
 text = 10016
@@ -54,15 +64,17 @@ bss = 160
 flash = 12256
 ram = 160
 fmt_functions = 0
+div64_functions = 0
 
 [thumbv6m-none-eabi.mstp]
-text = 21824
+text = 19424
 rodata = 1136
 data = 64
-bss = 16240
-flash = 23152
-ram = 16240
+bss = 6224
+flash = 20768
+ram = 6224
 fmt_functions = 0
+div64_functions = 0
 
 [thumbv6m-none-eabi.bip]
 text = 11728
@@ -72,15 +84,17 @@ bss = 160
 flash = 13040
 ram = 160
 fmt_functions = 0
+div64_functions = 0
 
 [riscv32imc-unknown-none-elf.mstp]
-text = 22816
+text = 20000
 rodata = 1456
 data = 64
-bss = 16240
-flash = 24288
-ram = 16240
+bss = 6224
+flash = 21472
+ram = 6224
 fmt_functions = 0
+div64_functions = 0
 
 [riscv32imc-unknown-none-elf.bip]
 text = 13248
@@ -90,3 +104,4 @@ bss = 160
 flash = 14976
 ram = 160
 fmt_functions = 0
+div64_functions = 0

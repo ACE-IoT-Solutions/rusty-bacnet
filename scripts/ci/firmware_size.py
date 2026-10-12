@@ -10,12 +10,13 @@
 - every section the image loads, and whether it counts toward flash, RAM
   or both;
 - .text, .rodata, .data, .bss and the flash and RAM totals against the
-  table's budget, with the count of core::fmt functions linked in;
+  table's budget, with the counts of core::fmt functions and of 64-bit
+  division routines linked in;
 - the largest objects in RAM, and .text by crate.
 
-It exits 1 when a size or the core::fmt count is over budget, when the
-budget lacks an entry, or when the image has no symbol table to look for
-core::fmt in. A size more than 20% under its budget gets a notice, not a
+It exits 1 when a size or either count is over budget, when the budget
+lacks an entry, or when the image has no symbol table to look for those
+functions in. A size more than 20% under its budget gets a notice, not a
 failure. --suggest prints a budget table for the image instead, each size
 plus 12%. Used by check-firmware-link.sh; see docs/ci.md, "Firmware link
 test".
@@ -46,6 +47,16 @@ ROWS = tuple((name, name.lstrip(".")) for name in SECTIONS) + (
     ("flash", "flash"),
     ("ram", "ram"),
     ("core::fmt", "fmt_functions"),
+    ("64-bit division", "div64_functions"),
+)
+# Counts of functions, budgeted as counts rather than sizes: (key, what each
+# listed function is called in the output, advice when over budget).
+COUNTS = (
+    ("fmt_functions", "core::fmt function",
+     "find what formats, starting from the functions listed above"),
+    ("div64_functions", "64-bit division function",
+     "find the 64-bit division by a runtime value, starting from the functions listed"
+     " above, and divide in 32 bits"),
 )
 # What --suggest and the over-budget error add to a measured size.
 HEADROOM = 0.12
@@ -66,6 +77,15 @@ STT_FUNC = 2
 TOP = 4
 # A Rust symbol in core::fmt or below, in either mangling scheme.
 FMT_MARK = "4core3fmt"
+# 64-bit division on a 32-bit target, which has no instruction for it: the
+# C-ABI routines compiler-builtins exports, signed and unsigned, quotient
+# and remainder, and its Rust implementation behind them. A 64-bit division
+# by a constant compiles to multiplications and links none of these.
+DIV64_ROUTINES = frozenset({
+    "__aeabi_uldivmod", "__aeabi_ldivmod",
+    "__udivmoddi4", "__divmoddi4", "__udivdi3", "__divdi3", "__umoddi3", "__moddi3",
+})
+DIV64_RUST = re.compile(r"specialized_div_rem.*[iu]64_div_rem")
 
 
 class InputError(Exception):
@@ -228,15 +248,16 @@ def suggested(measured):
 
 
 def measure(elf):
-    """The image's loaded sections, its measured sizes by budget key, and
-    its symbols. Fails when the image has no usable symbol table."""
+    """The image's loaded sections, its measured sizes by budget key, its
+    symbols, and the functions each count lists. Fails when the image has
+    no usable symbol table."""
     data = Path(elf).read_bytes()
     sections = read_sections(data)
     symbols = read_symbols(data, sections)
     if not symbols or not any(s[2] == STT_FUNC for s in symbols):
         raise InputError(
-            f"{elf} has no function symbols, so core::fmt can't be checked:"
-            " the image must not be stripped"
+            f"{elf} has no function symbols, so core::fmt and 64-bit division"
+            " can't be checked: the image must not be stripped"
         )
     loaded = [(s[0], s[4], counted_in(s[0], s[1], s[2])) for s in sections if s[2] & SHF_ALLOC]
     sizes = {name.lstrip("."): 0 for name in SECTIONS}
@@ -245,13 +266,23 @@ def measure(elf):
             sizes[name.lstrip(".")] = size
     sizes["flash"] = sum(size for _, size, totals in loaded if "flash" in totals)
     sizes["ram"] = sum(size for _, size, totals in loaded if "ram" in totals)
-    fmt = sorted({demangle(s[0]) for s in symbols if s[2] == STT_FUNC and FMT_MARK in s[0]})
-    sizes["fmt_functions"] = len(fmt)
-    return loaded, sizes, symbols, fmt
+    functions = [s[0] for s in symbols if s[2] == STT_FUNC]
+    listed = {
+        "fmt_functions": sorted({demangle(name) for name in functions if FMT_MARK in name}),
+        "div64_functions": sorted({demangle(name) for name in functions if is_div64(name)}),
+    }
+    for key, names in listed.items():
+        sizes[key] = len(names)
+    return loaded, sizes, symbols, listed
+
+
+def is_div64(name):
+    """Whether a function symbol is a 64-bit division routine."""
+    return name in DIV64_ROUTINES or DIV64_RUST.search(name) is not None
 
 
 def check(elf, budget_path, table):
-    loaded, sizes, symbols, fmt = measure(elf)
+    loaded, sizes, symbols, listed = measure(elf)
     budget = read_budget(budget_path).get(table)
     if budget is None:
         raise InputError(f"{budget_path} has no [{table}] table")
@@ -287,8 +318,9 @@ def check(elf, budget_path, table):
     print("  .text by crate:")
     for crate, size in sorted(by_crate.items(), key=lambda item: -item[1])[:TOP + 2]:
         print(f"  {size:>10}  {crate}")
-    for name in fmt:
-        print(f"  core::fmt function: {name}")
+    for key, label, _ in COUNTS:
+        for name in listed[key]:
+            print(f"  {label}: {name}")
 
     # The table first, then the messages under it, when both go to one log.
     sys.stdout.flush()
@@ -299,8 +331,9 @@ def check(elf, budget_path, table):
             file=sys.stderr,
         )
     for key in failed:
-        if key == "fmt_functions":
-            advice = "find what formats, starting from the functions listed above"
+        counted = [advice for counted, _, advice in COUNTS if counted == key]
+        if counted:
+            advice = counted[0]
         else:
             advice = (
                 "if the growth is intended, raise the budget"
@@ -318,7 +351,7 @@ def suggest(elf, table):
     _, sizes, _, _ = measure(elf)
     print(f"[{table}]")
     for _, key in ROWS:
-        if key == "fmt_functions":
+        if any(key == counted for counted, _, _ in COUNTS):
             value = sizes[key]
         elif sizes[key] == 0:
             value = TOKEN

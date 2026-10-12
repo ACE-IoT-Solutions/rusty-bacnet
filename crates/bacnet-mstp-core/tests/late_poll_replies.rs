@@ -6,7 +6,7 @@
 mod support;
 
 use bacnet_mstp_codec::FrameType;
-use bacnet_mstp_core::{Action, CoreError, Direction, Duration, Instant, MasterState};
+use bacnet_mstp_core::{Action, CoreError, Direction, Duration, MasterState};
 
 use support::*;
 
@@ -21,7 +21,8 @@ use support::*;
 fn a_late_answer_to_a_poll_still_finds_the_successor() {
     for handed in [false, true] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         poll_waiting(&mut core);
         let (_, header) = send_next(&mut core);
         assert!(is(header, FrameType::PollForMaster, PEER));
@@ -70,49 +71,6 @@ fn a_late_answer_to_a_poll_still_finds_the_successor() {
     }
 }
 
-/// Station 1 with successor 3 (station 2 is silent) runs through Npoll
-/// token uses until it polls station 2 for maintenance; returns once that
-/// poll has gone out.
-fn maintenance_poll_sent(core: &mut Core<'_>) {
-    poll_waiting(core);
-    send_next(core);
-    let timeout = core.next_deadline().unwrap();
-    core.on_deadline(timeout).unwrap();
-    let header = send(core, timeout);
-    assert!(is(header, FrameType::PollForMaster, 3));
-    let answered = timeout + Duration::from_millis(5);
-    validated(
-        core,
-        FrameType::ReplyToPollForMaster,
-        STATION,
-        3,
-        &[],
-        answered,
-    );
-    for _ in 0..=50 {
-        let (passed, header) = send_next(core);
-        assert!(is(header, FrameType::Token, 3));
-        // Station 3 uses the token, then passes it back.
-        let used = passed + Duration::from_millis(3);
-        validated(
-            core,
-            FrameType::BACnetDataNotExpectingReply,
-            0,
-            3,
-            &[1, 0, 7],
-            used,
-        );
-        let back = used + Duration::from_millis(2);
-        validated(core, FrameType::Token, STATION, 3, &[], back);
-        if core.state() == MasterState::PollForMaster {
-            let (_, header) = send_next(core);
-            assert!(is(header, FrameType::PollForMaster, PEER));
-            return;
-        }
-    }
-    panic!("no maintenance poll after Npoll token uses");
-}
-
 /// Station 2 never answers the maintenance poll, so station 1 passes the
 /// token on to its successor (DoneWithPFM). A late answer from station 2
 /// while that Token waits for its adapter is too late: the successor is
@@ -120,7 +78,8 @@ fn maintenance_poll_sent(core: &mut Core<'_>) {
 #[test]
 fn a_late_answer_is_dropped_while_the_token_goes_to_the_successor() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     maintenance_poll_sent(&mut core);
     let timeout = core.next_deadline().unwrap();
     core.on_deadline(timeout).unwrap();

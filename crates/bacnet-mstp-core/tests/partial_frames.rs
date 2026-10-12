@@ -23,7 +23,8 @@ const PARTIAL: [u8; 4] = [0x55, 0xFF, 0x01, 0x02];
 #[test]
 fn a_partial_frame_dies_when_a_poll_starts() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     poll_waiting(&mut core);
     let last = feed(&mut core, &PARTIAL, ms(11));
     let due = last + turnaround(&core);
@@ -59,7 +60,8 @@ fn a_partial_frame_does_not_end_the_wait_for_a_reply() {
         ..config()
     };
     let mut rx = [0; 64];
-    let mut core = Core::new(config, Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = Core::new(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     enqueue(&mut core, true, ms(1));
     validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
     let last = feed(&mut core, &PARTIAL, ms(11));
@@ -87,7 +89,8 @@ fn a_partial_frame_does_not_end_the_wait_for_a_reply() {
 fn an_overdue_abort_counts_alike_at_the_start() {
     for serviced in [true, false] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         poll_waiting(&mut core);
         let last = feed(&mut core, &PARTIAL, ms(11));
         let due = last + turnaround(&core);

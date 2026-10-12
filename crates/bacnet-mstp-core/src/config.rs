@@ -455,20 +455,26 @@ impl MstpCoreConfig {
 
 /// `bits` bit times at `baud_rate` in microseconds, rounded up, for minimum
 /// bounds. `None` for a zero baud rate or on overflow.
-const fn ceil_bit_times(baud_rate: u32, bits: u64) -> Option<Duration> {
-    let baud = baud_rate as u64;
+///
+/// The arithmetic is 32-bit: every caller asks for at most 60 bit times,
+/// whose 60,000,000 microsecond-bits fit a `u32`, so the result is exact and
+/// a 32-bit target links no 64-bit division routine for it.
+const fn ceil_bit_times(baud_rate: u32, bits: u32) -> Option<Duration> {
     match bits.checked_mul(1_000_000) {
-        Some(numerator) if baud != 0 => Some(Duration::from_micros(numerator.div_ceil(baud))),
+        Some(numerator) if baud_rate != 0 => {
+            Some(Duration::from_micros(numerator.div_ceil(baud_rate) as u64))
+        }
         _ => None,
     }
 }
 
 /// `bits` bit times at `baud_rate` in microseconds, rounded down, for maximum
-/// bounds. `None` for a zero baud rate or on overflow.
-const fn floor_bit_times(baud_rate: u32, bits: u64) -> Option<Duration> {
+/// bounds. `None` for a zero baud rate or on overflow. 32-bit, as
+/// [`ceil_bit_times`] is.
+const fn floor_bit_times(baud_rate: u32, bits: u32) -> Option<Duration> {
     match bits.checked_mul(1_000_000) {
-        Some(numerator) => match numerator.checked_div(baud_rate as u64) {
-            Some(micros) => Some(Duration::from_micros(micros)),
+        Some(numerator) => match numerator.checked_div(baud_rate) {
+            Some(micros) => Some(Duration::from_micros(micros as u64)),
             None => None,
         },
         None => None,
@@ -537,6 +543,41 @@ mod tests {
             config.validate(),
             Err(ConfigError::FrameAbortOutOfRange { .. })
         ));
+    }
+
+    /// The 32-bit bit-time arithmetic gives exactly what 64-bit division
+    /// gives, for every bit count it is used for, at every baud rate.
+    #[test]
+    fn bit_times_match_64_bit_division() {
+        for baud in [
+            1,
+            7,
+            9_600,
+            19_200,
+            38_400,
+            57_600,
+            76_800,
+            115_200,
+            1_000_003,
+            u32::MAX,
+        ] {
+            for bits in [10u32, 15, 20, 40, 60] {
+                let numerator = u64::from(bits) * 1_000_000;
+                let baud64 = u64::from(baud);
+                assert_eq!(
+                    super::ceil_bit_times(baud, bits),
+                    Some(Duration::from_micros(numerator.div_ceil(baud64))),
+                    "ceil {bits} at {baud}"
+                );
+                assert_eq!(
+                    super::floor_bit_times(baud, bits),
+                    Some(Duration::from_micros(numerator / baud64)),
+                    "floor {bits} at {baud}"
+                );
+            }
+        }
+        assert_eq!(super::ceil_bit_times(0, 10), None);
+        assert_eq!(super::floor_bit_times(0, 10), None);
     }
 
     #[test]

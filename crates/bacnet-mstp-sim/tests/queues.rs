@@ -71,7 +71,7 @@ fn an_oversized_npdu_is_refused_and_the_token_keeps_moving() {
     assert!(sim
         .deliveries(10)
         .iter()
-        .any(|delivery| delivery.npdu == largest));
+        .any(|delivery| delivery.data == largest));
     assert_eq!(sim.core(3).unwrap().counters().unicast.drops_oversize, 1);
     assert_eq!(
         token_users(sim.frames(), ms(2_000))

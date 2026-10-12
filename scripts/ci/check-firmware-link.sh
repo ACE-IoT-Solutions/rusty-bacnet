@@ -20,7 +20,8 @@
 # the build, with the root Cargo.toml's `firmware` profile (size-optimized,
 # LTO, panic=abort); then, per image, scripts/ci/firmware_size.py, which
 # prints the loaded sections, the four main sections and the flash and RAM
-# totals against the budget, and any core::fmt code, and fails over budget.
+# totals against the budget, and any core::fmt code or 64-bit division
+# routine, and fails over budget.
 # The targets need only `rustup target add`: they link with the rust-lld
 # that rustc ships.
 set -euo pipefail

@@ -11,6 +11,7 @@ use bacnet_mstp_core::{
 };
 
 type Queues = HeaplessQueues<4, 4>;
+type Actions = bacnet_mstp_core::ActionBuffers;
 
 /// The request arrives at 1 ms.
 const REQUEST_AT: Instant = Instant::from_micros(1_000);
@@ -68,7 +69,15 @@ fn take_postponed(core: &mut MasterCore<'_, Queues>) -> TransmitId {
 #[test]
 fn decision_deadline_leaves_the_transmit_margin() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     receive_request(&mut core);
     assert_eq!(core.next_deadline(), Some(DECIDE_BY));
 
@@ -91,11 +100,13 @@ fn decision_deadline_leaves_the_transmit_margin() {
 
     // The margin is configurable.
     let mut rx = [0; 64];
+    let mut actions = Actions::new();
     let config = MstpCoreConfig {
         reply_transmit_margin: Duration::from_millis(50),
         ..config()
     };
-    let mut core = MasterCore::new(config, Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut core =
+        MasterCore::new(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     receive_request(&mut core);
     assert_eq!(
         core.next_deadline(),
@@ -107,7 +118,15 @@ fn decision_deadline_leaves_the_transmit_margin() {
 fn deadline_call_one_microsecond_late_still_sends_postponed() {
     // Lateness under LATE_DEADLINE is ordinary tick jitter: sent, not counted.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     receive_request(&mut core);
     let late = DECIDE_BY + Duration::from_micros(1);
     core.on_deadline(late).unwrap();
@@ -118,7 +137,15 @@ fn deadline_call_one_microsecond_late_still_sends_postponed() {
 
     // At LATE_DEADLINE it is counted as a miss, and still answered.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     receive_request(&mut core);
     let late = DECIDE_BY + LATE_DEADLINE;
     core.on_deadline(late).unwrap();
@@ -130,7 +157,15 @@ fn deadline_call_one_microsecond_late_still_sends_postponed() {
     // A deadline call even past T_reply_delay still answers, and the late
     // start is counted too.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     receive_request(&mut core);
     let late = SEND_BY + Duration::from_micros(1);
     core.on_deadline(late).unwrap();
@@ -144,7 +179,15 @@ fn deadline_call_one_microsecond_late_still_sends_postponed() {
 #[test]
 fn transmit_start_200_microseconds_late_still_sends_postponed() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     receive_request(&mut core);
     core.on_deadline(DECIDE_BY).unwrap();
     let id = take_postponed(&mut core);
@@ -164,7 +207,15 @@ fn nothing_is_sent_once_the_requester_may_have_stopped_waiting() {
     // A Reply Postponed that would start at the requester's shortest timeout
     // is refused: the requester may be transmitting again.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     receive_request(&mut core);
     core.on_deadline(DECIDE_BY).unwrap();
     let id = take_postponed(&mut core);
@@ -179,7 +230,15 @@ fn nothing_is_sent_once_the_requester_may_have_stopped_waiting() {
 
     // One microsecond earlier it still goes out, counted late.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     receive_request(&mut core);
     core.on_deadline(DECIDE_BY).unwrap();
     let id = take_postponed(&mut core);
@@ -192,7 +251,15 @@ fn nothing_is_sent_once_the_requester_may_have_stopped_waiting() {
 #[test]
 fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let id = receive_request(&mut core);
     // The answer comes inside the turnaround, so the reply waits for it.
     core.complete_request(
@@ -228,7 +295,15 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
     // A frame for this station meanwhile is ignored rather than answered in
     // the reply's place.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let id = receive_request(&mut core);
     core.complete_request(
         id,
