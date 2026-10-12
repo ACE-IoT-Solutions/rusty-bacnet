@@ -53,8 +53,10 @@ pub enum ForeignRegistrationOutcome {
     Cancelled,
 }
 
-/// Register-Foreign-Device observations for manual and automatic requests.
-/// The totals survive stop/start; last-attempt fields and countdown reset.
+/// Register-Foreign-Device observations for manual and automatic requests,
+/// and the automatic registration's lease and held broadcasts. The totals
+/// survive stop/start; the last-attempt fields, the countdown and the lease
+/// reset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ForeignRegistrationSnapshot {
     /// Admitted attempts, including local failures; excludes busy refusals.
@@ -72,10 +74,39 @@ pub struct ForeignRegistrationSnapshot {
     pub last_result: Option<BvlcResultCode>,
     /// Outcome of that attempt, cleared when the transport stops or restarts.
     pub last_outcome: Option<ForeignRegistrationOutcome>,
-    /// Time until the automatic worker's next scheduled attempt. Busy work or
-    /// scheduling delays may postpone it; this is not a remote lease countdown.
+    /// Time until the automatic worker's next scheduled attempt; while one is
+    /// in flight, the latest the next can go, one renewal interval after it
+    /// started. A loss, or a Distribute-Broadcast-To-Network NAK from the
+    /// BBMD, brings it forward; busy exchanges or scheduling delays may
+    /// postpone it. This is not a lease countdown: see `lease_remaining`.
     /// Absent outside automatic foreign mode and after stop.
     pub next_attempt_in: Option<Duration>,
+    /// Whether the automatic registration holds a live lease (#1622). A
+    /// success proves one from the earliest send it could answer, for one
+    /// time-to-live, without the BBMD's grace period, so this never claims
+    /// a registration the BBMD has already let go, unless it lost it early,
+    /// as on a restart. False outside automatic foreign mode and after stop.
+    pub registered: bool,
+    /// The time left on that lease while `registered`.
+    pub lease_remaining: Option<Duration>,
+    /// Leases that ended with no newer success.
+    pub lapses: u64,
+    /// Distribute-Broadcast-To-Network NAKs from the BBMD, taken as a sign it
+    /// holds no registration for this device: each brings the next attempt
+    /// forward, to no sooner than one response timeout after the last one
+    /// started.
+    pub renewal_hints: u64,
+    /// Broadcasts held while the first automatic attempt of a start was
+    /// outstanding.
+    pub broadcasts_held: u64,
+    /// Held broadcasts sent once that attempt succeeded or went unanswered.
+    pub broadcasts_released: u64,
+    /// Held broadcasts dropped because the BBMD refused that attempt.
+    pub broadcasts_discarded: u64,
+    /// Broadcasts refused, with an error, because the hold was full.
+    pub broadcasts_hold_full: u64,
+    /// Broadcasts sent while no lease was live, which the BBMD may refuse.
+    pub broadcasts_unregistered: u64,
 }
 
 impl ForeignRegistrationSnapshot {
@@ -85,6 +116,8 @@ impl ForeignRegistrationSnapshot {
         self.last_result = None;
         self.last_outcome = None;
         self.next_attempt_in = None;
+        self.registered = false;
+        self.lease_remaining = None;
     }
 }
 
@@ -167,8 +200,8 @@ impl ClientRecord {
         snapshot.reset_status();
     }
 
-    /// The totals and status so far. The countdown to the next attempt is
-    /// the node's to fill in.
+    /// The totals and status so far. The countdown to the next attempt and
+    /// the lease are the node's to fill in.
     pub(super) fn snapshot(&self) -> BvlcClientSnapshot {
         *self.lock()
     }
@@ -195,6 +228,25 @@ impl ClientRecord {
             foreign.last_result = attempt.result;
             foreign.last_outcome = Some(outcome(attempt.outcome));
         }
+        add(&mut foreign.lapses, counters.lapses);
+        add(&mut foreign.renewal_hints, counters.renewal_hints);
+        add(&mut foreign.broadcasts_held, counters.broadcasts_held);
+        add(
+            &mut foreign.broadcasts_released,
+            counters.broadcasts_released,
+        );
+        add(
+            &mut foreign.broadcasts_discarded,
+            counters.broadcasts_discarded,
+        );
+        add(
+            &mut foreign.broadcasts_hold_full,
+            counters.broadcasts_hold_full,
+        );
+        add(
+            &mut foreign.broadcasts_unregistered,
+            counters.broadcasts_unregistered,
+        );
         add(
             &mut snapshot.unmatched_responses,
             counters.unmatched_responses,

@@ -4678,9 +4678,16 @@ the exchanges are all busy or local sends fail immediately. This is a
 local pacing policy; the requested TTL stays unchanged on the wire. The
 effective interval also drives `next_attempt_in` and response waiting.
 The automatic worker waits at most the smaller of the effective interval
-and three seconds for each result, then schedules another attempt. Manual
-requests run beside it; only when all eight exchanges are in use is an attempt
-refused as busy, counted, and retried on the next interval.
+and three seconds for each result. After a success it renews one interval
+into the lease that success proved; after a refusal, one interval after that
+attempt started; after a lost attempt or a local error, sooner: one response
+wait later, doubling with each failure in a row, and never later than one
+interval after the attempt started (#1622). A Distribute-Broadcast-To-Network
+NAK from the BBMD, which a BBMD sends a device it holds no registration for,
+brings the next attempt forward, to no sooner than one response wait after
+the last one started; `renewal_hints` counts them. Manual requests run beside
+it; only when all eight exchanges are in use is an attempt refused as busy,
+counted, and retried as after a loss.
 There is no catch-up burst after a delayed attempt. The first attempt is
 admitted at `start()` and sent when the transport's driver task first runs.
 One-shot `register_foreign_device_bvlc` calls retain their three-second
@@ -4695,15 +4702,24 @@ A transport is in one B/IP mode: `start()` fails, before any I/O, on one set
 up both as a BBMD (`enable_bbmd`) and as a foreign device, since the two
 broadcast differently; run them on separate transports (#938, #1622).
 
-`build()` means the client is running locally. Poll `last_outcome` for a
-matched acceptance or refusal; a send failure or timeout leaves the remote
-outcome unknown. A registration NAK rejects that attempt and does not prove
-an earlier accepted entry disappeared. The `next_attempt_in` countdown is the
-worker's scheduled attempt, not a remote lease expiry. Annex J.5.2's BBMD
-expiry includes its grace period; the earlier local renewal is a scheduling
-choice. Last-attempt status and countdown clear on stop/restart while totals
-remain. Foreign-mode broadcasts use DBTN toward the configured BBMD even
-before acceptance or after a rejected attempt.
+`build()` means the client is running locally. `registered` and
+`lease_remaining` report the lease the BBMD's successes prove: it starts at
+the earliest send a success could answer and lasts one time-to-live, leaving
+out the grace period a BBMD adds (Annex J.5.2.3), so the device never counts
+on time the BBMD might not give it. `lapses` counts leases that ran out with
+no newer success. A BBMD that loses its table early, as on a restart, ends
+the registration before the lease does; its Distribute-Broadcast-To-Network
+NAKs then bring the next attempt forward. The transport logs one line when
+the device becomes registered (info), and when the BBMD refuses it or the
+lease lapses (warn); renewals and lost attempts log at debug. Poll
+`last_outcome` for a matched acceptance or refusal; a send failure or timeout
+leaves the remote outcome unknown. A registration NAK rejects that attempt
+and leaves a live lease in place. The `next_attempt_in` countdown is the
+worker's scheduled attempt, not a lease expiry. Last-attempt status,
+countdown and lease clear on stop/restart while totals remain. Foreign-mode
+broadcasts use DBTN toward the configured BBMD even before acceptance or
+after a rejected attempt; one sent with no live lease is counted in
+`broadcasts_unregistered`.
 
 The BBMD helpers (`read_bdt`, `write_bdt`, `read_fdt`, `delete_fdt_entry`,
 `register_foreign_device_bvlc`) work on any client whose transport implements

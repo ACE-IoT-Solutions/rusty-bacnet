@@ -1,8 +1,11 @@
-//! A foreign device's registration schedule on the node engine, as it was
-//! before the engine (#1622): an attempt every renewal interval, counted
-//! from the start of the one before, whatever came of it: an answer, a
-//! refusal, a timeout, or a Distribute-Broadcast-To-Network NAK
-//! from the BBMD. Each attempt waits for its result for the interval or 3 s,
+//! A foreign device's registration schedule on the node engine
+//! (`Retry::Backoff`, #1622). After a success the next attempt goes one
+//! renewal interval into the lease it proved, which starts at the earliest
+//! send the success could answer; after a refusal, one interval after that
+//! attempt started; after a loss, sooner: one response timeout after it,
+//! doubling with each loss in a row, and never later than the interval. A
+//! Distribute-Broadcast-To-Network NAK from the BBMD pulls the next attempt
+//! forward. Each attempt waits for its result for the interval or 3 s,
 //! whichever is shorter.
 
 use std::time::Duration;
@@ -20,15 +23,15 @@ const BBMD: ([u8; 4], u16) = ([198, 51, 100, 1], 0xBAC0);
 
 /// A foreign device renewing every `interval`, what it sends, and its
 /// driver.
-struct Device {
-    ctx: RecvContext,
-    sink: SendSink,
+pub(super) struct Device {
+    pub(super) ctx: RecvContext,
+    pub(super) sink: SendSink,
     start: Instant,
     _driver: JoinHandle<()>,
 }
 
 impl Device {
-    async fn new(interval: Duration) -> Self {
+    pub(super) async fn new(interval: Duration) -> Self {
         let sink = SendSink::default();
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let socket = Arc::new(BipSocket::recording(socket, sink.clone()));
@@ -52,21 +55,26 @@ impl Device {
     }
 
     /// Let time run to `ms` milliseconds from the start.
-    async fn at(&self, ms: u64) {
+    pub(super) async fn at(&self, ms: u64) {
         tokio::time::sleep_until(self.start + Duration::from_millis(ms)).await;
     }
 
-    /// The BBMD answers with `code`.
-    async fn bbmd_says(&self, code: u16) {
+    /// `peer` sends a BVLC-Result with `code`.
+    async fn says(&self, peer: ([u8; 4], u16), code: u16) {
         let result = BvllMessage {
             function: BvlcFunction::BVLC_RESULT,
             payload: bytes::Bytes::copy_from_slice(&code.to_be_bytes()),
         };
-        handle_bvll_message(&result, BBMD, Delivery::Unicast, &self.ctx).await;
+        handle_bvll_message(&result, peer, Delivery::Unicast, &self.ctx).await;
+    }
+
+    /// The BBMD answers with `code`.
+    pub(super) async fn bbmd_says(&self, code: u16) {
+        self.says(BBMD, code).await;
     }
 
     /// When each registration attempt went, in milliseconds from the start.
-    fn attempts(&self) -> Vec<u128> {
+    pub(super) fn attempts(&self) -> Vec<u128> {
         let bbmd = SocketAddrV4::new(Ipv4Addr::from(BBMD.0), BBMD.1);
         self.sink
             .take()
@@ -78,58 +86,49 @@ impl Device {
 }
 
 #[tokio::test(start_paused = true)]
-async fn attempts_go_one_interval_apart_whatever_came_of_them() {
+async fn attempts_back_off_after_a_loss_and_renew_into_the_lease() {
     let device = Device::new(Duration::from_secs(10)).await;
-    // The first goes at once, and is answered.
+    // The first goes at once, and is answered: registered until 60 s.
     device.at(13).await;
     device.bbmd_says(0).await;
-    // The second is refused.
+    // The second is refused: the next waits one interval.
     device.at(10_013).await;
     device.bbmd_says(0x30).await;
-    // The third goes unanswered, and times out at 23 s; the next still
-    // waits for 30 s.
-    device.at(23_000).await;
+    // The third and fourth are lost: the retry after each comes one
+    // response timeout (3 s), then two, after it timed out.
+    device.at(29_000).await;
     tokio::task::yield_now().await;
     let lost = device.ctx.node.snapshot();
-    assert_eq!(lost.register_foreign_device.timeouts, 1);
+    let registration = lost.foreign_registration;
+    assert_eq!(lost.register_foreign_device.timeouts, 2);
     assert_eq!(
-        lost.foreign_registration.last_outcome,
+        registration.last_outcome,
         Some(ForeignRegistrationOutcome::TimedOut)
     );
-    assert_eq!(
-        lost.foreign_registration.next_attempt_in,
-        Some(Duration::from_secs(7))
-    );
-    device.at(30_013).await;
+    assert_eq!(registration.next_attempt_in, Some(Duration::from_secs(6)));
+    // The first lease still stands.
+    assert!(registration.registered);
+    assert_eq!(registration.lease_remaining, Some(Duration::from_secs(31)));
+    // The fifth is answered. The success could answer any attempt since the
+    // last answer, so the lease starts at the third's send, 20 s, and its
+    // renewal, due at 30 s, goes at once.
+    device.at(35_013).await;
     device.bbmd_says(0).await;
-    // A Distribute-Broadcast-To-Network NAK from the BBMD pulls nothing
-    // forward.
-    device.at(30_050).await;
-    device.bbmd_says(0x60).await;
-    // A manual request in flight over 40 s takes another slot, so that
-    // attempt goes as due (#1622), and is lost.
-    device.at(35_000).await;
-    let request = Bvll::ReadBroadcastDistributionTable;
-    let peer = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 30), 0xBAC0);
-    let held = device.ctx.node.begin(peer, request, Duration::from_secs(3));
-    device.at(45_000).await;
-    drop(held);
-    device.at(50_500).await;
+    tokio::task::yield_now().await;
+    // That one's answer starts the lease at the fifth's send.
+    device.at(35_026).await;
+    device.bbmd_says(0).await;
+    device.at(40_000).await;
 
     assert_eq!(
         device.attempts(),
-        [0, 10_000, 20_000, 30_000, 40_000, 50_000]
+        [0, 10_000, 20_000, 26_000, 35_000, 35_013]
     );
     let snapshot = device.ctx.node.snapshot();
     let counters = snapshot.register_foreign_device;
     assert_eq!(
-        (
-            counters.sent,
-            counters.results,
-            counters.timeouts,
-            counters.busy
-        ),
-        (6, 3, 2, 0)
+        (counters.sent, counters.results, counters.timeouts),
+        (6, 4, 2)
     );
     let registration = snapshot.foreign_registration;
     assert_eq!(
@@ -138,27 +137,58 @@ async fn attempts_go_one_interval_apart_whatever_came_of_them() {
             registration.accepted,
             registration.refused
         ),
-        (6, 2, 1)
+        (6, 3, 1)
     );
-    assert_eq!(snapshot.unmatched_responses, 1);
+    assert_eq!(registration.next_attempt_in, Some(Duration::from_secs(5)));
+    assert!(registration.registered);
+    assert_eq!(registration.lease_remaining, Some(Duration::from_secs(55)));
+    assert_eq!(registration.lapses, 0);
+}
+
+/// A Distribute-Broadcast-To-Network NAK from the BBMD says it holds no
+/// registration for this device (Annex J.4.5): the next attempt goes as
+/// soon as one response timeout has passed since the last one started. The
+/// same NAK from another peer changes nothing.
+#[tokio::test(start_paused = true)]
+async fn a_distribute_nak_from_the_bbmd_pulls_the_next_attempt_forward() {
+    let device = Device::new(Duration::from_secs(10)).await;
+    device.at(13).await;
+    device.bbmd_says(0).await;
+    device.at(10_013).await;
+    device.bbmd_says(0).await;
+    // Renewed from 10 s; the next is due at 20 s.
+    device.at(12_000).await;
+    device.says(([192, 0, 2, 30], 0xBAC0), 0x60).await;
     assert_eq!(
-        registration.next_attempt_in,
-        Some(Duration::from_millis(9_500))
+        device
+            .ctx
+            .node
+            .snapshot()
+            .foreign_registration
+            .next_attempt_in,
+        Some(Duration::from_secs(8))
     );
+    device.bbmd_says(0x60).await;
+    device.at(13_500).await;
+
+    assert_eq!(device.attempts(), [0, 10_000, 13_000]);
+    let snapshot = device.ctx.node.snapshot();
+    assert_eq!(snapshot.foreign_registration.renewal_hints, 1);
+    assert_eq!(snapshot.unmatched_responses, 2);
 }
 
 /// An attempt waits for its result for the interval when that is shorter
-/// than 3 s, so a lost one ends as the next falls due, and an answer that
-/// comes later belongs to the next.
+/// than 3 s, so a lost one ends as the next falls due. An answer to the
+/// second could also answer the first, still unanswered, so the lease starts
+/// at the first's send, and its renewal is due at once.
 #[tokio::test(start_paused = true)]
-async fn a_short_interval_bounds_the_wait_and_a_late_answer_meets_the_next_attempt() {
+async fn a_short_interval_bounds_the_wait_and_a_late_answer_anchors_the_lease_early() {
     let device = Device::new(Duration::from_millis(300)).await;
-    // Nothing for the first; the one at 300 ms takes this late success.
     device.at(303).await;
     device.bbmd_says(0).await;
     device.at(950).await;
-    assert_eq!(device.attempts(), [0, 300, 600, 900]);
+    assert_eq!(device.attempts(), [0, 300, 303, 603, 903]);
     let snapshot = device.ctx.node.snapshot();
-    assert_eq!(snapshot.register_foreign_device.timeouts, 2);
+    assert_eq!(snapshot.register_foreign_device.timeouts, 3);
     assert_eq!(snapshot.foreign_registration.accepted, 1);
 }

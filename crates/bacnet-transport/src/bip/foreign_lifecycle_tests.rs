@@ -117,6 +117,10 @@ async fn foreign_attempt_results_renewal_and_restart_are_observable() {
         accepted.foreign_registration.last_result,
         Some(BvlcResultCode::SUCCESSFUL_COMPLETION)
     );
+    // Registered for the 2 s time-to-live, from the attempt's send.
+    assert!(accepted.foreign_registration.registered);
+    let left = accepted.foreign_registration.lease_remaining.unwrap();
+    assert!(left <= Duration::from_secs(2), "{left:?}");
     let worker = transport.node_task.as_ref().unwrap().abort_handle();
     transport.stop().await.unwrap();
     assert!(worker.is_finished());
@@ -127,6 +131,8 @@ async fn foreign_attempt_results_renewal_and_restart_are_observable() {
     assert_eq!(stopped.foreign_registration.last_result, None);
     assert_eq!(stopped.register_foreign_device.last_result, None);
     assert_eq!(stopped.foreign_registration.next_attempt_in, None);
+    assert!(!stopped.foreign_registration.registered);
+    assert_eq!(stopped.foreign_registration.lease_remaining, None);
     assert_eq!(stopped.foreign_registration.accepted, 1);
     let _rx = transport.start().await.unwrap();
     let restarted = transport.bvlc_client_snapshot();

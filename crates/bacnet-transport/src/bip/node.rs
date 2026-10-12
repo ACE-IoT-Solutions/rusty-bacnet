@@ -31,9 +31,9 @@ use bacnet_bip_core::{Duration as CoreDuration, Instant as CoreInstant};
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{oneshot, Notify};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
-use super::client_snapshot::ClientRecord;
+use super::client_snapshot::{ClientRecord, ForeignRegistrationSnapshot};
 use super::rate_limit::ManagementRateLimiter;
 use super::BipSocket;
 use crate::bbmd;
@@ -186,7 +186,7 @@ impl NodeState {
                 }
                 Action::ReleaseHeld => self.release.extend(self.held.drain(..)),
                 Action::DiscardHeld => self.held.clear(),
-                Action::Registration(event) => log_registration(event),
+                Action::Registration(event) => log_registration(event, self.node.link()),
             }
         }
         let counters = self.node.take_counters();
@@ -203,12 +203,29 @@ impl NodeState {
     }
 }
 
-fn log_registration(event: RegistrationEvent) {
+/// Log a change in a foreign device's registration: one line each when it
+/// becomes registered, is refused, or lapses, and the routine renewals and
+/// losses at debug.
+fn log_registration(event: RegistrationEvent, link: &Link) {
+    let Mode::Foreign(foreign) = link.mode else {
+        return;
+    };
+    let bbmd = foreign.bbmd;
     match event {
+        RegistrationEvent::Registered { since, until } => {
+            let lease = Duration::from_nanos(until.saturating_duration_since(since).as_nanos());
+            info!(%bbmd, ?lease, "B/IP foreign device registered with its BBMD");
+        }
+        RegistrationEvent::Refused { code } => {
+            warn!(%bbmd, %code, "B/IP BBMD refused the foreign-device registration");
+        }
+        RegistrationEvent::Lapsed => {
+            warn!(%bbmd, "B/IP foreign-device registration lapsed, with no renewal answered");
+        }
+        RegistrationEvent::Renewed { .. } => debug!(%bbmd, "Foreign registration renewed"),
         RegistrationEvent::Unanswered => {
             debug!("Foreign registration attempt did not return a matched result");
         }
-        event => debug!(?event, "Foreign registration"),
     }
 }
 
@@ -339,26 +356,33 @@ impl NodeHandle {
         })
     }
 
-    /// Time until a foreign device's next automatic registration attempt:
-    /// one renewal interval after the last one started.
-    pub(super) fn next_attempt_in(&self) -> Option<Duration> {
+    /// Fill in a foreign device's registration as of now: the time until
+    /// its next automatic attempt (while one is in flight, the latest the
+    /// next can go, one renewal interval after it started), and its lease.
+    /// Nothing changes in the other modes.
+    pub(super) fn fill_registration(&self, foreign: &mut ForeignRegistrationSnapshot) {
         let state = self.lock();
         let now = self.clock.now();
-        let view = state.node.registration(now)?;
-        let next = match view.next_attempt {
-            Some(next) => next,
-            None => state.attempt_started? + self.renewal?,
+        let Some(view) = state.node.registration(now) else {
+            return;
         };
-        Some(Duration::from_nanos(
-            next.saturating_duration_since(now).as_nanos(),
-        ))
+        let next = view
+            .next_attempt
+            .or_else(|| Some(state.attempt_started? + self.renewal?));
+        let until =
+            |at: CoreInstant| Duration::from_nanos(at.saturating_duration_since(now).as_nanos());
+        foreign.next_attempt_in = next.map(until);
+        foreign.registered = view.registered;
+        foreign.lease_remaining = view
+            .lease_remaining
+            .map(|left| Duration::from_nanos(left.as_nanos()));
     }
 
     /// What this node's exchanges came to, as the transport reports them.
     #[cfg(test)]
     pub(super) fn snapshot(&self) -> super::BvlcClientSnapshot {
         let mut snapshot = self.record.snapshot();
-        snapshot.foreign_registration.next_attempt_in = self.next_attempt_in();
+        self.fill_registration(&mut snapshot.foreign_registration);
         snapshot
     }
 

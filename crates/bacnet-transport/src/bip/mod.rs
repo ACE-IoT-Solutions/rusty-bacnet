@@ -485,14 +485,16 @@ impl BipTransport {
     }
 
     /// Snapshot this transport's own manual BVLC and automatic foreign-device
-    /// exchanges. Counts are cumulative per instance; registration status and
-    /// its next-attempt countdown reset on stop/start. This neither polls a
-    /// BBMD nor proves a current remote lease. See [`BvlcClientSnapshot`] for
-    /// matching limits and the meaning of each observation.
+    /// exchanges. Counts are cumulative per instance; registration status,
+    /// its next-attempt countdown and its lease reset on stop/start. This
+    /// never polls a BBMD: the lease is a conservative local view of what the
+    /// BBMD's successes prove. See [`BvlcClientSnapshot`] for matching limits
+    /// and the meaning of each observation.
     pub fn bvlc_client_snapshot(&self) -> BvlcClientSnapshot {
         let mut snapshot = self.client_record.snapshot();
-        snapshot.foreign_registration.next_attempt_in =
-            self.node.as_ref().and_then(|node| node.next_attempt_in());
+        if let Some(node) = &self.node {
+            node.fill_registration(&mut snapshot.foreign_registration);
+        }
         snapshot
     }
 
@@ -940,5 +942,7 @@ mod client_management_tests;
 mod foreign_lifecycle_tests;
 #[cfg(test)]
 mod registration_schedule_tests;
+#[cfg(test)]
+mod registration_status_tests;
 #[cfg(test)]
 mod registration_tests;
