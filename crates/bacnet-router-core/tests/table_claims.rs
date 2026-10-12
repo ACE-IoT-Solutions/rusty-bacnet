@@ -4,7 +4,7 @@
 
 mod support;
 
-use bacnet_router_core::table::{ClaimCounters, Convergence, Learned, Reachability};
+use bacnet_router_core::table::{ClaimCounters, Convergence, Learned, Reachability, RejectEffect};
 use bacnet_router_core::table::{Refusal, Timing};
 use bacnet_router_core::{Instant, Mac, PortId};
 use support::{
@@ -167,11 +167,19 @@ fn pending_claim_preserves_busy_and_reject_records_until_apply() {
         table.lookup(3000).unwrap().busy_until,
         Some(now + HOLD_DOWN)
     );
-    assert_eq!(table.held_since(3000, port(0)), Some(now));
-    table.apply_reject(3000, port(0), 1, now, &TIMING);
+    // The busy mark's hold-down holds off a reason-1 change.
+    assert_eq!(
+        table.apply_reject(3000, port(0), 1, now, &TIMING),
+        RejectEffect::HeldDown
+    );
     assert_eq!(table.claim_counters().reject_dampened_hold_down, 1);
     assert!(claim(&mut table, 1, now));
-    assert_eq!(table.holds().count(), 0);
+    // The move cleared the hold-down: the same reject now applies.
+    let mut probe = table.clone();
+    assert_eq!(
+        probe.apply_reject(3000, port(0), 1, now, &TIMING),
+        RejectEffect::Applied
+    );
     assert_eq!(
         table.lookup(3000).unwrap().reachability,
         Reachability::Reachable

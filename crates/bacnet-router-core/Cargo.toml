@@ -1,6 +1,6 @@
 [package]
 name = "bacnet-router-core"
-description = "Portable no-std BACnet router behaviour (Clause 6): a borrowed NPDU view and writer, network-layer messages, a routing table and route discovery"
+description = "Portable no-std BACnet router (Clause 6): a sans-IO routing engine over a borrowed NPDU view and writer, network-layer messages, a routing table and route discovery"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,13 +9,13 @@ repository.workspace = true
 readme = "README.md"
 keywords = ["bacnet", "router", "npdu", "embedded", "no-std"]
 categories = ["embedded", "network-programming", "no-std"]
-# Unpublished until the router engine, its hosted cutover and the firmware
-# router image land (#1679).
+# Unpublished until the hosted cutover and the firmware router image land
+# (#1679).
 publish = false
 
-# The table and discovery live in caller-sized arrays (const generics), and
-# NPDUs are borrowed or written into caller storage, so the crate needs
-# neither std nor an allocator, and has no features.
+# The table, discovery and the engine's scratch live in caller-sized arrays
+# (const generics), and NPDUs are borrowed or written into caller storage,
+# so the crate needs neither std nor an allocator, and has no features.
 [dependencies]
 bacnet-time = { workspace = true }
 

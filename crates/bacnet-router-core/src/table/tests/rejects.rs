@@ -1,15 +1,17 @@
 //! Received rejects and the hold-down. Ported from `bacnet-network`'s
 //! `router_table_reject_tests.rs`, plus the core's bounded record pool.
+//! Unit tests, since the hold-down records they inspect are the crate's
+//! own.
 
-mod support;
+use std::vec::Vec;
 
-use bacnet_router_core::table::Timing;
-use bacnet_router_core::table::{ClaimCounters, Hold, Reachability, RejectEffect, Table};
-use bacnet_router_core::{Mac, PortId};
-use support::{
+use super::support::{
     held_networks, holds_for, learned_table, mac, port, purge, secs, Hosted, BASE, HOLD_DOWN, NANO,
     TIMING,
 };
+use crate::table::holds::Hold;
+use crate::table::{ClaimCounters, Reachability, RejectEffect, Table, Timing};
+use crate::{Mac, PortId};
 
 #[test]
 fn reject_spam_is_idempotent_without_refreshing_route_or_window() {
