@@ -15,6 +15,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// start. After any error for a transmit, or once it is aborted, send
     /// nothing more for its id.
     ///
+    /// A host assembler that was part way through a frame drops it now: the
+    /// receiver is off while the driver is on, so it can never complete, and
+    /// the core drops its own decoder's partial frame here too.
+    ///
     /// - A start for a transmit whose [`Action::Transmit`] has not been
     ///   polled is refused with [`CoreError::TransmitNotPolled`] and counted
     ///   in [`MstpCounters::adapter_errors`]; the transmit stays as it was.

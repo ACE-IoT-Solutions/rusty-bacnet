@@ -29,6 +29,12 @@
 //!   what the receiver hears is the station's own echo, which the core
 //!   ignores; a frame it was part way through receiving is dropped then.
 //!
+//! An adapter on a host serial API, which hands over chunks without
+//! per-octet times, assembles frames itself and reports them with
+//! [`MasterCore::on_host_activity`], [`MasterCore::on_validated_frame`] and
+//! [`MasterCore::on_invalid_frame`]; the same rules apply, and an assembler
+//! drops its own partial frame at a confirmed start.
+//!
 //! Line activity never makes the core abandon a frame it is waiting to send
 //! on its own: the frame waits for the line to go quiet. Only the evidence
 //! its state watches for, or a time limit taken from that state, drops it,

@@ -222,7 +222,8 @@ struct OwnedFrame {
 /// Feed it what the line does, timestamped by the caller's monotonic clock:
 /// [`Self::on_octet`] or [`Self::on_receive_error`] for each received
 /// character, or from a host-side assembler [`Self::on_host_activity`] for
-/// raw octets and [`Self::on_validated_frame`] for each frame it completes; and [`Self::on_deadline`] at
+/// raw octets and [`Self::on_validated_frame`] or [`Self::on_invalid_frame`]
+/// for each frame it completes; and [`Self::on_deadline`] at
 /// [`Self::next_deadline`].
 ///
 /// After each call, carry out the actions from [`Self::poll_action`] until it
@@ -242,8 +243,8 @@ struct OwnedFrame {
 /// that time pushes the frame back (Clause 9.5.5.1), and the core may take
 /// the frame back on its own, queueing
 /// [`Direction::Receive`](crate::Direction::Receive) before the start; drop
-/// the frame then. Octets received after the confirmed start are taken
-/// for the station's own echo and ignored.
+/// the frame then. Input after the confirmed start is taken for the
+/// station's own echo and ignored, whichever call reports it.
 ///
 /// Line activity only delays a frame the core waits to send. A frame is
 /// dropped, and counted, only on the evidence its sending state watches for

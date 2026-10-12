@@ -39,13 +39,14 @@ fn scenario_summary() {
             None,
             None,
         ],
-        // The peer's broadcast and its request.
+        // The peer's broadcast and its request, then its Test_Response.
         npdus_delivered: 2,
+        frames_delivered: 1,
         requests: 1,
         state: MasterState::Idle,
-        // The token, the peer's answer to the poll, its broadcast and its
-        // request.
-        frames_received: 4,
+        // The token, the peer's answer to the poll, its broadcast, its
+        // Test_Response and its request.
+        frames_received: 5,
         frames_transmitted: 4,
         token_rotations: 1,
         parser_errors: 0,

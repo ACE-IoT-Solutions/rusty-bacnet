@@ -1,7 +1,7 @@
 //! A master node: its core, the adapter that runs the core's actions, and
 //! the application behind it.
 
-use bacnet_mstp_codec::MAX_STANDARD_FRAME_LENGTH;
+use bacnet_mstp_codec::{FrameType, MAX_STANDARD_FRAME_LENGTH};
 use bacnet_mstp_core::{
     Action, AllocQueues, CoreError, Direction, Instant, MasterCore, MasterState, MstpCounters,
     NetworkPriority, QueueRejectReason, ReceiveError, ReplyDecision, RequestId, TransmitId,
@@ -132,7 +132,9 @@ enum Effect {
     Deliver {
         source: u8,
         destination: u8,
-        npdu: Vec<u8>,
+        /// `None` for an NPDU, else the type of a frame delivered whole.
+        frame_type: Option<FrameType>,
+        data: Vec<u8>,
         request: Option<RequestId>,
     },
 }
@@ -170,8 +172,21 @@ fn drain(core: &mut SimCore) -> Result<Vec<Effect>, usize> {
             } => Effect::Deliver {
                 source,
                 destination,
-                npdu: npdu.to_vec(),
+                frame_type: None,
+                data: npdu.to_vec(),
                 request: request_id,
+            },
+            Action::DeliverFrame {
+                frame_type,
+                source,
+                destination,
+                data,
+            } => Effect::Deliver {
+                source,
+                destination,
+                frame_type: Some(frame_type),
+                data: data.to_vec(),
+                request: None,
             },
         };
         effects.push(effect);
@@ -405,40 +420,44 @@ impl Sim {
                 Effect::Deliver {
                     source,
                     destination,
-                    npdu,
+                    frame_type,
+                    data,
                     request,
-                } => self.deliver(node, source, destination, npdu, request),
+                } => {
+                    let delivery = Delivery {
+                        at: self.now,
+                        source,
+                        destination,
+                        frame_type,
+                        data,
+                        request: request.is_some(),
+                    };
+                    self.deliver(node, delivery, request);
+                }
             }
         }
     }
 
     /// The application receives an NPDU and, for a request, plans its answer.
-    fn deliver(
-        &mut self,
-        node: usize,
-        source: u8,
-        destination: u8,
-        npdu: Vec<u8>,
-        request: Option<RequestId>,
-    ) {
+    fn deliver(&mut self, node: usize, delivery: Delivery, request: Option<RequestId>) {
         let now = self.now;
         let station = self.nodes[node].station;
+        let source = delivery.source;
+        let destination = delivery.destination;
+        let kind = match delivery.frame_type {
+            None => String::new(),
+            Some(frame_type) => format!(" {frame_type:?} frame"),
+        };
         self.note(
             Who::Station(station),
             TraceKind::Action(format!(
-                "Deliver {source}->{destination} {} octets{}",
-                npdu.len(),
+                "Deliver{kind} {source}->{destination} {} octets{}",
+                delivery.data.len(),
                 if request.is_some() { " (request)" } else { "" }
             )),
         );
         let master = self.master_mut(node).expect("a master");
-        master.deliveries.push(Delivery {
-            at: now,
-            source,
-            destination,
-            npdu,
-            request: request.is_some(),
-        });
+        master.deliveries.push(delivery);
         let Some(request) = request else {
             return;
         };

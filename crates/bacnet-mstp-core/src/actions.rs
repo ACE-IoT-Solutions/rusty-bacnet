@@ -12,7 +12,7 @@
 //!   they are queued, because the stream decoder reuses its receive buffer.
 
 use bacnet_mstp_codec::{
-    Frame, FrameError, FrameHeader, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
+    Frame, FrameError, FrameHeader, FrameType, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
 };
 
 /// The physical direction requested for the serial transceiver.
@@ -134,6 +134,27 @@ pub enum Action<'a> {
         /// expecting-reply frame.
         request_id: Option<RequestId>,
     },
+    /// Deliver a received frame whose data is not an NPDU, for this station
+    /// or broadcast: a Test_Response, or a proprietary frame (types 128-255).
+    ///
+    /// Clause 9.5.6.2 passes both up as frames that need no reply. A
+    /// Test_Response for this station that ends a wait for a reply comes
+    /// here too (Clause 9.5.6.4). The core knows no proprietary type that
+    /// asks for a reply, so it never answers one; one without the 2-octet
+    /// vendor identifier Clause 9.3.11 requires is not delivered.
+    DeliverFrame {
+        /// [`FrameType::TestResponse`], or a proprietary
+        /// [`FrameType::Unknown`] type.
+        frame_type: FrameType,
+        /// Source MS/TP station.
+        source: u8,
+        /// Destination MS/TP station: this station, or 255 for broadcast.
+        destination: u8,
+        /// The data field: a Test_Response's test data, or a proprietary
+        /// frame's vendor identifier (two octets, most significant first)
+        /// followed by its content.
+        data: &'a [u8],
+    },
     /// No action is pending.
     Idle,
 }
@@ -195,6 +216,9 @@ impl<const DELIVERIES: usize> Default for ActionBuffers<DELIVERIES> {
 struct DeliverySlot {
     /// The request bound to an NPDU that asks for a reply.
     request_id: Option<RequestId>,
+    /// The raw type of the frame the data came in, which says how it is
+    /// delivered: BACnet data as an NPDU, any other type whole.
+    frame_type: u8,
     source: u8,
     destination: u8,
     length: u16,
@@ -205,6 +229,7 @@ impl DeliverySlot {
     /// All zero bits, so zeroed buffers can live in `.bss`.
     const EMPTY: Self = Self {
         request_id: None,
+        frame_type: 0,
         source: 0,
         destination: 0,
         length: 0,
@@ -315,7 +340,7 @@ impl<'b> ActionQueue<'b> {
     }
 
     /// Queue received data for delivery, copying it in. `header` says whom it
-    /// came from.
+    /// came from and how it goes up: see [`DeliverySlot::frame_type`].
     pub(crate) fn enqueue_delivery(
         &mut self,
         header: FrameHeader,
@@ -328,6 +353,7 @@ impl<'b> ActionQueue<'b> {
         }
         let slot = &mut self.deliveries[wrap(self.head + self.waiting, self.deliveries.len())];
         slot.request_id = request_id;
+        slot.frame_type = header.frame_type.to_raw();
         slot.source = header.source;
         slot.destination = header.destination;
         slot.length = length;
@@ -367,11 +393,22 @@ impl<'b> ActionQueue<'b> {
         self.head = wrap(index + 1, self.deliveries.len());
         self.waiting -= 1;
         let slot = &self.deliveries[index];
-        Action::DeliverNpdu {
-            source: slot.source,
-            destination: slot.destination,
-            npdu: &slot.data[..usize::from(slot.length)],
-            request_id: slot.request_id,
+        let data = &slot.data[..usize::from(slot.length)];
+        match FrameType::from_raw(slot.frame_type) {
+            FrameType::BACnetDataExpectingReply | FrameType::BACnetDataNotExpectingReply => {
+                Action::DeliverNpdu {
+                    source: slot.source,
+                    destination: slot.destination,
+                    npdu: data,
+                    request_id: slot.request_id,
+                }
+            }
+            frame_type => Action::DeliverFrame {
+                frame_type,
+                source: slot.source,
+                destination: slot.destination,
+                data,
+            },
         }
     }
 }
@@ -389,7 +426,6 @@ fn wrap(index: usize, length: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bacnet_mstp_codec::FrameType;
 
     const NPDU: FrameType = FrameType::BACnetDataNotExpectingReply;
 
@@ -485,6 +521,37 @@ mod tests {
         actions.poll();
         assert_eq!(polled_frame(&mut actions), (TransmitId::new(5), 0x77));
         assert!(!actions.transmit_queued(TransmitId::new(5)));
+    }
+
+    #[test]
+    fn whole_frames_go_up_as_frames() {
+        let mut buffers = ActionBuffers::<2>::new();
+        let mut actions = ActionQueue::new(&mut buffers);
+        let proprietary = FrameType::Unknown(0x80);
+        actions
+            .enqueue_delivery(header(FrameType::TestResponse, 5, 1), &[9, 9], None)
+            .unwrap();
+        actions
+            .enqueue_delivery(header(proprietary, 6, 0xFF), &[0x01, 0x04, 3], None)
+            .unwrap();
+        assert_eq!(
+            actions.poll(),
+            Action::DeliverFrame {
+                frame_type: FrameType::TestResponse,
+                source: 5,
+                destination: 1,
+                data: &[9, 9],
+            }
+        );
+        assert_eq!(
+            actions.poll(),
+            Action::DeliverFrame {
+                frame_type: proprietary,
+                source: 6,
+                destination: 0xFF,
+                data: &[0x01, 0x04, 3],
+            }
+        );
     }
 
     #[test]

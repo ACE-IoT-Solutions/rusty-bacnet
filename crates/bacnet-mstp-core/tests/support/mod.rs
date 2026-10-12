@@ -229,3 +229,39 @@ pub fn maintenance_poll_sent(core: &mut Core<'_>) {
     }
     panic!("no maintenance poll after Npoll token uses");
 }
+
+/// Station 1 takes the token from 2 with a data-expecting-reply NPDU queued
+/// for it and sends it. Returns when that request went out, with the core
+/// waiting for the reply.
+pub fn waiting_for_reply(core: &mut Core<'_>) -> Instant {
+    enqueue(core, true, ms(0));
+    validated(core, FrameType::Token, STATION, PEER, &[], ms(10));
+    let (due, header) = send_next(core);
+    assert!(is(header, FrameType::BACnetDataExpectingReply, PEER));
+    assert_eq!(core.state(), MasterState::WaitForReply);
+    due + Duration::from_millis(1)
+}
+
+/// The eight octets of a header whose CRC is wrong. A station's own
+/// decoder counts it invalid at the last one, wherever it was going.
+pub fn bad_header() -> Vec<u8> {
+    let mut wire = encode(FrameType::BACnetDataNotExpectingReply, 3, PEER, &[1, 2]);
+    wire.truncate(8);
+    wire[7] ^= 0x01;
+    wire
+}
+
+/// Report one invalid frame whose first octet arrives at `first`, through
+/// the core's own decoder or as a host assembler would: its octets, then
+/// the verdict. Returns when it was found, at its last octet.
+pub fn invalid_frame(core: &mut Core<'_>, host: bool, first: Instant) -> Instant {
+    if host {
+        let octet = core.config().octet_time();
+        let last = first + us(7 * octet.as_micros());
+        core.on_host_activity(8, last).unwrap();
+        core.on_invalid_frame(last).unwrap();
+        last
+    } else {
+        feed(core, &bad_header(), first)
+    }
+}

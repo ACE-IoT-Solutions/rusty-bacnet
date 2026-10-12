@@ -8,10 +8,10 @@
 //!   stream with a [`StreamDecoder`](bacnet_mstp_codec::StreamDecoder),
 //!   noise and a corrupted frame included.
 //! - **Core:** take a token, send a queued data frame, poll for a master,
-//!   pass the token on, then receive a broadcast and answer a request. Time
-//!   is injected, and every action the core returns is carried out. The
-//!   core is built on the stack over storage in [`Memory`], the pattern for
-//!   firmware.
+//!   pass the token on, then receive a broadcast and a Test_Response and
+//!   answer a request. Time is injected, and every action the core returns
+//!   is carried out. The core is built on the stack over storage in
+//!   [`Memory`], the pattern for firmware.
 //! - **Capacity:** fill the unicast queue and offer an NPDU too long for a
 //!   standard frame.
 //!
@@ -118,6 +118,8 @@ pub struct Summary {
     pub sent: [Option<Sent>; SENT_FRAMES],
     /// Core: NPDUs it delivered.
     pub npdus_delivered: u8,
+    /// Core: frames it delivered whole (Test_Response and proprietary).
+    pub frames_delivered: u8,
     /// Core: requests it handed up for an answer.
     pub requests: u8,
     /// Core: its state at the end of the token exchange.
@@ -153,6 +155,7 @@ impl Summary {
             direction_changes: 0,
             sent: [None; SENT_FRAMES],
             npdus_delivered: 0,
+            frames_delivered: 0,
             requests: 0,
             state: MasterState::Idle,
             frames_received: 0,

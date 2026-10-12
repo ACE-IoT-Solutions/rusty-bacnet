@@ -74,7 +74,7 @@ fn a_request_is_answered_inside_treply_delay() {
     assert!(sim
         .deliveries(0)
         .iter()
-        .any(|delivery| delivery.npdu == ANSWER));
+        .any(|delivery| delivery.data == ANSWER));
     assert_eq!(sim.core(3).unwrap().counters().late_replies, 0);
     assert!(!sim.perturbed());
 }
@@ -111,7 +111,7 @@ fn a_slow_application_gets_reply_postponed_and_answers_with_the_token() {
     assert!(sim
         .deliveries(0)
         .iter()
-        .any(|delivery| delivery.npdu == ANSWER));
+        .any(|delivery| delivery.data == ANSWER));
     sim.assert_no_violations();
 }
 
@@ -231,7 +231,7 @@ fn a_reply_the_adapter_starts_late_goes_out_until_the_requester_may_give_up() {
     assert!(sim
         .deliveries(0)
         .iter()
-        .any(|delivery| delivery.npdu == ANSWER));
+        .any(|delivery| delivery.data == ANSWER));
     sim.assert_no_violations();
 
     // Would start at 260 ms: withheld, and the requester times out at 255 ms.
