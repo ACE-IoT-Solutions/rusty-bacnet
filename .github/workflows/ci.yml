@@ -14,9 +14,9 @@ name: CI
 #           crate, and each published crate alone with default features, for
 #           Linux, Windows and macOS; the every-feature and PyO3 rustdoc runs
 #           include private items), the no_std crates on bare-metal targets
-#           and their alloc tests on the host, and the MS/TP and B/IP
-#           firmware images linked without an allocator and checked against
-#           their size budgets,
+#           and their alloc tests on the host, and the firmware images
+#           (MS/TP and B/IP without an allocator, the APDU stack with one)
+#           linked and checked against their size budgets,
 #           every-feature Linux tests plus bacnet-cli's feature-off tests
 #           and the no_std crates' tests and doctests without std,
 #           and the Python bindings built with maturin, their unittest suite
@@ -248,12 +248,14 @@ jobs:
       - name: Clippy (no_std crates with alloc, all targets)
         if: ${{ !cancelled() }}
         run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
-      # Clippy doesn't link, so this builds the MS/TP and B/IP stacks into
-      # bare-metal images with no allocator (firmware/link), one per stack, for
-      # each target, and checks their sizes against the budget. It links with
+      # Clippy doesn't link, so this builds the stacks into bare-metal images
+      # (firmware/link), one per stack, for each target, and checks their
+      # sizes against the budget: MS/TP and B/IP with no allocator, and
+      # bacnet-encoding and bacnet-services with one, its critical section
+      # and, without compare-and-swap, portable-atomic (#1635). It links with
       # the rust-lld that rustc ships, so the targets' core libraries are all
       # it needs. Nothing runs the images; the scenarios they link run in Test.
-      - name: Firmware link test (bare-metal images, no allocator, size budget)
+      - name: Firmware link test (bare-metal images, size budgets)
         if: ${{ !cancelled() }}
         run: |
           # shellcheck disable=SC2086 # one argument per target
