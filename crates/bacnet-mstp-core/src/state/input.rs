@@ -160,6 +160,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     /// Report a UART receive failure as bus activity and abort partial input.
     ///
+    /// A failure inside a frame counts as an invalid frame, a header or data
+    /// in progress as well as a dropped frame the decoder is skipping by
+    /// count, whatever its destination (Clause 9.5.4).
+    ///
     /// It is taken for the station's own echo exactly when
     /// [`Self::on_octet`] would be: once a transmit's start is confirmed.
     pub fn on_receive_error(
@@ -186,7 +190,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     /// Apply exact wire silence; a partial frame aborts only when silence is
-    /// strictly greater than T_frame_abort.
+    /// strictly greater than T_frame_abort. An aborted header or data,
+    /// including a dropped frame being skipped by count, counts as an invalid
+    /// frame whatever its destination (Clause 9.5.4).
     pub fn on_silence(&mut self, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         if self.abort_partial_if_late(now) {

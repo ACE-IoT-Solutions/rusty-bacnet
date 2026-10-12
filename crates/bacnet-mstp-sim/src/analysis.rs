@@ -96,6 +96,8 @@ pub fn holds(frames: &[WireFrame], station: u8) -> Vec<Hold> {
             FrameType::PollForMaster => hold.polls += 1,
             FrameType::BACnetDataExpectingReply
             | FrameType::BACnetDataNotExpectingReply
+            | FrameType::BACnetExtendedDataExpectingReply
+            | FrameType::BACnetExtendedDataNotExpectingReply
             | FrameType::TestRequest
             | FrameType::Unknown(_) => hold.info_frames += 1,
             FrameType::ReplyToPollForMaster

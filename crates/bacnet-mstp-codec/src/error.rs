@@ -24,8 +24,9 @@ pub enum FrameError {
     },
     /// Decode: the header CRC does not match.
     HeaderCrcMismatch,
-    /// A frame type in the COBS-encoded range 32-127, which this crate does
-    /// not implement yet.
+    /// A reserved COBS-encoded frame type, 34-127, which the codec doesn't
+    /// implement. The header passed every other check first, source and
+    /// Length included, so it is a good header (Clause 9.5.8).
     UnsupportedCobsFrame {
         /// The frame type octet.
         raw_type: u8,
@@ -33,7 +34,27 @@ pub enum FrameError {
     /// The source address is 255, the broadcast address, which no station may
     /// send from (Clause 9.3).
     BroadcastSource,
-    /// The data field is longer than a standard frame allows.
+    /// A COBS-encoded frame's Length is outside
+    /// [`MIN_COBS_LENGTH`](crate::MIN_COBS_LENGTH)..=[`MAX_COBS_LENGTH`](crate::MAX_COBS_LENGTH),
+    /// so the header is bad (Clause 9.5.8). On encode, the data is empty or
+    /// encodes to more than the largest Length allows.
+    InvalidCobsLength {
+        /// The Length declared by the header (decode), or the one the data
+        /// would need (encode).
+        length: usize,
+    },
+    /// Decode with [`decode_frame`](crate::decode_frame): a good extended
+    /// frame header, whose COBS-encoded data can't be borrowed from the
+    /// input. It says only "decode this in place": nothing after the header
+    /// was checked, and
+    /// [`decode_frame_in_place`](crate::decode_frame_in_place) gives the
+    /// verdict on the rest of the frame.
+    ExtendedFrame {
+        /// The frame type octet, 32 or 33.
+        raw_type: u8,
+    },
+    /// The data field of a standard (not COBS-encoded) frame is longer than
+    /// one allows.
     Oversize {
         /// Data length declared by the header (decode) or supplied (encode).
         length: usize,
@@ -56,22 +77,27 @@ pub enum FrameError {
         /// Length of the supplied data.
         length: usize,
     },
-    /// Decode: the input ended before the data field and its CRC were complete.
+    /// Decode: the input ended before the frame did: before a standard
+    /// frame's data and data CRC, or an extended frame's encoded fields, were
+    /// complete.
     Truncated {
-        /// Data length declared by the header.
-        data_length: usize,
+        /// The Length declared by the header.
+        length: usize,
         /// Octets supplied after the header.
         available: usize,
     },
-    /// Decode: the data CRC does not match.
+    /// Decode: the frame's data failed its check. For a standard frame the
+    /// data CRC doesn't match. For an extended frame the CRC-32K doesn't, or
+    /// a code octet in either encoded field is zero or runs past the field's
+    /// end, which Clause 9.10.3 treats as a bad CRC too.
     DataCrcMismatch {
-        /// Data length declared by the header.
-        data_length: usize,
+        /// The Length declared by the header.
+        length: usize,
     },
     /// Stream decode: a candidate frame is longer than the decoder's whole
     /// storage, so it can never be buffered. See [`crate::StreamDecoder`].
     FrameTooLong {
-        /// Octets the candidate needs, from its preamble to its last CRC octet.
+        /// Octets the candidate needs, from its preamble to its last octet.
         needed: usize,
         /// The decoder's storage capacity.
         capacity: usize,
@@ -81,7 +107,7 @@ pub enum FrameError {
     /// slice. Nothing was stored.
     BufferExhausted {
         /// Octets this call had to store: the encoded frame, or the pushed
-        /// slice.
+        /// slice less the octets of a frame the decoder is skipping.
         needed: usize,
         /// Free room at the time of the call: the sink's remaining capacity,
         /// or the decoder's capacity less what it already buffers.
@@ -103,6 +129,12 @@ impl fmt::Display for FrameError {
                 write!(f, "unsupported COBS frame type {raw_type}")
             }
             Self::BroadcastSource => f.write_str("source address is broadcast (0xFF)"),
+            Self::InvalidCobsLength { length } => {
+                write!(f, "COBS frame length {length} is out of range")
+            }
+            Self::ExtendedFrame { raw_type } => {
+                write!(f, "extended frame type {raw_type} must be decoded in place")
+            }
             Self::Oversize { length, maximum } => {
                 write!(f, "data length {length} exceeds maximum {maximum}")
             }
@@ -116,13 +148,9 @@ impl fmt::Display for FrameError {
                 f,
                 "proprietary frame type {raw_type} needs a 2-octet vendor ID, got {length} octets"
             ),
-            Self::Truncated {
-                data_length,
-                available,
-            } => write!(
-                f,
-                "truncated data length {data_length}, available {available}"
-            ),
+            Self::Truncated { length, available } => {
+                write!(f, "truncated frame length {length}, available {available}")
+            }
             Self::DataCrcMismatch { .. } => f.write_str("data CRC mismatch"),
             Self::FrameTooLong { needed, capacity } => write!(
                 f,

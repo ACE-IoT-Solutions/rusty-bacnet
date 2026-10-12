@@ -1,21 +1,25 @@
-//! Frame types, headers, and one-shot encode and decode.
+//! Frame types, headers, and encoding.
 
+use crate::cobs;
 use crate::{
-    crc16, crc16_valid, crc8, crc8_valid, FrameError, FrameSink, BROADCAST_MAC, HEADER_LENGTH,
-    MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    crc16, crc8, FrameError, FrameSink, BROADCAST_MAC, HEADER_LENGTH, MAX_COBS_LENGTH,
+    MAX_STANDARD_MPDU_DATA, MIN_COBS_LENGTH, PREAMBLE,
 };
 
 /// Octets before the data field: the preamble and the header with its CRC.
 pub(crate) const DATA_OFFSET: usize = PREAMBLE.len() + HEADER_LENGTH;
-/// The data CRC that follows a non-empty data field.
-const DATA_CRC_LENGTH: usize = 2;
+/// What follows a non-empty data field: the two-octet data CRC of a standard
+/// frame, or the two octets an extended frame's Length leaves out.
+const TRAILER_LENGTH: usize = 2;
 
-/// Wire length of a standard frame whose data field is `data_length` octets.
-pub(crate) const fn wire_length(data_length: usize) -> usize {
-    if data_length == 0 {
+/// Wire length of a frame whose header declares `length`: the data and its
+/// CRC for a standard frame, both encoded fields for an extended one, whose
+/// Length counts them less two (Clause 9.3).
+pub(crate) const fn wire_length(length: usize) -> usize {
+    if length == 0 {
         DATA_OFFSET
     } else {
-        DATA_OFFSET + data_length + DATA_CRC_LENGTH
+        DATA_OFFSET + length + TRAILER_LENGTH
     }
 }
 
@@ -39,13 +43,19 @@ pub enum FrameType {
     BACnetDataNotExpectingReply = 0x06,
     /// Reply postponed frame.
     ReplyPostponed = 0x07,
-    /// Any other type octet: reserved (8-31), COBS-encoded (32-127) or
-    /// proprietary (128-255).
+    /// BACnet extended data expecting a reply: an NPDU too long for a
+    /// standard frame, COBS-encoded (Clause 9.3.9).
+    BACnetExtendedDataExpectingReply = 0x20,
+    /// BACnet extended data not expecting a reply: an NPDU too long for a
+    /// standard frame, COBS-encoded (Clause 9.3.10).
+    BACnetExtendedDataNotExpectingReply = 0x21,
+    /// Any other type octet: reserved (8-31), reserved and COBS-encoded
+    /// (34-127), or proprietary (128-255).
     ///
-    /// [`FrameType::from_raw`] never returns it for 0-7. If one is built by
-    /// hand, the codec's checks still treat it as the named type, because they
-    /// look at the raw value; `==` does not, since equality is structural
-    /// (`Unknown(0) != Token`).
+    /// [`FrameType::from_raw`] never returns it for a named type. If one is
+    /// built by hand, the codec's checks still treat it as the named type,
+    /// because they look at the raw value; `==` does not, since equality is
+    /// structural (`Unknown(0) != Token`).
     Unknown(u8),
 }
 
@@ -61,6 +71,8 @@ impl FrameType {
             5 => Self::BACnetDataExpectingReply,
             6 => Self::BACnetDataNotExpectingReply,
             7 => Self::ReplyPostponed,
+            0x20 => Self::BACnetExtendedDataExpectingReply,
+            0x21 => Self::BACnetExtendedDataNotExpectingReply,
             value => Self::Unknown(value),
         }
     }
@@ -76,6 +88,8 @@ impl FrameType {
             Self::BACnetDataExpectingReply => 5,
             Self::BACnetDataNotExpectingReply => 6,
             Self::ReplyPostponed => 7,
+            Self::BACnetExtendedDataExpectingReply => 0x20,
+            Self::BACnetExtendedDataNotExpectingReply => 0x21,
             Self::Unknown(value) => value,
         }
     }
@@ -93,9 +107,18 @@ impl FrameType {
     }
 
     /// Whether this type is in the COBS-encoded range, 32-127 (Clause 9.3).
+    /// Its Length must fall within
+    /// [`MIN_COBS_LENGTH`]..=[`MAX_COBS_LENGTH`] (Clause 9.5.8).
     pub const fn is_cobs(self) -> bool {
         let raw = self.to_raw();
         raw >= 0x20 && raw <= 0x7F
+    }
+
+    /// Whether this is one of the two extended data types, 32 and 33: the
+    /// COBS-encoded types the codec encodes and decodes. The rest of the
+    /// COBS range, 34-127, is reserved.
+    pub(crate) const fn is_extended_data(self) -> bool {
+        matches!(self.to_raw(), 0x20 | 0x21)
     }
 
     /// Whether this type is in the vendor-proprietary range, 128-255. Such a
@@ -107,8 +130,8 @@ impl FrameType {
 
 /// The addressing fields of an MS/TP frame header.
 ///
-/// The length field is not stored: it is always the length of the data that
-/// goes with the header, [`Frame::data`].
+/// The length field is not stored: it follows from the data that goes with
+/// the header, [`Frame::data`], and the frame type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameHeader {
     /// Frame type.
@@ -130,13 +153,44 @@ impl FrameHeader {
     }
 }
 
+/// Check the header fields that both directions check, in the order they
+/// check them (Clause 9.5.8): the source, then the Length against the bounds
+/// of the type's class, then whether the codec supports a COBS type. So
+/// [`FrameError::UnsupportedCobsFrame`] always comes with a good header.
+pub(crate) fn check_header_fields(
+    frame_type: FrameType,
+    source: u8,
+    length: usize,
+) -> Result<(), FrameError> {
+    if source == BROADCAST_MAC {
+        return Err(FrameError::BroadcastSource);
+    }
+    if frame_type.is_cobs() {
+        if !(MIN_COBS_LENGTH..=MAX_COBS_LENGTH).contains(&length) {
+            return Err(FrameError::InvalidCobsLength { length });
+        }
+        if !frame_type.is_extended_data() {
+            return Err(FrameError::UnsupportedCobsFrame {
+                raw_type: frame_type.to_raw(),
+            });
+        }
+    } else if length > MAX_STANDARD_MPDU_DATA {
+        return Err(FrameError::Oversize {
+            length,
+            maximum: MAX_STANDARD_MPDU_DATA,
+        });
+    }
+    Ok(())
+}
+
 /// A frame whose data borrows from the caller or from decoder storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame<'a> {
     /// Header fields.
     pub header: FrameHeader,
-    /// The data field: an NPDU, test data or proprietary content. Its length
-    /// is the frame's length field.
+    /// The data field as the sender's client gave it: an NPDU, test data or
+    /// proprietary content. An extended frame carries it COBS-encoded on the
+    /// wire; here it is decoded.
     pub data: &'a [u8],
 }
 
@@ -152,10 +206,12 @@ impl<'a> Frame<'a> {
     /// Encode this frame at the start of `output` and return its wire length.
     ///
     /// The frame is checked first, as described in the [crate docs](crate):
-    /// no COBS type, at most [`MAX_STANDARD_MPDU_DATA`] octets of data, a
-    /// source other than 255, no data on a type that never carries any, and
-    /// at least a vendor identifier's two octets on a proprietary type.
-    /// Nothing is written unless the frame passes and fits.
+    /// a source other than 255; for a standard type, at most
+    /// [`MAX_STANDARD_MPDU_DATA`] octets of data, none on a type that never
+    /// carries any, and a vendor identifier's two octets on a proprietary
+    /// type; for a COBS type, a Length within the COBS bounds and one of the
+    /// two extended data types. Nothing is written unless the frame passes
+    /// and fits.
     ///
     /// ```
     /// use bacnet_mstp_codec::{Frame, FrameError, FrameType};
@@ -184,7 +240,8 @@ impl<'a> Frame<'a> {
     /// fails, the octets written before it stay in the sink; see
     /// [`FrameSink`].
     pub fn encode_to_sink<S: FrameSink + ?Sized>(self, sink: &mut S) -> Result<usize, FrameError> {
-        let total = self.checked_wire_length()?;
+        let length = self.checked_length()?;
+        let total = wire_length(length);
         if let Some(available) = sink.remaining_capacity() {
             if available < total {
                 return Err(FrameError::BufferExhausted {
@@ -193,7 +250,6 @@ impl<'a> Frame<'a> {
                 });
             }
         }
-        let length = self.data.len();
         let fields = [
             self.header.frame_type.to_raw(),
             self.header.destination,
@@ -206,31 +262,24 @@ impl<'a> Frame<'a> {
         head[PREAMBLE.len()..DATA_OFFSET - 1].copy_from_slice(&fields);
         head[DATA_OFFSET - 1] = crc8(&fields);
         sink.write(&head)?;
-        if length != 0 {
+        if self.header.frame_type.is_cobs() {
+            cobs::write_fields(self.data, sink)?;
+        } else if length != 0 {
             sink.write(self.data)?;
             sink.write(&crc16(self.data).to_le_bytes())?;
         }
         Ok(total)
     }
 
-    /// Apply the encode checks and return the frame's wire length.
-    fn checked_wire_length(&self) -> Result<usize, FrameError> {
+    /// Apply the encode checks and return the frame's Length field.
+    fn checked_length(&self) -> Result<usize, FrameError> {
         let frame_type = self.header.frame_type;
-        let length = self.data.len();
-        if frame_type.is_cobs() {
-            return Err(FrameError::UnsupportedCobsFrame {
-                raw_type: frame_type.to_raw(),
-            });
-        }
-        if length > MAX_STANDARD_MPDU_DATA {
-            return Err(FrameError::Oversize {
-                length,
-                maximum: MAX_STANDARD_MPDU_DATA,
-            });
-        }
-        if self.header.source == BROADCAST_MAC {
-            return Err(FrameError::BroadcastSource);
-        }
+        let length = if frame_type.is_cobs() {
+            cobs::frame_length(self.data)
+        } else {
+            self.data.len()
+        };
+        check_header_fields(frame_type, self.header.source, length)?;
         if length != 0 && !frame_type.allows_data() {
             return Err(FrameError::UnexpectedData {
                 raw_type: frame_type.to_raw(),
@@ -243,81 +292,6 @@ impl<'a> Frame<'a> {
                 length,
             });
         }
-        Ok(wire_length(length))
+        Ok(length)
     }
-}
-
-/// Decode one frame from `input`, which must start with the preamble.
-///
-/// Returns the frame and the number of octets it occupies; anything after
-/// them is ignored. The checks, in order: preamble, header CRC, COBS type,
-/// source 255, length limit, completeness, data CRC. The [crate docs](crate)
-/// explain what is deliberately not checked.
-///
-/// ```
-/// use bacnet_mstp_codec::{decode_frame, FrameError, FrameType};
-///
-/// // Data Not Expecting Reply from slave 200 to station 1, data 01 00.
-/// let wire = [0x55, 0xFF, 0x06, 0x01, 0xC8, 0x00, 0x02, 0xEF, 0x01, 0x00, 0x9F, 0x16];
-/// let (frame, consumed) = decode_frame(&wire)?;
-/// assert_eq!(frame.header.frame_type, FrameType::BACnetDataNotExpectingReply);
-/// assert_eq!((frame.header.destination, frame.header.source), (1, 200));
-/// assert_eq!(frame.data, [0x01, 0x00]);
-/// assert_eq!(consumed, wire.len());
-///
-/// // Without its data CRC the frame is incomplete.
-/// assert!(matches!(decode_frame(&wire[..10]), Err(FrameError::Truncated { .. })));
-/// # Ok::<(), FrameError>(())
-/// ```
-pub fn decode_frame(input: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
-    if input.len() < DATA_OFFSET {
-        return Err(FrameError::TooShort {
-            needed: DATA_OFFSET,
-            available: input.len(),
-        });
-    }
-    if input[..PREAMBLE.len()] != PREAMBLE {
-        return Err(FrameError::InvalidPreamble {
-            first: input[0],
-            second: input[1],
-        });
-    }
-    if !crc8_valid(&input[PREAMBLE.len()..DATA_OFFSET]) {
-        return Err(FrameError::HeaderCrcMismatch);
-    }
-    let frame_type = FrameType::from_raw(input[2]);
-    if frame_type.is_cobs() {
-        return Err(FrameError::UnsupportedCobsFrame { raw_type: input[2] });
-    }
-    let (destination, source) = (input[3], input[4]);
-    if source == BROADCAST_MAC {
-        return Err(FrameError::BroadcastSource);
-    }
-    let data_length = usize::from(u16::from_be_bytes([input[5], input[6]]));
-    if data_length > MAX_STANDARD_MPDU_DATA {
-        return Err(FrameError::Oversize {
-            length: data_length,
-            maximum: MAX_STANDARD_MPDU_DATA,
-        });
-    }
-    let total = wire_length(data_length);
-    if input.len() < total {
-        return Err(FrameError::Truncated {
-            data_length,
-            available: input.len() - DATA_OFFSET,
-        });
-    }
-    if data_length != 0 && !crc16_valid(&input[DATA_OFFSET..total]) {
-        return Err(FrameError::DataCrcMismatch { data_length });
-    }
-    let frame = Frame {
-        header: FrameHeader::new(frame_type, destination, source),
-        data: &input[DATA_OFFSET..DATA_OFFSET + data_length],
-    };
-    Ok((frame, total))
-}
-
-/// Return the offset of the first preamble in `data`, if it holds one.
-pub fn find_preamble(data: &[u8]) -> Option<usize> {
-    data.windows(2).position(|pair| pair == PREAMBLE)
 }

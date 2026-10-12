@@ -44,6 +44,7 @@ checks=(
   "bacnet-mstp-codec alloc"
   "bacnet-mstp-codec heapless"
   "bacnet-mstp-codec bytes,heapless"
+  "bacnet-mstp-codec crc32k-table"
   "bacnet-mstp-core -"
   "bacnet-mstp-core alloc"
   "bacnet-mstp-core heapless"

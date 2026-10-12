@@ -39,11 +39,11 @@
 # Measured 2026-10-11 with Rust 1.99.0, as text / rodata / data / bss, then
 # flash / ram:
 #
-#   thumbv7m mstp     16468 / 1004 / 0 /  5544   18496 /  5544
+#   thumbv7m mstp     17852 / 1060 / 0 /  5544   19936 /  5544
 #   thumbv7m bip       8936 /  976 / 0 /   132   10936 /   132
-#   thumbv6m mstp     17340 / 1004 / 0 /  5544   18536 /  5544
+#   thumbv6m mstp     18684 / 1060 / 0 /  5544   19936 /  5544
 #   thumbv6m bip      10468 /  980 / 0 /   132   11640 /   132
-#   riscv32imc mstp   17852 / 1292 / 0 /  5544   19166 /  5544
+#   riscv32imc mstp   19592 / 1348 / 0 /  5544   20962 /  5544
 #   riscv32imc bip    11820 / 1524 / 0 /   132   13366 /   132
 #   thumbv7m apdu     37504 / 5188 / 0 /  1056   43716 /  1056
 #   thumbv6m apdu     39920 / 5188 / 0 /  1056   45300 /  1056
@@ -56,14 +56,19 @@
 # when the core began borrowing its large buffers, dropped its control
 # ring and its 64-bit divisions, and the image switched to building the
 # core on the stack (#1617, #1618): 2.3-2.8 KB less text and 8,952 octets
-# less RAM. The apdu rows are from when that image was added (#1635).
+# less RAM. They were again when the codec gained extended frames, whose
+# COBS and CRC-32K code the stream decoder and encoder can reach, and the
+# counted skip of dropped frames (#1611, #1609): 1.4-1.8 KB more flash and
+# the RAM unchanged. The CRC-32K's 1 KiB table (the codec's `crc32k-table`
+# feature) would add about 0.95 KB more. The apdu rows are from when that
+# image was added (#1635).
 
 [thumbv7m-none-eabi.mstp]
-text = 18448
-rodata = 1136
+text = 20000
+rodata = 1200
 data = 64
 bss = 6224
-flash = 20720
+flash = 22336
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
@@ -89,11 +94,11 @@ fmt_functions = 15
 div64_functions = 0
 
 [thumbv6m-none-eabi.mstp]
-text = 19424
-rodata = 1136
+text = 20928
+rodata = 1200
 data = 64
 bss = 6224
-flash = 20768
+flash = 22336
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
@@ -119,11 +124,11 @@ fmt_functions = 15
 div64_functions = 3
 
 [riscv32imc-unknown-none-elf.mstp]
-text = 20000
-rodata = 1456
+text = 21952
+rodata = 1520
 data = 64
 bss = 6224
-flash = 21472
+flash = 23488
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
