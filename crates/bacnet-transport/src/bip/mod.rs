@@ -45,8 +45,8 @@ mod fanout;
 mod groups;
 mod socket;
 use bbmd_start::{
-    initial_bbmd_state, refresh_own_address, warn_if_broadcast_may_leave_another_interface,
-    BbmdConfig, OwnAddressContext,
+    initial_bbmd_state, refresh_own_address, subnet_mask_of,
+    warn_if_broadcast_may_leave_another_interface, BbmdConfig, OwnAddressContext,
 };
 use bvlc_response::{decode_bvlc_result_code, unexpected_response, BvlcResponseKind};
 use socket::BipSocket;
@@ -663,17 +663,30 @@ impl TransportPort for BipTransport {
             host: &local_unicast_ips,
             route_ip,
         };
+        // With the own address goes the mask of the subnet it is on, looked
+        // up at each start: a peer's forward sent from that subnet isn't
+        // broadcast there again (Annex J.4.5). A first start looks it up
+        // before it consumes the configuration, so a start cancelled at the
+        // lookup is retried whole.
         let bbmd_ip = if let Some(config) = &self.bbmd_config {
-            let state = initial_bbmd_state(config, self.bdt_persist_path.as_deref(), &own_address)?;
+            let mut state =
+                initial_bbmd_state(config, self.bdt_persist_path.as_deref(), &own_address)?;
             let (ip, _) = state.local_address();
+            state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
             self.bbmd = Some(Arc::new(std::sync::Mutex::new(state)));
             Some(ip)
         } else if let Some(bbmd) = self.bbmd.as_ref().filter(|_| wildcard_bind) {
-            // An explicit interface keeps its IP and port across restarts.
-            let mut state = bbmd::lock(bbmd);
-            refresh_own_address(&mut state, &own_address)?;
-            Some(state.local_address().0)
+            // An explicit interface keeps its IP and port, and its mask,
+            // across restarts. No lock is held across the lookup.
+            let ip = {
+                let mut state = bbmd::lock(bbmd);
+                refresh_own_address(&mut state, &own_address)?;
+                state.local_address().0
+            };
+            let mask = subnet_mask_of(Ipv4Addr::from(ip)).await;
+            bbmd::lock(bbmd).set_subnet_mask(mask);
+            Some(ip)
         } else {
             None
         };

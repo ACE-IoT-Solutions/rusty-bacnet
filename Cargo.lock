@@ -272,6 +272,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-bip-core"
+version = "0.12.0"
+dependencies = [
+ "bacnet-bip-codec",
+ "proptest",
+]
+
+[[package]]
 name = "bacnet-cli"
 version = "0.12.0"
 dependencies = [
@@ -473,6 +481,7 @@ version = "0.12.0"
 dependencies = [
  "aws-lc-rs",
  "bacnet-bip-codec",
+ "bacnet-bip-core",
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",

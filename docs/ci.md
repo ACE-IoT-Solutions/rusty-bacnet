@@ -141,8 +141,8 @@ but not `[workspace.lints]`, since samples print to the terminal.
 
 `bacnet-types`, `bacnet-encoding` and `bacnet-services` build without `std`
 when `alloc` replaces their default `std` feature, and the MS/TP and B/IP
-crates (`bacnet-mstp-codec`, `bacnet-mstp-core` and `bacnet-bip-codec`) never
-use it. A host build always has `std` and an allocator, so no single run
+crates (`bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec` and
+`bacnet-bip-core`) never use it. A host build always has `std` and an allocator, so no single run
 proves all of that; each check covers a part.
 
 | Check | Job | What it shows |
@@ -1185,8 +1185,9 @@ Clippy runs six ways:
 - the PyO3 crate on its own;
 - `bacnet-cli` with no default features (without the TUI);
 - the `no_std` crates (`bacnet-mstp-codec`, `bacnet-mstp-core`,
-  `bacnet-bip-codec`, and `bacnet-types`, `bacnet-encoding` and
-  `bacnet-services` with `alloc` in place of their default `std`) on
+  `bacnet-bip-codec`, `bacnet-bip-core`, and `bacnet-types`,
+  `bacnet-encoding` and `bacnet-services` with `alloc` in place of their
+  default `std`) on
   bare-metal targets, once per feature set
   (`scripts/ci/check-no-std.sh`). A host build always has `std` and an
   allocator, so only a target without them shows that a crate needs neither.
