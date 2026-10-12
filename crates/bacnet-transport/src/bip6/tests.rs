@@ -121,13 +121,39 @@ fn original_function_requires_matching_ip_destination_and_vmac() {
         &binding(local_ip, local_vmac, &[local_ip], false),
         Some(true),
     ));
-    assert!(!original_destination_matches(
-        Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION,
-        local_ip.into(),
-        Some(local_vmac),
-        &binding(local_ip, local_vmac, &[local_ip], false),
-        Some(false),
-    ));
+    // The BBMD requests this node refuses must come to its own address: a
+    // group delivery would draw a NAK from every member.
+    for function in [
+        Bvlc6Function::REGISTER_FOREIGN_DEVICE,
+        Bvlc6Function::DELETE_FOREIGN_DEVICE_TABLE_ENTRY,
+        Bvlc6Function::DISTRIBUTE_BROADCAST_TO_NETWORK,
+    ] {
+        assert!(
+            original_destination_matches(
+                function,
+                local_ip.into(),
+                None,
+                &binding(local_ip, local_vmac, &[local_ip], false),
+                Some(false),
+            ),
+            "{function:?}"
+        );
+        for (destination, os) in [
+            (BACNET_IPV6_MULTICAST_SITE_LOCAL, None),
+            (local_ip, Some(true)),
+        ] {
+            assert!(
+                !original_destination_matches(
+                    function,
+                    destination.into(),
+                    None,
+                    &binding(local_ip, local_vmac, &[local_ip], false),
+                    os,
+                ),
+                "{function:?} {destination} {os:?}"
+            );
+        }
+    }
 }
 
 /// U.3: the three messages that name a recipient's VMAC pass only when it

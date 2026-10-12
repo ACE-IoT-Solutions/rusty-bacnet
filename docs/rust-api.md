@@ -35,8 +35,10 @@ with `default-features = false, features = ["alloc"]`. Each crate needs `std`
 `bacnet-encoding` logs nothing. `bytes` has to build for the target too: on
 one without atomic compare-and-swap, such as ARMv6-M, that takes its
 `extra-platforms` feature and a `portable-atomic` backend the firmware
-chooses. CI builds all three for ARMv7E-M and RISC-V, and `bacnet-types` for
-ARMv6-M as well (`scripts/ci/check-no-std.sh`).
+chooses. CI builds all three for ARMv6-M, ARMv7E-M and RISC-V
+(`scripts/ci/check-no-std.sh`), on ARMv6-M with `portable-atomic`'s
+`critical-section` backend, and runs their tests and doctests with `alloc`
+and without `std` ([CI](ci.md#no_std-checks)).
 
 ### Enums (`bacnet_enum!` macro)
 
@@ -860,6 +862,30 @@ A Forwarded-NPDU whose original source address is an IPv6 multicast group, a
 group destination at any port, is malformed for the same reason as on B/IP:
 it is dropped before the network layer sees it and counted in
 `forwarded_group_origin_drops()` (#1493).
+
+The transport is never a B/IPv6 BBMD. A Register-Foreign-Device,
+Delete-Foreign-Device-Table-Entry or Distribute-Broadcast-To-Network sent to
+its own address gets that request's BVLC-Result NAK at the datagram's source
+(Annex U.4.4, U.4.5.3, U.4.5.4). Like the Address-Resolution and
+Virtual-Address-Resolution answers, a NAK only goes to an *answerable
+source*: not a group, unspecified, IPv4-mapped or port 0, and not this node's
+own address. Only an answerable source is learned into the VMAC table.
+
+A Forwarded-Address-Resolution for the node's VMAC gets an
+Address-Resolution-ACK at the asker's address the message carries, when that
+address is *usable without a scope ID* (a unicast address that isn't
+unspecified, loopback, link-local or IPv4-mapped, at a non-zero port), and
+the asker is learned (U.5). A foreign device
+takes one only by unicast from its configured BBMD. Any other node takes the
+copy a BBMD multicasts into its domain (U.4.4), from an answerable source on
+a BACnet group. It has no configured BBMD to check against, but only the node
+that owns the target VMAC answers, with one datagram.
+
+The NAKs and these answers count against two separate quotas, each per
+destination address and overall, so forged requests can't turn the node into
+a reflector and a NAK flood can't silence address resolution.
+Address-Resolution and Virtual-Address-Resolution answers stay outside both
+(#1632).
 
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is

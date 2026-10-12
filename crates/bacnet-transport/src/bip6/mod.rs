@@ -55,6 +55,7 @@ mod ingress;
 mod link;
 mod port;
 mod receive;
+mod reply_limit;
 mod send;
 mod socket;
 mod vmac_table;
@@ -69,6 +70,8 @@ pub use vmac_table::generate_random_vmac;
 mod frame_tests;
 #[cfg(test)]
 mod group_delivery_tests;
+#[cfg(test)]
+mod reply_tests;
 #[cfg(test)]
 mod safety_tests;
 #[cfg(test)]
