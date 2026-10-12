@@ -65,7 +65,8 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-case $timeout in '' | *[!0-9]*) usage ;; esac
+# A positive whole number, without leading zeros (bash would read 08 as octal).
+case $timeout in '' | *[!0-9]* | 0*) usage ;; esac
 
 boards=()
 if [ ${#wanted[@]} -eq 0 ]; then

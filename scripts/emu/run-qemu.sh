@@ -14,7 +14,8 @@
 # otherwise what firmware/link/src/bin/emulate/mod.rs documents. An image
 # still running at the timeout is killed and fails as 124, as a hang or a
 # fault the image couldn't report would. The script exits 1 if any image
-# failed. It needs only bash and QEMU, so the Docker image needs nothing else.
+# failed. Besides QEMU it needs only bash, sleep and head, which the Docker
+# image's base already has.
 set -uo pipefail
 
 if [ $# -lt 3 ]; then
@@ -23,8 +24,9 @@ if [ $# -lt 3 ]; then
 fi
 timeout=$1 dir=$2
 shift 2
-case $timeout in '' | *[!0-9]*)
-  echo "error: the timeout is a whole number of seconds, not '$timeout'" >&2
+# A positive whole number, without leading zeros (bash would read 08 as octal).
+case $timeout in '' | *[!0-9]* | 0*)
+  echo "error: the timeout is a positive whole number of seconds, not '$timeout'" >&2
   exit 2
   ;;
 esac

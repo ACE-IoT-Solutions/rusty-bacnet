@@ -8,8 +8,10 @@
 # base image was built from (its debian.sources records it), and both QEMU
 # packages pinned to that snapshot's version. apt checks each Release file
 # against the Debian archive keyring, so plain HTTP is fine, and old
-# snapshots' Valid-Until dates are ignored. trixie packages the RISC-V
-# emulators apart from qemu-system-misc, which keeps the image near 250 MB.
+# snapshots' Valid-Until dates are ignored. snapshot.debian.org throttles
+# busy clients, so each fetch is retried up to 5 times. trixie packages the
+# RISC-V emulators apart from qemu-system-misc, which keeps the image near
+# 330 MB.
 #
 # To move to a newer QEMU: take a newer trixie-slim digest, its snapshot
 # date from /etc/apt/sources.list.d/debian.sources, and the version
@@ -33,8 +35,8 @@ RUN printf '%s\n' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
       > /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install -y --no-install-recommends \
+    && apt-get -o Acquire::Retries=5 -o Acquire::Check-Valid-Until=false update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       "qemu-system-arm=${QEMU_VERSION}" \
       "qemu-system-riscv=${QEMU_VERSION}" \
     && rm -rf /var/lib/apt/lists/*

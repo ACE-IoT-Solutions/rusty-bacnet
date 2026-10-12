@@ -427,7 +427,7 @@ python3 scripts/ci/test-firmware-size.py                     # the size helper's
 ### Emulation (manual)
 
 The [firmware link test](#firmware-link-test) builds its images and CI never
-runs them. `scripts/emu/emulate-firmware.sh` (#1626) runs them, on boards
+runs them. `scripts/emu/emulate-firmware.sh` (#1651) runs them, on boards
 QEMU emulates, so each stack's code executes on the instruction set it was
 built for. It is a manual check, run at intervals such as a toolchain bump
 or a change to a `no_std` crate's hot paths: no push, pull request or
