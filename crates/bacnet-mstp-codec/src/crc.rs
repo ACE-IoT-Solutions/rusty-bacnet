@@ -1,4 +1,5 @@
-//! Clause 9.6 CRC implementations.
+//! The CRCs of Clause 9.6: the header CRC-8, the data CRC-16, and the
+//! CRC-32K of extended frames.
 
 const CRC8_TABLE: [u8; 256] = {
     let mut table = [0u8; 256];
@@ -98,4 +99,82 @@ pub fn crc16_valid(data_with_crc: &[u8]) -> bool {
     let split = data_with_crc.len() - 2;
     let stored = u16::from_le_bytes([data_with_crc[split], data_with_crc[split + 1]]);
     crc16(&data_with_crc[..split]) == stored
+}
+
+/// The CRC-32K (Koopman) generator of Clause 9.6.3, bit-reversed for a
+/// register that shifts right, least significant bit first (Annex G.3).
+const CRC32K_POLYNOMIAL: u32 = 0xEB31_D82E;
+
+/// The register after `bits` shifts of `crc` with no new input.
+const fn crc32k_shift(mut crc: u32, bits: u32) -> u32 {
+    let mut bit = 0;
+    while bit < bits {
+        crc = if crc & 1 != 0 {
+            (crc >> 1) ^ CRC32K_POLYNOMIAL
+        } else {
+            crc >> 1
+        };
+        bit += 1;
+    }
+    crc
+}
+
+/// One entry per octet value: 1 KiB, one lookup per octet.
+#[cfg(feature = "crc32k-table")]
+const CRC32K_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        table[i] = crc32k_shift(i as u32, 8);
+        i += 1;
+    }
+    table
+};
+
+/// One entry per nibble value: 64 octets, two lookups per octet.
+#[cfg(not(feature = "crc32k-table"))]
+const CRC32K_NIBBLES: [u32; 16] = {
+    let mut table = [0u32; 16];
+    let mut i = 0;
+    while i < 16 {
+        table[i] = crc32k_shift(i as u32, 4);
+        i += 1;
+    }
+    table
+};
+
+/// Accumulate `data` into the CRC-32K register `crc`.
+pub(crate) fn crc32k_update(mut crc: u32, data: &[u8]) -> u32 {
+    for &byte in data {
+        #[cfg(feature = "crc32k-table")]
+        {
+            crc = (crc >> 8) ^ CRC32K_TABLE[((crc ^ u32::from(byte)) & 0xFF) as usize];
+        }
+        #[cfg(not(feature = "crc32k-table"))]
+        {
+            crc ^= u32::from(byte);
+            crc = (crc >> 4) ^ CRC32K_NIBBLES[(crc & 0x0F) as usize];
+            crc = (crc >> 4) ^ CRC32K_NIBBLES[(crc & 0x0F) as usize];
+        }
+    }
+    crc
+}
+
+/// Compute the CRC-32K of an extended frame's Encoded Data field: the
+/// complement of the register, which goes out low octet first, COBS-encoded
+/// as the Encoded CRC-32K field (Clauses 9.6.3, 9.10.2).
+///
+/// By default the codec works it out with a 16-entry table, two lookups per
+/// octet. The `crc32k-table` feature uses a 256-entry table instead, one
+/// lookup per octet, for about 1 KiB more flash. The results are the same.
+pub fn crc32k(data: &[u8]) -> u32 {
+    !crc32k_update(u32::MAX, data)
+}
+
+/// Compute the running CRC-32K register over `data` from its all-ones start,
+/// without the final complement. Run over the Encoded Data and then the four
+/// CRC octets decoded from a good frame's Encoded CRC-32K field, it ends at
+/// [`CRC32K_RESIDUAL`](crate::CRC32K_RESIDUAL).
+pub fn crc32k_accumulate_all(data: &[u8]) -> u32 {
+    crc32k_update(u32::MAX, data)
 }

@@ -142,7 +142,8 @@
 //! - **Host-style input.** Received octets go through `on_octet` one at a
 //!   time. The chunked `on_validated_frame` and `on_host_activity` paths of
 //!   a host adapter are not exercised.
-//! - **COBS-encoded frames**, which the codec does not support yet.
+//! - **Extended (COBS-encoded) frames**, which the codec handles but the
+//!   core does not take yet.
 //!
 //! Each powered-on core borrows a receive buffer for its whole life, so the
 //! simulator leaks one 512-octet buffer per power-up; scenarios power nodes

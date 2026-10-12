@@ -219,13 +219,38 @@ fn a_frame_too_long_for_storage_counts_only_for_this_station() {
 }
 
 #[test]
-fn a_cobs_frame_counts_only_for_this_station() {
-    // COBS type 32 with a Length of 506, inside the COBS range: a good
-    // header the codec can't decode. Its body would follow as noise.
-    let header = |destination| raw_header(0x20, destination, 5, 506);
+fn a_reserved_cobs_frame_counts_only_for_this_station() {
+    // Reserved COBS type 34 with a Length of 506, inside the COBS range: a
+    // good header of a type the codec doesn't decode. Its body would follow
+    // as noise; here it never comes.
+    let header = |destination| raw_header(0x22, destination, 5, 506);
     assert!(!counted_invalid(600, &header(OTHER)));
     assert!(counted_invalid(600, &header(STATION)));
     assert!(counted_invalid(600, &header(BROADCAST_MAC)));
+}
+
+/// The core doesn't take extended frames yet: the codec decodes them, but
+/// the core drops one its storage holds as an unsupported type, and one its
+/// storage can't hold as too long. Either way it counts only when it is for
+/// this station or broadcast, as a COBS frame did before the codec decoded
+/// them.
+#[test]
+fn an_extended_frame_counts_only_for_this_station() {
+    // 100 data octets make a 114-octet frame.
+    let frame = |destination| {
+        encode(Frame::new(
+            FrameType::BACnetExtendedDataNotExpectingReply,
+            destination,
+            5,
+            &[0x11; 100],
+        ))
+    };
+    assert_eq!(frame(OTHER).len(), 114);
+    for storage in [64, 600] {
+        assert!(!counted_invalid(storage, &frame(OTHER)), "{storage}");
+        assert!(counted_invalid(storage, &frame(STATION)), "{storage}");
+        assert!(counted_invalid(storage, &frame(BROADCAST_MAC)), "{storage}");
+    }
 }
 
 #[test]
@@ -260,6 +285,19 @@ fn a_bad_header_counts_whatever_its_destination() {
         counted_invalid(600, &raw_header(0x06, OTHER, 5, 600)),
         "length"
     );
+    // A COBS header with source 255, or a Length outside the COBS range
+    // (Clause 9.5.8): the codec checks both before the type now, so neither
+    // passes for a good header of a type it doesn't decode (#1611).
+    assert!(
+        counted_invalid(600, &raw_header(0x22, OTHER, 255, 506)),
+        "COBS source"
+    );
+    for length in [4, 2044] {
+        assert!(
+            counted_invalid(600, &raw_header(0x20, OTHER, 5, length)),
+            "COBS length {length}"
+        );
+    }
 }
 
 #[test]

@@ -38,6 +38,19 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             match self.decoder.push_slice(input) {
                 DecodeEvent::NeedMore => return Ok(()),
                 DecodeEvent::Invalid { .. } => {}
+                // The core doesn't take extended frames yet: one that the
+                // storage was large enough to decode is dropped as the
+                // codec used to drop every COBS type.
+                DecodeEvent::Frame { frame: decoded, .. }
+                    if decoded.header.frame_type.is_cobs() =>
+                {
+                    dropped = Some((
+                        FrameError::UnsupportedCobsFrame {
+                            raw_type: decoded.header.frame_type.to_raw(),
+                        },
+                        Some(decoded.header.destination),
+                    ))
+                }
                 DecodeEvent::Frame { frame: decoded, .. } => {
                     frame = Some(Self::copy_frame(decoded))
                 }
@@ -67,16 +80,14 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// was going. Trouble found past the header (a length beyond this
     /// station's buffer, an encoding it can't take, a bad data CRC) counts
     /// only on a frame for this station or broadcast (Clause 9.5.4.4); a frame
-    /// for another station is skipped without looking at its data.
-    ///
-    /// The codec refuses a COBS-encoded type before it looks at the source or
-    /// the length, so a COBS header with source 255 or a Length outside the
-    /// COBS range, which Clause 9.5.8 rejects, looks the same as a good one and
-    /// is skipped when it is for another station.
+    /// for another station is skipped without looking at its data. The codec
+    /// checks a header's source and Length before its type, so an unsupported
+    /// COBS type always has a good header.
     fn dropped_candidate_is_invalid(&self, error: FrameError, destination: Option<u8>) -> bool {
         match error {
             FrameError::HeaderCrcMismatch
             | FrameError::BroadcastSource
+            | FrameError::InvalidCobsLength { .. }
             | FrameError::Oversize { .. } => true,
             // No destination means the header never completed, which the
             // storage `new` accepts rules out; count it to be safe.
@@ -88,6 +99,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             // candidate; a refused octet (BufferExhausted) is lost input.
             FrameError::TooShort { .. }
             | FrameError::InvalidPreamble { .. }
+            | FrameError::ExtendedFrame { .. }
             | FrameError::UnexpectedData { .. }
             | FrameError::MissingVendorId { .. }
             | FrameError::Truncated { .. }
