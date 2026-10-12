@@ -13,6 +13,7 @@ use tracing::{debug, warn};
 use crate::udp_metadata::{DestinationReceiver, IpVersion, ReceivedDatagram};
 
 use super::io::{handle_bvll_message, RecvContext};
+use super::receive_counters::{DropReason, ReceiveDrops};
 use super::socket::{BipSocket, BoundSockets};
 
 /// Which of a transport's sockets a datagram arrived on (socket.rs).
@@ -67,7 +68,7 @@ pub(super) struct Listeners {
 
 /// Which socket [`Listeners::recv`] read: `None` for the primary, or the
 /// index of a broadcast listener.
-type Source = Option<usize>;
+pub(super) type Source = Option<usize>;
 
 impl Listeners {
     /// Hand the sockets one start bound to tokio. Each keeps `lease` until
@@ -130,19 +131,49 @@ pub(super) async fn receive_loop(
                 let data = listeners.data(source, received.len);
                 handle_datagram(data, &received, arrival, &local, &ctx).await;
             }
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                debug!(error = %e, "Dropping UDP datagram with invalid destination metadata");
-            }
-            Err(e) => match source {
-                None => {
-                    warn!(error = %e, "UDP recv error");
-                    break;
-                }
-                Some(index) => {
-                    warn!(error = %e, "B/IP broadcast listener failed; closing it");
-                    listeners.broadcast[index] = None;
-                }
+            Err(e) => match receive_failed(source, &e, &ctx.drops) {
+                AfterReceiveError::Continue => {}
+                AfterReceiveError::CloseListener(index) => listeners.broadcast[index] = None,
+                AfterReceiveError::Stop => break,
             },
+        }
+    }
+}
+
+/// What the receive loop does after a failed read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AfterReceiveError {
+    /// Read on: the error cost one datagram.
+    Continue,
+    /// Close the broadcast listener with this index, and read on.
+    CloseListener(usize),
+    /// Stop receiving: the primary socket failed.
+    Stop,
+}
+
+/// Count and log a failed read on `source`, and say what follows. An
+/// `InvalidData` error drops one datagram (too large for the buffer, without
+/// usable metadata, or on Windows an error reported for an earlier send; see
+/// udp_metadata.rs) and reading goes on. Any other error closes the socket
+/// it came from.
+pub(super) fn receive_failed(
+    source: Source,
+    error: &io::Error,
+    drops: &ReceiveDrops,
+) -> AfterReceiveError {
+    drops.count(DropReason::ReceiveError);
+    if error.kind() == io::ErrorKind::InvalidData {
+        debug!(%error, "Dropping UDP datagram with invalid destination metadata");
+        return AfterReceiveError::Continue;
+    }
+    match source {
+        None => {
+            warn!(%error, "UDP recv error");
+            AfterReceiveError::Stop
+        }
+        Some(index) => {
+            warn!(%error, "B/IP broadcast listener failed; closing it");
+            AfterReceiveError::CloseListener(index)
         }
     }
 }
@@ -281,17 +312,23 @@ pub(super) async fn handle_datagram(
     local: &IngressAddresses,
     ctx: &RecvContext,
 ) {
-    // A group source goes before anything in the frame is read (#1504).
+    // An IPv4 socket reports only IPv4 peers: any other is unusable
+    // metadata, as in `receive_failed`.
     let SocketAddr::V4(peer) = received.peer else {
+        ctx.drops.count(DropReason::ReceiveError);
         return;
     };
+    // A group source goes before anything in the frame is read (#1504).
     if !ctx.group_sources.admits_sender(peer) {
         return;
     }
+    // Per datagram, so at debug: a flood of them must not flood the log at
+    // warn. The counters carry the signal (#1624).
     let frame = match BvllFrame::decode(data) {
         Ok(frame) => frame,
         Err(e) => {
-            warn!(error = %e, "Failed to decode BVLL frame");
+            ctx.drops.count(DropReason::header(&e));
+            debug!(error = %e, "Failed to decode BVLL frame");
             return;
         }
     };
@@ -304,6 +341,7 @@ pub(super) async fn handle_datagram(
         local.wildcard_bind,
         received.os_group_delivery,
     ) else {
+        ctx.drops.count(DropReason::DestinationMismatch);
         debug!(
             function = frame.function.to_raw(),
             destination = %received.destination,
@@ -316,6 +354,7 @@ pub(super) async fn handle_datagram(
     // own address takes that), and another node on this port may share the
     // listener, so the listener keeps broadcasts only.
     if arrival == Arrival::BroadcastListener && delivery != Delivery::Broadcast {
+        ctx.drops.count(DropReason::ListenerMismatch);
         debug!(
             destination = %received.destination,
             "Dropping unicast on the B/IP broadcast listener"
@@ -325,6 +364,7 @@ pub(super) async fn handle_datagram(
     if arrival == Arrival::BroadcastListener
         && arrived_elsewhere(local.listener_interface, received.arrival_index)
     {
+        ctx.drops.count(DropReason::ListenerMismatch);
         let (own, arrival) = (local.listener_interface, received.arrival_index);
         if local.interface_mismatch_seen.swap(true, Ordering::Relaxed) {
             debug!(

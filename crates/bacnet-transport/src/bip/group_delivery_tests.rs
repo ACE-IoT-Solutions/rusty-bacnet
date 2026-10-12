@@ -38,6 +38,7 @@ async fn context(broadcast_addr: Ipv4Addr) -> (RecvContext, mpsc::Receiver<Recei
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
     (ctx, npdu_rx)
 }

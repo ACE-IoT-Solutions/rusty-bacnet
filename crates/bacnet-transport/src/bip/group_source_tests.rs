@@ -81,6 +81,7 @@ async fn context(
             Arc::clone(&drops.sender),
             Arc::clone(&drops.origin),
         ),
+        drops: Arc::default(),
         force_dbtn_forward_failure: false,
     };
     (ctx, npdu_rx)
