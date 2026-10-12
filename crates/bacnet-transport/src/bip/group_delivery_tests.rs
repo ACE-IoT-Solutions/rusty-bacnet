@@ -1,6 +1,6 @@
 //! An Original-Unicast-NPDU that was sent to a broadcast address is never
 //! handed up as a directed NPDU (#1301). The receive path drops it, and the
-//! handler takes the NPDU's `link_layer_group` from how the datagram arrived.
+//! node takes the NPDU's `link_layer_group` from how the datagram arrived.
 //! Datagrams are fed in-process with the destination the OS would report.
 
 use super::ingress::arrived_elsewhere;
@@ -17,8 +17,17 @@ const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 10);
 const SUBNET_BROADCAST: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 255);
 const SENDER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 30), 0xBAC0);
 
-/// A receive context whose only listener is the returned NPDU channel.
+/// A receive context for a node at 192.0.2.10 whose only listener is the
+/// returned NPDU channel.
 async fn context(broadcast_addr: Ipv4Addr) -> (RecvContext, mpsc::Receiver<ReceivedNpdu>) {
+    context_at(LOCAL, broadcast_addr).await
+}
+
+/// [`context`] for a node at `own`.
+async fn context_at(
+    own: Ipv4Addr,
+    broadcast_addr: Ipv4Addr,
+) -> (RecvContext, mpsc::Receiver<ReceivedNpdu>) {
     let socket = Arc::new(super::BipSocket::new(
         UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
             .await
@@ -26,20 +35,13 @@ async fn context(broadcast_addr: Ipv4Addr) -> (RecvContext, mpsc::Receiver<Recei
         None,
     ));
     let (npdu_tx, npdu_rx) = mpsc::channel(4);
-    let ctx = RecvContext {
-        local_mac: encode_bip_mac(LOCAL.octets(), 0xBAC0),
+    let ctx = RecvContext::for_test(
         socket,
         npdu_tx,
-        bbmd: None,
-        broadcast_addr,
-        broadcast_port: 0xBAC0,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
-    };
+        SocketAddrV4::new(own, 0xBAC0),
+        SocketAddrV4::new(broadcast_addr, 0xBAC0),
+        None,
+    );
     (ctx, npdu_rx)
 }
 
@@ -94,7 +96,6 @@ async fn receive_on(
 
 fn bound_to(local_ip: Ipv4Addr) -> IngressAddresses {
     IngressAddresses {
-        local_ip,
         unicast_ips: vec![local_ip],
         wildcard_bind: false,
         listener_interface: None,
@@ -102,20 +103,24 @@ fn bound_to(local_ip: Ipv4Addr) -> IngressAddresses {
     }
 }
 
+/// An Original-Unicast-NPDU is handed up only when it was sent to this
+/// node, so never as a group NPDU: one sent to the broadcast address doesn't
+/// fit its function.
 #[tokio::test]
-async fn original_unicast_takes_its_group_flag_from_the_delivery() {
+async fn original_unicast_is_handed_up_only_as_directed() {
     let (ctx, mut rx) = context(SUBNET_BROADCAST).await;
     let msg = BvllMessage {
         function: BvlcFunction::ORIGINAL_UNICAST_NPDU,
         payload: Bytes::from_static(CONFIRMED_REQUEST),
     };
     let sender = (SENDER.ip().octets(), SENDER.port());
-    for (delivery, group) in [(Delivery::Broadcast, true), (Delivery::Unicast, false)] {
-        handle_bvll_message(&msg, sender, delivery, &ctx).await;
-        let npdu = rx.try_recv().expect("the handler hands the NPDU up");
-        assert_eq!(npdu.npdu.as_ref(), CONFIRMED_REQUEST);
-        assert_eq!(npdu.link_layer_group, group, "{delivery:?}");
-    }
+    handle_bvll_message(&msg, sender, Delivery::Broadcast, &ctx).await;
+    assert!(rx.try_recv().is_err());
+    assert_eq!(ctx.drops.snapshot().destination_mismatch, 1);
+    handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;
+    let npdu = rx.try_recv().expect("the handler hands the NPDU up");
+    assert_eq!(npdu.npdu.as_ref(), CONFIRMED_REQUEST);
+    assert!(!npdu.link_layer_group);
 }
 
 #[tokio::test]
@@ -157,7 +162,7 @@ async fn original_unicast_sent_to_a_broadcast_address_is_dropped() {
 /// decides.
 #[tokio::test]
 async fn the_function_decides_where_the_broadcast_address_is_the_local_one() {
-    let (ctx, mut rx) = context(Ipv4Addr::LOCALHOST).await;
+    let (ctx, mut rx) = context_at(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST).await;
     let local = bound_to(Ipv4Addr::LOCALHOST);
     for (function, group) in [
         (BvlcFunction::ORIGINAL_UNICAST_NPDU, false),

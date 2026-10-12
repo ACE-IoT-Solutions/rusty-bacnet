@@ -164,3 +164,56 @@ fn a_bbmd_that_also_registers_as_a_foreign_device_has_no_single_mode() {
         .retain_network_port_lease_internal(Arc::new(()))
         .is_err());
 }
+
+fn foreign_config() -> ForeignDeviceConfig {
+    ForeignDeviceConfig {
+        bbmd_ip: Ipv4Addr::new(10, 0, 0, 1),
+        bbmd_port: 47808,
+        renewal_interval: None,
+        ttl: 60,
+    }
+}
+
+fn assert_refused_as_both(error: Error) {
+    assert!(matches!(error, Error::Encoding(_)), "{error:?}");
+    assert!(
+        error
+            .to_string()
+            .contains("a BBMD that also registers as a foreign device"),
+        "{error}"
+    );
+}
+
+/// A transport is in one B/IP mode (#938): one set up both as a BBMD and as
+/// a foreign device fails to start, before it binds or sends anything, in
+/// either order of setup.
+#[tokio::test]
+async fn a_bbmd_that_also_registers_as_a_foreign_device_fails_to_start() {
+    for bbmd_first in [true, false] {
+        // A nonlocal interface would fail the start later, at the bind.
+        let mut both = BipTransport::new(Ipv4Addr::new(192, 0, 2, 1), 0, Ipv4Addr::BROADCAST);
+        if bbmd_first {
+            both.enable_bbmd(vec![]);
+            both.register_as_foreign_device(foreign_config());
+        } else {
+            both.register_as_foreign_device(foreign_config());
+            both.enable_bbmd(vec![]);
+        }
+        assert_refused_as_both(both.start().await.unwrap_err());
+        assert!(both.socket.is_none());
+        assert!(!both.bvlc_client_snapshot().running);
+    }
+}
+
+/// The BBMD a transport started as stays across a stop, so registering it as
+/// a foreign device afterwards fails the next start too.
+#[tokio::test]
+async fn a_started_bbmd_cant_restart_as_a_foreign_device() {
+    let mut bbmd = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    bbmd.enable_bbmd(vec![]);
+    let _rx = bbmd.start().await.unwrap();
+    bbmd.stop().await.unwrap();
+    bbmd.register_as_foreign_device(foreign_config());
+    assert_refused_as_both(bbmd.start().await.unwrap_err());
+    assert!(bbmd.socket.is_none());
+}

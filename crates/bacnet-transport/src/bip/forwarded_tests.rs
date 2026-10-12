@@ -57,18 +57,13 @@ async fn forwarded_npdu_from_bdt_peer_uses_originating_source_mac() {
         .unwrap();
 
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_broadcast_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_broadcast_port),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
@@ -142,18 +137,13 @@ async fn forwarded_npdu_from_non_bdt_sender_is_rejected_without_delivery() {
     );
 
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket: bbmd_socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_broadcast_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            bbmd_socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_broadcast_port),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
@@ -221,18 +211,13 @@ async fn forwarded_npdu_from_one_hop_peer_is_rebroadcast_when_own_row_is_two_hop
     );
 
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket: bbmd_socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_broadcast_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            bbmd_socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_broadcast_port),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
@@ -310,18 +295,13 @@ async fn forwarded_npdu_fdt_fanout_respects_budget_and_increments_counter() {
 
     let bbmd_state = Arc::new(std::sync::Mutex::new(state));
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket: bbmd_socket,
-        npdu_tx,
-        bbmd: Some(bbmd_state.clone()),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_broadcast_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            bbmd_socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_broadcast_port),
+            Some(bbmd_state.clone()),
+        )
     };
     let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
@@ -384,18 +364,13 @@ async fn forwarded_npdu_bbmd_self_sender_is_ignored_before_delivery_and_fanout()
     );
     let (npdu_tx, mut npdu_rx) = mpsc::channel(1);
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(self_sender.0, local_port),
-        socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_sink.local_addr().unwrap().port(),
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(self_sender.0), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_sink.local_addr().unwrap().port()),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let mut msg = forwarded_message(([192, 0, 2, 9], 47808), &[1, 0x80, 0x13, 0, 99, 1]);
     // Remote embedded origin does not make our looped-back UDP send a peer.
@@ -424,29 +399,25 @@ async fn forwarded_npdu_bbmd_self_sender_is_ignored_before_delivery_and_fanout()
 
 #[test]
 fn delivery_is_broadcast_only_for_the_configured_or_limited_broadcast_address() {
-    use std::net::{IpAddr, Ipv6Addr};
+    use bacnet_bip_core::node::{Addressed, LocalAddresses};
     let configured = Ipv4Addr::new(192, 0, 2, 255);
-    for (destination, os, expected) in [
-        (IpAddr::V4(configured), None, Delivery::Broadcast),
-        (IpAddr::V4(Ipv4Addr::BROADCAST), None, Delivery::Broadcast),
-        (IpAddr::V4(configured), Some(true), Delivery::Broadcast),
+    let local = LocalAddresses {
+        own: Ipv4Addr::new(192, 0, 2, 10),
+        broadcast: configured,
+        wildcard: None,
+    };
+    for (destination, os, broadcast) in [
+        (configured, None, true),
+        (Ipv4Addr::BROADCAST, None, true),
+        (configured, Some(true), true),
         // An OS that reports unicast delivery overrides the destination.
-        (IpAddr::V4(configured), Some(false), Delivery::Unicast),
-        (
-            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
-            None,
-            Delivery::Unicast,
-        ),
-        (
-            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 255)),
-            None,
-            Delivery::Unicast,
-        ),
-        (IpAddr::V6(Ipv6Addr::LOCALHOST), None, Delivery::Unicast),
+        (configured, Some(false), false),
+        (Ipv4Addr::new(192, 0, 2, 10), None, false),
+        (Ipv4Addr::new(198, 51, 100, 255), None, false),
     ] {
         assert_eq!(
-            Delivery::of(destination, configured, os),
-            expected,
+            Addressed::classify(destination, os, &local).broadcast,
+            broadcast,
             "{destination} {os:?}"
         );
     }
@@ -485,18 +456,13 @@ async fn forwarded_npdu_arriving_by_broadcast_is_not_rebroadcast_locally() {
     );
     let (npdu_tx, mut npdu_rx) = mpsc::channel(2);
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_sink.local_addr().unwrap().port(),
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_sink.local_addr().unwrap().port()),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let msg = forwarded_message(([192, 0, 2, 20], 0xBAC1), &[0x01, 0x00, 0xAA, 0xBB]);
     let assert_forwarded = |frame: &BvllMessage, label: &str| {

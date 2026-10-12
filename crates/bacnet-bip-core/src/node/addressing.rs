@@ -116,11 +116,12 @@ impl Link {
     /// The link's group destinations, with the IP of the node's own B/IP
     /// address as its interface.
     ///
-    /// A host bound to the wildcard address may judge a sender by its
-    /// bind address (0.0.0.0) instead, as the Tokio transport's own group
-    /// test does. The two differ only where the configured broadcast IP is
-    /// the node's own IP, a misconfiguration: this one then takes a sender
-    /// from that IP, which the own-echo rule drops at the node's port.
+    /// A host bound to the wildcard address may judge a destination by its
+    /// bind address (0.0.0.0) instead, as the Tokio transport's
+    /// `is_group_destination` does. The two differ only where the configured
+    /// broadcast IP is the node's own IP, a misconfiguration: this one then
+    /// takes a sender from that IP, which the own-echo rule drops at the
+    /// node's port.
     #[must_use]
     pub const fn groups(&self) -> Groups {
         Groups {

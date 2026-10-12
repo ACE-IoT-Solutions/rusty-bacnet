@@ -1,9 +1,11 @@
 //! Bounded observations of this transport's outgoing management exchanges.
 
 use std::net::SocketAddrV4;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use bacnet_bip_codec::{BvlcFunction, BvlcResultCode};
+use bacnet_bip_codec::BvlcResultCode;
+use bacnet_bip_core::node::{AttemptOutcome, ExchangeCounters, NodeCounters, Operation};
 
 /// One management function's locally observed exchanges, cumulative across
 /// stop/start on the same transport. Counts saturate at `u64::MAX`.
@@ -125,18 +127,111 @@ impl BvlcClientSnapshot {
         self.last_unmatched_result = None;
     }
 
-    pub(super) fn counters(&mut self, function: BvlcFunction) -> &mut BvlcRequestCounters {
-        match function {
-            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE => &mut self.read_bdt,
-            BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE => &mut self.write_bdt,
-            BvlcFunction::READ_FOREIGN_DEVICE_TABLE => &mut self.read_fdt,
-            BvlcFunction::DELETE_FOREIGN_DEVICE_TABLE_ENTRY => &mut self.delete_fdt_entry,
-            BvlcFunction::REGISTER_FOREIGN_DEVICE => &mut self.register_foreign_device,
-            _ => unreachable!("only the five management helpers admit requests"),
+    /// One operation's counters.
+    pub(super) fn counters_mut(&mut self, operation: Operation) -> &mut BvlcRequestCounters {
+        match operation {
+            Operation::ReadBdt => &mut self.read_bdt,
+            Operation::WriteBdt => &mut self.write_bdt,
+            Operation::ReadFdt => &mut self.read_fdt,
+            Operation::DeleteFdtEntry => &mut self.delete_fdt_entry,
+            Operation::RegisterForeignDevice => &mut self.register_foreign_device,
         }
     }
 }
 
-pub(super) fn increment(counter: &mut u64) {
-    *counter = counter.saturating_add(1);
+/// This transport's [`BvlcClientSnapshot`], kept across restarts: the
+/// node's counts are added in as it reports them.
+#[derive(Debug, Default)]
+pub(super) struct ClientRecord {
+    snapshot: Mutex<BvlcClientSnapshot>,
+}
+
+impl ClientRecord {
+    fn lock(&self) -> MutexGuard<'_, BvlcClientSnapshot> {
+        self.snapshot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The transport started: clear the last-attempt status.
+    pub(super) fn start(&self) {
+        let mut snapshot = self.lock();
+        snapshot.reset_status();
+        snapshot.running = true;
+    }
+
+    /// The transport stopped: clear the last-attempt status.
+    pub(super) fn stop(&self) {
+        let mut snapshot = self.lock();
+        snapshot.running = false;
+        snapshot.reset_status();
+    }
+
+    /// The totals and status so far. The countdown to the next attempt is
+    /// the node's to fill in.
+    pub(super) fn snapshot(&self) -> BvlcClientSnapshot {
+        *self.lock()
+    }
+
+    /// Add what the node counted since it last reported.
+    pub(super) fn absorb(&self, counters: &NodeCounters) {
+        if *counters == NodeCounters::default() {
+            return;
+        }
+        let mut snapshot = self.lock();
+        for operation in Operation::ALL {
+            add_exchange(
+                snapshot.counters_mut(operation),
+                counters.exchange(operation),
+            );
+        }
+        let foreign = &mut snapshot.foreign_registration;
+        add(&mut foreign.attempts, counters.registration_attempts);
+        add(&mut foreign.accepted, counters.registrations_accepted);
+        add(&mut foreign.refused, counters.registrations_refused);
+        if let Some(attempt) = counters.last_registration_attempt {
+            foreign.last_bbmd = Some(attempt.bbmd);
+            foreign.last_ttl = Some(attempt.ttl);
+            foreign.last_result = attempt.result;
+            foreign.last_outcome = Some(outcome(attempt.outcome));
+        }
+        add(
+            &mut snapshot.unmatched_responses,
+            counters.unmatched_responses,
+        );
+        if let Some(code) = counters.last_unmatched_result {
+            snapshot.last_unmatched_result = Some(code);
+        }
+        add(
+            &mut snapshot.malformed_responses,
+            counters.malformed_responses,
+        );
+    }
+}
+
+fn add_exchange(total: &mut BvlcRequestCounters, delta: &ExchangeCounters) {
+    add(&mut total.sent, delta.sent);
+    add(&mut total.acknowledgements, delta.acknowledgements);
+    add(&mut total.results, delta.results);
+    if delta.last_result.is_some() {
+        total.last_result = delta.last_result;
+    }
+    add(&mut total.timeouts, delta.timeouts);
+    add(&mut total.busy, delta.busy);
+    add(&mut total.local_errors, delta.local_errors);
+    add(&mut total.malformed_responses, delta.malformed_responses);
+}
+
+fn outcome(outcome: AttemptOutcome) -> ForeignRegistrationOutcome {
+    match outcome {
+        AttemptOutcome::Pending => ForeignRegistrationOutcome::Pending,
+        AttemptOutcome::Accepted => ForeignRegistrationOutcome::Accepted,
+        AttemptOutcome::Refused => ForeignRegistrationOutcome::Refused,
+        AttemptOutcome::TimedOut => ForeignRegistrationOutcome::TimedOut,
+        AttemptOutcome::LocalError => ForeignRegistrationOutcome::LocalError,
+        AttemptOutcome::Cancelled => ForeignRegistrationOutcome::Cancelled,
+    }
+}
+
+/// Add a count the node reported, saturating.
+fn add(total: &mut u64, delta: u32) {
+    *total = total.saturating_add(u64::from(delta));
 }
