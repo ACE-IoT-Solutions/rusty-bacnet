@@ -216,8 +216,9 @@ link.
   - `mstp::run` encodes a few frame types and decodes them with a
     `StreamDecoder`, noise and a bad CRC included. It drives a `MasterCore`
     with injected time through a token pass, a queued data frame, a poll for
-    master, a received broadcast and an answered request, carrying out each
-    action, and records each frame sent with its destination. Then it fills
+    master, a received broadcast and Test_Response and an answered request,
+    carrying out each action, and records each frame sent with its
+    destination. Then it fills
     the unicast queue and offers an NPDU too long for a standard frame.
   - `bip::run` encodes one message of each `Bvll` variant into a slice and
     into a `heapless::Vec` sink and decodes each back, and decodes three
@@ -280,12 +281,18 @@ link.
     code placed in RAM would count toward flash only, and the alignment
     gaps between sections (at most 4 octets of flash per image today)
     count toward neither;
-  - the count of `core::fmt` functions linked in, the largest objects in
-    RAM, and `.text` by crate.
+  - the counts of `core::fmt` functions and of 64-bit division routines
+    linked in, the largest objects in RAM, and `.text` by crate.
 
   It fails when a size is over budget, or when any formatting code is
   linked in: the panic handler never reads the message, so panics cost no
-  formatting code, and a change that adds some shows up here. It also fails
+  formatting code, and a change that adds some shows up here. It fails the
+  same way on any 64-bit division routine (`div64_functions`, budgeted at
+  0): compiler-builtins' `u64_div_rem` and the `__aeabi_uldivmod`,
+  `__udivdi3`, `__umoddi3` and similar entry points to it. These targets
+  have no 64-bit divide instruction, so a 64-bit division by a runtime
+  value costs about 0.9 KB, which the budgets' headroom would otherwise
+  absorb; the MS/TP core divides only in 32 bits (#1618). It also fails
   when the image has no function symbols to look for that code in: the
   images must not be stripped. A size more than 20% under its budget gets a
   notice to tighten it, not a failure. `scripts/ci/test-firmware-size.py`
@@ -295,16 +302,21 @@ link.
   install the toolchain again for builds that take seconds.
 - **What `.text` holds.** Each image's `.text` includes its scenario, not
   just the stack it links. The check's by-crate list shows the split: on
-  `thumbv7m-none-eabi`, the MS/TP image's 18.7 KB is about 6.3 KB of
-  `bacnet-mstp-core`, 6.4 KB of the scenario (with the core code it
-  inlines), 4.3 KB of compiler-builtins and startup code (memory copies,
-  64-bit division and the reset handler; the list shows the unmangled part
-  separately) and 1.4 KB of `bacnet-mstp-codec`.
-- **RAM.** The scenarios' buffers and the core are statics, so `.bss`
-  measures them: the core is 13,344 octets on these targets. `.bss` doesn't
-  count the stack, where `MasterCore::new` builds the core before it is
-  copied into place (#1618). `cargo nextest run -p firmware-link` prints the
-  host sizes from the `ram_sizes` test.
+  `thumbv7m-none-eabi`, the MS/TP image's 16.5 KB is about 5.7 KB of
+  `bacnet-mstp-core`, 5.7 KB of the scenario (with the core code it
+  inlines), 3.4 KB of compiler-builtins and startup code (memory copies
+  and fills, and the reset handler; the list shows the unmangled part
+  separately) and 1.4 KB of `bacnet-mstp-codec`. Only `thumbv6m-none-eabi`,
+  which has no divide instruction, also links compiler-builtins' 32-bit
+  multiply and divide routines.
+- **RAM.** The scenarios' buffers are statics, so `.bss` measures them. The
+  MS/TP image keeps everything large the core borrows in its static, the
+  firmware pattern the core's crate docs describe: receive storage, queues
+  (3,360 octets for `HeaplessQueues<4, 2>`) and `ActionBuffers<1>` (1,028),
+  5,544 octets in all with the codec part's buffers. The core itself, 504
+  octets on these targets, is built on the stack. `.bss` doesn't count the
+  stack. `cargo nextest run -p firmware-link` prints the host sizes from the
+  `ram_sizes` test.
 - **Raising a budget.** Each budget is the measured size plus 12%, rounded
   up to 16 octets. When a change grows an image on purpose, the error
   suggests a new budget; update it and the measured sizes in the file's

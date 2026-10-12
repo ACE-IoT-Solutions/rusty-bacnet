@@ -106,7 +106,8 @@ impl fmt::Display for WireFrame {
     }
 }
 
-/// An NPDU a master's core delivered to its application.
+/// Data a master's core delivered to its application: an NPDU, or a frame
+/// delivered whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
     /// When the core delivered it.
@@ -115,8 +116,11 @@ pub struct Delivery {
     pub source: u8,
     /// Destination station (this node or broadcast).
     pub destination: u8,
-    /// The NPDU.
-    pub npdu: Vec<u8>,
+    /// `None` for an NPDU; for a frame delivered whole (a Test_Response or a
+    /// proprietary frame), its type.
+    pub frame_type: Option<FrameType>,
+    /// The NPDU, or the whole frame's data.
+    pub data: Vec<u8>,
     /// Whether the core bound a reply request to it.
     pub request: bool,
 }

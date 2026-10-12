@@ -118,15 +118,19 @@ fn a_broadcast_test_request_gets_no_answer() {
 }
 
 /// Clause 9.5.6.2 (ReceivedDataNoReply) passes a Test_Response for this
-/// station up to the higher layers. The core accepts one only as the
-/// answer it is waiting for and otherwise drops it; #1617 tracks delivering
-/// it. This documents the current behaviour.
+/// station, or broadcast, up to the higher layers, and a proprietary frame
+/// (Clause 9.3.11) that needs no reply too, whole (#1617).
 #[test]
-fn an_unsolicited_test_response_is_not_passed_up_today() {
-    let mut sim = with_tester(|token| {
+fn test_responses_and_proprietary_frames_are_passed_up() {
+    let proprietary = FrameType::Unknown(0x80);
+    let mut sim = with_tester(move |token| {
         if token == 0 {
+            // Each about 3.4 ms on the wire, so 5 ms apart.
             vec![
                 ScriptSend::frame(PAUSE, FrameType::TestResponse, 0, 5, &[7, 7]),
+                ScriptSend::frame(millis(5), FrameType::TestResponse, 0xFF, 5, &[8]),
+                ScriptSend::frame(millis(10), proprietary, 0, 5, &[0x01, 0x04, 9]),
+                ScriptSend::frame(millis(15), proprietary, 0xFF, 5, &[0x01, 0x04]),
                 ScriptSend::frame(millis(40), FrameType::Token, 0, 5, &[]),
             ]
         } else {
@@ -138,6 +142,26 @@ fn an_unsolicited_test_response_is_not_passed_up_today() {
         .frames()
         .iter()
         .any(|frame| frame.is(FrameType::TestResponse, 5, 0)));
-    assert!(sim.deliveries(0).is_empty());
+    let delivered: Vec<_> = sim
+        .deliveries(0)
+        .iter()
+        .map(|delivery| {
+            (
+                delivery.frame_type,
+                delivery.destination,
+                delivery.data.clone(),
+                delivery.request,
+            )
+        })
+        .collect();
+    assert_eq!(
+        delivered,
+        [
+            (Some(FrameType::TestResponse), 0, vec![7, 7], false),
+            (Some(FrameType::TestResponse), 0xFF, vec![8], false),
+            (Some(proprietary), 0, vec![0x01, 0x04, 9], false),
+            (Some(proprietary), 0xFF, vec![0x01, 0x04], false),
+        ]
+    );
     sim.assert_no_violations();
 }

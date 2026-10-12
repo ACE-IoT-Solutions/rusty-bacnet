@@ -2,11 +2,11 @@
 //! This is where the scenario's behaviour is verified: the bare-metal build
 //! only links it.
 
-use core::mem::{size_of, MaybeUninit};
+use core::mem::size_of;
 
 use bacnet_mstp_codec::{FrameType, StreamDecoder, MAX_STANDARD_FRAME_LENGTH};
-use bacnet_mstp_core::MasterState;
-use firmware_link::mstp::{run, Core, Memory, Queues, Summary};
+use bacnet_mstp_core::{ActionBuffers, HeaplessQueues, MasterCore, MasterState};
+use firmware_link::mstp::{run, Actions, Core, Memory, Queues, Summary};
 
 /// The peer station the scenario exchanges the token with.
 const PEER: u8 = 2;
@@ -14,8 +14,7 @@ const PEER: u8 = 2;
 #[test]
 fn scenario_summary() {
     let mut memory = Memory::new();
-    let mut core = MaybeUninit::uninit();
-    let summary = run(&mut memory, &mut core);
+    let summary = run(&mut memory);
     let expected = Summary {
         // The five frames of the codec part (a Who-Is among them) go through
         // the stream decoder; the encoder refuses a Token with data.
@@ -40,13 +39,14 @@ fn scenario_summary() {
             None,
             None,
         ],
-        // The peer's broadcast and its request.
+        // The peer's broadcast and its request, then its Test_Response.
         npdus_delivered: 2,
+        frames_delivered: 1,
         requests: 1,
         state: MasterState::Idle,
-        // The token, the peer's answer to the poll, its broadcast and its
-        // request.
-        frames_received: 4,
+        // The token, the peer's answer to the poll, its broadcast, its
+        // Test_Response and its request.
+        frames_received: 5,
         frames_transmitted: 4,
         token_rotations: 1,
         parser_errors: 0,
@@ -66,14 +66,27 @@ fn scenario_summary() {
 #[test]
 fn ram_sizes() {
     let core = size_of::<Core<'static>>();
+    let owning = size_of::<MasterCore<'static, Queues>>();
     let queues = size_of::<Queues>();
+    let actions = size_of::<Actions>();
+    let default_actions = size_of::<ActionBuffers>();
+    let host = size_of::<MasterCore<'static, HeaplessQueues<4, 2>>>();
     let decoder = size_of::<StreamDecoder<'static>>();
-    println!("MasterCore<HeaplessQueues<4, 2>>: {core} octets, its queues {queues}");
+    println!("MasterCore<&mut HeaplessQueues<4, 2>> (the image's): {core} octets");
+    println!("MasterCore<HeaplessQueues<4, 2>>: {owning} octets, its queues {queues}");
+    println!(
+        "ActionBuffers<1> (the image's): {actions} octets; ActionBuffers<8>: {default_actions}"
+    );
+    println!("MasterCore<HeaplessQueues<4, 2>> with ActionBuffers<8>: {host} + {default_actions}");
     println!(
         "StreamDecoder: {decoder} octets, {} with {MAX_STANDARD_FRAME_LENGTH} octets of storage",
         decoder + MAX_STANDARD_FRAME_LENGTH
     );
     println!("Memory: {} octets", size_of::<Memory>());
-    // The core holds its queues and its decoder, not the decoder's storage.
-    assert!(core > queues + decoder);
+    // The core holds its decoder, but borrows the decoder's storage, its
+    // queues and its action buffers: it stays small whatever their size.
+    assert!(core > decoder);
+    assert!(core < 1024, "the core is {core} octets");
+    assert_eq!(owning, host);
+    assert!(owning > queues + decoder);
 }

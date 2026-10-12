@@ -20,7 +20,8 @@ use support::*;
 fn a_data_frame_waits_out_activity_from_every_ingress() {
     for ingress in 0..4 {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         enqueue(&mut core, false, ms(1));
         validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
         assert_eq!(core.next_deadline(), Some(ms(10) + turnaround(&core)));
@@ -59,7 +60,8 @@ fn a_data_frame_waits_out_activity_from_every_ingress() {
 #[test]
 fn a_data_frame_kept_waiting_for_t_no_token_is_dropped() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     enqueue(&mut core, false, ms(1));
     validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
     let mut at = ms(10);
@@ -86,7 +88,8 @@ fn a_data_frame_kept_waiting_for_t_no_token_is_dropped() {
 #[test]
 fn frames_that_complete_while_a_holder_frame_waits() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     enqueue(&mut core, false, ms(1));
     validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
     let frames = [
@@ -132,7 +135,8 @@ fn frames_that_complete_while_a_holder_frame_waits() {
 #[test]
 fn the_token_pass_after_an_invalid_reply_waits_for_its_tail() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     pass_waiting(&mut core);
     let (passed, _) = send_next(&mut core);
     let used = passed + Duration::from_millis(5);
@@ -184,7 +188,8 @@ fn the_token_pass_after_an_invalid_reply_waits_for_its_tail() {
 #[test]
 fn a_poll_waits_out_noise_in_its_turnaround() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     poll_waiting(&mut core);
     core.on_octet(0x00, ms(12)).unwrap();
     assert_eq!(core.state(), MasterState::PollForMaster);
@@ -202,7 +207,8 @@ fn a_poll_waits_out_noise_in_its_turnaround() {
 #[test]
 fn a_test_response_waits_within_the_reply_window() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     validated(&mut core, FrameType::TestRequest, STATION, 7, &[5], ms(1));
     core.on_octet(0x00, ms(2)).unwrap();
     let due = ms(2) + turnaround(&core);
@@ -212,7 +218,8 @@ fn a_test_response_waits_within_the_reply_window() {
     assert!(is(header, FrameType::TestResponse, 7));
 
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     validated(&mut core, FrameType::TestRequest, STATION, 7, &[5], ms(1));
     let give_up = ms(1) + us(255_000 - 1_042 - 1_000);
     let mut at = ms(1);
@@ -236,7 +243,8 @@ fn a_test_response_waits_within_the_reply_window() {
 fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
     let give_up = ms(1) + us(20_000 - 1_042 - 1_000);
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
     core.on_octet(0x00, ms(2)).unwrap();
     let due = ms(2) + turnaround(&core);
@@ -249,7 +257,8 @@ fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
 
     // Started after T_usage_delay: sent, counted late.
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
@@ -259,7 +268,8 @@ fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
 
     // Started at the cutoff: refused.
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
@@ -273,7 +283,8 @@ fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
 
     // Kept waiting by noise until the cutoff: dropped.
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
     for at in [2, 6, 10, 14, 18] {
         core.on_octet(0x00, ms(at)).unwrap();
@@ -293,7 +304,8 @@ fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
 fn a_token_retry_yields_to_a_successor_that_uses_the_token() {
     for octets in [4usize, 5] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         let (handed, id) = retry_handed_over(&mut core);
         let last = feed(&mut core, &vec![0x00; octets], handed + us(500));
         if octets == 4 {
@@ -331,7 +343,8 @@ fn a_token_retry_yields_to_a_successor_that_uses_the_token() {
 #[test]
 fn a_valid_frame_ends_a_waiting_token_retry() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     let (handed, id) = retry_handed_over(&mut core);
     validated(
         &mut core,
@@ -361,7 +374,8 @@ fn a_token_retry_kept_waiting_past_t_usage_timeout_is_dropped() {
         ..config()
     };
     let mut rx = [0; 64];
-    let mut core = Core::new(config, Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = Core::new(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     let (made, id) = retry_handed_over(&mut core);
     core.on_octet(0x00, made + Duration::from_millis(1))
         .unwrap();
@@ -397,7 +411,8 @@ fn a_token_retry_kept_waiting_past_t_usage_timeout_is_dropped() {
 fn a_generating_poll_yields_to_another_active_station() {
     for octets in [4usize, 5] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         let id = generation_handed_over(&mut core);
         let last = feed(&mut core, &vec![0x00; octets], ms(511));
         if octets == 4 {
@@ -429,7 +444,8 @@ fn a_generating_poll_yields_to_another_active_station() {
 #[test]
 fn a_valid_frame_ends_a_waiting_generating_poll() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     let id = generation_handed_over(&mut core);
     validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(511));
     assert_eq!(core.counters().cancelled_sends, 1);
@@ -452,7 +468,8 @@ fn a_valid_frame_ends_a_waiting_generating_poll() {
 fn a_new_successor_poll_yields_to_a_successor_that_uses_the_token() {
     for (later, dropped) in [(1usize, false), (2, true)] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         let (handed, retry) = retry_handed_over(&mut core);
         core.on_transmit_started(retry, handed).unwrap();
         let sent = handed + Duration::from_millis(1);
@@ -487,7 +504,8 @@ fn a_new_successor_poll_yields_to_a_successor_that_uses_the_token() {
 #[test]
 fn a_token_retry_counts_events_from_when_it_is_made() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     pass_waiting(&mut core);
     let (passed, _) = send_next(&mut core);
     let heard = feed(&mut core, &[0x00; 4], passed + Duration::from_millis(2));
@@ -512,7 +530,8 @@ fn a_token_retry_counts_events_from_when_it_is_made() {
 #[test]
 fn a_generating_poll_counts_events_from_no_token() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     let heard = feed(&mut core, &encode(FrameType::Token, 3, 0, &[]), ms(1));
     let silent = heard + Duration::from_millis(500);
     assert_eq!(core.next_deadline(), Some(silent));
@@ -537,7 +556,8 @@ fn a_generating_poll_counts_events_from_no_token() {
 #[test]
 fn a_generating_poll_kept_waiting_for_t_no_token_is_dropped() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     let id = generation_handed_over(&mut core);
     core.on_octet(0x00, ms(1_008)).unwrap();
     assert_eq!(
@@ -558,7 +578,8 @@ fn a_generating_poll_kept_waiting_for_t_no_token_is_dropped() {
 #[test]
 fn an_invalid_frame_while_a_poll_waits_only_delays_it() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     poll_waiting(&mut core);
     let mut bad = encode(FrameType::ReplyToPollForMaster, STATION, 3, &[]);
     bad[7] ^= 0x01;
@@ -578,7 +599,8 @@ fn an_invalid_frame_while_a_poll_waits_only_delays_it() {
 #[test]
 fn a_start_refused_past_the_limit_drops_the_frame_at_once() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     let id = generation_handed_over(&mut core);
     core.on_octet(0x00, ms(1_008)).unwrap();
     assert_eq!(
