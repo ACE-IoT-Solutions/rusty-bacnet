@@ -153,7 +153,7 @@ impl<S: SerialPort> Task<S> {
                     return;
                 }
             };
-        let max_age = Duration::from_micros(config.queue_max_age.as_micros());
+        let max_age = Duration::from(config.queue_max_age);
         let mut mac = Mac {
             echo: serial.echo(),
             serial,
@@ -161,7 +161,7 @@ impl<S: SerialPort> Task<S> {
             npdus,
             counts,
             queues: shared,
-            octet_time: Duration::from_micros(config.octet_time().as_micros()),
+            octet_time: Duration::from(config.octet_time()),
             read_buf: vec![0; READ_CHUNK],
             tx_frame: Vec::with_capacity(MAX_EXTENDED_FRAME_LENGTH),
             outgoing: None,

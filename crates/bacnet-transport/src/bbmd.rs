@@ -26,8 +26,6 @@ mod clock;
 mod forward;
 mod policy;
 mod tables;
-#[cfg(test)]
-use clock::core_duration;
 use clock::CoreClock;
 pub(crate) use forward::Forward;
 use policy::ForeignDeviceRateTracker;
@@ -574,7 +572,7 @@ impl BbmdState {
         registration.registered_at = self
             .clock
             .to_core(Instant::now())
-            .saturating_sub(core_duration(elapsed));
+            .saturating_sub(bacnet_bip_core::Duration::saturating_from_core(elapsed));
         self.tables
             .fdt
             .restore(registration)

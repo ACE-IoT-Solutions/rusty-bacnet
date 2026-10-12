@@ -139,6 +139,7 @@ struct Driver<'s> {
     tx: Option<Tx>,
     /// Request ids the core handed up, newest last.
     requests: Vec<RequestId>,
+    /// The time, in whole microseconds; the core gets it in nanoseconds.
     now: u64,
     /// The time of the last call the core took a time from.
     stamp: u64,

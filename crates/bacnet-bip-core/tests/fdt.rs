@@ -347,6 +347,8 @@ fn seconds_remaining_count_down_from_ttl_plus_grace() {
         );
     }
     assert_eq!(entry.seconds_remaining_at(Instant::ZERO), 90);
+    // Seconds past what a u32 counts still leave nothing.
+    assert_eq!(entry.seconds_remaining_at(Instant::MAX), 0);
     assert_eq!(
         entry.wire_entry_at(T0 + secs(30)),
         FdtEntry::new(entry.address, 60, 60)

@@ -19,8 +19,9 @@ pub struct AdapterSpec {
     /// exactly when it falls due.
     pub deadline_lateness: Duration,
     /// Further lateness drawn per deadline, uniformly from zero to this, from
-    /// the run's seeded generator: the granularity of a tick-driven timer.
-    /// Below the core's `LATE_DEADLINE` (1 ms) it is not a miss. Without
+    /// the run's seeded generator, in whole microseconds: the granularity of
+    /// a tick-driven timer. Below the core's `LATE_DEADLINE` (1 ms) it is not
+    /// a miss. Without
     /// any, two masters that start in step can stay in step for ever.
     pub deadline_jitter: Duration,
 }

@@ -4,7 +4,8 @@
 use core::fmt;
 use core::net::SocketAddrV4;
 
-use crate::time::Duration;
+use bacnet_time::Duration;
+
 use crate::LocalSubnet;
 
 /// The largest NPDU a B/IP data link carries (Table 6-1).
@@ -105,14 +106,13 @@ impl Foreign {
     /// broadcasts held, and Forwarded-NPDUs taken only from `bbmd`.
     #[must_use]
     pub const fn new(bbmd: SocketAddrV4, ttl: u16) -> Self {
-        let renewal = Duration::from_secs(ttl as u64)
-            .half()
-            .max_const(MIN_RENEWAL);
+        // Half the time-to-live, exactly: a whole number of milliseconds.
+        let renewal = Duration::from_millis(ttl as u64 * 500).max(MIN_RENEWAL);
         Self {
             bbmd,
             ttl,
             renewal,
-            response_timeout: renewal.min_const(DEFAULT_RESPONSE_TIMEOUT),
+            response_timeout: renewal.min(DEFAULT_RESPONSE_TIMEOUT),
             retry: Retry::Backoff,
             hold: 0,
             trust: ForwardedTrust::ConfiguredBbmd,
@@ -129,14 +129,14 @@ impl Foreign {
     /// [`MIN_RENEWAL`].
     #[must_use]
     pub const fn effective_renewal(&self) -> Duration {
-        self.renewal.max_const(MIN_RENEWAL)
+        self.renewal.max(MIN_RENEWAL)
     }
 
     /// The response timeout in use: [`response_timeout`](Self::response_timeout),
     /// at most the [effective renewal](Self::effective_renewal).
     #[must_use]
     pub const fn effective_response_timeout(&self) -> Duration {
-        self.response_timeout.min_const(self.effective_renewal())
+        self.response_timeout.min(self.effective_renewal())
     }
 }
 

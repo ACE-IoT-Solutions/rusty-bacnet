@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{ExchangeId, ExchangeRefusal, LocalFailure};
+use bacnet_bip_core::Duration as CoreDuration;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 use tokio::sync::oneshot;
 
-use super::node::{core_duration, NodeHandle, Outcome, Waiter};
+use super::node::{NodeHandle, Outcome, Waiter};
 use crate::bvll::{decode_bip_mac, encode_bvll, BvllMessage};
 
 /// A manual exchange admitted by the node. Dropping it before it ends
@@ -64,7 +65,8 @@ impl NodeHandle {
             }
             let (id, _) = state
                 .node
-                .begin_exchange(peer, request, core_duration(timeout), now)
+                // A timeout past some 584 years is one that never ends.
+                .begin_exchange(peer, request, CoreDuration::saturating_from_core(timeout), now)
                 .map_err(refusal_error)?;
             let waiter = Waiter {
                 tx,

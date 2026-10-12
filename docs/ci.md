@@ -142,7 +142,7 @@ but not `[workspace.lints]`, since samples print to the terminal.
 `bacnet-types`, `bacnet-encoding` and `bacnet-services` build without `std`
 when `alloc` replaces their default `std` feature, and the MS/TP and B/IP
 crates (`bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec` and
-`bacnet-bip-core`) never use it. A host build always has `std` and an allocator, so no single run
+`bacnet-bip-core`) and the cores' time type (`bacnet-time`) never use it. A host build always has `std` and an allocator, so no single run
 proves all of that; each check covers a part.
 
 | Check | Job | What it shows |
@@ -205,7 +205,8 @@ bare-metal images, one per stack, because code can't be credited to a crate
 reliably within one LTO image:
 
 - `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
-  features, plus the core's `heapless` queues), with no global allocator;
+  features, plus the core's `heapless` queues) and through the core
+  `bacnet-time`, with no global allocator;
 - `bip` links `bacnet-bip-codec` (default features, plus its `heapless`
   sink), both its B/IP and its B/IPv6 messages, with no global allocator;
 - `apdu` links `bacnet-encoding` and `bacnet-services` (and through them
@@ -1049,8 +1050,9 @@ data frame per token use than allowed failed it within ten, and Reply
 Postponed handled as an abandoned request within five.
 
 **When.** On a PR to `dev` or `main` that changes
-`crates/bacnet-mstp-codec/**`, `crates/bacnet-bip-codec/**` or
-`crates/bacnet-mstp-core/**` (fuzz crates included), the workflow,
+`crates/bacnet-mstp-codec/**`, `crates/bacnet-bip-codec/**`,
+`crates/bacnet-mstp-core/**` (fuzz crates included) or
+`crates/bacnet-time/**`, the workflow,
 `.github/ci-pins.env`, `scripts/ci/fuzz.sh` or
 `scripts/ci/install-tools.sh`, each target runs for 60 seconds. Twice a
 week (Sundays and Wednesdays at 03:41 UTC, on `dev`) and by hand, each runs
@@ -1194,8 +1196,8 @@ Clippy runs six ways:
 - the workspace with every feature;
 - the PyO3 crate on its own;
 - `bacnet-cli` with no default features (without the TUI);
-- the `no_std` crates (`bacnet-mstp-codec`, `bacnet-mstp-core`,
-  `bacnet-bip-codec`, `bacnet-bip-core`, and `bacnet-types`,
+- the `no_std` crates (`bacnet-time`, `bacnet-mstp-codec`,
+  `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core`, and `bacnet-types`,
   `bacnet-encoding` and `bacnet-services` with `alloc` in place of their
   default `std`) on
   bare-metal targets, once per feature set
@@ -1215,7 +1217,9 @@ Clippy runs six ways:
 - each published crate alone with default features, plus the `no_std` builds
   of `bacnet-types`, `bacnet-encoding` and `bacnet-services`
   (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
-  how docs.rs builds, and a rustdoc-only run of `bacnet-cli` without the TUI.
+  how docs.rs builds, a rustdoc-only run of `bacnet-cli` without the TUI,
+  and rustdoc-only runs of `bacnet-mstp-core`, `bacnet-mstp-codec` and
+  `bacnet-bip-codec` with `alloc` alone and `heapless` alone (#1681).
 
 The last catches code that compiles only when another crate's feature unifies
 in. With no arguments it checks the host; given target triples, it checks
@@ -1234,7 +1238,8 @@ every-feature run replaces the public-only run rather than adding a second
 one. Every module of the PyO3 crate is private, so without the flag rustdoc
 would check none of its docs. The per-crate default-features run and the
 feature-off rustdoc runs of `check-default-features.sh` (the `no_std` crates
-with `alloc`, `bacnet-cli` without `tui`) pass the flag too (#1192), so private items
+with `alloc`, the MS/TP and B/IP crates with one storage feature, `bacnet-cli`
+without `tui`) pass the flag too (#1192), so private items
 that exist only in one feature configuration are covered; the run takes about
 2 s longer on the host.
 

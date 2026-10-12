@@ -54,8 +54,8 @@ struct Clock {
 impl Clock {
     /// Let `octets` octet times pass.
     fn pass(&mut self, octets: usize) {
-        let octets = u64::try_from(octets).unwrap_or(u64::MAX);
-        self.now += Duration::from_micros(self.octet.as_micros().saturating_mul(octets));
+        let octets = u32::try_from(octets).unwrap_or(u32::MAX);
+        self.now += self.octet.saturating_mul(octets);
     }
 }
 

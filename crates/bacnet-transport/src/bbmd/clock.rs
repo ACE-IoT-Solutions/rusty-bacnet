@@ -29,12 +29,13 @@ impl CoreClock {
     /// away as no time at all, which would map an instant just before the
     /// epoch onto the epoch itself.
     pub(crate) fn to_core(self, at: Instant) -> bip_core::Instant {
-        let nanos = if at >= self.epoch {
-            MIDPOINT.saturating_add(duration_nanos(at.duration_since(self.epoch)))
+        // Either side saturates some 292 years from the epoch.
+        let midpoint = bip_core::Instant::from_nanos(MIDPOINT);
+        if at >= self.epoch {
+            midpoint + bip_core::Duration::saturating_from_core(at.duration_since(self.epoch))
         } else {
-            MIDPOINT.saturating_sub(duration_nanos(self.epoch.duration_since(at)))
-        };
-        bip_core::Instant::from_nanos(nanos)
+            midpoint - bip_core::Duration::saturating_from_core(self.epoch.duration_since(at))
+        }
     }
 
     /// The host instant that `at` on the core's timeline stands for, or
@@ -50,16 +51,6 @@ impl CoreClock {
         };
         mapped.unwrap_or(self.epoch)
     }
-}
-
-/// `duration` as the core's.
-#[cfg(test)]
-pub(crate) fn core_duration(duration: Duration) -> bip_core::Duration {
-    bip_core::Duration::from_nanos(duration_nanos(duration))
-}
-
-fn duration_nanos(duration: Duration) -> u64 {
-    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -82,22 +73,17 @@ mod tests {
             let later = epoch + offset;
             assert_eq!(
                 clock.to_core(later).as_nanos(),
-                MIDPOINT + duration_nanos(later.duration_since(epoch))
+                MIDPOINT + u64::try_from(later.duration_since(epoch).as_nanos()).unwrap()
             );
             assert_eq!(clock.to_std(clock.to_core(later)), later);
             if let Some(earlier) = epoch.checked_sub(offset) {
                 assert_eq!(
                     clock.to_core(earlier).as_nanos(),
-                    MIDPOINT - duration_nanos(epoch.duration_since(earlier))
+                    MIDPOINT - u64::try_from(epoch.duration_since(earlier).as_nanos()).unwrap()
                 );
                 assert_eq!(clock.to_std(clock.to_core(earlier)), earlier);
                 assert!(clock.to_core(earlier) <= clock.to_core(epoch));
             }
         }
-        assert_eq!(
-            core_duration(Duration::from_secs(2)).as_nanos(),
-            2_000_000_000
-        );
-        assert_eq!(core_duration(Duration::MAX), bip_core::Duration::MAX);
     }
 }

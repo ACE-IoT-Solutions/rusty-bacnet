@@ -64,7 +64,8 @@ impl HostClock {
     /// The engine's time now.
     pub(super) fn now(&self) -> CoreInstant {
         let elapsed = tokio::time::Instant::now().saturating_duration_since(self.origin);
-        CoreInstant::from_nanos(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
+        // Saturates some 584 years after the node started.
+        CoreInstant::ZERO + CoreDuration::saturating_from_core(elapsed)
     }
 
     /// The Tokio instant of an engine time. Both ways are exact, so a timer
@@ -75,11 +76,6 @@ impl HostClock {
             .checked_add(offset)
             .unwrap_or_else(|| self.origin + Duration::from_secs(86_400 * 365))
     }
-}
-
-/// `duration` on the engine's timeline.
-pub(super) fn core_duration(duration: Duration) -> CoreDuration {
-    CoreDuration::from_nanos(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX))
 }
 
 /// The host's rules [`Link::receive`] consults: the management rate limit,

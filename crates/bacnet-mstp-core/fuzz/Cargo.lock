@@ -20,8 +20,13 @@ name = "bacnet-mstp-core"
 version = "0.12.0"
 dependencies = [
  "bacnet-mstp-codec",
+ "bacnet-time",
  "heapless",
 ]
+
+[[package]]
+name = "bacnet-time"
+version = "0.12.0"
 
 [[package]]
 name = "byteorder"

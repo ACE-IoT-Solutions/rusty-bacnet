@@ -11,6 +11,7 @@ use core::cmp::Ordering;
 
 #[cfg(any(feature = "alloc", feature = "heapless"))]
 use bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA;
+use bacnet_time::Instant;
 
 use crate::counters::QueueCounters;
 
@@ -120,10 +121,10 @@ pub struct QueueItemInfo {
     pub priority: NetworkPriority,
     /// Payload length.
     pub len: usize,
-    /// Enqueue timestamp supplied by the caller.
-    pub enqueued_at: u64,
-    /// Absolute expiry timestamp, if one was supplied.
-    pub expires_at: Option<u64>,
+    /// When the item was queued, on the core's timeline.
+    pub enqueued_at: Instant,
+    /// When the item expires, on the same timeline, if it does.
+    pub expires_at: Option<Instant>,
     /// Sequence assigned when the item was accepted.
     pub sequence: u64,
     /// Number of service opportunities this item has waited.
@@ -162,29 +163,29 @@ pub trait QueueStorage {
 
     /// Add a payload to the destination queue.
     ///
-    /// `expires_at` is an absolute timestamp in the same monotonically
-    /// increasing unit as `now`.  Expiry is inclusive: an item is expired
-    /// when `now >= expires_at`.
+    /// `expires_at` is an absolute time on the same timeline as `now`, the
+    /// core's. Expiry is inclusive: an item is expired when
+    /// `now >= expires_at`.
     fn enqueue_npdu(
         &mut self,
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
+        now: Instant,
+        expires_at: Option<Instant>,
     ) -> Result<(), QueueRejectReason>;
 
     /// Remove expired items at `now`, returning the number removed.
-    fn expire(&mut self, now: u64) -> usize;
+    fn expire(&mut self, now: Instant) -> usize;
 
     /// Inspect the item that policy would service next.
-    fn peek(&self, now: u64) -> Option<QueueItemInfo>;
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo>;
 
     /// Inspect the next item in one destination class.
     ///
     /// The core uses this form when applying its configured
     /// broadcast/unicast service ratio.
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo>;
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo>;
 
     /// Copy the selected payload into `scratch` and remove it atomically.
     ///
@@ -195,7 +196,7 @@ pub trait QueueStorage {
     /// head.
     fn dequeue_into(
         &mut self,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         let Some(info) = self.peek(now) else {
@@ -209,7 +210,7 @@ pub trait QueueStorage {
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason>;
 
@@ -241,27 +242,27 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
+        now: Instant,
+        expires_at: Option<Instant>,
     ) -> Result<(), QueueRejectReason> {
         (**self).enqueue_npdu(destination, payload, priority, now, expires_at)
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: Instant) -> usize {
         (**self).expire(now)
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         (**self).peek(now)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
         (**self).peek_kind(kind, now)
     }
 
     fn dequeue_into(
         &mut self,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         (**self).dequeue_into(now, scratch)
@@ -270,7 +271,7 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         (**self).dequeue_kind_into(kind, now, scratch)
@@ -297,8 +298,8 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
 struct Item<const N: usize> {
     destination: u8,
     priority: NetworkPriority,
-    enqueued_at: u64,
-    expires_at: Option<u64>,
+    enqueued_at: Instant,
+    expires_at: Option<Instant>,
     sequence: u64,
     service_wait: u8,
     len: usize,
@@ -322,7 +323,7 @@ impl<const N: usize> Item<N> {
 }
 
 #[cfg(any(feature = "alloc", feature = "heapless"))]
-fn expired(expires_at: Option<u64>, now: u64) -> bool {
+fn expired(expires_at: Option<Instant>, now: Instant) -> bool {
     expires_at.is_some_and(|deadline| now >= deadline)
 }
 
@@ -404,7 +405,7 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
         self.starvation_limit.unwrap_or(DEFAULT_STARVATION_LIMIT)
     }
 
-    fn select(&self, now: u64) -> Option<(QueueKind, usize, QueueItemInfo)> {
+    fn select(&self, now: Instant) -> Option<(QueueKind, usize, QueueItemInfo)> {
         let mut selected: Option<(QueueKind, usize, QueueItemInfo)> = None;
         for (index, item) in self.unicast.iter().copied().enumerate() {
             let info = item.info(QueueKind::Unicast);
@@ -425,7 +426,7 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
         selected
     }
 
-    fn select_kind(&self, kind: QueueKind, now: u64) -> Option<(usize, QueueItemInfo)> {
+    fn select_kind(&self, kind: QueueKind, now: Instant) -> Option<(usize, QueueItemInfo)> {
         let mut selected: Option<(usize, QueueItemInfo)> = None;
         match kind {
             QueueKind::Unicast => {
@@ -501,8 +502,8 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
+        now: Instant,
+        expires_at: Option<Instant>,
     ) -> Result<(), QueueRejectReason> {
         let kind = QueueKind::from_destination(destination);
         if payload.len() > N {
@@ -535,7 +536,7 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         Ok(())
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: Instant) -> usize {
         let mut removed = 0;
         let mut index = 0;
         while index < self.unicast.len() {
@@ -562,18 +563,18 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         removed
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         self.select(now).map(|selected| selected.2)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
         self.select_kind(kind, now).map(|selected| selected.1)
     }
 
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         self.expire(now);

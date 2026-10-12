@@ -276,6 +276,7 @@ name = "bacnet-bip-core"
 version = "0.12.0"
 dependencies = [
  "bacnet-bip-codec",
+ "bacnet-time",
  "proptest",
 ]
 
@@ -411,6 +412,7 @@ name = "bacnet-mstp-core"
 version = "0.12.0"
 dependencies = [
  "bacnet-mstp-codec",
+ "bacnet-time",
  "heapless",
  "proptest",
 ]
@@ -473,6 +475,13 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-types",
  "bytes",
+]
+
+[[package]]
+name = "bacnet-time"
+version = "0.12.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

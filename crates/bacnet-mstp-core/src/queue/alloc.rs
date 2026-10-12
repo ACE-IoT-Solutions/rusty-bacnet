@@ -2,6 +2,8 @@
 
 use alloc::vec::Vec;
 
+use bacnet_time::Instant;
+
 use crate::counters::QueueCounters;
 
 use super::{
@@ -12,8 +14,8 @@ use super::{
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
 ///
-/// `N` is the longest NPDU a slot holds, as for
-/// [`HeaplessQueues`](super::HeaplessQueues): 501 octets by default, and
+/// `N` is the longest NPDU a slot holds, as for `HeaplessQueues` (the
+/// `heapless` feature): 501 octets by default, and
 /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
 /// a core with extended frames on.
 #[derive(Debug)]
@@ -52,7 +54,7 @@ impl<const N: usize> AllocQueues<N> {
         }
     }
 
-    fn select(&self, now: u64) -> Option<(QueueKind, usize, QueueItemInfo)> {
+    fn select(&self, now: Instant) -> Option<(QueueKind, usize, QueueItemInfo)> {
         let mut selected: Option<(QueueKind, usize, QueueItemInfo)> = None;
         for (index, item) in self.unicast.iter().copied().enumerate() {
             let info = item.info(QueueKind::Unicast);
@@ -73,7 +75,7 @@ impl<const N: usize> AllocQueues<N> {
         selected
     }
 
-    fn select_kind(&self, kind: QueueKind, now: u64) -> Option<(usize, QueueItemInfo)> {
+    fn select_kind(&self, kind: QueueKind, now: Instant) -> Option<(usize, QueueItemInfo)> {
         let mut selected: Option<(usize, QueueItemInfo)> = None;
         match kind {
             QueueKind::Unicast => {
@@ -137,8 +139,8 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
+        now: Instant,
+        expires_at: Option<Instant>,
     ) -> Result<(), QueueRejectReason> {
         let kind = QueueKind::from_destination(destination);
         if payload.len() > N {
@@ -185,7 +187,7 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         Ok(())
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: Instant) -> usize {
         let mut removed = 0;
         let mut index = 0;
         while index < self.unicast.len() {
@@ -212,18 +214,18 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         removed
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         self.select(now).map(|selected| selected.2)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
         self.select_kind(kind, now).map(|selected| selected.1)
     }
 
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         self.expire(now);

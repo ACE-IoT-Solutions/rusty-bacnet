@@ -6,7 +6,7 @@ use bacnet_mstp_codec::{
     crc8, decode_frame_in_place, Frame, FrameType, BROADCAST_MAC, MAX_EXTENDED_MPDU_DATA,
     MAX_STANDARD_MPDU_DATA,
 };
-use bacnet_mstp_core::MstpCoreConfig;
+use bacnet_mstp_core::{Duration, MstpCoreConfig};
 
 use crate::input::{fill, Address, FrameSpec, Kind};
 
@@ -28,6 +28,11 @@ pub const T_SLOT: u64 = 10_000;
 pub const T_NO_TOKEN: u64 = 500_000;
 
 /// The station's parameters, in µs where they are times.
+///
+/// The core counts nanoseconds, but the target works in whole microseconds:
+/// every timer the setup gives the core is one, and so is every step's time,
+/// which the driver hands over with `Instant::from_micros`. So the core's
+/// deadlines are whole microseconds too, and this model of them is exact.
 #[derive(Debug, Clone, Copy)]
 pub struct Params {
     /// TS.
@@ -63,6 +68,17 @@ pub struct Params {
     pub max_npdu: usize,
 }
 
+/// `duration` in microseconds, which it must be whole in: a timer with a
+/// fraction of one would make the model inexact.
+fn micros(duration: Duration) -> u64 {
+    assert_eq!(
+        duration.as_nanos() % 1_000,
+        0,
+        "the setup gave the core a timer of {duration:?}, not whole microseconds"
+    );
+    duration.as_micros()
+}
+
 impl Params {
     /// The parameters of `config`.
     pub fn new(config: &MstpCoreConfig) -> Self {
@@ -76,13 +92,13 @@ impl Params {
                 .clamp(1, max_info_frames),
             max_info_frames,
             octet_time: 10_000_000u64.div_ceil(u64::from(config.baud_rate)),
-            turnaround: config.t_turnaround.as_micros(),
-            frame_abort: config.t_frame_abort.as_micros(),
-            reply_timeout: config.t_reply_timeout.as_micros(),
-            usage_timeout: config.t_usage_timeout.as_micros(),
-            reply_delay: config.t_reply_delay.as_micros(),
-            usage_delay: config.t_usage_delay.as_micros(),
-            reply_margin: config.reply_transmit_margin.as_micros(),
+            turnaround: micros(config.t_turnaround),
+            frame_abort: micros(config.t_frame_abort),
+            reply_timeout: micros(config.t_reply_timeout),
+            usage_timeout: micros(config.t_usage_timeout),
+            reply_delay: micros(config.t_reply_delay),
+            usage_delay: micros(config.t_usage_delay),
+            reply_margin: micros(config.reply_transmit_margin),
             extended: config.extended_frames,
             max_npdu: if config.extended_frames {
                 MAX_EXTENDED_MPDU_DATA

@@ -4,8 +4,7 @@ use bacnet_mstp_codec::{
     MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH,
     MAX_STANDARD_MPDU_DATA,
 };
-
-use crate::clock::Duration;
+use bacnet_time::Duration;
 
 const MAX_MASTER_ADDRESS: u8 = 127;
 const DEFAULT_BAUD_RATE: u32 = 9_600;
@@ -31,7 +30,7 @@ const WATCHDOG_COMPLETION_MARGIN: Duration = Duration::from_millis(1);
 pub enum ConfigError {
     /// A baud rate of zero cannot be used to derive bit-time limits.
     ZeroBaudRate,
-    /// A derived timing calculation overflowed the microsecond representation.
+    /// A derived timing calculation overflowed its arithmetic.
     TimingOverflow,
     /// Clause 9 fixes Npoll at 50 token uses.
     InvalidPollCount {
@@ -240,10 +239,12 @@ pub enum LocalLimitField {
 /// All timing, addressing, and bounded-queue parameters needed by an MS/TP
 /// master.
 ///
-/// Durations are represented in microseconds.  Values whose limits are stated
-/// in bit times are still stored as absolute durations so a core instance can
-/// keep absolute deadlines without retaining a platform clock or baud-rate
-/// conversion helper.
+/// Durations are `bacnet-time` [`Duration`]s, in nanoseconds. Values whose
+/// limits are stated in bit times are still stored as absolute durations so a
+/// core instance can keep absolute deadlines without retaining a platform
+/// clock or baud-rate conversion helper. The bit-time values the constructors
+/// derive from the baud rate, and the bounds [`Self::validate`] checks them
+/// against, are whole microseconds (see [`Self::octet_time`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MstpCoreConfig {
     /// This station's MAC address.
@@ -366,7 +367,14 @@ impl MstpCoreConfig {
         Self::for_baud_rate_unchecked(DEFAULT_BAUD_RATE)
     }
 
-    /// The time one octet takes on the wire: ten bit times, rounded up.
+    /// The time one octet takes on the wire: ten bit times, rounded up to a
+    /// whole microsecond.
+    ///
+    /// Every time derived from the baud rate is a whole number of
+    /// microseconds, rounded up for a lower bound and down for an upper one:
+    /// the octet time, T_frame_abort, T_frame_gap, T_postdrive and
+    /// T_turnaround, and validation's bounds on them. That keeps the
+    /// arithmetic in 32 bits, with no 64-bit division on a 32-bit target.
     #[must_use]
     pub const fn octet_time(&self) -> Duration {
         or_max(ceil_bit_times(self.baud_rate, 10))
@@ -576,7 +584,8 @@ impl MstpCoreConfig {
         } else {
             MAX_STANDARD_FRAME_LENGTH
         };
-        Duration::from_micros(self.octet_time().as_micros().saturating_mul(octets as u64))
+        // At most 1516 octets, so the cast is exact.
+        self.octet_time().saturating_mul(octets as u32)
     }
 
     /// The shortest [`Self::transmit_watchdog`] validation accepts: the
@@ -608,7 +617,7 @@ impl MstpCoreConfig {
     /// [`Self::minimum_transmit_watchdog`]: the one it has if it does, else
     /// the longest frame's time plus the default one second.
     const fn with_covering_watchdog(mut self) -> Self {
-        if self.transmit_watchdog.as_micros() < self.minimum_transmit_watchdog().as_micros() {
+        if self.transmit_watchdog.as_nanos() < self.minimum_transmit_watchdog().as_nanos() {
             self.transmit_watchdog = self
                 .longest_frame_time()
                 .saturating_add(DEFAULT_TRANSMIT_WATCHDOG);
@@ -617,12 +626,14 @@ impl MstpCoreConfig {
     }
 }
 
-/// `bits` bit times at `baud_rate` in microseconds, rounded up, for minimum
-/// bounds. `None` for a zero baud rate or on overflow.
+/// `bits` bit times at `baud_rate`, rounded up to a whole microsecond, for
+/// minimum bounds. `None` for a zero baud rate or on overflow.
 ///
 /// The arithmetic is 32-bit: every caller asks for at most 60 bit times,
 /// whose 60,000,000 microsecond-bits fit a `u32`, so the result is exact and
-/// a 32-bit target links no 64-bit division routine for it.
+/// a 32-bit target links no 64-bit division routine for it. Nanosecond steps
+/// would need 60,000,000,000, past a `u32`, and whole microseconds keep each
+/// value what it was before the core counted nanoseconds.
 const fn ceil_bit_times(baud_rate: u32, bits: u32) -> Option<Duration> {
     match bits.checked_mul(1_000_000) {
         Some(numerator) if baud_rate != 0 => {
@@ -632,8 +643,8 @@ const fn ceil_bit_times(baud_rate: u32, bits: u32) -> Option<Duration> {
     }
 }
 
-/// `bits` bit times at `baud_rate` in microseconds, rounded down, for maximum
-/// bounds. `None` for a zero baud rate or on overflow. 32-bit, as
+/// `bits` bit times at `baud_rate`, rounded down to a whole microsecond, for
+/// maximum bounds. `None` for a zero baud rate or on overflow. 32-bit, as
 /// [`ceil_bit_times`] is.
 const fn floor_bit_times(baud_rate: u32, bits: u32) -> Option<Duration> {
     match bits.checked_mul(1_000_000) {
@@ -657,7 +668,7 @@ const fn or_max(duration: Option<Duration>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{ConfigError, MstpCoreConfig};
-    use crate::clock::Duration;
+    use bacnet_time::Duration;
 
     #[test]
     fn defaults_are_standard_safe() {

@@ -10,6 +10,8 @@ are omitted; each crate's `Cargo.toml` is the exact dependency authority.
 
 ```text
 Foundations
+  bacnet-time           Instant and Duration in nanoseconds, the portable cores' shared
+                        time (no_std; no allocator, no deps)
   bacnet-types          Enums, primitives, error types (no I/O; no_std + alloc)
   bacnet-encoding       ASN.1 tags, APDU/NPDU codecs, value encoding (no_std + alloc)
   bacnet-services       Service request/response structures (no_std + alloc)
@@ -162,7 +164,7 @@ UART + GPIO → DE/RE ─────────>│  GpioDirectionPort<S>    �
 `MstpTransport` keeps the serial I/O layer above and runs the master node state machine of `bacnet-mstp-core`, with frames from `bacnet-mstp-codec` (re-exported as `bacnet_transport::mstp::codec`). There is no second state machine or codec in the transport. Its task owns the core, the core's receive buffer and a boxed `ActionBuffers`, and acts as the core's adapter:
 
 - **Input.** Every octet a serial read returns goes to `on_octet`, stamped with the time of that read, so the core's own stream decoder (the one the simulator and fuzzers exercise) assembles every frame. A host stamp can only be late, which can only defer this station's sends. T_frame_abort is 100 ms, the most Clause 9.5.3 allows, so a frame whose tail a USB adapter holds back still completes. A read that returns no octets is the port's end of file (`SerialPort::read`): three in a row end the task as a read error does, counted in `serial_read_errors`.
-- **Deadlines.** Tokio time is mapped onto the core's microsecond clock from the moment the transport started. The task sleeps until the earliest of `next_deadline`, the echo hunt's timer and the first expiry in the deferred reply set, and stamps `on_deadline` with the time it woke, so late service shows in the core's `deadline_misses`.
+- **Deadlines.** Tokio time is mapped exactly onto the core's nanosecond timeline (`bacnet-time`'s `Instant`) from the moment the transport started. The task sleeps until the earliest of `next_deadline`, the echo hunt's timer and the first expiry in the deferred reply set, and stamps `on_deadline` with the time it woke, so late service shows in the core's `deadline_misses`.
 - **Sending.** Octets already waiting are fed to the core right before `on_transmit_started`; the frame is written only if that returns Ok. It is complete when the port's `drain` returns, and never before its time on the wire at the baud rate (a port without a drain is timed by that alone). Each frame, including this station's own consecutive frames, waits T_turnaround after the last activity.
 - **Echo.** `SerialPort::echo` says whether the port hears its own frames. With `Echo::Full { grace }` (`Echo::full()` gives 40 ms, room for USB receive latency; zero is refused at start) the transport hunts for the frame it sent in what it reads. Octets that could begin the echo are held back and dropped once the whole frame has matched; an octet that does not fit passes on to the core with as few of the held octets as it takes, so a stray octet before the echo (a peer's pad octet) passes on and the echo behind it is still dropped, and a peer's frame that only starts like the echo passes on whole. The frame is reported complete at the first octet that passes on, when the echo has matched, or at the end of the grace, always before the core is fed anything read after it. The hunt then goes on: an echo under way is still matched as it continues, one not begun is looked for during one more grace (ended by a timer), and the hunt stops at the next confirmed start (octets held in the probe pass on before the station tries to start) or, while an echo under way is still being matched, after T_frame_abort of silence. Held octets that waited longer than T_frame_abort are dropped as a stale fragment. Mismatches, missing echoes and dropped fragments are counted.
 - **Queues.** The core's unicast and broadcast queues (256 NPDUs each) are shared with the send calls behind a short-held mutex, so a full queue or an oversized NPDU is refused at once. NPDUs go out by network priority.
@@ -222,7 +224,8 @@ At start the transport asks the host for the mask of the subnet the BBMD's
 own address is on, for the last of those conditions; where the host doesn't
 report one, a forward from the BBMD's own subnet is rebroadcast.
 
-`BbmdState` maps `std::time::Instant` onto the core's nanosecond clock, with
+`BbmdState` maps `std::time::Instant` onto the core's nanosecond clock
+(`bacnet-time`'s `Instant`, which `bacnet-mstp-core` takes too), with
 the state's creation at the middle of its range, so every instant maps
 exactly both ways. Each decision takes the state's lock once, copies its
 destinations out, and releases it before anything is sent; no await happens

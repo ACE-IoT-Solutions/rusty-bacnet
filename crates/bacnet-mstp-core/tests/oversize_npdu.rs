@@ -73,10 +73,10 @@ fn an_oversize_npdu_already_queued_is_dropped_and_the_token_moves_on() {
     // Queued straight into the storage before the core owns it.
     let mut queues = BigQueues::new();
     queues
-        .enqueue_npdu(2, &[0; 600], NetworkPriority::Normal, 0, None)
+        .enqueue_npdu(2, &[0; 600], NetworkPriority::Normal, Instant::ZERO, None)
         .unwrap();
     queues
-        .enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, 0, None)
+        .enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, Instant::ZERO, None)
         .unwrap();
     let mut rx = [0; 64];
     let mut actions = Actions::new();
@@ -92,7 +92,7 @@ fn an_oversize_npdu_already_queued_is_dropped_and_the_token_moves_on() {
     // a successor.
     let mut queues = BigQueues::new();
     queues
-        .enqueue_npdu(2, &[0; 600], NetworkPriority::Normal, 0, None)
+        .enqueue_npdu(2, &[0; 600], NetworkPriority::Normal, Instant::ZERO, None)
         .unwrap();
     let mut rx = [0; 64];
     let mut actions = Actions::new();
@@ -116,29 +116,29 @@ impl QueueStorage for Overstating {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
+        now: Instant,
+        expires_at: Option<Instant>,
     ) -> Result<(), QueueRejectReason> {
         self.0
             .enqueue_npdu(destination, payload, priority, now, expires_at)
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: Instant) -> usize {
         self.0.expire(now)
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         self.0.peek(now)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
         self.0.peek_kind(kind, now)
     }
 
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         let item = self.0.dequeue_kind_into(kind, now, scratch)?;

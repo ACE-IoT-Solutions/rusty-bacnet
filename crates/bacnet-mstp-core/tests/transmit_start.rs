@@ -267,11 +267,11 @@ fn only_a_started_transmit_adds_driver_on_time() {
         core.on_deadline(watchdog).unwrap();
         expect_receive_only(&mut core);
         let on = if started {
-            core.config().transmit_watchdog.as_micros()
+            core.config().transmit_watchdog
         } else {
-            0
+            Duration::ZERO
         };
-        assert_eq!(core.counters().de_assertion_us, on, "started {started}");
+        assert_eq!(core.counters().de_assertion, on, "started {started}");
         assert_eq!(core.counters().cancelled_sends, u32::from(!started));
         assert_eq!(core.state(), MasterState::Idle);
     }

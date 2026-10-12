@@ -287,29 +287,29 @@ impl QueueStorage for Unsized {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
+        now: Instant,
+        expires_at: Option<Instant>,
     ) -> Result<(), QueueRejectReason> {
         self.0
             .enqueue_npdu(destination, payload, priority, now, expires_at)
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: Instant) -> usize {
         self.0.expire(now)
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         self.0.peek(now)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
         self.0.peek_kind(kind, now)
     }
 
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         self.0.dequeue_kind_into(kind, now, scratch)

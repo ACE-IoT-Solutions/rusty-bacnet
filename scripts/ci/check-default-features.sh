@@ -2,7 +2,8 @@
 # Clippy and rustdoc for each publishable crate on its own, with default
 # features and only its lib/bin targets, denying warnings. Also covers the
 # feature-off builds of bacnet-types, bacnet-encoding and bacnet-services
-# (no_std with alloc) and of bacnet-cli (no TUI). Every rustdoc run documents
+# (no_std with alloc) and of bacnet-cli (no TUI), and the rustdoc of the
+# MS/TP and B/IP crates with each storage feature alone. Every rustdoc run documents
 # private items, so a broken intra-doc link on an item that exists only in one
 # feature configuration fails here (#1192).
 #
@@ -55,6 +56,18 @@ for crate in bacnet-types bacnet-encoding bacnet-services; do
   echo "==> $crate (no_std with alloc$label)"
   cargo_for clippy -p "$crate" --no-default-features --features alloc --locked -- -D warnings
   cargo_for doc -p "$crate" --no-default-features --features alloc --no-deps --locked --document-private-items
+done
+
+# The rustdoc of the MS/TP and B/IP crates with each storage feature alone.
+# Their defaults have none, and the workspace runs turn on all of them, so
+# an intra-doc link to an item behind the other feature breaks only here
+# (#1681).
+for spec in "bacnet-mstp-core alloc" "bacnet-mstp-core heapless" \
+  "bacnet-mstp-codec alloc" "bacnet-mstp-codec heapless" \
+  "bacnet-bip-codec alloc" "bacnet-bip-codec heapless"; do
+  read -r crate features <<<"$spec"
+  echo "==> $crate (rustdoc, features: $features$label)"
+  cargo_for doc -p "$crate" --no-default-features --features "$features" --no-deps --locked --document-private-items
 done
 
 echo "==> bacnet-cli (rustdoc, no default features, without the TUI$label)"

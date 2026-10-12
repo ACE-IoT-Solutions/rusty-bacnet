@@ -13,7 +13,7 @@ It isn't BTL certified; [Conformance](#conformance) explains what is covered.
 **[Documentation](https://jscott3201.github.io/rusty-bacnet/)** ·
 [Install](#install) · [Quickstart](#quickstart) · [Transports](#transports) ·
 [Crates](#crates) · [Find it in the docs](#find-it-in-the-docs) ·
-[Contributing](#contributing)
+[Roadmap](#roadmap) · [Contributing](#contributing)
 
 > [!NOTE]
 > **Release and branch.** The latest release is **0.12.0**. The published
@@ -38,6 +38,11 @@ It isn't BTL certified; [Conformance](#conformance) explains what is covered.
   [Transports](#transports).
 - **Routing.** A network layer with router tables, routed requests and BBMD and
   foreign-device support for BACnet/IP.
+- **Embedded cores (in progress).** Portable `no_std` cores for MS/TP and
+  BACnet/IP, BBMD included, that run without an allocator on
+  microcontrollers and take time from the caller. The Tokio MS/TP and
+  BACnet/IP transports run on these same cores, and a portable router core is
+  on the way. See [Roadmap](#roadmap).
 - **Python bindings.** `BACnetClient`, `BACnetServer`, `ScHub` and the shared
   endpoints with asyncio support, typed enums and values, and async COV notification streams. Python and
   Rust expose different configuration surfaces, so check the Python API before
@@ -281,6 +286,7 @@ How to configure each one:
 | [`bacnet-types`](https://crates.io/crates/bacnet-types) | Enums, primitives, bit strings and errors (`no_std` with `alloc`) |
 | [`bacnet-encoding`](https://crates.io/crates/bacnet-encoding) | ASN.1 tags, APDU/NPDU codecs, segmentation (`no_std` with `alloc`) |
 | [`bacnet-services`](https://crates.io/crates/bacnet-services) | Service request and response types (`no_std` with `alloc`) |
+| [`bacnet-time`](crates/bacnet-time) | The monotonic `Instant` and `Duration`, in nanoseconds, that the portable cores share, so firmware feeds them one clock (`no_std`; no allocator, no dependencies) |
 | [`bacnet-mstp-codec`](crates/bacnet-mstp-codec) | MS/TP frame codec: CRCs, encode, decode and a stream decoder, for standard and extended (COBS-encoded) frames (`no_std`; no allocator or dependencies by default) |
 | [`bacnet-mstp-core`](crates/bacnet-mstp-core) | MS/TP master state machine driven by caller-supplied time and events (`no_std`; no allocator by default) |
 | [`bacnet-bip-codec`](crates/bacnet-bip-codec) | BACnet/IP and BACnet/IPv6 BVLL codec: every Annex J and Annex U message, B/IP and B/IPv6 addresses, VMACs and BDT/FDT tables (`no_std`; no allocator or dependencies by default) |
@@ -294,9 +300,9 @@ How to configure each one:
 | [`bacnet-endpoint`](https://crates.io/crates/bacnet-endpoint) | One transport owner for both client and server roles |
 | [`bacnet-cli`](https://crates.io/crates/bacnet-cli) | The `bacnet` command-line tool (also as release binaries) |
 
-The other eleven are on crates.io at 0.12.0; `bacnet-mstp-codec`,
-`bacnet-mstp-core`, `bacnet-bip-codec` and `bacnet-bip-core` are new on `dev`
-and ship with the next release. The
+The other eleven are on crates.io at 0.12.0; `bacnet-time`,
+`bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec` and
+`bacnet-bip-core` are new on `dev` and ship with the next release. The
 Python package is built from [`crates/rusty-bacnet`](crates/rusty-bacnet) with
 [maturin](https://www.maturin.rs/). The [architecture guide](docs/architecture.md)
 shows how the layers fit together.
@@ -330,6 +336,27 @@ conformance. The website's
 section lists the object types, services, transports and Python bindings that
 0.12.0 implements. A running server can also generate a PICS for its
 own objects and services with `bacnet_server::pics`.
+
+## Roadmap
+
+Planned work is public on the
+**[Rusty BACnet Roadmap](https://github.com/users/jscott3201/projects/4)**
+project board. Every open issue is there with its track (MS/TP, BACnet/IP and
+BBMD, routing, Python, server and objects, and so on), a priority from P0 to
+P3, and the release it's aimed at:
+
+- **0.13.0 puts `no_std` first.** It brings the portable MS/TP and BACnet/IP
+  cores, with BBMD and routing available to firmware, the Tokio transports on
+  those same cores, and the first crates.io release of the new crates.
+- **0.14.0** brings the interactive terminal UI for the `bacnet` CLI.
+- An issue with no milestone is in the backlog.
+
+Releases have no dates. Each ships when its milestone's work is done. The
+board's views show the same issues by track, by release and by parent issue.
+**Needs decision** lists open design questions, where comments help most, and
+**Good first issues** lists self-contained places to start. To suggest
+something, [open an issue](https://github.com/jscott3201/rusty-bacnet/issues/new/choose);
+new issues join the board automatically.
 
 ## Contributing
 
