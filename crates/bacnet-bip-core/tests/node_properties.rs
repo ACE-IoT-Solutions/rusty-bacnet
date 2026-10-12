@@ -2,6 +2,11 @@
 //! loses, delays and duplicates: the lease the node reports never outlasts
 //! the BBMD's entry without its grace period, and attempts stay between one
 //! response timeout and one renewal interval apart (Annex J.5.2).
+//!
+//! Time-to-live 2, 20 and 60 s. Every copy of a result arrives less than
+//! the answer window after its request's send: three response timeouts, at
+//! most the renewal interval, so one timeout (1 s) at a 2 s time-to-live
+//! and three (9 s) at 20 and 60 s.
 
 mod node_support;
 
@@ -14,14 +19,17 @@ use bacnet_bip_core::{Duration, Instant};
 use node_support::*;
 use proptest::prelude::*;
 
-/// Time-to-live, renewal and response timeout, as the design's traces.
-const TTL: u16 = 60;
-const TIMEOUT_MS: u64 = 3_000;
-const RENEWAL_MS: u64 = 30_000;
+/// How long after its request's send a result may still arrive, as the
+/// engine counts on: three response timeouts, at most the renewal.
+fn answer_window(foreign: &Foreign) -> Duration {
+    let timeout = foreign.effective_response_timeout();
+    (timeout + timeout + timeout).min(foreign.effective_renewal())
+}
 
-/// The longest a copy of a response takes from its request's send: three
-/// response timeouts. The engine counts on no more (its answer window).
-const MAX_ROUND_TRIP_MS: u64 = 3 * TIMEOUT_MS;
+/// `share` per mille of `window`, rounded down.
+fn part(window: Duration, share: u64) -> Duration {
+    Duration::from_nanos(window.as_nanos() / 1_000 * share)
+}
 
 const LIMITS: RegistrationLimits = RegistrationLimits {
     min_ttl: 1,
@@ -35,21 +43,22 @@ const LIMITS: RegistrationLimits = RegistrationLimits {
 struct Plan {
     /// The request never arrives.
     request_lost: bool,
-    /// How much of the round-trip budget the request takes, per mille.
+    /// How much of the answer window the request takes, per mille.
     request_share: u64,
     /// The BBMD refuses it (table full, say).
     refused: bool,
     /// Each copy of the result: lost, or its share of what is left, per
-    /// mille. Two copies are a duplicate.
+    /// mille. Two copies are a duplicate. Below 1000, so every copy
+    /// arrives inside the window.
     copies: Vec<(bool, u64)>,
 }
 
 fn plan() -> impl Strategy<Value = Plan> {
     (
         prop::bool::weighted(0.3),
-        0u64..=1_000,
+        0u64..1_000,
         prop::bool::weighted(0.1),
-        prop::collection::vec((prop::bool::weighted(0.25), 0u64..=1_000), 1..=2),
+        prop::collection::vec((prop::bool::weighted(0.25), 0u64..1_000), 1..=2),
     )
         .prop_map(|(request_lost, request_share, refused, copies)| Plan {
             request_lost,
@@ -71,6 +80,8 @@ enum Message {
 struct World {
     node: Node,
     fdt: Fdt<2>,
+    foreign: Foreign,
+    window: Duration,
     plans: Vec<Plan>,
     /// Messages by arrival time, then order sent.
     in_flight: BTreeMap<(Instant, u64), Message>,
@@ -83,16 +94,16 @@ struct World {
 }
 
 impl World {
-    fn new(retry: Retry, plans: Vec<Plan>) -> Self {
+    fn new(ttl: u16, retry: Retry, plans: Vec<Plan>) -> Self {
         let foreign = Foreign {
             retry,
-            ..Foreign::new(BBMD, TTL)
+            ..Foreign::new(BBMD, ttl)
         };
-        assert_eq!(foreign.response_timeout, ms(TIMEOUT_MS));
-        assert_eq!(foreign.renewal, ms(RENEWAL_MS));
         let mut world = Self {
             node: Node::new(foreign_link(foreign), Instant::ZERO).unwrap(),
             fdt: Fdt::new(),
+            foreign,
+            window: answer_window(&foreign),
             plans,
             in_flight: BTreeMap::new(),
             sent: 0,
@@ -116,7 +127,7 @@ impl World {
             match self.node.poll_action() {
                 Action::Idle => break,
                 Action::Register { exchange, ttl, .. } => {
-                    assert_eq!(ttl, TTL);
+                    assert_eq!(ttl, self.foreign.ttl);
                     let index = self.starts.len();
                     self.starts.push(now);
                     self.accepted_before.push(self.accepted_since_start > 0);
@@ -126,8 +137,8 @@ impl World {
                         continue;
                     };
                     if !plan.request_lost {
-                        let delay = MAX_ROUND_TRIP_MS * plan.request_share / 1_000;
-                        self.post(now + ms(delay), Message::Request(index));
+                        let delay = part(self.window, plan.request_share);
+                        self.post(now + delay, Message::Request(index));
                     }
                 }
                 Action::Registration(_) | Action::ReleaseHeld | Action::DiscardHeld => {}
@@ -139,20 +150,20 @@ impl World {
     /// The BBMD takes request `index` at `now` and answers it.
     fn bbmd(&mut self, index: usize, now: Instant) {
         let plan = self.plans[index].clone();
+        let ttl = self.foreign.ttl;
         let outcome = self
             .fdt
-            .register(OWN, TTL, now, &LIMITS, Reservation::Ordinary, || {
+            .register(OWN, ttl, now, &LIMITS, Reservation::Ordinary, || {
                 !plan.refused
             });
         let code = match outcome.result {
             Ok(_) => BvlcResultCode::SUCCESSFUL_COMPLETION,
             Err(refusal) => refusal.result_code(),
         };
-        let used = MAX_ROUND_TRIP_MS * plan.request_share / 1_000;
+        let left = self.window - part(self.window, plan.request_share);
         for (lost, share) in plan.copies {
             if !lost {
-                let delay = (MAX_ROUND_TRIP_MS - used) * share / 1_000;
-                self.post(now + ms(delay), Message::Result(code));
+                self.post(now + part(left, share), Message::Result(code));
             }
         }
     }
@@ -179,8 +190,19 @@ impl World {
         Ok(())
     }
 
+    /// Run until `end`, checking the lease after every event. No more than
+    /// two attempts start per response timeout: one at most, and the one
+    /// renewal a success may ask for at once.
     fn run(&mut self, end: Instant) -> Result<(), TestCaseError> {
+        let timeout = self.foreign.effective_response_timeout();
+        let most = 2 * (end.as_nanos() / timeout.as_nanos()) as usize + 2;
         loop {
+            prop_assert!(
+                self.starts.len() <= most,
+                "{} attempts by {end:?}: {:?}",
+                self.starts.len(),
+                &self.starts[..8]
+            );
             let arrival = self.in_flight.keys().next().map(|(when, _)| *when);
             let Some(now) = [arrival, self.node.next_deadline()]
                 .into_iter()
@@ -210,16 +232,21 @@ impl World {
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
     #[test]
     fn lease_never_outlives_the_bbmd_entry_without_grace(
+        ttl in prop_oneof![Just(2u16), Just(20), Just(60)],
         backoff in any::<bool>(),
         plans in prop::collection::vec(plan(), 48),
     ) {
         let retry = if backoff { Retry::Backoff } else { Retry::AtRenewal };
-        let mut world = World::new(retry, plans);
-        world.run(at(1_200_000))?;
-        let renewal = ms(RENEWAL_MS);
-        let timeout = ms(TIMEOUT_MS);
+        let mut world = World::new(ttl, retry, plans);
+        let renewal = world.foreign.effective_renewal();
+        let timeout = world.foreign.effective_response_timeout();
+        // Fifty renewal intervals: the 48 planned attempts and the losses
+        // after them.
+        world.run(Instant::ZERO + Duration::from_nanos(renewal.as_nanos() * 50))?;
         for (pair, accepted) in world.starts.windows(2).zip(&world.accepted_before[1..]) {
             let gap = pair[1] - pair[0];
             // Never later than one renewal after the attempt before.

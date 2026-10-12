@@ -155,6 +155,12 @@ pub enum ExchangeRefusal {
     Full,
     /// The message isn't one of the five requests ([`Operation`]).
     NotARequest,
+    /// A foreign device's own BBMD, for a request a success answers
+    /// (Register-Foreign-Device, Delete-Foreign-Device-Table-Entry,
+    /// Write-Broadcast-Distribution-Table). The node owns that
+    /// registration: such a request could change the BBMD's entry behind
+    /// the lease, and its success could pass for a registration's.
+    ManagedRegistration,
 }
 
 impl fmt::Display for ExchangeRefusal {
@@ -166,6 +172,9 @@ impl fmt::Display for ExchangeRefusal {
             }
             Self::Full => "every BVLC exchange slot is in use",
             Self::NotARequest => "not a BVLC management request",
+            Self::ManagedRegistration => {
+                "the foreign-device registration with this BBMD is managed automatically"
+            }
         })
     }
 }

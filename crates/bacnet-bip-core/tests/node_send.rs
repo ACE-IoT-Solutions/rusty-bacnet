@@ -242,3 +242,41 @@ fn a_link_is_checked_before_it_runs() {
     assert_eq!(check(OWN, mode(beside), budget), Ok(()));
     assert!(!ConfigError::Renewal.to_string().is_empty());
 }
+
+#[test]
+fn a_bbmd_at_no_single_address_is_refused() {
+    let base = foreign();
+    let check = |bbmd| {
+        let link = Link {
+            address: OWN,
+            subnet: SUBNET,
+            mode: Mode::Foreign(Foreign { bbmd, ..base }),
+            budget: None,
+        };
+        link.validate()
+    };
+    for bbmd in [
+        addr(0, 0, 0, 0, PORT),
+        addr(255, 255, 255, 255, PORT),
+        addr(224, 0, 0, 1, PORT),
+        addr(239, 1, 2, 3, 47_809),
+        BROADCAST,
+        // The subnet's broadcast IP at any port.
+        addr(192, 168, 1, 255, 47_809),
+    ] {
+        assert_eq!(check(bbmd), Err(ConfigError::BbmdAddress), "{bbmd}");
+    }
+    assert_eq!(check(BBMD), Ok(()));
+    // A loopback test's broadcast address is a group only at its port.
+    let loopback = LocalSubnet {
+        broadcast: addr(127, 0, 0, 1, PORT),
+        mask: None,
+    };
+    let own = addr(127, 0, 0, 1, 47_809);
+    let on_loopback = |bbmd| Link::new(own, loopback, Mode::Foreign(Foreign::new(bbmd, 60)));
+    assert!(on_loopback(addr(127, 0, 0, 1, 47_810)).is_ok());
+    assert_eq!(
+        on_loopback(addr(127, 0, 0, 1, PORT)),
+        Err(ConfigError::BbmdAddress)
+    );
+}

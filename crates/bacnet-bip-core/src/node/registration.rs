@@ -14,7 +14,8 @@
 //! J.5.2.3). Locally, a success can't say which request it answers, so the
 //! lease starts at the earliest send it could be for, and ends one
 //! time-to-live later, without the grace period. Every send precedes its
-//! arrival, so the local view never outlasts the BBMD's entry.
+//! arrival, so the local view never outlasts the BBMD's entry, on the
+//! assumption [`Lease`] states.
 
 use bacnet_bip_codec::BvlcResultCode;
 
@@ -24,10 +25,19 @@ use crate::time::{Duration, Instant};
 /// A registration the BBMD has proven: from `since` until `until`.
 ///
 /// A success names no request, so `since` is the earliest send it could
-/// answer: any attempt sent since the last answer, and any sent within
-/// three response timeouts (at most half the renewal interval) before the
-/// success, in case it is a late copy. The lease holds as long as no
-/// result takes longer than that from its request.
+/// answer: any attempt sent since the last answer, and any sent less than
+/// the answer window before the success, in case it is a late or repeated
+/// copy. The answer window is three response timeouts, but no longer than
+/// the renewal interval, so never shorter than one response timeout.
+///
+/// `until` is never later than the end of the BBMD's entry, grace period
+/// left out, for every valid time-to-live, as long as every result, and
+/// every copy of one, reaches the node less than the answer window after
+/// its request was sent, and nothing else changes the entry (in foreign
+/// mode the node refuses manual requests that could). A BBMD that loses its
+/// table, as on a restart, ends the entry early; the
+/// Distribute-Broadcast-To-Network NAK that follows is taken as a hint to
+/// register again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lease {
     /// The earliest send the proving success could answer.
@@ -173,16 +183,18 @@ impl Recent {
         self.next = (self.next + 1) & (Self::LEN as u8 - 1);
     }
 
-    /// The earliest start at or after `floor`. When one that old may have
-    /// left the ring, `floor` itself, which is no later than it.
-    fn earliest_since(&self, floor: Instant) -> Option<Instant> {
-        if self.evicted.is_some_and(|start| start >= floor) {
-            return Some(floor);
+    /// The earliest start after `floor`, or of all with no floor. When one
+    /// that late may have left the ring, `floor` itself (or the epoch),
+    /// which is earlier than it.
+    fn earliest_after(&self, floor: Option<Instant>) -> Option<Instant> {
+        let inside = |start: Instant| floor.is_none_or(|floor| start > floor);
+        if self.evicted.is_some_and(inside) {
+            return Some(floor.unwrap_or(Instant::ZERO));
         }
         self.starts[..usize::from(self.len)]
             .iter()
             .copied()
-            .filter(|start| *start >= floor)
+            .filter(|start| inside(*start))
             .min()
     }
 }
@@ -241,16 +253,19 @@ impl Lifecycle {
     }
 
     /// How long after its request a success, or a copy of it, may still
-    /// arrive and be told apart: three response timeouts, but at most half
-    /// the renewal interval, so a renewal never counts its predecessor.
-    /// Any attempt sent this long before a success could be the one it
-    /// answers, so the lease starts no later than the earliest of them.
+    /// arrive: three response timeouts, but no longer than the renewal
+    /// interval. The response timeout is never longer than the renewal, so
+    /// this is at least one response timeout. Any attempt sent less than
+    /// this before a success could be the one it answers, so the lease
+    /// starts no later than the earliest of them. An attempt one renewal
+    /// back is never counted, so a renewal doesn't pull its lease back to
+    /// its predecessor's.
     pub(crate) fn answer_window(&self) -> Duration {
         let three = self
             .timeout
             .saturating_double()
             .saturating_add(self.timeout);
-        three.min(self.renewal.half())
+        three.min(self.renewal)
     }
 
     /// When the next attempt is due, while none is in flight.
@@ -291,8 +306,10 @@ impl Lifecycle {
         now: Instant,
     ) -> (Option<RegistrationEvent>, Option<HeldVerdict>) {
         let start = self.attempt.take().map_or(now, |attempt| attempt.start);
-        let floor = now.saturating_sub(self.answer_window());
-        let since = [self.unanswered_since, self.recent.earliest_since(floor)]
+        // Sent less than the window before now: after the floor, or any
+        // when the window reaches back past the epoch.
+        let floor = now.checked_sub(self.answer_window());
+        let since = [self.unanswered_since, self.recent.earliest_after(floor)]
             .into_iter()
             .flatten()
             .fold(start, Instant::min);
@@ -419,5 +436,44 @@ impl Lifecycle {
             first_resolved: self.first_resolved,
             held: self.held,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Instant, Recent};
+
+    fn at(secs: u64) -> Instant {
+        Instant::from_secs(secs)
+    }
+
+    #[test]
+    fn the_ring_answers_with_the_earliest_start_after_the_floor() {
+        let mut recent = Recent::new();
+        assert_eq!(recent.earliest_after(None), None);
+        for start in [10, 20, 30] {
+            recent.push(at(start));
+        }
+        assert_eq!(recent.earliest_after(None), Some(at(10)));
+        assert_eq!(recent.earliest_after(Some(at(10))), Some(at(20)));
+        assert_eq!(recent.earliest_after(Some(at(9))), Some(at(10)));
+        assert_eq!(recent.earliest_after(Some(at(30))), None);
+    }
+
+    #[test]
+    fn a_start_pushed_out_of_the_ring_falls_back_to_the_floor() {
+        let mut recent = Recent::new();
+        for start in [10, 20, 30, 40, 50] {
+            recent.push(at(start));
+        }
+        // 10 left the ring. Inside the window, the floor stands in for it.
+        assert_eq!(recent.earliest_after(Some(at(5))), Some(at(5)));
+        assert_eq!(recent.earliest_after(None), Some(Instant::ZERO));
+        // Outside it, the ring answers alone.
+        assert_eq!(recent.earliest_after(Some(at(10))), Some(at(20)));
+        assert_eq!(recent.earliest_after(Some(at(25))), Some(at(30)));
+        recent.push(at(60));
+        assert_eq!(recent.earliest_after(Some(at(15))), Some(at(15)));
+        assert_eq!(recent.earliest_after(Some(at(20))), Some(at(30)));
     }
 }

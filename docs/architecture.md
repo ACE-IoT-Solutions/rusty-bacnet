@@ -238,18 +238,21 @@ BBMD mode, in two layers:
   budget), makes pure decisions. `Link::receive` applies the receive rules in
   a fixed order (truncation, group source, broadcast listener, header,
   destination, the host's rate limit, payload), drops own echoes and group
-  origins, answers each BBMD-only request with its own NAK
-  (`BvlcFunction::nak`) unless the mode is BBMD, and in BBMD mode hands the
-  BBMD's share to the caller for `bbmd::Tables`. `Link::unicast` and
+  origins, and answers each BBMD-only request with its own NAK
+  (`BvlcFunction::nak`). In BBMD mode it hands the BBMD's share of the
+  other five to the caller for `bbmd::Tables` instead; Write-BDT is refused
+  in every mode. `Link::unicast` and
   `Link::broadcast` say what to send, refusing NPDUs over the budget (by
   default Table 6-1's 1497 octets).
 - **`Node<X>`** holds what changes: up to `X` management exchanges, matched by
   peer and operation with a local generation since a BVLC-Result has no
   invoke ID; a foreign device's registration (backoff after a loss, capped at
   the renewal interval; a lease anchored at the earliest send its success
-  could answer, ending at the time-to-live without the BBMD's grace period);
-  broadcasts held until the first registration attempt resolves; and the
-  timers. Callers poll its actions after every call.
+  could answer, ending at the time-to-live without the BBMD's grace period,
+  which holds while every result arrives within an answer window of at least
+  one response timeout; manual requests that could change that registration
+  are refused); broadcasts held until the first registration attempt
+  resolves; and the timers. Callers poll its actions after every call.
 
 The engine has no buffers: deliveries borrow the datagram, and every send is
 a `Bvll` the caller encodes. A node that is not a BBMD links no BBMD code.

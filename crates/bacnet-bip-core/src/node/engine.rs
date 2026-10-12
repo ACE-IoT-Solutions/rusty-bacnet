@@ -40,12 +40,17 @@ pub enum Inbound<'d> {
     /// Dropped ([`Received::Discarded`]).
     Discarded(Discard),
     /// The response answers `exchange`. A malformed table ACK still
-    /// completes the exchange it fits, with the codec's error.
+    /// completes the exchange it fits, with the codec's error, and so does
+    /// one [`Policy::accept_table`] refused, as received.
     Matched {
         /// The exchange.
         exchange: ExchangeId,
         /// The response.
         message: Result<Bvll<'d>, BvllError>,
+        /// Whether the codec decoded it and [`Policy::accept_table`] took
+        /// it ([`Response::accepted`]). Only an accepted response counts as
+        /// an answer; the caller fails the exchange otherwise.
+        accepted: bool,
         /// Whether the exchange ended now. When it beat
         /// [`Node::exchange_sent`], the caller keeps the response until
         /// that returns `true`.
@@ -212,6 +217,7 @@ impl<const X: usize> Node<X> {
             return Inbound::Matched {
                 exchange,
                 message,
+                accepted: valid,
                 settled: false,
             };
         }
@@ -219,6 +225,7 @@ impl<const X: usize> Node<X> {
         Inbound::Matched {
             exchange,
             message,
+            accepted: valid,
             settled: true,
         }
     }
@@ -336,6 +343,10 @@ impl<const X: usize> Node<X> {
     /// within `timeout` of its send. Encode and send the returned message,
     /// then report it with [`exchange_sent`](Node::exchange_sent) or
     /// [`exchange_failed`](Node::exchange_failed).
+    ///
+    /// A foreign device refuses a request a success answers to its own
+    /// BBMD ([`ExchangeRefusal::ManagedRegistration`]): the node owns that
+    /// registration. A normal node or a BBMD may send any.
     pub fn begin_exchange<'r>(
         &mut self,
         peer: SocketAddrV4,
@@ -345,6 +356,11 @@ impl<const X: usize> Node<X> {
     ) -> Result<(ExchangeId, Outgoing<'r>), ExchangeRefusal> {
         self.advance(now);
         let operation = Operation::of(request.function()).ok_or(ExchangeRefusal::NotARequest)?;
+        if let Mode::Foreign(foreign) = &self.link.mode {
+            if foreign.bbmd == peer && operation.answered_by_success() {
+                return Err(ExchangeRefusal::ManagedRegistration);
+            }
+        }
         let ttl = match request {
             Bvll::RegisterForeignDevice { ttl } => ttl,
             _ => 0,

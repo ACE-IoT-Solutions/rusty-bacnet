@@ -68,8 +68,9 @@
 //!
 //! # Annex J, for a node that is not a BBMD
 //!
-//! Each obligation Annex J places on a node that is not a BBMD, in our own
-//! words, and the test in `crates/bacnet-bip-core/tests/` that covers it.
+//! Each obligation Annex J places on a node that is not a BBMD, and one
+//! recommendation, in our own words, with the test in
+//! `crates/bacnet-bip-core/tests/` that covers it.
 //!
 //! | Obligation | Clause | Test |
 //! | --- | --- | --- |
@@ -77,7 +78,6 @@
 //! | A local broadcast goes to the subnet's broadcast IP at the network's port | J.1.2, J.4.1 | `node_send.rs` `normal_broadcast_is_original_broadcast_at_the_network_port` |
 //! | Every message has BVLC type 0x81, and a Length that counts the whole message | J.2 | `node_receive.rs` `header_failures_are_discarded_by_reason` |
 //! | Each request only a BBMD serves, reaching a non-BBMD by unicast, is answered with that request's own NAK: Read-BDT 0x0020, Read-FDT 0x0040, Delete-FDT-Entry 0x0050, Register-Foreign-Device 0x0030, Distribute-Broadcast-To-Network 0x0060 | J.2.1, J.4.4.1, J.4.5, J.5.2.1.1, J.5.2.1.2, J.5.2.2 | `node_naks.rs` `each_bbmd_only_request_draws_its_own_nak` |
-//! | The same requests sent to a broadcast address draw nothing | J.2.1 | `node_naks.rs` `a_broadcast_bbmd_request_draws_nothing` |
 //! | Write-BDT is refused with 0x0010 by every device, a BBMD included, and changes nothing | J.4.4.2 | `node_naks.rs` `write_bdt_is_refused_in_every_mode` |
 //! | A BVLC-Result reports on one of the node's own requests; nothing answers it | J.2.1 | `node_exchanges.rs` `a_result_is_matched_and_never_answered` |
 //! | A Forwarded-NPDU's originating address, not its sender, is the NPDU's source | J.2.5 | `node_receive.rs` `forwarded_npdu_is_delivered_from_its_origin` |
@@ -85,10 +85,10 @@
 //! | An Original-Unicast-NPDU must reach the node at its own address, an Original-Broadcast-NPDU at the broadcast address | J.2.11, J.2.12, J.4.1 | `node_receive.rs` `original_functions_must_fit_their_destination` |
 //! | A foreign device broadcasts through its BBMD with Distribute-Broadcast-To-Network, never with Original-Broadcast-NPDU | J.2.10, J.2.12 | `node_send.rs` `foreign_broadcast_is_always_dbtn_to_the_bbmd` |
 //! | A device that can't act as a BBMD can register as a foreign device; a success result means it is registered | J.4.3, J.5.2 | `node_registration.rs` `success_registers` |
-//! | The time-to-live bounds when the device must register again; the 30-second grace belongs to the BBMD, so the device doesn't count on it | J.2.6.1, J.5.2.1, J.5.2.3 | `registration_traces.rs`; `node_properties.rs` `lease_never_outlives_the_bbmd_entry_without_grace` |
+//! | The time-to-live bounds when the device must register again; the 30-second grace belongs to the BBMD, so the device doesn't count on it. The lease the node reports never outlasts the BBMD's entry, for any time-to-live, while every result and copy of one arrives less than the answer window ([`Lease`]: three response timeouts, at most the renewal interval, never under one timeout) after its request | J.2.6.1, J.5.2.1, J.5.2.3 | `registration_traces.rs`; `node_properties.rs` `lease_never_outlives_the_bbmd_entry_without_grace` (time-to-live 2, 20 and 60 s); `node_registration.rs` `a_copy_of_an_answer_never_stretches_a_short_lease` |
 //! | A BBMD that won't register the device answers with the Register-Foreign-Device NAK | J.5.2.2 | `node_registration.rs` `a_refusal_keeps_earlier_evidence` |
-//! | A BBMD refuses Distribute-Broadcast-To-Network from a device it hasn't registered, so that NAK from the device's own BBMD means the registration is gone | J.4.5 | `node_registration.rs` `distribute_nak_pulls_the_renewal_forward` |
-//! | Behind NAT, a foreign device registers often enough to keep the router's mapping open, whatever its time-to-live | J.7.5 (e) | `node_registration.rs` `renewal_is_independent_of_ttl` |
+//! | A BBMD answers Distribute-Broadcast-To-Network with its NAK when the sender isn't registered, and also when forwarding fails; that NAK from the device's own BBMD is taken as a hint to register again, at most once per response timeout | J.4.5 | `node_registration.rs` `distribute_nak_pulls_the_renewal_forward` |
+//! | A recommendation, not an obligation: behind NAT, a foreign device registers often enough to keep the router's mapping open, whatever its time-to-live | J.7.5 (e) | `node_registration.rs` `renewal_is_independent_of_ttl` |
 //! | A function the annex doesn't define, 0x0C among them (its clause is deleted), is dropped unanswered | J.2.13 | `node_receive.rs` `unknown_functions_are_dropped_unanswered` |
 //! | B/IP multicast (a group address in place of the broadcast address) | J.8 | Not supported here (#941); the broadcast address is configuration |
 //!
@@ -96,6 +96,7 @@
 //!
 //! | Rule | Test |
 //! | --- | --- |
+//! | A BBMD-only request sent to a broadcast address draws nothing: J.2.1 asks for the NAK when the request came by unicast, read here as leaving broadcast copies unanswered | `node_naks.rs` `a_broadcast_bbmd_request_draws_nothing` |
 //! | A datagram whose UDP source is a group address is dropped before its frame is read (#1504) | `node_receive.rs` `group_sources_and_origins_are_dropped` |
 //! | A Forwarded-NPDU whose origin is a group address is dropped (#1493) | `node_receive.rs` `group_sources_and_origins_are_dropped` |
 //! | The node's own frames, and Forwarded-NPDUs naming it as the origin, are dropped | `node_receive.rs` `own_echoes_are_dropped` |
@@ -107,6 +108,7 @@
 //! | A truncated datagram is dropped first | `node_receive.rs` `truncation_is_checked_first` |
 //! | A foreign device takes Forwarded-NPDUs only from its BBMD by unicast | `node_receive.rs` `foreign_trust_takes_forwards_only_from_the_bbmd_by_unicast` |
 //! | Broadcasts are held, bounded, until the first registration attempt resolves | `node_registration.rs` `broadcasts_are_held_until_the_first_attempt_resolves` |
+//! | A foreign device refuses manual requests a success answers to its own BBMD, whose registration it owns | `node_registration.rs` `a_foreign_device_refuses_manual_requests_to_its_bbmd` |
 //! | NPDUs longer than the datagram budget allows are refused | `node_send.rs` `the_budget_caps_each_cast` |
 
 mod actions;

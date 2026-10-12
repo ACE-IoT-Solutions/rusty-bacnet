@@ -55,8 +55,13 @@ fn register() -> Bvll<'static> {
     Bvll::RegisterForeignDevice { ttl: 60 }
 }
 
+/// Whether `inbound` settles `exchange` now with an accepted answer.
 fn settled(inbound: &Inbound<'_>, exchange: ExchangeId) -> bool {
-    matches!(inbound, Inbound::Matched { exchange: e, message: Ok(_), settled: true } if *e == exchange)
+    matches!(
+        inbound,
+        Inbound::Matched { exchange: e, message: Ok(_), accepted: true, settled: true }
+            if *e == exchange
+    )
 }
 
 #[test]
@@ -223,6 +228,7 @@ fn a_response_that_beats_the_send_settles_it() {
         Inbound::Matched {
             exchange,
             message: Ok(Bvll::BvlcResult(SUCCESS)),
+            accepted: true,
             settled: false
         }
     );
@@ -256,6 +262,29 @@ fn a_response_that_beats_the_send_settles_it() {
         (0, 1)
     );
     assert!(!node.exchange_sent(exchange, at(6)));
+
+    // A refused table that beats the send says so too, and settles it
+    // unanswered at the send.
+    let (exchange, _) = node
+        .begin_exchange(PEER, read_bdt(), TIMEOUT, at(7))
+        .unwrap();
+    let rows = [
+        BdtEntry::new(PEER, Ipv4Addr::BROADCAST),
+        BdtEntry::new(REMOTE, Ipv4Addr::BROADCAST),
+    ];
+    let big = wire(Bvll::ReadBroadcastDistributionTableAck(
+        BdtEntries::from_entries(&rows),
+    ));
+    assert!(matches!(
+        node.receive(&datagram(&big, PEER, UNICAST), at(8), &mut OneRow),
+        Inbound::Matched {
+            accepted: false,
+            settled: false,
+            ..
+        }
+    ));
+    assert!(node.exchange_sent(exchange, at(9)));
+    assert_eq!(node.take_counters().read_bdt.acknowledgements, 0);
 }
 
 #[test]
@@ -375,18 +404,34 @@ fn malformed_responses_are_counted_and_only_acks_complete() {
     let ragged = raw(0x03, &[0x00; 7]);
     assert!(matches!(
         answer(&mut node, &ragged, PEER, at(4)),
-        Inbound::Matched { exchange, message: Err(_), settled: true } if exchange == read
+        Inbound::Matched { exchange, message: Err(_), accepted: false, settled: true }
+            if exchange == read
     ));
-    // An ACK the policy refuses completes it as received, uncounted.
+    // An ACK the policy refuses completes it as received, marked refused
+    // so the caller fails the exchange without judging the table again,
+    // and uncounted.
     let read = sent(&mut node, PEER, read_bdt(), at(5));
     let rows = [
         BdtEntry::new(PEER, Ipv4Addr::BROADCAST),
         BdtEntry::new(REMOTE, Ipv4Addr::BROADCAST),
     ];
-    let big = wire(Bvll::ReadBroadcastDistributionTableAck(
-        BdtEntries::from_entries(&rows),
+    let table = BdtEntries::from_entries(&rows);
+    let big = wire(Bvll::ReadBroadcastDistributionTableAck(table));
+    assert_eq!(
+        node.receive(&datagram(&big, PEER, UNICAST), at(6), &mut OneRow),
+        Inbound::Matched {
+            exchange: read,
+            message: Ok(Bvll::ReadBroadcastDistributionTableAck(table)),
+            accepted: false,
+            settled: true
+        }
+    );
+    // One row passes the policy, accepted.
+    let read = sent(&mut node, PEER, read_bdt(), at(6));
+    let small = wire(Bvll::ReadBroadcastDistributionTableAck(
+        BdtEntries::from_entries(&rows[..1]),
     ));
-    let inbound = node.receive(&datagram(&big, PEER, UNICAST), at(6), &mut OneRow);
+    let inbound = node.receive(&datagram(&small, PEER, UNICAST), at(6), &mut OneRow);
     assert!(settled(&inbound, read));
     // Nothing waiting: a malformed ACK is only malformed.
     assert!(matches!(
@@ -406,7 +451,7 @@ fn malformed_responses_are_counted_and_only_acks_complete() {
             counters.read_bdt.acknowledgements,
             counters.write_bdt.results
         ),
-        (0, 1)
+        (1, 1)
     );
     assert_eq!(counters.unmatched_responses, 0);
 }

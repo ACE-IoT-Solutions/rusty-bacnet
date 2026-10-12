@@ -5,7 +5,7 @@
 
 mod node_support;
 
-use bacnet_bip_codec::{BvlcResultCode, Bvll};
+use bacnet_bip_codec::{BdtEntries, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{
     Action, Admission, AttemptOutcome, ExchangeId, ExchangeRefusal, Foreign, Inbound, Lease,
     LocalFailure, Mode, Node, Permissive, Received, RegistrationEvent, Retry, SendRefusal,
@@ -359,29 +359,82 @@ fn a_bbmd_on_another_port_is_answered_from_that_port() {
 }
 
 #[test]
-fn a_manual_registration_shares_the_automatic_key() {
+fn a_foreign_device_refuses_manual_requests_to_its_bbmd() {
     let mut node = start(foreign());
     act(&mut node, at(0));
-    // The automatic attempt is live: a manual one to the BBMD must wait.
-    let request = Bvll::RegisterForeignDevice { ttl: 0 };
-    assert_eq!(
-        node.begin_exchange(BBMD, request, ms(3_000), at(1))
-            .map(|_| ()),
-        Err(ExchangeRefusal::SameExchange)
-    );
     bbmd_says(&mut node, SUCCESS, at(10));
     act(&mut node, at(10));
-    // Now it may go; its success leaves the lease alone.
+    // The node owns its registration with the BBMD: a manual request a
+    // success answers could change the entry behind the lease, whatever
+    // its time-to-live, or pass for the registration's answer.
+    let owned = [
+        Bvll::RegisterForeignDevice { ttl: 0 },
+        Bvll::RegisterForeignDevice { ttl: 60 },
+        Bvll::DeleteForeignDeviceTableEntry(OWN),
+        Bvll::WriteBroadcastDistributionTable(BdtEntries::from_entries(&[])),
+    ];
+    for request in owned {
+        assert_eq!(
+            node.begin_exchange(BBMD, request, ms(3_000), at(20))
+                .map(|_| ()),
+            Err(ExchangeRefusal::ManagedRegistration),
+            "{request:?}"
+        );
+    }
+    // Reading its tables is fine, and so is registering elsewhere, which
+    // leaves the lease alone.
+    for request in [
+        Bvll::ReadBroadcastDistributionTable,
+        Bvll::ReadForeignDeviceTable,
+    ] {
+        let (read, _) = node
+            .begin_exchange(BBMD, request, ms(3_000), at(20))
+            .unwrap();
+        node.exchange_failed(read, LocalFailure::Cancelled, at(20));
+    }
+    let elsewhere = addr(10, 0, 0, 2, PORT);
+    let request = Bvll::RegisterForeignDevice { ttl: 0 };
     let (manual, _) = node
-        .begin_exchange(BBMD, request, ms(3_000), at(20))
+        .begin_exchange(elsewhere, request, ms(3_000), at(20))
         .unwrap();
     node.exchange_sent(manual, at(20));
-    bbmd_says(&mut node, SUCCESS, at(30));
+    let success = result(SUCCESS);
+    node.receive(
+        &datagram(&success, elsewhere, UNICAST),
+        at(30),
+        &mut Permissive,
+    );
     assert!(act(&mut node, at(30)).1.is_empty());
-    let view = node.registration(at(30)).unwrap();
-    assert_eq!(view.lease.unwrap().until, at(60_000));
-    // An automatic attempt due while a manual one is live can't start: it
-    // counts as busy and retries, without an event.
+    assert_eq!(
+        node.registration(at(30)).unwrap().lease.unwrap().until,
+        at(60_000)
+    );
+    let counters = node.take_counters();
+    assert_eq!(counters.register_foreign_device.busy, 0);
+    assert_eq!(counters.registration_attempts, 2);
+    // A normal node, as the CLI's one-shot registration uses, may send them.
+    let mut normal: Node = Node::new(link(Mode::Normal), Instant::ZERO).unwrap();
+    for request in owned {
+        let (exchange, _) = normal
+            .begin_exchange(BBMD, request, ms(3_000), at(1))
+            .unwrap();
+        normal.exchange_failed(exchange, LocalFailure::Cancelled, at(1));
+    }
+}
+
+#[test]
+fn a_due_attempt_with_no_free_slot_retries_without_an_event() {
+    let mut node: Node<1> = Node::new(foreign_link(foreign()), Instant::ZERO).unwrap();
+    let Action::Register { exchange, .. } = drain(&mut node)[0] else {
+        panic!("a registration");
+    };
+    node.exchange_sent(exchange, at(0));
+    let success = result(SUCCESS);
+    node.receive(&datagram(&success, BBMD, UNICAST), at(10), &mut Permissive);
+    drain(&mut node);
+    // A manual read holds the only slot when the renewal falls due: it
+    // counts as busy and retries one response timeout later.
+    let request = Bvll::ReadForeignDeviceTable;
     let (manual, _) = node
         .begin_exchange(BBMD, request, ms(3_000), at(29_000))
         .unwrap();
@@ -392,11 +445,103 @@ fn a_manual_registration_shares_the_automatic_key() {
         Some(at(33_000))
     );
     node.exchange_failed(manual, LocalFailure::Cancelled, at(31_000));
+    node.on_deadline(at(33_000));
+    assert!(matches!(drain(&mut node)[..], [Action::Register { .. }]));
     let counters = node.take_counters();
-    assert_eq!(counters.register_foreign_device.busy, 2);
-    assert_eq!(counters.registration_attempts, 3);
+    assert_eq!(counters.register_foreign_device.busy, 1);
+    assert_eq!(counters.registration_attempts, 2);
     let last = counters.last_registration_attempt.unwrap();
-    assert_eq!((last.ttl, last.outcome), (0, AttemptOutcome::Cancelled));
+    assert_eq!((last.ttl, last.outcome), (60, AttemptOutcome::Pending));
+}
+
+/// Run a foreign device whose BBMD answers every attempt with success
+/// `after` its send, until `end` or `cap` attempts: their start times.
+fn answered_starts(node: &mut Node, after: Duration, end: Instant, cap: usize) -> Vec<Instant> {
+    let mut starts = Vec::new();
+    let mut answer: Option<Instant> = None;
+    let mut now = Instant::ZERO;
+    loop {
+        if act(node, now).0.is_some() {
+            starts.push(now);
+            answer = Some(now + after);
+        }
+        if starts.len() > cap {
+            return starts;
+        }
+        let Some(next) = [answer, node.next_deadline()].into_iter().flatten().min() else {
+            return starts;
+        };
+        if next > end {
+            return starts;
+        }
+        now = next;
+        if answer == Some(now) {
+            answer = None;
+            assert_eq!(bbmd_says(node, SUCCESS, now), Said::Settled);
+        } else {
+            node.on_deadline(now);
+        }
+    }
+}
+
+#[test]
+fn a_short_ttl_renews_once_per_interval() {
+    // A 2 s time-to-live: renewal and response timeout 1 s each, so the
+    // answer window is the renewal interval. A renewal never counts its
+    // predecessor, so each lease starts at its own attempt.
+    let every_second: Vec<Instant> = (0..=10).map(|second| at(second * 1_000)).collect();
+    // Answered at once too: the attempt one renewal back stays out.
+    let mut instant = start(Foreign::new(BBMD, 2));
+    assert_eq!(
+        answered_starts(&mut instant, ms(0), at(10_010), 40),
+        every_second
+    );
+    let mut node = start(Foreign::new(BBMD, 2));
+    let starts = answered_starts(&mut node, ms(10), at(10_010), 40);
+    assert_eq!(starts, every_second);
+    let lease = node.registration(at(10_010)).unwrap().lease.unwrap();
+    assert_eq!(
+        lease,
+        Lease {
+            since: at(10_000),
+            until: at(12_000)
+        }
+    );
+}
+
+#[test]
+fn a_copy_of_an_answer_never_stretches_a_short_lease() {
+    // A 2 s time-to-live: renewal and response timeout 1 s each.
+    let mut node = start(Foreign::new(BBMD, 2));
+    // Attempt 1, at 0, is lost; attempt 2 goes when it times out.
+    act(&mut node, at(0));
+    node.on_deadline(at(1_000));
+    let (second, events) = act(&mut node, at(1_000));
+    assert!(second.is_some());
+    assert_eq!(
+        events,
+        [Action::Registration(RegistrationEvent::Unanswered)]
+    );
+    // The BBMD takes attempt 2 at 1.1 s, so its entry ends at 3.1 s. The
+    // success at 1.2 s could answer attempt 1, so the lease starts at 0,
+    // and the renewal it makes due goes at once.
+    assert_eq!(bbmd_says(&mut node, SUCCESS, at(1_200)), Said::Settled);
+    let (third, events) = act(&mut node, at(1_200));
+    assert!(third.is_some());
+    assert_eq!(events, [registered(0, 2_000)]);
+    // Attempt 3 is lost. A copy of attempt 2's success, 0.75 s after its
+    // send, settles it: the lease may start no later than attempt 2.
+    assert_eq!(bbmd_says(&mut node, SUCCESS, at(1_750)), Said::Settled);
+    assert_eq!(
+        act(&mut node, at(1_750)).1,
+        [Action::Registration(RegistrationEvent::Renewed {
+            until: at(3_000)
+        })]
+    );
+    let entry_end = at(3_100);
+    let lease = node.registration(at(1_750)).unwrap().lease.unwrap();
+    assert!(lease.until <= entry_end, "{lease:?}");
+    assert!(!node.registration(at(3_050)).unwrap().registered);
 }
 
 #[test]

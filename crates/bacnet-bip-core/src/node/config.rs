@@ -81,7 +81,8 @@ pub struct Foreign {
     /// J.7.5).
     pub renewal: Duration,
     /// How long an attempt waits for its result: above zero. One longer
-    /// than the renewal interval is cut to it.
+    /// than the renewal interval is cut to it. It also sets the answer
+    /// window the lease counts on ([`Lease`](super::Lease)).
     pub response_timeout: Duration,
     /// When a failed attempt is tried again.
     pub retry: Retry,
@@ -196,6 +197,9 @@ impl Link {
             if foreign.bbmd.port() == 0 {
                 return Err(ConfigError::BbmdPort);
             }
+            if foreign.bbmd.ip().is_unspecified() || self.groups().contains(foreign.bbmd) {
+                return Err(ConfigError::BbmdAddress);
+            }
             let (bbmd, own) = (foreign.bbmd, self.address);
             if bbmd.ip().to_bits() == own.ip().to_bits() && bbmd.port() == own.port() {
                 return Err(ConfigError::BbmdIsSelf);
@@ -217,6 +221,10 @@ pub enum ConfigError {
     ResponseTimeout,
     /// A foreign device's BBMD has UDP port 0.
     BbmdPort,
+    /// A foreign device's BBMD is the unspecified address or a group
+    /// address ([`Groups::contains`](super::Groups::contains)), which no
+    /// BBMD answers from.
+    BbmdAddress,
     /// A foreign device's BBMD is the node itself.
     BbmdIsSelf,
     /// The datagram budget is below [`MIN_BUDGET`] octets.
@@ -232,6 +240,7 @@ impl fmt::Display for ConfigError {
             }
             Self::ResponseTimeout => "foreign-device mode needs a response timeout > 0",
             Self::BbmdPort => "the BBMD's UDP port is 0",
+            Self::BbmdAddress => "the BBMD's address is unspecified or a group address",
             Self::BbmdIsSelf => "the BBMD is this node's own address",
             Self::Budget => "the datagram budget is below 64 octets",
         })

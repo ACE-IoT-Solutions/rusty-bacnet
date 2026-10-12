@@ -94,26 +94,35 @@ impl Groups {
     /// Whether `address` is a group destination: the link's broadcast
     /// address, or any address whose IP is a group IP ([`Groups::contains_ip`]).
     #[must_use]
-    pub fn contains(&self, address: SocketAddrV4) -> bool {
-        address == self.broadcast || self.contains_ip(*address.ip())
+    pub const fn contains(&self, address: SocketAddrV4) -> bool {
+        let broadcast = &self.broadcast;
+        (address.ip().to_bits() == broadcast.ip().to_bits() && address.port() == broadcast.port())
+            || self.contains_ip(*address.ip())
     }
 
     /// Whether `ip` is a group at any port: 255.255.255.255, a multicast
     /// address, or the broadcast IP when it is neither loopback nor the
     /// node's own interface. This is the test for a datagram's UDP source.
     #[must_use]
-    pub fn contains_ip(&self, ip: Ipv4Addr) -> bool {
-        let broadcast = *self.broadcast.ip();
+    pub const fn contains_ip(&self, ip: Ipv4Addr) -> bool {
+        let (ip_bits, broadcast) = (ip.to_bits(), self.broadcast.ip().to_bits());
         ip.is_broadcast()
             || ip.is_multicast()
-            || (ip == broadcast && !ip.is_loopback() && ip != self.interface)
+            || (ip_bits == broadcast && !ip.is_loopback() && ip_bits != self.interface.to_bits())
     }
 }
 
 impl Link {
-    /// The link's group destinations.
+    /// The link's group destinations, with the IP of the node's own B/IP
+    /// address as its interface.
+    ///
+    /// A host bound to the wildcard address may judge a sender by its
+    /// bind address (0.0.0.0) instead, as the Tokio transport's own group
+    /// test does. The two differ only where the configured broadcast IP is
+    /// the node's own IP, a misconfiguration: this one then takes a sender
+    /// from that IP, which the own-echo rule drops at the node's port.
     #[must_use]
-    pub fn groups(&self) -> Groups {
+    pub const fn groups(&self) -> Groups {
         Groups {
             broadcast: self.subnet.broadcast,
             interface: *self.address.ip(),
