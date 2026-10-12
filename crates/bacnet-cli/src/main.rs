@@ -74,7 +74,7 @@ async fn resolve_target_mac<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    match resolve::parse_target(target_str)? {
+    match resolve::parse_target_on(client.transport(), target_str)? {
         resolve::Target::Mac(mac) => Ok(mac),
         resolve::Target::Bip6(peer) => Ok(resolve::bip6_vmac(client.transport(), peer).await?),
         resolve::Target::Instance(n) => match client.get_device(n).await {
@@ -613,6 +613,9 @@ mod tests {
         let mut client = BACnetClient::bip6_builder()
             .interface(Ipv6Addr::LOCALHOST)
             .port(0)
+            // An instance VMAC: a random one needs a multicast probe at start,
+            // which Linux loopback can't carry.
+            .device_instance(4321)
             .build()
             .await
             .unwrap();

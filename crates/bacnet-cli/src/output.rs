@@ -50,7 +50,7 @@ pub fn format_mac(mac: &[u8]) -> String {
         let port = u16::from_be_bytes([mac[4], mac[5]]);
         format!("{ip}:{port}")
     } else if let Ok(vmac) = <[u8; 3]>::try_from(mac) {
-        crate::resolve::format_bip6_vmac(vmac)
+        bacnet_transport::bip6::format_vmac_text(bacnet_transport::bip6::Bip6Vmac::new(vmac))
     } else {
         mac.iter()
             .map(|b| format!("{b:02x}"))

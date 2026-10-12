@@ -539,6 +539,7 @@ client = BACnetClient(
     share_port_by_address=False, # Keyword-only; B/IP, see "Sharing a port by address"
     # IPv6 options:
     ipv6_interface=None,         # IPv6 selected local address; None means ::
+    ipv6_device_instance=None,   # Keyword-only; 0..=4194303 for the VMAC of that instance, None for random
     # SC options:
     sc_hub=None,                 # WebSocket hub URL
     sc_vmac=None,                # 6-byte VMAC
@@ -641,7 +642,8 @@ All `address` parameters accept:
 - B/IPv6: `"bip6:1234"`, the VMAC of device instance 1234 (0 to 4194303,
   Clause H.7.2), or `"bip6:0x40ABCD"`, any 3-octet VMAC. A B/IPv6 node is
   addressed by its VMAC (Clause U.1.3); `"bip6:0x0004D2"` is the form
-  `resolve_vmac` and `BACnetServer.local_address()` return.
+  `resolve_vmac` and `BACnetServer.local_address()` return. Only a
+  `transport="ipv6"` client takes it; any other raises `ValueError`.
 - Hex MAC: `"01:02:03:04:05:06"` (raw bytes, for SC/Ethernet, or `"00:04:d2"`
   for a B/IPv6 VMAC)
 - MS/TP: `"7"` or `"mstp:7"` (a station, 0 to 254)
@@ -942,9 +944,10 @@ node is addressed by its VMAC, not its IPv6 address (Clause U.1.3), so this
 is how an IPv6 address becomes a target. It sends the node a
 Virtual-Address-Resolution by unicast, up to three times a second apart
 (Clause U.5), unless the client already knows which VMAC is at that address.
-Being unicast, it works where multicast doesn't reach, such as Linux loopback.
-A link-local address may carry its interface as a numeric zone,
-`"[fe80::1%3]:47808"`.
+The request itself is unicast, so it reaches a node that multicast doesn't,
+but a client without `ipv6_device_instance` still needs a multicast-capable
+link to start (see [BACnet/IPv6](#bacnetipv6)). A link-local address may carry
+its interface as a numeric zone, `"[fe80::1%3]:47808"`.
 
 It needs a started client with `transport="ipv6"` (`RuntimeError` otherwise),
 and any other address form raises `ValueError`. When nothing answers within
@@ -952,7 +955,7 @@ three seconds, or the node refuses, it raises `BacnetTransportError` (errno
 `ETIMEDOUT` for the timeout).
 
 ```python
-async with BACnetClient(transport="ipv6", port=0) as client:
+async with BACnetClient(transport="ipv6", port=0, ipv6_device_instance=4321) as client:
     vmac = await client.resolve_vmac("[2001:db8::10]:47808")  # "bip6:0x0004D2"
     name = await client.read_property(vmac, device, PropertyIdentifier.OBJECT_NAME)
 ```
@@ -4397,17 +4400,25 @@ address a node by its 3-octet VMAC, not its IPv6 address (Clause U.1.3), and a
 device's VMAC is its device instance (Clause H.7.2). So every `address`
 parameter takes `"bip6:1234"` (the VMAC of device 1234), `"bip6:0x40ABCD"` (any
 VMAC, such as a client's random one) or the raw hex `"00:04:d2"`, and
-`DiscoveredDevice.mac_address` holds the 3-octet VMAC. A bracketed
-`"[ip]:port"` raises `ValueError`; turn it into a VMAC once with
-[`resolve_vmac`](#resolve_vmacaddress---str). A send to a VMAC the client
-hasn't heard from yet first asks the link who has it, and fails after three
-seconds when nobody answers.
+`DiscoveredDevice.mac_address` and a COV notification's source MAC hold the
+3-octet VMAC. A bracketed `"[ip]:port"` raises `ValueError`; turn it into a
+VMAC once with [`resolve_vmac`](#resolve_vmacaddress---str). A `bip6:` address
+given to a client on another transport raises `ValueError` too. A send to a
+VMAC the client hasn't heard from yet first asks the link who has it, and
+fails after three seconds when nobody answers.
 
 **A server's VMAC is its `device_instance`**, so `local_address()` returns
 `"bip6:0x0004D2"` for instance 1234. The server checks at startup that no
 other node on its link and port answers for that VMAC, and `start()` fails if
-one does. A client has no device instance and picks a random VMAC at each
-start.
+one does.
+
+**A client's VMAC comes from `ipv6_device_instance`** when you give it one.
+Give a client an instance to get a stable VMAC; without one it picks a random
+VMAC at each start, and that needs a multicast-capable link at start: the
+client must ask the link whether another node already has the random VMAC,
+and Linux loopback (`::1`) carries no multicast, so there `__aenter__` fails.
+A client with an instance, like a server, still checks for a duplicate where
+multicast works, but starts where it doesn't.
 
 ```python
 # Server
@@ -4422,7 +4433,8 @@ await server.start()
 await server.local_address()  # "bip6:0x0004D2"
 
 # Client
-async with BACnetClient(transport="ipv6", ipv6_interface="::", port=47809) as client:
+async with BACnetClient(transport="ipv6", ipv6_interface="::", port=47809,
+                        ipv6_device_instance=4321) as client:
     vmac = await client.resolve_vmac("[2001:db8::10]:47808")  # "bip6:0x0004D2"
     await client.read_property(vmac, device, PropertyIdentifier.OBJECT_NAME)
     await client.read_property("bip6:1234", device, PropertyIdentifier.OBJECT_NAME)
@@ -4430,8 +4442,12 @@ async with BACnetClient(transport="ipv6", ipv6_interface="::", port=47809) as cl
 
 **Migrating from 0.12:** replace `"[ip]:port"` strings with a `bip6:` form or a
 `resolve_vmac` result, read `"bip6:0x…"` from an ipv6 server's
-`local_address()`, and rewrite stored 18-octet B/IPv6 MACs (recipients,
-bindings, COV subscriptions) as the peer's VMAC.
+`local_address()`, and rewrite stored 18-octet B/IPv6 MACs (recipients, COV
+subscriptions) as the peer's VMAC. `DiscoveredDevice.mac_address` and COV
+source MACs are now 3 octets on B/IPv6. Give each ipv6 server a device
+instance no other node on its link and port uses, since `start()` now fails
+on a duplicate, and give an ipv6 client `ipv6_device_instance` where the link
+has no multicast.
 
 ### BACnet/SC (Secure Connect)
 

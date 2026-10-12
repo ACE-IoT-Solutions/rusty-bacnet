@@ -44,12 +44,12 @@ use bacnet_types::primitives::BACnetTimeStamp;
 use crate::errors::to_py_err;
 use crate::types::{
     audit_log_query_ack_to_py, audit_log_query_request_from_py, audit_notification_request_from_py,
-    decode_read_ack, format_bip6_vmac, parse_address, parse_bip6_address, py_to_rpm_specs,
-    py_to_wpm_specs, rpm_ack_to_py, PyAcknowledgmentFilter, PyBACnetTimeStamp,
-    PyCovNotificationIterator, PyDeviceWrite, PyDiscoveredDevice, PyEnableDisable,
-    PyEnrollmentSummaryEventStateFilter, PyEventState, PyEventType, PyLifeSafetyOperation,
-    PyMessagePriority, PyObjectIdentifier, PyObjectType, PyPropertyIdentifier, PyPropertyValue,
-    PyPropertyWrite, PyReadAccessSpec, PyReinitializedState, PyWriteAccessSpec,
+    decode_read_ack, parse_bip6_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
+    PeerAddresses, PyAcknowledgmentFilter, PyBACnetTimeStamp, PyCovNotificationIterator,
+    PyDeviceWrite, PyDiscoveredDevice, PyEnableDisable, PyEnrollmentSummaryEventStateFilter,
+    PyEventState, PyEventType, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier,
+    PyObjectType, PyPropertyIdentifier, PyPropertyValue, PyPropertyWrite, PyReadAccessSpec,
+    PyReinitializedState, PyWriteAccessSpec,
 };
 
 fn validate_write_priority(priority: Option<u8>) -> PyResult<()> {
@@ -127,6 +127,9 @@ pub struct BACnetClient {
     sc_heartbeat_timeout_ms: Option<u64>,
     // IPv6 config
     ipv6_interface: Option<String>,
+    /// The device instance whose VMAC an ipv6 client uses (H.7.2); `None`
+    /// picks a random VMAC at each start.
+    ipv6_device_instance: Option<u32>,
     // MS/TP config
     serial_port: Option<String>,
     mstp_baud: u32,

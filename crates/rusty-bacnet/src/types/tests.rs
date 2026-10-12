@@ -17,11 +17,16 @@ fn parse_address_bip6_vmac_forms() {
     assert_eq!(parse_address("bip6:4194303").unwrap(), [0x3F, 0xFF, 0xFF]);
     assert_eq!(parse_address("bip6:0x40ABCD").unwrap(), [0x40, 0xAB, 0xCD]);
     assert_eq!(parse_address("bip6:0x40abcd").unwrap(), [0x40, 0xAB, 0xCD]);
-    // The canonical output reads back, and so does the raw hex form.
-    assert_eq!(format_bip6_vmac([0x00, 0x04, 0xD2]), "bip6:0x0004D2");
-    assert_eq!(format_bip6_vmac([0x40, 0xAB, 0xCD]), "bip6:0x40ABCD");
+    assert_eq!(parse_address("bip6:0X40ABCD").unwrap(), [0x40, 0xAB, 0xCD]);
+    // What resolve_vmac and local_address() print reads back, and so does
+    // the raw hex form.
+    let printed =
+        bacnet_transport::bip6::format_vmac_text(bacnet_transport::bip6::Bip6Vmac::new([
+            0x00, 0x04, 0xD2,
+        ]));
+    assert_eq!(printed, "bip6:0x0004D2");
     assert_eq!(
-        parse_address(&format_bip6_vmac([0x00, 0x04, 0xD2])).unwrap(),
+        parse_address(&printed).unwrap(),
         parse_address("00:04:d2").unwrap()
     );
 }
@@ -29,15 +34,15 @@ fn parse_address_bip6_vmac_forms() {
 #[test]
 fn parse_address_refuses_bad_bip6_forms() {
     Python::initialize();
-    for address in [
-        "bip6:4194304",
-        "bip6:4294967295",
-        "bip6:99999999999999999999",
+    for (address, digits) in [
+        ("bip6:4194304", "4194304"),
+        ("bip6:4294967295", "4294967295"),
+        ("bip6:99999999999999999999", "99999999999999999999"),
     ] {
         let err = parse_address(address).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "ValueError: B/IPv6 device instance must be in 0..=4194303",
+            format!("ValueError: B/IPv6 device instance must be in 0..=4194303, not {digits}"),
             "{address}"
         );
     }
@@ -52,7 +57,28 @@ fn parse_address_refuses_bad_bip6_forms() {
         "bip6: 1234",
     ] {
         let err = parse_address(address).unwrap_err().to_string();
-        assert!(err.contains("'bip6:0x<6 hex digits>'"), "{address}: {err}");
+        assert!(err.starts_with("ValueError: '"), "{address}: {err}");
+        assert!(err.contains("bip6:0x<6 hex digits>"), "{address}: {err}");
+    }
+}
+
+/// A client on any transport but B/IPv6 refuses a `bip6:` VMAC up front,
+/// rather than handing its transport a 3-octet MAC it can't send to.
+#[test]
+fn only_an_ipv6_client_takes_bip6_vmacs() {
+    Python::initialize();
+    let ipv6 = PeerAddresses::for_transport("ipv6");
+    assert_eq!(ipv6.parse("bip6:1234").unwrap(), [0x00, 0x04, 0xD2]);
+    for transport in ["bip", "sc", "mstp"] {
+        let peers = PeerAddresses::for_transport(transport);
+        let err = peers.parse("bip6:1234").unwrap_err().to_string();
+        assert!(
+            err.contains("bip6: addresses need transport='ipv6'"),
+            "{err}"
+        );
+        // Other forms parse as before.
+        assert_eq!(peers.parse("00:04:d2").unwrap(), [0x00, 0x04, 0xD2]);
+        assert_eq!(peers.parse("7").unwrap(), [7]);
     }
 }
 

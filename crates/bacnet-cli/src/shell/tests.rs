@@ -163,6 +163,9 @@ async fn shell_bip6_address_target_resolves_to_the_vmac_there() {
     let mut client = BACnetClient::bip6_builder()
         .interface(std::net::Ipv6Addr::LOCALHOST)
         .port(0)
+        // An instance VMAC: a random one needs a multicast probe at start,
+        // which Linux loopback can't carry.
+        .device_instance(4321)
         .build()
         .await
         .unwrap();
@@ -176,8 +179,8 @@ async fn shell_bip6_address_target_resolves_to_the_vmac_there() {
         .unwrap();
     let (label, line) = local_address_line(client.local_mac(), Some(bound));
     assert_eq!(label, "Local address:");
-    assert!(line.starts_with("bip6:0x"), "{line}");
-    assert!(line.ends_with(&format!(" ({bound})")), "{line}");
+    // Instance 4321 is VMAC 00 10 E1 (H.7.2).
+    assert_eq!(line, format!("bip6:0x0010E1 ({bound})"));
     client.stop().await.unwrap();
     server.stop().await.unwrap();
 }

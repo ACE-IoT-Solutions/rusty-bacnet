@@ -18,10 +18,11 @@ impl BACnetClient {
         lifetime: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let oid = monitored_object_identifier.to_rust();
 
         let future = async move {
-            let mac = parse_address(&address)?;
+            let mac = peers.parse(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -52,10 +53,11 @@ impl BACnetClient {
         monitored_object_identifier: PyObjectIdentifier,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let oid = monitored_object_identifier.to_rust();
 
         let future = async move {
-            let mac = parse_address(&address)?;
+            let mac = peers.parse(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -229,7 +231,7 @@ impl BACnetClient {
                 .resolve_virtual_address(peer)
                 .await
                 .map_err(to_py_err)?;
-            Ok(format_bip6_vmac(vmac.octets()))
+            Ok(bacnet_transport::bip6::format_vmac_text(vmac))
         })
     }
 }

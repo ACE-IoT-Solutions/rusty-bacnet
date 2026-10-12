@@ -63,7 +63,9 @@ MSTP_KEYWORD_ONLY = [
     "mstp_max_info_frames",
     "mstp_extended_frames",
 ]
-CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + ["sc_device_uuid", "share_port_by_address", "min_request_interval_ms"]
+CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + [
+    "sc_device_uuid", "share_port_by_address", "min_request_interval_ms", "ipv6_device_instance",
+]
 SERVER_KEYWORD_ONLY = ["mutation_policy", "dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
     "max_confirmed_in_flight", "max_unconfirmed_in_flight",
     "max_confirmed_in_flight_per_peer", "max_unconfirmed_in_flight_per_peer",
@@ -312,8 +314,7 @@ class MstpRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     )
         for address in (
             "192.168.1.100:47808",
-            "bip6:1234",
-            "bip6:0x40ABCD",
+            "00:04:d2",
             "01:02:03:04:05:06",
         ):
             with self.subTest(address=address), self.assertRaisesRegex(

@@ -34,6 +34,7 @@ impl BACnetClient {
         validation: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let request = crate::read_range::request(
             &object_id,
             &property_id,
@@ -47,7 +48,7 @@ impl BACnetClient {
         let validation = crate::read_range::validation(validation)?;
 
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
             let reply = c
                 .read_range_with(&mac, &request, validation)
@@ -69,10 +70,11 @@ impl BACnetClient {
         #[pyo3(from_py_with = crate::log_records::page_size_arg)] page_size: u16,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let (log, cursor) = crate::log_records::page_request(&object_id, cursor.as_ref())?;
 
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
             let page = c
                 .read_log_page(&mac, log, cursor, page_size)

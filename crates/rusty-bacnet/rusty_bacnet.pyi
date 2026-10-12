@@ -1875,14 +1875,16 @@ class BACnetClient:
 
         # A B/IPv6 peer is named by its VMAC: "bip6:1234" for device 1234,
         # "bip6:0x40ABCD" for any VMAC. resolve_vmac finds it from "[ip]:port".
-        async with BACnetClient(transport="ipv6", port=0) as client:
+        # ipv6_device_instance gives the client a stable VMAC of its own.
+        async with BACnetClient(transport="ipv6", port=0, ipv6_device_instance=4321) as client:
             vmac = await client.resolve_vmac("[2001:db8::10]:47808")
             value = await client.read_property(vmac, oid, pid)
 
     Every ``address`` takes ``"ip:port"`` (B/IP), ``"bip6:<device
-    instance>"`` or ``"bip6:0x<6 hex digits>"`` (a B/IPv6 VMAC), colon hex
-    such as ``"01:02:03:04:05:06"`` (SC, or ``"00:04:d2"`` for a VMAC), or an
-    MS/TP station. ``"[ip]:port"`` raises ValueError: use ``resolve_vmac``.
+    instance>"`` or ``"bip6:0x<6 hex digits>"`` (a B/IPv6 VMAC, ipv6 only),
+    colon hex such as ``"01:02:03:04:05:06"`` (SC, or ``"00:04:d2"`` for a
+    VMAC), or an MS/TP station. ``"[ip]:port"`` raises ValueError: use
+    ``resolve_vmac``. So does a ``bip6:`` address on any other transport.
     """
 
     def __init__(
@@ -1910,8 +1912,17 @@ class BACnetClient:
         sc_device_uuid: Optional[bytes | bytearray] = None,
         share_port_by_address: bool = False,
         min_request_interval_ms: int = 0,
+        ipv6_device_instance: Optional[int] = None,
     ) -> None:
-        """``mstp_extended_frames`` (MS/TP only, default False): take and send
+        """``ipv6_device_instance`` (B/IPv6 only, default None): the device
+        instance whose VMAC the client uses (Clause H.7.2), 0 to 4194303, so
+        peers know it by a stable VMAC such as ``bip6:0x0010E1``. Give a
+        client an instance to get a stable VMAC; without one it picks a
+        random VMAC at each start, and that needs a multicast-capable link at
+        start, which Linux loopback is not. Another transport, or an instance
+        out of range, raises ValueError.
+
+        ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
         octets, so APDUs of up to 1476; without it MS/TP carries 480-octet
         APDUs and counts an extended frame it hears as invalid.

@@ -77,7 +77,10 @@ pub use port::{
 pub use receive_counters::Bip6ReceiveCounters;
 pub use resolve_counters::Bip6ResolutionCounters;
 pub use resolver::UnresolvedSend;
-pub use vmac_table::{generate_random_vmac, vmac_from_device_instance};
+pub use vmac_table::{
+    format_vmac_text, generate_random_vmac, parse_vmac_text, vmac_from_device_instance,
+    VMAC_TEXT_PREFIX,
+};
 
 #[cfg(test)]
 mod frame_tests;

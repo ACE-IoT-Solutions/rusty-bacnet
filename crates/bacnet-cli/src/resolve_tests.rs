@@ -77,15 +77,17 @@ fn bip6_targets_name_a_vmac() {
     assert_eq!(mac(parse_target("bip6:4194303")), [0x3F, 0xFF, 0xFF]);
     assert_eq!(mac(parse_target("bip6:0x40ABCD")), [0x40, 0xAB, 0xCD]);
     assert_eq!(mac(parse_target("bip6:0x40abcd")), [0x40, 0xAB, 0xCD]);
+    assert_eq!(mac(parse_target("bip6:0X40ABCD")), [0x40, 0xAB, 0xCD]);
 }
 
 /// What the CLI prints, it reads back.
 #[test]
 fn bip6_vmac_text_round_trips() {
     for vmac in [[0x00, 0x04, 0xD2], [0x40, 0xAB, 0xCD], [0x3F, 0xFF, 0xFF]] {
-        assert_eq!(mac(parse_target(&format_bip6_vmac(vmac))), vmac);
+        let printed = crate::output::format_mac(&vmac);
+        assert_eq!(mac(parse_target(&printed)), vmac, "{printed}");
     }
-    assert_eq!(format_bip6_vmac([0x00, 0x04, 0xD2]), "bip6:0x0004D2");
+    assert_eq!(crate::output::format_mac(&[0, 4, 0xD2]), "bip6:0x0004D2");
 }
 
 #[test]
@@ -96,7 +98,10 @@ fn bip6_targets_refuse_bad_forms() {
         "bip6:99999999999999999999",
     ] {
         let error = parse_target(target).err().unwrap();
-        assert!(error.contains("out of range"), "{target}: {error}");
+        assert!(
+            error.contains("must be in 0..=4194303"),
+            "{target}: {error}"
+        );
     }
     for target in [
         "bip6:",
@@ -108,7 +113,7 @@ fn bip6_targets_refuse_bad_forms() {
         "bip6:0xGG0000",
     ] {
         let error = parse_target(target).err().unwrap();
-        assert!(error.contains("bip6:INSTANCE"), "{target}: {error}");
+        assert!(error.contains("bip6:0x<6 hex digits>"), "{target}: {error}");
     }
 }
 
@@ -128,12 +133,13 @@ fn bracketed_ipv6_is_an_address_to_resolve() {
 }
 
 /// `[ip]:port` becomes the VMAC of the node there, asked once with a
-/// Virtual-Address-Resolution (Clause U.5). That is unicast, so this runs
-/// on Linux loopback too, which carries no multicast.
+/// unicast Virtual-Address-Resolution (Clause U.5). Both ends have a device
+/// instance: a random VMAC would need a multicast probe at start, which
+/// Linux loopback can't carry.
 #[tokio::test]
 async fn a_bip6_address_resolves_to_the_vmac_of_the_node_there() {
     let mut server = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(1234));
-    let mut client = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, None);
+    let mut client = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(4321));
     let _server_rx = server.start().await.unwrap();
     let _client_rx = client.start().await.unwrap();
     let server_address = server.local_address().unwrap();
@@ -169,4 +175,25 @@ async fn a_bip6_address_needs_the_bip6_transport() {
     let error = bip6_vmac(&bip, peer).await.unwrap_err();
     assert!(error.contains("--ipv6"), "{error}");
     assert!(as_bip6(&bip).is_none());
+}
+
+/// A `bip6:` VMAC names a B/IPv6 node, so a command on another transport
+/// refuses it up front, rather than hand B/IP a 3-octet MAC.
+#[tokio::test]
+async fn a_bip6_vmac_needs_the_bip6_transport() {
+    let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    for target in ["bip6:1234", "bip6:0x40ABCD"] {
+        let error = parse_target_on(&bip, target).err().unwrap();
+        assert!(
+            error.contains("bip6: addresses need the --ipv6 transport"),
+            "{error}"
+        );
+        let error = address_mac(&bip, target, "unused").await.unwrap_err();
+        assert!(error.contains("--ipv6"), "{error}");
+    }
+    // Other forms parse on B/IP as before.
+    assert_eq!(
+        mac(parse_target_on(&bip, "10.0.0.1")),
+        [10, 0, 0, 1, 0xBA, 0xC0]
+    );
 }

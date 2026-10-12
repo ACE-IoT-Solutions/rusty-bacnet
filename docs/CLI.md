@@ -40,7 +40,7 @@ and its headers (`libpcap-dev` on Debian and Ubuntu).
 | `--min-interval-ms <MS>` | `0` | Least time from the latest confirmed request to a device finishing (or being sent, while it is still outstanding) to the next, at most 3600000, so paging or polling leaves a slow device room for others |
 | `--ipv6` | | Use BACnet/IPv6 transport |
 | `--ipv6-interface <IP>` | | IPv6 interface address |
-| `--device-instance <N>` | | Device instance for BIP6 VMAC derivation |
+| `--device-instance <N>` | | Device instance whose VMAC the CLI uses on `--ipv6`; needed where the link has no multicast, such as Linux loopback |
 | `--sc` | | Use BACnet/SC transport |
 | `--sc-url <URL>` | | SC hub WebSocket URL |
 | `--sc-ca <FILE>` | required for SC | Trusted site CA certificate(s) in PEM; no system-root fallback |
@@ -80,8 +80,13 @@ turns an `[IPv6]` or `[IPv6]:port` target into a VMAC before the command runs,
 asking the node there with a unicast Virtual-Address-Resolution (Clause U.5);
 it fails after three seconds when nothing answers. Device tables, COV output
 and `status` show B/IPv6 addresses as `bip6:0x0004D2`, which every target
-argument takes back. `--device-instance` sets the CLI's own VMAC; without it
-the CLI picks a random one at each start.
+argument takes back. A `bip6:` target without `--ipv6` is refused.
+
+`--device-instance` gives the CLI the VMAC of that instance on `--ipv6`.
+Without it the CLI picks a random VMAC at each start, and must first ask the
+link whether another node already has it, by multicast. A link with no
+multicast, such as Linux loopback (`--ipv6-interface ::1`), can't carry that
+question, so pass `--device-instance` there.
 
 ## Commands
 

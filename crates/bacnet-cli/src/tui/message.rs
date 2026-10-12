@@ -62,6 +62,15 @@ impl WhoIsSpec {
             .is_none_or(|range| (range.low(), range.high()) == (0, MAX_INSTANCE))
     }
 
+    /// This request with a directed B/IPv6 destination replaced by the VMAC
+    /// found for it; the label the user typed stays.
+    pub(crate) fn with_vmac(mut self, vmac: Vec<u8>) -> Self {
+        if let WhoIsScope::Directed { to, .. } = &mut self.scope {
+            *to = DirectedTo::Mac(vmac);
+        }
+        self
+    }
+
     /// True for a global broadcast.
     pub(crate) fn is_global(&self) -> bool {
         self.scope == WhoIsScope::Global

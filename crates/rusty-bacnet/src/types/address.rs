@@ -1,6 +1,7 @@
 use std::net::SocketAddrV6;
 
-use bacnet_transport::bip6::vmac_from_device_instance;
+use bacnet_transport::bip6::{parse_vmac_text, VMAC_TEXT_PREFIX};
+use bacnet_types::error::Error;
 
 use super::*;
 
@@ -15,8 +16,9 @@ use super::*;
 /// - B/IPv6: `"bip6:1234"` → the 3-byte VMAC of device instance 1234
 ///   (0..=4194303, Clause H.7.2), or `"bip6:0x0004D2"` → any 3-byte VMAC. A
 ///   B/IPv6 node is addressed by its VMAC (Clause U.1.3).
-/// - Hex:  `"01:02:03:04:05:06"` → raw bytes (an SC VMAC, an Ethernet MAC, or
-///   a B/IPv6 VMAC such as `"00:04:d2"`)
+/// - Hex:  `"01:02:03:04:05:06"` → raw bytes, two or more colon-separated
+///   pairs (an SC VMAC, an Ethernet MAC, or a B/IPv6 VMAC such as
+///   `"00:04:d2"`)
 /// - MS/TP: `"7"` or `"mstp:7"` → 1-byte unicast peer MAC (0..=254)
 ///
 /// A bracketed IPv6 address such as `"[::1]:47808"` raises `ValueError`: it
@@ -27,8 +29,10 @@ pub fn parse_address(address: &str) -> PyResult<Vec<u8>> {
     if let Some(rest) = address.strip_prefix("mstp:") {
         return parse_mstp_peer_address(rest);
     }
-    if let Some(rest) = address.strip_prefix("bip6:") {
-        return parse_bip6_vmac(rest).map(Vec::from);
+    if address.starts_with(VMAC_TEXT_PREFIX) {
+        return parse_vmac_text(address)
+            .map(|vmac| vmac.octets().to_vec())
+            .map_err(value_error);
     }
     let is_negative_decimal = address
         .strip_prefix('-')
@@ -45,7 +49,7 @@ pub fn parse_address(address: &str) -> PyResult<Vec<u8>> {
         )));
     }
 
-    // Hex colon notation: aa:bb:cc:dd:ee:ff (6 or more hex pairs)
+    // Hex colon notation: two or more colon-separated hex pairs.
     if address.contains(':')
         && address
             .split(':')
@@ -77,34 +81,41 @@ pub fn parse_address(address: &str) -> PyResult<Vec<u8>> {
     Ok(mac)
 }
 
-/// What a `bip6:` address names, after the prefix: a decimal device
-/// instance, whose VMAC is its 22 bits (Clause H.7.2), or `0x` and six hex
-/// digits for any VMAC, such as a random one.
-fn parse_bip6_vmac(text: &str) -> PyResult<[u8; 3]> {
-    const FORM: &str =
-        "B/IPv6 address must be 'bip6:<device instance 0..=4194303>' or 'bip6:0x<6 hex digits>'";
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(PyValueError::new_err(FORM));
-        }
-        let value = u32::from_str_radix(hex, 16).map_err(|_| PyValueError::new_err(FORM))?;
-        let [_, high, middle, low] = value.to_be_bytes();
-        return Ok([high, middle, low]);
-    }
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(PyValueError::new_err(FORM));
-    }
-    // Digits past u32 are out of range like any instance above 4194303.
-    let instance = text.parse::<u32>().unwrap_or(u32::MAX);
-    vmac_from_device_instance(instance)
-        .map(|vmac| vmac.octets())
-        .map_err(|_| PyValueError::new_err("B/IPv6 device instance must be in 0..=4194303"))
+/// The addresses one `BACnetClient` takes: [`parse_address`], except that a
+/// `bip6:` VMAC names a B/IPv6 node, so a client on any other transport
+/// refuses it with a `ValueError` that says so, rather than sending a
+/// 3-octet MAC its transport can't use.
+#[derive(Clone, Copy)]
+pub(crate) struct PeerAddresses {
+    bip6: bool,
 }
 
-/// A B/IPv6 VMAC as `bip6:0x0004D2`, the form [`parse_address`] reads back.
-pub(crate) fn format_bip6_vmac(vmac: [u8; 3]) -> String {
-    let [high, middle, low] = vmac;
-    format!("bip6:0x{high:02X}{middle:02X}{low:02X}")
+impl PeerAddresses {
+    /// The addresses a client with this `transport` keyword takes.
+    pub(crate) fn for_transport(transport: &str) -> Self {
+        Self {
+            bip6: transport == "ipv6",
+        }
+    }
+
+    /// Parse `address` for this client.
+    pub(crate) fn parse(self, address: &str) -> PyResult<Vec<u8>> {
+        if !self.bip6 && address.starts_with(VMAC_TEXT_PREFIX) {
+            return Err(PyValueError::new_err(format!(
+                "'{address}' is a B/IPv6 VMAC: bip6: addresses need transport='ipv6'"
+            )));
+        }
+        parse_address(address)
+    }
+}
+
+/// A `ValueError` carrying a parse error's own message, without the
+/// `encoding error:` or `value out of range:` prefix its `Display` adds.
+fn value_error(error: Error) -> PyErr {
+    match error {
+        Error::Encoding(message) | Error::OutOfRange(message) => PyValueError::new_err(message),
+        other => PyValueError::new_err(other.to_string()),
+    }
 }
 
 /// The B/IPv6 address `resolve_vmac` takes: `"[ip]:port"`, where a

@@ -353,7 +353,9 @@ impl BACnetServer {
                             mac.len()
                         ))
                     })?;
-                    Ok(crate::types::format_bip6_vmac(vmac))
+                    Ok(bacnet_transport::bip6::format_vmac_text(
+                        bacnet_transport::bip6::Bip6Vmac::new(vmac),
+                    ))
                 }
                 "mstp" => {
                     if mac.len() != 1 {

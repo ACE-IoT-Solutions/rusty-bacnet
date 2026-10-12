@@ -5,7 +5,8 @@ Demonstrates:
 - Finding a server's VMAC from its IPv6 address with resolve_vmac
 - Naming a B/IPv6 peer by VMAC: "bip6:5000" or "bip6:0x001388"
 
-Both ends use the loopback address, so the example runs on one host.
+Both ends use the loopback address and a device instance, so the example runs
+on one host, Linux included.
 """
 
 import asyncio
@@ -37,8 +38,12 @@ async def main():
     await server.start()
     print(f"IPv6 server is {await server.local_address()} at [::1]:{SERVER_PORT}")
 
-    # Connect an IPv6 client on another port
-    async with BACnetClient(transport="ipv6", ipv6_interface="::1", port=0) as client:
+    # Connect an IPv6 client on another port. Its own instance gives it a
+    # stable VMAC; without one it would pick a random VMAC, which needs a
+    # multicast-capable link at start, and Linux loopback has none.
+    async with BACnetClient(
+        transport="ipv6", ipv6_interface="::1", port=0, ipv6_device_instance=5001
+    ) as client:
         # Ask the node at the server's address for its VMAC
         # (Virtual-Address-Resolution). Knowing the device instance,
         # "bip6:5000" names the same node without asking.

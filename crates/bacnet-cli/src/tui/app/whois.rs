@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::resolve::{parse_target, Target};
 use crate::tui::message::{AddressStyle, DirectedTo, WhoIsScope, WhoIsSpec, MAX_INSTANCE};
 use bacnet_services::who_is::DeviceInstanceRange;
+use bacnet_transport::bip6::VMAC_TEXT_PREFIX;
 
 /// Which scope the form's first field selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +262,11 @@ fn parse_directed(target: &str, style: AddressStyle) -> Result<DirectedTo, Strin
             return Ok(DirectedTo::Mac(vmac.to_vec()));
         }
     }
+    if target.starts_with(VMAC_TEXT_PREFIX) && style != AddressStyle::Bip6 {
+        return Err(format!(
+            "'{target}' is a B/IPv6 VMAC; bip6: addresses need the --ipv6 transport"
+        ));
+    }
     match parse_target(target)? {
         Target::Mac(mac) => Ok(DirectedTo::Mac(mac)),
         // The worker finds the VMAC of the node at this address.
@@ -433,6 +439,16 @@ mod tests {
         form.target = "[::1]:47808".into();
         form.key(FormKey::Submit, AddressStyle::Bip, 0);
         assert!(form.error.as_deref().unwrap().contains("--ipv6"));
+        // So does a B/IPv6 VMAC, which B/IP and SC can't send to.
+        for style in [AddressStyle::Bip, AddressStyle::Hex] {
+            form.target = "bip6:1234".into();
+            form.key(FormKey::Submit, style, 0);
+            assert!(form
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("bip6: addresses need the --ipv6 transport"));
+        }
 
         let mut sc = form.clone();
         sc.target = "020000000009".into();

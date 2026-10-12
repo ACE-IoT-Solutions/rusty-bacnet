@@ -945,7 +945,10 @@ the destination's VMAC and refuses any other length with `InvalidInput`.
 Routed NPDUs carry a B/IPv6 node's VMAC as a 3-octet SADR or DADR, as other
 vendors' routers expect. `local_address()` gives this node's B/IPv6 address,
 `vmac_from_device_instance` the VMAC a device instance gives (H.7.2), and
-`BACnetServer::transport()` the server's transport.
+`BACnetServer::transport()` the server's transport. `parse_vmac_text` and
+`format_vmac_text` read and write a VMAC as text the way the CLI and the
+Python bindings take it: `bip6:1234` for an instance's VMAC, `bip6:0x0004D2`
+for any VMAC.
 
 The transport keeps a neighbour table from the frames it receives (U.5): up to
 4096 peers, the one heard from least recently giving way to a new one. It

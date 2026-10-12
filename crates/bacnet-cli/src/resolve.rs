@@ -1,8 +1,11 @@
 use std::any::Any;
 use std::net::{Ipv4Addr, SocketAddrV6};
 
-use bacnet_transport::bip6::{vmac_from_device_instance, Bip6Transport, DEFAULT_BACNET6_PORT};
+use bacnet_transport::bip6::{
+    parse_vmac_text, Bip6Transport, DEFAULT_BACNET6_PORT, VMAC_TEXT_PREFIX,
+};
 use bacnet_transport::port::TransportPort;
+use bacnet_types::error::Error;
 
 /// A parsed target for a BACnet command.
 pub enum Target {
@@ -34,13 +37,19 @@ pub fn ip_to_bip_mac(ip: Ipv4Addr, port: u16) -> Vec<u8> {
 /// - `dnet:instance` — routed device (e.g., `2:1234`)
 /// - `ip` or `ip:port` — direct BIP MAC (e.g., `192.168.1.100` or `192.168.1.100:47808`)
 /// - `bip6:instance` or `bip6:0xHHHHHH` — a B/IPv6 VMAC: a device instance's
-///   (Clause H.7.2), or any three octets, as [`format_bip6_vmac`] prints them
+///   (Clause H.7.2), or any three octets, as
+///   [`format_vmac_text`](bacnet_transport::bip6::format_vmac_text) prints them
 /// - `[ipv6]` or `[ipv6]:port` — a B/IPv6 address (port 47808 when absent),
 ///   whose VMAC [`bip6_vmac`] finds
 /// - `instance` — device instance number (e.g., `1234`)
 pub fn parse_target(s: &str) -> Result<Target, String> {
-    if let Some(vmac) = s.strip_prefix("bip6:") {
-        return parse_bip6_vmac(vmac).map(|vmac| Target::Mac(vmac.to_vec()));
+    if s.starts_with(VMAC_TEXT_PREFIX) {
+        return parse_vmac_text(s)
+            .map(|vmac| Target::Mac(vmac.octets().to_vec()))
+            .map_err(|error| match error {
+                Error::Encoding(message) | Error::OutOfRange(message) => message,
+                other => other.to_string(),
+            });
     }
     if s.starts_with('[') {
         return parse_bip6_address(s).map(Target::Bip6);
@@ -80,31 +89,6 @@ pub fn parse_target(s: &str) -> Result<Target, String> {
     ))
 }
 
-/// The VMAC a `bip6:` target names, after the prefix: a decimal device
-/// instance, whose VMAC is its 22 bits (Clause H.7.2), or `0x` and six hex
-/// digits for any VMAC, such as a client's random one.
-fn parse_bip6_vmac(text: &str) -> Result<[u8; 3], String> {
-    let form = || {
-        format!("invalid B/IPv6 VMAC 'bip6:{text}': expected bip6:INSTANCE (0-4194303) or bip6:0x and 6 hex digits")
-    };
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(form());
-        }
-        let value = u32::from_str_radix(hex, 16).map_err(|_| form())?;
-        let [_, high, middle, low] = value.to_be_bytes();
-        return Ok([high, middle, low]);
-    }
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(form());
-    }
-    // Digits past u32 are out of range like any instance above 4194303.
-    let instance = text.parse::<u32>().unwrap_or(u32::MAX);
-    vmac_from_device_instance(instance)
-        .map(|vmac| vmac.octets())
-        .map_err(|_| format!("B/IPv6 device instance {text} is out of range (0-4194303)"))
-}
-
 /// `[ipv6]` or `[ipv6]:port`, port 47808 when absent. A link-local address
 /// may carry its interface as a numeric zone, `[fe80::1%3]`.
 fn parse_bip6_address(s: &str) -> Result<SocketAddrV6, String> {
@@ -119,16 +103,25 @@ fn parse_bip6_address(s: &str) -> Result<SocketAddrV6, String> {
         .map_err(|_| format!("invalid B/IPv6 address '{s}': expected [IPv6] or [IPv6]:port"))
 }
 
-/// A B/IPv6 VMAC as `bip6:0x0004D2`, the form [`parse_target`] reads back.
-pub fn format_bip6_vmac(vmac: [u8; 3]) -> String {
-    let [high, middle, low] = vmac;
-    format!("bip6:0x{high:02X}{middle:02X}{low:02X}")
-}
-
 /// `transport` as the B/IPv6 transport, when it is one. The commands are
 /// generic over the transport; only B/IPv6 maps addresses to VMACs.
 pub fn as_bip6<T: TransportPort + 'static>(transport: &T) -> Option<&Bip6Transport> {
     (transport as &dyn Any).downcast_ref()
+}
+
+/// [`parse_target`] for a command on `transport`. A `bip6:` VMAC names a
+/// B/IPv6 node, so any other transport refuses it here, rather than hand
+/// its link a 3-octet MAC it can't send to.
+pub fn parse_target_on<T: TransportPort + 'static>(
+    transport: &T,
+    s: &str,
+) -> Result<Target, String> {
+    if s.starts_with(VMAC_TEXT_PREFIX) && as_bip6(transport).is_none() {
+        return Err(format!(
+            "'{s}' is a B/IPv6 VMAC: bip6: addresses need the --ipv6 transport"
+        ));
+    }
+    parse_target(s)
 }
 
 /// Find the VMAC of the B/IPv6 node at `peer`, the MAC a command sends to.
@@ -163,7 +156,7 @@ pub async fn address_mac<T: TransportPort + 'static>(
     text: &str,
     refusal: &str,
 ) -> Result<Vec<u8>, String> {
-    match parse_target(text)? {
+    match parse_target_on(transport, text)? {
         Target::Mac(mac) => Ok(mac),
         Target::Bip6(peer) => bip6_vmac(transport, peer).await,
         Target::Instance(_) | Target::Routed(..) => Err(refusal.to_string()),
