@@ -12,8 +12,8 @@
 #   whatever RAM is left, doesn't count, but its .heap (`_heap_size`, 0
 #   here) does. The apdu image's heap is a 1 KiB static arena in .bss
 #   (`firmware_link::apdu::ARENA`). The stack the code uses at run time
-#   isn't budgeted; the manual emulation check measures it (docs/ci.md,
-#   "Emulation (manual)").
+#   isn't counted here: the manual emulation check measures it and holds it
+#   to firmware/link/stack-budget.toml (docs/ci.md, "Emulation (manual)").
 # - fmt_functions, div64_functions: counts of functions, not octets, 0 for
 #   mstp and bip. A 64-bit division by a runtime value links
 #   compiler-builtins' routine, about 0.9 KB, which the 12% headroom would
@@ -46,9 +46,9 @@
 #   thumbv6m bip      10468 /  980 / 0 /   132   11640 /   132
 #   riscv32imc mstp   19592 / 1348 / 0 /  5544   20962 /  5544
 #   riscv32imc bip    11820 / 1524 / 0 /   132   13366 /   132
-#   thumbv7m apdu     37504 / 5188 / 0 /  1056   43716 /  1056
-#   thumbv6m apdu     39920 / 5188 / 0 /  1056   45300 /  1056
-#   riscv32imc apdu   45356 / 5832 / 0 /  1056   51210 /  1056
+#   thumbv7m apdu     37404 / 5188 / 0 /  1056   43616 /  1056
+#   thumbv6m apdu     39796 / 5188 / 0 /  1056   45176 /  1056
+#   riscv32imc apdu   45236 / 5832 / 0 /  1056   51090 /  1056
 #
 # The bip rows were measured again on 2026-10-11, same toolchain, when the
 # image gained the B/IPv6 codec's scenario (#1621): about 4.6-6.0 KB more
@@ -62,7 +62,17 @@
 # counted skip of dropped frames (#1611, #1609): 1.4-1.8 KB more flash and
 # the RAM unchanged. The CRC-32K's 1 KiB table (the codec's `crc32k-table`
 # feature) would add about 0.95 KB more. The apdu rows are from when that
-# image was added (#1635).
+# image was added (#1635), measured again on 2026-10-12, same toolchain,
+# when the service decoders stopped building their context labels on
+# success (#1645): 100-124 octets less text, the counts unchanged.
+#
+# The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
+# joined the check, on 2026-10-12, same toolchain (#1660). Its images are
+# a little smaller than thumbv7m's:
+#
+#   thumbv7em mstp    17724 / 1060 / 0 /  5544   19808 /  5544
+#   thumbv7em bip      8872 /  976 / 0 /   132   10872 /   132
+#   thumbv7em apdu    37316 / 5188 / 0 /  1056   43528 /  1056
 
 [thumbv7m-none-eabi.mstp]
 text = 20000
@@ -85,11 +95,11 @@ fmt_functions = 0
 div64_functions = 0
 
 [thumbv7m-none-eabi.apdu]
-text = 42016
+text = 41904
 rodata = 5824
 data = 64
 bss = 1184
-flash = 48976
+flash = 48864
 ram = 1184
 fmt_functions = 15
 div64_functions = 0
@@ -115,11 +125,11 @@ fmt_functions = 0
 div64_functions = 0
 
 [thumbv6m-none-eabi.apdu]
-text = 44720
+text = 44576
 rodata = 5824
 data = 64
 bss = 1184
-flash = 50736
+flash = 50608
 ram = 1184
 fmt_functions = 15
 div64_functions = 3
@@ -145,11 +155,41 @@ fmt_functions = 0
 div64_functions = 0
 
 [riscv32imc-unknown-none-elf.apdu]
-text = 50800
+text = 50672
 rodata = 6544
 data = 64
 bss = 1184
-flash = 57360
+flash = 57232
+ram = 1184
+fmt_functions = 15
+div64_functions = 0
+
+[thumbv7em-none-eabihf.mstp]
+text = 19856
+rodata = 1200
+data = 64
+bss = 6224
+flash = 22192
+ram = 6224
+fmt_functions = 0
+div64_functions = 0
+
+[thumbv7em-none-eabihf.bip]
+text = 9936
+rodata = 1104
+data = 64
+bss = 160
+flash = 12176
+ram = 160
+fmt_functions = 0
+div64_functions = 0
+
+[thumbv7em-none-eabihf.apdu]
+text = 41808
+rodata = 5824
+data = 64
+bss = 1184
+flash = 48752
 ram = 1184
 fmt_functions = 15
 div64_functions = 0

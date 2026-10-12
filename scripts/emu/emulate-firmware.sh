@@ -4,7 +4,7 @@
 # calls it but .github/workflows/emulation.yml, which runs only when
 # someone starts it.
 #
-#   emulate-firmware.sh [--native] [--timeout <seconds>] [<board>...]
+#   emulate-firmware.sh [--native] [--suggest] [--timeout <seconds>] [<board>...]
 #
 # For each board (all four unless some are named), this builds the mstp,
 # bip and apdu images for the board's target with the `emulate` feature and
@@ -16,9 +16,14 @@
 # Dockerfile's hash; with --native, on the QEMU on PATH instead (Homebrew's
 # `qemu`, say), whose version may differ. Each image checks its scenario's
 # summary against the one its host test asserts, reports its stack's
-# high-water mark, and exits through semihosting. The script exits non-zero
-# if anything fails to build or any image fails or runs past the timeout
-# (default 30 s per image).
+# high-water mark, and exits through semihosting. Then
+# scripts/ci/firmware_size.py --stack checks each passing image's peak
+# against its budget in firmware/link/stack-budget.toml (#1660). The script
+# exits non-zero if anything fails to build, an image fails or runs past
+# the timeout (default 30 s per image), or a peak is over its budget or has
+# none; a run of every board also fails on a table for a board it doesn't
+# have. With --suggest it prints stack budget tables for the images as they
+# run now instead, each peak plus 25%, and checks none.
 #
 # The boards, their targets and QEMU machines (firmware/link/boards/ holds
 # their memory layouts):
@@ -42,19 +47,22 @@ all_boards=(
 # without the crate's default `alloc` feature, then apdu with it.
 builds=("--no-default-features" "--lib --bin apdu")
 images=(mstp bip apdu)
+stack_budget=firmware/link/stack-budget.toml
 
 usage() {
-  echo "usage: $0 [--native] [--timeout <seconds>] [<board>...]" >&2
+  echo "usage: $0 [--native] [--suggest] [--timeout <seconds>] [<board>...]" >&2
   echo "boards: microbit lm3s6965evb netduinoplus2 sifive_e" >&2
   exit 2
 }
 
 native=false
+suggest=false
 timeout=30
 wanted=()
 while [ $# -gt 0 ]; do
   case $1 in
     --native) native=true ;;
+    --suggest) suggest=true ;;
     --timeout)
       [ $# -ge 2 ] || usage
       timeout=$2
@@ -106,8 +114,10 @@ target_dir=$(cargo metadata --format-version 1 --no-deps --locked \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
 
 jobs=()
+machines=()
 for board in "${boards[@]}"; do
   read -r machine triple qemu feature <<<"$board"
+  machines+=("$machine")
   for build in "${builds[@]}"; do
     read -ra args <<<"$build"
     echo "==> firmware-link for $machine ($triple; --features $feature $build)"
@@ -122,26 +132,50 @@ done
 echo
 if "$native"; then
   echo "==> QEMU on the host"
-  bash scripts/emu/run-qemu.sh "$timeout" "$target_dir" "${jobs[@]}"
-  exit
+  run() { bash scripts/emu/run-qemu.sh "$timeout" "$target_dir" "${jobs[@]}"; }
+else
+  # The image's tag is the Dockerfile's hash, so an edit to it builds a new
+  # image instead of reusing a stale one.
+  if command -v sha256sum >/dev/null; then
+    hash=$(sha256sum scripts/emu/Dockerfile)
+  else
+    hash=$(shasum -a 256 scripts/emu/Dockerfile)
+  fi
+  tag=rusty-bacnet-emu:${hash:0:12}
+  if ! docker image inspect "$tag" >/dev/null 2>&1; then
+    echo "==> building $tag from scripts/emu/Dockerfile (once; under a minute)"
+    docker build --quiet --tag "$tag" - <scripts/emu/Dockerfile
+  fi
+  echo "==> QEMU in $tag"
+  # Read-only mounts and no network: the container only runs QEMU on the
+  # images and prints what they report.
+  run() {
+    docker run --rm --network none \
+      --volume "$target_dir:/images:ro" \
+      --volume "$PWD/scripts/emu:/emu:ro" \
+      "$tag" bash /emu/run-qemu.sh "$timeout" /images "${jobs[@]}"
+  }
 fi
 
-# The image's tag is the Dockerfile's hash, so an edit to it builds a new
-# image instead of reusing a stale one.
-if command -v sha256sum >/dev/null; then
-  hash=$(sha256sum scripts/emu/Dockerfile)
+# A copy of what the runs print, for the stack peaks: each image that
+# passes prints its peak on its PASS line, on stdout.
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+status=0
+run | tee "$log" || status=$?
+
+echo
+stack_status=0
+if "$suggest"; then
+  echo "==> stack budgets for $stack_budget, each peak plus 25%"
+  python3 scripts/ci/firmware_size.py --stack-suggest "$log" || stack_status=1
 else
-  hash=$(shasum -a 256 scripts/emu/Dockerfile)
+  args=("$log" "$stack_budget" "${machines[@]}")
+  # A run of every board also fails on a table for a board it doesn't have.
+  if [ ${#wanted[@]} -eq 0 ]; then args=(--all-boards "${args[@]}"); fi
+  python3 scripts/ci/firmware_size.py --stack "${args[@]}" || stack_status=1
 fi
-tag=rusty-bacnet-emu:${hash:0:12}
-if ! docker image inspect "$tag" >/dev/null 2>&1; then
-  echo "==> building $tag from scripts/emu/Dockerfile (once; under a minute)"
-  docker build --quiet --tag "$tag" - <scripts/emu/Dockerfile
-fi
-echo "==> QEMU in $tag"
-# Read-only mounts and no network: the container only runs QEMU on the
-# images and prints what they report.
-docker run --rm --network none \
-  --volume "$target_dir:/images:ro" \
-  --volume "$PWD/scripts/emu:/emu:ro" \
-  "$tag" bash /emu/run-qemu.sh "$timeout" /images "${jobs[@]}"
+# A failed stack check fails the script with 1, unless the run already
+# failed: its own status (run-qemu.sh's 1, or Docker's 125, say) stays.
+[ "$status" -ne 0 ] || status=$stack_status
+exit "$status"
