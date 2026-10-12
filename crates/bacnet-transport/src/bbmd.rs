@@ -141,7 +141,15 @@ fn address(ip: [u8; 4], port: u16) -> SocketAddrV4 {
 fn bdt_error(error: BdtError) -> Error {
     Error::Encoding(match error {
         BdtError::Invalid { entry, reason } => {
-            format!("BDT {}: {:?}", reason.reason(), BdtEntry::from(entry))
+            // A mask under /8 can direct a broadcast to 255.255.255.255,
+            // which this error has always named, and the tests check.
+            let reason = match reason {
+                core_bbmd::InvalidEntry::MaskTooWide => {
+                    "mask prefix too wide (< /8) or limited-broadcast target"
+                }
+                other => other.reason(),
+            };
+            format!("BDT {reason}: {:?}", BdtEntry::from(entry))
         }
         BdtError::ConflictingMasks { entry } => {
             format!("BDT conflicting masks: {:?}", BdtEntry::from(entry))

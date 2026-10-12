@@ -78,7 +78,7 @@ impl InvalidEntry {
             Self::LimitedBroadcastAddress => "limited-broadcast",
             Self::MulticastAddress => "multicast IP",
             Self::NonContiguousMask => "non-contiguous mask",
-            Self::MaskTooWide => "mask prefix too wide (< /8) or limited-broadcast target",
+            Self::MaskTooWide => "mask prefix too wide (< /8)",
             Self::NetworkAddress => "subnet network address",
             Self::DirectedBroadcastAddress => "subnet directed-broadcast",
             Self::LimitedBroadcastTarget => "limited-broadcast target",

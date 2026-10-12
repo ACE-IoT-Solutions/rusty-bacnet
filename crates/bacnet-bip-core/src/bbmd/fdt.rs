@@ -49,7 +49,9 @@ impl Registration {
     /// grace period included, as a Read-Foreign-Device-Table-Ack reports
     /// them (Annex J.2.8.1): the lifetime in seconds less the whole seconds
     /// passed, at most 65535. It counts down from time-to-live + 30 at
-    /// registration and reaches 0 one second before the registration lapses.
+    /// registration, reads 1 through the last second, and reads 0 from
+    /// exactly time-to-live + 30 s, the last instant the registration is
+    /// live, on.
     #[must_use]
     pub fn seconds_remaining_at(&self, now: Instant) -> u16 {
         let lifetime_secs = u32::from(self.ttl) + u32::from(GRACE_PERIOD_SECS);
