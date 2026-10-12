@@ -301,7 +301,7 @@ impl ControlGate {
         self.decisions.snapshot()
     }
 
-    fn decide(&self, ctx: &ControlAuthContext, class: ControlClass) -> bool {
+    pub(super) fn decide(&self, ctx: &ControlAuthContext, class: ControlClass) -> bool {
         match (&self.policy, &self.authorizer) {
             (ControlPolicy::Permissive, None) => {
                 self.decisions.record(class, Decision::Allow);

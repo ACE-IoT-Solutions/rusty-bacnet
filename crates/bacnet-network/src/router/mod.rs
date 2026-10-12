@@ -82,6 +82,8 @@ pub mod control_policy;
 mod dispatch;
 mod forwarding;
 mod group_dadr;
+#[cfg(test)]
+mod legacy;
 mod local_control;
 mod options;
 mod reject;
