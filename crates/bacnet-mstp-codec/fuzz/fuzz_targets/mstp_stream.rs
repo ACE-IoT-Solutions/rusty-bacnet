@@ -7,7 +7,8 @@
 //! - frames of every type: standard ones with 0 to 501 octets of data, and
 //!   COBS-encoded ones with 1 to 2032. Those of types 32 and 33 are valid
 //!   extended frames; those of the reserved types 34-127 have a header that
-//!   passes, and a type the codec doesn't decode;
+//!   passes, and a type the codec decodes only in the reserved-COBS mode
+//!   below;
 //! - damaged frames: any of those with one bit flipped past the header, so
 //!   the header passes and the data fails its check;
 //! - raw noise, any octets, and inert noise, which has no 0x55 and so can't
@@ -19,6 +20,14 @@
 //! resets (a drain, then `reset`) between them. A refused push is pushed
 //! again in pieces that fit. What the steps leave is pushed the same way,
 //! then drained.
+//!
+//! The input also picks the decoder's mode: by default, or built
+//! `with_reserved_cobs`, which checks the reserved COBS types as a receiver
+//! with COBS support does. In that mode a reserved type is decodable like
+//! Types 32 and 33: the oracle's `decode_with` and `decodable_with` take the
+//! mode, a generated reserved frame is a valid one, and `UnsupportedCobsFrame`
+//! never comes out. Everything below holds in both modes, with "a type the
+//! codec decodes" read for the mode.
 //!
 //! # Oracle
 //!
@@ -92,6 +101,8 @@ const MAX_COBS_DATA: usize = 2032;
 struct Input {
     /// The storage size, 1 to `MAX_CAPACITY` (modulo).
     capacity: u16,
+    /// Build the decoder `with_reserved_cobs`.
+    reserved_cobs: bool,
     chunks: Vec<Chunk>,
     steps: Vec<Step>,
 }
@@ -166,7 +177,9 @@ impl FrameSpec {
 }
 
 impl Stream {
-    fn build(chunks: &[Chunk]) -> Self {
+    /// The stream `chunks` make. A frame of a reserved COBS type is a valid
+    /// one only to a decoder that checks them, `reserved_cobs`.
+    fn build(chunks: &[Chunk], reserved_cobs: bool) -> Self {
         let mut stream = Self {
             octets: Vec::new(),
             frames: Vec::new(),
@@ -178,7 +191,8 @@ impl Stream {
             match chunk {
                 Chunk::Frame(spec) => {
                     let frame = spec.octets(false);
-                    if !wire::is_cobs(spec.frame_type) || wire::is_extended(spec.frame_type) {
+                    let raw = spec.frame_type;
+                    if !wire::is_cobs(raw) || wire::is_extended(raw) || reserved_cobs {
                         stream.frames.push((stream.octets.len(), frame.len()));
                     }
                     stream.octets.extend_from_slice(&frame);
@@ -259,6 +273,8 @@ impl From<DecodeEvent<'_>> for Seen {
 struct Run<'a> {
     decoder: StreamDecoder<'a>,
     capacity: usize,
+    /// The decoder checks reserved COBS types.
+    reserved_cobs: bool,
     stream: &'a [u8],
     /// Stream octets pushed and taken so far.
     pushed: usize,
@@ -315,8 +331,9 @@ impl Run<'_> {
         } else {
             self.pushed += length;
             let shadow = &stream[self.start.min(self.pushed)..self.pushed];
+            let reserved = self.reserved_cobs;
             match &seen {
-                Seen::NeedMore => need_more(shadow, self.capacity),
+                Seen::NeedMore => need_more(shadow, self.capacity, reserved),
                 Seen::Invalid { discard } => {
                     invalid(shadow, *discard);
                     self.start += discard;
@@ -326,7 +343,14 @@ impl Run<'_> {
                     error,
                     destination,
                 } => {
-                    let skipped = malformed(shadow, *discard, *error, *destination, self.capacity);
+                    let skipped = malformed(
+                        shadow,
+                        *discard,
+                        *error,
+                        *destination,
+                        self.capacity,
+                        reserved,
+                    );
                     if skipped {
                         self.skipped.push((self.start, *discard));
                     }
@@ -337,7 +361,7 @@ impl Run<'_> {
                     fields,
                     data,
                 } => {
-                    frame(shadow, *consumed, *fields, data);
+                    frame(shadow, *consumed, *fields, data, reserved);
                     self.delivered.push((self.start, *consumed));
                     self.pending = *consumed;
                 }
@@ -409,8 +433,8 @@ fn starts_preamble(shadow: &[u8]) -> bool {
 }
 
 /// `NeedMore`: nothing buffered, or the front of a candidate that still
-/// lacks octets and will fit.
-fn need_more(shadow: &[u8], capacity: usize) {
+/// lacks octets and will fit. `reserved` is the decoder's mode.
+fn need_more(shadow: &[u8], capacity: usize, reserved: bool) {
     assert!(
         shadow.len() < capacity,
         "NeedMore with full storage: wedged"
@@ -429,7 +453,7 @@ fn need_more(shadow: &[u8], capacity: usize) {
     let header = Header::read(shadow);
     match header {
         Header::Incomplete => {}
-        Header::Good { length, .. } if header.decodable() => {
+        Header::Good { length, .. } if header.decodable_with(reserved) => {
             let total = wire::wire_length(length);
             assert!(
                 total <= capacity,
@@ -466,6 +490,7 @@ fn malformed(
     error: FrameError,
     destination: Option<u8>,
     capacity: usize,
+    reserved: bool,
 ) -> bool {
     assert!(!shadow.is_empty(), "Malformed with nothing buffered");
     assert!(
@@ -485,6 +510,7 @@ fn malformed(
     assert_eq!(destination, known, "destination for {error:?}");
     let good = matches!(header, Header::Good { .. });
     let cobs = good && wire::is_cobs(frame_type);
+    let decodable = header.decodable_with(reserved);
     // The frame's wire length, when its header passed.
     let total = header.wire_length();
     let skipped = match error {
@@ -501,8 +527,9 @@ fn malformed(
             assert_eq!(maximum, MAX_DATA);
             false
         }
+        // Never in the mode, where every header that passes is decodable.
         FrameError::UnsupportedCobsFrame { raw_type }
-            if header.passes() && !header.decodable() && raw_type == frame_type =>
+            if header.passes() && !decodable && raw_type == frame_type =>
         {
             true
         }
@@ -514,20 +541,20 @@ fn malformed(
                 assert_eq!(needed, HEADER_END);
                 false
             }
-            _ if header.decodable() => {
+            _ if decodable => {
                 assert_eq!(Some(needed), total);
                 true
             }
             _ => panic!("FrameTooLong for header {header:?}"),
         },
-        FrameError::DataCrcMismatch { length } if header.decodable() && length == declared => {
+        FrameError::DataCrcMismatch { length } if decodable && length == declared => {
             let total = wire::wire_length(length);
             assert!(
                 total <= shadow.len(),
                 "DataCrcMismatch before the frame is whole"
             );
             assert_eq!(
-                wire::valid_frame(shadow),
+                wire::decode_with(shadow, reserved),
                 None,
                 "DataCrcMismatch for a good frame"
             );
@@ -545,10 +572,10 @@ fn malformed(
 }
 
 /// `Frame`: the whole valid frame at the front, with its fields and its
-/// decoded data.
-fn frame(shadow: &[u8], consumed: usize, fields: [u8; 3], data: &[u8]) {
+/// decoded data, a reserved COBS type's included in the mode.
+fn frame(shadow: &[u8], consumed: usize, fields: [u8; 3], data: &[u8], reserved: bool) {
     assert_eq!(
-        wire::decode(shadow),
+        wire::decode_with(shadow, reserved),
         Some((consumed, data.to_vec())),
         "delivered something other than the frame at the front: {shadow:02X?}"
     );
@@ -602,12 +629,19 @@ fn check_delivered(stream: &Stream, capacity: usize, run: &Run<'_>) {
 fuzz_target!(
     init: wire::self_test(),
     |input: Input| {
-        let stream = Stream::build(&input.chunks);
+        let reserved_cobs = input.reserved_cobs;
+        let stream = Stream::build(&input.chunks, reserved_cobs);
         let capacity = 1 + usize::from(input.capacity) % MAX_CAPACITY;
         let mut storage = vec![0u8; capacity];
+        let mut decoder = StreamDecoder::new(&mut storage);
+        if reserved_cobs {
+            decoder = decoder.with_reserved_cobs();
+        }
+        assert_eq!(decoder.checks_reserved_cobs(), reserved_cobs);
         let mut run = Run {
-            decoder: StreamDecoder::new(&mut storage),
+            decoder,
             capacity,
+            reserved_cobs,
             stream: &stream.octets,
             pushed: 0,
             start: 0,

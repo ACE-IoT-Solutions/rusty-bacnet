@@ -30,7 +30,11 @@
 //!
 //! The other COBS-encoded types, 34-127, are reserved: both directions refuse
 //! them with [`FrameError::UnsupportedCobsFrame`], after the header's other
-//! checks. Test_Request and Test_Response stay standard frames.
+//! checks. The exception is a [`StreamDecoder`] built
+//! [`with_reserved_cobs`](StreamDecoder::with_reserved_cobs), for a receiver
+//! that supports COBS: it checks their CRC-32K as an extended frame's and
+//! yields a good one as a frame of a type it doesn't know. Test_Request and
+//! Test_Response stay standard frames.
 //!
 //! # Validation
 //!

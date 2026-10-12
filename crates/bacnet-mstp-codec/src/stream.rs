@@ -114,7 +114,9 @@ pub enum StreamPhase {
 /// whole, as the receive state machine skips one (Clause 9.5.4.4), and
 /// nothing inside it can come out as a frame. A header that fails its CRC or
 /// those checks says nothing reliable about the frame's length, so only its
-/// first octet is dropped and the octets after it are scanned again.
+/// first octet is dropped and the octets after it are scanned again. A
+/// decoder built [`with_reserved_cobs`](Self::with_reserved_cobs) buffers a
+/// reserved COBS type and checks it like an extended frame instead.
 ///
 /// # Destinations
 ///
@@ -167,6 +169,9 @@ pub struct StreamDecoder<'a> {
     /// Octets of a dropped frame still to come, which pushes drop by count.
     /// While it is nonzero nothing is buffered.
     skip: usize,
+    /// Reserved COBS types are checked and yielded, not skipped; see
+    /// [`Self::with_reserved_cobs`].
+    reserved_cobs: bool,
 }
 
 /// Offset of the destination octet: after the preamble and the type octet.
@@ -200,7 +205,37 @@ impl<'a> StreamDecoder<'a> {
             length: 0,
             pending: 0,
             skip: 0,
+            reserved_cobs: false,
         }
+    }
+
+    /// Check the reserved COBS-encoded types, 34-127, as a receiver that
+    /// supports COBS-encoded frames does, rather than skip them.
+    ///
+    /// Such a receiver takes the encoded fields of every COBS type in, and
+    /// a frame whose CRC-32K checks out is a valid frame of a type it
+    /// doesn't know (Clause 9.5.4.9), for its state machine to ignore or
+    /// treat as unexpected. So a reserved type whose header passes is
+    /// buffered like an extended frame: when it fits the storage and its
+    /// encoded fields check out, it comes out as a [`DecodeEvent::Frame`]
+    /// with its [`FrameType::Unknown`](crate::FrameType::Unknown) type and
+    /// its decoded data, and otherwise it is dropped and skipped by count,
+    /// with [`FrameError::DataCrcMismatch`] or [`FrameError::FrameTooLong`].
+    /// [`FrameError::UnsupportedCobsFrame`] never comes out.
+    ///
+    /// A decoder from [`Self::new`] skips them by count as soon as their
+    /// header passes, as a receiver without COBS support does, and reports
+    /// [`FrameError::UnsupportedCobsFrame`].
+    #[must_use]
+    pub const fn with_reserved_cobs(mut self) -> Self {
+        self.reserved_cobs = true;
+        self
+    }
+
+    /// Whether the decoder checks reserved COBS types; see
+    /// [`Self::with_reserved_cobs`].
+    pub const fn checks_reserved_cobs(&self) -> bool {
+        self.reserved_cobs
     }
 
     /// Number of buffered octets, including a frame awaiting the next push.
@@ -316,7 +351,7 @@ impl<'a> StreamDecoder<'a> {
             self.discard(discard);
             return InternalEvent::Invalid { discard };
         }
-        let error = match check_frame(buffered) {
+        let error = match check_frame(buffered, self.reserved_cobs) {
             Ok(valid) => {
                 decode_extended_in_place(&mut self.storage[..self.length], &valid);
                 self.pending = valid.consumed;
