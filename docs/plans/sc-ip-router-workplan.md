@@ -1,9 +1,10 @@
 # SC-to-IP router work plan
 
-Status: R1-R6 and R9 carried onto the upstream 0.12 baseline on
-`feature/sc-ip-router-upstream-0.12`; R7 and R10 remain open. The latest
-reconciliation note below supersedes the older branch bookkeeping. Last
-verified 2026-10-11.
+Status: R1-R6, R8, R9 and the first R7 slice carried onto the upstream 0.12
+baseline on `feature/sc-ip-router-upstream-0.12` (PR #5). Independent review
+2026-10-11 (H1-H7 below): workspace build broken by one upstream test, no CI
+on PR #5, fork release pipeline lost in the merge. R7 limits config and R10
+open.
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
@@ -815,7 +816,10 @@ R9 is delivered. Phase 8 is complete except the multi-arch image job (R10).
 
 ### Findings
 
-- [ ] **E1 - Merge PR #4.** `main` is still at `fd9d5cc` locally, nine
+- [ ] **E1 - Merge PR #4.** (2026-10-11: now urgent. The same branch has
+      since gained the embedded MS/TP and router work, about 100 commits and
+      23,000 lines over `main`, so every later review inherits this unmerged
+      base.) `main` is still at `fd9d5cc` locally, nine
       commits ahead of `origin/main`, and its own CI run from 2026-09-12 is
       red on the macOS and Windows test jobs. The branch's cross-platform
       fixes are what turned those green on the tag runs, so merging is also
@@ -887,6 +891,67 @@ Verification on macOS arm64: `cargo test -p bacnet-transport -p
 bacnet-network -p rusty-bacnet` passed (1,221 transport, 266 network, and 133
 binding unit tests, plus integration targets). The all-features transport gate
 remains Linux-only because its GPIO dependency does not compile on macOS.
+
+## Review 2026-10-11 - upstream 0.12 continuation branch
+
+Independent review of `feature/sc-ip-router-upstream-0.12` at `5ae0995`
+(191 commits over upstream `dev` `bdac34b5`; upstream has since moved 40
+commits further to `da229d0`). Verified in an isolated worktree with the
+pinned 1.97.1 toolchain.
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace --exclude rusty-bacnet --locked --features bacnet-types/serde,bacnet-transport/ipv6,bacnet-transport/sc-tls` | does not build: 0 suites ran |
+| Fresh wheel from the branch, full Python suite in a clean venv | 526 passed, 3328 subtests, 0 failed |
+| Embedded crates on the branch | upstream's merged codec and core with the fork's extended-frame series on top; `bacnet-router-core` and `bacnet-router-adapters` retained |
+| Team's own verification note | transport, network and bindings crates only |
+
+### Findings
+
+- [ ] **H1 - The workspace does not compile.**
+      `crates/bacnet-endpoint/tests/bip_sc.rs:89` builds an `ScReconnectConfig`
+      literal without the fork's `retry_forever` field. One line fixes it; the
+      point is that the reconciliation was verified on three crates and the
+      upstream `bacnet-endpoint` test target was never built. Run the full
+      workspace command before pushing.
+- [ ] **H2 - PR #5 gets no CI.** It targets `fix/sc-router-review-closeout`,
+      and the workflow runs pull requests only against `dev` and `main`. No
+      run exists for the branch. Retarget PR #5 at `main` (or stack it on PR
+      #4 and merge that first) so the matrix, the no_std checks and the
+      Python wheel job actually execute.
+- [ ] **H3 - The fork release pipeline was lost in the merge.**
+      `crates/rusty-bacnet/pyproject.toml` is back to `name = "rusty-bacnet"`
+      at 0.12.0, the `ace-pypi` index block and the `publish-private-pypi`
+      job are gone, and the wheel builds as `rusty_bacnet-0.12.0`. Restore
+      the `ace-rusty-bacnet` distribution, the private publish job and the
+      fork-tag gating from `3c51b34`, `ab8e558` and `be813fc7`, then decide
+      the first 0.12-line fork version.
+- [ ] **H4 - The legacy constructor and `test_virtual_router.py` were
+      dropped silently.** The reconciliation note says the virtual-network
+      transport, the `BACnetRouter(bip_network, virtual_ports, ...)`
+      constructor and the old per-port forwarding counters were not restored
+      because 0.12 no longer owns them. That is a defensible pre-1.0 call,
+      but it contradicts this plan's working rule and K5 of the embedded
+      plan. Record it as a decision here, add a changelog fragment naming
+      the removed API, and update `docs/python-api.md`.
+- [ ] **H5 - R7 and R8 bookkeeping.** R8 is delivered (`RouterConfig`,
+      `announce_interval_s`, recovery re-announce on the recovered port).
+      The first R7 slice is delivered (negotiated SC NPDU ceiling as a
+      transport hint, `oversize_drops`, Reject-Message-To-Network reason 4).
+      Phase 3 and Phase 4 items should be ticked to match, with node and hub
+      receive-limit configuration left open.
+- [ ] **H6 - Rebase before the gap grows again.** Upstream's 40 new commits
+      include a no_std B/IP and B/IPv6 BVLL codec (`bacnet-bip-codec`) and
+      moved the Tokio transports onto it, a virtual-time MS/TP bus simulator,
+      no-allocator firmware link images in CI, and a core fix that waits for
+      a quiet line before every send. `bacnet-transport/src/bip` and
+      `sc` are where this branch carries most of its delta, so each day of
+      drift costs a merge.
+- [ ] **H7 - Upstream now owns the router adapters' B/IP side.** Issues
+      #1622 (sans-IO B/IP node engine) and #1623 (BBMD tables and forwarding
+      as a portable core) describe what `bacnet-router-adapters` does on
+      the B/IP leg. Keep the adapters fork-provisional and point those issues
+      at them rather than extending them further.
 
 ## Out of scope
 

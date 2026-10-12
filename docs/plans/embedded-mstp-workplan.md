@@ -1,6 +1,9 @@
 # Embedded MS/TP work plan
 
-Status: active; decisions 1-4 ratified and Phases 0-5 implemented 2026-10-10
+Status: decided 2026-10-11 to adopt upstream's merged codec, core, and no_std
+crates (#1612, #1616, #1619) as the base and park the fork's own copies for
+later re-integration. Phase 7 (adopt upstream) is the implementation team's
+next work; Phase 6 hardware open
 Created: 2026-10-10
 Target line: `fix/sc-router-review-closeout`; embedded MS/TP released at
 `55233111` (`v0.11.7`). The firmware still vendors the `9f5e019`/0.11.4
@@ -118,6 +121,8 @@ The two requests are tracked here as K1-K5 (codecs) and M1-M8 (master core):
   `bacnet_transport::mstp::{MstpTransport, MstpConfig, SerialPort,
   LoopbackSerial, NoSerial}`, and `AnyTransport::Mstp` keep compiling for
   current callers. Deprecations are allowed, removals are not, in this plan.
+  (Superseded 2026-10-11 by F1: the maintainer has stated pre-1.0 APIs may
+  break and wants one implementation; see the alignment review below.)
 - The host `Bytes`-based API stays as an adapter layer over slice-based
   primitives. Do not rewrite the 690 `bytes` uses in `bacnet-services`.
 - The core crates never call `std::time`, never spawn, never lock, never
@@ -563,17 +568,278 @@ Ratified 2026-10-10.
 2. **Frame ownership:** the codec crate owns a `FrameHeader` value type plus
    borrowed frame data. The host `MstpFrame` with `Bytes` stays in the
    `bacnet-transport` adapter.
-3. **COBS extended frames:** explicit rejection and a reserved `cobs` feature
-   only. No implementation in this plan.
-4. **Version line:** this work lands on the fork's 0.11.x line. A 0.12
-   reconciliation with upstream is not a prerequisite; if the sc-ip-router
-   plan's E3 later chooses one, Phase 0 re-pins and the new crates carry over
-   unchanged because they are additive.
+3. **COBS extended frames:** originally explicit rejection only. Superseded
+   2026-10-11: the maintainer stated that MS/TP routing requires Extended
+   frame types 32 and 33, and the fork implemented COBS/CRC-32K and the
+   extended codec, core, and router profiles (`b8f0bb0e`, `724b40ca`,
+   `da7a4eda`). Explicit rejection remains the behavior of the standard
+   profile; see F3 for the upstream sequencing.
+4. **Version line:** originally the fork's 0.11.x line. Reopened 2026-10-11:
+   the canonical `bacnet-mstp-codec` and `bacnet-mstp-core` now live on
+   upstream `dev` at 0.12.0 with review changes the fork lacks. Carrying
+   0.11.x copies of crates upstream owns invites permanent divergence.
+   Decided 2026-10-11: take the upstream work and move forward. The firmware
+   and the fork consume the embedded crates from upstream `dev`; the fork's
+   own codec, core, extended-frame, and router work is parked on an archive
+   branch. Upstream continues to take what is useful from it, and the fork
+   re-integrates later (see Phase 7).
 
 Still open:
 
 - Whether `bacnet-objects` and `bacnet-network` should also gain `no_std`.
   Out of scope here; the requests do not ask for them.
+
+## Review 2026-10-11 - upstream alignment and verification
+
+Independent review of `fix/sc-router-review-closeout` at `da18670` against
+the maintainer's responses on
+[#1604](https://github.com/jscott3201/rusty-bacnet/issues/1604) and
+[#1605](https://github.com/jscott3201/rusty-bacnet/issues/1605) and the two
+upstream PRs [#1606](https://github.com/jscott3201/rusty-bacnet/pull/1606)
+and [#1607](https://github.com/jscott3201/rusty-bacnet/pull/1607), both still
+unreviewed and rebased on upstream `dev` `74fca30` with zero commits behind.
+
+| Check | Result |
+|---|---|
+| Workspace suite, CI feature set, cleaned crates | 77 suites, 4957 passed, 1 failed (see router plan G2: stale generated conformance doc) |
+| `cargo fmt --check`, 700-line gate | clean |
+| `check-embedded-deps.sh` on both bare targets | pass |
+| Cross-compile for `thumbv7em-none-eabi` and `riscv32imac-unknown-none-elf`: types, codec, codec+heapless, core, core+heapless, router-core, router-adapters, encoding+alloc, services+alloc | all 18 pass |
+
+Local note: a Homebrew `rustc` ahead of rustup on `PATH` makes every bare
+target fail with "can't find crate for core" even though
+`rust-toolchain.toml` lists the targets. Pin `RUSTC` to the 1.97.1 toolchain
+or put `~/.cargo/bin` first. Worth a line in the toolchain docs.
+
+### Where the maintainer's direction and the fork agree
+
+New crates (accepted explicitly); the event contract (`on_octet`,
+`on_host_activity`, `on_receive_error`, `on_silence`, `on_deadline`,
+absolute deadlines); driver acceptance distinguished from physical completion
+(`on_transmit_started`, `on_transmit_complete`, `on_transmit_aborted`);
+generation-bound `TransmitId` and `RequestId`; reserved control and reply
+capacity in the action scheduler; `Direction` as a core-owned action;
+standard-fixed parameters pinned by `MstpCoreConfig::validate()` (`N_poll`,
+`N_retry_token`, `N_min_octets`, `T_no_token`, `T_slot`) with ranges only
+where the standard permits; hosted adapters kept out of PR #1607; PyO3 kept
+in the host layer.
+
+### Findings
+
+- [ ] **F1 - Two implementations of the master state still exist on the host
+      path.** The maintainer wrote that pre-1.0 APIs may break, that nothing
+      requires retaining `MasterNode` or deprecated wrappers, and that there
+      should be one implementation of the protocol behavior. The host adapter
+      keeps `#[deprecated] MasterNode` and mirrors core state into it
+      (`mstp/core_adapter.rs::sync_legacy`, `mstp/port.rs` `mirror_legacy_*`).
+      Remove the legacy struct and the mirroring, migrate the remaining
+      callers and tests, and drop the "removals are not allowed" working rule.
+- [ ] **F2 - The codec's default profile still depends on `bacnet-types`.**
+      The maintainer asked that the strict MS/TP crates not depend on the
+      allocation-bearing `bacnet-types` surface. The codec only uses it for
+      `From<FrameError> for bacnet_types::Error` under `alloc`, but the Cargo
+      dependency is unconditional in both the fork and PR #1606, and
+      `bacnet-types` does `extern crate alloc` unconditionally when `std` is
+      off. Make the dependency optional and enable it from the `alloc`
+      feature, then tighten `check-embedded-deps.sh` to assert its absence in
+      the default profile. Apply the same change to PR #1606.
+- [ ] **F3 - Sequence the extended-frame work upstream.** Extended types 32
+      and 33, COBS, and CRC-32K now exist on the fork but are not in PR #1606
+      or #1607. Stack a third upstream PR for the codec and core extended
+      profiles once the first two have a review, and say so on #1604. The
+      standard-frame checkpoint is what upstream has seen.
+- [ ] **F4 - Prove an allocator-free link, not only a check.** The maintainer
+      separates an allocator-free smoke image from an integrated firmware
+      image with `alloc`. CI runs `cargo check` and the dependency-tree
+      script; nothing links a `#![no_std] #![no_main]` binary without a
+      global allocator against the codec and core. Add a tiny link-smoke
+      binary crate (excluded from default members) built for
+      `thumbv7em-none-eabi` in the embedded job.
+- [ ] **F5 - Record which tests are standard-backed and which are
+      legacy-differential.** The maintainer wants differential checks only
+      where the old behavior is known correct, plus independent standard
+      vectors. Extended frames now have Annex X.4 fixtures
+      (`tests/extended_wire_fixtures.rs`); the standard-frame codec is still
+      proved mainly by differential tests against `mstp_frame.rs`. Add an
+      evidence table naming the source for each case, and keep the
+      consolidated 135-2020 gap (X0 in the router plan) as the bar for any
+      conformance claim.
+- [ ] **F6 - Ask for the maintainer's regression candidates.** The #1604
+      reply mentions "specific source-level timing/address cases" found in
+      their first review that should be reproduced before extraction. We do
+      not have the list. Ask for it on #1605 and add each as a named test.
+- [ ] **F7 - Answer the three alignment questions on the thread.** The
+      maintainer asked to settle the storage and transmit contract, the first
+      supported role and hardware setup, and which landed changes go upstream
+      first. Post one comment: the contract as implemented (events, ids,
+      completion, direction ownership, reserved capacity), the first role as
+      standard-frame passive observer then MAC 30 master without routing, and
+      the proposed order alloc-profile encoding/services, codec, core,
+      extended, adapters.
+- [ ] **F8 - The `no_std + alloc` encoding/services slice has no upstream
+      PR.** The maintainer offered to carry `251e74d2` forward against current
+      `dev`. Open that PR, or ask them to, so K1 is not stranded behind the
+      MS/TP PRs.
+- [ ] **F9 - Pinned constants are still configuration fields.** `n_poll`,
+      `n_retry_token`, `n_min_octets`, `t_no_token`, and `t_slot` are public
+      fields that `validate()` rejects unless they hold the standard's single
+      value. Make them associated constants and remove the fields. Small,
+      pre-1.0, and it matches "only parameters the standard permits to vary
+      should become tuning knobs".
+- [ ] **F10 - BACnet/IP scope ran ahead of upstream agreement.** The
+      maintainer proposed a bounded follow-on: BVLC codecs first, then a
+      small normal or foreign-device engine. Overnight the fork added
+      `bacnet-router-core` and `bacnet-router-adapters` with a bounded B/IP
+      UDP adapter, about 7,000 lines, with no upstream issue. Open the issue
+      before offering any of it upstream, and label those crates as fork
+      provisional in the router plan until then. See the router plan's
+      review for the library findings.
+
+Hardware status is unchanged and honestly recorded: two passive attempts, a
+raw UART diagnostic that did receive bytes, no passing fail-closed capture,
+no logic-analyzer DE trace, active image not flashed. Phase 6 stays open.
+
+## Upstream merge adjustments 2026-10-11
+
+Upstream `dev` moved from `74fca30` to `4aeb3dbb` (20 commits) and merged, in
+order, the codec as [#1612](https://github.com/jscott3201/rusty-bacnet/pull/1612)
+(supersedes #1606), the maintainer's own `no_std + alloc` build of types,
+encoding, and services as [#1616](https://github.com/jscott3201/rusty-bacnet/pull/1616)
+(supersedes the fork's `251e74d2`), and the core as
+[#1619](https://github.com/jscott3201/rusty-bacnet/pull/1619) (supersedes
+#1607). The fork's commits were carried forward with authorship intact; the
+maintainer's commits on top are breaking. #1604 is closed; #1605 stays open
+for the follow-ups.
+
+### What changed in review (the fork does not have these)
+
+- Codec: `std` feature replaced by `bytes`; the `bacnet-types` dependency
+  removed, so the default build has no dependencies and builds on
+  `thumbv6m`; decode accepts slave sources 128-254; encode refuses source
+  255, data on Token, Poll For Master, Reply To Poll For Master and Reply
+  Postponed, and proprietary frames without a vendor id
+  (`FrameError::MissingVendorId`, `FrameType::is_proprietary`); the stream
+  decoder reports `FrameTooLong` once and resynchronizes instead of wedging;
+  `DecodeEvent::Malformed` carries `destination`; `BufferExhausted` reports
+  the refused length and free room; Annex G.1 vector added.
+- Core: `MstpCoreConfig::reply_transmit_margin` (default 25 ms) and
+  `octet_time`; Reply Postponed timing per Clause 9.5.6.9 with new counters
+  `late_replies`, `expired_requests`, `cancelled_sends`,
+  `discarded_while_answering`; replies accepted from any source; dropped
+  candidates filtered by destination; NPDUs over 501 octets refused as
+  `Oversize` and never hold the token (a real bug in the original); a
+  transmit must be started before it completes; an aborted transmit purges
+  its actions; frames received while answering are handled per 9.5.6.2.
+- types, encoding, services: upstream wiring is `std = ["alloc", ...]` and
+  `alloc`, `tracing` only under `std`, `Error` is `#[non_exhaustive]`,
+  `Error::Transport` only with `std`.
+- CI: `scripts/ci/check-no-std.sh` runs clippy on the no_std crates for
+  `thumbv6m-none-eabi`, `thumbv7em-none-eabihf`, and
+  `riscv32imac-unknown-none-elf`; `scripts/ci/check-default-features.sh`
+  checks each published crate on Linux, Windows, and macOS.
+- Docs: `docs/mstp-qualification.md` and its JSON result template define an
+  operator-run bench qualification method and the claim language allowed.
+
+The fork's two crates now differ from upstream by 37 files, about 3,800
+lines added and 3,400 removed, and `bacnet-router-core`,
+`bacnet-router-adapters`, and the Phase 4 Tokio adapter are written against
+the pre-review core API.
+
+### Maintainer follow-up issues that now define the queue
+
+| Issue | Topic | Fork position |
+|---|---|---|
+| [#1608](https://github.com/jscott3201/rusty-bacnet/issues/1608) | Host MS/TP MAC departs from Clause 9 in six places (U1-U6); fix by cutting the host transport over to codec + core and deleting the old MAC | Replaces our Phase 4 adapter design; the fork's legacy `MasterNode` mirror must not go upstream |
+| [#1609](https://github.com/jscott3201/rusty-bacnet/issues/1609) | Codec: skip a dropped frame's body by count; discard noise runs in one event | Not started |
+| [#1610](https://github.com/jscott3201/rusty-bacnet/issues/1610) | Codec: fuzz `StreamDecoder` and sinks; build the fuzz crate in CI | Fork has `fuzz/fuzz_targets/mstp_decode.rs`; offer it |
+| [#1611](https://github.com/jscott3201/rusty-bacnet/issues/1611) | Codec: extended frames types 32/33, COBS, CRC-32K, required for routing | Fork has X1-X3 implemented; the next PR |
+| [#1613](https://github.com/jscott3201/rusty-bacnet/issues/1613) | Run alloc-only tests and MSRV in CI; lift thumbv6m skips | Not started |
+| [#1614](https://github.com/jscott3201/rusty-bacnet/issues/1614) | Writer-trait encoders and an allocation-free services subset | Not started; shapes any future allocation-free router application layer |
+| [#1615](https://github.com/jscott3201/rusty-bacnet/issues/1615) | Port `bacnet-objects` to no_std + alloc | Not started; was our "still open" question, now upstream-owned |
+| [#1617](https://github.com/jscott3201/rusty-bacnet/issues/1617) | Core: `on_invalid_frame` input for host-assembled frames; deliver Test_Response and proprietary frames | Must land before host cutover; fork adapter uses `on_validated_frame` and is affected |
+| [#1618](https://github.com/jscott3201/rusty-bacnet/issues/1618) | Core: missed-slot policy, wait-for-silence sends, action-ring contract, construction without a 28 KB stack copy | Maintainer: settle before any firmware relies on the core; gates the active image |
+
+### Disposition of F1-F10
+
+| Finding | Disposition |
+|---|---|
+| F1 legacy `MasterNode` mirror | Superseded by #1608: upstream will delete the old MAC and cut over. Stop maintaining the mirror on the fork; do not include it in any PR. |
+| F2 codec depends on `bacnet-types` | Resolved upstream in #1612. Fork resyncs (Phase 7). |
+| F3 sequence extended frames | #1611 is the vehicle. Rebase the fork's X1-X3 onto the merged codec and core and open the PR. |
+| F4 allocator-free link proof | Resolved upstream by #1626: CI links the MS/TP and B/IP stacks into no-allocator images with size budgets. |
+| F5 standard-backed versus differential tests | Upstream added the Annex G.1 vector for standard frames. Extended fixtures stay the fork's contribution under #1611. |
+| F6 maintainer's regression candidates | Answered: #1608 U1-U6. Add them as named tests in the fork's host adapter until the cutover removes it. |
+| F7 answer the three alignment questions | Overtaken: the maintainer reviewed the contract directly and encoded the remaining questions in #1617 and #1618. Respond there, not on #1604. |
+| F8 alloc-profile slice has no PR | Resolved upstream in #1616 with the maintainer's wiring, which differs from `251e74d2`. Fork adopts upstream's feature wiring in Phase 7. |
+| F9 pinned constants as fields | Still true upstream. Raise on #1618 as a small follow-up. |
+| F10 router scope ahead of upstream | Still open. #1614 and #1615 show upstream's own direction for the application layer; open the router-boundary issue before any router PR. |
+
+## Phase 7 - adopt the upstream crates and park the fork copies
+
+State on `feature/sc-ip-router-upstream-0.12` (reviewed 2026-10-11): the team
+merged upstream `dev` at `bdac34b5`, so the codec and core are upstream's
+merged versions with the fork's extended-frame commits rebased on top, and
+`bacnet-router-core` and `bacnet-router-adapters` are retained. That satisfies
+"take the upstream work and move forward" as upstream-base plus a fork
+series rather than as parking; items 1 and 2 below therefore apply to the
+pre-merge head `da18670` (archive it) and to any future divergence, not to
+the extended series. Items 3 and 4 are done by the merge. Upstream has since
+closed #1626 (no-allocator link images in CI, which resolves F4) and #1625
+(wait for a quiet line, part of #1618); #1617 and #1618 remain the gate for
+the active image.
+
+Decision (2026-10-11): take the upstream work and move forward. Upstream can
+keep taking what is useful from the fork's branch; the fork re-integrates its
+extended-frame and router work later, on top of whatever upstream ships.
+
+- [ ] Tag the current branch head as `archive/embedded-fork-20261011` and push
+      it, so the fork's codec, core, extended-frame, router-core, and
+      router-adapter work stays addressable for upstream and for later
+      re-integration.
+- [ ] Remove the fork's `crates/bacnet-mstp-codec`, `crates/bacnet-mstp-core`,
+      `crates/bacnet-router-core`, and `crates/bacnet-router-adapters` from
+      the working branch and the workspace members. Do not try to merge them
+      with upstream's versions.
+- [ ] Bring upstream `dev` at `4aeb3dbb` or later into the fork for the
+      embedded crates and the no_std wiring of types, encoding, and services
+      (#1616 replaces `251e74d2`). The simplest route is the sc-ip-router
+      plan's E3: rebase the fork onto upstream `dev` once PR #4 merges,
+      rather than cherry-picking the embedded commits in isolation.
+- [ ] Drop the fork's `embedded-check` job and
+      `.github/scripts/check-embedded-deps.sh` in favour of upstream's
+      `scripts/ci/check-no-std.sh` and `check-default-features.sh`.
+- [ ] Firmware: repoint `vendor/rusty-bacnet` at the upstream `dev` commit
+      for the embedded crates and record it in `PROVENANCE.json`; adapt the
+      ESP-IDF adapter to the merged core API (`Oversize` refusal,
+      `reply_transmit_margin`, `octet_time`, start-before-complete transmit,
+      action purge on abort, `DecodeEvent::Malformed { destination }`).
+      Standard frames only until upstream lands #1611.
+- [ ] Do not flash an active image until upstream settles #1617 and #1618,
+      or the firmware team documents its own policy for each item.
+- [ ] Record in the evidence README which fork evidence (W14, bench, host
+      tests) still applies to the upstream crates and which was specific to
+      the parked copies.
+
+Acceptance: the fork and the firmware build only upstream-sourced embedded
+crates; the archive tag exists; no fork copy of an upstream-owned crate
+remains on the working branch.
+
+## Upstream engagement after the decision
+
+No fork PRs are required. The team engages where it is cheap and useful:
+
+- Point #1611 at the archive tag's extended-frame commits as reference
+  material; upstream decides what to take.
+- Point #1610 at the archive tag's fuzz target.
+- Report firmware findings on #1617 and #1618 as they arise from the ESP32
+  bench; those two issues gate the active image.
+- Raise F9 (pinned constants as fields) and F4 (allocator-free link proof)
+  as comments on #1618 and #1613 when convenient.
+- Re-open the router boundary conversation upstream only when the fork is
+  ready to re-integrate `bacnet-router-core`; until then it stays archived.
+
+The earlier "Revised upstream PR queue" and the F1-F10 dispositions above
+are retained as the record of why; they are no longer a work queue.
 
 ## Out of scope
 

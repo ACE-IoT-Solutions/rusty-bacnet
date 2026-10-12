@@ -1,6 +1,8 @@
 # Embedded BACnet/IP↔MS/TP router workplan
 
-Status: ready for human library review
+Status: parked 2026-10-11. The fork adopted upstream's merged MS/TP crates and
+archived this router work for later re-integration (embedded MS/TP plan,
+Phase 7). G1-G7 remain the review record to address at re-integration
 
 Last updated: 2026-10-11
 
@@ -354,6 +356,63 @@ release-order/registry prerequisite rather than a source-content failure and
 must remain visible to the human release review. Exact commands, toolchains,
 results, and claim limits are recorded in
 `docs/plans/evidence/embedded-router/closeout-2026-10-11.md`.
+
+## Independent review 2026-10-11
+
+Reviewer verification of `da18670`: workspace suite 4957 passed, 1 failed
+(G2); `bacnet-router-core` and `bacnet-router-adapters` cross-compile for
+`thumbv7em-none-eabi` and `riscv32imac-unknown-none-elf` with no features;
+`check-embedded-deps.sh` passes on both targets; fmt and the 700-line gate
+are clean. Both crates are `#![no_std]`, `#![forbid(unsafe_code)]`, and
+depend only on `bacnet-mstp-core` and each other; no Tokio reference exists
+in the adapters.
+
+- [ ] **G1 - The bare-target gates in the dashboard are not in CI.** The
+      `embedded-check` job and `check-embedded-deps.sh` cover types,
+      encoding, services, codec, and core only. R4, X3, and X5 claim "both
+      bare-target gates pass" for the router crates; that was a local run.
+      Add both crates to the job matrix and the dependency script so the
+      claim is reproducible.
+- [ ] **G2 - `generated_support_docs_match_generator_check` fails.**
+      `python3 scripts/generate-conformance-docs.py --check` reports
+      `docs/conformance/pics-draft.md` stale after the overnight ledger
+      edits. Regenerate and commit; this is a CI-visible failure in
+      `bacnet-integration-tests`.
+- [ ] **G3 - Scope arrived ahead of upstream agreement.** On #1604 the
+      maintainer proposed a bounded B/IP follow-on (BVLC codecs, then a small
+      normal or foreign-device engine) and asked to coordinate contracts
+      first. The router core, routed-broadcast policy, discovery and table
+      control, and B/IP UDP adapter all landed without an upstream issue.
+      Open one describing the portable router boundary before any PR, and
+      mark these crates fork-provisional in the dashboard until upstream
+      responds.
+- [ ] **G4 - Two unresolved interpretations are prose, not checkboxes.** C5
+      keeps the Initialize-Routing-Table `port_id` semantics and the
+      hop-count-one direct-delivery reading as "consolidated-standard review
+      items", yet the dashboard shows every box ticked. Represent them as
+      open items under X0 so the plan cannot read as 45 of 45 complete.
+- [ ] **G5 - Evidence log breaks `git diff --check`.**
+      `docs/plans/evidence/embedded-mstp/20261011T012252Z-raw-uart-diagnostic/candidate-flash.log`
+      contains trailing whitespace from the flasher's progress bar. Strip it
+      or mark the directory `-whitespace` in `.gitattributes` so the
+      whitespace gate stays meaningful.
+- [ ] **G6 - Review load.** The branch now carries roughly 100 commits and
+      more than 23,000 added lines over `main`, none merged, with PR #4 still
+      open at its pre-MS/TP size. "Ready for human library review" needs a
+      review unit smaller than the branch: one PR per new crate, in
+      dependency order, each against `main` after PR #4 merges.
+
+- [ ] **G7 - Rebase onto the merged upstream core.** Upstream merged
+      `bacnet-mstp-codec` and `bacnet-mstp-core` on 2026-10-11 (#1612, #1619)
+      with breaking review fixes: `Oversize` refusal at enqueue, new config
+      fields and counters, a start-before-complete transmit contract, action
+      purge on abort, and `DecodeEvent::Malformed { destination }`. Both
+      router crates and the adapters target the pre-review API. Phase 7 of
+      the embedded MS/TP plan carries the resync; nothing here should be
+      offered upstream until it builds against upstream `dev`. Upstream's
+      #1611 (extended frames), #1614 (allocation-free services subset), and
+      #1615 (`bacnet-objects` no_std) now set the application-layer
+      direction the router will compose with.
 
 ## Claim gates and downstream handoff
 
