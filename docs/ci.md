@@ -142,7 +142,8 @@ but not `[workspace.lints]`, since samples print to the terminal.
 `bacnet-types`, `bacnet-encoding` and `bacnet-services` build without `std`
 when `alloc` replaces their default `std` feature, and the MS/TP and B/IP
 crates (`bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec` and
-`bacnet-bip-core`) and the cores' time type (`bacnet-time`) never use it. A host build always has `std` and an allocator, so no single run
+`bacnet-bip-core`), the router core (`bacnet-router-core`) and the cores'
+time type (`bacnet-time`) never use it. A host build always has `std` and an allocator, so no single run
 proves all of that; each check covers a part.
 
 | Check | Job | What it shows |
@@ -1197,7 +1198,8 @@ Clippy runs six ways:
 - the PyO3 crate on its own;
 - `bacnet-cli` with no default features (without the TUI);
 - the `no_std` crates (`bacnet-time`, `bacnet-mstp-codec`,
-  `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core`, and `bacnet-types`,
+  `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core`,
+  `bacnet-router-core`, and `bacnet-types`,
   `bacnet-encoding` and `bacnet-services` with `alloc` in place of their
   default `std`) on
   bare-metal targets, once per feature set
@@ -1214,9 +1216,10 @@ Clippy runs six ways:
 - `bacnet-types`, `bacnet-encoding` and `bacnet-services` with `alloc` in
   place of `std` and `--all-targets`, on the host, so the tests the Test job
   runs without `std` are linted too;
-- each published crate alone with default features, plus the `no_std` builds
-  of `bacnet-types`, `bacnet-encoding` and `bacnet-services`
-  (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
+- each published crate alone with default features, and
+  `bacnet-router-core`, which will publish once its firmware image lands
+  (#1679), plus the `no_std` builds of `bacnet-types`, `bacnet-encoding` and
+  `bacnet-services` (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
   how docs.rs builds, a rustdoc-only run of `bacnet-cli` without the TUI,
   and rustdoc-only runs of `bacnet-mstp-core`, `bacnet-mstp-codec` and
   `bacnet-bip-codec` with `alloc` alone and `heapless` alone (#1681).
