@@ -49,6 +49,7 @@ pub use bacnet_bip_codec::{BvllSink, PayloadShape, SinkFull, HEADER_LENGTH, MAX_
 /// Maximum number of random VMAC regenerations before startup fails (Annex U.5/H.7.2).
 pub const MAX_VMAC_RETRIES: u32 = 3;
 
+mod collision_probe;
 mod frame;
 pub use frame::{bvll6_error, decode_bvll6, encode_bvll6};
 mod ingress;

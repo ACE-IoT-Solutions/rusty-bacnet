@@ -10,12 +10,12 @@ use tracing::{debug, warn};
 
 use crate::port::{ReceivedNpdu, TransportPort};
 
+use super::collision_probe::Probe;
 use super::frame::{bvll6_error, encoded};
-use super::ingress::{is_local_unicast_delivery, LocalBinding};
 use super::receive::Receiver;
 use super::receive_counters::{Bip6ReceiveCounters, ReceiveDrops};
 use super::reply_limit::ReplyLimiter;
-use super::socket::{Bip6Socket, Inbound};
+use super::socket::Bip6Socket;
 use super::vmac_table::{derive_vmac_from_device_instance, generate_random_vmac, VmacTable};
 use super::{encode_bvll6, Bip6Address, Bip6Vmac, Bvll6, MAX_VMAC_RETRIES};
 
@@ -267,86 +267,17 @@ impl TransportPort for Bip6Transport {
                     debug!(error = %error, "Configured-VMAC collision probe send failed");
                 }
 
-                let mut collision = false;
+                let probe = Probe {
+                    vmac: source_vmac,
+                    local_ip,
+                    local_port,
+                    local_unicast_ips: &local_unicast_ips,
+                    wildcard_bind,
+                    group: collision_group,
+                    required: collision_probe_required,
+                };
                 let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
-                loop {
-                    match tokio::time::timeout_at(deadline, socket.recv_from(&mut check_buf)).await
-                    {
-                        Ok(Ok(Inbound::OffLink)) => continue,
-                        Ok(Ok(Inbound::Datagram(received))) => {
-                            if let Ok(message) =
-                                bacnet_bip_codec::ipv6::decode(&check_buf[..received.len])
-                            {
-                                let is_self_loop = matches!(
-                                    received.peer,
-                                    std::net::SocketAddr::V6(peer)
-                                        if peer.port() == local_port
-                                            && (*peer.ip() == local_ip
-                                                || local_unicast_ips.contains(peer.ip()))
-                                );
-                                if let Bvll6::AddressResolution { source, target } = message {
-                                    if target == source_vmac
-                                        && matches!(received.destination, std::net::IpAddr::V6(ip) if ip == collision_group)
-                                        && received.os_group_delivery != Some(false)
-                                        && !is_self_loop
-                                    {
-                                        let ack = encoded(&Bvll6::AddressResolutionAck {
-                                            source: source_vmac,
-                                            destination: source,
-                                        })?;
-                                        if let Err(error) =
-                                            socket.send_to(&ack, received.peer).await
-                                        {
-                                            if collision_probe_required {
-                                                return Err(Error::Transport(error));
-                                            }
-                                            debug!(error = %error, "Configured-VMAC AR-Ack send failed");
-                                        }
-                                        if source == source_vmac {
-                                            collision = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                // AR-ACK from another node using our VMAC.
-                                if let Bvll6::AddressResolutionAck {
-                                    source,
-                                    destination,
-                                } = message
-                                {
-                                    if source == source_vmac
-                                        && is_local_unicast_delivery(
-                                            received.destination,
-                                            Some(destination),
-                                            &LocalBinding {
-                                                ip: local_ip,
-                                                vmac: source_vmac,
-                                                unicast_ips: &local_unicast_ips,
-                                                wildcard_bind,
-                                            },
-                                            received.os_group_delivery,
-                                        )
-                                    {
-                                        collision = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Ok(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {
-                            debug!(error = %e, "Error during VMAC collision check");
-                            continue;
-                        }
-                        Ok(Err(e)) => {
-                            if collision_probe_required {
-                                return Err(Error::Transport(e));
-                            }
-                            debug!(error = %e, "Configured-VMAC collision probe receive failed");
-                            break;
-                        }
-                        Err(_) => break, // timeout elapsed — no collision
-                    }
-                }
+                let collision = probe.window(&*socket, &mut check_buf, deadline).await?;
 
                 if !collision {
                     break;

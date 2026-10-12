@@ -920,8 +920,9 @@ address it was sent to; a Forwarded-NPDU or Forwarded-Address-Resolution
 from an untrusted path; a Forwarded-NPDU whose NPDU is too short or
 malformed; an origin or asker address unusable without a scope ID; a request
 from an unanswerable source or this node's own address; this node's own
-echo; and an NPDU the network-layer channel couldn't take because it was full
-or closed. Each drop counts once, and the totals survive a restart. Two more
+echo, a Forwarded-NPDU that names it as the origin included; and an NPDU the
+network-layer channel couldn't take because it was full or closed. Each drop
+counts once, and the totals survive a restart. Two more
 fields count the replies the quotas held back, NAKs and the answers to
 Forwarded-Address-Resolution, apart from the drops. A frame that fails to
 decode, which used to log a warning for each datagram, now logs at debug. A

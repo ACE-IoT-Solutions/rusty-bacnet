@@ -72,7 +72,12 @@ async fn each_malformed_bbmd_request_gets_its_nak_at_its_source() {
                 },
             };
             assert_eq!(nak, Some(expected), "{function} foreign={foreign}");
-            let [high, low] = code.to_raw().to_be_bytes();
+            let [high, low] = match *function {
+                Bvlc6Function::REGISTER_FOREIGN_DEVICE => [0x00, 0x90],
+                Bvlc6Function::DELETE_FOREIGN_DEVICE_TABLE_ENTRY => [0x00, 0xA0],
+                Bvlc6Function::DISTRIBUTE_BROADCAST_TO_NETWORK => [0x00, 0xC0],
+                other => unreachable!("{other} is not a BBMD request"),
+            };
             let wire = encoded(&expected.message).unwrap();
             assert_eq!(
                 wire[..],

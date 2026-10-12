@@ -450,13 +450,23 @@ impl Receiver {
                     );
                     return None;
                 }
+                let source_mac = original_address.to_octets();
+                // This node's own broadcast, come back through a BBMD, as
+                // where two BBMDs' multicast scopes overlap. Handing it up
+                // would show the network layer a frame from itself, and
+                // learning it would bind this node's own address to another
+                // VMAC (#1643).
+                if source_mac == self.local_mac {
+                    self.drops.count(DropReason::OwnEcho);
+                    debug!("Dropping a Forwarded-NPDU whose origin is this node");
+                    return None;
+                }
                 // The 18 octets carry no scope ID, so the origin gets none.
                 let source_addr = SocketAddrV6::from(original_address);
                 // The origin is taken as the NPDU's source, so a group there
                 // would bind a forged I-Am to every node in it, or send a
                 // request's answer to them all. No node sends from one: the
                 // frame is malformed, and counted (#1493).
-                let source_mac = original_address.to_octets();
                 if is_bip6_group(&source_mac) {
                     self.forwarded_group_origin_drops
                         .fetch_add(1, Ordering::Relaxed);

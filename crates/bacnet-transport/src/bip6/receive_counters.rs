@@ -23,7 +23,8 @@ use crate::warn_throttle::WarnThrottle;
 /// forwarded or not, an ACK, or a BVLC-Result. The last two fields
 /// count replies, not datagrams: the request they answer was handled. Each
 /// field is read on its own, so a snapshot taken while datagrams arrive need
-/// not add up across fields.
+/// not add up across fields. What the VMAC collision probe reads during
+/// `start`, before the receive loop runs, is not counted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Bip6ReceiveCounters {
     /// Failed socket reads, and datagrams without usable address metadata.
@@ -52,7 +53,8 @@ pub struct Bip6ReceiveCounters {
     /// Frames whose payload doesn't fit their BVLC function's layout. A
     /// malformed Register-Foreign-Device, Delete-Foreign-Device-Table-Entry
     /// or Distribute-Broadcast-To-Network still draws the NAK a well-formed
-    /// one would (#1638).
+    /// one would (#1638). One refused that NAK for its source is counted
+    /// here only, not under `unanswerable_request` too.
     pub malformed_payload: u64,
     /// Original-Unicast-NPDUs, Address-Resolution-ACKs and
     /// Virtual-Address-Resolution-ACKs whose destination VMAC is another
@@ -86,7 +88,9 @@ pub struct Bip6ReceiveCounters {
     /// a request.
     pub unanswerable_request: u64,
     /// Original-Unicast-NPDUs and Original-Broadcast-NPDUs from this node's
-    /// own address: mostly its own broadcasts coming back, which is routine.
+    /// own address, and Forwarded-NPDUs that name it as their origin: mostly
+    /// its own broadcasts coming back, directly or through a BBMD, which is
+    /// routine.
     pub own_echo: u64,
     /// NPDUs dropped because the channel to the network layer was full: the
     /// network layer is falling behind.

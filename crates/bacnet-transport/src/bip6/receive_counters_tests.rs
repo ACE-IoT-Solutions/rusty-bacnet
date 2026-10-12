@@ -462,6 +462,30 @@ async fn frames_from_this_node_count_as_own_echo() {
     assert_eq!(node.counters(), only(|c| c.own_echo = 2));
 }
 
+/// A Forwarded-NPDU by a trusted path whose origin is this node: its own
+/// broadcast come back through a BBMD. It is neither handed up nor learned,
+/// though the same frame from another origin would be.
+#[tokio::test]
+async fn a_forwarded_npdu_from_this_node_counts_as_own_echo() {
+    // From a BACnet group in normal mode, and from the configured BBMD by
+    // unicast for a foreign device.
+    for (foreign, from, to) in [(false, peer(), GROUP), (true, bbmd(), local_ip())] {
+        let mut node = Node::new(foreign, 8).await;
+        node.feed(&forwarded(own(), NPDU), from, to).await;
+        node.nothing_handed_up();
+        assert_eq!(node.receiver.vmac_table.lookup(&PEER_VMAC).await, None);
+        assert_eq!(
+            node.counters(),
+            only(|c| c.own_echo = 1),
+            "foreign={foreign}"
+        );
+
+        node.feed(&forwarded(station(), NPDU), from, to).await;
+        assert_eq!(node.rx.try_recv().unwrap().npdu.as_ref(), NPDU);
+        assert_eq!(node.counters(), only(|c| c.own_echo = 1));
+    }
+}
+
 #[tokio::test]
 async fn a_full_channel_counts_each_npdu_it_drops() {
     let mut node = Node::new(false, 1).await;

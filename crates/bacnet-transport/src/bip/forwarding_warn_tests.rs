@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
+use tokio::time::{timeout, Duration};
 use tracing::Level;
 
 use super::fanout::{AtomicFanoutCounters, FanoutDispatcher, FanoutJob, FanoutRateLimiter};
@@ -91,7 +92,11 @@ async fn a_full_fanout_queue_warns_at_most_once_per_interval() {
         logged(&logs, "BIP BBMD: fanout work queue full", "dropped"),
         [warned("1"), DEBUG, DEBUG, warned("3")]
     );
-    assert_eq!(counters.snapshot().queue_overflow_drops, 4);
+    let expected = FanoutCounters {
+        queue_overflow_drops: 4,
+        ..FanoutCounters::default()
+    };
+    assert_eq!(counters.snapshot(), expected);
 }
 
 /// The worker stops only with the transport, so a job that finds it gone
@@ -140,7 +145,11 @@ async fn failed_fanout_sends_warn_at_most_once_per_interval() {
         logged(&logs, "BIP BBMD: failed to send forwarded NPDU", "failed"),
         [warned("1"), DEBUG, DEBUG, warned("3")]
     );
-    assert_eq!(counters.snapshot().send_errors, 4);
+    let expected = FanoutCounters {
+        send_errors: 4,
+        ..FanoutCounters::default()
+    };
+    assert_eq!(counters.snapshot(), expected);
 }
 
 /// A BBMD that can't send the local copy of a registered foreign device's
@@ -198,9 +207,15 @@ async fn failed_forwarded_npdu_sends_warn_at_most_once_per_interval() {
         [warned("1"), DEBUG, DEBUG, DEBUG, warned("4"), DEBUG]
     );
 
+    // Real time from here, so a missing NAK fails fast instead of waiting
+    // for the test runner's timeout.
+    tokio::time::resume();
     let mut buf = [0u8; 64];
     for _ in 0..3 {
-        let (len, _) = foreign.recv_from(&mut buf).await.unwrap();
+        let (len, _) = timeout(Duration::from_secs(2), foreign.recv_from(&mut buf))
+            .await
+            .expect("each request is NAKed")
+            .unwrap();
         let reply = decode_bvll(&buf[..len]).unwrap();
         assert_eq!(
             decode_bvlc_result_code(&reply).unwrap(),
