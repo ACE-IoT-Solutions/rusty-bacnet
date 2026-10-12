@@ -10,7 +10,7 @@ mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::{
-    Action, CoreError, Direction, Duration, Instant, MasterState, ReceiveError, ReplyDecision,
+    Action, CoreError, Direction, Duration, MasterState, ReceiveError, ReplyDecision,
     TransmitFailure,
 };
 
@@ -22,7 +22,8 @@ use support::*;
 #[test]
 fn a_frame_heard_before_the_confirmed_start_is_received() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     poll_waiting(&mut core);
     let handed = core.next_deadline().unwrap();
     core.on_deadline(handed).unwrap();
@@ -67,7 +68,8 @@ fn a_frame_heard_before_the_confirmed_start_is_received() {
 fn other_input_before_the_confirmed_start_defers_it() {
     for host in [false, true] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         poll_waiting(&mut core);
         let handed = core.next_deadline().unwrap();
         core.on_deadline(handed).unwrap();
@@ -93,7 +95,8 @@ fn other_input_before_the_confirmed_start_defers_it() {
 fn a_start_a_full_turnaround_after_the_activity_goes_ahead() {
     for (late, refused) in [(Duration::ZERO, false), (us(1), true)] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         poll_waiting(&mut core);
         let handed = core.next_deadline().unwrap();
         core.on_deadline(handed).unwrap();
@@ -118,7 +121,8 @@ fn a_start_a_full_turnaround_after_the_activity_goes_ahead() {
 #[test]
 fn input_after_the_confirmed_start_is_echo() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     pass_waiting(&mut core);
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
@@ -151,7 +155,8 @@ fn a_reply_handed_over_waits_within_its_window() {
     let give_up = request + us(255_000 - 1_042 - 1_000);
     for activity in [ms(10), give_up] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         validated(
             &mut core,
             FrameType::BACnetDataExpectingReply,
@@ -203,7 +208,8 @@ fn a_reply_handed_over_waits_within_its_window() {
 #[test]
 fn an_aborted_unstarted_transmit_is_not_sent_again() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     poll_waiting(&mut core);
     let handed = core.next_deadline().unwrap();
     core.on_deadline(handed).unwrap();
@@ -225,7 +231,8 @@ fn an_aborted_unstarted_transmit_is_not_sent_again() {
 #[test]
 fn an_aborted_unstarted_answer_counts_as_expired() {
     let mut rx = [0; 64];
-    let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
     validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
@@ -246,7 +253,8 @@ fn an_aborted_unstarted_answer_counts_as_expired() {
 fn only_a_started_transmit_adds_driver_on_time() {
     for started in [false, true] {
         let mut rx = [0; 64];
-        let mut core = Core::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = new_core(&mut rx, &mut actions);
         poll_waiting(&mut core);
         let handed = core.next_deadline().unwrap();
         core.on_deadline(handed).unwrap();

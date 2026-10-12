@@ -128,6 +128,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         now: Instant,
     ) -> Result<(), CoreError> {
         self.counters.record_frame_received();
+        // Never this station's own echo, which is ignored before it gets
+        // here: another station uses this address. Clause 9 has no rule for
+        // it, so it is counted and then handled like any other frame.
+        if frame.header.source == self.config.station {
+            self.counters.record_own_address_frame();
+        }
         if self.frame_while_pending(&frame, now)? {
             return Ok(());
         }
@@ -199,8 +205,28 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                     now,
                 )
             }
+            _ if self.goes_up_whole(&frame) => {
+                self.deliver(&frame, None);
+                Ok(())
+            }
             _ => Ok(()),
         }
+    }
+
+    /// Whether a frame's data goes up whole, as [`Action::DeliverFrame`]: a
+    /// Test_Response, or a proprietary frame (types 128-255) that opens with
+    /// its 2-octet vendor identifier (Clause 9.3.11), sent to this station or
+    /// broadcast. Clause 9.5.6.2 passes both up as data that needs no reply
+    /// (ReceivedDataNoReply). Whether a proprietary type asks for a reply is
+    /// the vendor's to define; the core knows of none that does, so it
+    /// treats every one as needing none, broadcast included.
+    fn goes_up_whole(&self, frame: &OwnedFrame) -> bool {
+        let header = frame.header;
+        let for_us =
+            header.destination == self.config.station || header.destination == BROADCAST_MAC;
+        for_us
+            && (header.frame_type == FrameType::TestResponse
+                || (header.frame_type.is_proprietary() && frame.length >= 2))
     }
 
     /// A station answered this station's Poll For Master: it becomes the
@@ -232,7 +258,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// keeps no second frame buffer for that, and never lets the frame
     /// displace its own:
     ///
-    /// - Data that needs no reply from this station is delivered at once.
+    /// - Data that needs no reply from this station is delivered at once: an
+    ///   NPDU, a Test_Response or a proprietary frame.
     /// - A Token for this station is remembered when `keep_token` is set (the
     ///   station answers from IDLE, and goes back there) and taken up on the
     ///   way to IDLE. Otherwise this station already holds the token, and the
@@ -256,6 +283,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             FrameType::BACnetDataExpectingReply if broadcast => {
                 self.deliver(frame, None);
             }
+            _ if self.goes_up_whole(frame) => {
+                self.deliver(frame, None);
+            }
             FrameType::Token if for_us && keep_token => self.pending_token = true,
             FrameType::Token
             | FrameType::PollForMaster
@@ -274,9 +304,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Clause 9.5.6.4 takes any reply-type frame addressed to this station as
     /// the answer, whichever station sent it; the source is not compared with
     /// the station that was asked.
+    ///
+    /// A data reply or a Test_Response is passed up (ReceivedReply). Any
+    /// other frame, a proprietary one included since the core knows no
+    /// proprietary reply, is unexpected: the station goes to IDLE without
+    /// passing it up, and drops the token (ReceivedUnexpectedFrame).
     fn process_wait_for_reply(&mut self, frame: OwnedFrame, now: Instant) -> Result<(), CoreError> {
-        // A Test_Response ends the wait too. It is not delivered yet: the
-        // core has no indication for test frames.
         let is_reply = frame.header.destination == self.config.station
             && matches!(
                 frame.header.frame_type,
@@ -289,26 +322,35 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             self.protocol_deadline = Some(now + self.config.t_no_token);
             return Ok(());
         }
-        if frame.header.frame_type == FrameType::BACnetDataNotExpectingReply {
+        if frame.header.frame_type != FrameType::ReplyPostponed {
             self.deliver(&frame, None);
         }
         self.set_state(MasterState::DoneWithToken);
         self.drive_token(now)
     }
 
+    /// Queue a frame's data for the layers above: BACnet data as an NPDU,
+    /// anything else whole. Return whether it was queued; data that finds
+    /// every delivery slot full is dropped and counted.
     pub(super) fn deliver(&mut self, frame: &OwnedFrame, request_id: Option<RequestId>) -> bool {
-        match self.actions.enqueue_delivery(
-            frame.header.source,
-            frame.header.destination,
-            &frame.data[..frame.length],
-            request_id,
-        ) {
+        let header = frame.header;
+        match self
+            .actions
+            .enqueue_delivery(header, &frame.data[..frame.length], request_id)
+        {
             Ok(()) => {
-                self.counters.record_npdu_delivered();
+                if matches!(
+                    header.frame_type,
+                    FrameType::BACnetDataExpectingReply | FrameType::BACnetDataNotExpectingReply
+                ) {
+                    self.counters.record_npdu_delivered();
+                } else {
+                    self.counters.record_frame_delivered();
+                }
                 true
             }
             Err(_) => {
-                self.counters.record_action_drop();
+                self.counters.record_delivery_drop();
                 false
             }
         }

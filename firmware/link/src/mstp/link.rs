@@ -1,15 +1,23 @@
 //! The core part: one token exchange with a peer, driven the way a UART
 //! adapter would drive it, then the capacity paths.
 
-use core::mem::MaybeUninit;
-
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
     Action, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority, QueueRejectReason,
     ReplyDecision, RequestId, TransmitId,
 };
 
-use super::{Core, Queues, Summary, UNICAST_SLOTS, WHO_IS};
+use super::{Actions, Core, Queues, Summary, UNICAST_SLOTS, WHO_IS};
+
+/// What the core borrows for its lifetime.
+pub(crate) struct Storage<'m> {
+    /// Its receive storage.
+    pub(crate) rx: &'m mut [u8],
+    /// Its transmit queues.
+    pub(crate) queues: &'m mut Queues,
+    /// Its action buffers.
+    pub(crate) actions: &'m mut Actions,
+}
 
 /// This station.
 const STATION: u8 = 1;
@@ -51,24 +59,23 @@ impl Clock {
     }
 }
 
-/// Build the core in `slot`, run the token exchange, then the capacity
+/// Build the core over `storage`, run the token exchange, then the capacity
 /// paths, offering `oversize` as the NPDU too long for a standard frame.
-pub(crate) fn run<'rx>(
-    rx: &'rx mut [u8],
-    wire: &mut [u8],
-    oversize: &[u8],
-    slot: &mut MaybeUninit<Core<'rx>>,
-    summary: &mut Summary,
-) {
+pub(crate) fn run(storage: Storage<'_>, wire: &mut [u8], oversize: &[u8], summary: &mut Summary) {
     let mut clock = Clock {
         now: Instant::ZERO,
         octet: CONFIG.octet_time(),
     };
-    let Ok(built) = MasterCore::new(CONFIG, Queues::new(), rx, clock.now) else {
+    let Storage {
+        rx,
+        queues,
+        actions,
+    } = storage;
+    let Ok(mut core) = MasterCore::new(CONFIG, queues, rx, actions, clock.now) else {
         summary.error();
         return;
     };
-    let core = slot.write(built);
+    let core = &mut core;
 
     // Something to send while holding the token.
     if core
@@ -92,10 +99,13 @@ pub(crate) fn run<'rx>(
     let reply = Frame::new(FrameType::ReplyToPollForMaster, STATION, PEER, &[]);
     receive(core, wire, reply, &mut clock, summary);
     wait(core, &mut clock, summary);
-    // The peer uses the token: a broadcast shows it was taken up, then a
-    // request that this station answers at once.
+    // The peer uses the token: a broadcast shows it was taken up, then it
+    // announces itself with a broadcast Test_Response, then a request that
+    // this station answers at once.
     let broadcast = Frame::new(FrameType::BACnetDataNotExpectingReply, 0xFF, PEER, &WHO_IS);
     receive(core, wire, broadcast, &mut clock, summary);
+    let announce = Frame::new(FrameType::TestResponse, 0xFF, PEER, &[]);
+    receive(core, wire, announce, &mut clock, summary);
     let request = Frame::new(
         FrameType::BACnetDataExpectingReply,
         STATION,
@@ -205,6 +215,10 @@ fn drain(core: &mut Core<'_>, clock: &mut Clock, summary: &mut Summary) {
                     Some(id) => Then::Answer(id),
                     None => Then::Nothing,
                 }
+            }
+            Action::DeliverFrame { .. } => {
+                summary.frames_delivered += 1;
+                Then::Nothing
             }
         };
         match then {

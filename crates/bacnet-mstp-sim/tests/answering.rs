@@ -122,7 +122,7 @@ fn a_broadcast_request_is_delivered_and_left_unanswered() {
         let delivered: Vec<bool> = sim
             .deliveries(station)
             .iter()
-            .filter(|delivery| delivery.npdu == npdu(true, 2))
+            .filter(|delivery| delivery.data == npdu(true, 2))
             .map(|delivery| delivery.request)
             .collect();
         assert_eq!(delivered, [false], "station {station}");

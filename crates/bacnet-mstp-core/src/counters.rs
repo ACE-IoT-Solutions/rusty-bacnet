@@ -131,12 +131,22 @@ pub struct MstpCounters {
     pub frame_aborts: u32,
     /// Valid MS/TP frames received.
     pub frames_received: u32,
+    /// Valid frames received whose source address is this station's, outside
+    /// this station's own transmissions, whose echo is ignored. Each is
+    /// evidence that another station uses the same address. Clause 9 gives
+    /// such a frame no rule of its own, so it is otherwise handled as usual.
+    pub own_address_frames: u32,
     /// NPDUs delivered to the host/application.
     pub npdus_delivered: u32,
+    /// Frames delivered whole to the host: Test_Response and proprietary
+    /// frames ([`Action::DeliverFrame`](crate::Action::DeliverFrame)).
+    pub frames_delivered: u32,
     /// Frames accepted for transmission and completed on the wire.
     pub frames_transmitted: u32,
-    /// Actions dropped because the bounded action ring was full.
-    pub action_drops: u32,
+    /// Deliveries dropped because every delivery slot of the core's
+    /// [`ActionBuffers`](crate::ActionBuffers) was full. Control actions
+    /// are never dropped.
+    pub delivery_drops: u32,
     /// Cumulative time spent with driver-enable asserted, in microseconds.
     pub de_assertion_us: u64,
     /// Unicast queue counters.
@@ -221,9 +231,19 @@ impl MstpCounters {
         increment(&mut self.frames_received);
     }
 
+    /// Record a received frame from this station's address.
+    pub(crate) fn record_own_address_frame(&mut self) {
+        increment(&mut self.own_address_frames);
+    }
+
     /// Record an NPDU delivered to the host/application.
     pub(crate) fn record_npdu_delivered(&mut self) {
         increment(&mut self.npdus_delivered);
+    }
+
+    /// Record a frame delivered whole to the host.
+    pub(crate) fn record_frame_delivered(&mut self) {
+        increment(&mut self.frames_delivered);
     }
 
     /// Record a frame whose final octet was transmitted on the wire.
@@ -231,9 +251,9 @@ impl MstpCounters {
         increment(&mut self.frames_transmitted);
     }
 
-    /// Record an action-ring drop.
-    pub(crate) fn record_action_drop(&mut self) {
-        increment(&mut self.action_drops);
+    /// Record a delivery dropped for want of a slot.
+    pub(crate) fn record_delivery_drop(&mut self) {
+        increment(&mut self.delivery_drops);
     }
 
     /// Add a completed DE assertion interval.

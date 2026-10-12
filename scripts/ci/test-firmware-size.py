@@ -35,6 +35,13 @@ FUNC, OBJECT = 2, 1
 # A v0-mangled function in .text, and one in core::fmt.
 SCENARIO = "_RNvNtCs1_13firmware_link4mstp3run"
 FMT_WRITE = "_RNvNtCs2_4core3fmt5write"
+# 64-bit division: compiler-builtins' Rust implementation and the C-ABI
+# routines in front of it, as a 32-bit ARM or RISC-V image links them.
+U64_DIV_REM = "_RNvNtNtCs3_17compiler_builtins3int19specialized_div_rem11u64_div_rem"
+DIV64_ROUTINES = ("__aeabi_uldivmod", "__udivdi3", "__umoddi3")
+# 32-bit division, which a part without a divide instruction links too.
+U32_DIV_REM = "_RNvNtNtCs3_17compiler_builtins3int19specialized_div_rem11u32_div_rem.llvm.1"
+DIV32_ROUTINES = ("__aeabi_uidivmod", "__udivsi3")
 # A static in .bss.
 CORE = "_RNvNtCs1_13firmware_link5image4CORE"
 
@@ -102,6 +109,7 @@ bss = 400
 flash = 4240   # vector table, text, rodata and data
 ram = 416
 fmt_functions = 0
+div64_functions = 0
 """
 
 
@@ -125,7 +133,7 @@ class FirmwareSizeTests(unittest.TestCase):
         return status, out.getvalue(), err.getvalue()
 
     def test_sections_totals_and_nobits(self):
-        loaded, sizes, _, fmt = fs.measure(self.write("image", elf()))
+        loaded, sizes, _, listed = fs.measure(self.write("image", elf()))
         self.assertEqual(
             {key: sizes[key] for key in ("text", "rodata", "data", "bss")},
             {"text": 3000, "rodata": 200, "data": 16, "bss": 400},
@@ -140,7 +148,7 @@ class FirmwareSizeTests(unittest.TestCase):
         self.assertEqual(totals[".data"], ("flash", "ram"))
         self.assertEqual(totals[".text.dummy"], ())
         self.assertEqual(totals[".stack"], ())
-        self.assertEqual(fmt, [])
+        self.assertEqual(listed, {"fmt_functions": [], "div64_functions": []})
 
     def test_heap_and_uninit_count_toward_ram(self):
         # riscv-rt's .heap is `_heap_size` octets reserved on purpose, and
@@ -156,10 +164,10 @@ class FirmwareSizeTests(unittest.TestCase):
 
     def test_64_bit_elf(self):
         symbols = ((SCENARIO, 100, FUNC, ".text"), (FMT_WRITE, 40, FUNC, ".text"))
-        _, sizes, read, fmt = fs.measure(self.write("image", elf(symbols, wide=True)))
+        _, sizes, read, listed = fs.measure(self.write("image", elf(symbols, wide=True)))
         self.assertEqual((sizes["text"], sizes["flash"], sizes["ram"]), (3000, 4240, 416))
         self.assertEqual([s[:2] for s in read[1:]], [(SCENARIO, 100), (FMT_WRITE, 40)])
-        self.assertEqual(fmt, ["core::fmt::write"])
+        self.assertEqual(listed["fmt_functions"], ["core::fmt::write"])
 
     def test_within_budget_passes(self):
         status, out, err = self.run_main(
@@ -196,6 +204,30 @@ class FirmwareSizeTests(unittest.TestCase):
         self.assertIn("core::fmt function: core::fmt::write", out)
         self.assertIn("fmt_functions is 1, over its budget of 0", err)
 
+    def test_64_bit_division_fails(self):
+        symbols = [(SCENARIO, 100, FUNC, ".text"), (U64_DIV_REM, 866, FUNC, ".text")]
+        symbols += [(name, 20, FUNC, ".text") for name in DIV64_ROUTINES]
+        status, out, err = self.run_main(
+            self.write("image", elf(symbols)), self.write("budget.toml", BUDGET), "target.image")
+        self.assertEqual(status, 1)
+        self.assertIn(
+            "64-bit division function: compiler_builtins::int::specialized_div_rem::u64_div_rem",
+            out,
+        )
+        for name in DIV64_ROUTINES:
+            self.assertIn(f"64-bit division function: {name}", out)
+        self.assertIn("div64_functions is 4, over its budget of 0", err)
+        self.assertIn("divide in 32 bits", err)
+
+    def test_32_bit_division_is_not_counted(self):
+        symbols = [(SCENARIO, 100, FUNC, ".text"), (U32_DIV_REM, 390, FUNC, ".text")]
+        symbols += [(name, 16, FUNC, ".text") for name in DIV32_ROUTINES]
+        image = self.write("image", elf(symbols))
+        _, sizes, _, listed = fs.measure(image)
+        self.assertEqual((sizes["div64_functions"], listed["div64_functions"]), (0, []))
+        status, _, err = self.run_main(image, self.write("budget.toml", BUDGET), "target.image")
+        self.assertEqual(status, 0, err)
+
     def test_missing_symtab_fails_closed(self):
         status, _, err = self.run_main(
             self.write("image", elf(symtab=False)), self.write("budget.toml", BUDGET),
@@ -226,7 +258,7 @@ class FirmwareSizeTests(unittest.TestCase):
         self.assertEqual(
             out.splitlines(),
             ["[target.image]", "text = 3360", "rodata = 224", "data = 32", "bss = 448",
-             "flash = 4752", "ram = 480", "fmt_functions = 0"],
+             "flash = 4752", "ram = 480", "fmt_functions = 0", "div64_functions = 0"],
         )
 
     def test_demangle_and_crate(self):

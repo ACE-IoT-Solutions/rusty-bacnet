@@ -2,7 +2,8 @@
 //!
 //! On a bare-metal target this is a `no_main` image without a global
 //! allocator. Its reset entry runs [`firmware_link::mstp::run`] once, with
-//! the scenario's storage and the core in statics. Its inputs and its
+//! the scenario's storage in a static; the core, which borrows its large
+//! buffers from that storage, is built on the stack. Its input and its
 //! summary pass through [`core::hint::black_box`], so none of the work can
 //! be optimized away, and then it loops. Nothing runs it: building it proves
 //! that the codec and the core link without `std` or an allocator, and
@@ -11,7 +12,7 @@
 //! the scenario there.
 //!
 //! The only `unsafe` code is what the runtimes need: the code their entry
-//! macros generate, and on RISC-V one block that borrows the statics, which
+//! macros generate, and on RISC-V one block that borrows the static, which
 //! cortex-m-rt's macro does safely on Cortex-M.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
@@ -20,17 +21,15 @@
 #[cfg(all(target_os = "none", target_arch = "arm"))]
 mod image {
     use core::hint::black_box;
-    use core::mem::MaybeUninit;
 
-    use firmware_link::mstp::{run, Core, Memory};
+    use firmware_link::mstp::{run, Memory};
 
-    /// The reset entry. cortex-m-rt's macro turns each `static mut` below
+    /// The reset entry. cortex-m-rt's macro turns the `static mut` below
     /// into a `&'static mut`, which is sound because the entry runs once.
     #[cortex_m_rt::entry]
     fn main() -> ! {
         static mut MEMORY: Memory = Memory::new();
-        static mut CORE: MaybeUninit<Core<'static>> = MaybeUninit::uninit();
-        black_box(run(black_box(MEMORY), black_box(CORE)));
+        black_box(run(black_box(MEMORY)));
         loop {
             core::hint::spin_loop();
         }
@@ -41,29 +40,27 @@ mod image {
 #[cfg(all(target_os = "none", target_arch = "riscv32"))]
 mod image {
     use core::hint::black_box;
-    use core::mem::MaybeUninit;
     use core::ptr::addr_of_mut;
 
-    use firmware_link::mstp::{run, Core, Memory};
+    use firmware_link::mstp::{run, Memory};
 
     static mut MEMORY: Memory = Memory::new();
-    static mut CORE: MaybeUninit<Core<'static>> = MaybeUninit::uninit();
 
     /// The reset entry. riscv-rt's macro has no counterpart to cortex-m-rt's
-    /// `static mut` handling, so the statics are borrowed by hand.
+    /// `static mut` handling, so the static is borrowed by hand.
     #[riscv_rt::entry]
     fn main() -> ! {
-        // SAFETY: these two `&mut` are the only references to the statics
-        // for the rest of the program. The image targets single-hart parts
-        // (which is why riscv-rt's `single-hart` feature, which only drops
-        // its multi-hart gate, is on), so one hart exists, its startup code
+        // SAFETY: this `&mut` is the only reference to the static for the
+        // rest of the program. The image targets single-hart parts (which is
+        // why riscv-rt's `single-hart` feature, which only drops its
+        // multi-hart gate, is on), so one hart exists, its startup code
         // calls `main` once, and `main` never returns. No interrupt handler
         // can run either: the startup code writes 0 to `mie`, `mstatus.MIE`
         // is clear at reset, and nothing here enables either. Nothing else
-        // names the statics.
+        // names the static.
         #[allow(unsafe_code)]
-        let (memory, core) = unsafe { (&mut *addr_of_mut!(MEMORY), &mut *addr_of_mut!(CORE)) };
-        black_box(run(black_box(memory), black_box(core)));
+        let memory = unsafe { &mut *addr_of_mut!(MEMORY) };
+        black_box(run(black_box(memory)));
         loop {
             core::hint::spin_loop();
         }

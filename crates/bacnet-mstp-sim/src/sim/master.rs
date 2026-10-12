@@ -1,13 +1,13 @@
 //! A master node: its core, the adapter that runs the core's actions, and
 //! the application behind it.
 
-use bacnet_mstp_codec::MAX_STANDARD_FRAME_LENGTH;
+use bacnet_mstp_codec::{FrameType, MAX_STANDARD_FRAME_LENGTH};
 use bacnet_mstp_core::{
     Action, AllocQueues, CoreError, Direction, Instant, MasterCore, MasterState, MstpCounters,
     NetworkPriority, QueueRejectReason, ReceiveError, ReplyDecision, RequestId, TransmitId,
 };
 
-use super::{describe, leak_storage, Event, NodeKind, Sim, SimCore};
+use super::{describe, leak_action_buffers, leak_storage, Event, NodeKind, Sim, SimCore};
 use crate::event::Class;
 use crate::line::Driver;
 use crate::report::{Delivery, ViolationKind};
@@ -87,6 +87,7 @@ impl MasterNode {
             self.spec.config,
             queues,
             leak_storage(MAX_STANDARD_FRAME_LENGTH),
+            leak_action_buffers(),
             now,
         )
         .expect("a valid master spec");
@@ -131,7 +132,9 @@ enum Effect {
     Deliver {
         source: u8,
         destination: u8,
-        npdu: Vec<u8>,
+        /// `None` for an NPDU, else the type of a frame delivered whole.
+        frame_type: Option<FrameType>,
+        data: Vec<u8>,
         request: Option<RequestId>,
     },
 }
@@ -169,8 +172,21 @@ fn drain(core: &mut SimCore) -> Result<Vec<Effect>, usize> {
             } => Effect::Deliver {
                 source,
                 destination,
-                npdu: npdu.to_vec(),
+                frame_type: None,
+                data: npdu.to_vec(),
                 request: request_id,
+            },
+            Action::DeliverFrame {
+                frame_type,
+                source,
+                destination,
+                data,
+            } => Effect::Deliver {
+                source,
+                destination,
+                frame_type: Some(frame_type),
+                data: data.to_vec(),
+                request: None,
             },
         };
         effects.push(effect);
@@ -320,8 +336,9 @@ impl Sim {
         }
     }
 
-    /// Counters that must not move: adapter errors and action drops ever,
-    /// and deadline misses while the adapter is punctual.
+    /// Counters that must not move: adapter errors, delivery drops and
+    /// frames from the station's own address ever, and deadline misses while
+    /// the adapter is punctual.
     fn check_counters(&mut self, node: usize, counters: &MstpCounters, punctual: bool) {
         let station = self.nodes[node].station;
         let master = self.master_mut(node).expect("a master");
@@ -331,8 +348,16 @@ impl Sim {
         if counters.adapter_errors != 0 {
             wrong.push(format!("adapter_errors {}", counters.adapter_errors));
         }
-        if counters.action_drops != 0 {
-            wrong.push(format!("action_drops {}", counters.action_drops));
+        if counters.delivery_drops != 0 {
+            wrong.push(format!("delivery_drops {}", counters.delivery_drops));
+        }
+        // Every simulated station has its own address, so a frame from this
+        // one's is its own echo leaking past the adapter.
+        if counters.own_address_frames != 0 {
+            wrong.push(format!(
+                "own_address_frames {}",
+                counters.own_address_frames
+            ));
         }
         if punctual && new_misses != 0 {
             wrong.push(format!("{new_misses} more deadline_misses"));
@@ -404,40 +429,44 @@ impl Sim {
                 Effect::Deliver {
                     source,
                     destination,
-                    npdu,
+                    frame_type,
+                    data,
                     request,
-                } => self.deliver(node, source, destination, npdu, request),
+                } => {
+                    let delivery = Delivery {
+                        at: self.now,
+                        source,
+                        destination,
+                        frame_type,
+                        data,
+                        request: request.is_some(),
+                    };
+                    self.deliver(node, delivery, request);
+                }
             }
         }
     }
 
     /// The application receives an NPDU and, for a request, plans its answer.
-    fn deliver(
-        &mut self,
-        node: usize,
-        source: u8,
-        destination: u8,
-        npdu: Vec<u8>,
-        request: Option<RequestId>,
-    ) {
+    fn deliver(&mut self, node: usize, delivery: Delivery, request: Option<RequestId>) {
         let now = self.now;
         let station = self.nodes[node].station;
+        let source = delivery.source;
+        let destination = delivery.destination;
+        let kind = match delivery.frame_type {
+            None => String::new(),
+            Some(frame_type) => format!(" {frame_type:?} frame"),
+        };
         self.note(
             Who::Station(station),
             TraceKind::Action(format!(
-                "Deliver {source}->{destination} {} octets{}",
-                npdu.len(),
+                "Deliver{kind} {source}->{destination} {} octets{}",
+                delivery.data.len(),
                 if request.is_some() { " (request)" } else { "" }
             )),
         );
         let master = self.master_mut(node).expect("a master");
-        master.deliveries.push(Delivery {
-            at: now,
-            source,
-            destination,
-            npdu,
-            request: request.is_some(),
-        });
+        master.deliveries.push(delivery);
         let Some(request) = request else {
             return;
         };

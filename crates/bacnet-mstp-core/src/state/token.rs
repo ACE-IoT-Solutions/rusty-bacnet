@@ -21,11 +21,16 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             + self.config.t_no_token
             + scale(self.config.t_slot, u64::from(self.config.station));
         let mut start = first;
-        if now >= start + self.config.t_slot && cycle != Duration::ZERO {
-            let cycles = (now - start).as_micros() / cycle.as_micros();
-            start += scale(cycle, cycles);
-            if now >= start + self.config.t_slot {
-                start += cycle;
+        // The window that `now` falls in, or the next one: whole cycles after
+        // the first. Validation fixes T_slot at 10 ms and caps Max_Master at
+        // 127, so a cycle is at most 1.28 s, within `rem_short`'s bound, and
+        // no 64-bit division is needed.
+        if now >= first + self.config.t_slot {
+            if let Some(offset) = (now - first).rem_short(cycle) {
+                start = now - offset;
+                if offset >= self.config.t_slot {
+                    start += cycle;
+                }
             }
         }
         if now < start {
