@@ -23,7 +23,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
 | Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
-| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator and checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
+| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator, and the APDU image with one, checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`); also the [`no_std` crates](#no_std-checks)' tests and doctests with `alloc` and without `std` | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`), the `no_std` builds included |  | ✓ |  | ✓ |
@@ -152,7 +152,7 @@ proves all of that; each check covers a part.
 | `cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets` | Clippy | The three crates' tests with `alloc` and without `std`, which the Test job runs, are lint-clean too |
 | The `alloc` tests and doctests | Test | The three crates' tests and doctests with `alloc` and without `std`: the code a bare-metal build compiles. The tests link `std`; `check-no-std.sh` shows the code needs none |
 | `scripts/ci/check-msrv.sh` | MSRV | The three crates with `alloc` and without `std` build at the MSRV, in a run of their own, since the hosted crates turn `std` back on in the main run |
-| [Firmware link test](#firmware-link-test) | Clippy, `FIRMWARE_TARGETS` | The MS/TP and B/IP stacks link into bare-metal images with no allocator, within their size budgets |
+| [Firmware link test](#firmware-link-test) | Clippy, `FIRMWARE_TARGETS` | The MS/TP and B/IP stacks link into bare-metal images with no allocator, and `bacnet-encoding` and `bacnet-services` into one with an allocator, each within its size budget |
 
 **ARMv6-M and `bytes`.** `bytes` needs atomic compare-and-swap, which
 `thumbv6m-none-eabi` lacks. With its `extra-platforms` feature it takes that
@@ -176,7 +176,9 @@ test and the harness's target table both generalised.
 - **No critical-section implementation.** Clippy doesn't link, so the
   harness provides none. A firmware that links these crates on ARMv6-M picks
   its own backend and, for `critical-section`, links an implementation such
-  as `cortex-m`'s `critical-section-single-core`.
+  as `cortex-m`'s `critical-section-single-core`. The
+  [firmware link test](#firmware-link-test)'s apdu image links one of its
+  own, and its link fails without it.
 - **Workspace.** Like the [firmware link test](#firmware-link-test), the
   harness is a workspace member outside `default-members`. On a host it is an
   empty `no_std` crate with no dependencies, so host builds, clippy, rustdoc
@@ -197,19 +199,26 @@ cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-defa
 ### Firmware link test
 
 `check-no-std.sh` runs clippy on the `no_std` crates, and clippy never links.
-The firmware link test (#1626) does. `firmware/link` (the `firmware-link`
-crate, `publish = false`) builds two `#![no_main]` bare-metal images with no
-global allocator, one per stack, because code can't be credited to a crate
+The firmware link test (#1626, #1635) does. `firmware/link` (the
+`firmware-link` crate, `publish = false`) builds three `#![no_main]`
+bare-metal images, one per stack, because code can't be credited to a crate
 reliably within one LTO image:
 
 - `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
-  features, plus the core's `heapless` queues);
+  features, plus the core's `heapless` queues), with no global allocator;
 - `bip` links `bacnet-bip-codec` (default features, plus its `heapless`
-  sink), both its B/IP and its B/IPv6 messages.
+  sink), both its B/IP and its B/IPv6 messages, with no global allocator;
+- `apdu` links `bacnet-encoding` and `bacnet-services` (and through them
+  `bacnet-types`) without default features and with `alloc`, the way a
+  firmware uses them, with a global allocator over a fixed arena.
 
-A use of `alloc` anywhere in an image fails its build with "no global memory
-allocator found", and a symbol that only a hosted target provides fails the
-link.
+A use of `alloc` anywhere in `mstp` or `bip` fails its build with "no global
+memory allocator found". In any image, a symbol that only a hosted target
+or the firmware provides fails the link: an atomic library call, or a
+critical section that nothing implements. A compare-and-swap on ARMv6-M or
+RV32IMC fails earlier, at compile time: `core` has no such method on those
+targets, so a crate that needs one builds only with a backend such as
+`portable-atomic`'s.
 
 - **The scenarios.** Each image's scenario is one `no_std` function in the
   crate's lib that returns a summary of what it saw:
@@ -234,14 +243,65 @@ link.
     Annex U.2 layouts, a Forwarded-NPDU's origin, and B/IPv6 rejections,
     among them a B/IP type octet, the deleted function 0x0B and an
     address of the wrong length.
+  - `apdu::run` follows a client that finds a device behind a router and
+    reads its analog input: a Who-Is, the device's I-Am as the router
+    passes it on, a ReadProperty request for Present_Value and the
+    ComplexACK that answers it. It encodes each message's service
+    parameters, APDU and NPDU into `BytesMut` buffers, compares the NPDU
+    with a datagram written by hand from the Clause 6 and 20.1 layouts, and
+    decodes it back through all three layers. It also decodes each
+    hand-written datagram from a heap copy and keeps what it carries, and
+    decodes the ACK's value. Then it takes rejection paths: an NPDU of
+    protocol version 2, and on encode an NPDU to DNET 0 and an APDU size
+    the header can't express, each with the error kind it should draw; and
+    five malformed APDUs and service parameters, for each of which it
+    records how the library classifies the fault, the Reject reason the
+    error maps to. Two of them, a Who-Is and an I-Am, are unconfirmed, so
+    no Reject would be sent for them.
 
-  The host tests `firmware/link/tests/mstp.rs` and `tests/bip.rs` run them
-  and compare each whole summary, so the behaviour is checked natively, in
-  every `--workspace` test run on Linux, macOS and Windows. Each image's
-  reset entry calls its scenario, passing the inputs and the summary
-  through `core::hint::black_box`. Nothing runs the images, under an
-  emulator or otherwise: building them proves that they link, and measures
-  them.
+  The host tests `firmware/link/tests/mstp.rs`, `tests/bip.rs` and
+  `tests/apdu.rs` run them and compare each whole summary, so the
+  behaviour is checked natively, in every `--workspace` test run on Linux,
+  macOS and Windows. Each image's reset entry calls its scenario, passing
+  the inputs and the summary through `core::hint::black_box`. Nothing runs
+  the images, under an emulator or otherwise: building them proves that
+  they link, and measures them.
+- **The apdu image's allocator and atomics.** A library never chooses
+  these; the image does, as a firmware would, and only on bare-metal
+  targets (a host build uses std's allocator):
+  - **Allocator:** `embedded-alloc`'s linked-list first fit (`LlffHeap`,
+    without its TLSF allocator) over a static arena of
+    `firmware_link::apdu::ARENA` octets, 1 KiB. `tests/apdu.rs` runs the
+    scenario a second time in that allocator (`linked_list_allocator`, which
+    `LlffHeap` wraps) over an arena of the same size, and checks that it
+    fits, succeeds, frees everything and peaks at no more than half the
+    arena; its peak, which nextest prints, is 312 octets on a 64-bit host,
+    whose blocks are no smaller than a 32-bit target's.
+  - **Critical section:** the allocator locks its heap with one, on every
+    target, and both kinds suit a part with one core: they mask interrupts
+    and put back the mask they found. On RISC-V the image takes `riscv`'s
+    `critical-section-single-hart`. On Cortex-M it implements its own with
+    PRIMASK, as `cortex-m`'s `critical-section-single-core` does, because
+    `cortex-m` depends on the unmaintained `bare-metal`
+    (RUSTSEC-2026-0110), which Cargo Deny refuses. PRIMASK leaves NMI and
+    HardFault unmasked, so their handlers must stay out of critical
+    sections; the image's default handlers only loop.
+  - **Atomics:** `bytes` needs compare-and-swap, which ARMv6-M and RV32IMC
+    lack. On targets without it (`cfg(not(target_has_atomic = "ptr"))`), the
+    image turns on `bytes`' `extra-platforms` feature and
+    `portable-atomic`'s `critical-section` backend, as
+    `firmware/nostd-harness` does for the lint, and the same critical
+    section serves both. Nothing links an atomic library call: on ARMv6-M,
+    `bytes`' reference counts compile to that critical section around a
+    plain load and store.
+
+  Without the global allocator the image fails to build with "no global
+  memory allocator found"; without the critical section it fails to link,
+  missing `_critical_section_1_0_acquire` and `_release`. Its `unsafe`
+  code beyond the runtimes' is the call that hands the allocator its arena
+  and the Cortex-M critical section. The allocator and the critical section
+  add three packages to `Cargo.lock`: `embedded-alloc`,
+  `linked_list_allocator` and, for the host test's lock, `spinning_top`.
 - **Targets.** `thumbv7m-none-eabi` (Cortex-M3), `thumbv6m-none-eabi`
   (Cortex-M0/M0+) and `riscv32imc-unknown-none-elf` (RV32IMC, the ESP32-C3
   class), in `FIRMWARE_TARGETS` in `ci.yml`. They share one generic memory
@@ -255,20 +315,31 @@ link.
   setting and these targets' default. Were that ever to change, the worst
   case is a panic that aborts, which is what happens today. cortex-m-rt
   already drops ARM's unwind tables. The images' only `unsafe` code is in the runtimes' entry
-  macros and, on RISC-V, one block per image that borrows its statics, which
-  cortex-m-rt's macro does safely.
+  macros; on RISC-V, one block in each of `mstp` and `bip` that borrows its
+  statics, which cortex-m-rt's macro does safely; and the apdu image's
+  hand-over of its arena and its Cortex-M critical section.
 - **Workspace.** The crate is a workspace member outside `default-members`,
   like the [samples](#samples). It shares `Cargo.lock`, so Cargo Deny and
-  Cargo Audit cover the runtime crates; it follows `[workspace.lints]`; and it
+  Cargo Audit cover the runtime crates and the apdu image's allocator; it
+  follows `[workspace.lints]`; and it
   builds with the root `Cargo.toml`'s `firmware` profile (release with
   `opt-level = "z"`, LTO, one codegen unit and `panic = "abort"`), since
   cargo reads profiles only from the workspace root. On a host the binaries
-  are empty stubs and the runtimes aren't built, so `--workspace` builds,
-  clippy, rustdoc and tests work as before.
+  are empty stubs and neither the runtimes nor the apdu image's allocator
+  and critical section are built, so `--workspace` builds, clippy, rustdoc
+  and tests work as before.
+- **The `alloc` feature.** The crate's `alloc` feature brings in the
+  `apdu` scenario, the apdu image and their dependencies, and is on by
+  default, so host builds, clippy, rustdoc and tests cover them. It links
+  `alloc` into the crate's lib, so `mstp` and `bip` build with
+  `--no-default-features`: a bare-metal build of them with the feature on
+  fails, as it should, with "no global memory allocator found".
 - **The check.** `scripts/ci/check-firmware-link.sh` runs, per target,
-  clippy on the images' code (a host build compiles it out), the
-  `firmware`-profile build, and `scripts/ci/firmware_size.py` for each image
-  against its `[<target>.<image>]` table in `firmware/link/size-budget.toml`.
+  clippy on the images' code (a host build compiles it out) and the
+  `firmware`-profile build, once without the `alloc` feature for `mstp` and
+  `bip` and once with it for `apdu`, then `scripts/ci/firmware_size.py`
+  for each image against its `[<target>.<image>]` table in
+  `firmware/link/size-budget.toml`.
   The helper reads the ELF itself, so it needs no binutils. It prints:
   - every loaded section and which total it counts toward;
   - `.text`, `.rodata`, `.data`, `.bss` and two totals against their
@@ -292,33 +363,49 @@ link.
   `__udivdi3`, `__umoddi3` and similar entry points to it. These targets
   have no 64-bit divide instruction, so a 64-bit division by a runtime
   value costs about 0.9 KB, which the budgets' headroom would otherwise
-  absorb; the MS/TP core divides only in 32 bits (#1618). It also fails
+  absorb; the MS/TP core divides only in 32 bits (#1618). The apdu image
+  is the exception to both zeros. Its libraries build their error messages
+  with `format!`, which links 15 `core::fmt` functions (about 2.7 KB of
+  `.text` on `thumbv7m-none-eabi`), and on `thumbv6m-none-eabi`, which has
+  no multiply with a 64-bit product, formatting a `u64` divides by a
+  constant through the 64-bit division routine (3 functions). Its budget
+  holds both counts at what it links today, with no headroom, so any new
+  formatting or division function still fails the check. It also fails
   when the image has no function symbols to look for that code in: the
   images must not be stripped. A size more than 20% under its budget gets a
-  notice to tighten it, not a failure. `scripts/ci/test-firmware-size.py`
+  notice to tighten it, not a failure, and so does a count under its limit,
+  so a ceiling such as the apdu image's 15 `core::fmt` functions comes
+  down once the code behind it goes. `scripts/ci/test-firmware-size.py`
   tests the helper on small ELF files it builds itself, in the Lint job. CI
   runs the check in the Clippy job, after the `no_std` check, which already
   sets up bare-metal targets, rather than in a job of its own that would
   install the toolchain again for builds that take seconds.
 - **What `.text` holds.** Each image's `.text` includes its scenario, not
   just the stack it links. The check's by-crate list shows the split: on
-  `thumbv7m-none-eabi`, the MS/TP image's 17.8 KB is about 5.7 KB of
+  `thumbv7m-none-eabi`, the MS/TP image's 17.9 KB is about 5.7 KB of
   `bacnet-mstp-core`, 5.7 KB of the scenario (with the core code it
   inlines), 3.5 KB of compiler-builtins and startup code (memory copies
   and fills, and the reset handler; the list shows the unmangled part
-  separately) and 2.6 KB of `bacnet-mstp-codec`, about 1.2 KB of it the
+  separately) and 2.7 KB of `bacnet-mstp-codec`, about 1.3 KB of it the
   COBS and CRC-32K of extended frames, which its stream decoder and
   encoder can reach though the scenario sends none. Only `thumbv6m-none-eabi`,
   which has no divide instruction, also links compiler-builtins' 32-bit
-  multiply and divide routines.
-- **RAM.** The scenarios' buffers are statics, so `.bss` measures them. The
-  MS/TP image keeps everything large the core borrows in its static, the
+  multiply and divide routines. The apdu image's 37.5 KB on
+  `thumbv7m-none-eabi` is about 13 KB of `bacnet-encoding`, 8.6 KB of the
+  scenario with the library code it inlines, 3.7 KB of `core` (formatting
+  among it), 2.9 KB of `bacnet-services`, 2.4 KB of `bytes` and 2.1 KB of
+  compiler-builtins; about 4 KB of its 5.2 KB of `.rodata` is text, nearly
+  all of it error messages and their labels.
+- **RAM.** The `mstp` and `bip` scenarios' buffers are statics, so `.bss`
+  measures them. The MS/TP image keeps everything large the core borrows in its static, the
   firmware pattern the core's crate docs describe: receive storage, queues
   (3,360 octets for `HeaplessQueues<4, 2>`) and `ActionBuffers<1>` (1,028),
   5,544 octets in all with the codec part's buffers. The core itself, 512
   octets on these targets, is built on the stack. `.bss` doesn't count the
   stack. `cargo nextest run -p firmware-link` prints the host sizes from the
-  `ram_sizes` test.
+  `ram_sizes` test. The apdu image's `.bss` is its 1 KiB arena and the
+  allocator's 32-octet state: what its scenario builds lives in the arena
+  or on the stack, and `heap_fits_the_arena` measures the arena's use.
 - **Raising a budget.** Each budget is the measured size plus 12%, rounded
   up to 16 octets. When a change grows an image on purpose, the error
   suggests a new budget; update it and the measured sizes in the file's

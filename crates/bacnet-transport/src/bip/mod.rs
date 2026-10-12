@@ -54,6 +54,7 @@ mod ingress;
 mod io;
 mod own_broadcast;
 mod rate_limit;
+mod receive_counters;
 pub use access::AsBip;
 pub use fanout::{FanoutCounters, FanoutPolicy};
 #[cfg(test)]
@@ -76,6 +77,8 @@ async fn handle_bvll_message(
 use own_broadcast::OwnBroadcastForwarder;
 pub use rate_limit::ManagementCounters;
 use rate_limit::ManagementRateLimiter;
+pub use receive_counters::ReceiveCounters;
+use receive_counters::ReceiveDrops;
 
 /// Default BACnet/IP port (0xBAC0 = 47808).
 pub const DEFAULT_BACNET_PORT: u16 = 0xBAC0;
@@ -123,6 +126,8 @@ pub struct BipTransport {
     forwarded_group_origin_drops: Arc<std::sync::atomic::AtomicU64>,
     /// See [`Self::group_source_drops`].
     group_source_drops: Arc<std::sync::atomic::AtomicU64>,
+    /// See [`Self::receive_counters`].
+    receive_drops: Arc<ReceiveDrops>,
     /// Rate limiter for broadcast forwarding fanout.
     fanout_limiter: Arc<std::sync::Mutex<fanout::FanoutRateLimiter>>,
     /// Forwards this BBMD's own broadcasts to BDT peers and foreign devices
@@ -179,6 +184,7 @@ impl BipTransport {
             fanout_counters,
             forwarded_group_origin_drops: Arc::default(),
             group_source_drops: Arc::default(),
+            receive_drops: Arc::default(),
             fanout_limiter,
             own_broadcast: None,
             #[cfg(test)]
@@ -310,6 +316,12 @@ impl BipTransport {
     /// Return the operational broadcast forwarding fanout counters.
     pub fn fanout_counters(&self) -> FanoutCounters {
         self.fanout_counters.snapshot()
+    }
+
+    /// Return the datagrams the receive path dropped since this transport
+    /// was created, by reason (see [`ReceiveCounters`]).
+    pub fn receive_counters(&self) -> ReceiveCounters {
+        self.receive_drops.snapshot()
     }
 
     /// Set the broadcast forwarding fanout policy and rate limits.
@@ -725,6 +737,7 @@ impl TransportPort for BipTransport {
             management_limiter: Arc::clone(&self.management_limiter),
             fanout: Some(fanout_dispatcher),
             group_sources: self.group_sources(),
+            drops: Arc::clone(&self.receive_drops),
             #[cfg(test)]
             force_dbtn_forward_failure: false,
         };
@@ -883,6 +896,8 @@ mod original_tests;
 mod own_broadcast_tests;
 #[cfg(test)]
 mod rate_limit_tests;
+#[cfg(test)]
+mod receive_counters_tests;
 #[cfg(test)]
 mod response_amplification_tests;
 #[cfg(test)]

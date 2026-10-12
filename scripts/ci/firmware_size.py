@@ -16,8 +16,8 @@
 
 It exits 1 when a size or either count is over budget, when the budget
 lacks an entry, or when the image has no symbol table to look for those
-functions in. A size more than 20% under its budget gets a notice, not a
-failure. --suggest prints a budget table for the image instead, each size
+functions in. A size more than 20% under its budget, or a count under its
+limit, gets a notice, not a failure. --suggest prints a budget table for the image instead, each size
 plus 12%. Used by check-firmware-link.sh; see docs/ci.md, "Firmware link
 test".
 
@@ -295,6 +295,7 @@ def check(elf, budget_path, table):
         if size:
             print(f"  {name:<16}{size:>8}  {' and '.join(totals) or '-'}")
     print(f"  {'':<16}{'size':>8}{'budget':>8}")
+    counts = {key for key, _, _ in COUNTS}
     failed, loose = [], []
     for label, key in ROWS:
         measured, limit = sizes[key], budget[key]
@@ -302,6 +303,12 @@ def check(elf, budget_path, table):
         if measured > limit:
             failed.append(key)
             mark = "  over budget"
+        elif key in counts:
+            # A count has no headroom: any room under its limit is room a
+            # new function could take unnoticed.
+            if measured < limit:
+                loose.append(key)
+                mark = "  under its limit"
         elif limit > TOKEN and measured < limit * (1 - TIGHTEN):
             loose.append(key)
             mark = "  well under budget"
@@ -325,11 +332,19 @@ def check(elf, budget_path, table):
     # The table first, then the messages under it, when both go to one log.
     sys.stdout.flush()
     for key in loose:
-        print(
-            f"notice: {table}: {key} is {sizes[key]}, more than {TIGHTEN:.0%} under"
-            f" its budget of {budget[key]}; consider tightening it to {suggested(sizes[key])}.",
-            file=sys.stderr,
-        )
+        if key in counts:
+            print(
+                f"notice: {table}: {key} is {sizes[key]}, under its limit of {budget[key]};"
+                f" lower the limit to {sizes[key]}, so a new function can't take its place.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"notice: {table}: {key} is {sizes[key]}, more than {TIGHTEN:.0%} under"
+                f" its budget of {budget[key]}; consider tightening it to"
+                f" {suggested(sizes[key])}.",
+                file=sys.stderr,
+            )
     for key in failed:
         counted = [advice for counted, _, advice in COUNTS if counted == key]
         if counted:

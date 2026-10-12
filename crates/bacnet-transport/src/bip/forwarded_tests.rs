@@ -68,6 +68,7 @@ async fn forwarded_npdu_from_bdt_peer_uses_originating_source_mac() {
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
     let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
@@ -152,6 +153,7 @@ async fn forwarded_npdu_from_non_bdt_sender_is_rejected_without_delivery() {
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
     let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
@@ -226,6 +228,7 @@ async fn forwarded_npdu_from_directed_broadcast_peer_skips_local_rebroadcast() {
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
     let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
@@ -320,6 +323,7 @@ async fn forwarded_npdu_fdt_fanout_respects_budget_and_increments_counter() {
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
     let msg = forwarded_message((origin.0, origin.1), &[0x01, 0x00, 0xAA, 0xBB]);
 
@@ -393,6 +397,7 @@ async fn forwarded_npdu_bbmd_self_sender_is_ignored_before_delivery_and_fanout()
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
     let mut msg = forwarded_message(([192, 0, 2, 9], 47808), &[1, 0x80, 0x13, 0, 99, 1]);
     // Remote embedded origin does not make our looped-back UDP send a peer.
@@ -493,6 +498,7 @@ async fn forwarded_npdu_arriving_by_broadcast_is_not_rebroadcast_locally() {
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
     let msg = forwarded_message(([192, 0, 2, 20], 0xBAC1), &[0x01, 0x00, 0xAA, 0xBB]);
     let assert_forwarded = |frame: &BvllMessage, label: &str| {
