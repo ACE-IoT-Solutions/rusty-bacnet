@@ -9,7 +9,9 @@
 //!   noise and a corrupted frame included.
 //! - **Core:** take a token, send a queued data frame, poll for a master,
 //!   pass the token on, then receive a broadcast and answer a request. Time
-//!   is injected, and every action the core returns is carried out.
+//!   is injected, and every action the core returns is carried out. The
+//!   core is built on the stack over storage in [`Memory`], the pattern for
+//!   firmware.
 //! - **Capacity:** fill the unicast queue and offer an NPDU too long for a
 //!   standard frame.
 //!
@@ -19,21 +21,27 @@
 mod codec;
 mod link;
 
-use core::mem::MaybeUninit;
-
 use bacnet_mstp_codec::{FrameType, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA};
-use bacnet_mstp_core::{HeaplessQueues, MasterCore, MasterState};
+use bacnet_mstp_core::{ActionBuffers, HeaplessQueues, MasterCore, MasterState};
 
 /// Unicast slots in the transmit queue.
 pub const UNICAST_SLOTS: usize = 4;
 /// Broadcast slots in the transmit queue.
 pub const BROADCAST_SLOTS: usize = 2;
+/// Slots for received data waiting to be polled. One is enough: the
+/// scenario polls every action after each call into the core.
+pub const DELIVERY_SLOTS: usize = 1;
 
 /// The core's transmit queues: heapless, with standard-frame slots.
 pub type Queues = HeaplessQueues<UNICAST_SLOTS, BROADCAST_SLOTS>;
 
-/// The master core as the image configures it.
-pub type Core<'rx> = MasterCore<'rx, Queues>;
+/// The core's action buffers.
+pub type Actions = ActionBuffers<DELIVERY_SLOTS>;
+
+/// The master core as the image configures it: it borrows its queues, as it
+/// does its receive storage and action buffers, so all three can live in a
+/// static and the core itself is small.
+pub type Core<'m> = MasterCore<'m, &'m mut Queues>;
 
 /// An NPDU with an unconfirmed Who-Is: version 1, no addressing, no reply
 /// expected.
@@ -42,13 +50,21 @@ const WHO_IS: [u8; 4] = [0x01, 0x00, 0x10, 0x08];
 /// Octets of encoded frames the scenario keeps at once.
 const WIRE_LENGTH: usize = 128;
 
-/// Storage the scenario works in besides its stack: the core's receive
-/// buffer, the stream decoder's buffer and an encode buffer.
+/// Storage the scenario works in besides its stack: everything the core
+/// borrows (its receive buffer, queues and action buffers), the stream
+/// decoder's buffer and an encode buffer.
 ///
-/// The image keeps it in a static, so the linker counts it in `.bss`.
+/// [`Memory::new`] is all zero bits, so the image keeps it in a static that
+/// the linker places in `.bss`, costing no flash for an initial image. This
+/// is the pattern for firmware: the large buffers in a zeroed static, and the
+/// core, which borrows them, built on the stack.
 pub struct Memory {
     /// The core's receive storage, which its stream decoder borrows.
     rx: [u8; MAX_STANDARD_FRAME_LENGTH],
+    /// The core's transmit queues.
+    queues: Queues,
+    /// The core's action buffers.
+    actions: Actions,
     /// The standalone stream decoder's storage. Once the codec part is done,
     /// its first octets serve as the oversized NPDU.
     stream: [u8; MAX_STANDARD_FRAME_LENGTH],
@@ -61,6 +77,8 @@ impl Memory {
     pub const fn new() -> Self {
         Self {
             rx: [0; MAX_STANDARD_FRAME_LENGTH],
+            queues: Queues::new(),
+            actions: Actions::new(),
             stream: [0; MAX_STANDARD_FRAME_LENGTH],
             wire: [0; WIRE_LENGTH],
         }
@@ -154,26 +172,34 @@ impl Summary {
     }
 }
 
-/// Run the whole scenario in `memory`, building the core in `core`.
-///
-/// The core goes in the caller's slot rather than on this function's stack,
-/// so the image can keep it in a static. The slot is uninitialized storage
-/// because `None` for an `Option<Core>` is not all zero bits (the compiler
-/// keeps it in a niche of the core), so a static initialized to `None` goes
-/// in `.data`, all 13 KB of it, with its initial image copied from flash. An
-/// uninitialized static goes in `.bss`. Whatever the slot held is
-/// overwritten; the core needs no drop.
+/// Run the whole scenario in `memory`. The core is built on this function's
+/// stack, borrowing its large buffers from `memory`.
 ///
 /// The scenario never panics on a failed call: it counts the failure in
 /// [`Summary::errors`] and carries on, or returns early when it cannot
 /// continue.
-pub fn run<'m>(memory: &'m mut Memory, core: &mut MaybeUninit<Core<'m>>) -> Summary {
-    let Memory { rx, stream, wire } = memory;
+pub fn run(memory: &mut Memory) -> Summary {
+    let Memory {
+        rx,
+        queues,
+        actions,
+        stream,
+        wire,
+    } = memory;
     let mut summary = Summary::new();
     codec::run(stream, wire, &mut summary);
     // The decoder is done with its storage, which now serves as an NPDU one
     // octet longer than a standard frame carries.
     let oversize = stream.get(..MAX_STANDARD_MPDU_DATA + 1).unwrap_or_default();
-    link::run(rx, wire, oversize, core, &mut summary);
+    link::run(
+        link::Storage {
+            rx,
+            queues,
+            actions,
+        },
+        wire,
+        oversize,
+        &mut summary,
+    );
     summary
 }

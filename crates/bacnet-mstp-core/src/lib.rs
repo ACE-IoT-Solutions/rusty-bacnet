@@ -6,8 +6,14 @@
 //!
 //! # The adapter's side
 //!
-//! [`MasterCore`] describes the calls in full. Two rules matter most:
+//! [`MasterCore`] describes the calls in full. Three rules matter most:
 //!
+//! - **Poll after every call.** After each call into the core, poll
+//!   [`MasterCore::poll_action`] until [`Action::Idle`], and always before
+//!   reporting the next transmit event. Control actions can't run out of
+//!   room, and a start is refused ([`CoreError::TransmitNotPolled`]) until
+//!   its frame has been polled; received data waits in a fixed number of
+//!   slots, and data that finds them full is dropped and counted.
 //! - **A frame starts only on `Ok`.** Call
 //!   [`MasterCore::on_transmit_started`] right before enabling the line
 //!   driver, and drive the line only if it succeeds. It refuses a start that
@@ -27,6 +33,57 @@
 //! on its own: the frame waits for the line to go quiet. Only the evidence
 //! its state watches for, or a time limit taken from that state, drops it,
 //! and the drop is counted.
+//!
+//! # Storage, and building the core on a microcontroller
+//!
+//! The core's large buffers belong to the caller: the receive storage, the
+//! [`ActionBuffers`] (the frame being sent and the delivery slots) and,
+//! optionally, the queues, which the core can borrow as `&mut`. The core
+//! borrows them for its lifetime, so what it holds itself is a few hundred
+//! octets, and [`MasterCore::new`] returns it cheaply even on a small stack.
+//!
+//! On firmware, keep the buffers together in one static whose initializer is
+//! a `const fn` of zeros, so the linker puts it in `.bss` and no flash holds
+//! an initial image; [`ActionBuffers::new`] and `HeaplessQueues::new` are
+//! both all zero bits. Then build the core on the stack over that storage.
+//! This needs no `unsafe` in the library and does not depend on the compiler
+//! constructing anything in place:
+//!
+//! ```
+//! # #[cfg(feature = "heapless")]
+//! # mod example {
+//! use bacnet_mstp_codec::MAX_STANDARD_FRAME_LENGTH;
+//! use bacnet_mstp_core::{ActionBuffers, HeaplessQueues, Instant, MasterCore, MstpCoreConfig};
+//!
+//! /// Everything large, zeroed. On firmware it lives in a static, borrowed
+//! /// once at reset (for example through cortex-m-rt's `static mut`).
+//! pub struct Storage {
+//!     rx: [u8; MAX_STANDARD_FRAME_LENGTH],
+//!     queues: HeaplessQueues<4, 2>,
+//!     // One delivery slot: this adapter polls after every call.
+//!     actions: ActionBuffers<1>,
+//! }
+//!
+//! impl Storage {
+//!     pub const fn new() -> Self {
+//!         Self {
+//!             rx: [0; MAX_STANDARD_FRAME_LENGTH],
+//!             queues: HeaplessQueues::new(),
+//!             actions: ActionBuffers::new(),
+//!         }
+//!     }
+//! }
+//!
+//! pub fn run(storage: &mut Storage, config: MstpCoreConfig, now: Instant) {
+//!     let Storage { rx, queues, actions } = storage;
+//!     let Ok(mut core) = MasterCore::new(config, queues, rx, actions, now) else {
+//!         return;
+//!     };
+//!     // Feed the core the line's events and carry out its actions.
+//!     # let _ = core.poll_action();
+//! }
+//! # }
+//! ```
 //!
 //! # A local policy
 //!
@@ -59,7 +116,10 @@ mod counters;
 mod queue;
 mod state;
 
-pub use actions::{Action, Direction, RequestId, TransmitFailure, TransmitId};
+pub use actions::{
+    Action, ActionBuffers, Direction, RequestId, TransmitFailure, TransmitId,
+    DEFAULT_DELIVERY_SLOTS,
+};
 pub use clock::{Duration, Instant, Monotonic, SimClock};
 pub use config::{ConfigError, LocalDurationField, LocalLimitField, MstpCoreConfig};
 pub use counters::{MstpCounters, QueueCounters};

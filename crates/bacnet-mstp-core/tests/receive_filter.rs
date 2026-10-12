@@ -10,6 +10,7 @@ use bacnet_mstp_core::{
 };
 
 type Queues = HeaplessQueues<4, 4>;
+type Actions = bacnet_mstp_core::ActionBuffers;
 
 const STATION: u8 = 1;
 /// The station this one sends its request to.
@@ -81,7 +82,15 @@ fn feed(core: &mut MasterCore<'_, Queues>, wire: &[u8], start: Instant) -> Insta
 /// running.
 fn counted_invalid(storage: usize, wire: &[u8]) -> bool {
     let mut rx = vec![0u8; storage];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let start = wait_for_reply(&mut core);
     feed(&mut core, wire, start);
     let counters = core.counters();
@@ -103,7 +112,15 @@ fn a_reply_type_frame_from_any_station_ends_the_wait() {
         (FrameType::TestResponse, 6),
     ] {
         let mut rx = [0u8; 64];
-        let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = MasterCore::new(
+            config(),
+            Queues::new(),
+            &mut rx,
+            &mut actions,
+            Instant::ZERO,
+        )
+        .unwrap();
         let now = wait_for_reply(&mut core);
         let data: &[u8] = if frame_type.allows_data() { &[7] } else { &[] };
         core.on_validated_frame(Frame::new(frame_type, STATION, source, data), now)
@@ -125,7 +142,15 @@ fn a_reply_type_frame_from_any_station_ends_the_wait() {
 
     // A reply addressed elsewhere is an unexpected frame: back to IDLE.
     let mut rx = [0u8; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let now = wait_for_reply(&mut core);
     core.on_validated_frame(
         Frame::new(FrameType::BACnetDataNotExpectingReply, 2, ASKED, &[7]),
@@ -138,7 +163,15 @@ fn a_reply_type_frame_from_any_station_ends_the_wait() {
 #[test]
 fn validated_frame_the_codec_would_refuse_changes_nothing() {
     let mut rx = [0u8; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let late = Instant::from_micros(10_000);
     let data = [0u8; 502];
     assert_eq!(
@@ -243,7 +276,15 @@ fn the_decoder_is_drained_after_a_dropped_candidate() {
     assert_eq!(token[..3], bad[5..]);
 
     let mut rx = [0u8; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let last = feed(&mut core, &bad, Instant::ZERO);
     assert_eq!(core.counters().parser_errors, 1);
     // Draining at once leaves the Token's partial header current, so its

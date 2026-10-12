@@ -7,7 +7,7 @@ use bacnet_mstp_core::{
     NetworkPriority, QueueRejectReason, ReceiveError, ReplyDecision, RequestId, TransmitId,
 };
 
-use super::{describe, leak_storage, Event, NodeKind, Sim, SimCore};
+use super::{describe, leak_action_buffers, leak_storage, Event, NodeKind, Sim, SimCore};
 use crate::event::Class;
 use crate::line::Driver;
 use crate::report::{Delivery, ViolationKind};
@@ -87,6 +87,7 @@ impl MasterNode {
             self.spec.config,
             queues,
             leak_storage(MAX_STANDARD_FRAME_LENGTH),
+            leak_action_buffers(),
             now,
         )
         .expect("a valid master spec");
@@ -320,7 +321,7 @@ impl Sim {
         }
     }
 
-    /// Counters that must not move: adapter errors and action drops ever,
+    /// Counters that must not move: adapter errors and delivery drops ever,
     /// and deadline misses while the adapter is punctual.
     fn check_counters(&mut self, node: usize, counters: &MstpCounters, punctual: bool) {
         let station = self.nodes[node].station;
@@ -331,8 +332,8 @@ impl Sim {
         if counters.adapter_errors != 0 {
             wrong.push(format!("adapter_errors {}", counters.adapter_errors));
         }
-        if counters.action_drops != 0 {
-            wrong.push(format!("action_drops {}", counters.action_drops));
+        if counters.delivery_drops != 0 {
+            wrong.push(format!("delivery_drops {}", counters.delivery_drops));
         }
         if punctual && new_misses != 0 {
             wrong.push(format!("{new_misses} more deadline_misses"));

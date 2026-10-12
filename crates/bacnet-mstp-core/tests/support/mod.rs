@@ -10,6 +10,7 @@ use bacnet_mstp_core::{
 };
 
 pub type Queues = HeaplessQueues<4, 4>;
+pub type Actions = bacnet_mstp_core::ActionBuffers;
 pub type Core<'rx> = MasterCore<'rx, Queues>;
 
 /// This station.
@@ -25,6 +26,14 @@ pub fn config() -> MstpCoreConfig {
         max_master: 3,
         ..MstpCoreConfig::default()
     }
+}
+
+/// Station 1's core over `rx` and `actions`, from time zero.
+pub fn new_core<'a, const DELIVERIES: usize>(
+    rx: &'a mut [u8],
+    actions: &'a mut bacnet_mstp_core::ActionBuffers<DELIVERIES>,
+) -> Core<'a> {
+    Core::new(config(), Queues::new(), rx, actions, Instant::ZERO).unwrap()
 }
 
 pub fn ms(value: u64) -> Instant {
@@ -176,4 +185,47 @@ pub fn enqueue(core: &mut Core<'_>, expecting: bool, now: Instant) {
     let control = if expecting { 0x04 } else { 0x00 };
     core.enqueue_npdu(PEER, &[0x01, control, 0x07], NetworkPriority::Normal, now)
         .unwrap();
+}
+
+/// Station 1 with successor 3 (station 2 is silent) runs through Npoll
+/// token uses until it polls station 2 for maintenance; returns once that
+/// poll has gone out.
+pub fn maintenance_poll_sent(core: &mut Core<'_>) {
+    poll_waiting(core);
+    send_next(core);
+    let timeout = core.next_deadline().unwrap();
+    core.on_deadline(timeout).unwrap();
+    let header = send(core, timeout);
+    assert!(is(header, FrameType::PollForMaster, 3));
+    let answered = timeout + Duration::from_millis(5);
+    validated(
+        core,
+        FrameType::ReplyToPollForMaster,
+        STATION,
+        3,
+        &[],
+        answered,
+    );
+    for _ in 0..=50 {
+        let (passed, header) = send_next(core);
+        assert!(is(header, FrameType::Token, 3));
+        // Station 3 uses the token, then passes it back.
+        let used = passed + Duration::from_millis(3);
+        validated(
+            core,
+            FrameType::BACnetDataNotExpectingReply,
+            0,
+            3,
+            &[1, 0, 7],
+            used,
+        );
+        let back = used + Duration::from_millis(2);
+        validated(core, FrameType::Token, STATION, 3, &[], back);
+        if core.state() == MasterState::PollForMaster {
+            let (_, header) = send_next(core);
+            assert!(is(header, FrameType::PollForMaster, PEER));
+            return;
+        }
+    }
+    panic!("no maintenance poll after Npoll token uses");
 }

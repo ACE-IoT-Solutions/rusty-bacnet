@@ -297,18 +297,16 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     pub(super) fn deliver(&mut self, frame: &OwnedFrame, request_id: Option<RequestId>) -> bool {
-        match self.actions.enqueue_delivery(
-            frame.header.source,
-            frame.header.destination,
-            &frame.data[..frame.length],
-            request_id,
-        ) {
+        match self
+            .actions
+            .enqueue_delivery(frame.header, &frame.data[..frame.length], request_id)
+        {
             Ok(()) => {
                 self.counters.record_npdu_delivered();
                 true
             }
             Err(_) => {
-                self.counters.record_action_drop();
+                self.counters.record_delivery_drop();
                 false
             }
         }

@@ -86,11 +86,11 @@ pub(super) enum Origin {
     NoToken,
 }
 
-/// A frame this station has made but not yet started on the wire.
+/// A frame this station has made but not yet started on the wire. Its octets
+/// wait in the action buffers' frame buffer, which nothing else uses until
+/// the frame is over.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PendingSend {
-    pub(super) length: usize,
-    pub(super) frame: [u8; MAX_STANDARD_FRAME_LENGTH],
     pub(super) post: PostTransmit,
     pub(super) origin: Origin,
     /// T_turnaround after the last line activity.
@@ -110,6 +110,10 @@ impl PendingSend {
 impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Encode a frame and send it once the line has been quiet for
     /// T_turnaround: at once if it already has, otherwise from the deadline.
+    ///
+    /// Only one frame of this station's waits or is on the wire at a time:
+    /// every caller makes a frame only from a state that has none, which is
+    /// what lets the frame buffer and the control actions stay so small.
     pub(super) fn queue_frame(
         &mut self,
         frame_type: FrameType,
@@ -119,20 +123,22 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         origin: Origin,
         now: Instant,
     ) -> Result<(), CoreError> {
-        if self.pending_send.is_some() || self.active_transmit.is_some() {
-            return Err(CoreError::ActionCapacity);
-        }
-        let mut frame = [0; MAX_STANDARD_FRAME_LENGTH];
-        let length = Frame::new(frame_type, destination, self.config.station, data)
-            .encode_into(&mut frame)?;
+        debug_assert!(
+            self.pending_send.is_none() && self.active_transmit.is_none(),
+            "a second frame of this station's"
+        );
+        self.actions.encode_frame(Frame::new(
+            frame_type,
+            destination,
+            self.config.station,
+            data,
+        ))?;
         let limit = match origin {
             Origin::Answer(window) => window.give_up,
             Origin::Holder | Origin::NextPoll | Origin::NoToken => now + self.config.t_no_token,
             Origin::PassToken => now + self.config.t_usage_timeout,
         };
         self.pending_send = Some(PendingSend {
-            length,
-            frame,
             post,
             origin,
             earliest: self.last_activity + self.config.t_turnaround,
@@ -156,7 +162,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             self.protocol_deadline = Some(pending.deadline());
             return Ok(());
         }
-        self.dispatch_frame(&pending.frame[..pending.length], pending.post, now)
+        self.dispatch_frame(pending.post, now);
+        Ok(())
     }
 
     /// Line activity while a frame waits, before or after it went to the
@@ -202,7 +209,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             // on entry to POLL_FOR_MASTER (ReceivedReplyToPFM, Clause
             // 9.5.6.8), it becomes the successor, and this poll is moot.
             Origin::NextPoll if late_poll_reply => {
-                self.discard_pending()?;
+                self.discard_pending();
                 self.take_successor(header.source, now)?;
             }
             Origin::Holder | Origin::NextPoll => self.frame_while_busy(frame, false),
@@ -218,18 +225,17 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     /// Give up the waiting frame and count it, then go to IDLE.
     pub(super) fn drop_pending(&mut self, now: Instant) -> Result<(), CoreError> {
-        self.discard_pending()?;
+        self.discard_pending();
         self.enter_idle(now)
     }
 
     /// Give up the waiting frame, taking it back from the adapter if it was
     /// handed over, and count it.
-    fn discard_pending(&mut self) -> Result<(), CoreError> {
+    fn discard_pending(&mut self) {
         if let Some(tx) = self.active_transmit.filter(|tx| !tx.started) {
-            self.withdraw_transmit(tx.id)?;
+            self.withdraw_transmit(tx.id);
         }
         self.forget_pending();
-        Ok(())
     }
 
     /// Forget the waiting frame, counting it as given up: `expired_requests`

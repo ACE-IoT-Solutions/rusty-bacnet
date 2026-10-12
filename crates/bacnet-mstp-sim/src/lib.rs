@@ -105,7 +105,7 @@
 //! 5. **Bounded events.** Pending events stay within a small multiple of the
 //!    node count, and the trace keeps only its most recent entries.
 //! 6. **Core contract.** No unexpected [`CoreError`](bacnet_mstp_core::CoreError);
-//!    adapter errors and action drops stay zero; a punctual adapter's core
+//!    adapter errors and delivery drops stay zero; a punctual adapter's core
 //!    counts no deadline misses; no new deadline lies in the past, and none
 //!    stays due after being serviced over and over at one instant.
 //! 7. **Usage delay.** A punctual master answers a Token or Poll For Master
