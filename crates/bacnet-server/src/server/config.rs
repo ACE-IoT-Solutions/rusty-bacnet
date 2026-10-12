@@ -345,8 +345,9 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
 impl BipServerBuilder {
     /// Set the B/IP mode: a normal node (the default), a foreign device or
     /// a BBMD (#938). A foreign device's `build()` doesn't wait for its BBMD
-    /// to accept the registration. A registered Network Port reports the
-    /// mode in `BACnet_IP_Mode`.
+    /// to accept the registration; poll
+    /// [`BACnetServer::foreign_registration`] for how it went. A registered
+    /// Network Port reports the mode in `BACnet_IP_Mode`.
     ///
     /// ```
     /// use bacnet_server::server::BACnetServer;

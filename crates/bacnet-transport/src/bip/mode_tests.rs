@@ -4,6 +4,8 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use tokio::net::UdpSocket;
+
 use super::*;
 
 fn foreign_to(bbmd_port: u16) -> ForeignDeviceConfig {
@@ -92,4 +94,47 @@ async fn a_mode_replaces_the_one_before_it() {
     let _rx = transport.start().await.unwrap();
     assert!(transport.bbmd_state().is_some());
     transport.stop().await.unwrap();
+}
+
+/// The handle reads the registration of a transport another task owns, and
+/// sees it cleared when that task stops the transport.
+#[tokio::test]
+async fn the_status_handle_follows_a_transport_it_does_not_own() {
+    let bbmd = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let mut transport = transport();
+    transport.set_mode(BipMode::Foreign(foreign_to(
+        bbmd.local_addr().unwrap().port(),
+    )));
+    let status = transport.bvlc_client_status();
+    assert!(!status.snapshot().running);
+    let _rx = transport.start().await.unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let owner = tokio::spawn(async move {
+        let _ = stopped.await;
+        transport.stop().await.unwrap();
+    });
+
+    let mut packet = [0; 64];
+    let (len, from) = bbmd.recv_from(&mut packet).await.unwrap();
+    assert_eq!(&packet[..len], &[0x81, 5, 0, 6, 0, 60]);
+    bbmd.send_to(&[0x81, 0, 0, 6, 0, 0], from).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !status.snapshot().foreign_registration.registered {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the handle saw the registration");
+    let live = status.snapshot();
+    assert!(live.running);
+    assert!(live.foreign_registration.lease_remaining.is_some());
+    assert!(live.foreign_registration.next_attempt_in.unwrap() <= Duration::from_secs(5));
+
+    stop.send(()).unwrap();
+    owner.await.unwrap();
+    let after = status.snapshot();
+    assert!(!after.running);
+    assert!(!after.foreign_registration.registered);
+    assert_eq!(after.foreign_registration.next_attempt_in, None);
+    assert_eq!(after.foreign_registration.accepted, 1);
 }

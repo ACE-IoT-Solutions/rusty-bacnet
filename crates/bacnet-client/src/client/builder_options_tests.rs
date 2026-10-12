@@ -1,6 +1,7 @@
 use super::*;
 use bacnet_transport::bbmd::ForeignDevicePolicy;
-use bacnet_transport::bip::{BbmdOptions, ForeignDeviceConfig};
+use bacnet_transport::bip::{BbmdOptions, ForeignDeviceConfig, ForeignRegistrationOutcome};
+use bacnet_transport::bvll::BvlcResultCode;
 use bacnet_transport::loopback::LoopbackTransport;
 use std::net::Ipv4Addr;
 
@@ -65,6 +66,84 @@ async fn bip_builder_foreign_device_validates_settings_before_io() {
     }
 }
 
+/// A foreign client whose BBMD, a bare socket, answers its first
+/// registration with `code`, once the client has observed that answer.
+async fn foreign_client_answered_with(
+    code: BvlcResultCode,
+    renewal_interval: Option<Duration>,
+) -> BACnetClient<BipTransport> {
+    let bbmd = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let client = BACnetClient::bip_builder()
+        .interface(Ipv4Addr::LOCALHOST)
+        .port(0)
+        .mode(BipMode::Foreign(ForeignDeviceConfig {
+            bbmd_ip: Ipv4Addr::LOCALHOST,
+            bbmd_port: bbmd.local_addr().unwrap().port(),
+            ttl: 60,
+            renewal_interval,
+        }))
+        .build()
+        .await
+        .unwrap();
+    let mut packet = [0; 64];
+    let (len, from) = bbmd.recv_from(&mut packet).await.unwrap();
+    assert_eq!(&packet[..len], &[0x81, 5, 0, 6, 0, 60]);
+    let [high, low] = code.to_raw().to_be_bytes();
+    bbmd.send_to(&[0x81, 0, 0, 6, high, low], from)
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        while client.foreign_registration().unwrap().last_result.is_none() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the client saw the BBMD's answer");
+    client
+}
+
+/// The client reports its registration (#938): the lease a success proves,
+/// renewed on the interval the builder was given rather than half the TTL.
+#[tokio::test]
+async fn bip_builder_foreign_mode_reports_the_lease_and_renews_on_its_interval() {
+    let mut client = foreign_client_answered_with(
+        BvlcResultCode::SUCCESSFUL_COMPLETION,
+        Some(Duration::from_secs(1)),
+    )
+    .await;
+    let registration = client.foreign_registration().unwrap();
+    assert!(registration.registered);
+    assert_eq!(
+        registration.last_outcome,
+        Some(ForeignRegistrationOutcome::Accepted)
+    );
+    assert!(registration.lease_remaining.unwrap() > Duration::from_secs(50));
+    // Half the 60 s TTL would put it 30 s out.
+    assert!(registration.next_attempt_in.unwrap() <= Duration::from_secs(1));
+    client.stop().await.unwrap();
+}
+
+/// A BBMD's refusal reaches the client's registration status (#938).
+#[tokio::test]
+async fn bip_builder_foreign_mode_reports_a_refused_registration() {
+    let mut client =
+        foreign_client_answered_with(BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK, None).await;
+    let registration = client.foreign_registration().unwrap();
+    assert!(!registration.registered);
+    assert_eq!(registration.refused, 1);
+    assert_eq!(
+        registration.last_result,
+        Some(BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK)
+    );
+    assert_eq!(
+        registration.last_outcome,
+        Some(ForeignRegistrationOutcome::Refused)
+    );
+    client.stop().await.unwrap();
+}
+
 /// BBMD mode starts a BBMD with every option the mode carries (#938).
 #[tokio::test]
 async fn bip_builder_bbmd_mode_starts_a_bbmd_with_its_options() {
@@ -90,6 +169,9 @@ async fn bip_builder_bbmd_mode_starts_a_bbmd_with_its_options() {
         assert!(state.is_management_allowed(&[127, 0, 0, 9]));
         assert!(!state.is_management_allowed(&[127, 0, 0, 1]));
     }
+    // Not a foreign device: no registration runs.
+    let registration = client.foreign_registration().unwrap();
+    assert_eq!((registration.attempts, registration.registered), (0, false));
     client.stop().await.unwrap();
 }
 

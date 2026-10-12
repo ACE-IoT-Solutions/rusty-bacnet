@@ -14,7 +14,7 @@ use bytes::BytesMut;
 use tokio::sync::oneshot;
 
 use super::node::{NodeHandle, Outcome, Waiter};
-use super::{BipTransport, BvlcClientSnapshot};
+use super::{BipTransport, BvlcClientSnapshot, BvlcClientStatus};
 use crate::bbmd::{self, BdtEntry, FdtEntryWire};
 use crate::bvll::{decode_bip_mac, encode_bvll, BvllMessage};
 
@@ -139,11 +139,14 @@ impl BipTransport {
     /// BBMD's successes prove. See [`BvlcClientSnapshot`] for matching limits
     /// and the meaning of each observation.
     pub fn bvlc_client_snapshot(&self) -> BvlcClientSnapshot {
-        let mut snapshot = self.client_record.snapshot();
-        if let Some(node) = &self.node {
-            node.fill_registration(&mut snapshot.foreign_registration);
-        }
-        snapshot
+        self.client_record.live_snapshot()
+    }
+
+    /// A handle that reads [`Self::bvlc_client_snapshot`] after this
+    /// transport is handed to an owner that keeps it out of reach, as an
+    /// endpoint session does.
+    pub fn bvlc_client_status(&self) -> BvlcClientStatus {
+        BvlcClientStatus(Arc::clone(&self.client_record))
     }
 
     /// Send Read-Broadcast-Distribution-Table and return the response entries.

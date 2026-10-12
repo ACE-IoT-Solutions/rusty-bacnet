@@ -54,7 +54,7 @@ mod send_sink;
 #[cfg(test)]
 mod test_support;
 pub use client_snapshot::{
-    BvlcClientSnapshot, BvlcRequestCounters, ForeignRegistrationOutcome,
+    BvlcClientSnapshot, BvlcClientStatus, BvlcRequestCounters, ForeignRegistrationOutcome,
     ForeignRegistrationSnapshot,
 };
 pub use foreign_device::ForeignDeviceConfig;
@@ -694,6 +694,7 @@ impl TransportPort for BipTransport {
             }
         };
 
+        self.client_record.attach(&node);
         self.port = local_port;
         self.local_mac = encode_bip_mac(local_ip.octets(), local_port);
         self.socket = Some(Arc::clone(&socket));

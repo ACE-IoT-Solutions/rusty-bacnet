@@ -13,8 +13,9 @@
 //! and Original-Broadcast replies, ClientOnly foreign DBTN/retry and
 //! alternate forwarders, and Both requester/responder progress with cleanup.
 //! The modes themselves run on the same transport as the standalone client
-//! and server. Live BVLC queries (`read_bdt` / `write_bdt` / `read_fdt` / …)
-//! stay on [`BipTransport`].
+//! and server. [`EndpointSession::foreign_registration`] reports a foreign
+//! device's registration. Live BVLC queries (`read_bdt` / `write_bdt` /
+//! `read_fdt` / …) stay on [`BipTransport`].
 //!
 //! ```no_run
 //! use std::net::Ipv4Addr;
@@ -290,7 +291,9 @@ impl BipEndpointBuilder {
         let identity = self.identity.take();
         let registered_network_port = self.registered_network_port.take();
         let transport = self.build_transport()?;
+        let bip_status = transport.bvlc_client_status();
         let mut endpoint = EndpointSession::new(transport, role, session)?;
+        endpoint.bip_status = Some(bip_status);
         if let Some(db) = database {
             endpoint = endpoint.with_database(db);
         }
@@ -328,5 +331,69 @@ mod share_port_tests {
             panic!("start must refuse");
         };
         assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    use crate::session::SessionConfig;
+    use bacnet_transport::bip::{ForeignDeviceConfig, ForeignRegistrationOutcome};
+    use bacnet_transport::bvll::BvlcResultCode;
+    use std::time::Duration;
+
+    /// The session reports its transport's registration (#938) while it
+    /// runs, a BBMD's refusal included, and the totals after stop.
+    #[tokio::test]
+    async fn the_session_reports_a_refused_foreign_registration() {
+        let bbmd = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
+            .role(SessionRole::ClientOnly)
+            .mode(BipMode::Foreign(ForeignDeviceConfig {
+                bbmd_ip: Ipv4Addr::LOCALHOST,
+                bbmd_port: bbmd.local_addr().unwrap().port(),
+                renewal_interval: None,
+                ttl: 60,
+            }))
+            .build_session()
+            .unwrap();
+        assert_eq!(endpoint.foreign_registration().unwrap().attempts, 0);
+        endpoint.start().await.unwrap();
+        let mut packet = [0; 64];
+        let (len, from) = bbmd.recv_from(&mut packet).await.unwrap();
+        assert_eq!(&packet[..len], &[0x81, 5, 0, 6, 0, 60]);
+        bbmd.send_to(&[0x81, 0, 0, 6, 0, 0x30], from).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while endpoint.foreign_registration().unwrap().refused == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the refusal reached the session's status");
+        let registration = endpoint.foreign_registration().unwrap();
+        assert!(!registration.registered);
+        assert_eq!(
+            registration.last_result,
+            Some(BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK)
+        );
+        assert_eq!(
+            registration.last_outcome,
+            Some(ForeignRegistrationOutcome::Refused)
+        );
+        endpoint.stop().await.unwrap();
+        let registration = endpoint.foreign_registration().unwrap();
+        assert_eq!((registration.refused, registration.last_outcome), (1, None));
+    }
+
+    /// Only a session the B/IP builder built has a registration to report.
+    #[test]
+    fn a_session_built_without_the_builder_reports_none() {
+        let (transport, _peer) =
+            bacnet_transport::loopback::LoopbackTransport::pair(vec![1], vec![2]);
+        let session =
+            EndpointSession::new(transport, SessionRole::Both, SessionConfig::default()).unwrap();
+        assert!(session.foreign_registration().is_none());
     }
 }

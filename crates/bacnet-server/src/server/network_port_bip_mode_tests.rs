@@ -208,5 +208,49 @@ async fn the_builders_bbmd_mode_runs_a_bbmd_the_registered_port_reports() {
         rp(&server, P::BBMD_ACCEPT_FD_REGISTRATIONS).await.unwrap(),
         [0x11]
     );
+    assert_eq!(server.foreign_registration().unwrap().attempts, 0);
     server.stop().await.unwrap();
+}
+
+/// The builder's foreign mode registers, reports the BBMD's refusal through
+/// the server (#938), and stops reporting once the server stops.
+#[tokio::test]
+async fn the_builders_foreign_mode_reports_a_refused_registration() {
+    let bbmd = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let mut server = BACnetServer::bip_builder()
+        .interface(Ipv4Addr::LOCALHOST)
+        .port(0)
+        .database(database())
+        .registered_network_port(port_oid())
+        .mode(BipMode::Foreign(ForeignDeviceConfig {
+            bbmd_ip: Ipv4Addr::LOCALHOST,
+            bbmd_port: bbmd.local_addr().unwrap().port(),
+            renewal_interval: None,
+            ttl: 120,
+        }))
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(rp(&server, P::BACNET_IP_MODE).await.unwrap(), [0x91, 1]);
+    let mut packet = [0; 64];
+    let (len, from) = bbmd.recv_from(&mut packet).await.unwrap();
+    assert_eq!(&packet[..len], &[0x81, 5, 0, 6, 0, 120]);
+    bbmd.send_to(&[0x81, 0, 0, 6, 0, 0x30], from).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while server.foreign_registration().unwrap().refused == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the refusal reached the server's status");
+    let registration = server.foreign_registration().unwrap();
+    assert!(!registration.registered);
+    assert_eq!(
+        registration.last_result,
+        Some(BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK)
+    );
+    server.stop().await.unwrap();
+    assert!(server.foreign_registration().is_err());
 }

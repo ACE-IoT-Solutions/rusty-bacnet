@@ -287,9 +287,9 @@ impl BipClientBuilder {
     /// Set the B/IP mode: a normal node (the default), a foreign device or
     /// a BBMD (#938). `build()` starts the client locally; a foreign device
     /// doesn't wait for its BBMD to accept the registration. Poll
-    /// `client.transport().bvlc_client_snapshot()` for how it went:
-    /// `registered`, and the last attempt's outcome, a refusal included.
-    /// Invalid TTL or renewal settings fail `build()` before any I/O.
+    /// [`BACnetClient::foreign_registration`] for how it went: `registered`,
+    /// and the last attempt's outcome, a refusal included. Invalid TTL or
+    /// renewal settings fail `build()` before any I/O.
     ///
     /// ```no_run
     /// use bacnet_client::client::BACnetClient;
@@ -304,7 +304,7 @@ impl BipClientBuilder {
     ///     }))
     ///     .build().await?;
     /// // A successful local start alone does not establish registration.
-    /// let registration = client.transport().bvlc_client_snapshot().foreign_registration;
+    /// let registration = client.foreign_registration()?;
     /// let (registered, last_attempt) = (registration.registered, registration.last_outcome);
     /// client.stop().await?;
     /// # Ok(()) }
