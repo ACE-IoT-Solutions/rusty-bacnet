@@ -62,7 +62,9 @@ impl BACnetServer {
         time_sync_policy=None,
         share_port_by_address=false,
         segmentation_supported=crate::types::PySegmentation { inner: bacnet_types::enums::Segmentation::NONE },
-        apdu_segment_timeout_ms=5000
+        apdu_segment_timeout_ms=5000,
+        bbmd=None,
+        foreign_device=None
     ))]
     fn new(
         device_instance: u32,
@@ -123,12 +125,15 @@ impl BACnetServer {
         share_port_by_address: bool,
         segmentation_supported: crate::types::PySegmentation,
         apdu_segment_timeout_ms: u64,
+        bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
+        foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
     ) -> PyResult<Self> {
         let segmentation_supported = super::constructor_budgets::segmentation(
             segmentation_supported,
             apdu_segment_timeout_ms,
         )?;
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
+        let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
         super::constructor_budgets::registered_network_port(registered_network_port, transport)?;
         let mutation_policy = super::constructor_budgets::mutation_policy(mutation_policy)?;
         let super::constructor_budgets::DccConfiguration {
@@ -197,6 +202,7 @@ impl BACnetServer {
             port,
             broadcast_address: broadcast_address.to_string(),
             share_port_by_address,
+            bip_mode,
             registered_network_port,
             sc_hub,
             sc_vmac,
