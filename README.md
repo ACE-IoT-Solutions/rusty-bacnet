@@ -281,6 +281,7 @@ How to configure each one:
 | [`bacnet-types`](https://crates.io/crates/bacnet-types) | Enums, primitives, bit strings and errors (`no_std` with `alloc`) |
 | [`bacnet-encoding`](https://crates.io/crates/bacnet-encoding) | ASN.1 tags, APDU/NPDU codecs, segmentation (`no_std` with `alloc`) |
 | [`bacnet-services`](https://crates.io/crates/bacnet-services) | Service request and response types (`no_std` with `alloc`) |
+| [`bacnet-time`](crates/bacnet-time) | The monotonic `Instant` and `Duration`, in nanoseconds, that the portable cores share, so firmware feeds them one clock (`no_std`; no allocator, no dependencies) |
 | [`bacnet-mstp-codec`](crates/bacnet-mstp-codec) | MS/TP frame codec: CRCs, encode, decode and a stream decoder, for standard and extended (COBS-encoded) frames (`no_std`; no allocator or dependencies by default) |
 | [`bacnet-mstp-core`](crates/bacnet-mstp-core) | MS/TP master state machine driven by caller-supplied time and events (`no_std`; no allocator by default) |
 | [`bacnet-bip-codec`](crates/bacnet-bip-codec) | BACnet/IP and BACnet/IPv6 BVLL codec: every Annex J and Annex U message, B/IP and B/IPv6 addresses, VMACs and BDT/FDT tables (`no_std`; no allocator or dependencies by default) |
@@ -294,9 +295,9 @@ How to configure each one:
 | [`bacnet-endpoint`](https://crates.io/crates/bacnet-endpoint) | One transport owner for both client and server roles |
 | [`bacnet-cli`](https://crates.io/crates/bacnet-cli) | The `bacnet` command-line tool (also as release binaries) |
 
-The other eleven are on crates.io at 0.12.0; `bacnet-mstp-codec`,
-`bacnet-mstp-core`, `bacnet-bip-codec` and `bacnet-bip-core` are new on `dev`
-and ship with the next release. The
+The other eleven are on crates.io at 0.12.0; `bacnet-time`,
+`bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec` and
+`bacnet-bip-core` are new on `dev` and ship with the next release. The
 Python package is built from [`crates/rusty-bacnet`](crates/rusty-bacnet) with
 [maturin](https://www.maturin.rs/). The [architecture guide](docs/architecture.md)
 shows how the layers fit together.
