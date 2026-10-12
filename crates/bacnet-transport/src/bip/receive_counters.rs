@@ -12,12 +12,14 @@ use tracing::{debug, warn};
 /// Datagrams a B/IP transport's receive path dropped since the transport was
 /// created, by reason. The totals survive stop and restart.
 ///
-/// A dropped datagram counts once, under the first check it fails, in the
-/// order the fields are listed. Two drops are counted elsewhere: a datagram
-/// whose UDP source is a group address, in
-/// [`group_source_drops`](super::BipTransport::group_source_drops), and a
-/// Forwarded-NPDU whose origin is one, in
-/// [`forwarded_group_origin_drops`](super::BipTransport::forwarded_group_origin_drops).
+/// A dropped datagram counts once, under the first check it fails. Three
+/// drops are counted elsewhere: a datagram whose UDP source is a group
+/// address, in [`group_source_drops`](super::BipTransport::group_source_drops);
+/// a Forwarded-NPDU whose origin is one, in
+/// [`forwarded_group_origin_drops`](super::BipTransport::forwarded_group_origin_drops);
+/// and a well-formed BVLC-Result, Read-BDT-ACK or Read-FDT-ACK that no
+/// request was waiting for, in the `unmatched_responses` of
+/// [`bvlc_client_snapshot`](super::BipTransport::bvlc_client_snapshot).
 /// Each field is read on its own, so a snapshot taken while datagrams arrive
 /// need not add up across fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,6 +30,13 @@ pub struct ReceiveCounters {
     /// other error closes the socket: a broadcast listener closes alone, and
     /// on the socket every send leaves from, the transport stops receiving.
     pub receive_errors: u64,
+    /// Datagrams a broadcast listener read but doesn't keep, in per-address
+    /// mode ([`set_share_port_by_address`](super::BipTransport::set_share_port_by_address)),
+    /// whatever they hold: one not sent to this link's broadcast address,
+    /// such as a unicast for a local address no socket on the port is bound
+    /// to or another subnet's broadcast, or a broadcast that came in on
+    /// another interface. Routine on a shared port or a multihomed host.
+    pub listener_mismatch: u64,
     /// Datagrams shorter than the 4-octet BVLL header.
     pub too_short: u64,
     /// Datagrams whose BVLC type octet is not B/IP's (0x81), such as other
@@ -41,12 +50,6 @@ pub struct ReceiveCounters {
     /// function but it and Forwarded-NPDU not sent to this node's own
     /// address (Annex J.2, J.4).
     pub destination_mismatch: u64,
-    /// Datagrams a broadcast listener read but doesn't keep, in per-address
-    /// mode ([`set_share_port_by_address`](super::BipTransport::set_share_port_by_address)):
-    /// a unicast for an address no socket on the port is bound to, or a
-    /// broadcast that came in on another interface. Routine on a shared port
-    /// or a multihomed host.
-    pub listener_mismatch: u64,
     /// BBMD management requests (Read-BDT, Read-FDT, Register-Foreign-Device
     /// and Delete-FDT-Entry) discarded unanswered over the management rate
     /// limit.
@@ -54,10 +57,12 @@ pub struct ReceiveCounters {
     /// Frames whose BVLC function Annex J doesn't define.
     pub unknown_function: u64,
     /// Frames whose payload doesn't fit their BVLC function's layout. A
-    /// malformed BBMD request still draws its NAK, and a malformed
-    /// management response still reaches a request waiting for it, which
-    /// [`bvlc_client_snapshot`](super::BipTransport::bvlc_client_snapshot)
-    /// counts too.
+    /// malformed BBMD request still draws its NAK. A malformed BVLC-Result,
+    /// Read-BDT-ACK or Read-FDT-ACK is also counted in the
+    /// `malformed_responses` of
+    /// [`bvlc_client_snapshot`](super::BipTransport::bvlc_client_snapshot),
+    /// whether or not a request was waiting for it, and a malformed ACK
+    /// still reaches a request waiting for it.
     pub malformed_payload: u64,
     /// Frames from this node's own B/IP address, and Forwarded-NPDUs naming
     /// it as their origin: mostly its own broadcasts coming back, which is
@@ -66,10 +71,13 @@ pub struct ReceiveCounters {
     /// Forwarded-NPDUs a BBMD refused because their sender is not in its
     /// Broadcast Distribution Table.
     pub forwarded_not_from_peer: u64,
-    /// NPDUs dropped because the channel to the network layer was full (or,
-    /// once the network layer stopped reading, closed). A BBMD still
-    /// forwards a broadcast it couldn't hand up.
+    /// NPDUs dropped because the channel to the network layer was full: the
+    /// network layer is falling behind. A BBMD still forwards a broadcast it
+    /// couldn't hand up.
     pub npdu_channel_full: u64,
+    /// NPDUs dropped because the network layer had stopped reading and
+    /// closed its end of the channel, as while the stack shuts down.
+    pub npdu_channel_closed: u64,
 }
 
 /// Why the receive path dropped a datagram: one per [`ReceiveCounters`]
@@ -78,6 +86,8 @@ pub struct ReceiveCounters {
 pub(super) enum DropReason {
     /// [`ReceiveCounters::receive_errors`].
     ReceiveError,
+    /// [`ReceiveCounters::listener_mismatch`].
+    ListenerMismatch,
     /// [`ReceiveCounters::too_short`].
     TooShort,
     /// [`ReceiveCounters::not_bip`].
@@ -86,8 +96,6 @@ pub(super) enum DropReason {
     LengthMismatch,
     /// [`ReceiveCounters::destination_mismatch`].
     DestinationMismatch,
-    /// [`ReceiveCounters::listener_mismatch`].
-    ListenerMismatch,
     /// [`ReceiveCounters::rate_limited`].
     RateLimited,
     /// [`ReceiveCounters::unknown_function`].
@@ -100,27 +108,28 @@ pub(super) enum DropReason {
     ForwardedNotFromPeer,
     /// [`ReceiveCounters::npdu_channel_full`].
     NpduChannelFull,
+    /// [`ReceiveCounters::npdu_channel_closed`].
+    NpduChannelClosed,
 }
 
-/// One slot per [`DropReason`].
-const DROP_REASONS: usize = DropReason::NpduChannelFull as usize + 1;
-
 impl DropReason {
-    /// Why a datagram's header failed [`BvllFrame::decode`](bacnet_bip_codec::BvllFrame::decode).
-    pub(super) fn header(error: &BvllError) -> Self {
+    /// Why a datagram failed to decode, in its header
+    /// ([`BvllFrame::decode`](bacnet_bip_codec::BvllFrame::decode)) or its
+    /// payload ([`BvllFrame::message`](bacnet_bip_codec::BvllFrame::message)).
+    /// Every error is named, so a new one has to be filed here.
+    pub(super) fn of_decode_error(error: &BvllError) -> Self {
         match error {
             BvllError::TooShort { .. } => Self::TooShort,
             BvllError::NotBip { .. } => Self::NotBip,
-            // The third and last way the header check fails.
-            _ => Self::LengthMismatch,
-        }
-    }
-
-    /// Why a frame's payload failed [`BvllFrame::message`](bacnet_bip_codec::BvllFrame::message).
-    pub(super) fn payload(error: &BvllError) -> Self {
-        match error {
+            BvllError::LengthMismatch { .. } => Self::LengthMismatch,
             BvllError::UnknownFunction { .. } => Self::UnknownFunction,
-            _ => Self::MalformedPayload,
+            BvllError::PayloadLength { .. }
+            | BvllError::TableLength { .. }
+            | BvllError::AddressLength { .. } => Self::MalformedPayload,
+            // Encoding errors, which decoding never returns.
+            BvllError::TooLong { .. }
+            | BvllError::UndefinedResultCode { .. }
+            | BvllError::BufferExhausted { .. } => Self::MalformedPayload,
         }
     }
 }
@@ -128,12 +137,24 @@ impl DropReason {
 /// Least time between two warnings about NPDUs dropped for a full channel.
 pub(super) const CHANNEL_FULL_WARNING_INTERVAL: Duration = Duration::from_secs(10);
 
-/// The receive path's drop counts, which the transport keeps across
-/// restarts and lends to each receive loop, and the channel-full warning's
-/// throttle.
+/// The receive path's drop counts, one per [`DropReason`], which the
+/// transport keeps across restarts and lends to each receive loop, and the
+/// channel-full warning's throttle.
 #[derive(Debug, Default)]
 pub(super) struct ReceiveDrops {
-    counts: [AtomicU64; DROP_REASONS],
+    receive_errors: AtomicU64,
+    listener_mismatch: AtomicU64,
+    too_short: AtomicU64,
+    not_bip: AtomicU64,
+    length_mismatch: AtomicU64,
+    destination_mismatch: AtomicU64,
+    rate_limited: AtomicU64,
+    unknown_function: AtomicU64,
+    malformed_payload: AtomicU64,
+    own_echo: AtomicU64,
+    forwarded_not_from_peer: AtomicU64,
+    npdu_channel_full: AtomicU64,
+    npdu_channel_closed: AtomicU64,
     channel_full: Mutex<ChannelFullWarning>,
 }
 
@@ -145,9 +166,27 @@ struct ChannelFullWarning {
 }
 
 impl ReceiveDrops {
+    fn counter(&self, reason: DropReason) -> &AtomicU64 {
+        match reason {
+            DropReason::ReceiveError => &self.receive_errors,
+            DropReason::ListenerMismatch => &self.listener_mismatch,
+            DropReason::TooShort => &self.too_short,
+            DropReason::NotBip => &self.not_bip,
+            DropReason::LengthMismatch => &self.length_mismatch,
+            DropReason::DestinationMismatch => &self.destination_mismatch,
+            DropReason::RateLimited => &self.rate_limited,
+            DropReason::UnknownFunction => &self.unknown_function,
+            DropReason::MalformedPayload => &self.malformed_payload,
+            DropReason::OwnEcho => &self.own_echo,
+            DropReason::ForwardedNotFromPeer => &self.forwarded_not_from_peer,
+            DropReason::NpduChannelFull => &self.npdu_channel_full,
+            DropReason::NpduChannelClosed => &self.npdu_channel_closed,
+        }
+    }
+
     /// Count one datagram dropped for `reason`.
     pub(super) fn count(&self, reason: DropReason) {
-        self.counts[reason as usize].fetch_add(1, Ordering::Relaxed);
+        self.counter(reason).fetch_add(1, Ordering::Relaxed);
     }
 
     /// Count an NPDU dropped because the network layer's channel is full,
@@ -186,20 +225,21 @@ impl ReceiveDrops {
 
     /// The counts so far.
     pub(super) fn snapshot(&self) -> ReceiveCounters {
-        let get = |reason: DropReason| self.counts[reason as usize].load(Ordering::Relaxed);
+        let get = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         ReceiveCounters {
-            receive_errors: get(DropReason::ReceiveError),
-            too_short: get(DropReason::TooShort),
-            not_bip: get(DropReason::NotBip),
-            length_mismatch: get(DropReason::LengthMismatch),
-            destination_mismatch: get(DropReason::DestinationMismatch),
-            listener_mismatch: get(DropReason::ListenerMismatch),
-            rate_limited: get(DropReason::RateLimited),
-            unknown_function: get(DropReason::UnknownFunction),
-            malformed_payload: get(DropReason::MalformedPayload),
-            own_echo: get(DropReason::OwnEcho),
-            forwarded_not_from_peer: get(DropReason::ForwardedNotFromPeer),
-            npdu_channel_full: get(DropReason::NpduChannelFull),
+            receive_errors: get(&self.receive_errors),
+            listener_mismatch: get(&self.listener_mismatch),
+            too_short: get(&self.too_short),
+            not_bip: get(&self.not_bip),
+            length_mismatch: get(&self.length_mismatch),
+            destination_mismatch: get(&self.destination_mismatch),
+            rate_limited: get(&self.rate_limited),
+            unknown_function: get(&self.unknown_function),
+            malformed_payload: get(&self.malformed_payload),
+            own_echo: get(&self.own_echo),
+            forwarded_not_from_peer: get(&self.forwarded_not_from_peer),
+            npdu_channel_full: get(&self.npdu_channel_full),
+            npdu_channel_closed: get(&self.npdu_channel_closed),
         }
     }
 }

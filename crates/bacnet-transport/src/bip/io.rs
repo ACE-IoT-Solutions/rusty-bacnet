@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, warn};
 
 use bacnet_bip_codec::{
@@ -54,7 +54,9 @@ fn complete_pending_bvlc_response(
 }
 
 /// Hand an NPDU this transport received up to the network layer, or count
-/// it dropped when the channel is full. `frame` names its kind for the log.
+/// it dropped when the channel is full or closed. `frame` names its kind for
+/// the log. The channel's slot is reserved before the NPDU is copied, so a
+/// drop costs no allocation.
 fn hand_up(
     ctx: &RecvContext,
     npdu: &[u8],
@@ -62,17 +64,26 @@ fn hand_up(
     link_layer_group: bool,
     frame: &'static str,
 ) {
-    let received = ReceivedNpdu {
-        direct_response: None,
-        npdu: Bytes::copy_from_slice(npdu),
-        source_mac,
-        link_layer_group,
-        data_attributes: Vec::new(),
-        provenance: TransportProvenance::unverified(),
-        reply_tx: None,
-    };
-    if ctx.npdu_tx.try_send(received).is_err() {
-        ctx.drops.npdu_channel_full(frame);
+    match ctx.npdu_tx.try_reserve() {
+        Ok(permit) => permit.send(ReceivedNpdu {
+            direct_response: None,
+            npdu: Bytes::copy_from_slice(npdu),
+            source_mac,
+            link_layer_group,
+            data_attributes: Vec::new(),
+            provenance: TransportProvenance::unverified(),
+            reply_tx: None,
+        }),
+        Err(TrySendError::Full(())) => {
+            ctx.drops.npdu_channel_full(frame);
+        }
+        Err(TrySendError::Closed(())) => {
+            ctx.drops.count(DropReason::NpduChannelClosed);
+            debug!(
+                frame,
+                "B/IP: NPDU channel closed, dropping an incoming frame"
+            );
+        }
     }
 }
 
@@ -335,7 +346,7 @@ async fn handle_malformed(
     sender: ([u8; 4], u16),
     ctx: &RecvContext,
 ) {
-    ctx.drops.count(DropReason::payload(&error));
+    ctx.drops.count(DropReason::of_decode_error(&error));
     if let Some(nak) = frame.function.nak() {
         debug!(error = %error, "Refusing a malformed BVLL management request");
         send_bvlc_result(&ctx.socket, sender, nak).await;

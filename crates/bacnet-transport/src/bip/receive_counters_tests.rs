@@ -198,6 +198,35 @@ async fn a_broadcast_listener_counts_what_it_does_not_keep() {
     assert_eq!(node.counters(), only(|c| c.listener_mismatch = 2));
 }
 
+/// What reaches a listener without being this link's broadcast is the
+/// listener's to drop, whatever its BVLC function would make of the
+/// address: a unicast to another local address that no socket on the port
+/// is bound to (which reaches the wildcard listener of macOS and the BSDs),
+/// and another subnet's broadcast.
+#[tokio::test]
+async fn a_broadcast_listener_drops_what_is_not_this_links_broadcast() {
+    let mut node = Node::new(None, 8).await;
+    let listener = Arrival::BroadcastListener;
+    let unicast = frame(BvlcFunction::ORIGINAL_UNICAST_NPDU, NPDU);
+    let unbound = Ipv4Addr::new(192, 0, 2, 11);
+    node.feed_on(listener, None, &unicast, PEER, unbound).await;
+    let broadcast = frame(BvlcFunction::ORIGINAL_BROADCAST_NPDU, NPDU);
+    let other_subnet = Ipv4Addr::new(10, 0, 0, 255);
+    node.feed_on(listener, None, &broadcast, PEER, other_subnet)
+        .await;
+    // Not even a BVLL header is read.
+    node.feed_on(listener, None, &[0x00], PEER, unbound).await;
+    node.nothing_handed_up();
+    assert_eq!(node.counters(), only(|c| c.listener_mismatch = 3));
+
+    // Where the broadcast address is the interface's own, as in a loopback
+    // test, a unicast sent to it is still not the listener's to keep.
+    node.ctx.broadcast_addr = LOCAL;
+    node.feed_on(listener, None, &unicast, PEER, LOCAL).await;
+    node.nothing_handed_up();
+    assert_eq!(node.counters(), only(|c| c.listener_mismatch = 4));
+}
+
 #[tokio::test]
 async fn an_over_limit_management_request_counts_as_rate_limited() {
     let node = Node::new(None, 8).await;
@@ -308,6 +337,37 @@ async fn a_full_channel_counts_each_npdu_it_drops() {
     let distribute = frame(BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK, NPDU);
     node.feed(&distribute, foreign, LOCAL).await;
     assert_eq!(node.counters(), only(|c| c.npdu_channel_full = 2));
+}
+
+/// Once the network layer has closed its end, every NPDU is dropped as
+/// closed, not full, the BBMD's included.
+#[tokio::test]
+async fn a_closed_channel_counts_each_npdu_it_drops() {
+    let mut node = Node::new(None, 8).await;
+    node.rx.close();
+    let unicast = frame(BvlcFunction::ORIGINAL_UNICAST_NPDU, NPDU);
+    node.feed(&unicast, PEER, LOCAL).await;
+    let broadcast = frame(BvlcFunction::ORIGINAL_BROADCAST_NPDU, NPDU);
+    node.feed(&broadcast, PEER, SUBNET_BROADCAST).await;
+    node.feed(&forwarded_wire(STATION, NPDU), PEER, SUBNET_BROADCAST)
+        .await;
+    assert_eq!(node.counters(), only(|c| c.npdu_channel_closed = 3));
+
+    let peer_row = BdtEntry {
+        ip: PEER.0,
+        port: PEER.1,
+        broadcast_mask: [255, 255, 255, 255],
+    };
+    let mut state = bbmd(vec![peer_row]);
+    let foreign = ([192, 0, 2, 40], 0xBAC0);
+    let registered = state.register_foreign_device(foreign.0, foreign.1, 60);
+    assert_eq!(registered, BvlcResultCode::SUCCESSFUL_COMPLETION);
+    let mut node = Node::new(Some(state), 8).await;
+    node.rx.close();
+    node.feed(&forwarded_wire(STATION, NPDU), PEER, LOCAL).await;
+    let distribute = frame(BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK, NPDU);
+    node.feed(&distribute, foreign, LOCAL).await;
+    assert_eq!(node.counters(), only(|c| c.npdu_channel_closed = 2));
 }
 
 /// At most one warning per interval, carrying the drops since the last one.

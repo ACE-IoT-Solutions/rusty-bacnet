@@ -302,9 +302,59 @@ pub(super) fn arrived_elsewhere(listener_interface: Option<u32>, arrival: Option
     matches!((listener_interface, arrival), (Some(own), Some(arrival)) if arrival != 0 && own != arrival)
 }
 
+/// Whether a broadcast listener keeps a datagram: one sent to this link's
+/// broadcast address that came in on the transport's own interface. Unicast
+/// to a local address no socket on the port is bound to also reaches a
+/// wildcard listener (macOS and the BSDs), and a listener gets the
+/// broadcasts of every interface on the port (#1538). Neither is this
+/// transport's, and another node on this port may share the listener, so
+/// whatever such a datagram holds, it is counted and dropped before its
+/// frame is read.
+fn listener_keeps(
+    received: &ReceivedDatagram,
+    local: &IngressAddresses,
+    ctx: &RecvContext,
+) -> bool {
+    let delivery = Delivery::of(
+        received.destination,
+        ctx.broadcast_addr,
+        received.os_group_delivery,
+    );
+    if delivery != Delivery::Broadcast {
+        ctx.drops.count(DropReason::ListenerMismatch);
+        debug!(
+            destination = %received.destination,
+            "Dropping a datagram not sent to this link's broadcast address on the B/IP broadcast listener"
+        );
+        return false;
+    }
+    let (own, arrival) = (local.listener_interface, received.arrival_index);
+    if !arrived_elsewhere(own, arrival) {
+        return true;
+    }
+    ctx.drops.count(DropReason::ListenerMismatch);
+    if local.interface_mismatch_seen.swap(true, Ordering::Relaxed) {
+        debug!(
+            ?own,
+            ?arrival,
+            "Dropping a broadcast that arrived on another interface"
+        );
+    } else {
+        // The index was resolved at start; an interface that came back
+        // with a new one needs a restart.
+        warn!(
+            ?own,
+            ?arrival,
+            "Dropping a broadcast that arrived on another interface than the B/IP \
+             transport's; if its interface changed since start, restart the transport"
+        );
+    }
+    false
+}
+
 /// Decode one received datagram and hand it to the BVLL handler, unless its
-/// UDP source is a group address, its BVLC function does not fit its
-/// destination, or it is not a broadcast and came to the broadcast listener.
+/// UDP source is a group address, a broadcast listener doesn't keep it, or
+/// its BVLC function does not fit its destination.
 pub(super) async fn handle_datagram(
     data: &[u8],
     received: &ReceivedDatagram,
@@ -322,12 +372,15 @@ pub(super) async fn handle_datagram(
     if !ctx.group_sources.admits_sender(peer) {
         return;
     }
+    if arrival == Arrival::BroadcastListener && !listener_keeps(received, local, ctx) {
+        return;
+    }
     // Per datagram, so at debug: a flood of them must not flood the log at
     // warn. The counters carry the signal (#1624).
     let frame = match BvllFrame::decode(data) {
         Ok(frame) => frame,
         Err(e) => {
-            ctx.drops.count(DropReason::header(&e));
+            ctx.drops.count(DropReason::of_decode_error(&e));
             debug!(error = %e, "Failed to decode BVLL frame");
             return;
         }
@@ -349,39 +402,15 @@ pub(super) async fn handle_datagram(
         );
         return;
     };
-    // Unicast to an address no other socket on the port is bound to also
-    // reaches a wildcard socket. It is not this node's (a socket bound to its
-    // own address takes that), and another node on this port may share the
-    // listener, so the listener keeps broadcasts only.
+    // Where the configured broadcast address is also the interface's own,
+    // as in a loopback test, a unicast function sent to it passes both
+    // checks above as a unicast; the listener still keeps broadcasts only.
     if arrival == Arrival::BroadcastListener && delivery != Delivery::Broadcast {
         ctx.drops.count(DropReason::ListenerMismatch);
         debug!(
             destination = %received.destination,
             "Dropping unicast on the B/IP broadcast listener"
         );
-        return;
-    }
-    if arrival == Arrival::BroadcastListener
-        && arrived_elsewhere(local.listener_interface, received.arrival_index)
-    {
-        ctx.drops.count(DropReason::ListenerMismatch);
-        let (own, arrival) = (local.listener_interface, received.arrival_index);
-        if local.interface_mismatch_seen.swap(true, Ordering::Relaxed) {
-            debug!(
-                ?own,
-                ?arrival,
-                "Dropping a broadcast that arrived on another interface"
-            );
-        } else {
-            // The index was resolved at start; an interface that came back
-            // with a new one needs a restart.
-            warn!(
-                ?own,
-                ?arrival,
-                "Dropping a broadcast that arrived on another interface than the B/IP \
-                 transport's; if its interface changed since start, restart the transport"
-            );
-        }
         return;
     }
     handle_bvll_message(frame, (peer.ip().octets(), peer.port()), delivery, ctx).await;
