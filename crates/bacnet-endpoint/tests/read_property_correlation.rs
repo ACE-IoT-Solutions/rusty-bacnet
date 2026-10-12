@@ -63,7 +63,7 @@ fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
 }
 
 enum Reader {
-    Standalone(BACnetClient<LoopbackTransport>),
+    Standalone(Box<BACnetClient<LoopbackTransport>>),
     Endpoint(Box<EndpointSession<LoopbackTransport>>),
 }
 impl Reader {
@@ -131,13 +131,13 @@ async fn correlation_matrix(endpoint: bool, routed: bool) {
         session.start().await.unwrap();
         Reader::Endpoint(Box::new(session))
     } else {
-        Reader::Standalone(
+        Reader::Standalone(Box::new(
             BACnetClient::generic_builder()
                 .transport(transport)
                 .build()
                 .await
                 .unwrap(),
-        )
+        ))
     };
     let concrete = oid(ObjectType::ANALOG_INPUT, 7);
     let device_alias = oid(ObjectType::DEVICE, ObjectIdentifier::MAX_INSTANCE);

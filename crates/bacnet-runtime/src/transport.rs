@@ -468,7 +468,8 @@ mod tests {
 
     #[test]
     fn sc_config_rejects_each_invalid_public_boundary() {
-        let cases: Vec<Box<dyn FnOnce(&mut ScConfig)>> = vec![
+        type ScMutation = Box<dyn FnOnce(&mut ScConfig)>;
+        let cases: Vec<ScMutation> = vec![
             Box::new(|value| value.primary_hub = "ws://insecure.example.test".to_owned()),
             Box::new(|value| {
                 value

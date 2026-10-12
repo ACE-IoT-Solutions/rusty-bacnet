@@ -272,7 +272,7 @@ fn decode_sha256(value: &str) -> Result<[u8; 32], RuntimeError> {
         ));
     }
     let mut result = [0; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let pair = std::str::from_utf8(pair).expect("hexadecimal input is UTF-8");
         result[index] = u8::from_str_radix(pair, 16).map_err(|_| {
             RuntimeError::invalid_config(

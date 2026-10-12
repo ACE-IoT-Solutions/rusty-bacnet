@@ -474,9 +474,7 @@ impl BacnetRuntime {
 
         let attachment_stop = self.inner.registry.write().await.stop_all().await;
         let remaining_attachments = self.inner.registry.read().await.len();
-        if let Err(error) = attachment_stop {
-            return Err(error);
-        }
+        attachment_stop?;
         Ok(StopReport {
             newly_stopped,
             tasks_joined,

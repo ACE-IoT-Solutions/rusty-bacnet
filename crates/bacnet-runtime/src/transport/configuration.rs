@@ -313,6 +313,7 @@ impl RuntimeTransport {
                         max_master: mstp.max_master,
                         max_info_frames: mstp.max_info_frames,
                         baud_rate: mstp.baud,
+                        extended_frames: false,
                     },
                 );
                 let client = BACnetClient::generic_builder()

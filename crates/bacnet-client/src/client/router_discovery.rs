@@ -99,7 +99,7 @@ fn merge_router_announcement(
     message: &ReceivedNetworkControl,
 ) -> Result<(), Error> {
     let payload = &message.npdu.payload;
-    if payload.is_empty() || payload.len() % 2 != 0 {
+    if payload.is_empty() || !payload.len().is_multiple_of(2) {
         return Err(Error::decoding(
             0,
             "I-Am-Router-To-Network payload must contain one or more 16-bit networks",
@@ -118,8 +118,8 @@ fn merge_router_announcement(
         )));
     }
     let advertised = routers.entry(key).or_default();
-    for chunk in payload.chunks_exact(2) {
-        let network = u16::from_be_bytes([chunk[0], chunk[1]]);
+    for chunk in payload.as_chunks::<2>().0 {
+        let network = u16::from_be_bytes(*chunk);
         if network == 0 || network == u16::MAX {
             return Err(Error::decoding(
                 0,

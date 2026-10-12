@@ -570,7 +570,7 @@ mod registration_health_tests {
 
     #[test]
     fn rejected_expired_and_recovered_registration_preserves_order_and_running_state() {
-        let mut health = vec![attachment(2, "foreign"), attachment(1, "normal")];
+        let mut health = [attachment(2, "foreign"), attachment(1, "normal")];
 
         let rejected = status(ForeignDeviceRegistrationState::Rejected);
         apply_foreign_registration_health(&mut health[0], Some(&rejected));

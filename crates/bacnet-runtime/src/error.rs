@@ -78,6 +78,7 @@ impl RuntimeError {
         }
     }
 
+    #[cfg(any(not(feature = "mstp"), not(feature = "sc")))]
     pub(crate) fn unsupported_transport(attachment_id: AttachmentId, transport: &str) -> Self {
         Self {
             code: ErrorCode::UnsupportedTransport,
@@ -122,6 +123,7 @@ impl RuntimeError {
         }
     }
 
+    #[cfg(feature = "mstp")]
     pub(crate) fn serial_unavailable(
         attachment_id: AttachmentId,
         error: bacnet_types::error::Error,
@@ -134,6 +136,7 @@ impl RuntimeError {
         }
     }
 
+    #[cfg(feature = "sc")]
     pub(crate) fn tls_config(
         attachment_id: AttachmentId,
         error: bacnet_types::error::Error,
@@ -146,6 +149,7 @@ impl RuntimeError {
         }
     }
 
+    #[cfg(feature = "sc")]
     pub(crate) fn sc_connect(
         attachment_id: AttachmentId,
         error: bacnet_types::error::Error,

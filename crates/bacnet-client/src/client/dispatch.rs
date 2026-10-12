@@ -480,15 +480,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 source_network: src_net,
                                 source_address: src_addr.clone(),
                             };
-                            let bip_metadata = provenance.transport_metadata().and_then(
-                                |metadata| match metadata {
-                                    bacnet_transport::port::TransportMetadata::Bip {
-                                        bvlc_function,
-                                        udp_source,
-                                        forwarded_from,
-                                    } => Some((bvlc_function, udp_source, forwarded_from)),
-                                },
-                            );
+                            let bip_metadata =
+                                provenance
+                                    .transport_metadata()
+                                    .map(|metadata| match metadata {
+                                        bacnet_transport::port::TransportMetadata::Bip {
+                                            bvlc_function,
+                                            udp_source,
+                                            forwarded_from,
+                                        } => (bvlc_function, udp_source, forwarded_from),
+                                    });
                             let _ = iam_tx.send(IAmEvent {
                                 device_instance: i_am.object_identifier.instance_number(),
                                 object_identifier: i_am.object_identifier,
