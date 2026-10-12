@@ -164,6 +164,44 @@ fn a_missed_generation_slot_comes_round_again_and_is_counted() {
     }
 }
 
+/// The repeated window's edges, to the microsecond, and a deadline serviced
+/// ten hours late. Station 3 of 0-3: its first slot is 530-540 ms, and the
+/// window comes round every 40 ms. A window includes its start and excludes
+/// its end, as the first slot does.
+#[test]
+fn a_repeated_generation_window_has_exact_edges() {
+    // A window ten hours on: 900,000 whole cycles after the first slot.
+    const LATE: u64 = 530_000 + 40_000 * 900_000;
+    // When the deadline is serviced, and when the token is generated, in µs.
+    let cases = [
+        // The first slot's end: the next window.
+        (540_000, 570_000),
+        // Inside and at the end of the window after.
+        (570_000, 570_000),
+        (579_999, 579_999),
+        (580_000, 610_000),
+        // Ten hours late: 3 ms into a window, then at its end.
+        (LATE + 3_000, LATE + 3_000),
+        (LATE + 10_000, LATE + 40_000),
+    ];
+    for (serviced, generated) in cases {
+        let mut rx = [0; 1024];
+        let mut core =
+            MasterCore::new(standard_config(3, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        core.on_deadline(at(500)).unwrap();
+        let serviced = Instant::from_micros(serviced);
+        let generated = Instant::from_micros(generated);
+        core.on_deadline(serviced).unwrap();
+        if generated != serviced {
+            assert_eq!(core.state(), MasterState::NoToken, "{serviced:?}");
+            assert_eq!(core.next_deadline(), Some(generated), "{serviced:?}");
+            core.on_deadline(generated).unwrap();
+        }
+        assert_eq!(core.state(), MasterState::PollForMaster, "{serviced:?}");
+        assert_eq!(core.counters().missed_generation_slots, 1);
+    }
+}
+
 #[test]
 fn poll_for_master_uses_usage_timeout_not_slot() {
     let mut rx = [0; 1024];

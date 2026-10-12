@@ -169,6 +169,32 @@ impl Duration {
     pub const fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
+
+    /// The remainder of `self` divided by `divisor`, for a divisor of at
+    /// least 1 µs and under [`Self::SHORT_DIVISOR_LIMIT`]; `None` for any
+    /// other divisor.
+    ///
+    /// It divides one octet at a time with 32-bit operations, so a 32-bit
+    /// target links no 64-bit division routine for it. The remainder so far
+    /// stays below the divisor, so shifting it left by an octet still fits a
+    /// `u32`.
+    pub(crate) const fn rem_short(self, divisor: Self) -> Option<Self> {
+        if divisor.0 == 0 || divisor.0 >= Self::SHORT_DIVISOR_LIMIT.0 {
+            return None;
+        }
+        let divisor = divisor.0 as u32;
+        let octets = self.0.to_be_bytes();
+        let mut remainder = 0u32;
+        let mut index = 0;
+        while index < octets.len() {
+            remainder = ((remainder << 8) | octets[index] as u32) % divisor;
+            index += 1;
+        }
+        Some(Self(remainder as u64))
+    }
+
+    /// The bound on [`Self::rem_short`]'s divisor: 2^24 µs, about 16.8 s.
+    pub(crate) const SHORT_DIVISOR_LIMIT: Self = Self(1 << 24);
 }
 
 impl Add for Duration {
@@ -321,6 +347,39 @@ mod tests {
             Duration::ZERO
         );
         assert_eq!(now - Instant::from_micros(4), Duration::from_micros(6));
+    }
+
+    #[test]
+    fn short_remainders_match_the_64_bit_ones() {
+        let limit = Duration::SHORT_DIVISOR_LIMIT.as_micros();
+        for divisor in [1, 2, 10_000, 1_280_000, limit - 1] {
+            for value in [0, 1, divisor - 1, divisor, u64::MAX, u64::MAX - 7, 1 << 40] {
+                assert_eq!(
+                    Duration::from_micros(value).rem_short(Duration::from_micros(divisor)),
+                    Some(Duration::from_micros(value % divisor)),
+                    "{value} % {divisor}"
+                );
+            }
+        }
+        for divisor in [0, limit, u64::MAX] {
+            assert_eq!(
+                Duration::from_micros(5).rem_short(Duration::from_micros(divisor)),
+                None
+            );
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn short_remainders_match_for_any_value(
+            value in proptest::prelude::any::<u64>(),
+            divisor in 1u64..(1 << 24),
+        ) {
+            proptest::prop_assert_eq!(
+                Duration::from_micros(value).rem_short(Duration::from_micros(divisor)),
+                Some(Duration::from_micros(value % divisor))
+            );
+        }
     }
 
     #[test]
