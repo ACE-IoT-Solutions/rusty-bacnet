@@ -51,7 +51,7 @@ pub mod primitives;
 
 /// BACnet MAC address — stack-allocated for typical sizes (≤6 bytes).
 ///
-/// BACnet MAC addresses are 1 byte (MS/TP), 6 bytes (Ethernet/IP),
-/// 3 bytes (SC VMAC), or 18 bytes (BIP6 IP:port). SmallVec avoids
-/// heap allocation for the common cases.
+/// The data links this stack serves use 1-octet (MS/TP), 3-octet (the
+/// B/IPv6 VMAC) and 6-octet (B/IP, Ethernet, the B/SC VMAC) MACs, so SmallVec
+/// keeps every one of them inline.
 pub type MacAddr = smallvec::SmallVec<[u8; 6]>;

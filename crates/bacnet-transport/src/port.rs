@@ -2,8 +2,11 @@
 //!
 //! MAC addresses are opaque byte slices whose format depends on the transport:
 //! - BACnet/IP (Annex J): 6 bytes (4-byte IPv4 + 2-byte port, big-endian)
+//! - BACnet/IPv6 (Annex U): 3 bytes, the node's VMAC (U.1.3); the transport
+//!   maps it to the IPv6 address and port itself
 //! - BACnet/Ethernet (Clause 7): 6 bytes (IEEE 802 MAC)
 //! - MS/TP (Clause 9): 1 byte (station address 0-254)
+//! - BACnet/SC (Annex AB): 6 bytes, the node's VMAC
 
 pub use crate::direct_response::{DirectResponse, DirectResponseScope};
 use bacnet_types::error::Error;

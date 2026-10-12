@@ -127,7 +127,8 @@ Local nonrouter Number controls take a separate bounded path: one serial state o
 
 MAC address format varies by transport:
 - **BIP**: 6 bytes (4-byte IPv4 + 2-byte port, big-endian)
-- **BIP6**: 18 bytes (16-byte IPv6 + 2-byte port)
+- **BIP6**: 3 bytes (the node's VMAC, Annex U.1.3); the transport maps VMACs to
+  IPv6 addresses and ports itself, resolving unknown ones (U.5)
 - **MS/TP**: 1 byte (station address 0-254)
 - **BACnet/SC**: 6 bytes (VMAC)
 - **Ethernet**: 6 bytes (IEEE 802 MAC)
