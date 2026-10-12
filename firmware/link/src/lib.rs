@@ -13,11 +13,16 @@
 //! LTO image, code can't be attributed to a crate reliably.
 //!
 //! A scenario is one `no_std` function that returns a summary of what it
-//! saw. The host tests in `tests/` run each scenario natively and compare
-//! the whole summary; that is where behaviour is checked. Each image
-//! (`src/bin/`) calls its scenario from its reset entry, so building it
-//! proves that the stack links without `std`, and for `mstp` and `bip`
-//! without an allocator. Nothing runs the images.
+//! saw, and each module holds the summary of a good run: [`mstp::EXPECTED`],
+//! [`bip::EXPECTED`] and `apdu::expected()`. The host tests in `tests/` run
+//! each scenario natively and compare the whole summary with it; that is
+//! where behaviour is checked. Each image (`src/bin/`) calls its scenario
+//! from its reset entry, so building it proves that the stack links without
+//! `std`, and for `mstp` and `bip` without an allocator. CI never runs the
+//! images. Their emulation build, with the `emulate` feature and a board's,
+//! runs under QEMU by hand: each image checks its summary against the same
+//! expected one and reports through semihosting (docs/ci.md, "Emulation
+//! (manual)").
 //!
 //! The `alloc` feature, on by default, brings in the `apdu` module and its
 //! dependencies. The `mstp` and `bip` images build without it: with it, this
@@ -40,8 +45,9 @@ pub mod mstp;
 
 /// Stop where the panic happened. The handler never reads the panic's
 /// message, so the formatting code behind it can be left out of an image.
-/// The host tests get std's handler instead.
-#[cfg(target_os = "none")]
+/// The host tests get std's handler instead, and the emulation build the
+/// images' own, which reports the panic through semihosting.
+#[cfg(all(target_os = "none", not(feature = "emulate")))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     loop {

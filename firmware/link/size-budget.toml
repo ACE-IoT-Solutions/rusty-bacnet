@@ -12,7 +12,8 @@
 #   whatever RAM is left, doesn't count, but its .heap (`_heap_size`, 0
 #   here) does. The apdu image's heap is a 1 KiB static arena in .bss
 #   (`firmware_link::apdu::ARENA`). The stack the code uses at run time
-#   isn't measured.
+#   isn't budgeted; the manual emulation check measures it (docs/ci.md,
+#   "Emulation (manual)").
 # - fmt_functions, div64_functions: counts of functions, not octets, 0 for
 #   mstp and bip. A 64-bit division by a runtime value links
 #   compiler-builtins' routine, about 0.9 KB, which the 12% headroom would

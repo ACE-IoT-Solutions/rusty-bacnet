@@ -49,6 +49,11 @@ step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.
 step "clippy (no_std types, encoding and services with alloc, all targets)"
 cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
 step "firmware link test (bare-metal images, size budgets)"; bash scripts/ci/check-firmware-link.sh
+# The firmware images under QEMU: a manual check, never part of this run.
+# Uncomment to opt in; it needs Docker running (or add --native for a
+# Homebrew QEMU) and thumbv7em-none-eabihf too. See docs/ci.md, "Emulation
+# (manual)".
+# step "firmware images under QEMU (manual)"; bash scripts/emu/emulate-firmware.sh
 step "rustdoc (every macOS feature, private items)"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$features"
 step "rustdoc (PyO3 bindings, private items)"

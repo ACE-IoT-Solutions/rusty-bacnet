@@ -23,10 +23,14 @@
 //! The B/IPv6 part ([`ipv6::run`]) does the same for its twelve messages and
 //! its own rejections.
 //!
-//! `tests/bip.rs` runs it natively and compares the whole summary; the `bip`
-//! image (`src/bin/bip.rs`) links it.
+//! `tests/bip.rs` runs it natively and compares the whole summary with
+//! [`EXPECTED`]; the `bip` image (`src/bin/bip.rs`) links it, and its
+//! emulation build checks the emulated CPU's summary against the same.
 
+mod expected;
 pub mod ipv6;
+
+pub use expected::EXPECTED;
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
