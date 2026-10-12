@@ -1,0 +1,329 @@
+//! Network-layer message payloads: layouts, whole-or-nothing parsing, and
+//! agreement with `bacnet-types` and `bacnet-encoding` where they have the
+//! same thing.
+
+use bacnet_encoding::npdu::{decode_npdu, decode_reject_message_to_network};
+use bacnet_router_core::message::{
+    code, parse_disconnect, reason, EstablishConnection, ICouldBeRouter, NetworkNumberIs, Networks,
+    Reject, RoutingEntries, RoutingEntry, WhoIsRouter,
+};
+use bacnet_router_core::npdu::Npdu;
+use bacnet_types::enums::{NetworkMessageType, RejectMessageReason};
+use bytes::Bytes;
+use proptest::prelude::*;
+
+#[test]
+fn codes_and_reasons_match_bacnet_types() {
+    let codes = [
+        (
+            code::WHO_IS_ROUTER_TO_NETWORK,
+            NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK,
+        ),
+        (
+            code::I_AM_ROUTER_TO_NETWORK,
+            NetworkMessageType::I_AM_ROUTER_TO_NETWORK,
+        ),
+        (
+            code::I_COULD_BE_ROUTER_TO_NETWORK,
+            NetworkMessageType::I_COULD_BE_ROUTER_TO_NETWORK,
+        ),
+        (
+            code::REJECT_MESSAGE_TO_NETWORK,
+            NetworkMessageType::REJECT_MESSAGE_TO_NETWORK,
+        ),
+        (
+            code::ROUTER_BUSY_TO_NETWORK,
+            NetworkMessageType::ROUTER_BUSY_TO_NETWORK,
+        ),
+        (
+            code::ROUTER_AVAILABLE_TO_NETWORK,
+            NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK,
+        ),
+        (
+            code::INITIALIZE_ROUTING_TABLE,
+            NetworkMessageType::INITIALIZE_ROUTING_TABLE,
+        ),
+        (
+            code::INITIALIZE_ROUTING_TABLE_ACK,
+            NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK,
+        ),
+        (
+            code::ESTABLISH_CONNECTION_TO_NETWORK,
+            NetworkMessageType::ESTABLISH_CONNECTION_TO_NETWORK,
+        ),
+        (
+            code::DISCONNECT_CONNECTION_TO_NETWORK,
+            NetworkMessageType::DISCONNECT_CONNECTION_TO_NETWORK,
+        ),
+        (
+            code::WHAT_IS_NETWORK_NUMBER,
+            NetworkMessageType::WHAT_IS_NETWORK_NUMBER,
+        ),
+        (
+            code::NETWORK_NUMBER_IS,
+            NetworkMessageType::NETWORK_NUMBER_IS,
+        ),
+        (code::SECURITY_FIRST, NetworkMessageType::CHALLENGE_REQUEST),
+        (code::SECURITY_LAST, NetworkMessageType::SET_MASTER_KEY),
+    ];
+    for (core, types) in codes {
+        assert_eq!(core, types.to_raw());
+    }
+    let reasons = [
+        (reason::OTHER, RejectMessageReason::OTHER),
+        (
+            reason::NOT_DIRECTLY_CONNECTED,
+            RejectMessageReason::NOT_DIRECTLY_CONNECTED,
+        ),
+        (reason::ROUTER_BUSY, RejectMessageReason::ROUTER_BUSY),
+        (
+            reason::UNKNOWN_MESSAGE_TYPE,
+            RejectMessageReason::UNKNOWN_MESSAGE_TYPE,
+        ),
+        (
+            reason::MESSAGE_TOO_LONG,
+            RejectMessageReason::MESSAGE_TOO_LONG,
+        ),
+        (
+            reason::ADDRESSING_ERROR,
+            RejectMessageReason::ADDRESSING_ERROR,
+        ),
+    ];
+    for (core, types) in reasons {
+        assert_eq!(core, types.to_raw());
+    }
+}
+
+/// An independent walk of a routing-table payload, as the hosted router's
+/// tests make it: the count, then each entry, with nothing left over.
+fn peer_entries(payload: &[u8]) -> Option<Vec<(u16, u8, Vec<u8>)>> {
+    let (&count, mut rest) = payload.split_first()?;
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        if rest.len() < 4 {
+            return None;
+        }
+        let info_len = usize::from(rest[3]);
+        let info = rest.get(4..4 + info_len)?.to_vec();
+        entries.push((u16::from_be_bytes([rest[0], rest[1]]), rest[2], info));
+        rest = &rest[4 + info_len..];
+    }
+    rest.is_empty().then_some(entries)
+}
+
+/// A routing-table payload: usually a count and entries that agree, any of
+/// it cut short or run on.
+fn routing_payload() -> impl Strategy<Value = Vec<u8>> {
+    (
+        prop::collection::vec(
+            (
+                any::<u16>(),
+                any::<u8>(),
+                prop::collection::vec(any::<u8>(), 0..4),
+            ),
+            0..6,
+        ),
+        prop_oneof![3 => Just(None), 1 => any::<u8>().prop_map(Some)],
+        prop::collection::vec(any::<u8>(), 0..3),
+        any::<bool>(),
+    )
+        .prop_map(|(entries, count, tail, run_on)| {
+            let mut payload = vec![count.unwrap_or(entries.len() as u8)];
+            for (network, port_id, info) in entries {
+                payload.extend_from_slice(&network.to_be_bytes());
+                payload.extend_from_slice(&[port_id, info.len() as u8]);
+                payload.extend_from_slice(&info);
+            }
+            if run_on {
+                payload.extend_from_slice(&tail);
+            }
+            payload
+        })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2048))]
+
+    /// The reject view takes exactly what bacnet-encoding's does, and writes
+    /// it back unchanged.
+    #[test]
+    fn reject_agrees_with_bacnet_encoding(payload in prop::collection::vec(any::<u8>(), 0..5)) {
+        let view = Reject::parse(&payload);
+        let decoded = decode_reject_message_to_network(&payload).ok();
+        prop_assert_eq!(view.is_some(), decoded.is_some());
+        if let (Some(view), Some(decoded)) = (view, decoded) {
+            prop_assert_eq!(view.reason, decoded.reason.to_raw());
+            prop_assert_eq!(view.network, decoded.dnet);
+            prop_assert_eq!(&view.to_bytes()[..], &payload[..]);
+        }
+    }
+
+    /// The routing-table view accepts what the independent walk accepts,
+    /// reads the same entries, and writes them back as it read them when
+    /// they carry no Port Info.
+    #[test]
+    fn routing_entries_agree_with_an_independent_walk(payload in routing_payload()) {
+        let view = RoutingEntries::parse(&payload);
+        let walked = peer_entries(&payload);
+        prop_assert_eq!(view.is_some(), walked.is_some());
+        let (Some(view), Some(walked)) = (view, walked) else {
+            return Ok(());
+        };
+        prop_assert_eq!(usize::from(view.count()), walked.len());
+        let read: Vec<_> = view
+            .iter()
+            .map(|entry| (entry.network, entry.port_id, entry.port_info.to_vec()))
+            .collect();
+        prop_assert_eq!(&read, &walked);
+        if walked.iter().all(|(_, _, info)| info.is_empty()) {
+            let mut out = vec![0u8; payload.len()];
+            let len = RoutingEntries::write(
+                walked.iter().map(|(network, port_id, _)| (*network, *port_id)),
+                &mut out,
+            );
+            prop_assert_eq!(len, Some(payload.len()));
+            prop_assert_eq!(out, payload);
+        }
+    }
+
+    /// A network list reads back what was written, and an odd length is no
+    /// list at all.
+    #[test]
+    fn networks_round_trip(networks in prop::collection::vec(any::<u16>(), 0..8), odd in any::<u8>()) {
+        let mut out = vec![0u8; networks.len() * 2];
+        prop_assert_eq!(Networks::write(networks.iter().copied(), &mut out), Some(out.len()));
+        let view = Networks::parse(&out).unwrap();
+        prop_assert_eq!(view.len(), networks.len());
+        prop_assert_eq!(view.is_empty(), networks.is_empty());
+        prop_assert_eq!(view.as_bytes(), &out[..]);
+        prop_assert_eq!(view.iter().collect::<Vec<_>>(), networks.clone());
+        for network in &networks {
+            prop_assert!(view.contains(*network));
+        }
+        out.push(odd);
+        prop_assert_eq!(Networks::parse(&out), None);
+    }
+}
+
+#[test]
+fn writers_refuse_what_does_not_fit() {
+    // A refusal writes nothing at all, not even the part that would fit.
+    let untouched = |out: &[u8]| out.iter().all(|&octet| octet == 0xA5);
+    let mut out = [0xA5u8; 5];
+    assert_eq!(Networks::write([1, 2, 3], &mut out), None);
+    assert!(untouched(&out));
+    assert_eq!(RoutingEntries::write([(1, 1), (2, 1)], &mut out), None);
+    assert!(untouched(&out));
+    assert_eq!(RoutingEntries::write([], &mut []), None);
+
+    assert_eq!(Networks::write([1, 2], &mut out), Some(4));
+    assert_eq!(out, [0x00, 0x01, 0x00, 0x02, 0xA5]);
+    assert_eq!(RoutingEntries::write([(1, 1)], &mut out), Some(5));
+    assert_eq!(out, [1, 0x00, 0x01, 1, 0]);
+    assert_eq!(RoutingEntries::write([], &mut out[..1]), Some(1));
+    assert_eq!(out[0], 0);
+
+    // The count octet names at most 255 entries.
+    let mut big = vec![0xA5u8; 1 + 256 * RoutingEntries::ENTRY_LEN];
+    assert_eq!(
+        RoutingEntries::write((0..256).map(|n| (n, 1)), &mut big),
+        None
+    );
+    assert!(untouched(&big));
+    let len = RoutingEntries::write((0..255).map(|n| (n, 1)), &mut big).unwrap();
+    assert_eq!(RoutingEntries::parse(&big[..len]).unwrap().count(), 255);
+}
+
+#[test]
+fn routing_entries_tell_a_query_from_an_update_ack() {
+    let query = RoutingEntries::parse(&[0]).unwrap();
+    assert_eq!(query.count(), 0);
+    assert_eq!(query.iter().count(), 0);
+    // An Ack to an update has no data at all, not even a count.
+    assert_eq!(RoutingEntries::parse(&[]), None);
+    let entries = RoutingEntries::parse(&[1, 0x0B, 0xB8, 0x02, 0x01, 0xAA]).unwrap();
+    assert_eq!(
+        entries.iter().collect::<Vec<_>>(),
+        [RoutingEntry {
+            network: 3000,
+            port_id: 2,
+            port_info: &[0xAA],
+        }]
+    );
+}
+
+#[test]
+fn fixed_payloads_take_exactly_their_length() {
+    assert_eq!(WhoIsRouter::parse(&[]), Some(WhoIsRouter::All));
+    assert_eq!(
+        WhoIsRouter::parse(&[0x0B, 0xB8]),
+        Some(WhoIsRouter::Network(3000))
+    );
+    for bad in [&[0x0B][..], &[0x0B, 0xB8, 0x00]] {
+        // A bad tail never widens a scoped question to every network.
+        assert_eq!(WhoIsRouter::parse(bad), None);
+    }
+
+    assert_eq!(
+        ICouldBeRouter::parse(&[0x0B, 0xB8, 7]),
+        Some(ICouldBeRouter {
+            network: 3000,
+            performance_index: 7,
+        })
+    );
+    assert_eq!(
+        EstablishConnection::parse(&[0x0B, 0xB8, 0]),
+        Some(EstablishConnection {
+            network: 3000,
+            termination_time: 0,
+        })
+    );
+    assert_eq!(parse_disconnect(&[0x0B, 0xB8]), Some(3000));
+    let number = NetworkNumberIs::parse(&[0x00, 0x05, 1]).unwrap();
+    assert_eq!((number.network, number.is_configured()), (5, true));
+    assert_eq!(number.to_bytes(), [0x00, 0x05, 1]);
+    assert!(!NetworkNumberIs::parse(&[0x00, 0x05, 0])
+        .unwrap()
+        .is_configured());
+
+    for short in [&[][..], &[0x0B], &[0x0B, 0xB8], &[0x0B, 0xB8, 1, 2]] {
+        assert_eq!(ICouldBeRouter::parse(short), None);
+        assert_eq!(EstablishConnection::parse(short), None);
+        assert_eq!(NetworkNumberIs::parse(short), None);
+        assert_eq!(Reject::parse(short), None);
+    }
+    for wrong in [&[][..], &[0x0B], &[0x0B, 0xB8, 0]] {
+        assert_eq!(parse_disconnect(wrong), None);
+    }
+}
+
+#[test]
+fn messages_written_in_an_npdu_decode_in_bacnet_encoding() {
+    let reject = Reject {
+        reason: reason::MESSAGE_TOO_LONG,
+        network: 3000,
+    }
+    .to_bytes();
+    let npdu = Npdu::message(code::REJECT_MESSAGE_TO_NETWORK, &reject);
+    let mut out = [0u8; 16];
+    let len = npdu.write(&mut out).unwrap();
+    let decoded = decode_npdu(Bytes::copy_from_slice(&out[..len])).unwrap();
+    assert!(decoded.is_network_message);
+    assert_eq!(
+        decoded.message_type,
+        Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+    );
+    let body = decode_reject_message_to_network(&decoded.payload).unwrap();
+    assert_eq!(body.reason, RejectMessageReason::MESSAGE_TOO_LONG);
+    assert_eq!(body.dnet, 3000);
+
+    // A header with no payload, then the payload written after it.
+    let header = Npdu::message(code::I_AM_ROUTER_TO_NETWORK, &[]);
+    let at = header.write(&mut out).unwrap();
+    let len = at + Networks::write([1, 2], &mut out[at..]).unwrap();
+    let decoded = decode_npdu(Bytes::copy_from_slice(&out[..len])).unwrap();
+    assert_eq!(
+        decoded.payload,
+        Bytes::from_static(&[0x00, 0x01, 0x00, 0x02])
+    );
+}

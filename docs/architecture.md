@@ -20,6 +20,9 @@ Foundations
   bacnet-bip-codec      B/IP and B/IPv6 BVLL codec (no_std; by default no allocator, no deps)
   bacnet-bip-core       B/IP behaviour: a sans-IO node engine, BBMD tables and forwarding
                         (no_std; no allocator)
+  bacnet-router-core    Router behaviour (Clause 6): an NPDU view and writer, network-layer
+                        messages, the routing table and route discovery (no_std; no allocator;
+                        not published yet)
   bacnet-transport      Data-link transports and framing (B/IP, B/IPv6 BVLL via bacnet-bip-codec;
                         the B/IP node and BBMD via bacnet-bip-core)
   bacnet-network        Network layer, BACnetRouter, RouterTable
@@ -102,6 +105,8 @@ Loopback (local client/server) ─┘      |
 ```
 
 The router receives NPDUs from all transports, checks the destination network number in the NPDU header, and forwards to the appropriate transport. Messages for the local device (DNET matches a loopback port) are delivered to the client/server.
+
+`bacnet-router-core` is the router's portable half, under way in #1679 and not published yet. It is `no_std` and needs no allocator: a borrowed view of an NPDU's control information, which a property test holds equal to `bacnet-encoding`'s decoder, and a writer into caller storage; views and writers for the network-layer messages; the routing table in caller-sized arrays, with the convergence modes, busy and unreachable marks, the reject hold-down and aging; and bounded route discovery, all on `bacnet-time`'s `Instant`. A sans-IO router engine over those pieces comes next. `BACnetRouter` still runs on its own `RouterTable` until it moves onto the core, and firmware will join `bacnet-bip-core` and `bacnet-mstp-core` ports through it.
 
 Data attributes are carried on `ReceivedNpdu` and `ReceivedApdu`, and attribute-aware send helpers are available on `TransportPort` and `NetworkLayer`. `ReceivedApdu.link_layer_group` preserves whether the incoming data-link destination was a group address, while `ReceivedApdu.is_group` describes the effective BACnet network destination; a routed unicast can therefore have `link_layer_group == true` and `is_group == false`. `ReceivedApdu.global_broadcast` marks an NPDU addressed to the global broadcast network (DNET 65535), which `is_group` alone does not tell apart from a local or one-network broadcast. BACnet/SC maps every inbound Annex AB Data Option to these attributes and maps outbound attributes back to SC Data Options. Unknown Data Options do not block NPDU delivery. For received Encapsulated-NPDUs, an unsupported Must Understand Destination Option returns a BVLC-Result NAK with the original option marker to the unicast source through the hub and drops broadcast without a result. This message-level NAK does not close the source connection. A Destination Option without Must Understand does not block delivery. The current `DataAttribute.must_understand` field stores the Data Option bit-6 value, but Addendum 135-2020cf Every Segment behavior is not implemented. The router preserves inbound data attributes when forwarding unicast or broadcast NPDUs across attribute-capable transports, while data links that do not support attributes expose an empty list on receive and ignore attributes on send.
 
