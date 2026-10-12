@@ -491,9 +491,9 @@ impl BbmdState {
     }
 
     /// Whether a Forwarded-NPDU from this BDT peer still needs a local
-    /// subnet broadcast: its row has the two-hop mask. The receive path
-    /// asks [`Self::forward_forwarded_npdu`], which also counts how the
-    /// datagram arrived.
+    /// subnet broadcast: its row has the two-hop mask. The receive path's
+    /// decision, [`Tables::forwarded_npdu`](core_bbmd::Tables::forwarded_npdu),
+    /// also weighs how the datagram arrived.
     pub fn forwarded_npdu_needs_local_broadcast(&self, ip: [u8; 4], port: u16) -> bool {
         self.tables
             .bdt
