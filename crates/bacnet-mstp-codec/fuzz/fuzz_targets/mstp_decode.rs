@@ -1,39 +1,124 @@
 //! One-shot decode of arbitrary octets.
 //!
-//! Oracle: `decode_frame` accepts exactly the inputs that start with a whole
-//! valid standard frame by `mstp_codec_fuzz::valid_frame`, which checks the
-//! layout and both CRCs without the codec, and reports that frame's length
-//! and fields. A frame it accepts re-encodes to the same octets, unless the
-//! encoder's stricter checks refuse it: data on a type defined without any,
-//! or a proprietary frame too short for its vendor identifier.
+//! Oracle: `decode_frame_in_place` accepts exactly the inputs that start
+//! with a whole valid frame by `mstp_codec_fuzz::decode`, which checks the
+//! layout, both CRCs or the CRC-32K, and the COBS encoding without the
+//! codec. It reports that frame's length, fields and decoded data, and
+//! changes the input only by decoding an extended frame's data over its
+//! Encoded Data field. `decode_frame` gives the same results without
+//! changing anything, except that it refuses a valid extended frame with
+//! `ExtendedFrame`.
+//!
+//! A refusal past the preamble names the first check that failed: the
+//! header CRC, then source 255, then the Length against its type's bounds,
+//! then a reserved COBS type (Clause 9.5.8 and the codec's docs), then
+//! completeness, then the data's check.
+//!
+//! A frame it accepts re-encodes to the same octets, unless the encoder's
+//! stricter checks refuse it (data on a type defined without any, or a
+//! proprietary frame too short for its vendor identifier) or the input
+//! encodes an extended frame in a form Clause 9.10.3 accepts but a strict
+//! encoder never sends; then it re-encodes to the harness's own encoding.
 
 #![no_main]
 
-use bacnet_mstp_codec::{decode_frame, FrameError};
+use bacnet_mstp_codec::{decode_frame, decode_frame_in_place, FrameError};
 use libfuzzer_sys::fuzz_target;
-use mstp_codec_fuzz::{self as wire, HEADER_END};
+use mstp_codec_fuzz::{self as wire, Header, HEADER_END, MAX_DATA};
+
+/// The error the first failing check gives, for input that starts with a
+/// preamble and has no whole valid frame.
+fn expected_error(input: &[u8]) -> FrameError {
+    let header = Header::read(input);
+    let Header::Good {
+        frame_type,
+        source,
+        length,
+        ..
+    } = header
+    else {
+        return match header {
+            Header::Incomplete => FrameError::TooShort {
+                needed: HEADER_END,
+                available: input.len(),
+            },
+            _ => FrameError::HeaderCrcMismatch,
+        };
+    };
+    if source == 0xFF {
+        return FrameError::BroadcastSource;
+    }
+    if !header.passes() {
+        return if wire::is_cobs(frame_type) {
+            FrameError::InvalidCobsLength { length }
+        } else {
+            FrameError::Oversize {
+                length,
+                maximum: MAX_DATA,
+            }
+        };
+    }
+    if !header.decodable() {
+        return FrameError::UnsupportedCobsFrame {
+            raw_type: frame_type,
+        };
+    }
+    if input.len() < wire::wire_length(length) {
+        return FrameError::Truncated {
+            length,
+            available: input.len() - HEADER_END,
+        };
+    }
+    FrameError::DataCrcMismatch { length }
+}
 
 fuzz_target!(
     init: wire::self_test(),
     |input: &[u8]| {
         let decoded = decode_frame(input);
-        let Some(length) = wire::valid_frame(input) else {
-            assert!(decoded.is_err(), "accepted an invalid frame: {decoded:?}");
+        let mut copy = input.to_vec();
+        let in_place = decode_frame_in_place(&mut copy).map(|(frame, used)| {
+            (frame.header, frame.data.to_vec(), used)
+        });
+        let Some((total, data)) = wire::decode(input) else {
+            let error = decoded.expect_err("accepted an invalid frame");
+            assert_eq!(in_place, Err(error));
+            assert_eq!(copy, input, "a refused decode changed its input");
+            if input.len() >= 2 && input.starts_with(&wire::PREAMBLE) {
+                assert_eq!(error, expected_error(input));
+            }
             return;
         };
-        let (frame, consumed) = decoded.expect("refused a valid frame");
-        assert_eq!(consumed, length);
         let raw = input[2];
-        assert_eq!(frame.header.frame_type.to_raw(), raw);
-        assert_eq!(frame.header.destination, input[3]);
-        assert_eq!(frame.header.source, input[4]);
-        let data_length = frame.data.len();
-        assert_eq!(wire::wire_length(data_length), length);
-        assert_eq!(frame.data, &input[HEADER_END..HEADER_END + data_length]);
+        let (header, decoded_data, consumed) = in_place.expect("refused a valid frame");
+        assert_eq!(consumed, total);
+        assert_eq!(header.frame_type.to_raw(), raw);
+        assert_eq!(header.destination, input[3]);
+        assert_eq!(header.source, input[4]);
+        assert_eq!(decoded_data, data);
+        if wire::is_extended(raw) {
+            assert_eq!(decoded, Err(FrameError::ExtendedFrame { raw_type: raw }));
+            // The header stays, the data replaces the Encoded Data from the
+            // octet after it, and nothing past the frame changes.
+            assert_eq!(copy[..HEADER_END], input[..HEADER_END]);
+            assert_eq!(copy[HEADER_END..HEADER_END + data.len()], data[..]);
+            assert_eq!(copy[total..], input[total..]);
+        } else {
+            let (frame, used) = decoded.expect("refused a valid standard frame");
+            assert_eq!((frame.header, frame.data, used), (header, &data[..], total));
+            assert_eq!(copy, input, "decoding a standard frame changed its input");
+        }
 
-        let mut output = [0u8; wire::MAX_WIRE];
+        let frame = bacnet_mstp_codec::Frame { header, data: &data };
+        let mut output = [0u8; wire::MAX_COBS_WIRE];
         match frame.encode_into(&mut output) {
-            Ok(written) => assert_eq!(output[..written], input[..length]),
+            Ok(written) => {
+                let strict = wire::encode(raw, input[3], input[4], &data);
+                assert_eq!(output[..written], strict[..]);
+                if !wire::is_extended(raw) {
+                    assert_eq!(strict[..], input[..total]);
+                }
+            }
             Err(FrameError::UnexpectedData { raw_type, length }) => {
                 assert!(wire::never_carries_data(raw_type) && length != 0)
             }

@@ -1,11 +1,16 @@
 //! What the MS/TP codec's fuzz targets share.
 //!
-//! [`encode`] and [`valid_frame`] are written from the frame layout (Clause
-//! 9.3) and the two CRC definitions (Clause 9.6), with bit-at-a-time CRCs
-//! rather than the codec's tables, and without calling the codec. The targets
-//! check the codec against them, so a fault that the codec's encoder and
-//! decoder share can't cancel out in a round trip. [`self_test`] pins them to
-//! two frames written out by hand.
+//! [`encode`], [`valid_frame`] and [`decoded_data`] are written from the
+//! frame layout (Clause 9.3), the CRC definitions (Clause 9.6) and COBS
+//! (Clause 9.10), with bit-at-a-time CRCs and a COBS of their own rather than
+//! the codec's, and without calling the codec. The targets check the codec
+//! against them, so a fault that the codec's encoder and decoder share can't
+//! cancel out in a round trip. [`self_test`] pins them to frames written out
+//! by hand and to the standard's worked examples.
+//!
+//! The COBS here works chunk by chunk, as Clause 9.10.1 describes it: the
+//! data with a zero appended, cut after each zero. The codec's scans for runs
+//! of non-zero octets instead, so the two share no code or structure.
 //!
 //! [`check_sinks`] encodes one frame through every `FrameSink` the codec
 //! implements and checks what each one holds afterwards.
@@ -23,12 +28,23 @@ pub const HEADER_END: usize = 8;
 pub const MAX_DATA: usize = 501;
 /// Longest standard frame on the wire.
 pub const MAX_WIRE: usize = HEADER_END + MAX_DATA + 2;
+/// Smallest and largest Length a COBS-encoded frame's header may declare
+/// (Clause 9.5.3).
+pub const MIN_COBS_LENGTH: usize = 5;
+/// See [`MIN_COBS_LENGTH`].
+pub const MAX_COBS_LENGTH: usize = 2043;
+/// Longest frame of any kind on the wire: a COBS-encoded one of the largest
+/// Length.
+pub const MAX_COBS_WIRE: usize = HEADER_END + MAX_COBS_LENGTH + 2;
+/// Length of an extended frame's second encoded field, which carries its
+/// CRC-32K.
+pub const ENCODED_CRC: usize = 5;
 /// The octet every fixed sink is filled with before an encode, so that a
 /// write outside the frame shows.
 pub const SENTINEL: u8 = 0xA5;
 /// Capacity of the heapless sink the targets use: a little more than the
 /// longest frame, so its prefill decides whether a frame fits.
-pub const HEAPLESS_CAPACITY: usize = MAX_WIRE + 9;
+pub const HEAPLESS_CAPACITY: usize = MAX_COBS_WIRE + 9;
 
 /// The header CRC: CRC-8 with polynomial x^8 + x^7 + 1, shifted out least
 /// significant bit first from an all-ones register, and sent complemented.
@@ -65,20 +81,110 @@ pub fn data_crc(data: &[u8]) -> u16 {
     !register
 }
 
-/// Wire length of a standard frame with `data_length` octets of data: no
-/// data CRC follows an empty data field.
-pub const fn wire_length(data_length: usize) -> usize {
-    if data_length == 0 {
+/// The CRC-32K of an extended frame's Encoded Data, as sent: shifted out
+/// least significant bit first from an all-ones register, and complemented.
+/// The generator's terms below x^32 (Clause 9.6.3) each set a bit of the
+/// right-shifting register, x^n at bit 31 - n.
+pub fn crc32k(data: &[u8]) -> u32 {
+    const TERMS: [u32; 17] = [0, 1, 2, 4, 6, 7, 10, 11, 15, 16, 17, 19, 20, 26, 28, 29, 30];
+    let generator = TERMS.iter().fold(0u32, |acc, term| acc | 1 << (31 - term));
+    let mut register = u32::MAX;
+    for &octet in data {
+        for bit in 0..8 {
+            let feedback = (register ^ u32::from(octet >> bit)) & 1;
+            register >>= 1;
+            if feedback != 0 {
+                register ^= generator;
+            }
+        }
+    }
+    !register
+}
+
+/// COBS (Clause 9.10.1), before the mask: append a zero, cut the data after
+/// each zero, and code each chunk as blocks of a code octet and up to 254
+/// octets. A chunk ending the data that holds a whole number of full blocks
+/// gets no block for the appended zero.
+pub fn cobs_encode(data: &[u8]) -> Vec<u8> {
+    let mut with_zero = data.to_vec();
+    with_zero.push(0);
+    let mut out = Vec::new();
+    let mut last_body = 0;
+    for chunk in with_zero.split_inclusive(|&octet| octet == 0) {
+        let mut body = &chunk[..chunk.len() - 1];
+        last_body = body.len();
+        while body.len() >= 254 {
+            out.push(0xFF);
+            out.extend_from_slice(&body[..254]);
+            body = &body[254..];
+        }
+        out.push(u8::try_from(body.len() + 1).expect("under 255"));
+        out.extend_from_slice(body);
+    }
+    if last_body != 0 && last_body % 254 == 0 {
+        // That last block is the empty one for the appended zero.
+        out.pop();
+    }
+    out
+}
+
+/// Undo [`cobs_encode`] the way Clause 9.10.3 does, or `None` when a code is
+/// zero or counts past the end. Like it, this takes a zero inside a block and
+/// an empty block after a full one that ends the field.
+pub fn cobs_decode(field: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut remaining = field.len();
+    let mut index = 0;
+    while remaining > 0 {
+        let code = usize::from(field[index]);
+        if code == 0 || code > remaining {
+            return None;
+        }
+        out.extend_from_slice(&field[index + 1..index + code]);
+        index += code;
+        remaining -= code;
+        if remaining > 0 && code != 0xFF {
+            out.push(0);
+        }
+    }
+    Some(out)
+}
+
+/// Each octet XORed with 0x55: the mask both encoded fields go out with.
+pub fn mask(octets: &[u8]) -> Vec<u8> {
+    octets.iter().map(|&octet| octet ^ 0x55).collect()
+}
+
+/// The two encoded fields of an extended frame carrying `data`: the Encoded
+/// Data, then the Encoded CRC-32K, with the CRC-32K of the first's octets as
+/// sent, low octet first (Clause 9.10.2).
+pub fn encoded_fields(data: &[u8]) -> Vec<u8> {
+    let mut fields = mask(&cobs_encode(data));
+    let crc = crc32k(&fields).to_le_bytes();
+    fields.extend(mask(&cobs_encode(&crc)));
+    fields
+}
+
+/// Wire length of a frame whose header declares `length`: an extended
+/// frame's Length counts its encoded fields less two, and a standard frame
+/// has no data CRC after an empty data field, so the same rule fits both.
+pub const fn wire_length(length: usize) -> usize {
+    if length == 0 {
         HEADER_END
     } else {
-        HEADER_END + data_length + 2
+        HEADER_END + length + 2
     }
 }
 
-/// Whether `raw` is a COBS-encoded frame type (32-127), which the codec
-/// refuses in both directions.
+/// Whether `raw` is a COBS-encoded frame type (32-127).
 pub const fn is_cobs(raw: u8) -> bool {
     matches!(raw, 0x20..=0x7F)
+}
+
+/// Whether `raw` is one of the two extended data types (32 and 33), the
+/// COBS types the codec encodes and decodes.
+pub const fn is_extended(raw: u8) -> bool {
+    matches!(raw, 0x20 | 0x21)
 }
 
 /// Whether frames of type `raw` are defined without data: types 0 to 2 (the
@@ -93,21 +199,38 @@ pub const fn is_proprietary(raw: u8) -> bool {
     raw >= 0x80
 }
 
-/// The wire octets of a frame, built field by field with no checks. The
-/// data must be at most 65,535 octets.
+/// The Length field of a frame of type `raw` carrying `data`.
+pub fn length_field(raw: u8, data: &[u8]) -> usize {
+    if is_cobs(raw) {
+        encoded_fields(data).len() - 2
+    } else {
+        data.len()
+    }
+}
+
+/// The wire octets of a frame, built field by field with no checks: a COBS
+/// type gets both encoded fields, any other type its data and data CRC. The
+/// Length must fit in 16 bits.
 pub fn encode(raw_type: u8, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
-    let [high, low] = u16::try_from(data.len())
-        .expect("data length fits the length field")
+    let body = if is_cobs(raw_type) {
+        encoded_fields(data)
+    } else if data.is_empty() {
+        Vec::new()
+    } else {
+        let mut body = data.to_vec();
+        body.extend_from_slice(&data_crc(data).to_le_bytes());
+        body
+    };
+    let length = length_field(raw_type, data);
+    let [high, low] = u16::try_from(length)
+        .expect("the Length fits its field")
         .to_be_bytes();
     let fields = [raw_type, destination, source, high, low];
-    let mut wire = Vec::with_capacity(wire_length(data.len()));
+    let mut wire = Vec::with_capacity(HEADER_END + body.len());
     wire.extend_from_slice(&PREAMBLE);
     wire.extend_from_slice(&fields);
     wire.push(header_crc(&fields));
-    if !data.is_empty() {
-        wire.extend_from_slice(data);
-        wire.extend_from_slice(&data_crc(data).to_le_bytes());
-    }
+    wire.extend_from_slice(&body);
     wire
 }
 
@@ -126,7 +249,7 @@ pub enum Header {
         destination: u8,
         /// Source address.
         source: u8,
-        /// The data length the header declares.
+        /// The Length the header declares.
         length: usize,
     },
 }
@@ -149,39 +272,91 @@ impl Header {
         }
     }
 
-    /// Whether a frame with this header can be a valid standard frame: not
-    /// a COBS type, a source other than 255 and at most 501 octets of data.
-    /// `false` for a header that is incomplete or fails its CRC.
-    pub fn is_standard(self) -> bool {
-        matches!(self, Self::Good { frame_type, source, length, .. }
-            if !is_cobs(frame_type) && source != 0xFF && length <= MAX_DATA)
+    /// Whether the header passes the checks of Clause 9.5.8: its CRC, a
+    /// source other than 255, and a Length within its type's bounds, at most
+    /// 501 for a standard type and 5 to 2043 for a COBS one.
+    pub fn passes(self) -> bool {
+        match self {
+            Self::Good {
+                frame_type,
+                source,
+                length,
+                ..
+            } if source != 0xFF => {
+                if is_cobs(frame_type) {
+                    (MIN_COBS_LENGTH..=MAX_COBS_LENGTH).contains(&length)
+                } else {
+                    length <= MAX_DATA
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a frame with this header can be valid: it passes, and it is
+    /// not a reserved COBS type (34-127).
+    pub fn decodable(self) -> bool {
+        matches!(self, Self::Good { frame_type, .. }
+            if self.passes() && (!is_cobs(frame_type) || is_extended(frame_type)))
+    }
+
+    /// The frame's wire length, when the header passes.
+    pub fn wire_length(self) -> Option<usize> {
+        match self {
+            Self::Good { length, .. } if self.passes() => Some(wire_length(length)),
+            _ => None,
+        }
     }
 }
 
-/// The wire length of the valid standard frame at the start of `octets`,
-/// or `None` when there isn't one there whole. Like the codec's decoder it
-/// accepts data on a type defined without any and a proprietary frame too
-/// short for its vendor identifier.
-pub fn valid_frame(octets: &[u8]) -> Option<usize> {
+/// The wire length and data of the valid frame at the start of `octets`, or
+/// `None` when there isn't one there whole. Like the codec's decoder it
+/// accepts data on a type defined without any, a proprietary frame too
+/// short for its vendor identifier, and the encodings Clause 9.10.3 takes
+/// that a strict encoder doesn't send.
+pub fn decode(octets: &[u8]) -> Option<(usize, Vec<u8>)> {
     if !octets.starts_with(&PREAMBLE) {
         return None;
     }
     let header = Header::read(octets);
-    let Header::Good { length, .. } = header else {
+    let Header::Good {
+        frame_type, length, ..
+    } = header
+    else {
         return None;
     };
-    if !header.is_standard() {
+    if !header.decodable() {
         return None;
     }
     let total = wire_length(length);
-    let frame = octets.get(..total)?;
-    if length != 0 {
-        let data = &frame[HEADER_END..HEADER_END + length];
-        if data_crc(data).to_le_bytes() != frame[HEADER_END + length..] {
+    let body = octets.get(HEADER_END..total)?;
+    let data = if is_cobs(frame_type) {
+        let (encoded, field) = body.split_at(body.len() - ENCODED_CRC);
+        let data = cobs_decode(&mask(encoded))?;
+        let crc = cobs_decode(&mask(field))?;
+        if crc != crc32k(encoded).to_le_bytes() {
             return None;
         }
-    }
-    Some(total)
+        data
+    } else {
+        if length != 0 && data_crc(&body[..length]).to_le_bytes() != body[length..] {
+            return None;
+        }
+        body[..length].to_vec()
+    };
+    Some((total, data))
+}
+
+/// The wire length of the valid frame at the start of `octets`; see
+/// [`decode`].
+pub fn valid_frame(octets: &[u8]) -> Option<usize> {
+    decode(octets).map(|(total, _)| total)
+}
+
+/// The data of the valid frame at the start of `octets`, decoded; see
+/// [`decode`].
+pub fn decoded_data(octets: &[u8]) -> Option<Vec<u8>> {
+    decode(octets).map(|(_, data)| data)
 }
 
 /// `length` octets of `pattern` repeated, or a counting pattern when it is
@@ -195,10 +370,17 @@ pub fn fill(length: usize, pattern: &[u8]) -> Vec<u8> {
     pattern.iter().copied().cycle().take(length).collect()
 }
 
-/// Check [`encode`] and [`valid_frame`] against two frames from the codec's
-/// documentation, a Token and a Data Not Expecting Reply from slave 200, and
-/// [`data_crc`] against the worked example of Annex G.2: data 01 22 30 goes
-/// out with the CRC octets 10 BD.
+/// Check the encoder, decoder and CRCs here against frames written out by
+/// hand and the standard's worked examples:
+///
+/// - a Token and a Data Not Expecting Reply from slave 200, from the codec's
+///   documentation;
+/// - the data CRC of Annex G.2 (01 22 30 goes out with 10 BD) and the
+///   CRC-32K of Annex G.3.1 (the same octets, complement 7C22A5BE);
+/// - the COBS encoding of Annex T.1 ("Hello World", a newline and a zero);
+/// - the Who-Has frame of Annex T.3: its header, Length 512 and header CRC
+///   4E, its first encoded octets, and its Encoded CRC-32K;
+/// - COBS runs at the 254-octet block limit, worked out by hand.
 pub fn self_test() {
     let token = [0x55, 0xFF, 0x00, 0x10, 0x05, 0x00, 0x00, 0x8C];
     let data = [
@@ -207,9 +389,46 @@ pub fn self_test() {
     assert_eq!(encode(0x00, 0x10, 0x05, &[]), token);
     assert_eq!(encode(0x06, 0x01, 0xC8, &[0x01, 0x00]), data);
     assert_eq!(valid_frame(&token), Some(token.len()));
-    assert_eq!(valid_frame(&data), Some(data.len()));
+    assert_eq!(decode(&data), Some((data.len(), vec![0x01, 0x00])));
     assert_eq!(valid_frame(&data[..data.len() - 1]), None);
     assert_eq!(data_crc(&[0x01, 0x22, 0x30]).to_le_bytes(), [0x10, 0xBD]);
+    assert_eq!(crc32k(&[0x01, 0x22, 0x30]), 0x7C22_A5BE);
+
+    let hello = b"Hello World\n\0";
+    let mut cobs = vec![0x0D];
+    cobs.extend_from_slice(&hello[..12]);
+    cobs.push(0x01);
+    assert_eq!(cobs_encode(hello), cobs);
+    assert_eq!(mask(&cobs)[..4], [0x58, 0x1D, 0x30, 0x39]);
+    assert_eq!(cobs_decode(&cobs).as_deref(), Some(&hello[..]));
+
+    let mut npdu = vec![
+        0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x07, 0x3D, 0xFE, 0x01, 0xEF, 0x00,
+    ];
+    npdu.extend((b'A'..=b'Z').flat_map(|letter| [letter; 19]));
+    let who_has = encode(0x21, 0xFF, 0x01, &npdu);
+    assert_eq!(who_has.len(), 522);
+    assert_eq!(
+        who_has[..8],
+        [0x55, 0xFF, 0x21, 0xFF, 0x01, 0x02, 0x00, 0x4E]
+    );
+    assert_eq!(who_has[8..12], [0x50, 0x54, 0x75, 0xAA]);
+    assert_eq!(who_has[517..], [0x50, 0xF9, 0xA1, 0xD6, 0xE8]);
+    assert_eq!(decode(&who_has), Some((522, npdu)));
+
+    let run = [0x11u8; 254];
+    assert_eq!(cobs_encode(&run), [&[0xFF][..], &run].concat());
+    assert_eq!(
+        cobs_encode(&[&run[..], &[0x00]].concat()),
+        [&[0xFF][..], &run, &[0x01, 0x01]].concat()
+    );
+    assert_eq!(
+        cobs_encode(&[0x11; 255]),
+        [&[0xFF][..], &run, &[0x02, 0x11]].concat()
+    );
+    assert_eq!(cobs_encode(&[]), [0x01]);
+    assert_eq!(cobs_decode(&[0x00]), None);
+    assert_eq!(cobs_decode(&[0x03, 0x11]), None);
 }
 
 /// How one encode exercises the sinks: the slice's room relative to the
