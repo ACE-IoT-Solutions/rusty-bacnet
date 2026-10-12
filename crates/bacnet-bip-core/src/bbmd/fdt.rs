@@ -361,9 +361,19 @@ impl<const N: usize> Fdt<N> {
     fn retain(&mut self, mut keep: impl FnMut(&Registration) -> bool) -> usize {
         let mut kept = 0;
         for index in 0..self.len {
-            let entry = self.slots[index];
-            if keep(&entry) {
-                self.slots[kept] = entry;
+            let Registration {
+                address,
+                ttl,
+                registered_at,
+            } = self.slots[index];
+            if keep(&self.slots[index]) {
+                // Field by field: a whole-entry copy between two slots of
+                // the array compiles to a memmove call, about 1.4 KB of code
+                // on a Cortex-M3.
+                let slot = &mut self.slots[kept];
+                slot.address = address;
+                slot.ttl = ttl;
+                slot.registered_at = registered_at;
                 kept += 1;
             }
         }

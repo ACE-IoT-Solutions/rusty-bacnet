@@ -5,7 +5,7 @@
 //! scenario's storage in a static. Its input and its summary pass through
 //! [`core::hint::black_box`], so none of the work can be optimized away,
 //! and then it loops. CI never runs it: building it proves that the BVLL
-//! codec links without `std` or an allocator, and
+//! codec and the BBMD core link without `std` or an allocator, and
 //! `scripts/ci/check-firmware-link.sh` checks its sizes. On a host the
 //! binary is a stub; `tests/bip.rs` runs the scenario there.
 //!

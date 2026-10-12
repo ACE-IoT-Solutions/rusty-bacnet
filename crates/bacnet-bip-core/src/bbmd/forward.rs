@@ -21,6 +21,7 @@ pub enum Arrival {
 
 /// What kind of destination a [`Target`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Via {
     /// The B/IP broadcast address of this BBMD's own subnet.
     LocalBroadcast,
@@ -43,9 +44,10 @@ pub struct Target {
 
 impl Target {
     /// A placeholder to fill caller storage with before a call writes it.
+    /// It is all zero bits, so a static filled with it can go in `.bss`.
     pub const UNUSED: Self = Self {
         destination: SocketAddrV4::new(core::net::Ipv4Addr::UNSPECIFIED, 0),
-        via: Via::Peer,
+        via: Via::LocalBroadcast,
     };
 }
 

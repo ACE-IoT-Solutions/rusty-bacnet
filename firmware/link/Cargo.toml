@@ -82,12 +82,13 @@ board-netduinoplus2 = ["emulate"]
 board-sifive-e = ["emulate"]
 
 # Default features, so no allocator, plus each crate's heapless storage: the
-# core's queues and the BVLL codec's sink. The alloc stack is `no_std` with
+# core's queues and the BVLL codec's sink. The B/IP core has no features. The alloc stack is `no_std` with
 # `alloc`, as the libraries document.
 [dependencies]
 bacnet-mstp-codec = { workspace = true }
 bacnet-mstp-core = { workspace = true, features = ["heapless"] }
 bacnet-bip-codec = { workspace = true, features = ["heapless"] }
+bacnet-bip-core = { workspace = true }
 heapless = { workspace = true }
 bacnet-types = { workspace = true, features = ["alloc"], optional = true }
 bacnet-encoding = { workspace = true, features = ["alloc"], optional = true }
