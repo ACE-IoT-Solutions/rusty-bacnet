@@ -361,7 +361,8 @@ jobs:
       - *upload
 
   # When a hunt job failed, or timed out in a run nobody cancelled: one issue
-  # collects the failures. A PR's run always gets here and only reads.
+  # collects the failures. A PR's run always gets here and only reports what
+  # it would write, without querying or changing Issues.
   report:
     name: "Hunt: report"
     needs: [settings, python, stress]
@@ -412,9 +413,12 @@ jobs:
         run: |
           report=$RUNNER_TEMP/report
           cat "$report/comment.md" >>"$GITHUB_STEP_SUMMARY"
-          # A PR's run only says what it would write.
+          if [ "$DRY_RUN" = true ]; then
+            echo "dry run: would open or update \"$ISSUE_TITLE\""
+            exit 0
+          fi
           act() {
-            if [ "$DRY_RUN" = true ]; then echo "dry run, would run: $*"; else "$@"; fi
+            "$@"
           }
           have_label=false
           if gh api "repos/$GH_REPO/labels/$ISSUE_LABEL" --silent 2>/dev/null; then
