@@ -3,10 +3,11 @@
 //!
 //! Delivered as one unicast, such an NPDU reaches every node in the group
 //! without the broadcast network addresses #1491 filters, so the router
-//! delivers only an Unconfirmed-Request there. The fixture's port B counts
-//! MAC 0xFF as its broadcast. Hand-built NPDUs go in at peer A; an
-//! Unconfirmed-Request sent right after the refused ones is the first frame
-//! out of port B, which shows the refused ones went nowhere.
+//! delivers only an Unconfirmed-Request there, and as that port's local
+//! broadcast (#1677). The fixture's port B counts MAC 0xFF as its
+//! broadcast. Hand-built NPDUs go in at peer A; an Unconfirmed-Request sent
+//! right after the refused ones is the first frame out of port B, which
+//! shows the refused ones went nowhere.
 
 use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress, RejectMessageToNetwork};
 use bacnet_types::enums::RejectMessageReason;
@@ -69,9 +70,11 @@ async fn router_delivers_only_an_unconfirmed_request_to_a_group_dadr() {
     let dadr = remote.destination.map(|to| (to.network, to.mac_address));
     assert_eq!(dadr, Some((REMOTE, MacAddr::from_slice(&[GROUP]))));
     let (group, to) = next_from_router(&mut fixture.from_router_b).await;
-    assert_eq!(to.as_deref(), Some(&[GROUP][..]));
+    assert_eq!(to, None, "a local broadcast on port B");
     assert_eq!(group.payload, APDU[..]);
     assert_eq!(group.destination, None, "network 2000 is port B's own");
+    let source = group.source.map(|from| (from.network, from.mac_address));
+    assert_eq!(source, Some((1000, MacAddr::from_slice(&[0x0A]))));
     let (one, to) = next_from_router(&mut fixture.from_router_b).await;
     assert_eq!(to.as_deref(), Some(&[0x0B][..]));
     assert_eq!(one.payload, CONFIRMED_REQUEST);
@@ -101,7 +104,7 @@ async fn router_delivers_back_out_the_arrival_port_only_an_unconfirmed_request()
     fixture.send_from_b(&routed(2000, GROUP, &APDU)).await;
 
     let (back, to) = next_from_router(&mut fixture.from_router_b).await;
-    assert_eq!(to.as_deref(), Some(&[GROUP][..]));
+    assert_eq!(to, None, "a local broadcast on port B");
     assert_eq!(back.payload, APDU[..], "the refused request went nowhere");
     assert_eq!(fixture.router.group_dadr_drops(), 1);
     fixture.stop().await;

@@ -820,6 +820,14 @@ and `forwarded_group_origin_drops()` counts it (#1493). Otherwise a forged
 I-Am could bind a device to a group, and the answer to a request would go to
 every node in it.
 
+`send_unicast` to one of those group destinations fails with
+`Error::Encoding` and sends nothing (#1677). An Original-Unicast-NPDU goes to
+one node's own address, and a receiver that checks where a datagram was sent,
+as this transport does, drops one sent to a group, so the caller finds out
+instead of losing the message; `send_broadcast` reaches the link. Another
+subnet's directed broadcast address isn't known to the transport, so it isn't
+refused.
+
 A well-formed BVLC-Result, Read-BDT-ACK or Read-FDT-ACK that no request was
 waiting for is counted in `bvlc_client_snapshot().unmatched_responses`. Every
 other datagram the receive path drops is counted in `receive_counters()`, a
@@ -2104,7 +2112,10 @@ multicast group, on Ethernet any MAC with the group bit set), is a local
 broadcast too, but the layer doesn't ask the transport on every unicast:
 `BACnetClient`'s confirmed requests, the endpoint's egress and its requester,
 which take caller-chosen MACs, refuse anything but an Unconfirmed-Request there
-themselves. The server refuses one for the confirmed requests it starts
+themselves. B/IP goes further and refuses every unicast to one of its group
+addresses with `Error::Encoding`, sending nothing, since its receivers drop
+an Original-Unicast-NPDU that wasn't sent to their own address (#1677): send
+a local broadcast with `broadcast_apdu` instead. The server refuses one for the confirmed requests it starts
 itself, to event recipients, Channel and Command targets, audit recipients and
 bound devices, and binds no device to one (#1493); its replies and COV
 notifications go to the source a request came from. `is_broadcast_mac` keeps
@@ -2128,7 +2139,9 @@ connected port, to a DADR that is a group destination there
 (`TransportPort::group_destinations`), unless its APDU is an
 Unconfirmed-Request (#1504). As one unicast it would reach every node in the
 group without the broadcast network addresses #1491 filters. It is delivered
-nowhere, draws no reject, and counts in `group_dadr_drops()`. Network
+nowhere, draws no reject, and counts in `group_dadr_drops()`. An
+Unconfirmed-Request for such a DADR goes out on that port as its local
+broadcast, which is what its sender meant, and isn't counted (#1677). Network
 messages, and a group DADR on a network behind another router, which that
 router judges, are not affected. A routed request's SADR names a node on
 another network, which the ingress rule above can't judge, so a reply to a

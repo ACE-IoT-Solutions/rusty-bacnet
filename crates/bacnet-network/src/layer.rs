@@ -366,9 +366,12 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// 6.3). This layer doesn't ask the transport on every unicast, so that
     /// is the caller's to keep: `BACnetClient`, the endpoint's egress and its
     /// requester, which take caller-chosen MACs, refuse anything else to it
-    /// (#1479). The server refuses one for the confirmed requests it starts
-    /// itself, to event recipients, Channel and Command targets, audit
-    /// recipients and bound devices (#1493). Its replies and COV
+    /// (#1479). B/IP refuses any unicast to one of its group addresses, with
+    /// an error, so send a local broadcast there with
+    /// [`broadcast_apdu`](Self::broadcast_apdu) (#1677). The server refuses
+    /// one for the confirmed requests it starts itself, to event recipients,
+    /// Channel and Command targets, audit recipients and bound devices
+    /// (#1493). Its replies and COV
     /// notifications go to the source a request came from, and the server,
     /// the client and the endpoint ignore a confirmed request from a group
     /// source MAC (#1504), so none of those goes to a group on this link. A

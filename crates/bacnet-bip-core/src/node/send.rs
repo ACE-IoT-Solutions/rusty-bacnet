@@ -40,6 +40,12 @@ pub enum SendRefusal {
     /// ([`Foreign::hold`](super::Foreign::hold)) until its first
     /// registration attempt is answered.
     HoldFull,
+    /// A unicast to one of the link's group addresses
+    /// ([`Link::groups`](super::Link::groups)): the subnet's broadcast
+    /// address, the limited broadcast or a multicast address. An
+    /// Original-Unicast-NPDU goes to one node's own address; to reach the
+    /// group, broadcast ([`Link::broadcast`]).
+    GroupDestination,
 }
 
 impl fmt::Display for SendRefusal {
@@ -47,6 +53,9 @@ impl fmt::Display for SendRefusal {
         match self {
             Self::TooLong { max } => write!(f, "NPDU longer than the {max} octets B/IP sends"),
             Self::HoldFull => f.write_str("no room to hold a broadcast until registration"),
+            Self::GroupDestination => {
+                f.write_str("a unicast can't go to a group address; send a broadcast instead")
+            }
         }
     }
 }
@@ -78,11 +87,22 @@ impl Link {
     }
 
     /// An Original-Unicast-NPDU carrying `npdu` to `to` (Annex J.3).
+    ///
+    /// `to` must be one node's address: a group address of this link
+    /// ([`Groups::contains`](super::Groups::contains)) is refused with
+    /// [`SendRefusal::GroupDestination`]. A receiver that checks the
+    /// destination drops an Original-Unicast-NPDU sent to a group, so it
+    /// would reach no one, or nodes that should have ignored it (#1677).
+    /// Another subnet's directed broadcast address isn't known here, so it
+    /// isn't caught; a receiver's destination check still drops it.
     pub fn unicast<'n>(
         &self,
         to: SocketAddrV4,
         npdu: &'n [u8],
     ) -> Result<Outgoing<'n>, SendRefusal> {
+        if self.groups().contains(to) {
+            return Err(SendRefusal::GroupDestination);
+        }
         self.fits(npdu, Cast::Unicast)?;
         Ok(Outgoing {
             to,

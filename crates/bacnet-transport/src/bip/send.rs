@@ -13,7 +13,8 @@ use crate::bvll::{bvll_error, encode_bvll};
 
 impl NodeHandle {
     /// Send `npdu` to the B/IP address `mac` as an Original-Unicast-NPDU
-    /// (Annex J.3).
+    /// (Annex J.3). One of the link's group addresses is refused, unsent
+    /// (#1677).
     pub(super) async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
         let dest = codec::address_from_slice(mac).map_err(bvll_error)?;
         let outgoing = self

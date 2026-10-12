@@ -27,6 +27,49 @@ fn unicast_is_original_unicast() {
     }
 }
 
+/// A unicast to one of the link's group addresses (the subnet's broadcast
+/// IP at any port, the limited broadcast, a multicast address) is refused
+/// before there is a message to encode, in every mode, whatever the NPDU's
+/// length: an Original-Unicast-NPDU goes to one node (#1677). A broadcast
+/// still reaches the group.
+///
+/// Ported from ACE IoT's bacnet-router-adapters
+/// (ACE-IoT-Solutions/rusty-bacnet#5), thanks @acedrew.
+#[test]
+fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
+    let over = vec![0x01; MAX_NPDU + 1];
+    for mode in [Mode::Normal, Mode::Foreign(foreign()), Mode::Bbmd] {
+        let link = link(mode);
+        for group in [
+            BROADCAST,
+            addr(192, 168, 1, 255, 47_809),
+            addr(255, 255, 255, 255, PORT),
+            addr(239, 1, 2, 3, PORT),
+        ] {
+            let mut scratch = [0xA5; 32];
+            let before = scratch;
+            let sent = link
+                .unicast(group, NPDU)
+                .map(|outgoing| outgoing.message.encode_into(&mut scratch));
+            assert_eq!(
+                sent.map(drop),
+                Err(SendRefusal::GroupDestination),
+                "{mode:?} to {group}"
+            );
+            assert_eq!(scratch, before, "nothing encoded");
+            assert_eq!(
+                link.unicast(group, &over).map(drop),
+                Err(SendRefusal::GroupDestination),
+                "the destination is judged first"
+            );
+        }
+        assert!(link.broadcast(NPDU).is_ok());
+        // One node's address takes it, on the subnet or off it.
+        assert!(link.unicast(PEER, NPDU).is_ok());
+        assert!(link.unicast(addr(198, 51, 100, 7, 47_809), NPDU).is_ok());
+    }
+}
+
 #[test]
 fn normal_broadcast_is_original_broadcast_at_the_network_port() {
     assert_eq!(
