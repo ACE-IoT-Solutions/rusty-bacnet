@@ -64,12 +64,24 @@ Commands that take a `<target>` argument accept several formats:
 |--------|---------|-------------|
 | IPv4 address | `192.168.1.100` | Direct BIP target (default port 47808) |
 | IPv4:port | `10.0.1.5:47809` | Direct BIP target with explicit port |
-| IPv6 bracket | `[fe80::1]` | Direct BIP6 target (default port 47808) |
-| IPv6:port | `[fe80::1]:47809` | Direct BIP6 target with explicit port |
+| B/IPv6 device | `bip6:1234` | The VMAC of device instance 1234 (0 to 4194303), with `--ipv6` |
+| B/IPv6 VMAC | `bip6:0x40ABCD` | Any 3-octet VMAC, as the CLI prints B/IPv6 addresses |
+| IPv6 bracket | `[2001:db8::10]` | B/IPv6 address (port 47808), resolved to the VMAC of the node there |
+| IPv6:port | `[fe80::1%3]:47809` | The same with a port; a link-local address takes a numeric zone |
 | Device instance | `1234` | Looks up address from discovered device cache |
 | DNET:instance | `2:1234` | Routed device (network:instance) |
 
 When using a device instance number, the device must have been previously found via `discover`. In the shell, you can set a default target with the `target` command to omit the target argument from subsequent commands.
+
+**B/IPv6 targets are VMACs.** A B/IPv6 node is addressed by its 3-octet VMAC,
+not its IPv6 address (Clause U.1.3), and a device's VMAC is its device instance
+(Clause H.7.2), so `bip6:1234` reaches device 1234 without discovery. The CLI
+turns an `[IPv6]` or `[IPv6]:port` target into a VMAC before the command runs,
+asking the node there with a unicast Virtual-Address-Resolution (Clause U.5);
+it fails after three seconds when nothing answers. Device tables, COV output
+and `status` show B/IPv6 addresses as `bip6:0x0004D2`, which every target
+argument takes back. `--device-instance` sets the CLI's own VMAC; without it
+the CLI picks a random one at each start.
 
 ## Commands
 
@@ -158,7 +170,7 @@ interfaces (one interface is used without asking, as in the shell).
 | Field | Values |
 |---|---|
 | Scope | Local broadcast, global broadcast, directed (one address), or remote network |
-| Target | For directed: `IP`, `IP:port`, `[IPv6]:port`, or an SC VMAC as 12 hex digits. For remote network: the network number |
+| Target | For directed: `IP` or `IP:port` on BACnet/IP; `bip6:N`, `bip6:0xVMAC` or `[IPv6]:port` on BACnet/IPv6, where the address is resolved to the VMAC of the node there before the Who-Is goes; an SC VMAC as 12 hex digits on BACnet/SC. For remote network: the network number |
 | Range | Blank for every instance, `N`, or `LOW-HIGH` (0 to 4194303) |
 | Listen | Seconds to show the request as running while replies arrive (1 to 60, default 3) |
 
@@ -556,7 +568,8 @@ Note: `--read` and `--device` are mutually exclusive; `--quiet` requires `--save
 ```bash
 # BACnet/IPv6
 bacnet --ipv6 discover
-bacnet --ipv6 read [fe80::1]:47808 ai:1 pv
+bacnet --ipv6 read bip6:1234 ai:1 pv                # device 1234's VMAC
+bacnet --ipv6 read [2001:db8::10]:47808 ai:1 pv     # resolved to its VMAC first
 
 # BACnet/SC (requires sc-tls feature)
 bacnet --sc --sc-url wss://hub:443 --sc-ca site-ca.pem --sc-cert cert.pem --sc-key key.pem --sc-vmac 22:01:02:03:04:05 --sc-device-uuid 00112233-4455-6677-8899-aabbccddeeff discover
