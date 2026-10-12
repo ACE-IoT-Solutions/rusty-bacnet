@@ -287,7 +287,8 @@ impl<S: SerialPort> Drop for MstpTransport<S> {
 /// In-memory loopback serial port for unit testing.
 ///
 /// [`Self::pair`] connects two ports: what one writes, the other reads, in
-/// whole writes. Writes are delivered at once, so a frame takes no time on
+/// whole writes (an empty write delivers nothing, and a read always returns
+/// at least one octet). Writes are delivered at once, so a frame takes no time on
 /// this "wire"; the transport times it by the baud rate (see the
 /// [module docs](super)). By default a port does not hear its own writes;
 /// [`Self::with_echo`] makes it hear them, as a transceiver whose receiver
@@ -369,15 +370,20 @@ impl SerialPort for LoopbackSerial {
             return Ok(len);
         }
         let mut rx = self.rx.lock().await;
-        match rx.recv().await {
-            Some(data) => {
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                // Keep what did not fit for the next read.
-                leftover.extend_from_slice(&data[len..]);
-                Ok(len)
+        loop {
+            match rx.recv().await {
+                // An empty write puts nothing on the line, and a read that
+                // returns nothing would mean the end of it.
+                Some(data) if data.is_empty() => {}
+                Some(data) => {
+                    let len = data.len().min(buf.len());
+                    buf[..len].copy_from_slice(&data[..len]);
+                    // Keep what did not fit for the next read.
+                    leftover.extend_from_slice(&data[len..]);
+                    return Ok(len);
+                }
+                None => return Err(Error::Encoding("loopback channel closed".into())),
             }
-            None => Err(Error::Encoding("loopback channel closed".into())),
         }
     }
 

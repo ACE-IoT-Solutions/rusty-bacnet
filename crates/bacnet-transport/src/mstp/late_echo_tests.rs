@@ -409,44 +409,82 @@ async fn the_probe_ends_at_its_deadline() {
     }
 }
 
-/// A port whose reads always return at once with nothing (as a closed
-/// pseudo-terminal's do) cannot hold a frame open: the echo wait checks its
-/// grace after every read, so the frame completes and the station polls on,
-/// and every empty read yields, so stopping the transport returns. Real
-/// time: an always-ready read keeps a paused clock from advancing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_always_empty_port_completes_frames_and_stops() {
+/// At a baud rate whose octet takes a whole millisecond, every instant the
+/// test and the station use falls on the timer's millisecond grid, so a copy
+/// of the station's frame can arrive at exactly the probe's end. Its deadline
+/// is inclusive: the probe is over then, and the copy reaches the core as a
+/// frame from another station with this address would. A millisecond before,
+/// it is still the late echo.
+#[tokio::test(start_paused = true)]
+async fn the_probe_is_over_at_exactly_its_deadline() {
+    for (before_the_end, fed) in [(TICK, false), (Duration::ZERO, true)] {
+        let config = super::MstpConfig {
+            baud_rate: 10_000,
+            ..config(3, 4)
+        };
+        let mut bus = Bus::start_with(config, SHORT_GRACE).await;
+        assert_eq!(bus.octet, TICK, "an octet takes a whole millisecond");
+        let token = bus.join(4).await;
+        bus.echoing.store(false, Ordering::SeqCst);
+        bus.return_token(&token, 4).await;
+        let passed = bus.next().await;
+        // The grace ends with no echo, and the probe runs one more grace.
+        bus.until(passed.end + GRACE * 2 - before_the_end).await;
+        bus.send_raw(&octets(&passed));
+        tokio::time::sleep(TICK).await;
+        let counts = bus.transport.diagnostics().snapshot();
+        assert_eq!(counts.echo_missing, 1);
+        assert_eq!(
+            counts.mac.own_address_frames,
+            u32::from(fed),
+            "{before_the_end:?} before the probe's end"
+        );
+        bus.stop().await;
+    }
+}
+
+/// A port that reaches its end of file while the station waits for the echo
+/// of its first frame: every read after the frame returns nothing at once.
+/// The task ends at the third empty read, well inside the grace, so the
+/// frame is never reported complete and no echo is counted missing, and
+/// stopping the transport returns. Real time, so that if the echo wait went
+/// on reading, the reads would not hold a paused clock still: the grace would
+/// end and the missing echo show.
+#[tokio::test]
+async fn an_end_of_file_in_the_echo_wait_ends_the_task() {
     use super::{MstpTransport, SerialPort};
 
-    struct Empty(tokio::sync::mpsc::UnboundedSender<Vec<u8>>);
+    /// Reads wait until the station writes, then return nothing.
+    struct ClosesAfterWrite(tokio::sync::watch::Sender<bool>);
 
-    impl SerialPort for Empty {
-        async fn write(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
-            let _ = self.0.send(data.to_vec());
+    impl SerialPort for ClosesAfterWrite {
+        async fn write(&self, _data: &[u8]) -> Result<(), bacnet_types::error::Error> {
+            self.0.send_replace(true);
             Ok(())
         }
 
         async fn read(&self, _buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
+            let mut written = self.0.subscribe();
+            let _ = written.wait_for(|written| *written).await;
             Ok(0)
         }
 
         fn echo(&self) -> Echo {
-            Echo::Full { grace: GRACE }
+            Echo::Full {
+                grace: Duration::from_millis(200),
+            }
         }
     }
 
-    let (writes, mut written) = tokio::sync::mpsc::unbounded_channel();
-    let mut transport = MstpTransport::new(Empty(writes), config(3, 7));
-    let _npdus = transport.start().await.unwrap();
-    for destination in [4, 5] {
-        let poll = tokio::time::timeout(Duration::from_secs(2), written.recv())
-            .await
-            .expect("the frame was never completed")
-            .unwrap();
-        assert_eq!(poll[2], FrameType::PollForMaster.to_raw());
-        assert_eq!(poll[3], destination);
-    }
-    assert!(transport.diagnostics().snapshot().echo_missing >= 1);
+    let (written, wrote) = tokio::sync::watch::channel(false);
+    let mut transport = MstpTransport::new(ClosesAfterWrite(written), config(3, 7));
+    let diagnostics = transport.diagnostics();
+    let mut npdus = transport.start().await.unwrap();
+    assert!(npdus.recv().await.is_none(), "the task ended");
+    assert!(*wrote.borrow(), "the station sent its first frame");
+    let counts = diagnostics.snapshot();
+    assert_eq!(counts.serial_read_errors, 1);
+    assert_eq!(counts.echo_missing, 0, "the frame was completed");
     tokio::time::timeout(Duration::from_secs(2), transport.stop())
         .await
         .expect("stop hung")

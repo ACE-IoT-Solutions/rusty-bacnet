@@ -13,7 +13,14 @@
 //! request's arrival plus the queue's maximum age: a channel is dropped
 //! then, counted, and an answer queued before then keeps that same absolute
 //! expiry in the queue, so no answer outlives its request by more than the
-//! maximum age. A channel whose sender is dropped just goes away.
+//! maximum age. The task sleeps no later than [`Replies::next_expiry`], so
+//! the drop comes on time even when nothing else happens. A channel whose
+//! sender is dropped just goes away.
+//!
+//! Each turn of the task's loop polls the current channel and every deferred
+//! one ([`Replies::resolved`]): at most nine receivers, which costs little.
+//! A much larger bound would want a ready queue instead, so that a turn
+//! polls only the channels that have woken.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -165,6 +172,11 @@ impl Replies {
         self.deferred.len()
     }
 
+    /// When the first deferred channel expires, which the task wakes for.
+    pub(super) fn next_expiry(&self) -> Option<Instant> {
+        self.deferred.iter().map(|deferred| deferred.expires).min()
+    }
+
     /// Drop the deferred channels that are past their age; return how many.
     pub(super) fn prune(&mut self, now: Instant) -> usize {
         let before = self.deferred.len();
@@ -292,6 +304,30 @@ mod tests {
         assert_eq!(replies.resolved().await, Resolved::Late(Late::Expired));
         assert_eq!(replies.prune(Instant::now()), DEFERRED_REPLIES - 1);
         assert_eq!(replies.deferred(), 0);
+    }
+
+    /// The first expiry is the oldest deferred channel's, and goes with it.
+    #[tokio::test(start_paused = true)]
+    async fn the_next_expiry_is_the_oldest_channels() {
+        let mut replies = Replies::new(AGE);
+        assert_eq!(replies.next_expiry(), None);
+        let first = Instant::now();
+        let _first = request(&mut replies, 1);
+        assert_eq!(
+            replies.next_expiry(),
+            None,
+            "the current one is not deferred"
+        );
+        replies.finish_current();
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let _second = request(&mut replies, 2);
+        replies.finish_current();
+        assert_eq!(replies.next_expiry(), Some(first + AGE));
+        assert_eq!(replies.prune(first + AGE), 1);
+        assert_eq!(
+            replies.next_expiry(),
+            Some(first + Duration::from_secs(1) + AGE)
+        );
     }
 
     #[tokio::test(start_paused = true)]

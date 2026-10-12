@@ -138,15 +138,12 @@ impl<S: SerialPort> Mac<S> {
                 read = self.serial.read(&mut self.read_buf) => Some(read),
                 () = tokio::time::sleep_until(grace_end) => None,
             };
-            match read {
+            match read.map(|read| self.outcome(read)).transpose()? {
                 None => {}
-                Some(Err(error)) => {
-                    self.read_failed(&error);
-                    return Err(ReadFailed);
-                }
-                // Nothing read: let other work, an abort included, run.
-                Some(Ok(0)) => tokio::task::yield_now().await,
-                Some(Ok(count)) => {
+                // Nothing read, short of the end of file: let other work, an
+                // abort included, run.
+                Some(0) => tokio::task::yield_now().await,
+                Some(count) => {
                     let read_at = Instant::now();
                     let now = self.clock.now();
                     for index in 0..count {
@@ -183,17 +180,12 @@ impl<S: SerialPort> Mac<S> {
             let Some(read) = poll_once(self.serial.read(&mut self.read_buf)).await else {
                 return Ok(());
             };
-            match read {
-                Ok(0) => return Ok(()),
-                Ok(count) => {
-                    let now = self.clock.now();
-                    self.receive(core, 0..count, now);
-                }
-                Err(error) => {
-                    self.read_failed(&error);
-                    return Err(ReadFailed);
-                }
+            let count = self.outcome(read)?;
+            if count == 0 {
+                return Ok(());
             }
+            let now = self.clock.now();
+            self.receive(core, 0..count, now);
             if self.outgoing.is_none() {
                 return Ok(());
             }

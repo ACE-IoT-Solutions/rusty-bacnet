@@ -53,8 +53,10 @@ pub struct MstpDiagnosticsSnapshot {
     pub ingress_full: u64,
     /// Ingress NPDUs dropped because the receive channel was closed.
     pub ingress_closed: u64,
-    /// Serial read calls that completed with an error. The transport's task
-    /// ends at the first one.
+    /// Serial reads that failed: a read that completed with an error, or
+    /// the port's end of file, three reads in a row that returned no octets
+    /// (see [`SerialPort::read`](super::SerialPort::read)). The transport's
+    /// task ends at the first one.
     pub serial_read_errors: u64,
     /// Serial write or drain calls that completed with an error. The frame
     /// is reported to the core as aborted.

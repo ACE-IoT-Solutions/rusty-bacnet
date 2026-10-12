@@ -1780,8 +1780,13 @@ falsely claiming completion; the transport then times each frame by its
 octets at the baud rate. Custom backends used for software direction control
 must implement this operation. `read()` must be cancel safe: the transport
 drops a pending read to service a deadline, and polls one once, without
-waiting, to collect octets already there before it starts a frame. The
-loopback backend completes writes in memory and drains immediately.
+waiting, to collect octets already there before it starts a frame. It waits
+for at least one octet: `Ok(0)` means end of file, no more data will come (a
+closed pseudo-terminal, or on some platforms an unplugged USB adapter), and
+never "nothing yet". After three `Ok(0)` reads in a row the transport ends as
+it does at a read error: counted in `serial_read_errors`, logged, its NPDU
+channel closed and later sends refused. The loopback backend completes writes
+in memory and drains immediately, and its reads always return octets.
 
 ### Loopback Transport
 
