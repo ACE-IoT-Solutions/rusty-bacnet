@@ -1830,7 +1830,7 @@ class ForeignDevice:
     ``BACnetClient``, ``BACnetServer`` and ``BipEndpoint`` (B/IP only).
 
     ``bbmd`` is ``"ip"`` or ``"ip:port"`` (port 47808 by default). ``ttl`` is
-    the registration's time-to-live in seconds, at least 1. ``renewal`` is
+    how many seconds the BBMD keeps the entry, at least 1. ``renewal`` is
     the seconds between registrations, more than 0 and less than ``ttl``;
     ``None`` renews at half the TTL. Behind NAT, renew often so the mapping
     the BBMD's replies come back on stays open, while the TTL stays long.
@@ -2003,8 +2003,8 @@ class BACnetClient:
         foreign_device: Optional[ForeignDevice] = None,
     ) -> None:
         """``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
-        ValueError): run the client as a BBMD, or register it as a foreign
-        device with a BBMD on another subnet, so its Who-Is reaches that
+        ValueError): run the client as a BBMD, or register it with a BBMD
+        on another subnet as a foreign device, so its Who-Is reaches that
         subnet (#938). See ``Bbmd`` and ``ForeignDevice``.
 
         ``ipv6_device_instance`` (B/IPv6 only, default None): the device
@@ -3149,8 +3149,8 @@ class BACnetServer:
         broadcasts and unicast then arrive in no fixed order.
 
         ``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
-        ValueError): run the device as a BBMD, or register it as a foreign
-        device with a BBMD on another subnet (#938). See ``Bbmd`` and
+        ValueError): run the device as a BBMD, or register it with a BBMD
+        on another subnet as a foreign device (#938). See ``Bbmd`` and
         ``ForeignDevice``. A registered Network Port reports the mode in
         BACnet_IP_Mode (normal 0, foreign 1, BBMD 2).
 

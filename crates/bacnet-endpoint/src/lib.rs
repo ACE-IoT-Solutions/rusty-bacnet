@@ -71,7 +71,7 @@
 //! | Data link | Endpoint builder | Evidence |
 //! |-----------|------------------|----------|
 //! | B/IP IPv4 unicast + local broadcast | [`bip::BipEndpointBuilder`] | Real loopback UDP proof (RB-16) |
-//! | B/IP BBMD / foreign-device mode | [`bip::BipEndpointBuilder::enable_bbmd`] et al. | **Experimental / unproven**: construction-only coverage, no wire BBMD proof; live BVLC queries stay on [`BipTransport`](bacnet_transport::bip::BipTransport) |
+//! | B/IP BBMD / foreign-device mode | [`bip::BipEndpointBuilder::mode`] | The standalone builders' transport and modes; loopback Network Number wire coverage; [`session::EndpointSession::foreign_registration`] reports a registration; live BVLC queries stay on [`BipTransport`](bacnet_transport::bip::BipTransport) |
 //! | BACnet/SC via hub | [`sc::ScEndpointBuilder`] | Real constrained-TLS hub proof (RB-16, `sc-tls`); loopback composition for unit validation |
 //! | MS/TP | [`mstp::MstpEndpointBuilder`] | **Simulator evidence only** (`LoopbackSerial` ownership + frame sequencing); no bench or on-wire conformance; timing is RB-26 |
 //! | BIPv6 | None | Explicitly unsupported: no endpoint builder; use `bacnet-transport` directly |
@@ -154,7 +154,7 @@
 //!
 //! Standalone BBMD helpers (`read_bdt` / `write_bdt` / `read_fdt` / foreign
 //! registration) stay on [`BipTransport`](bacnet_transport::bip::BipTransport);
-//! the endpoint BBMD setters only stage pre-start state and are experimental.
+//! [`bip::BipEndpointBuilder::mode`] sets the endpoint's B/IP mode before start.
 //! BIPv6/Ethernet have no endpoint builder: keep the standalone path there.
 //! See `docs/rust-api.md` for the same table with service-scope notes.
 //!

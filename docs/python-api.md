@@ -537,6 +537,8 @@ client = BACnetClient(
     apdu_timeout_ms=6000,
     transport="bip",             # "bip", "ipv6", or "sc"
     share_port_by_address=False, # Keyword-only; B/IP, see "Sharing a port by address"
+    bbmd=None,                   # Keyword-only; B/IP, a Bbmd: see "BBMD and foreign-device modes"
+    foreign_device=None,         # Keyword-only; B/IP, a ForeignDevice; not with bbmd
     # IPv6 options:
     ipv6_interface=None,         # IPv6 selected local address; None means ::
     ipv6_device_instance=None,   # Keyword-only; 0..=4194303 for the VMAC of that instance, None for random
@@ -592,6 +594,59 @@ exclusively, though the bind still succeeds beside another program's socket
 on `0.0.0.0` at that port. See
 [Sharing a port by address](rust-api.md#sharing-a-port-by-address) for each
 OS.
+
+### BBMD and foreign-device modes
+
+A B/IP `BACnetClient`, `BACnetServer` or `BipEndpoint` is a normal node by
+default. The keyword-only `bbmd=` makes it a BBMD, and `foreign_device=`
+registers it with a BBMD on another subnet as a foreign device, so its
+broadcasts, Who-Is among them, reach that subnet (#938). Each takes a typed
+object; giving both, or either on another transport, raises `ValueError`.
+
+```python
+from rusty_bacnet import BACnetClient, BACnetServer, Bbmd, ForeignDevice
+
+# A BBMD that forwards to the BBMD of another subnet and takes foreign devices.
+server = BACnetServer(
+    1234, interface="192.168.1.10", broadcast_address="192.168.1.255",
+    bbmd=Bbmd(["10.0.5.2:47808"], accept_foreign_devices=True),
+)
+
+# A client behind NAT, registered with that BBMD for ten minutes and
+# renewing every 20 seconds so the NAT mapping the BBMD's replies use stays open.
+async with BACnetClient(port=0, foreign_device=ForeignDevice(
+        "203.0.113.7:47808", ttl=600, renewal=20)) as client:
+    await client.who_is()
+    status = await client.foreign_registration()
+```
+
+`ForeignDevice(bbmd, ttl=300, renewal=None)` takes the BBMD as `"ip"` or
+`"ip:port"` (port 47808 by default), how many seconds the BBMD keeps the entry (at least
+1), and the seconds between registrations, more than 0 and less than `ttl`;
+`None` renews at half the TTL. The owner registers when it starts and renews
+on its own; its first broadcasts wait for the first registration to be
+answered.
+
+`Bbmd(bdt=None, *, accept_foreign_devices=False, management_acl=None,
+bdt_persist_path=None)` takes the BDT as `"ip:port"` rows (forwarded to by
+unicast) or `("ip:port", "mask")` pairs; the BBMD's own row is added when
+missing. Without `accept_foreign_devices=True` every registration is
+refused, and `management_acl` lists the addresses allowed to delete Foreign
+Device Table entries (none by default). `bdt_persist_path` names a file
+holding a BDT, 10 octets per row, to start with instead when it loads;
+Write-BDT from the network is always refused. Both classes check their
+values when built and raise `ValueError`.
+
+`foreign_registration()`, on all three owners, returns how the registration
+is going without sending anything: `registered`, `lease_remaining` and
+`next_attempt_in` in seconds (or None), the latest attempt's `last_bbmd`,
+`last_result` (the BVLC result code, 0x0030 when the BBMD refused it) and
+`last_outcome` (`"pending"`, `"accepted"`, `"refused"`, `"timed_out"`,
+`"local_error"` or `"cancelled"`), and the `attempts`, `accepted` and
+`refused` totals. The latest attempt clears when the owner stops; the totals
+stay. It raises `RuntimeError` before start and after stop. See
+[B/IP modes on the builders](rust-api.md#bip-modes-on-the-builders) for the
+Rust side.
 
 ### MS/TP serial ports
 
@@ -1927,6 +1982,8 @@ server = BACnetServer(
     broadcast_address="255.255.255.255",
     transport="bip",             # "bip", "ipv6", or "sc"
     share_port_by_address=False, # keyword-only; B/IP, see "Sharing a port by address"
+    bbmd=None,                   # keyword-only; B/IP, see "BBMD and foreign-device modes"
+    foreign_device=None,         # keyword-only; B/IP; not with bbmd
     segmentation_supported=Segmentation.NONE, # keyword-only; full-server capabilities
     apdu_segment_timeout_ms=5000, # keyword-only; shared Device/runtime segment timeout
     # SC options same as BACnetClient
@@ -3339,11 +3396,17 @@ raw `add_network_port(network_type=...)` API is removed.
 
 ### Registered B/IP Network Port
 
-This receiving-port association remains a bounded single NORMAL B/IP profile. Local Network Number behavior is described below; complete Network Port conformance, BBMD/foreign-device registration authority and multiport routing remain outside this registration contract.
+A registered port follows its owner's B/IP mode (#939): `BACnet_IP_Mode` reads
+0 for a normal node, 1 for a foreign device and 2 for a BBMD (`bbmd=` and
+`foreign_device=`, see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes)),
+and a BBMD's port serves its live BDT and FDT, a foreign device's its BBMD and
+time-to-live. Local Network Number behavior is described below; complete
+Network Port conformance and multiport routing remain outside this
+registration contract.
 
 ### Local Network Number controls
 
-Three Python owners consume the two local nonrouter controls automatically, one per transport: `BACnetServer`, the endpoint classes and `BACnetClient`. `BACnetServer` and `BACnetClient` own them with `transport="bip"` (NORMAL B/IP), `"ipv6"` (normal multicast B/IPv6), `"sc"` and `"mstp"`; `BipEndpoint`, `ScEndpoint` and `MstpEndpoint` own them on their links. Python has no BBMD, foreign-device or Ethernet constructor, so the B/IP BBMD/foreign-device, B/IPv6 foreign-device and Ethernet paragraphs below describe Rust-only modes. A valid local unicast or broadcast What-Is-Network-Number receives a local-broadcast Network-Number-Is when the owner knows its number (Clauses 6.4.19–6.4.20). There is no proactive startup announcement: the Standard asks that of configured routers, not of every nonrouter node. An explicit registered Network Port with a nonzero configured number reports `CONFIGURED` and never replaces that number from an announcement. Zero starts `UNKNOWN`; an owner without registration also starts unknown, regardless of other declared objects.
+Three Python owners consume the two local nonrouter controls automatically, one per transport: `BACnetServer`, the endpoint classes and `BACnetClient`. `BACnetServer` and `BACnetClient` own them with `transport="bip"` (NORMAL B/IP), `"ipv6"` (normal multicast B/IPv6), `"sc"` and `"mstp"`; `BipEndpoint`, `ScEndpoint` and `MstpEndpoint` own them on their links. Python's B/IP owners take `bbmd=` and `foreign_device=` for those two modes; the B/IPv6 foreign-device and Ethernet paragraphs below describe Rust-only modes. A valid local unicast or broadcast What-Is-Network-Number receives a local-broadcast Network-Number-Is when the owner knows its number (Clauses 6.4.19–6.4.20). There is no proactive startup announcement: the Standard asks that of configured routers, not of every nonrouter node. An explicit registered Network Port with a nonzero configured number reports `CONFIGURED` and never replaces that number from an announcement. Zero starts `UNKNOWN`; an owner without registration also starts unknown, regardless of other declared objects.
 
 A valid local-broadcast announcement with flag zero updates an unknown/learned owner to `LEARNED`. Flag one sets `LEARNED_CONFIGURED` and takes precedence over all subsequent flag-zero announcements. Further flag-one announcements may replace that learned value, including conflicts; an equal value still upgrades its quality. Both learned qualities transmit flag zero in their own responses. Selected-object `Network_Number` and `Network_Number_Quality` reads use the same database-owned state. Configuration remains immutable, so a new registration resets the pair from configured provenance; a new unregistered runtime starts unknown. There is no persistence of learned state across constructing a new runtime. After stop, the object retains the last observed pair until reconstruction or a new registration.
 
@@ -3355,7 +3418,7 @@ Once `BACnetClient` has learned its network's number, a device its table holds a
 
 SC starts UNKNOWN with no configured SC Network Port API; unrelated configured objects provide no authority. SC logical broadcast is the BVLC broadcast destination VMAC. A direct unicast What-Is is valid, but its Number reply uses the Hub broadcast path, never the saved original-direct APDU response capability. Hub-relayed controls do not identify an originating TLS leaf; SC control-origin authorization remains separate (#518). A message from a direct-connection peer is never a logical broadcast, so it can ask but cannot teach.
 
-B/IP BBMD and configured foreign modes start UNKNOWN with no registered Network Port authority. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop. Broader shared-endpoint BBMD/foreign behavior remains experimental; these modes add no configured Network Port authority.
+B/IP BBMD and configured foreign modes start UNKNOWN with no registered Network Port authority. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop.
 
 B/IPv6 starts UNKNOWN with no configured IPv6 Network Port authority. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python foreign-device API.
 
@@ -3379,8 +3442,8 @@ start. Declaring or adding an object alone never selects a live port.
 
 Successful start publishes actual announced IP/UDP/derived MAC and `APDU_Length` (399) = 1476.
 The selected configuration and Out_Of_Service are read-only while its lifetime
-lease survives; pending activation, BBMD/foreign modes, rebind and same-device
-multiport routing remain unsupported. Other configured rows remain unbound.
+lease survives; pending activation, rebind and same-device multiport routing
+remain unsupported. Other configured rows remain unbound.
 
 `BipEndpoint.local_address()` and `status()["local_address"]` report the same
 active announced address and actual ephemeral port for **all** active B/IP
@@ -3892,7 +3955,9 @@ async with endpoint:
 
 `await endpoint.status()` returns a redacted snapshot (`is_running`,
 `device_instance`, `vendor_id`, `max_apdu`, `transport`, `local_address`,
-`active_leases`, plus policy counters). `local_address()` is `"ip:port"`
+`active_leases`, plus policy counters). `BipEndpoint` also takes `bbmd=` and
+`foreign_device=`, and reports a registration with `foreign_registration()`
+(see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes)). `local_address()` is `"ip:port"`
 (BIP), VMAC hex (SC), or station string (MS/TP). Roles expose no callbacks;
 the client initiates `read_property`, `read_range` and `read_property_multiple`; concurrent use is
 `asyncio.gather` over these reads plus

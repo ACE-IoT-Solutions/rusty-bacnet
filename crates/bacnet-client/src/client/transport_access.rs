@@ -133,10 +133,8 @@ impl<T: TransportPort + AsBip + 'static> BACnetClient<T> {
     /// How this client's foreign-device registration is going (#938): whether
     /// it holds a live lease, the time left on it, and the last attempt's
     /// result and outcome, a BBMD's refusal included. Outside
-    /// [`BipMode::Foreign`](bacnet_transport::bip::BipMode::Foreign) only
-    /// manual registrations show. It reads
-    /// [`BipTransport::bvlc_client_snapshot`](bacnet_transport::bip::BipTransport::bvlc_client_snapshot)
-    /// and sends nothing.
+    /// [`BipMode::Foreign`] only manual registrations show. It reads
+    /// [`BipTransport::bvlc_client_snapshot`] and sends nothing.
     pub fn foreign_registration(&self) -> Result<ForeignRegistrationSnapshot, Error> {
         Ok(self
             .transport()

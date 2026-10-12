@@ -1973,6 +1973,78 @@ stopped worker, which only happens as the transport stops, logs at debug
 before the local send and does not depend on it, so in BBMD mode an `Err` from
 `send_broadcast` can follow a forward that was already queued.
 
+### B/IP modes on the builders
+
+A B/IP node is in one mode, and `BipMode` names it (#938): `Normal` (the
+default), `Foreign(ForeignDeviceConfig)` or `Bbmd(BbmdOptions)`. The client,
+server and endpoint builders take it as `.mode(...)`, so a BBMD that also
+registers as a foreign device can't be built. `BbmdOptions` carries what the
+BBMD setters above take: the BDT, the foreign-device policy (`None` refuses
+every registration), the Delete-FDT-Entry ACL (empty denies every source), the
+persisted-BDT path and the `FanoutPolicy`. `BipTransport::set_mode` maps a mode
+onto those setters and replaces whatever was set up before; the setters remain
+for code that builds a transport by hand, and `start()` still refuses a
+transport set up as both.
+
+```rust
+use std::net::Ipv4Addr;
+use std::time::Duration;
+
+use bacnet_client::client::BACnetClient;
+use bacnet_endpoint::bip::BipEndpointBuilder;
+use bacnet_server::server::BACnetServer;
+use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
+use bacnet_transport::bip::{BbmdOptions, BipMode, ForeignDeviceConfig};
+
+// A BBMD server that takes foreign-device registrations.
+let server = BACnetServer::bip_builder()
+    .interface(Ipv4Addr::new(192, 168, 1, 10))
+    .broadcast_address(Ipv4Addr::new(192, 168, 1, 255))
+    .database(db)
+    .mode(BipMode::Bbmd(BbmdOptions {
+        bdt: vec![BdtEntry {
+            ip: [10, 0, 5, 2],
+            port: 47808,
+            broadcast_mask: [255, 255, 255, 255],
+        }],
+        foreign_device_policy: Some(ForeignDevicePolicy::default()),
+        ..BbmdOptions::default()
+    }))
+    .build()
+    .await?;
+
+// A client behind NAT, registered with that BBMD: the TTL stays long, while
+// renewing every 20 s keeps the NAT mapping the BBMD's replies use open.
+let client = BACnetClient::bip_builder()
+    .port(0)
+    .mode(BipMode::Foreign(ForeignDeviceConfig {
+        bbmd_ip: Ipv4Addr::new(203, 0, 113, 7),
+        bbmd_port: 47808,
+        ttl: 600,
+        renewal_interval: Some(Duration::from_secs(20)),
+    }))
+    .build()
+    .await?;
+
+// The endpoint takes the same modes.
+let session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
+    .mode(BipMode::Bbmd(BbmdOptions::default()))
+    .build_session()?;
+```
+
+How a foreign device's registration goes, a BBMD's refusal included, is
+`ForeignRegistrationSnapshot`: `registered`, `lease_remaining`,
+`next_attempt_in`, the last attempt's `last_result` and `last_outcome`, and the
+totals. `BACnetClient::foreign_registration()` and
+`BACnetServer::foreign_registration()` read it from a B/IP transport (any
+transport with `AsBip`; the server's fails once it has stopped), and
+`EndpointSession::foreign_registration()` from a session `BipEndpointBuilder`
+built. They read the transport's `bvlc_client_snapshot()` and send nothing. An
+endpoint keeps its transport out of reach, so the builder takes a
+`BipTransport::bvlc_client_status()` handle first; take one yourself before
+handing a transport to another owner. A registered Network Port reports the
+mode in `BACnet_IP_Mode`.
+
 ---
 
 ## bacnet-network
@@ -4670,9 +4742,9 @@ deadlocks. Lock, copy and release. The live MS/TP master node and SC
 connection are not public.
 
 The management, FDT and fanout counters count what this transport does as a
-BBMD (ACKs sent, registrations admitted, broadcasts forwarded). A client from
-`bip_builder()` is never a BBMD, so its counters stay at zero; a client built
-with `generic_builder()` over a BBMD-mode `BipTransport` reports live values.
+BBMD (ACKs sent, registrations admitted, broadcasts forwarded). They stay at
+zero unless the client runs as one, from `bip_builder().mode(BipMode::Bbmd(..))`
+or `generic_builder()` over a BBMD-mode `BipTransport`.
 
 `bvlc_client_snapshot()` instead describes this transport's own outgoing
 Read-BDT, Write-BDT, Read-FDT, Delete-FDT and Register-FD exchanges, including
@@ -4700,27 +4772,29 @@ attempt. These counters describe local correlations, not certain attribution
 after a timeout. Encoding/send errors, cancellation and stop release the
 pending slot without inventing a timeout.
 
-The Rust B/IP client builder can configure automatic foreign-device mode:
+The B/IP builders run automatic foreign-device mode with
+`BipMode::Foreign` (see [B/IP modes on the builders](#bip-modes-on-the-builders)):
 
 ```rust
 use bacnet_client::client::BACnetClient;
-use bacnet_transport::bip::ForeignDeviceConfig;
+use bacnet_transport::bip::{BipMode, ForeignDeviceConfig};
 use std::{net::Ipv4Addr, time::Duration};
 
 let client = BACnetClient::bip_builder()
     .port(0)
-    .foreign_device(ForeignDeviceConfig {
+    .mode(BipMode::Foreign(ForeignDeviceConfig {
         bbmd_ip: Ipv4Addr::new(192, 0, 2, 10),
         bbmd_port: 47808,
         ttl: 60,
         renewal_interval: Some(Duration::from_secs(20)),
-    })
+    }))
     .build().await?;
-let registration = client.transport().bvlc_client_snapshot().foreign_registration;
+let registration = client.foreign_registration()?;
 ```
 
-Add `renewal_interval: None` to existing `ForeignDeviceConfig` literals to use
-the default of half the advertised TTL, including 500 ms for TTL 1. Automatic
+`renewal_interval: None` uses half the advertised TTL, including 500 ms for
+TTL 1; a shorter interval renews more often without changing the TTL the BBMD
+is asked for, as behind NAT. Automatic
 mode requires a positive TTL and a positive interval shorter than that TTL;
 invalid settings fail before transport I/O. Positive intervals below 100 ms
 use 100 ms instead, limiting automatic attempts to ten per second even when
@@ -4750,7 +4824,8 @@ with: the unspecified address, a group address or port 0 before any I/O, and
 the transport's own address once bound (#1622).
 A transport is in one B/IP mode: `start()` fails, before any I/O, on one set
 up both as a BBMD (`enable_bbmd`) and as a foreign device, since the two
-broadcast differently; run them on separate transports (#938, #1622).
+broadcast differently; run them on separate transports (#938, #1622). A
+`BipMode` can't express both.
 
 `build()` means the client is running locally. `registered` and
 `lease_remaining` report the lease the BBMD's successes prove: it starts at
@@ -7255,9 +7330,10 @@ responder and retains its services vector as a local declaration.
 Standalone BBMD helpers (`read_bdt` / `write_bdt` / `read_fdt` / foreign
 registration) stay on `BipTransport` and on `BACnetClient` over B/IP (see
 [Transport access and BBMD helpers](#transport-access-and-bbmd-helpers));
-the endpoint BBMD setters only stage
-pre-start state. Local Number controls have the bounded wire coverage above;
-broader BBMD/foreign administration remains experimental.
+`BipEndpointBuilder::mode` sets the B/IP mode as on the
+standalone builders (see [B/IP modes on the builders](#bip-modes-on-the-builders)),
+and `EndpointSession::foreign_registration()` reports a foreign device's
+registration.
 BIPv6/Ethernet have no endpoint builder — keep the standalone path there and
 do not expect identical administration across data links.
 

@@ -307,8 +307,10 @@ pub(super) async fn report_foreign_start(
     match crate::foreign::await_registration(client, bbmd).await {
         Ok(()) => eprintln!(
             "{}",
-            format!("Registered as a foreign device with BBMD {bbmd}, renewed automatically")
-                .green()
+            format!(
+                "BBMD {bbmd} accepted the foreign-device registration; it renews automatically"
+            )
+            .green()
         ),
         Err(e) => output::print_error(&format!("{e}; retrying in the background")),
     }

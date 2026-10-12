@@ -27,8 +27,8 @@ pub(crate) fn only_on_bip(share_port_by_address: bool, transport: &str) -> PyRes
 
 /// A foreign-device registration, for the `foreign_device=` keyword (#938).
 ///
-/// `bbmd` is `"ip"` or `"ip:port"` (port 47808 by default). `ttl` is the
-/// registration's time-to-live in seconds, at least 1. `renewal` is the
+/// `bbmd` is `"ip"` or `"ip:port"` (port 47808 by default). `ttl`, at
+/// least 1, is how many seconds the BBMD keeps the entry. `renewal` is the
 /// seconds between registrations, shorter than `ttl`; `None` renews at half
 /// the TTL. Behind NAT, renew often so the mapping the BBMD's replies come
 /// back on stays open, while the TTL stays long.
@@ -212,8 +212,7 @@ pub(crate) fn bip_mode(
     }
     match (bbmd, foreign_device) {
         (Some(_), Some(_)) => Err(PyValueError::new_err(
-            "bbmd and foreign_device are mutually exclusive: a B/IP node is a BBMD or a \
-             foreign device, not both",
+            "bbmd and foreign_device are mutually exclusive: a B/IP node can't be both",
         )),
         (Some(bbmd), None) => Ok(BipMode::Bbmd(bbmd.options.clone())),
         (None, Some(foreign)) => Ok(BipMode::Foreign(foreign.config.clone())),
