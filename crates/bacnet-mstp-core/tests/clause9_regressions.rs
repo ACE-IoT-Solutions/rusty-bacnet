@@ -5,7 +5,7 @@
 use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,
-    MstpCoreConfig, NetworkPriority, ReplyDecision, TransmitId,
+    MstpCoreConfig, NetworkPriority, ReplyDecision, TransmitFailure, TransmitId,
 };
 
 type Queues = HeaplessQueues<16, 16>;
@@ -572,4 +572,160 @@ fn host_chunk_activity_prevents_retry_during_a_fragmented_successor_frame() {
     core.on_deadline(ms(559)).unwrap();
     assert_eq!(core.poll_action(), Action::Idle);
     assert_eq!(core.next_deadline(), Some(ms(1050)));
+}
+
+/// A frame cut short after its start still drove the line, and each octet it
+/// sent restarted the silence (Clause 9.5.5.1). So the token-generation slot
+/// (Clause 9.5.6.7) counts from the abort, not from the activity before the
+/// frame. Found by the core fuzz target (#1640).
+#[test]
+fn an_aborted_frame_restarts_the_silence_before_token_generation() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(2, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    validated(&mut core, FrameType::PollForMaster, 2, 1, &[], ms(1));
+    core.on_deadline(ms(6)).unwrap();
+    let (reply, header) = take_transmit(&mut core, ms(6));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::ReplyToPollForMaster, 1)
+    );
+    core.on_transmit_aborted(reply, TransmitFailure::Aborted, ms(100))
+        .unwrap();
+    assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
+
+    // T_no_token after the abort the station waits for its own slot, two
+    // slots in, rather than for a window counted from before the frame.
+    core.on_deadline(ms(600)).unwrap();
+    assert_eq!(core.state(), MasterState::NoToken);
+    assert_eq!(core.poll_action(), Action::Idle);
+    assert_eq!(core.next_deadline(), Some(ms(620)));
+    core.on_deadline(ms(620)).unwrap();
+    let (_poll, header) = take_transmit(&mut core, ms(620));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::PollForMaster, 3)
+    );
+    assert_eq!(core.counters().missed_generation_slots, 0);
+}
+
+/// A station above Max_Master that answers a poll becomes the successor
+/// (ReceivedReplyToPFM, Clause 9.5.6.8). When it never uses the token, the
+/// search for a new successor starts at (NS + 1) modulo (Max_Master + 1)
+/// (FindNewSuccessor, Clause 9.5.6.6): 3 for NS 130 and Max_Master 7, not
+/// 0. Found by the core fuzz target (#1640).
+#[test]
+fn a_successor_search_past_one_above_max_master_starts_at_ns_plus_one() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 7),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    core.on_deadline(ms(500)).unwrap();
+    core.on_deadline(ms(510)).unwrap();
+    let (poll, header) = take_transmit(&mut core, ms(510));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::PollForMaster, 2)
+    );
+    finish(&mut core, poll, ms(511));
+    validated(
+        &mut core,
+        FrameType::ReplyToPollForMaster,
+        1,
+        130,
+        &[],
+        ms(512),
+    );
+    core.on_deadline(ms(517)).unwrap();
+    let (token, header) = take_transmit(&mut core, ms(517));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::Token, 130)
+    );
+    finish(&mut core, token, ms(518));
+    core.on_deadline(ms(538)).unwrap();
+    let (retry, header) = take_transmit(&mut core, ms(538));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::Token, 130)
+    );
+    finish(&mut core, retry, ms(539));
+
+    core.on_deadline(ms(559)).unwrap();
+    let (_poll, header) = take_transmit(&mut core, ms(559));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::PollForMaster, 3)
+    );
+}
+
+/// With a successor above Max_Master, the address after PS never equals NS,
+/// so the maintenance polls every 50 token uses (Clause 9.5.6.5) would walk
+/// on round to this station itself. They poll every other address, then the
+/// sweep ends as ResetMaintenancePFM ends it. Found in review of the core
+/// fuzz target (#1640).
+#[test]
+fn maintenance_polls_never_reach_this_station_with_a_successor_above_max_master() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    core.on_deadline(ms(500)).unwrap();
+    core.on_deadline(ms(510)).unwrap();
+    let (poll, _) = take_transmit(&mut core, ms(510));
+    finish(&mut core, poll, ms(511));
+    validated(
+        &mut core,
+        FrameType::ReplyToPollForMaster,
+        1,
+        130,
+        &[],
+        ms(512),
+    );
+    core.on_deadline(ms(517)).unwrap();
+    let (token, _) = take_transmit(&mut core, ms(517));
+    finish(&mut core, token, ms(518));
+
+    // Station 130 hands the token straight back, round after round; after a
+    // poll the wait times out and the token goes to 130 again.
+    let mut polls = Vec::new();
+    for round in 0..60u64 {
+        let at = 600 + 100 * round;
+        validated(&mut core, FrameType::Token, 1, 130, &[], ms(at));
+        core.on_deadline(ms(at + 5)).unwrap();
+        let (first, header) = take_transmit(&mut core, ms(at + 5));
+        finish(&mut core, first, ms(at + 6));
+        if header.frame_type == FrameType::PollForMaster {
+            polls.push((round, header.destination));
+            core.on_deadline(ms(at + 26)).unwrap();
+            let (token, header) = take_transmit(&mut core, ms(at + 26));
+            assert_eq!(header.destination, 130);
+            finish(&mut core, token, ms(at + 27));
+        } else {
+            assert_eq!(
+                (header.frame_type, header.destination),
+                (FrameType::Token, 130)
+            );
+        }
+    }
+    assert_eq!(polls, [(50, 2), (51, 3), (52, 0)]);
 }

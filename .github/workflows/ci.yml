@@ -142,9 +142,9 @@ jobs:
           fi
           exit $fail
       # Each fuzz crate's own Cargo.lock still matches its manifests. It
-      # records the codec's workspace version and the workspace's dependency
-      # requirements, so a change to either that skipped `fuzz.sh lock` fails
-      # here, not in a scheduled fuzz run (docs/ci.md, "Fuzzing").
+      # records the fuzzed crate's workspace version and the workspace's
+      # dependency requirements, so a change to either that skipped `fuzz.sh
+      # lock` fails here, not in a scheduled fuzz run (docs/ci.md, "Fuzzing").
       - name: Fuzz crate lockfiles
         run: bash scripts/ci/fuzz.sh lock --check
       - name: Rustfmt
