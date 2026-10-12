@@ -328,6 +328,10 @@ async fn bvlc_malformed_ack_returns_decode_error_without_counting_an_ack() {
     transport.stop().await.unwrap();
 }
 
+/// A request a success answers is busy while another is in flight to the
+/// same peer, since a success couldn't tell them apart; it times out on its
+/// own; and a success after that is a late result, not an acceptance. A
+/// table read to the same peer meanwhile runs beside it (#1622).
 #[tokio::test]
 async fn bvlc_busy_timeout_and_late_result_are_distinct_observations() {
     let (peer, target) = peer().await;
@@ -341,19 +345,30 @@ async fn bvlc_busy_timeout_and_late_result_are_distinct_observations() {
             result = &mut request => panic!("early response: {result:?}"),
             received = peer.recv_from(&mut packet) => { received.unwrap(); }
         }
-        assert!(transport
-            .read_fdt(&target)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("already in flight"));
+        let busy = transport.write_bdt(&target, &[]).await.unwrap_err();
+        assert!(busy.to_string().contains("already in flight"), "{busy}");
+        {
+            let read = transport.read_fdt(&target);
+            tokio::pin!(read);
+            let (len, source) = tokio::select! {
+                result = &mut read => panic!("early response: {result:?}"),
+                received = peer.recv_from(&mut packet) => received.unwrap(),
+            };
+            assert_eq!(&packet[..len], &[0x81, 6, 0, 4]);
+            peer.send_to(&[0x81, 7, 0, 4], source).await.unwrap();
+            assert!(read.await.unwrap().is_empty());
+        }
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(4)).await;
         assert!(matches!(request.await, Err(Error::Timeout(_))));
         tokio::time::resume();
     }
     let snapshot = transport.bvlc_client_snapshot();
-    assert_eq!((snapshot.read_fdt.sent, snapshot.read_fdt.busy), (0, 1));
+    assert_eq!((snapshot.write_bdt.sent, snapshot.write_bdt.busy), (0, 1));
+    assert_eq!(
+        (snapshot.read_fdt.sent, snapshot.read_fdt.acknowledgements),
+        (1, 1)
+    );
     assert_eq!(
         (
             snapshot.register_foreign_device.sent,

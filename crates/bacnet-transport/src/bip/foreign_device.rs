@@ -7,6 +7,13 @@ use bacnet_types::error::Error;
 
 use super::BipTransport;
 
+/// How many broadcasts a foreign device holds while the first registration
+/// attempt after each start is outstanding (#1622): enough for what a device
+/// or router announces at start, such as I-Am and I-Am-Router-To-Network.
+/// They go, in order, once that attempt succeeds or goes unanswered, and are
+/// dropped if the BBMD refuses it; one more is refused with an error.
+pub(super) const HELD_BROADCASTS: u16 = 16;
+
 /// Configuration for automatic foreign-device registration. Its positive TTL
 /// is sent unchanged; the independent renewal interval controls local attempts.
 #[derive(Debug, Clone)]
@@ -66,11 +73,17 @@ impl ForeignDeviceConfig {
     }
 
     /// The node engine's registration, renewed every `interval`
-    /// ([`Self::interval`]) as before: an attempt waits for its result at
-    /// most that interval or the manual helpers' timeout, whichever is
-    /// shorter; the next goes one interval after the last one started,
-    /// whatever came of it; broadcasts go at once, and Forwarded-NPDUs are
-    /// taken from any sender.
+    /// ([`Self::interval`]): an attempt waits for its result at most that
+    /// interval or the manual helpers' timeout, whichever is shorter. After
+    /// a success the next goes one interval into the lease it proved; after
+    /// a refusal, one interval after that attempt started; after a loss,
+    /// sooner, backing off from the response timeout up to the interval;
+    /// and a Distribute-Broadcast-To-Network NAK from the BBMD pulls it
+    /// forward ([`Retry::Backoff`], #1622). Until the first attempt
+    /// resolves, up to [`HELD_BROADCASTS`] broadcasts are held. A
+    /// Forwarded-NPDU is taken only from the BBMD by unicast, as a BBMD sends
+    /// its foreign devices the network's broadcasts
+    /// ([`ForwardedTrust::ConfiguredBbmd`]).
     pub(super) fn engine(&self, interval: CoreDuration) -> Foreign {
         // Three seconds, exactly.
         let response_timeout =
@@ -80,9 +93,9 @@ impl ForeignDeviceConfig {
             ttl: self.ttl,
             renewal: interval,
             response_timeout: interval.min(response_timeout),
-            retry: Retry::AtRenewal,
-            hold: 0,
-            trust: ForwardedTrust::AnySender,
+            retry: Retry::Backoff,
+            hold: HELD_BROADCASTS,
+            trust: ForwardedTrust::ConfiguredBbmd,
         }
     }
 }

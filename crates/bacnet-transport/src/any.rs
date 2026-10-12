@@ -306,6 +306,20 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
+    fn local_broadcast_destinations(&self) -> crate::port::GroupDestinations {
+        match self {
+            Self::Bip(t) => t.local_broadcast_destinations(),
+            Self::Mstp(t) => t.local_broadcast_destinations(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.local_broadcast_destinations(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.local_broadcast_destinations(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.local_broadcast_destinations(),
+            Self::Loopback(t) => t.local_broadcast_destinations(),
+        }
+    }
+
     fn group_destinations(&self) -> crate::port::GroupDestinations {
         match self {
             Self::Bip(t) => t.group_destinations(),

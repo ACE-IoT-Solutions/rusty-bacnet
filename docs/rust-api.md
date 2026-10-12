@@ -820,6 +820,17 @@ and `forwarded_group_origin_drops()` counts it (#1493). Otherwise a forged
 I-Am could bind a device to a group, and the answer to a request would go to
 every node in it.
 
+`send_unicast` to one of those group destinations fails with
+`Error::Encoding` and sends nothing (#1677). An Original-Unicast-NPDU goes to
+one node's own address, and a receiver that checks where a datagram was sent,
+as this transport does, drops one sent to a group, so the caller finds out
+instead of losing the message; `send_broadcast` reaches the link, and
+`NetworkLayer::send_apdu` and `BACnetRouter` send an Unconfirmed-Request for a
+group address at the link's own port that way themselves
+(`local_broadcast_destinations`). One at another port belongs to another B/IP
+network, so they leave it refused. Another subnet's directed broadcast
+address isn't known to the transport, so it isn't refused.
+
 A well-formed BVLC-Result, Read-BDT-ACK or Read-FDT-ACK that no request was
 waiting for is counted in `bvlc_client_snapshot().unmatched_responses`. Every
 other datagram the receive path drops is counted in `receive_counters()`, a
@@ -833,7 +844,10 @@ malformed response also shows in the client snapshot's `malformed_responses`,
 whether or not a request was waiting for it); this node's own echo; a request
 the node would refuse with a NAK, from a source no reply can reach (the
 unspecified address, port 0 or the node itself), which gets no NAK (#1622); a
-Forwarded-NPDU from outside a BBMD's BDT; and an NPDU the network-layer
+Forwarded-NPDU from outside a BBMD's BDT; a Forwarded-NPDU a foreign device
+takes from no one but its BBMD by unicast, the one way a BBMD hands it the
+network's broadcasts (`forwarded_untrusted`, #1622; a node in normal mode
+takes one from any sender); and an NPDU the network-layer
 channel couldn't take because it was full or, once the network layer stopped
 reading, closed. Each drop counts once, and the totals survive a restart. A
 header that fails to decode and a malformed BVLC response, which used to log a
@@ -841,6 +855,17 @@ warning for each datagram, now log at debug, so a flood of them can't flood
 the log; the counters carry the signal. A full channel still warns, at most
 once every 10 seconds, with the number of NPDUs dropped since the last
 warning.
+
+The transport sends NPDUs up to 1497 octets, the most a B/IP data link
+carries (Table 6-1); a BBMD's Forwarded-NPDU of one is a 1507-octet datagram.
+A longer NPDU, unicast or broadcast, fails with `Error::Encoding` before
+anything is sent, and counts in `send_counters().npdu_too_long`, whose totals
+survive a restart (#1622). A router forwarding one onto a B/IP port logs the
+failed send, but doesn't tell the sender yet; the Reject-Message-To-Network
+for it comes with #1665. One exception: a BBMD passing on what it received,
+a broadcast to its BDT peers, foreign devices or subnet, or a foreign
+device's Distribute-Broadcast-To-Network, forwards it as it came, without
+this check or count.
 
 ### BIP6 (IPv6)
 
@@ -2088,16 +2113,32 @@ empty DADR for every PDU type: a remote network's broadcast goes through
 its link DA is the broadcast MAC. `send_apdu` to the MAC the transport reports
 as its broadcast, or any other group address the medium carries
 (`TransportPort::is_group_destination`: on B/IP the limited broadcast, the
-configured broadcast IP or a multicast address at any port, on B/IPv6 any
-multicast group, on Ethernet any MAC with the group bit set), is a local
-broadcast too, but the layer doesn't ask the transport on every unicast:
+configured broadcast IP or a multicast address at any port, on Ethernet any
+MAC with the group bit set; a B/IPv6 MAC is a VMAC, which names no group), is
+a local broadcast too.
+
+`send_apdu` sends an Unconfirmed-Request for one of the groups the link's own
+broadcast stands for (`TransportPort::local_broadcast_destinations`) through
+the transport's `send_broadcast` (#1677). B/IP refuses every unicast to one of
+its group addresses with `Error::Encoding`, sending nothing, since its
+receivers drop an Original-Unicast-NPDU that wasn't sent to their own address.
+On B/IP those groups are the ones at the link's own UDP port: a group address
+at another port belongs to another B/IP network, so a send there is left to
+the transport, which refuses it. On Ethernet a multicast MAC becomes the
+all-ones broadcast. The layer takes the rule when it is made and again at
+start, so no send calls back into the transport; a transport that gives no
+rule (`group_destinations`, which the local-broadcast rule defaults to) has
+every send go as addressed. Anything else goes to the transport as given,
+where B/IP refuses it; the layer doesn't refuse it itself.
+
 `BACnetClient`'s confirmed requests, the endpoint's egress and its requester,
-which take caller-chosen MACs, refuse anything but an Unconfirmed-Request there
-themselves. The server refuses one for the confirmed requests it starts
-itself, to event recipients, Channel and Command targets, audit recipients and
-bound devices, and binds no device to one (#1493); its replies and COV
-notifications go to the source a request came from. `is_broadcast_mac` keeps
-its narrower meaning, this link's own broadcast, which routing relies on.
+which take caller-chosen MACs, refuse anything but an Unconfirmed-Request to a
+group address themselves. The server refuses one for the confirmed requests
+it starts itself, to event recipients, Channel and Command targets, audit
+recipients and bound devices, and binds no device to one (#1493); its replies
+and COV notifications go to the source a request came from.
+`is_broadcast_mac` keeps its narrower meaning, this link's own broadcast,
+which routing relies on.
 
 A reply goes back to the link-layer MAC its request came from, so a
 confirmed request from a group address would get its answer, any segment
@@ -2117,9 +2158,17 @@ connected port, to a DADR that is a group destination there
 (`TransportPort::group_destinations`), unless its APDU is an
 Unconfirmed-Request (#1504). As one unicast it would reach every node in the
 group without the broadcast network addresses #1491 filters. It is delivered
-nowhere, draws no reject, and counts in `group_dadr_drops()`. Network
-messages, and a group DADR on a network behind another router, which that
-router judges, are not affected. A routed request's SADR names a node on
+nowhere, draws no reject, and counts in `group_dadr_drops()`. So is a network
+message routed to such a DADR, or a Reject-Message-To-Network relayed to one,
+which must not reach every router on that network as a broadcast (#1677). An
+Unconfirmed-Request for one of the groups the port's own broadcast stands for
+(`TransportPort::local_broadcast_destinations`) goes out on that port as its
+local broadcast, which is what its sender meant, and isn't counted; it also
+reaches the router's own application where a DLEN 0 broadcast would, when it
+came from that network (#1677). On B/IP a group at another UDP port belongs
+to another B/IP network, so an Unconfirmed-Request for one is dropped and
+counted too. A group DADR on a network behind another router, which that
+router judges, is not affected. A routed request's SADR names a node on
 another network, which the ingress rule above can't judge, so a reply to a
 group SADR is dropped only where the final router is a `BACnetRouter`.
 
@@ -4602,6 +4651,7 @@ let outgoing = bip_client.transport().bvlc_client_snapshot();
 let management = bip_client.transport().management_counters();
 let fanout = bip_client.transport().fanout_counters();
 let dropped = bip_client.transport().receive_counters(); // datagrams dropped on receipt, by reason
+let refused = bip_client.transport().send_counters(); // NPDUs refused on send, by reason
 let fdt = bip_client.transport().fdt_counters(); // None unless a BBMD
 let bbmd = bip_client.transport().bbmd_state().cloned(); // Option<Arc<std::sync::Mutex<BbmdState>>>
 
@@ -4629,8 +4679,12 @@ Read-BDT, Write-BDT, Read-FDT, Delete-FDT and Register-FD exchanges, including
 automatic registration, which the `bacnet-bip-core` node engine runs (#1622).
 Each function reports successful local UDP sends, valid matched ACKs, matched
 result counts and the latest result code, response timeouts, local errors,
-malformed replies, and calls refused because the single management slot was
-busy. Sending a datagram is not a BBMD receipt. The snapshot uses fixed-size
+malformed replies, and calls refused as busy. Requests to different peers, or
+for different operations, run at the same time, in up to eight exchanges
+(#1622). A request is busy only while the same request is in flight to that
+peer, or another request a success answers (Write-BDT, Delete-FDT-Entry or
+Register-FD) is, since a success couldn't tell the two apart, or while all
+eight are in use. Sending a datagram is not a BBMD receipt. The snapshot uses fixed-size
 counters and a short synchronous lock; polling it does not send traffic.
 Totals belong to this transport instance and survive stop/start; last-result
 fields clear. BBMD-side counters keep their existing meanings.
@@ -4670,15 +4724,22 @@ the default of half the advertised TTL, including 500 ms for TTL 1. Automatic
 mode requires a positive TTL and a positive interval shorter than that TTL;
 invalid settings fail before transport I/O. Positive intervals below 100 ms
 use 100 ms instead, limiting automatic attempts to ten per second even when
-a manual request owns the slot or local sends fail immediately. This is a
+the exchanges are all busy or local sends fail immediately. This is a
 local pacing policy; the requested TTL stays unchanged on the wire. The
 effective interval also drives `next_attempt_in` and response waiting.
 The automatic worker waits at most the smaller of the effective interval
-and three seconds for each result, then schedules another attempt; busy manual
-requests cause a locally counted busy refusal and a retry on the next interval.
+and three seconds for each result. After a success it renews one interval
+into the lease that success proved; after a refusal, one interval after that
+attempt started; after a lost attempt or a local error, sooner: one response
+wait later, doubling with each failure in a row, and never later than one
+interval after the attempt started (#1622). A Distribute-Broadcast-To-Network
+NAK from the BBMD, which a BBMD sends a device it holds no registration for,
+brings the next attempt forward, to no sooner than one response wait after
+the last one started; `renewal_hints` counts them. Manual requests run beside
+it; only when all eight exchanges are in use is an attempt refused as busy,
+counted, and retried as after a loss.
 There is no catch-up burst after a delayed attempt. The first attempt is
-admitted at `start()` and sent when the transport's driver task first runs,
-so a manual request made at once finds the slot busy.
+admitted at `start()` and sent when the transport's driver task first runs.
 One-shot `register_foreign_device_bvlc` calls retain their three-second
 response wait and permit zero-TTL requests; they do not switch broadcast mode.
 A foreign device refuses the requests a success answers (Register,
@@ -4691,15 +4752,34 @@ A transport is in one B/IP mode: `start()` fails, before any I/O, on one set
 up both as a BBMD (`enable_bbmd`) and as a foreign device, since the two
 broadcast differently; run them on separate transports (#938, #1622).
 
-`build()` means the client is running locally. Poll `last_outcome` for a
-matched acceptance or refusal; a send failure or timeout leaves the remote
-outcome unknown. A registration NAK rejects that attempt and does not prove
-an earlier accepted entry disappeared. The `next_attempt_in` countdown is the
-worker's scheduled attempt, not a remote lease expiry. Annex J.5.2's BBMD
-expiry includes its grace period; the earlier local renewal is a scheduling
-choice. Last-attempt status and countdown clear on stop/restart while totals
-remain. Foreign-mode broadcasts use DBTN toward the configured BBMD even
-before acceptance or after a rejected attempt.
+`build()` means the client is running locally. `registered` and
+`lease_remaining` report the lease the BBMD's successes prove: it starts at
+the earliest send a success could answer and lasts one time-to-live, leaving
+out the grace period a BBMD adds (Annex J.5.2.3), so the device never counts
+on time the BBMD might not give it. `lapses` counts leases that ran out with
+no newer success. A BBMD that loses its table early, as on a restart, ends
+the registration before the lease does; its Distribute-Broadcast-To-Network
+NAKs then bring the next attempt forward. The transport logs one line when
+the device becomes registered (info), and when the BBMD refuses it or the
+lease lapses (warn); renewals and lost attempts log at debug. Poll
+`last_outcome` for a matched acceptance or refusal; a send failure or timeout
+leaves the remote outcome unknown. A registration NAK rejects that attempt
+and leaves a live lease in place. The `next_attempt_in` countdown is the
+worker's scheduled attempt, not a lease expiry. Last-attempt status,
+countdown and lease clear on stop/restart while totals remain.
+
+Foreign-mode broadcasts use DBTN toward the configured BBMD. Until the first
+attempt after each start is answered or times out, the transport holds up to
+16 of them (`broadcasts_held`), so what a device or router announces at start
+doesn't race its registration, and refuses more with an error
+(`broadcasts_hold_full`) (#1622). It sends them, in order, once that attempt
+succeeds or goes unanswered (`broadcasts_released`), and drops them if the
+BBMD refuses it (`broadcasts_discarded`). One made while the released ones
+still wait to go queues behind them, so broadcasts go in the order they were
+made; that queue takes another 16, and refuses more as a full hold. A stop
+drops what is held or queued, counted as discarded. After that, broadcasts go
+at once, registered or not; one sent with no live lease is counted in
+`broadcasts_unregistered`.
 
 The BBMD helpers (`read_bdt`, `write_bdt`, `read_fdt`, `delete_fdt_entry`,
 `register_foreign_device_bvlc`) work on any client whose transport implements
@@ -7049,7 +7129,7 @@ Routed controls, malformed payloads and unicast Network-Number-Is are ignored. A
 
 The full server publishes the number its owner holds on `NetworkLayer::local_network_number` (a `bacnet_network::network_number::LocalNetworkNumber` handle), where event routing, writes in other devices and Audit delivery read it without the database lock (#1298, #1358). With a registered Network Port the port stays the one authority: startup copies the port's number there once the bind is published, and the worker copies the port's state after each control under the same database write lock that changed it, so the handle never holds a number the port does not. Without a registered port, the handle holds the number the worker learned. A later announcement that replaces the number takes effect for the next notification or write sent. Nothing withdraws a known number, since no announcement can, so it stays until a new runtime starts again from the configured number or unknown. The standalone client publishes its learned number on its own layer the same way, where its routed requests and network broadcasts read it (#1358); neither exposes its layer. Every sender that reads the number sends a destination naming it as local traffic, with no DNET, and keys a confirmed request to the MAC it went to, since the answer comes from there with no SNET. `NetworkLayer`'s own send methods frame the destination they are given and never rewrite it, so answers to a request, and COV notifications to a subscriber, keep the route the request arrived by. The shared endpoint session's owner publishes on its own layer in the same way, a registered port's number from startup, and the endpoint's requester and source Audit routes read it (#1403); its answers also keep their route.
 
-Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no Python foreign-device API, configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, alternate-sender compatibility, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. MS/TP LoopbackSerial tests also cover the standalone client in both execution modes, with the same frame decoding and fences as the full server and shared endpoint below; its own ReadProperty to the peer completes while a Number send is held.
+Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no Python foreign-device API, configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, the refusal of another sender's Forwarded-NPDU in foreign mode, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. MS/TP LoopbackSerial tests also cover the standalone client in both execution modes, with the same frame decoding and fences as the full server and shared endpoint below; its own ReadProperty to the peer completes while a Number send is held.
 
 The pre-1.0 Rust helper moved directly from `bacnet_objects::network_port::NetworkNumber` to `bacnet_types::network_number::NetworkNumber`, with no compatibility alias. Its default is UNKNOWN; `configured(number)` returns `None` for reserved 65535. Pure observation reports configured conflicts to the caller for logging. Shared nonrouter packet parsing and reply encoding live in `bacnet_network::network_number`; registered database authority remains in the server/object adapter.
 
@@ -7057,7 +7137,7 @@ Transport wrappers must delegate `TransportPort::supports_local_nonrouter_number
 
 SC starts UNKNOWN with no configured SC Network Port API; unrelated configured objects provide no authority. SC logical broadcast is the BVLC broadcast destination VMAC. A direct unicast What-Is is valid, but its Number reply uses the Hub broadcast path, never the saved original-direct APDU response capability. Hub-relayed controls do not identify an originating TLS leaf; SC control-origin authorization remains separate (#518). A message from a direct-connection peer is never a logical broadcast, so it can ask but cannot teach.
 
-B/IP BBMD and configured foreign modes start UNKNOWN unless a Network Port is registered for them, which then supplies configured authority as in NORMAL mode. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts structurally valid Forwarded-NPDU from alternate UDP senders under its existing compatibility policy and answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the existing periodic registration loop continues. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly alternate forwarding and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop. Broader shared-endpoint BBMD/foreign behavior remains experimental; only a registered Network Port adds configured authority in these modes.
+B/IP BBMD and configured foreign modes start UNKNOWN unless a Network Port is registered for them, which then supplies configured authority as in NORMAL mode. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop. Broader shared-endpoint BBMD/foreign behavior remains experimental; only a registered Network Port adds configured authority in these modes.
 
 B/IPv6 starts UNKNOWN with no configured IPv6 Network Port authority. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python foreign-device API.
 

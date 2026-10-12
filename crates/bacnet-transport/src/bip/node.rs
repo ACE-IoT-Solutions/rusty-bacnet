@@ -24,24 +24,29 @@ use std::time::Duration;
 
 use bacnet_bip_codec::{BvlcFunction, Bvll, BvllError};
 use bacnet_bip_core::node::{
-    Action, Admission, ConfigError, ExchangeId, Inbound, Link, LocalFailure, Mode, Node, Policy,
-    RegistrationEvent, Response, SendRefusal,
+    Action, Admission, ConfigError, ExchangeId, Inbound, Link, LocalFailure, Mode, Node,
+    NodeCounters, Policy, RegistrationEvent, Response, SendRefusal,
 };
 use bacnet_bip_core::{Duration as CoreDuration, Instant as CoreInstant};
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{oneshot, Notify};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
-use super::client_snapshot::ClientRecord;
+use super::client_snapshot::{ClientRecord, ForeignRegistrationSnapshot};
+use super::foreign_device::HELD_BROADCASTS;
 use super::rate_limit::ManagementRateLimiter;
+use super::send_counters::SendRefusals;
 use super::BipSocket;
 use crate::bbmd;
 use crate::bvll::{bvll_error, encode_bvll, BvllMessage};
 
-/// Exchange slots: one, which the management helpers and a foreign
-/// device's registration share, as before the engine.
-const SLOTS: usize = 1;
+/// Exchange slots, which the management helpers and a foreign device's
+/// registration share. Each holds one exchange per peer and operation, so
+/// requests to different peers, or for different operations, run at the
+/// same time (#1622); only the same request to the same peer, or a second
+/// one a success answers, waits its turn.
+const SLOTS: usize = 8;
 
 /// The engine as the hosted transport runs it.
 pub(super) type HostNode = Node<SLOTS>;
@@ -162,6 +167,15 @@ pub(super) struct NodeState {
     held: VecDeque<Bytes>,
     /// Held broadcasts released, for the driver to send.
     release: Vec<Bytes>,
+    /// Broadcasts made while released ones still wait for the driver, which
+    /// sends them next, so none overtakes another. At most
+    /// [`HELD_BROADCASTS`]; one more is refused as a full hold.
+    queued: Vec<Bytes>,
+    /// The driver is sending broadcasts it took from `release` and `queued`.
+    releasing: bool,
+    /// A refusal was logged at warn, and the next ones go at debug until a
+    /// success or the lease's end.
+    refusal_warned: bool,
     /// Set by stop: no request starts, and nothing more is counted.
     pub(super) stopped: bool,
 }
@@ -183,7 +197,7 @@ impl NodeState {
                 }
                 Action::ReleaseHeld => self.release.extend(self.held.drain(..)),
                 Action::DiscardHeld => self.held.clear(),
-                Action::Registration(event) => log_registration(event),
+                Action::Registration(event) => self.log_registration(event),
             }
         }
         let counters = self.node.take_counters();
@@ -198,14 +212,43 @@ impl NodeState {
             let _ = waiter.tx.send(outcome);
         }
     }
-}
 
-fn log_registration(event: RegistrationEvent) {
-    match event {
-        RegistrationEvent::Unanswered => {
-            debug!("Foreign registration attempt did not return a matched result");
+    /// Log a change in a foreign device's registration: a line when it
+    /// becomes registered, when the BBMD starts refusing it, and when the
+    /// lease lapses; renewals, losses and further refusals in a row at
+    /// debug. A success or a lapse ends a run of refusals, so the next
+    /// refusal warns again: a BBMD that keeps refusing warns once, not at
+    /// every attempt.
+    fn log_registration(&mut self, event: RegistrationEvent) {
+        let Mode::Foreign(foreign) = self.node.link().mode else {
+            return;
+        };
+        let bbmd = foreign.bbmd;
+        match event {
+            RegistrationEvent::Registered { since, until } => {
+                self.refusal_warned = false;
+                let lease = Duration::from_nanos(until.saturating_duration_since(since).as_nanos());
+                info!(%bbmd, ?lease, "B/IP foreign device registered with its BBMD");
+            }
+            RegistrationEvent::Refused { code } if self.refusal_warned => {
+                debug!(%bbmd, %code, "B/IP BBMD refused the foreign-device registration");
+            }
+            RegistrationEvent::Refused { code } => {
+                self.refusal_warned = true;
+                warn!(%bbmd, %code, "B/IP BBMD refused the foreign-device registration");
+            }
+            RegistrationEvent::Lapsed => {
+                self.refusal_warned = false;
+                warn!(%bbmd, "B/IP foreign-device registration lapsed, with no renewal answered");
+            }
+            RegistrationEvent::Renewed { .. } => {
+                self.refusal_warned = false;
+                debug!(%bbmd, "Foreign registration renewed");
+            }
+            RegistrationEvent::Unanswered => {
+                debug!("Foreign registration attempt did not return a matched result");
+            }
         }
-        event => debug!(?event, "Foreign registration"),
     }
 }
 
@@ -216,6 +259,8 @@ pub(super) struct NodeHandle {
     clock: HostClock,
     socket: Arc<BipSocket>,
     record: Arc<ClientRecord>,
+    /// Where the sends the link refuses are counted.
+    refusals: Arc<SendRefusals>,
     /// A foreign device's renewal interval.
     renewal: Option<CoreDuration>,
     state: Mutex<NodeState>,
@@ -224,15 +269,17 @@ pub(super) struct NodeHandle {
 }
 
 impl NodeHandle {
-    /// The node on `link`, sending from `socket` and counting into
-    /// `record`. A foreign device's first registration attempt is admitted
-    /// at once and sent when the driver first runs, which is also when what
-    /// the node counted for it reaches `record`, as with the registration
-    /// worker before the engine.
+    /// The node on `link`, sending from `socket`, counting its exchanges
+    /// into `record` and the sends its link refuses into `refusals`. A
+    /// foreign device's first registration attempt is admitted at once and
+    /// sent when the driver first runs, which is also when what the node
+    /// counted for it reaches `record`, as with the registration worker
+    /// before the engine.
     pub(super) fn new(
         link: Link,
         socket: Arc<BipSocket>,
         record: Arc<ClientRecord>,
+        refusals: Arc<SendRefusals>,
     ) -> Result<Self, Error> {
         let clock = HostClock::new();
         let node = HostNode::new(link, clock.now()).map_err(config_error)?;
@@ -245,6 +292,7 @@ impl NodeHandle {
             clock,
             socket,
             record,
+            refusals,
             renewal,
             state: Mutex::new(NodeState {
                 node,
@@ -253,6 +301,9 @@ impl NodeHandle {
                 attempt_started: None,
                 held: VecDeque::new(),
                 release: Vec::new(),
+                queued: Vec::new(),
+                releasing: false,
+                refusal_warned: false,
                 stopped: false,
             }),
             wake: Notify::new(),
@@ -273,6 +324,12 @@ impl NodeHandle {
     /// The socket every send leaves from.
     pub(super) fn socket(&self) -> &Arc<BipSocket> {
         &self.socket
+    }
+
+    /// The error for a send the link refused, counted.
+    pub(super) fn refuse_send(&self, refusal: SendRefusal) -> Error {
+        self.refusals.count(refusal);
+        send_refusal(refusal)
     }
 
     fn lock(&self) -> MutexGuard<'_, NodeState> {
@@ -324,50 +381,96 @@ impl NodeHandle {
         });
     }
 
-    /// Whether a foreign device's broadcast of `npdu` goes now. One held
-    /// is kept until the node releases or drops it.
-    pub(super) fn admit_broadcast(&self, npdu: &[u8]) -> Result<Admission, Error> {
+    /// Whether a foreign device's broadcast of `npdu` goes now, from the
+    /// caller. Otherwise the node keeps it: held until it releases or drops
+    /// it, or queued behind released broadcasts the driver hasn't sent yet,
+    /// so that broadcasts go in the order they were made. That queue takes
+    /// as many as the hold; one more is refused and counted as a full hold.
+    pub(super) fn admit_broadcast(&self, npdu: &[u8]) -> Result<bool, Error> {
         self.with(|state, now| {
-            let admission = state.node.admit_broadcast(now).map_err(send_refusal)?;
-            if admission == Admission::Hold {
-                state.held.push_back(Bytes::copy_from_slice(npdu));
+            let admission = state
+                .node
+                .admit_broadcast(now)
+                .map_err(|refusal| self.refuse_send(refusal))?;
+            let copy = || Bytes::copy_from_slice(npdu);
+            let waiting = state.releasing || !state.release.is_empty() || !state.queued.is_empty();
+            match admission {
+                Admission::Hold => state.held.push_back(copy()),
+                Admission::Send if waiting => {
+                    if state.queued.len() >= usize::from(HELD_BROADCASTS) {
+                        if !state.stopped {
+                            self.record.absorb(&NodeCounters {
+                                broadcasts_hold_full: 1,
+                                ..NodeCounters::default()
+                            });
+                        }
+                        return Err(self.refuse_send(SendRefusal::HoldFull));
+                    }
+                    state.queued.push(copy());
+                }
+                Admission::Send => return Ok(true),
             }
-            Ok(admission)
+            Ok(false)
         })
     }
 
-    /// Time until a foreign device's next automatic registration attempt:
-    /// one renewal interval after the last one started.
-    pub(super) fn next_attempt_in(&self) -> Option<Duration> {
+    /// Fill in a foreign device's registration as of now: the time until
+    /// its next automatic attempt (while one is in flight, the latest the
+    /// next can go, one renewal interval after it started), and its lease.
+    /// Nothing changes in the other modes.
+    pub(super) fn fill_registration(&self, foreign: &mut ForeignRegistrationSnapshot) {
         let state = self.lock();
         let now = self.clock.now();
-        let view = state.node.registration(now)?;
-        let next = match view.next_attempt {
-            Some(next) => next,
-            None => state.attempt_started? + self.renewal?,
+        let Some(view) = state.node.registration(now) else {
+            return;
         };
-        Some(Duration::from_nanos(
-            next.saturating_duration_since(now).as_nanos(),
-        ))
+        let next = view
+            .next_attempt
+            .or_else(|| Some(state.attempt_started? + self.renewal?));
+        let until =
+            |at: CoreInstant| Duration::from_nanos(at.saturating_duration_since(now).as_nanos());
+        foreign.next_attempt_in = next.map(until);
+        foreign.registered = view.registered;
+        foreign.lease_remaining = view
+            .lease_remaining
+            .map(|left| Duration::from_nanos(left.as_nanos()));
     }
 
     /// What this node's exchanges came to, as the transport reports them.
     #[cfg(test)]
     pub(super) fn snapshot(&self) -> super::BvlcClientSnapshot {
         let mut snapshot = self.record.snapshot();
-        snapshot.foreign_registration.next_attempt_in = self.next_attempt_in();
+        self.fill_registration(&mut snapshot.foreign_registration);
         snapshot
     }
 
     /// Stop: requests in flight fail as their channel closes, none starts,
-    /// and nothing more is sent or counted.
+    /// and nothing more is sent or counted. Broadcasts still held or queued
+    /// count as discarded, so every held broadcast counts as released or
+    /// discarded, and every queued one as sent or discarded.
     pub(super) fn stop(&self) {
         let mut state = self.lock();
+        let kept = state.held.len() + state.queued.len();
+        let discarded = u32::try_from(kept).unwrap_or(u32::MAX);
+        if discarded > 0 && !state.stopped {
+            self.record.absorb(&NodeCounters {
+                broadcasts_discarded: discarded,
+                ..NodeCounters::default()
+            });
+        }
         state.stopped = true;
         state.waiters.clear();
         state.register = None;
         state.held.clear();
         state.release.clear();
+        state.queued.clear();
+        state.releasing = false;
+    }
+
+    /// The sends this node's link refused, as counted.
+    #[cfg(test)]
+    pub(super) fn send_counters(&self) -> super::SendCounters {
+        self.refusals.snapshot()
     }
 
     /// Send what the node asks for, and wake it at its deadlines, until the
@@ -376,16 +479,14 @@ impl NodeHandle {
         // What the node asked for at its start.
         self.with(|_, _| ());
         loop {
-            let (attempt, release) = {
-                let mut state = self.lock();
-                (state.register.take(), std::mem::take(&mut state.release))
-            };
+            // A registration attempt goes before the broadcasts released
+            // with it, so the BBMD sees the device register before it is
+            // asked to distribute for it.
+            let attempt = self.lock().register.take();
             if let Some(attempt) = attempt {
                 self.send_attempt(attempt).await;
             }
-            for npdu in release {
-                self.send_released(&npdu).await;
-            }
+            self.send_releases().await;
             let deadline = self.lock().node.next_deadline();
             let timer = async {
                 match deadline {
@@ -428,7 +529,29 @@ impl NodeHandle {
         }
     }
 
-    /// Send a broadcast the node held for the first registration.
+    /// Send the broadcasts in `release`, then those queued behind them, in
+    /// order, with any queued while they go. Under the lock, `releasing` is
+    /// cleared only once nothing is left, so a broadcast made after that
+    /// goes from its caller, after these.
+    async fn send_releases(&self) {
+        loop {
+            let batch = {
+                let mut state = self.lock();
+                let mut batch = std::mem::take(&mut state.release);
+                batch.append(&mut state.queued);
+                state.releasing = !batch.is_empty();
+                batch
+            };
+            if batch.is_empty() {
+                return;
+            }
+            for npdu in batch {
+                self.send_released(&npdu).await;
+            }
+        }
+    }
+
+    /// Send a broadcast the node kept.
     async fn send_released(&self, npdu: &[u8]) {
         let Ok((outgoing, _)) = self.link.broadcast(npdu) else {
             return;
@@ -469,6 +592,6 @@ fn config_error(error: ConfigError) -> Error {
     Error::Encoding(error.to_string())
 }
 
-pub(super) fn send_refusal(refusal: SendRefusal) -> Error {
+fn send_refusal(refusal: SendRefusal) -> Error {
     Error::Encoding(refusal.to_string())
 }

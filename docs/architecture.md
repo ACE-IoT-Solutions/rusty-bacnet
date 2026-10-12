@@ -252,7 +252,8 @@ BBMD mode, in two layers:
   other five to the caller for `bbmd::Tables` instead; Write-BDT is refused
   in every mode. `Link::unicast` and
   `Link::broadcast` say what to send, refusing NPDUs over the budget (by
-  default Table 6-1's 1497 octets).
+  default Table 6-1's 1497 octets), and a unicast to one of the link's group
+  addresses (#1677).
 - **`Node<X>`** holds what changes: up to `X` management exchanges, matched by
   peer and operation with a local generation since a BVLC-Result has no
   invoke ID; a foreign device's registration (backoff after a loss, capped at
@@ -285,10 +286,15 @@ The Tokio `BipTransport` runs on it (#1622):
 - **Two clocks, which never meet.** The node runs on Tokio time from the
   start, so paused-time tests drive it; the BBMD keeps its std clock. No time
   on one is compared with a time on the other.
-- **Settings.** It runs with one exchange slot, shared by the management
-  helpers and registration, attempts one renewal interval apart whatever came
-  of the one before, no broadcasts held, Forwarded-NPDUs taken from any
-  sender, and no datagram budget: what the transport did before the engine.
+- **Settings.** It runs with eight exchange slots, shared by the management
+  helpers and registration; `Retry::Backoff`; up to 16 broadcasts held until
+  the first registration attempt after a start resolves; in foreign mode,
+  Forwarded-NPDUs taken only from the configured BBMD by unicast; and the
+  default datagram budget, NPDUs up to 1497 octets (#1622). The link refuses
+  a unicast to a group address, so `NetworkLayer::send_apdu` and a router
+  send an Unconfirmed-Request for one at the link's own UDP port as its
+  local broadcast; a router drops anything else for a group DADR, network
+  messages and relayed rejects included (#1677).
 
 ### Testing MS/TP without hardware
 

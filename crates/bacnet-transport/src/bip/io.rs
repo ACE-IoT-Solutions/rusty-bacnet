@@ -149,10 +149,6 @@ fn discarded(discard: Discard, datagram: &Datagram<'_>, ctx: &RecvContext) {
             ctx.group_drops.origin();
             debug!("Dropping Forwarded-NPDU whose origin is a group address");
         }
-        Discard::ForwardedUntrusted => {
-            // Not with ForwardedTrust::AnySender, which this transport uses.
-            debug!(%source, "Dropping a Forwarded-NPDU from an untrusted sender");
-        }
         other => {
             if let Some(reason) = DropReason::of_discard(other) {
                 ctx.drops.count(reason);

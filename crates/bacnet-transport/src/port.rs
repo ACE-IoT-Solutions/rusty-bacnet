@@ -419,6 +419,13 @@ pub trait TransportPort: Send + Sync {
     fn abort(&mut self) {}
 
     /// Send NPDU bytes to a specific MAC address (unicast).
+    ///
+    /// B/IP refuses a MAC that is one of its group addresses
+    /// ([`Self::is_group_destination`]) with an error, sending nothing
+    /// (#1677): its receivers drop an Original-Unicast-NPDU that wasn't sent
+    /// to their own address. Send a local broadcast with
+    /// [`Self::send_broadcast`] instead, as `NetworkLayer::send_apdu` and
+    /// `BACnetRouter` do for an Unconfirmed-Request.
     fn send_unicast(
         &self,
         npdu: &[u8],
@@ -488,10 +495,11 @@ pub trait TransportPort: Send + Sync {
     /// Whether a send to `mac` with no DNET reaches a group of nodes rather
     /// than one: this link's broadcast MAC, or any other broadcast or
     /// multicast address the medium carries, such as a B/IP limited
-    /// broadcast, an IPv6 multicast group or an Ethernet multicast MAC
-    /// (#1493). Such a send is a local broadcast, which may carry only an
-    /// Unconfirmed-Request (Clause 6.3), so a sender that takes a
-    /// caller-chosen MAC refuses anything else to it (#1479). The server binds
+    /// broadcast or an Ethernet multicast MAC (#1493). A B/IPv6 MAC is a
+    /// 3-octet VMAC, which never names a group. Such a send is a local
+    /// broadcast, which may carry only an Unconfirmed-Request (Clause 6.3),
+    /// so a sender that takes a caller-chosen MAC refuses anything else to it
+    /// (#1479). The server binds
     /// no device to one, and the confirmed requests it starts itself, to
     /// event recipients, Channel and Command targets, audit recipients and
     /// bound devices, never go to one (#1493). Its replies and COV
@@ -501,7 +509,15 @@ pub trait TransportPort: Send + Sync {
     /// routed request's SADR names a node on another network, which this
     /// link can't judge: a reply to a group SADR is dropped only where the
     /// final router is a `BACnetRouter`, which delivers only an
-    /// Unconfirmed-Request to a DADR that is a group on its delivery port.
+    /// Unconfirmed-Request to a DADR that is a group on its delivery port,
+    /// as that port's local broadcast when it is one of
+    /// [`Self::local_broadcast_destinations`], and drops anything else,
+    /// network messages included.
+    ///
+    /// B/IP refuses [`Self::send_unicast`] to a group address (#1677), so a
+    /// sender must broadcast there: `NetworkLayer::send_apdu` sends an
+    /// Unconfirmed-Request for one of [`Self::local_broadcast_destinations`]
+    /// through [`Self::send_broadcast`] itself.
     ///
     /// [`Self::is_broadcast_mac`] keeps its narrower meaning, this link's own
     /// broadcast, which routing and recipient checks rely on. The default is
@@ -516,5 +532,16 @@ pub trait TransportPort: Send + Sync {
     /// [`GroupDestinations::unknown`], which leaves the check to the send path.
     fn group_destinations(&self) -> GroupDestinations {
         GroupDestinations::unknown()
+    }
+
+    /// The group destinations a send with no DNET may reach as this link's
+    /// local broadcast instead: `NetworkLayer::send_apdu` and `BACnetRouter`
+    /// send an Unconfirmed-Request for one through [`Self::send_broadcast`]
+    /// (#1677). It is a part of [`Self::group_destinations`], and the default
+    /// is all of it. B/IP keeps the groups at the link's own UDP port: one
+    /// at another port belongs to another B/IP network, so a send there is
+    /// refused, not turned into this one's broadcast.
+    fn local_broadcast_destinations(&self) -> GroupDestinations {
+        self.group_destinations()
     }
 }

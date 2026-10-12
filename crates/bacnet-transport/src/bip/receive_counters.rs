@@ -83,6 +83,11 @@ pub struct ReceiveCounters {
     /// Forwarded-NPDUs a BBMD refused because their sender is not in its
     /// Broadcast Distribution Table.
     pub forwarded_not_from_peer: u64,
+    /// Forwarded-NPDUs a foreign device refused because they didn't come
+    /// from its BBMD by unicast, the one way a BBMD sends a foreign device
+    /// the network's broadcasts (#1622). A node in normal mode takes them
+    /// from any sender.
+    pub forwarded_untrusted: u64,
     /// NPDUs dropped because the channel to the network layer was full: the
     /// network layer is falling behind. A BBMD still forwards a broadcast it
     /// couldn't hand up.
@@ -120,6 +125,8 @@ pub(super) enum DropReason {
     UnanswerableRequest,
     /// [`ReceiveCounters::forwarded_not_from_peer`].
     ForwardedNotFromPeer,
+    /// [`ReceiveCounters::forwarded_untrusted`].
+    ForwardedUntrusted,
     /// [`ReceiveCounters::npdu_channel_full`].
     NpduChannelFull,
     /// [`ReceiveCounters::npdu_channel_closed`].
@@ -164,9 +171,8 @@ impl DropReason {
             Discard::MalformedPayload => Self::MalformedPayload,
             Discard::OwnEcho => Self::OwnEcho,
             Discard::UnanswerableSource => Self::UnanswerableRequest,
-            Discard::GroupSource | Discard::GroupOrigin | Discard::ForwardedUntrusted => {
-                return None
-            }
+            Discard::ForwardedUntrusted => Self::ForwardedUntrusted,
+            Discard::GroupSource | Discard::GroupOrigin => return None,
         })
     }
 }
@@ -189,6 +195,7 @@ pub(super) struct ReceiveDrops {
     own_echo: AtomicU64,
     unanswerable_request: AtomicU64,
     forwarded_not_from_peer: AtomicU64,
+    forwarded_untrusted: AtomicU64,
     npdu_channel_full: AtomicU64,
     npdu_channel_closed: AtomicU64,
     channel_full: WarnThrottle,
@@ -210,6 +217,7 @@ impl ReceiveDrops {
             DropReason::OwnEcho => &self.own_echo,
             DropReason::UnanswerableRequest => &self.unanswerable_request,
             DropReason::ForwardedNotFromPeer => &self.forwarded_not_from_peer,
+            DropReason::ForwardedUntrusted => &self.forwarded_untrusted,
             DropReason::NpduChannelFull => &self.npdu_channel_full,
             DropReason::NpduChannelClosed => &self.npdu_channel_closed,
         }
@@ -277,6 +285,7 @@ impl ReceiveDrops {
             own_echo: get(&self.own_echo),
             unanswerable_request: get(&self.unanswerable_request),
             forwarded_not_from_peer: get(&self.forwarded_not_from_peer),
+            forwarded_untrusted: get(&self.forwarded_untrusted),
             npdu_channel_full: get(&self.npdu_channel_full),
             npdu_channel_closed: get(&self.npdu_channel_closed),
         }

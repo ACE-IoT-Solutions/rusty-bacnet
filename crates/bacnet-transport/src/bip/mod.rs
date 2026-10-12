@@ -18,17 +18,21 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use crate::bbmd::{self, BbmdState, BdtEntry, FdtEntryWire};
+use crate::bbmd::{self, BbmdState, BdtEntry};
 pub use crate::bbmd::{FdtCounters, ForeignDevicePolicy};
+use crate::bvll::encode_bip_mac;
+#[cfg(test)]
+use crate::bvll::BvllMessage;
 #[cfg(test)]
 use crate::bvll::{
     decode_bip_mac, decode_bvll, forwarded_message, forwarded_wire, origin_of, raw_frame,
 };
-use crate::bvll::{encode_bip_mac, BvllMessage};
 use crate::port::{BipPort, ReceivedNpdu, TransportPort};
 #[cfg(test)]
 use crate::udp_metadata::{DestinationReceiver, IpVersion};
-use bacnet_bip_codec::{self as codec, BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
+use bacnet_bip_codec as codec;
+#[cfg(test)]
+use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{Link, Mode};
 use bacnet_bip_core::LocalSubnet;
 use bacnet_types::bip_port::{BbmdTables, BipPortMode};
@@ -43,6 +47,7 @@ mod exchange;
 mod foreign_device;
 mod node;
 mod send;
+mod send_counters;
 #[cfg(test)]
 mod send_sink;
 #[cfg(test)]
@@ -60,6 +65,7 @@ use bbmd_start::{
     warn_if_broadcast_may_leave_another_interface, BbmdConfig, OwnAddressContext,
 };
 use client_snapshot::ClientRecord;
+#[cfg(test)]
 use exchange::{decode_bvlc_result_code, unexpected_response};
 use node::NodeHandle;
 use socket::BipSocket;
@@ -79,8 +85,15 @@ pub use rate_limit::ManagementCounters;
 use rate_limit::ManagementRateLimiter;
 pub use receive_counters::ReceiveCounters;
 use receive_counters::ReceiveDrops;
+pub use send_counters::SendCounters;
+use send_counters::SendRefusals;
 #[cfg(test)]
 use test_support::{admitted_delivery, handle_bvll_message, Delivery};
+
+/// The longest datagram the transport sends: a Forwarded-NPDU carrying a
+/// 1497-octet NPDU, the largest B/IP carries (Table 6-1). Longer NPDUs are
+/// refused, with an error, and counted in [`SendCounters`] (#1622).
+const DATAGRAM_BUDGET: u16 = bacnet_bip_core::node::MAX_DATAGRAM as u16;
 
 /// Default BACnet/IP port (0xBAC0 = 47808).
 pub const DEFAULT_BACNET_PORT: u16 = 0xBAC0;
@@ -132,6 +145,8 @@ pub struct BipTransport {
     group_drops: groups::GroupDrops,
     /// See [`Self::receive_counters`].
     receive_drops: Arc<ReceiveDrops>,
+    /// See [`Self::send_counters`].
+    send_refusals: Arc<SendRefusals>,
     /// Rate limiter for broadcast forwarding fanout.
     fanout_limiter: Arc<std::sync::Mutex<fanout::FanoutRateLimiter>>,
     /// Forwards this BBMD's own broadcasts to BDT peers and foreign devices
@@ -193,6 +208,7 @@ impl BipTransport {
             fanout_counters,
             group_drops: groups::GroupDrops::default(),
             receive_drops: Arc::default(),
+            send_refusals: Arc::default(),
             fanout_limiter,
             own_broadcast: None,
             #[cfg(test)]
@@ -343,6 +359,12 @@ impl BipTransport {
         self.receive_drops.snapshot()
     }
 
+    /// Return the NPDUs this transport refused to send since it was
+    /// created, by reason (see [`SendCounters`]).
+    pub fn send_counters(&self) -> SendCounters {
+        self.send_refusals.snapshot()
+    }
+
     /// Set the broadcast forwarding fanout policy and rate limits.
     pub fn set_fanout_policy(&mut self, policy: FanoutPolicy) {
         let policy = policy.sanitized();
@@ -475,106 +497,6 @@ impl BipTransport {
                 "Transport not started",
             ))
         })
-    }
-
-    /// Send a BVLC management request and await the response.
-    async fn bvlc_request(&self, target: &[u8], request: Bvll<'_>) -> Result<BvllMessage, Error> {
-        let node = Arc::clone(self.require_node()?);
-        node.request(target, request, Self::BVLC_RESPONSE_TIMEOUT)
-            .await
-    }
-
-    /// Snapshot this transport's own manual BVLC and automatic foreign-device
-    /// exchanges. Counts are cumulative per instance; registration status and
-    /// its next-attempt countdown reset on stop/start. This neither polls a
-    /// BBMD nor proves a current remote lease. See [`BvlcClientSnapshot`] for
-    /// matching limits and the meaning of each observation.
-    pub fn bvlc_client_snapshot(&self) -> BvlcClientSnapshot {
-        let mut snapshot = self.client_record.snapshot();
-        snapshot.foreign_registration.next_attempt_in =
-            self.node.as_ref().and_then(|node| node.next_attempt_in());
-        snapshot
-    }
-
-    /// Send Read-Broadcast-Distribution-Table and return the response entries.
-    pub async fn read_bdt(&self, target: &[u8]) -> Result<Vec<BdtEntry>, Error> {
-        let msg = self
-            .bvlc_request(target, Bvll::ReadBroadcastDistributionTable)
-            .await?;
-        match msg.message()? {
-            Bvll::BvlcResult(code) => Err(Error::Encoding(format!("BVLC-Result: {code:?}"))),
-            Bvll::ReadBroadcastDistributionTableAck(table) => bbmd::bdt_from_wire(table),
-            other => Err(unexpected_response(
-                BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK,
-                other.function(),
-            )),
-        }
-    }
-
-    /// Send Write-Broadcast-Distribution-Table and return the result code.
-    ///
-    /// Outbound client helper only. A conforming 135-2020 receiver answers
-    /// with the not-supported result and leaves its table unchanged.
-    pub async fn write_bdt(
-        &self,
-        target: &[u8],
-        entries: &[BdtEntry],
-    ) -> Result<BvlcResultCode, Error> {
-        let rows: Vec<codec::BdtEntry> = entries.iter().map(codec::BdtEntry::from).collect();
-        let msg = self
-            .bvlc_request(
-                target,
-                Bvll::WriteBroadcastDistributionTable(BdtEntries::from_entries(&rows)),
-            )
-            .await?;
-        decode_bvlc_result_code(&msg)
-    }
-
-    /// Send Read-Foreign-Device-Table and return the response entries.
-    pub async fn read_fdt(&self, target: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
-        let msg = self
-            .bvlc_request(target, Bvll::ReadForeignDeviceTable)
-            .await?;
-        match msg.message()? {
-            Bvll::BvlcResult(code) => Err(Error::Encoding(format!("BVLC-Result: {code:?}"))),
-            Bvll::ReadForeignDeviceTableAck(table) => bbmd::fdt_from_wire(table),
-            other => Err(unexpected_response(
-                BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK,
-                other.function(),
-            )),
-        }
-    }
-
-    /// Send Delete-Foreign-Device-Table-Entry and return the result code.
-    pub async fn delete_fdt_entry(
-        &self,
-        target: &[u8],
-        ip: [u8; 4],
-        port: u16,
-    ) -> Result<BvlcResultCode, Error> {
-        let entry = SocketAddrV4::new(Ipv4Addr::from(ip), port);
-        let msg = self
-            .bvlc_request(target, Bvll::DeleteForeignDeviceTableEntry(entry))
-            .await?;
-        decode_bvlc_result_code(&msg)
-    }
-
-    /// Send a Register-Foreign-Device BVLC message to a BBMD and return the result code.
-    ///
-    /// This is a low-level BVLC management operation. It does NOT configure this
-    /// transport as a foreign device for broadcast behavior (use
-    /// [`register_as_foreign_device`](Self::register_as_foreign_device) before `start()` for that).
-    /// A zero TTL is passed through for a one-shot removal request; automatic
-    /// mode's positive-TTL validation does not apply to this helper.
-    pub async fn register_foreign_device_bvlc(
-        &self,
-        target: &[u8],
-        ttl: u16,
-    ) -> Result<BvlcResultCode, Error> {
-        let msg = self
-            .bvlc_request(target, Bvll::RegisterForeignDevice { ttl })
-            .await?;
-        decode_bvlc_result_code(&msg)
     }
 }
 
@@ -753,12 +675,16 @@ impl TransportPort for BipTransport {
                 mask: None,
             },
             mode,
-            // Any NPDU the codec can carry, as before (#1622 PR 3 caps it).
-            budget: None,
+            // NPDUs up to the 1497 octets B/IP carries (Table 6-1, #1622).
+            budget: Some(DATAGRAM_BUDGET),
         };
         self.client_record.start();
-        let node = match NodeHandle::new(link, Arc::clone(&socket), Arc::clone(&self.client_record))
-        {
+        let node = match NodeHandle::new(
+            link,
+            Arc::clone(&socket),
+            Arc::clone(&self.client_record),
+            Arc::clone(&self.send_refusals),
+        ) {
             Ok(node) => Arc::new(node),
             Err(error) => {
                 self.client_record.stop();
@@ -877,6 +803,16 @@ impl TransportPort for BipTransport {
         let groups = self.groups();
         crate::port::GroupDestinations::new(move |mac| groups.contains(mac))
     }
+
+    /// The group destinations at this link's own UDP port (#1677): a group
+    /// address at another port belongs to another B/IP network, so a send
+    /// there is refused rather than sent as this link's broadcast.
+    fn local_broadcast_destinations(&self) -> crate::port::GroupDestinations {
+        let (groups, port) = (self.groups(), self.port);
+        crate::port::GroupDestinations::new(move |mac| {
+            groups.contains(mac) && codec::address_from_slice(mac).is_ok_and(|a| a.port() == port)
+        })
+    }
 }
 
 impl Drop for BipTransport {
@@ -894,9 +830,13 @@ mod bdt_persistence_tests;
 #[cfg(test)]
 mod dbtn_tests;
 #[cfg(test)]
+mod exchange_tests;
+#[cfg(test)]
 mod fanout_tests;
 #[cfg(test)]
 mod fdt_tests;
+#[cfg(test)]
+mod foreign_trust_tests;
 #[cfg(test)]
 mod forwarded_tests;
 #[cfg(test)]
@@ -905,6 +845,10 @@ mod forwarding_warn_tests;
 mod group_delivery_tests;
 #[cfg(test)]
 mod group_source_tests;
+#[cfg(test)]
+mod group_unicast_tests;
+#[cfg(test)]
+mod held_broadcast_tests;
 #[cfg(test)]
 mod malformed_bvll_tests;
 #[cfg(test)]
@@ -922,6 +866,8 @@ mod receive_counters_tests;
 #[cfg(test)]
 mod response_amplification_tests;
 #[cfg(test)]
+mod send_budget_tests;
+#[cfg(test)]
 mod shared_port_tests;
 #[cfg(test)]
 mod socket_tests;
@@ -938,5 +884,7 @@ mod client_management_tests;
 mod foreign_lifecycle_tests;
 #[cfg(test)]
 mod registration_schedule_tests;
+#[cfg(test)]
+mod registration_status_tests;
 #[cfg(test)]
 mod registration_tests;

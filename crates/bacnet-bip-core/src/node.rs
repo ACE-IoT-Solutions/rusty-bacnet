@@ -110,6 +110,7 @@
 //! | Broadcasts are held, bounded, until the first registration attempt resolves | `node_registration.rs` `broadcasts_are_held_until_the_first_attempt_resolves` |
 //! | A foreign device refuses manual requests a success answers to its own BBMD, whose registration it owns | `node_registration.rs` `a_foreign_device_refuses_manual_requests_to_its_bbmd` |
 //! | NPDUs longer than the datagram budget allows are refused | `node_send.rs` `the_budget_caps_each_cast` |
+//! | A unicast to one of the link's group addresses is refused before anything is encoded (#1677) | `node_send.rs` `unicast_group_destinations_are_rejected_before_encoding_or_send` |
 
 mod actions;
 mod addressing;

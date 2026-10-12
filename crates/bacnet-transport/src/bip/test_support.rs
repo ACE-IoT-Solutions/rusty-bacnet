@@ -92,7 +92,7 @@ pub(super) fn admitted_delivery(
 }
 
 /// A link at `own`, whose local broadcasts go to `broadcast`, in `mode`,
-/// sending any NPDU, as the transport runs it.
+/// sending NPDUs up to 1497 octets, as the transport runs it.
 pub(super) fn test_link(own: SocketAddrV4, broadcast: SocketAddrV4, mode: Mode) -> Link {
     Link {
         address: own,
@@ -101,7 +101,7 @@ pub(super) fn test_link(own: SocketAddrV4, broadcast: SocketAddrV4, mode: Mode) 
             mask: None,
         },
         mode,
-        budget: None,
+        budget: Some(super::DATAGRAM_BUDGET),
     }
 }
 
@@ -135,8 +135,9 @@ impl RecvContext {
         link: Link,
         bbmd: Option<Arc<Mutex<BbmdState>>>,
     ) -> Self {
-        let node = NodeHandle::new(link, socket, Arc::new(ClientRecord::default()))
-            .expect("a valid test link");
+        let record = Arc::new(ClientRecord::default());
+        let node =
+            NodeHandle::new(link, socket, record, Arc::default()).expect("a valid test link");
         RecvContext {
             node: Arc::new(node),
             npdu_tx,
@@ -166,7 +167,8 @@ impl super::BipTransport {
         let broadcast = SocketAddrV4::new(self.broadcast_address, self.port);
         let link = test_link(own, broadcast, mode);
         let record = Arc::clone(&self.client_record);
-        let node = NodeHandle::new(link, Arc::clone(&socket), record).unwrap();
+        let refusals = Arc::clone(&self.send_refusals);
+        let node = NodeHandle::new(link, Arc::clone(&socket), record, refusals).unwrap();
         self.node = Some(Arc::new(node));
         self.socket = Some(socket);
     }

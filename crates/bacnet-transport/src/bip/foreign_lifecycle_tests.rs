@@ -117,6 +117,10 @@ async fn foreign_attempt_results_renewal_and_restart_are_observable() {
         accepted.foreign_registration.last_result,
         Some(BvlcResultCode::SUCCESSFUL_COMPLETION)
     );
+    // Registered for the 2 s time-to-live, from the attempt's send.
+    assert!(accepted.foreign_registration.registered);
+    let left = accepted.foreign_registration.lease_remaining.unwrap();
+    assert!(left <= Duration::from_secs(2), "{left:?}");
     let worker = transport.node_task.as_ref().unwrap().abort_handle();
     transport.stop().await.unwrap();
     assert!(worker.is_finished());
@@ -127,6 +131,8 @@ async fn foreign_attempt_results_renewal_and_restart_are_observable() {
     assert_eq!(stopped.foreign_registration.last_result, None);
     assert_eq!(stopped.register_foreign_device.last_result, None);
     assert_eq!(stopped.foreign_registration.next_attempt_in, None);
+    assert!(!stopped.foreign_registration.registered);
+    assert_eq!(stopped.foreign_registration.lease_remaining, None);
     assert_eq!(stopped.foreign_registration.accepted, 1);
     let _rx = transport.start().await.unwrap();
     let restarted = transport.bvlc_client_snapshot();
@@ -249,8 +255,11 @@ async fn foreign_silent_attempt_times_out_then_renews_without_claiming_acceptanc
     transport.stop().await.unwrap();
 }
 
+/// A manual request to the BBMD no longer holds up the registration: the
+/// renewal goes while the request waits for its answer, and each answer
+/// finds its own exchange (#1622).
 #[tokio::test]
-async fn foreign_busy_worker_retries_after_manual_request_finishes() {
+async fn foreign_registration_runs_beside_a_manual_request() {
     let (peer, mut transport) = peer_and_transport().await;
     let _rx = transport.start().await.unwrap();
     // The first attempt is admitted at start; answer it.
@@ -262,7 +271,7 @@ async fn foreign_busy_worker_retries_after_manual_request_finishes() {
         peer.local_addr().unwrap().port(),
     );
     {
-        // A manual request holds the one slot across the renewal.
+        // A manual request is in flight across the renewal.
         let manual = transport.read_bdt(&target);
         tokio::pin!(manual);
         let mut packet = [0; 64];
@@ -271,19 +280,23 @@ async fn foreign_busy_worker_retries_after_manual_request_finishes() {
             received = peer.recv_from(&mut packet) => received.unwrap(),
         };
         assert_eq!(&packet[..len], &[0x81, 2, 0, 4]);
-        let busy = tokio::select! {
+        let renewal = tokio::select! {
             result = &mut manual => panic!("manual request finished early: {result:?}"),
-            busy = observed(&transport, |s| s.register_foreign_device.busy == 1) => busy,
+            source = registration(&peer) => source,
         };
-        assert_eq!(busy.register_foreign_device.sent, 1);
-        assert_eq!(busy.foreign_registration.attempts, 1);
-        assert!(busy.foreign_registration.next_attempt_in.unwrap() <= PERIOD);
+        assert_eq!(renewal, source);
+        // The renewal's answer, then the table read's.
+        peer.send_to(&[0x81, 0, 0, 6, 0, 0], source).await.unwrap();
+        observed(&transport, |s| s.foreign_registration.accepted == 2).await;
         peer.send_to(&[0x81, 3, 0, 4], source).await.unwrap();
-        manual.await.unwrap();
+        assert!(manual.await.unwrap().is_empty());
     }
-    let source = registration(&peer).await;
-    peer.send_to(&[0x81, 0, 0, 6, 0, 0], source).await.unwrap();
-    observed(&transport, |s| s.foreign_registration.accepted == 2).await;
+    let snapshot = transport.bvlc_client_snapshot();
+    assert_eq!(snapshot.register_foreign_device.busy, 0);
+    assert_eq!(
+        (snapshot.read_bdt.sent, snapshot.read_bdt.acknowledgements),
+        (1, 1)
+    );
     transport.stop().await.unwrap();
 }
 
@@ -404,28 +417,35 @@ async fn check_tiny_interval_pacing(busy: bool, local_error: bool) {
         bacnet_bip_core::node::Mode::Foreign(config.engine(interval)),
     );
     let record = Arc::new(client_snapshot::ClientRecord::default());
-    let node = Arc::new(node::NodeHandle::new(link, socket, Arc::clone(&record)).unwrap());
+    let node = node::NodeHandle::new(link, socket, Arc::clone(&record), Arc::default());
+    let node = Arc::new(node.unwrap());
     let started = tokio::time::Instant::now();
     let worker = tokio::spawn(Arc::clone(&node).drive());
-    // For the busy case, the first attempt fails at once and frees the
-    // slot, and a manual request then holds it.
-    let held_request = if busy {
+    // For the busy case, the first attempt fails at once and frees its
+    // slot, and manual requests to other peers then hold every slot.
+    let held_requests = if busy {
         let begun = tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let target = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 47809);
+            let mut held = Vec::new();
+            let mut port = 47809;
+            while held.len() < 8 {
+                let target = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
                 let request = Bvll::ReadBroadcastDistributionTable;
-                if let Ok(held) = node.begin(target, request, Duration::from_secs(3)) {
-                    return held;
+                match node.begin(target, request, Duration::from_secs(3)) {
+                    Ok(request) => {
+                        held.push(request);
+                        port += 1;
+                    }
+                    Err(_) => tokio::task::yield_now().await,
                 }
-                tokio::task::yield_now().await;
             }
+            held
         })
         .await
-        .expect("the first attempt frees the slot");
+        .expect("the first attempt frees its slot");
         sink.fail_sends(false);
-        Some(begun)
+        begun
     } else {
-        None
+        Vec::new()
     };
     tokio::time::sleep(Duration::from_millis(250)).await;
     worker.abort();
@@ -454,5 +474,5 @@ async fn check_tiny_interval_pacing(busy: bool, local_error: bool) {
         let sent = sink.take();
         assert_eq!(sent[0].bytes, [0x81, 5, 0, 6, 0, 2]);
     }
-    drop(held_request);
+    drop(held_requests);
 }

@@ -3,20 +3,24 @@
 //! broadcast asks the node itself.
 
 use bacnet_bip_codec as codec;
-use bacnet_bip_core::node::{Admission, Mode};
+use bacnet_bip_core::node::Mode;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 
-use super::node::{send_refusal, NodeHandle};
+use super::node::NodeHandle;
 use super::own_broadcast::OwnBroadcastForwarder;
 use crate::bvll::{bvll_error, encode_bvll};
 
 impl NodeHandle {
     /// Send `npdu` to the B/IP address `mac` as an Original-Unicast-NPDU
-    /// (Annex J.3).
+    /// (Annex J.3). One of the link's group addresses is refused, unsent
+    /// (#1677).
     pub(super) async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
         let dest = codec::address_from_slice(mac).map_err(bvll_error)?;
-        let outgoing = self.link().unicast(dest, npdu).map_err(send_refusal)?;
+        let outgoing = self
+            .link()
+            .unicast(dest, npdu)
+            .map_err(|refusal| self.refuse_send(refusal))?;
 
         let mut buf = BytesMut::with_capacity(4 + npdu.len());
         encode_bvll(&mut buf, &outgoing.message)?;
@@ -38,16 +42,19 @@ impl NodeHandle {
         npdu: &[u8],
         forwarder: Option<&OwnBroadcastForwarder>,
     ) -> Result<(), Error> {
-        let (outgoing, forward_own) = self.link().broadcast(npdu).map_err(send_refusal)?;
+        let (outgoing, forward_own) = self
+            .link()
+            .broadcast(npdu)
+            .map_err(|refusal| self.refuse_send(refusal))?;
 
         let mut buf = BytesMut::with_capacity(4 + npdu.len());
         encode_bvll(&mut buf, &outgoing.message)?;
 
-        // A foreign device asks its node first, which may hold the broadcast
-        // until the first registration resolves (not while it holds none).
-        if matches!(self.link().mode, Mode::Foreign(_))
-            && self.admit_broadcast(npdu)? == Admission::Hold
-        {
+        // A foreign device asks its node first, which holds the broadcast
+        // while the first registration attempt after a start is outstanding,
+        // refuses it when that hold is full (#1622), and queues it behind
+        // released broadcasts its driver hasn't sent yet.
+        if matches!(self.link().mode, Mode::Foreign(_)) && !self.admit_broadcast(npdu)? {
             return Ok(());
         }
 
