@@ -123,21 +123,21 @@ proptest = "1"
 cortex-m-rt = "0.7.7"
 riscv-rt = "0.18.0"
 # The atomics backend on targets without compare-and-swap, for the no_std
-# harness on ARMv6-M (#1613) and the firmware link test's alloc image
+# harness on ARMv6-M (#1613) and the firmware link test's apdu image
 # (#1635). Without default features, as bytes asks for it: `fallback` only
 # adds atomics wider than bytes uses.
 portable-atomic = { version = "1.3", default-features = false }
-# The alloc image's global allocator (#1635): a linked-list first fit over a
+# The apdu image's global allocator (#1635): a linked-list first fit over a
 # fixed arena, without the TLSF allocator the default features add.
 embedded-alloc = { version = "0.7.0", default-features = false, features = ["llff"] }
-# The critical section the alloc image's allocator, and its atomics on
+# The critical section the apdu image's allocator, and its atomics on
 # targets without compare-and-swap, lock with (#1635). On RISC-V the image
 # takes riscv's `critical-section-single-hart` implementation; on Cortex-M it
 # implements one itself, since cortex-m's depends on the unmaintained
 # bare-metal crate (RUSTSEC-2026-0110).
 critical-section = "1.2.0"
 riscv = "0.16.1"
-# The host test of the alloc image's arena (#1635): the allocator
+# The host test of the apdu image's arena (#1635): the allocator
 # embedded-alloc's `llff` heap wraps, here with its own spin lock.
 linked_list_allocator = "0.10.6"
 

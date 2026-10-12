@@ -196,6 +196,25 @@ class FirmwareSizeTests(unittest.TestCase):
         # A token allowance of 64 octets or less gets no notice.
         self.assertNotIn("data is", err)
 
+    def test_count_under_its_limit_gets_a_notice_not_a_failure(self):
+        # A count has no headroom, so any room under its limit gets a notice:
+        # here one core::fmt function against a limit of 3, and no 64-bit
+        # division against a limit of 1. A count at its limit gets none.
+        symbols = ((SCENARIO, 100, FUNC, ".text"), (FMT_WRITE, 40, FUNC, ".text"))
+        image = self.write("image", elf(symbols))
+        budget = BUDGET.replace("fmt_functions = 0", "fmt_functions = 3").replace(
+            "div64_functions = 0", "div64_functions = 1")
+        status, out, err = self.run_main(image, self.write("a.toml", budget), "target.image")
+        self.assertEqual(status, 0, err)
+        self.assertIn("under its limit", out)
+        self.assertIn(
+            "notice: target.image: fmt_functions is 1, under its limit of 3;"
+            " lower the limit to 1", err)
+        self.assertIn("notice: target.image: div64_functions is 0, under its limit of 1", err)
+        budget = BUDGET.replace("fmt_functions = 0", "fmt_functions = 1")
+        status, _, err = self.run_main(image, self.write("b.toml", budget), "target.image")
+        self.assertEqual((status, err), (0, ""))
+
     def test_fmt_function_fails(self):
         symbols = ((SCENARIO, 100, FUNC, ".text"), (FMT_WRITE, 40, FUNC, ".text"))
         status, out, err = self.run_main(

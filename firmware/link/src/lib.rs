@@ -5,7 +5,7 @@
 //!
 //! - `mstp` ([`mstp::run`]): `bacnet-mstp-codec` and `bacnet-mstp-core`.
 //! - `bip` ([`bip::run`]): `bacnet-bip-codec`, B/IP and B/IPv6.
-//! - `alloc` (`apdu::run`, with the `alloc` feature): `bacnet-encoding` and
+//! - `apdu` (`apdu::run`, with the `alloc` feature): `bacnet-encoding` and
 //!   `bacnet-services`, `no_std` with `alloc`, and a global allocator over a
 //!   fixed arena.
 //!

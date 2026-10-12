@@ -1,4 +1,4 @@
-//! Runs the alloc image's scenario natively and checks what it reports,
+//! Runs the apdu image's scenario natively and checks what it reports,
 //! then runs it again in the image's allocator over an arena of the image's
 //! size. This is where the scenario's behaviour is verified: the bare-metal
 //! build only links it.
@@ -179,8 +179,10 @@ unsafe impl GlobalAlloc for Switch {
 }
 
 /// Runs the scenario with its allocations in an arena of the image's size,
-/// in the image's allocator: it must fit, succeed, and give back everything
-/// it took. Prints the peak, which nextest shows (.config/nextest.toml).
+/// in the image's allocator: it must fit, succeed, give back everything it
+/// took, and peak at no more than half the arena, the margin
+/// [`ARENA`]'s docs promise. Prints the peak, which nextest shows
+/// (.config/nextest.toml).
 ///
 /// A 64-bit host's blocks are at least as large as a 32-bit target's: the
 /// allocator rounds each up to two words and to word alignment, and the
@@ -197,11 +199,16 @@ fn heap_fits_the_arena() {
     drop(summary);
     let peak = PEAK.load(Ordering::Relaxed);
     let left = ARENA_HEAP.lock().used();
-    println!("alloc scenario heap: peak {peak} of {ARENA} octets on this host");
+    println!("apdu scenario heap: peak {peak} of {ARENA} octets on this host");
     assert!(
         !EXHAUSTED.load(Ordering::Relaxed),
         "the scenario needs more than {ARENA} octets of heap"
     );
     assert_eq!(errors, 0, "the scenario failed in the arena");
     assert_eq!(left, 0, "the scenario kept {left} octets of heap");
+    assert!(
+        peak * 2 <= ARENA,
+        "the scenario's heap peak of {peak} octets is over half the {ARENA}-octet arena; \
+         grow firmware_link::apdu::ARENA, and the image's RAM budget with it"
+    );
 }

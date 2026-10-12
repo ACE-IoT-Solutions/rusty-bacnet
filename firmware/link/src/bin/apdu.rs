@@ -1,4 +1,4 @@
-//! The firmware link test's alloc image (#1635).
+//! The firmware link test's apdu image (#1635).
 //!
 //! On a bare-metal target this is a `no_main` image with a global allocator:
 //! `embedded-alloc`'s linked-list first fit over an arena of
@@ -9,7 +9,7 @@
 //! then it loops. Nothing runs it: building it proves that `bacnet-encoding`
 //! and `bacnet-services` link `no_std` with `alloc`, with no symbol only a
 //! hosted target provides, and `scripts/ci/check-firmware-link.sh` checks
-//! its sizes. On a host the binary is a stub; `tests/alloc.rs` runs the
+//! its sizes. On a host the binary is a stub; `tests/apdu.rs` runs the
 //! scenario there.
 //!
 //! The image, not a library, chooses what only a firmware may:
@@ -74,7 +74,8 @@ mod image {
 /// The critical section on Cortex-M, which the allocator and, on ARMv6-M,
 /// `portable-atomic` lock with. It masks interrupts with PRIMASK and puts
 /// back the mask it found, so sections nest. On a part with one core that
-/// stops everything else that could run; a multi-core part would need more.
+/// stops every interrupt handler but NMI's and HardFault's; a multi-core
+/// part would need more.
 ///
 /// It is what `cortex-m`'s `critical-section-single-core` feature provides,
 /// but that crate depends on the unmaintained `bare-metal`
@@ -91,12 +92,15 @@ mod single_core {
 
     critical_section::set_impl!(SingleCore);
 
-    // SAFETY: on one core, nothing runs while interrupts are masked except
-    // the code that masked them, so a section excludes every other.
-    // `release` unmasks only when its `acquire` found interrupts unmasked,
-    // so an inner section's release leaves the outer section masked. The
-    // compiler fences keep the section's memory accesses inside it, which on
-    // one core is the ordering the trait's contract asks for.
+    // SAFETY: on one core, no interrupt handler runs while PRIMASK masks
+    // interrupts, so a section excludes every other. PRIMASK leaves NMI and
+    // HardFault unmasked, as with cortex-m's implementation: their handlers
+    // must not enter a critical section or touch what one guards, and this
+    // image's never do (cortex-m-rt's defaults only loop). `release` unmasks
+    // only when its `acquire` found interrupts unmasked, so an inner
+    // section's release leaves the outer section masked. The compiler fences
+    // keep the section's memory accesses inside it, which on one core is the
+    // ordering the trait's contract asks for.
     unsafe impl critical_section::Impl for SingleCore {
         unsafe fn acquire() -> RawRestoreState {
             let primask: u32;
@@ -150,6 +154,6 @@ mod image {
     }
 }
 
-/// A host has nothing to flash: `tests/alloc.rs` runs the scenario.
+/// A host has nothing to flash: `tests/apdu.rs` runs the scenario.
 #[cfg(not(target_os = "none"))]
 fn main() {}

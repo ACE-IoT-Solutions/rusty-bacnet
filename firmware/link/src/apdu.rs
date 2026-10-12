@@ -1,4 +1,4 @@
-//! The alloc image's scenario.
+//! The apdu image's scenario.
 //!
 //! [`run`] drives `bacnet-encoding` and `bacnet-services`, `no_std` with
 //! `alloc`, through the exchange of a client that finds a device behind a
@@ -15,16 +15,19 @@
 //!   as a receive path would, so a fault that encode and decode share can't
 //!   cancel out. Keep what each carries, and decode the ACK's value.
 //! - **Rejections:** NPDUs and APDUs the codecs refuse to encode or decode,
-//!   and service parameters that a responder would reject, with the reason it
-//!   would give.
+//!   with the kind of error each draws, and malformed APDUs and service
+//!   parameters the decoders refuse, with the Reject reason the library
+//!   maps each error to (`Error::reject_reason`). That is how the library
+//!   classifies the fault; a responder sends a Reject only for a confirmed
+//!   request, never for the Who-Is or the I-Am.
 //!
 //! The work lives on the heap: the `BytesMut` and `Bytes` buffers, the ACK's
 //! value, and the messages the decoders' errors carry. The image gives its
 //! allocator an arena of [`ARENA`] octets.
 //!
-//! `tests/alloc.rs` runs it natively and compares the whole summary, then
+//! `tests/apdu.rs` runs it natively and compares the whole summary, then
 //! runs it again in the image's allocator over an arena of that size. The
-//! `alloc` image (`src/bin/alloc.rs`) links it.
+//! `apdu` image (`src/bin/apdu.rs`) links it.
 
 use bacnet_encoding::apdu::{
     decode_apdu, encode_apdu, Apdu, ComplexAck, ConfirmedRequest, UnconfirmedRequest,
@@ -42,13 +45,14 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 
-/// The heap the alloc image gives its allocator, in octets.
+/// The heap the apdu image gives its allocator, in octets.
 ///
-/// The scenario's peak use is about 300 octets: `tests/alloc.rs` runs it in
+/// The scenario's peak use is about 300 octets: `tests/apdu.rs` runs it in
 /// the same first-fit allocator over an arena of this size, on a 64-bit
 /// host, whose blocks are no smaller than a 32-bit target's, and prints the
-/// peak. 1 KiB leaves more than three times that, for fragmentation and for
-/// a scenario that grows a little.
+/// peak. It fails when the peak passes half the arena, so the arena always
+/// holds at least twice the peak: room for fragmentation, and for a
+/// scenario that grows a little before the arena has to.
 pub const ARENA: usize = 1024;
 
 /// The device the client reads: its instance, the network behind the
@@ -116,8 +120,8 @@ pub const DATAGRAMS: [&[u8]; MESSAGES] = [
     ],
 ];
 
-/// The rejection paths the scenario takes that a responder answers with a
-/// Reject reason.
+/// The decoding paths the scenario takes whose error it classifies by the
+/// Reject reason the library maps it to.
 pub const REJECTIONS: usize = 5;
 
 /// What one datagram decoded to: its network-layer addressing, its APDU's
@@ -161,16 +165,19 @@ pub struct Summary {
     pub read_property_ack: Option<Decoded<ReadPropertyACK>>,
     /// The ACK's value, decoded from its application tag.
     pub present_value: Option<PropertyValue>,
-    /// Refusals with no Reject reason: an NPDU of protocol version 2 on
-    /// decode, and on encode an NPDU to DNET 0 and a Confirmed-Request
-    /// offering APDUs of 100 octets, a size the header can't express.
+    /// Refusals with the error kind each should draw, counted only when it
+    /// draws that kind: an NPDU of protocol version 2 on decode
+    /// (`NpduDecodeError::Malformed`), and on encode an NPDU to DNET 0 and a
+    /// Confirmed-Request offering APDUs of 100 octets, a size the header
+    /// can't express (both `Error::Encoding`).
     pub refusals: u8,
-    /// The Reject reason each rejection path drew (`None` where the input
-    /// was accepted, or refused with an error that draws none): a
-    /// Confirmed-Request that ends after its invoke ID; a
-    /// ReadProperty request without its property identifier, and one with
-    /// an Unsigned after it; a Who-Is with a low limit only; an I-Am whose
-    /// vendor identifier takes three octets.
+    /// How the library classifies each decoding fault: the Reject reason it
+    /// maps the error to, `None` where the input was accepted or the error
+    /// maps to none. The inputs are a Confirmed-Request that ends after its
+    /// invoke ID; a ReadProperty request without its property identifier,
+    /// and one with an Unsigned after it; a Who-Is with a low limit only;
+    /// and an I-Am whose vendor identifier takes three octets. The last two
+    /// are unconfirmed, so no Reject would ever be sent for them.
     pub rejections: [Option<RejectReason>; REJECTIONS],
     /// Calls that failed where the scenario expects success. Zero in a good
     /// run.
@@ -507,7 +514,8 @@ fn receive<P: Parameters>(datagram: &[u8], header: Header) -> Option<Decoded<P>>
 }
 
 /// Take the refusal paths that have no Reject reason, `who_is` being the
-/// Who-Is datagram, and count those refused.
+/// Who-Is datagram, and count those refused with the error kind each
+/// should draw.
 fn refusals(who_is: &[u8]) -> u8 {
     let mut version_2 = BytesMut::from(who_is);
     if let Some(version) = version_2.first_mut() {
@@ -517,7 +525,6 @@ fn refusals(who_is: &[u8]) -> u8 {
         decode_npdu(version_2.freeze()),
         Err(NpduDecodeError::Malformed(_))
     );
-    let mut wire = BytesMut::new();
     let to_network_0 = Npdu {
         destination: Some(NpduAddress {
             network: 0,
@@ -525,7 +532,12 @@ fn refusals(who_is: &[u8]) -> u8 {
         }),
         ..Npdu::default()
     };
-    let network_0_refused = encode_npdu(&mut wire, &to_network_0).is_err();
+    let network_0_refused = matches!(
+        encode_npdu(&mut BytesMut::new(), &to_network_0),
+        Err(Error::Encoding(_))
+    );
+    // `validate_max_apdu_length` refuses the size, as an encoding error,
+    // before the encoder writes the header.
     let odd_size = Apdu::ConfirmedRequest(ConfirmedRequest {
         segmented: false,
         more_follows: false,
@@ -538,13 +550,15 @@ fn refusals(who_is: &[u8]) -> u8 {
         service_choice: ConfirmedServiceChoice::READ_PROPERTY,
         service_request: Bytes::new(),
     });
-    let odd_size_refused = encode_apdu(&mut wire, &odd_size).is_err();
+    let mut header = BytesMut::new();
+    let odd_size_refused =
+        matches!(encode_apdu(&mut header, &odd_size), Err(Error::Encoding(_))) && header.is_empty();
     u8::from(version_refused) + u8::from(network_0_refused) + u8::from(odd_size_refused)
 }
 
-/// Take each rejection path and return the Reject reason each error
-/// draws, `None` where a call unexpectedly succeeded or its error draws
-/// none.
+/// Take each decoding fault and return the Reject reason the library maps
+/// its error to, `None` where a call unexpectedly succeeded or its error
+/// maps to none.
 fn rejections() -> [Option<RejectReason>; REJECTIONS] {
     // A Confirmed-Request that ends after its invoke ID.
     let cut_apdu = Bytes::from_static(&[0x02, 0x05, 0x2A]);

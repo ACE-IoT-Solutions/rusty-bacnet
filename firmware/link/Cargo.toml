@@ -26,20 +26,22 @@ path = "src/bin/bip.rs"
 test = false
 bench = false
 
+# Named for its scenario, not its feature: a crate named `alloc` would share
+# the sysroot crate's name in the size check's per-crate list.
 [[bin]]
-name = "alloc"
-path = "src/bin/alloc.rs"
+name = "apdu"
+path = "src/bin/apdu.rs"
 test = false
 bench = false
 required-features = ["alloc"]
 
 [[test]]
-name = "alloc"
-path = "tests/alloc.rs"
+name = "apdu"
+path = "tests/apdu.rs"
 required-features = ["alloc"]
 
-# `alloc`: the alloc image and its scenario (`apdu`), which link
-# bacnet-encoding and bacnet-services with `alloc`, and on bare-metal targets
+# `alloc`: the apdu image and its scenario, which link bacnet-encoding and
+# bacnet-services with `alloc`, and on bare-metal targets
 # the image's allocator and critical section, and the atomics backend where
 # the target has no compare-and-swap. On by default, so host builds, clippy,
 # rustdoc and tests cover it. The mstp and bip images build without it
@@ -77,11 +79,11 @@ bytes = { workspace = true, optional = true }
 linked_list_allocator = { workspace = true }
 
 # The runtimes only on bare-metal targets, so a host build pulls in neither.
-# The alloc image's allocator too: a host build uses std's.
+# The apdu image's allocator too: a host build uses std's.
 [target.'cfg(target_os = "none")'.dependencies]
 embedded-alloc = { workspace = true, optional = true }
 
-# critical-section: the alloc image implements a single-core critical
+# critical-section: the apdu image implements a single-core critical
 # section on Cortex-M, which its allocator and atomics lock with, saving the
 # interrupt mask as a bool. cortex-m's implementation would bring in the
 # unmaintained bare-metal crate (RUSTSEC-2026-0110).
@@ -92,7 +94,7 @@ critical-section = { workspace = true, features = ["restore-state-bool"], option
 # single-hart: the images target parts with one hart, so the startup code
 # can drop its multi-hart gate; memory: its link.x includes memory.x, as
 # cortex-m-rt's does. riscv: its single-hart critical section, for the
-# alloc image as on Cortex-M above.
+# apdu image as on Cortex-M above.
 [target.'cfg(all(target_arch = "riscv32", target_os = "none"))'.dependencies]
 riscv-rt = { workspace = true, features = ["single-hart", "memory"] }
 riscv = { workspace = true, features = ["critical-section-single-hart"], optional = true }

@@ -10,15 +10,16 @@
 #   included (on Cortex-M, also the 1 KB or 192 B vector table).
 # - ram: every loaded writable section; riscv-rt's .stack, which fills
 #   whatever RAM is left, doesn't count, but its .heap (`_heap_size`, 0
-#   here) does. The alloc image's heap is a 1 KiB static arena in .bss
+#   here) does. The apdu image's heap is a 1 KiB static arena in .bss
 #   (`firmware_link::apdu::ARENA`). The stack the code uses at run time
 #   isn't measured.
 # - fmt_functions, div64_functions: counts of functions, not octets, 0 for
 #   mstp and bip. A 64-bit division by a runtime value links
 #   compiler-builtins' routine, about 0.9 KB, which the 12% headroom would
-#   otherwise absorb; the MS/TP core divides in 32 bits (#1618). The alloc
+#   otherwise absorb; the MS/TP core divides in 32 bits (#1618). The apdu
 #   image's counts are what it links today, with no headroom, so a new
-#   function fails the check. Its libraries build error messages with
+#   function fails the check, and a count under its limit gets a notice to
+#   lower the limit. Its libraries build error messages with
 #   format!, which brings in core::fmt (15 functions, about 2.7 KB of text
 #   on ARMv7-M). On ARMv6-M, which has no multiply with a 64-bit product,
 #   formatting a u64 divides by a constant through the 64-bit division
@@ -44,9 +45,9 @@
 #   thumbv6m bip      10468 /  980 / 0 /   132   11640 /   132
 #   riscv32imc mstp   17852 / 1292 / 0 /  5544   19166 /  5544
 #   riscv32imc bip    11820 / 1524 / 0 /   132   13366 /   132
-#   thumbv7m alloc    37476 / 5188 / 0 /  1056   43688 /  1056
-#   thumbv6m alloc    39912 / 5188 / 0 /  1056   45292 /  1056
-#   riscv32imc alloc  45328 / 5832 / 0 /  1056   51182 /  1056
+#   thumbv7m apdu     37504 / 5188 / 0 /  1056   43716 /  1056
+#   thumbv6m apdu     39920 / 5188 / 0 /  1056   45300 /  1056
+#   riscv32imc apdu   45356 / 5832 / 0 /  1056   51210 /  1056
 #
 # The bip rows were measured again on 2026-10-11, same toolchain, when the
 # image gained the B/IPv6 codec's scenario (#1621): about 4.6-6.0 KB more
@@ -55,7 +56,7 @@
 # when the core began borrowing its large buffers, dropped its control
 # ring and its 64-bit divisions, and the image switched to building the
 # core on the stack (#1617, #1618): 2.3-2.8 KB less text and 8,952 octets
-# less RAM. The alloc rows are from when that image was added (#1635).
+# less RAM. The apdu rows are from when that image was added (#1635).
 
 [thumbv7m-none-eabi.mstp]
 text = 18448
@@ -77,12 +78,12 @@ ram = 160
 fmt_functions = 0
 div64_functions = 0
 
-[thumbv7m-none-eabi.alloc]
-text = 41984
+[thumbv7m-none-eabi.apdu]
+text = 42016
 rodata = 5824
 data = 64
 bss = 1184
-flash = 48944
+flash = 48976
 ram = 1184
 fmt_functions = 15
 div64_functions = 0
@@ -107,8 +108,8 @@ ram = 160
 fmt_functions = 0
 div64_functions = 0
 
-[thumbv6m-none-eabi.alloc]
-text = 44704
+[thumbv6m-none-eabi.apdu]
+text = 44720
 rodata = 5824
 data = 64
 bss = 1184
@@ -137,12 +138,12 @@ ram = 160
 fmt_functions = 0
 div64_functions = 0
 
-[riscv32imc-unknown-none-elf.alloc]
-text = 50768
+[riscv32imc-unknown-none-elf.apdu]
+text = 50800
 rodata = 6544
 data = 64
 bss = 1184
-flash = 57328
+flash = 57360
 ram = 1184
 fmt_functions = 15
 div64_functions = 0
