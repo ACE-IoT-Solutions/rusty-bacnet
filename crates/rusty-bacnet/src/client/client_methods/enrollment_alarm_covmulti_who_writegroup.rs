@@ -28,6 +28,7 @@ impl BACnetClient {
         notification_class_filter: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let af = acknowledgment_filter.to_rust();
         let es = event_state_filter.map(|e| e.to_rust());
         let et = event_type_filter.map(|e| e.to_rust());
@@ -40,7 +41,7 @@ impl BACnetClient {
         };
 
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let mac = peers.parse(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -105,8 +106,9 @@ impl BACnetClient {
         address: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
+            let mac = peers.parse(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -198,8 +200,9 @@ impl BACnetClient {
         req.encode(&mut buf)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let future = async move {
-            let mac = parse_address(&address)?;
+            let mac = peers.parse(&address)?;
             let c = {
                 let guard = inner.lock().await;
                 Arc::clone(guard.as_ref().ok_or_else(|| {
@@ -314,11 +317,12 @@ impl BACnetClient {
             write_group_broadcast(address.is_some(), network).map_err(PyValueError::new_err)?;
 
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let future = async move {
             let destination = match (broadcast, address) {
                 (Some(broadcast), _) => broadcast,
                 (None, Some(address)) => WriteGroupDestination::Device(
-                    bacnet_types::MacAddr::from_slice(&parse_address(&address)?),
+                    bacnet_types::MacAddr::from_slice(&peers.parse(&address)?),
                 ),
                 (None, None) => unreachable!("no address means a broadcast"),
             };

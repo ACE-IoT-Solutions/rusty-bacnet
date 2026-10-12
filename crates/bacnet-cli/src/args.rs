@@ -56,7 +56,9 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) ipv6_interface: Option<String>,
 
-    /// Device instance for BIP6 VMAC derivation.
+    /// Device instance whose VMAC the CLI uses on --ipv6. Without it the CLI
+    /// picks a random VMAC, which needs a multicast-capable link at start
+    /// (Linux loopback has none).
     #[arg(long, global = true)]
     pub(crate) device_instance: Option<u32>,
 
