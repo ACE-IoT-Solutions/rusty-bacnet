@@ -16,7 +16,7 @@ use tokio::time::Instant;
 use super::{DeviceFeed, EventSink};
 use crate::transport::{self, TransportArgs};
 use crate::tui::message::{
-    AddressStyle, Command, OpId, OpOutcome, WhoIsScope, WhoIsSpec, WorkerEvent,
+    AddressStyle, Command, DirectedTo, OpId, OpOutcome, WhoIsScope, WhoIsSpec, WorkerEvent,
 };
 
 /// How often the worker checks whether the UI needs a resync.
@@ -130,7 +130,12 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
     sink: EventSink,
     mut commands: mpsc::Receiver<Command>,
 ) {
-    let local = style.format(client.local_mac());
+    let mut local = style.format(client.local_mac());
+    // A B/IPv6 VMAC alone doesn't say where the client is bound.
+    if let Some(bound) = crate::resolve::as_bip6(client.transport()).and_then(|t| t.local_address())
+    {
+        local = format!("{local} ({bound})");
+    }
     tracing::info!("connected; local address {local}");
     let mut devices = client.device_events();
     let mut collisions = client.device_collision_events();
@@ -205,7 +210,7 @@ async fn who_is<T: TransportPort + 'static>(
             tracing::warn!("Who-Is {op} failed: {error}");
             sink.deliver(WorkerEvent::OpFinished {
                 op,
-                outcome: OpOutcome::Failed(error.to_string()),
+                outcome: OpOutcome::Failed(error),
             })
             .await;
             None
@@ -216,9 +221,9 @@ async fn who_is<T: TransportPort + 'static>(
 async fn send_who_is<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     spec: &WhoIsSpec,
-) -> Result<(), Error> {
+) -> Result<(), String> {
     let range = spec.range;
-    match &spec.scope {
+    let sent = match &spec.scope {
         WhoIsScope::Local => {
             let mut buf = BytesMut::new();
             WhoIsRequest { range }.encode(&mut buf);
@@ -227,7 +232,17 @@ async fn send_who_is<T: TransportPort + 'static>(
                 .await
         }
         WhoIsScope::Global => client.who_is(range).await,
-        WhoIsScope::Directed { mac, .. } => client.who_is_directed(mac, range).await,
+        WhoIsScope::Directed { to, .. } => {
+            let mac = match to {
+                DirectedTo::Mac(mac) => mac.clone(),
+                // Asked once, when the Who-Is is sent (Clause U.5).
+                DirectedTo::Bip6(peer) => {
+                    crate::resolve::bip6_vmac(client.transport(), *peer).await?
+                }
+            };
+            client.who_is_directed(&mac, range).await
+        }
         WhoIsScope::Network(dnet) => client.who_is_network(*dnet, range).await,
-    }
+    };
+    sent.map_err(|error| error.to_string())
 }

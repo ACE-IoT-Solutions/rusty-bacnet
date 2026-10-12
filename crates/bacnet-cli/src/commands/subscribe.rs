@@ -127,7 +127,12 @@ fn print_cov_notification(received: &ReceivedCOVNotification, format: OutputForm
     }
 }
 
+/// A MAC as hex, except a B/IPv6 VMAC, which prints as the `bip6:` target
+/// the CLI reads back.
 fn format_mac(mac: &[u8]) -> String {
+    if let Ok(vmac) = <[u8; 3]>::try_from(mac) {
+        return crate::resolve::format_bip6_vmac(vmac);
+    }
     mac.iter()
         .map(|b| format!("{b:02x}"))
         .collect::<Vec<_>>()
