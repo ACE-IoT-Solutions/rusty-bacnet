@@ -12,7 +12,11 @@
 //! that one, which is keyed by IPv4 address and private to the B/IPv4
 //! transport. The receive loop keeps one for the NAKs and another for the
 //! Forwarded-Address-Resolution answers, so a NAK flood can't spend the
-//! budget those answers need.
+//! budget those answers need. In normal mode a sender on the link can still
+//! forge group Forwarded-Address-Resolutions that name this node and a
+//! different asker each time, and so spend the answers' per-window total
+//! for that window. That is an accepted trade-off: the cost is a missed
+//! answer the asker retries, against an unbounded reflector without it.
 //!
 //! The answers to Address-Resolution and Virtual-Address-Resolution stay
 //! outside both: each is one datagram back to its sender, and a spent quota

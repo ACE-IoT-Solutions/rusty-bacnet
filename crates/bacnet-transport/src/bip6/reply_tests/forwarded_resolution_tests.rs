@@ -53,15 +53,18 @@ async fn a_forwarded_address_resolution_from_the_bbmd_is_answered_at_the_asker()
 
 /// U.4.4, U.5: a BBMD multicasts the request into its own domain, and a
 /// node that isn't a foreign device answers the copy that names it, from
-/// whichever unicast source and on whichever BACnet group it arrives.
+/// whichever answerable source and on whichever BACnet group it arrives. A
+/// BBMD on the link may well send from its link-local address, which the
+/// socket reports with the scope it arrived on.
 #[tokio::test]
 async fn a_multicast_forwarded_address_resolution_is_answered_in_normal_mode() {
+    let link_local_bbmd = SocketAddrV6::new("fe80::5".parse().unwrap(), 0xBAC0, 0, 3);
     for group in [
         BACNET_IPV6_MULTICAST_LINK_LOCAL,
         BACNET_IPV6_MULTICAST_SITE_LOCAL,
         BACNET_IPV6_MULTICAST_ORG_LOCAL,
     ] {
-        for source in [bbmd(), sender()] {
+        for source in [bbmd(), sender(), link_local_bbmd] {
             let receiver = receiver(false).await;
             assert_eq!(
                 reply(
@@ -98,6 +101,14 @@ async fn forwarded_address_resolutions_from_an_untrusted_path_are_dropped() {
         reply(&foreign, ours, bbmd(), GROUP).await,
         None,
         "foreign, sent to a group"
+    );
+    let frame = encoded(&ours).unwrap();
+    let mut flagged = datagram(&frame, bbmd(), local_ip());
+    flagged.os_group_delivery = Some(true);
+    assert_eq!(
+        foreign.handle_datagram(&frame, &flagged).await,
+        None,
+        "foreign, to its own address but flagged by the OS as a group delivery"
     );
     assert_eq!(foreign.vmac_table.lookup(&ASKER_VMAC).await, None);
 

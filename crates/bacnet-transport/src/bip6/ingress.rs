@@ -26,6 +26,12 @@ fn is_bacnet_ipv6_multicast(destination: Ipv6Addr) -> bool {
     )
 }
 
+/// Whether an address a message carries (a Forwarded-NPDU's origin, a
+/// Forwarded-Address-Resolution's asker) is usable without a scope ID: a
+/// unicast address that is not unspecified, loopback, link-local, or
+/// IPv4-mapped or -compatible, with a non-zero port. Stricter than
+/// [`is_answerable_source`], since the 18 octets carry no scope and name an
+/// address this node never saw a datagram from.
 pub(super) fn forwarded_source_is_usable(source: SocketAddrV6) -> bool {
     let ip = source.ip();
     source.port() != 0
@@ -137,13 +143,19 @@ fn is_bacnet_group_delivery(destination: IpAddr, os_group_delivery: Option<bool>
         && os_group_delivery != Some(false)
 }
 
-/// Whether an answer to a datagram from `peer` would reach one node: an IPv6
-/// source that is neither a group, nor unspecified, nor port 0. IPv6 forbids
-/// a multicast source address, so a datagram claiming one is forged, and an
-/// answer to it would reach every member of the group.
+/// Whether `peer` is an answerable source: an IPv6 source an answer would
+/// reach as one node, so neither a group, nor unspecified, nor IPv4-mapped,
+/// nor port 0. IPv6 forbids a multicast source address, so a datagram
+/// claiming one is forged, and an answer to it would reach every member of
+/// the group. The socket is IPv6-only, so an IPv4-mapped source is forged
+/// too. Link-local and loopback sources are answerable: the socket reports
+/// the scope a link-local one arrived on.
 pub(super) fn is_answerable_source(peer: SocketAddr) -> bool {
     matches!(peer, SocketAddr::V6(peer)
-        if !peer.ip().is_multicast() && !peer.ip().is_unspecified() && peer.port() != 0)
+        if !peer.ip().is_multicast()
+            && !peer.ip().is_unspecified()
+            && peer.ip().to_ipv4_mapped().is_none()
+            && peer.port() != 0)
 }
 
 /// Whether `peer` is the BBMD this node registers with as a foreign device:
@@ -166,15 +178,15 @@ fn is_configured_bbmd(peer: SocketAddr, foreign_bbmd: Option<(Ipv6Addr, u16)>) -
 /// - A foreign device takes one only by unicast from the BBMD it is
 ///   configured to register with.
 /// - Any other node has no configured BBMD to check the sender against. It
-///   takes one that arrives on a BACnet multicast group from a source an
-///   answer could reach (see [`is_answerable_source`]). A forged one draws
-///   at most one Address-Resolution-ACK, from the one node whose VMAC it
-///   targets, so the reflection is bounded by the per-destination quota the
-///   answer counts against.
+///   takes one that arrives on a BACnet multicast group from an answerable
+///   source ([`is_answerable_source`]). A forged one draws at most one
+///   Address-Resolution-ACK, from the one node whose VMAC it targets, so the
+///   reflection is bounded by the per-destination quota the answer counts
+///   against.
 ///
 /// Either way the answer also needs the target to be this node's VMAC and
-/// the carried address to be usable without a scope ID; the receive path
-/// checks those.
+/// the carried address to be usable without a scope ID
+/// ([`forwarded_source_is_usable`]); the receive path checks those.
 pub(super) fn forwarded_address_resolution_is_trusted(
     peer: SocketAddr,
     destination: IpAddr,

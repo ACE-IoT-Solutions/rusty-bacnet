@@ -187,7 +187,8 @@ impl Receiver {
         }
         // Forwarded-NPDU's source VMAC identifies the original node, not the
         // forwarding BBMD. Its original address is learned from the function
-        // payload in `dispatch`.
+        // payload in `dispatch`. A source no node sends from is never
+        // learned: nothing could be sent back to it.
         if matches!(
             function,
             Bvlc6Function::ORIGINAL_UNICAST_NPDU
@@ -196,7 +197,8 @@ impl Receiver {
                 | Bvlc6Function::ADDRESS_RESOLUTION_ACK
                 | Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION
                 | Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION_ACK
-        ) {
+        ) && is_answerable_source(received.peer)
+        {
             if let SocketAddr::V6(v6) = received.peer {
                 self.vmac_table.learn(message.source_vmac(), v6).await;
             }
@@ -241,21 +243,24 @@ impl Receiver {
     /// checked, and return the reply it calls for.
     ///
     /// This transport is never a B/IPv6 BBMD. Annex U's receive-side rules
-    /// for a node that isn't one, against what the transport does. "Usable
-    /// source" means one [`is_answerable_source`] admits.
+    /// for a node that isn't one, against what the transport does. Two terms
+    /// keep the rows short: an *answerable source* is a datagram source
+    /// [`is_answerable_source`] admits, and an address *usable without a
+    /// scope ID* is one a message carries that [`forwarded_source_is_usable`]
+    /// admits. Only an answerable source is ever learned from.
     ///
     /// | Message | Annex U asks | This transport | Clause |
     /// | --- | --- | --- | --- |
     /// | BVLC-Result | No reply: it reports on a request this node sent | Logged, a NAK at error level | U.2.1 |
     /// | Original-Unicast-NPDU | Take the NPDU when the destination VMAC is this node's, else discard | Handed up when sent to this node's address and VMAC | U.2.2, U.3 |
     /// | Original-Broadcast-NPDU | Take the NPDU | Handed up when sent to a BACnet multicast group | U.2.3, U.4 |
-    /// | Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker | Answered at a usable source when sent to a BACnet group and targeting this VMAC; no quota | U.2.4, U.5 |
-    /// | Forwarded-Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker's address it carries | Taken by a foreign device only by unicast from its configured BBMD, and by any other node only from a BACnet group with a usable source. Answered at the carried address when the target is this VMAC and that address is usable; the asker is then learned. FAR-answer quota | U.2.5, U.4.4, U.5 |
+    /// | Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker | Answered at an answerable source other than this node's own address, when sent to a BACnet group and targeting this VMAC; no quota | U.2.4, U.5 |
+    /// | Forwarded-Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker's address it carries | Taken by a foreign device only by unicast from its configured BBMD, and by any other node only from a BACnet group with an answerable source. Answered at the carried address when the target is this VMAC and that address is usable without a scope ID; the asker is then learned. FAR-answer quota | U.2.5, U.4.4, U.5 |
     /// | Address-Resolution-ACK | Update the VMAC table; discard one for another VMAC | Learned when sent to this node's address and VMAC | U.2.6, U.3, U.5 |
-    /// | Virtual-Address-Resolution | Unicast a Virtual-Address-Resolution-ACK to the asker | Answered at a usable source when sent to this node's address; no quota | U.2.7, U.5 |
+    /// | Virtual-Address-Resolution | Unicast a Virtual-Address-Resolution-ACK to the asker | Answered at an answerable source other than this node's own address, when sent to this node's address; no quota | U.2.7, U.5 |
     /// | Virtual-Address-Resolution-ACK | Update the VMAC table; discard one for another VMAC | Learned when sent to this node's address and VMAC; one naming this node's VMAC as its source is logged as a collision | U.2.8, U.3, U.5 |
-    /// | Forwarded-NPDU | Take the NPDU as from its original source | Handed up from a BACnet group, or in foreign mode from the configured BBMD, when the original address is usable; that address is learned | U.2.9, U.4.4 |
-    /// | Register-Foreign-Device | Reply with its NAK | Its NAK at a usable source other than this node's own address, when sent to this node's address. NAK quota | U.4.5.3 |
+    /// | Forwarded-NPDU | Take the NPDU as from its original source | Handed up from a BACnet group, or in foreign mode from the configured BBMD, when the original address is usable without a scope ID; that address is learned | U.2.9, U.4.4 |
+    /// | Register-Foreign-Device | Reply with its NAK | Its NAK at an answerable source other than this node's own address, when sent to this node's address. NAK quota | U.4.5.3 |
     /// | Delete-Foreign-Device-Table-Entry | Reply with its NAK | The same | U.4.5.4 |
     /// | Distribute-Broadcast-To-Network | Reply with its NAK | The same | U.4.4 |
     /// | Function 0x0B | Nothing: its clause was removed | Dropped as unknown before dispatch | U.2.12 |
@@ -367,7 +372,7 @@ impl Receiver {
                 // A node receiving VAR at its unicast B/IPv6 address
                 // answers with its own VMAC and the requester's VMAC.
                 Some(Reply {
-                    to: reply_address(received.peer)?.into(),
+                    to: self.reply_address(received.peer)?.into(),
                     message: Bvll6::VirtualAddressResolutionAck {
                         source: self.vmac,
                         destination: source,
@@ -385,7 +390,7 @@ impl Receiver {
                 }
                 debug!(vmac = ?self.vmac, "Received AR for our VMAC, sending AR-Ack");
                 Some(Reply {
-                    to: reply_address(received.peer)?.into(),
+                    to: self.reply_address(received.peer)?.into(),
                     message: Bvll6::AddressResolutionAck {
                         source: self.vmac,
                         destination: source,
@@ -467,16 +472,7 @@ impl Receiver {
             | Bvll6::DeleteForeignDeviceTableEntry { .. }
             | Bvll6::DistributeBroadcastToNetwork { .. } => {
                 let code = message.function().nak()?;
-                let source = reply_address(received.peer)?;
-                // This node never sends itself one, so a request from its own
-                // address is forged; refusing it would only NAK this node.
-                if encode_bip6_mac(*source.ip(), source.port()) == self.local_mac {
-                    debug!(
-                        function = message.function().to_raw(),
-                        "Dropping a BBMD request from this node's own address"
-                    );
-                    return None;
-                }
+                let source = self.reply_address(received.peer)?;
                 debug!(
                     function = message.function().to_raw(),
                     peer = %source,
@@ -490,17 +486,25 @@ impl Receiver {
             }
         }
     }
-}
 
-/// The address to answer a request at: the datagram's source, unless an
-/// answer there could reach more than one node or none
-/// ([`is_answerable_source`]).
-fn reply_address(peer: SocketAddr) -> Option<SocketAddrV6> {
-    match peer {
-        SocketAddr::V6(source) if is_answerable_source(peer) => Some(source),
-        _ => {
+    /// The address to answer a request at: the datagram's source, unless it
+    /// isn't an answerable source ([`is_answerable_source`]) or it is this
+    /// node's own address. This node never sends itself a request, so one
+    /// from its own address is forged, and answering it would only send
+    /// this node its own answer (a Virtual-Address-Resolution-ACK from its
+    /// own VMAC would even look like a collision).
+    fn reply_address(&self, peer: SocketAddr) -> Option<SocketAddrV6> {
+        let SocketAddr::V6(source) = peer else {
+            return None;
+        };
+        if !is_answerable_source(peer) {
             debug!(peer = %peer, "Not answering a request from an address no node sends from");
-            None
+            return None;
         }
+        if encode_bip6_mac(*source.ip(), source.port()) == self.local_mac {
+            debug!("Not answering a request from this node's own address");
+            return None;
+        }
+        Some(source)
     }
 }

@@ -60,11 +60,13 @@ fn asker() -> SocketAddrV6 {
     )
 }
 
-/// Sources no node sends from: a group, the unspecified address, port 0.
-fn unanswerable_sources() -> [SocketAddrV6; 3] {
+/// Sources no node sends from: a group, the unspecified address, an
+/// IPv4-mapped address on an IPv6-only socket, port 0.
+fn unanswerable_sources() -> [SocketAddrV6; 4] {
     [
         SocketAddrV6::new("ff02::1".parse().unwrap(), 0xBAC0, 0, 0),
         SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0xBAC0, 0, 0),
+        SocketAddrV6::new("::ffff:192.0.2.30".parse().unwrap(), 0xBAC0, 0, 0),
         SocketAddrV6::new(*sender().ip(), 0, 0, 0),
     ]
 }
@@ -257,18 +259,77 @@ async fn no_answer_goes_to_a_source_no_node_sends_from() {
     }
 }
 
-/// This node never sends itself a BBMD request, so one from its own address
-/// is forged and isn't refused: the NAK would only come back to this node.
-/// Another port on the same address is another node and is refused.
+/// A source no node sends from is never learned into the VMAC table, by any
+/// message that teaches the sender's address; the same messages from an
+/// answerable source are. Each sender gets an endpoint of its own, since a
+/// newer VMAC at an endpoint replaces the older one.
 #[tokio::test]
-async fn a_bbmd_request_from_this_nodes_own_address_is_not_refused() {
+async fn a_source_no_node_sends_from_is_not_learned() {
+    /// A message from a given VMAC, and where it is sent.
+    type Kind = (fn(Bip6Vmac) -> Bvll6<'static>, Ipv6Addr);
+    let receiver = receiver(false).await;
+    let group = BACNET_IPV6_MULTICAST_LINK_LOCAL;
+    let kinds: [Kind; 3] = [
+        (
+            |source| Bvll6::AddressResolution {
+                source,
+                target: LOCAL_VMAC,
+            },
+            group,
+        ),
+        (
+            |source| Bvll6::VirtualAddressResolution { source },
+            local_ip(),
+        ),
+        (
+            |source| Bvll6::OriginalBroadcastNpdu { source, npdu: NPDU },
+            group,
+        ),
+    ];
+    let mut checks = Vec::new();
+    for (kind, (message, destination)) in (0u8..).zip(kinds) {
+        let answerable = SocketAddrV6::new(*sender().ip(), 0xBAC0 + u16::from(kind), 0, 0);
+        let mut sources = unanswerable_sources().to_vec();
+        sources.push(answerable);
+        for (index, source) in (0u8..).zip(sources) {
+            let vmac = Bip6Vmac::new([0x00, 0x07 + kind, index]);
+            let _ = reply(&receiver, message(vmac), source, destination).await;
+            checks.push((vmac, source, (source == answerable).then_some(source)));
+        }
+    }
+    for (vmac, source, expected) in checks {
+        assert_eq!(
+            receiver.vmac_table.lookup(&vmac).await,
+            expected,
+            "{vmac:?} from {source}"
+        );
+    }
+}
+
+/// This node never sends itself a request, so one from its own address is
+/// forged and gets no answer: a NAK, Address-Resolution-ACK or
+/// Virtual-Address-Resolution-ACK would only come back to this node. Another
+/// port on the same address is another node and is answered.
+#[tokio::test]
+async fn a_request_from_this_nodes_own_address_is_not_answered() {
     let receiver = receiver(false).await;
     let own = SocketAddrV6::new(local_ip(), LOCAL_PORT, 0, 0);
     let neighbour = SocketAddrV6::new(local_ip(), LOCAL_PORT + 1, 0, 0);
-    for request in [register(), delete_entry(), distribute()] {
-        assert_eq!(reply(&receiver, request, own, local_ip()).await, None);
-        let nak = reply(&receiver, request, neighbour, local_ip()).await;
-        assert_eq!(nak.map(|reply| reply.to), Some(neighbour.into()));
+    let group = BACNET_IPV6_MULTICAST_LINK_LOCAL;
+    for (request, destination) in [
+        (register(), local_ip()),
+        (delete_entry(), local_ip()),
+        (distribute(), local_ip()),
+        (address_resolution(LOCAL_VMAC), group),
+        (virtual_resolution(), local_ip()),
+    ] {
+        assert_eq!(
+            reply(&receiver, request, own, destination).await,
+            None,
+            "{request:?}"
+        );
+        let answer = reply(&receiver, request, neighbour, destination).await;
+        assert_eq!(answer.map(|reply| reply.to), Some(neighbour.into()));
     }
 }
 
