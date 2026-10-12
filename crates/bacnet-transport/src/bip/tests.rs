@@ -126,6 +126,7 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
 
     let result = test_bvll_message(BvlcFunction::BVLC_RESULT, &[0x00, 0x00]);

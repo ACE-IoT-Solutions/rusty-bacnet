@@ -95,9 +95,11 @@ pub enum QueueRejectReason {
     /// The destination queue has no free slot.
     Full,
     /// The payload is too long: larger than the queue's owned slot or, from
-    /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than a
-    /// standard frame's 501 octets. A dequeue also returns it when it dropped
-    /// an item too long for the caller's scratch.
+    /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than
+    /// the station sends
+    /// ([`MstpCoreConfig::max_npdu_length`](crate::MstpCoreConfig::max_npdu_length)).
+    /// A dequeue also returns it when it dropped an item too long for the
+    /// caller's scratch.
     Oversize,
     /// The supplied expiry is at or before the enqueue time, or an item
     /// reached its expiry boundary while waiting.
@@ -164,6 +166,19 @@ pub trait QueueStorage {
     /// Apply the core's service-opportunity starvation limit.
     fn set_starvation_limit(&mut self, limit: u8);
 
+    /// The longest NPDU one queue slot holds. A core with
+    /// [`MstpCoreConfig::extended_frames`](crate::MstpCoreConfig::extended_frames)
+    /// on refuses queues whose slots hold less than
+    /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA);
+    /// nothing else reads it.
+    ///
+    /// The default is a standard frame's 501 octets, so storage that doesn't
+    /// say is refused for extended frames: it fails closed. Storage whose
+    /// slots hold extended NPDUs overrides it.
+    fn max_npdu_length(&self) -> usize {
+        bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA
+    }
+
     /// Add a payload to the destination queue.
     ///
     /// `expires_at` is an absolute timestamp in the same monotonically
@@ -224,8 +239,9 @@ pub trait QueueStorage {
     ///
     /// If `scratch` is too small, the item is dropped, counted in
     /// `drops_oversize`, and [`QueueRejectReason::Oversize`] is returned. The
-    /// core's scratch holds a standard frame's data, so such an item could
-    /// never be sent; leaving it queued would keep it at the head.
+    /// core's scratch holds the longest NPDU its delivery slots do, so such
+    /// an item could never be sent; leaving it queued would keep it at the
+    /// head.
     fn dequeue_into(
         &mut self,
         now: u64,
@@ -284,6 +300,70 @@ pub trait QueueStorage {
     /// The total number of queued NPDUs.
     fn total_depth(&self) -> usize {
         self.depth(QueueKind::Unicast) + self.depth(QueueKind::Broadcast)
+    }
+}
+
+/// Queues kept elsewhere, such as in a static, which the core borrows rather
+/// than holds.
+impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
+    fn set_starvation_limit(&mut self, limit: u8) {
+        (**self).set_starvation_limit(limit);
+    }
+
+    fn max_npdu_length(&self) -> usize {
+        (**self).max_npdu_length()
+    }
+
+    fn enqueue_npdu(
+        &mut self,
+        destination: u8,
+        payload: &[u8],
+        priority: NetworkPriority,
+        now: u64,
+        expires_at: Option<u64>,
+    ) -> Result<(), QueueRejectReason> {
+        (**self).enqueue_npdu(destination, payload, priority, now, expires_at)
+    }
+
+    fn expire(&mut self, now: u64) -> usize {
+        (**self).expire(now)
+    }
+
+    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+        (**self).peek(now)
+    }
+
+    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+        (**self).peek_kind(kind, now)
+    }
+
+    fn dequeue_into(
+        &mut self,
+        now: u64,
+        scratch: &mut [u8],
+    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        (**self).dequeue_into(now, scratch)
+    }
+
+    fn dequeue_kind_into(
+        &mut self,
+        kind: QueueKind,
+        now: u64,
+        scratch: &mut [u8],
+    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        (**self).dequeue_kind_into(kind, now, scratch)
+    }
+
+    fn depth(&self, kind: QueueKind) -> usize {
+        (**self).depth(kind)
+    }
+
+    fn stats(&self, kind: QueueKind) -> QueueCounters {
+        (**self).stats(kind)
+    }
+
+    fn total_depth(&self) -> usize {
+        (**self).total_depth()
     }
 }
 
@@ -350,20 +430,29 @@ fn better(candidate: QueueItemInfo, current: Option<QueueItemInfo>, starvation_l
     }
 }
 
+/// The starvation limit of [`HeaplessQueues::new`].
+#[cfg(feature = "heapless")]
+const DEFAULT_STARVATION_LIMIT: u8 = 16;
+
 #[cfg(feature = "heapless")]
 #[derive(Debug)]
 /// Heapless, independently bounded unicast and broadcast queues.
-pub struct HeaplessQueues<
-    const U: usize,
-    const B: usize,
-    const N: usize = MAX_NPDU_LEN,
-    const C: usize = 2,
-> {
+///
+/// `U` and `B` are the unicast and broadcast capacities, and `N` the longest
+/// NPDU a slot holds: a standard frame's 501 octets by default, and
+/// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
+/// a core with extended frames on.
+///
+/// [`Self::new`] is a `const fn` whose result is all zero bits, so the
+/// queues can live in a zero-initialized static (`.bss`) and be lent to the
+/// core as `&mut` (see the crate docs).
+pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: heapless::Vec<Item<N>, U>,
     broadcast: heapless::Vec<Item<N>, B>,
     network_control: heapless::Vec<Item<N>, C>,
     sequence: u64,
-    starvation_limit: u8,
+    /// `None` for [`DEFAULT_STARVATION_LIMIT`], so that `new` is all zeros.
+    starvation_limit: Option<u8>,
     unicast_counters: QueueCounters,
     broadcast_counters: QueueCounters,
     network_control_counters: QueueCounters,
@@ -373,11 +462,15 @@ pub struct HeaplessQueues<
 impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQueues<U, B, N, C> {
     /// Construct queues with the default starvation limit of 16 time units.
     pub const fn new() -> Self {
-        Self::with_starvation_limit(16)
+        Self::with_limit(None)
     }
 
     /// Construct queues with an explicit starvation limit.
     pub const fn with_starvation_limit(starvation_limit: u8) -> Self {
+        Self::with_limit(Some(starvation_limit))
+    }
+
+    const fn with_limit(starvation_limit: Option<u8>) -> Self {
         Self {
             unicast: heapless::Vec::new(),
             broadcast: heapless::Vec::new(),
@@ -390,12 +483,16 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
         }
     }
 
+    fn starvation_limit(&self) -> u8 {
+        self.starvation_limit.unwrap_or(DEFAULT_STARVATION_LIMIT)
+    }
+
     fn select(&self, now: u64) -> Option<(QueueKind, usize, QueueItemInfo)> {
         let mut selected: Option<(QueueKind, usize, QueueItemInfo)> = None;
         for (index, item) in self.unicast.iter().copied().enumerate() {
             let info = item.info(QueueKind::Unicast, QueueClass::Data);
             if !expired(info.expires_at, now)
-                && better(info, selected.map(|v| v.2), self.starvation_limit)
+                && better(info, selected.map(|v| v.2), self.starvation_limit())
             {
                 selected = Some((QueueKind::Unicast, index, info));
             }
@@ -403,7 +500,7 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
         for (index, item) in self.broadcast.iter().copied().enumerate() {
             let info = item.info(QueueKind::Broadcast, QueueClass::Data);
             if !expired(info.expires_at, now)
-                && better(info, selected.map(|v| v.2), self.starvation_limit)
+                && better(info, selected.map(|v| v.2), self.starvation_limit())
             {
                 selected = Some((QueueKind::Broadcast, index, info));
             }
@@ -418,7 +515,7 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
                 for (index, item) in self.unicast.iter().copied().enumerate() {
                     let info = item.info(kind, QueueClass::Data);
                     if !expired(info.expires_at, now)
-                        && better(info, selected.map(|v| v.1), self.starvation_limit)
+                        && better(info, selected.map(|v| v.1), self.starvation_limit())
                     {
                         selected = Some((index, info));
                     }
@@ -428,7 +525,7 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
                 for (index, item) in self.broadcast.iter().copied().enumerate() {
                     let info = item.info(kind, QueueClass::Data);
                     if !expired(info.expires_at, now)
-                        && better(info, selected.map(|v| v.1), self.starvation_limit)
+                        && better(info, selected.map(|v| v.1), self.starvation_limit())
                     {
                         selected = Some((index, info));
                     }
@@ -501,8 +598,16 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> Default
 }
 
 #[cfg(feature = "heapless")]
-impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQueues<U, B, N, C> {
-    fn enqueue_class(
+impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQueues<U, B, N> {
+    fn set_starvation_limit(&mut self, limit: u8) {
+        self.starvation_limit = Some(limit);
+    }
+
+    fn max_npdu_length(&self) -> usize {
+        N
+    }
+
+    fn enqueue_npdu(
         &mut self,
         class: QueueClass,
         destination: u8,

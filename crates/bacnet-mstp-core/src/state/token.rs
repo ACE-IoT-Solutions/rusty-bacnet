@@ -3,45 +3,49 @@
 use super::*;
 use crate::queue::QueueClass;
 
-impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
-    ProfileMasterCore<'rx, Q, NPDU, FRAME>
-{
+impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     pub(super) fn enter_no_token(&mut self, now: Instant) -> Result<(), CoreError> {
         self.set_state(MasterState::NoToken);
         self.retry_token_count = 0;
+        // Clause 9.5.6.2 (LostToken): SawFrame counts events from here.
+        self.event_count = 0;
         self.generate_token_if_in_slot(now)
     }
 
+    /// Generate a token in this station's slot of the silence (Clause
+    /// 9.5.6.7), or in a later window if the deadline came after the slot
+    /// closed: the local recovery policy described on [`MasterCore`], counted
+    /// in [`MstpCounters::missed_generation_slots`].
     pub(super) fn generate_token_if_in_slot(&mut self, now: Instant) -> Result<(), CoreError> {
         let cycle = scale(self.config.t_slot, u64::from(self.config.max_master) + 1);
         let first = self.last_activity
             + self.config.t_no_token
             + scale(self.config.t_slot, u64::from(self.config.station));
         let mut start = first;
-        if now >= start + self.config.t_slot && cycle != Duration::ZERO {
-            let cycles = (now - start).as_micros() / cycle.as_micros();
-            start += scale(cycle, cycles);
-            if now >= start + self.config.t_slot {
-                start += cycle;
+        // The window that `now` falls in, or the next one: whole cycles after
+        // the first. Validation fixes T_slot at 10 ms and caps Max_Master at
+        // 127, so a cycle is at most 1.28 s, within `rem_short`'s bound, and
+        // no 64-bit division is needed.
+        if now >= first + self.config.t_slot {
+            if let Some(offset) = (now - first).rem_short(cycle) {
+                start = now - offset;
+                if offset >= self.config.t_slot {
+                    start += cycle;
+                }
             }
         }
         if now < start {
             self.protocol_deadline = Some(start);
             return Ok(());
         }
+        if start != first {
+            self.counters.record_missed_generation_slot();
+        }
         self.counters.record_token_regeneration();
         self.next_station = self.config.station;
         self.token_count = 0;
         self.poll_station = next_addr(self.config.station, self.config.max_master);
-        self.queue_frame(
-            FrameType::PollForMaster,
-            self.poll_station,
-            &[],
-            PostTransmit::PollForMaster,
-            now,
-        )?;
-        self.set_state(MasterState::PollForMaster);
-        Ok(())
+        self.queue_poll(Origin::NoToken, now)
     }
 
     pub(super) fn pass_token_timeout(&mut self, now: Instant) -> Result<(), CoreError> {
@@ -51,7 +55,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         } else if self.retry_token_count < self.config.n_retry_token {
             self.retry_token_count = self.retry_token_count.saturating_add(1);
             self.counters.record_token_retry();
-            self.queue_token(self.next_station, now)?;
+            self.queue_token(self.next_station, Origin::PassToken, now)?;
         } else {
             let failed = self.next_station;
             self.next_station = self.config.station;
@@ -61,14 +65,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             }
             self.retry_token_count = 0;
             self.token_count = 0;
-            self.queue_frame(
-                FrameType::PollForMaster,
-                self.poll_station,
-                &[],
-                PostTransmit::PollForMaster,
-                now,
-            )?;
-            self.set_state(MasterState::PollForMaster);
+            self.queue_poll(Origin::PassToken, now)?;
         }
         Ok(())
     }
@@ -81,7 +78,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         }
         if self.next_station != self.config.station {
             self.retry_token_count = 0;
-            return self.queue_token(self.next_station, now);
+            return self.queue_token(self.next_station, Origin::Holder, now);
         }
         let next = next_addr(self.poll_station, self.config.max_master);
         if next == self.config.station {
@@ -91,13 +88,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             return self.drive_token(now);
         }
         self.poll_station = next;
-        self.queue_frame(
-            FrameType::PollForMaster,
-            self.poll_station,
-            &[],
-            PostTransmit::PollForMaster,
-            now,
-        )
+        self.queue_poll(Origin::NextPoll, now)
     }
 
     pub(super) fn drive_token(&mut self, now: Instant) -> Result<(), CoreError> {
@@ -115,33 +106,16 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
         self.done_with_token(now)
     }
 
-    /// Send the next queued NPDU, if there is one.
+    /// Send the next queued NPDU, if there is one: in a standard frame, or
+    /// an extended one when it is longer than 501 octets (Clauses 9.3.9,
+    /// 9.3.10), which only extended frames let into the queue.
     ///
-    /// An NPDU that cannot go out in a standard frame is dropped, counted as
-    /// oversize, and the next one is tried, so it never holds the token. The
-    /// attempts are bounded in case a [`QueueStorage`] fails to drop it.
+    /// An NPDU that cannot go out (longer than this station sends, or than
+    /// its `NPDU`-octet scratch holds) is dropped, counted as oversize, and
+    /// the next one is tried, so it never holds the token. The attempts are
+    /// bounded in case a [`QueueStorage`] fails to drop it.
     fn dequeue_and_send(&mut self, now: Instant) -> Result<bool, CoreError> {
         self.queues.expire(now.as_micros());
-        let has_data = self
-            .queues
-            .peek_class(QueueClass::Data, now.as_micros())
-            .is_some();
-        let has_control = self
-            .queues
-            .peek_class(QueueClass::NetworkControl, now.as_micros())
-            .is_some();
-        let class = match (has_data, has_control) {
-            (false, false) => return Ok(false),
-            (true, false) => QueueClass::Data,
-            (false, true) => QueueClass::NetworkControl,
-            (true, true) if self.consecutive_network_control < self.config.starvation_limit => {
-                QueueClass::NetworkControl
-            }
-            (true, true) => QueueClass::Data,
-        };
-        if class == QueueClass::NetworkControl {
-            return self.dequeue_network_control_and_send(now);
-        }
         let mut npdu = [0; NPDU];
         for _ in 0..=self.queues.total_depth() {
             let Some(kind) = self.next_queue_kind(now) else {
@@ -156,8 +130,13 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
                 // Too long for the scratch: the queue dropped and counted it.
                 Err(_) => continue,
             };
-            let Some(data) = npdu.get(..item.len) else {
-                // The queue claims more octets than it copied.
+            let Some(data) = npdu
+                .get(..item.len)
+                .filter(|data| data.len() <= self.config.max_npdu_length())
+            else {
+                // The queue claims more octets than it copied, or holds an
+                // NPDU this station doesn't send, which a queue fed only
+                // through `enqueue_npdu` never does.
                 self.record_oversize_npdu(kind);
                 continue;
             };
@@ -168,19 +147,33 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             };
             self.frame_count = self.frame_count.saturating_add(1);
             let expecting = kind == QueueKind::Unicast && data.len() >= 2 && data[1] & 0x04 != 0;
-            let (frame_type, post) = if expecting {
-                (
+            let extended = data.len() > MAX_STANDARD_MPDU_DATA;
+            let (frame_type, post) = match (expecting, extended) {
+                (true, false) => (
                     FrameType::BACnetDataExpectingReply,
                     PostTransmit::WaitForReply,
-                )
-            } else {
-                (
+                ),
+                (true, true) => (
+                    FrameType::BACnetExtendedDataExpectingReply,
+                    PostTransmit::WaitForReply,
+                ),
+                (false, false) => (
                     FrameType::BACnetDataNotExpectingReply,
                     PostTransmit::ContinueToken,
-                )
+                ),
+                (false, true) => (
+                    FrameType::BACnetExtendedDataNotExpectingReply,
+                    PostTransmit::ContinueToken,
+                ),
             };
-            self.queue_frame(frame_type, item.destination, data, post, now)?;
-            self.consecutive_network_control = 0;
+            self.queue_frame(
+                frame_type,
+                item.destination,
+                data,
+                post,
+                Origin::Holder,
+                now,
+            )?;
             return Ok(true);
         }
         Ok(false)
@@ -240,15 +233,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             let next_ps = next_addr(self.poll_station, self.config.max_master);
             if !self.sole_master && self.next_station == self.config.station {
                 self.poll_station = next_ts;
-                self.queue_frame(
-                    FrameType::PollForMaster,
-                    self.poll_station,
-                    &[],
-                    PostTransmit::PollForMaster,
-                    now,
-                )?;
-                self.set_state(MasterState::PollForMaster);
-                return Ok(());
+                return self.queue_poll(Origin::Holder, now);
             }
             if self.token_count < self.config.n_poll {
                 self.token_count = self.token_count.saturating_add(1);
@@ -261,7 +246,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
                     continue;
                 }
                 self.retry_token_count = 0;
-                return self.queue_token(self.next_station, now);
+                return self.queue_token(self.next_station, Origin::Holder, now);
             }
             if next_ps == self.next_station {
                 self.poll_station = self.config.station;
@@ -269,54 +254,52 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
                 if self.sole_master {
                     self.next_station = self.config.station;
                     self.poll_station = next_ts;
-                    self.queue_frame(
-                        FrameType::PollForMaster,
-                        self.poll_station,
-                        &[],
-                        PostTransmit::PollForMaster,
-                        now,
-                    )?;
-                    self.set_state(MasterState::PollForMaster);
-                    return Ok(());
+                    return self.queue_poll(Origin::Holder, now);
                 }
                 self.retry_token_count = 0;
-                return self.queue_token(self.next_station, now);
+                return self.queue_token(self.next_station, Origin::Holder, now);
             }
             self.poll_station = next_ps;
-            self.queue_frame(
-                FrameType::PollForMaster,
-                self.poll_station,
-                &[],
-                PostTransmit::PollForMaster,
-                now,
-            )?;
-            self.set_state(MasterState::PollForMaster);
-            return Ok(());
+            return self.queue_poll(Origin::Holder, now);
         }
     }
 
-    pub(super) fn queue_token(&mut self, destination: u8, now: Instant) -> Result<(), CoreError> {
+    /// Pass the token to `destination` and enter PASS_TOKEN; a station that
+    /// would pass to itself polls for a successor instead.
+    pub(super) fn queue_token(
+        &mut self,
+        destination: u8,
+        origin: Origin,
+        now: Instant,
+    ) -> Result<(), CoreError> {
         if destination == self.config.station {
             self.poll_station = next_addr(self.config.station, self.config.max_master);
-            self.queue_frame(
-                FrameType::PollForMaster,
-                self.poll_station,
-                &[],
-                PostTransmit::PollForMaster,
-                now,
-            )?;
-            self.set_state(MasterState::PollForMaster);
-            return Ok(());
+            return self.queue_poll(origin, now);
         }
         self.queue_frame(
             FrameType::Token,
             destination,
             &[],
             PostTransmit::PassToken,
+            origin,
             now,
         )?;
         self.set_state(MasterState::PassToken);
         self.event_count = 0;
+        Ok(())
+    }
+
+    /// Poll `poll_station` for a master and enter POLL_FOR_MASTER.
+    fn queue_poll(&mut self, origin: Origin, now: Instant) -> Result<(), CoreError> {
+        self.queue_frame(
+            FrameType::PollForMaster,
+            self.poll_station,
+            &[],
+            PostTransmit::PollForMaster,
+            origin,
+            now,
+        )?;
+        self.set_state(MasterState::PollForMaster);
         Ok(())
     }
 }

@@ -11,6 +11,7 @@ use bacnet_mstp_core::{
 use proptest::prop_assert;
 
 type Queues = HeaplessQueues<8, 8>;
+type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn at(millis: u64) -> Instant {
     Instant::from_micros(millis * 1_000)
@@ -59,8 +60,15 @@ fn complete_transmit<Q: bacnet_mstp_core::QueueStorage>(
 #[test]
 fn public_events_reach_all_clause_states_and_counters_are_observable() {
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     assert_eq!(core.state(), MasterState::Idle);
 
     // Lost-token recovery has a distinct NoToken station slot before its
@@ -103,9 +111,17 @@ fn public_events_reach_all_clause_states_and_counters_are_observable() {
 #[test]
 fn frame_abort_is_strictly_greater_than_timing_and_next_deadline_is_plus_one() {
     let mut rx = [0; 1024];
+    let mut actions = Actions::new();
     let core_config = standard_config(0, 1);
     let abort = core_config.t_frame_abort;
-    let mut core = MasterCore::new(core_config, Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut core = MasterCore::new(
+        core_config,
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_octet(0x55, Instant::ZERO).unwrap();
     assert_eq!(
         core.next_deadline(),
@@ -121,8 +137,15 @@ fn frame_abort_is_strictly_greater_than_timing_and_next_deadline_is_plus_one() {
 #[test]
 fn no_token_uses_station_slot_and_resets_after_new_silence_epoch() {
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(2, 4), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(2, 4),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_deadline(at(500)).unwrap();
     assert_eq!(core.state(), MasterState::NoToken);
     assert_eq!(core.next_deadline(), Some(at(520)));
@@ -133,19 +156,109 @@ fn no_token_uses_station_slot_and_resets_after_new_silence_epoch() {
     assert!(core.counters().token_regenerations >= 1);
 
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(2, 4), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(2, 4),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_deadline(at(500)).unwrap();
     core.on_octet(0x00, at(501)).unwrap();
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.next_deadline(), Some(at(1001)));
 }
 
+/// #1618 item 1, a local recovery policy: a NO_TOKEN deadline serviced
+/// after this station's slot (Clause 9.5.6.7) has closed opens the window
+/// again a whole cycle of slots, T_slot x (Max_Master + 1), later, and the
+/// token generated there is counted. On time, the first slot is used.
+#[test]
+fn a_missed_generation_slot_comes_round_again_and_is_counted() {
+    for (serviced, generated, missed) in [(530, 530, 0), (545, 570, 1)] {
+        let mut rx = [0; 1024];
+        let mut actions = Actions::new();
+        let mut core = MasterCore::new(
+            standard_config(3, 3),
+            Queues::new(),
+            &mut rx,
+            &mut actions,
+            Instant::ZERO,
+        )
+        .unwrap();
+        core.on_deadline(at(500)).unwrap();
+        assert_eq!(core.next_deadline(), Some(at(530)));
+        core.on_deadline(at(serviced)).unwrap();
+        if serviced != generated {
+            assert_eq!(core.state(), MasterState::NoToken);
+            assert_eq!(core.next_deadline(), Some(at(generated)));
+            core.on_deadline(at(generated)).unwrap();
+        }
+        assert_eq!(core.state(), MasterState::PollForMaster);
+        assert_eq!(core.counters().token_regenerations, 1);
+        assert_eq!(core.counters().missed_generation_slots, missed);
+    }
+}
+
+/// The repeated window's edges, to the microsecond, and a deadline serviced
+/// ten hours late. Station 3 of 0-3: its first slot is 530-540 ms, and the
+/// window comes round every 40 ms. A window includes its start and excludes
+/// its end, as the first slot does.
+#[test]
+fn a_repeated_generation_window_has_exact_edges() {
+    // A window ten hours on: 900,000 whole cycles after the first slot.
+    const LATE: u64 = 530_000 + 40_000 * 900_000;
+    // When the deadline is serviced, and when the token is generated, in µs.
+    let cases = [
+        // The first slot's end: the next window.
+        (540_000, 570_000),
+        // Inside and at the end of the window after.
+        (570_000, 570_000),
+        (579_999, 579_999),
+        (580_000, 610_000),
+        // Ten hours late: 3 ms into a window, then at its end.
+        (LATE + 3_000, LATE + 3_000),
+        (LATE + 10_000, LATE + 40_000),
+    ];
+    for (serviced, generated) in cases {
+        let mut rx = [0; 1024];
+        let mut actions = Actions::new();
+        let mut core = MasterCore::new(
+            standard_config(3, 3),
+            Queues::new(),
+            &mut rx,
+            &mut actions,
+            Instant::ZERO,
+        )
+        .unwrap();
+        core.on_deadline(at(500)).unwrap();
+        let serviced = Instant::from_micros(serviced);
+        let generated = Instant::from_micros(generated);
+        core.on_deadline(serviced).unwrap();
+        if generated != serviced {
+            assert_eq!(core.state(), MasterState::NoToken, "{serviced:?}");
+            assert_eq!(core.next_deadline(), Some(generated), "{serviced:?}");
+            core.on_deadline(generated).unwrap();
+        }
+        assert_eq!(core.state(), MasterState::PollForMaster, "{serviced:?}");
+        assert_eq!(core.counters().missed_generation_slots, 1);
+    }
+}
+
 #[test]
 fn poll_for_master_uses_usage_timeout_not_slot() {
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(0, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(0, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_deadline(at(500)).unwrap();
     core.on_deadline(at(500)).unwrap();
     // Station zero's slot is the beginning of the epoch.
@@ -163,8 +276,15 @@ fn poll_for_master_uses_usage_timeout_not_slot() {
 #[test]
 fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_validated_frame(
         frame(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 0x01]),
         at(1),
@@ -206,8 +326,15 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
 #[test]
 fn abandoned_request_returns_idle_without_wire_actions() {
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_validated_frame(
         frame(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 0x01]),
         at(1),
@@ -236,8 +363,16 @@ fn abandoned_request_returns_idle_without_wire_actions() {
 #[test]
 fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
     let mut rx = [0; 1024];
+    let mut actions = Actions::new();
     let queues = Queues::new();
-    let mut core = MasterCore::new(standard_config(1, 2), queues, &mut rx, Instant::ZERO).unwrap();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        queues,
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), Instant::ZERO)
         .unwrap();
     core.on_deadline(at(5)).unwrap();
@@ -261,8 +396,15 @@ fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
 #[test]
 fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token() {
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.on_validated_frame(
         frame(FrameType::BACnetDataExpectingReply, 0xff, 2, &[1, 2]),
         at(1),
@@ -279,8 +421,15 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
     );
 
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     core.enqueue_npdu(2, &[0, 0x04], NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
     core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), Instant::ZERO)
@@ -309,8 +458,15 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
 #[test]
 fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_octets() {
     let mut rx = [0; 1024];
-    let mut core =
-        MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     for source in 2..=9 {
         core.on_validated_frame(
             frame(FrameType::BACnetDataNotExpectingReply, 1, source, &[source]),
@@ -332,8 +488,15 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
         .encode_into(&mut encoded)
         .unwrap();
     let mut rx = [0; 1024];
-    let mut stream_core =
-        MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut stream_core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     for (index, byte) in encoded[..len].iter().copied().enumerate() {
         stream_core
             .on_octet(byte, at(u64::try_from(index).unwrap() + 1))
@@ -348,7 +511,8 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
 fn monotone_random_events_never_panic_and_deadlines_are_causal() {
     proptest::proptest!(|(steps in proptest::collection::vec(0u8..6, 1..80))| {
         let mut rx = [0; 1024];
-        let mut core = MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, Instant::ZERO)
+        let mut actions = Actions::new();
+        let mut core = MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, &mut actions, Instant::ZERO)
             .unwrap();
         let mut now = Instant::ZERO;
         for step in steps {
@@ -403,9 +567,16 @@ mod allocation_test {
     #[test]
     fn alloc_queues_and_core_do_not_allocate_after_construction() {
         let mut rx = [0; 1024];
-        let queues = AllocQueues::new(4, 4);
-        let mut core =
-            MasterCore::new(standard_config(1, 2), queues, &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let queues = AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 4);
+        let mut core = MasterCore::new(
+            standard_config(1, 2),
+            queues,
+            &mut rx,
+            &mut actions,
+            Instant::ZERO,
+        )
+        .unwrap();
         // Initialize the thread-local counter before beginning the measured
         // interval; construction above is the final permitted allocation.
         THREAD_ALLOCATIONS.with(|count| count.set(0));

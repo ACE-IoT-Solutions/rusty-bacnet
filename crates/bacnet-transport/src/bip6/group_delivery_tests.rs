@@ -9,6 +9,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use tokio::sync::mpsc;
 
+use super::frame::{encoded, raw_frame};
 use super::receive::Receiver;
 use super::socket::Bip6Socket;
 use super::vmac_table::VmacTable;
@@ -21,8 +22,8 @@ use crate::udp_metadata::ReceivedDatagram;
 const CONFIRMED_REQUEST: &[u8] = &[
     0x01, 0x04, 0x00, 0x05, 0x01, 0x0C, 0x0C, 0x02, 0x00, 0x00, 0x01, 0x19, 0x55,
 ];
-const LOCAL_VMAC: Bip6Vmac = [0x00, 0x05, 0x15];
-const SENDER_VMAC: Bip6Vmac = [0x00, 0x05, 0x1E];
+const LOCAL_VMAC: Bip6Vmac = Bip6Vmac::new([0x00, 0x05, 0x15]);
+const SENDER_VMAC: Bip6Vmac = Bip6Vmac::new([0x00, 0x05, 0x1E]);
 
 fn local_ip() -> Ipv6Addr {
     Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10)
@@ -56,6 +57,9 @@ async fn receiver() -> (Receiver, mpsc::Receiver<ReceivedNpdu>) {
         foreign_bbmd: None,
         vmac_table: VmacTable::new(),
         forwarded_group_origin_drops: Arc::default(),
+        drops: Arc::default(),
+        nak_quota: Default::default(),
+        far_ack_quota: Default::default(),
     };
     (receiver, rx)
 }
@@ -65,16 +69,20 @@ fn original_unicast() -> BytesMut {
 }
 
 fn original_unicast_to(destination_vmac: Bip6Vmac) -> BytesMut {
-    let mut buf = BytesMut::new();
-    encode_bvlc6_original_unicast(&mut buf, &SENDER_VMAC, &destination_vmac, CONFIRMED_REQUEST)
-        .unwrap();
-    buf
+    encoded(&Bvll6::OriginalUnicastNpdu {
+        source: SENDER_VMAC,
+        destination: destination_vmac,
+        npdu: CONFIRMED_REQUEST,
+    })
+    .unwrap()
 }
 
 fn original_broadcast() -> BytesMut {
-    let mut buf = BytesMut::new();
-    encode_bvlc6_original_broadcast(&mut buf, &SENDER_VMAC, CONFIRMED_REQUEST).unwrap();
-    buf
+    encoded(&Bvll6::OriginalBroadcastNpdu {
+        source: SENDER_VMAC,
+        npdu: CONFIRMED_REQUEST,
+    })
+    .unwrap()
 }
 
 fn datagram(
@@ -141,9 +149,9 @@ async fn original_unicast_takes_its_group_flag_from_the_destination() {
         (local_ip(), Some(true), true),
         (local_ip(), None, false),
     ] {
-        let frame = decode_bvlc6(&unicast).unwrap();
+        let frame = decode_bvll6(&unicast).unwrap();
         receiver
-            .dispatch(frame, &datagram(&unicast, destination, os))
+            .dispatch(frame, sender(), &datagram(&unicast, destination, os))
             .await;
         let npdu = rx.try_recv().expect("dispatch hands the NPDU up");
         assert_eq!(npdu.link_layer_group, group, "{destination} {os:?}");
@@ -155,7 +163,7 @@ async fn original_unicast_takes_its_group_flag_from_the_destination() {
 #[tokio::test]
 async fn original_unicast_for_another_vmac_is_dropped() {
     let (receiver, mut rx) = receiver().await;
-    let other = original_unicast_to([0x00, 0x05, 0x16]);
+    let other = original_unicast_to(Bip6Vmac::new([0x00, 0x05, 0x16]));
     receiver
         .handle_datagram(&other, &datagram(&other, local_ip(), None))
         .await;
@@ -202,18 +210,12 @@ fn every_multicast_group_is_a_group_destination() {
 
 /// A Forwarded-NPDU from `origin`, carrying a ReadProperty request.
 fn forwarded_from(origin: SocketAddrV6) -> BytesMut {
-    let mut payload = origin.ip().octets().to_vec();
-    payload.extend_from_slice(&origin.port().to_be_bytes());
-    payload.extend_from_slice(CONFIRMED_REQUEST);
-    let mut buf = BytesMut::new();
-    encode_bvlc6(
-        &mut buf,
-        Bvlc6Function::ForwardedNpdu,
-        &SENDER_VMAC,
-        &payload,
-    )
-    .unwrap();
-    buf
+    encoded(&Bvll6::ForwardedNpdu {
+        original_source: SENDER_VMAC,
+        original_address: origin.into(),
+        npdu: CONFIRMED_REQUEST,
+    })
+    .unwrap()
 }
 
 /// #1493: the original source of a Forwarded-NPDU becomes the NPDU's source,
@@ -258,6 +260,59 @@ async fn a_forwarded_npdu_from_a_multicast_origin_is_dropped_and_counted() {
         npdu.source_mac.as_slice(),
         &encode_bip6_mac(*station.ip(), station.port())
     );
+}
+
+/// A Forwarded-NPDU whose NPDU is shorter than an NPDU's version and control
+/// octets is dropped before its origin is looked at, as the old payload
+/// decoder refused it (#1621): not handed up, not learned, and not counted
+/// as a group origin even when it has one, but as a malformed NPDU (#1643).
+/// Without a whole address the codec refuses the frame itself, as a
+/// malformed payload.
+#[tokio::test]
+async fn a_forwarded_npdu_too_short_for_an_npdu_is_dropped_before_its_origin() {
+    let (receiver, mut rx) = receiver().await;
+    let group = Bip6Address::new(BACNET_IPV6_MULTICAST_SITE_LOCAL, 0xBAC0);
+    let station = Bip6Address::new("2001:db8::20".parse().unwrap(), 0xBAC0);
+    for origin in [group, station] {
+        for npdu in [&[][..], &[0x01]] {
+            let frame = encoded(&Bvll6::ForwardedNpdu {
+                original_source: SENDER_VMAC,
+                original_address: origin,
+                npdu,
+            })
+            .unwrap();
+            receiver
+                .handle_datagram(
+                    &frame,
+                    &datagram(&frame, BACNET_IPV6_MULTICAST_SITE_LOCAL, None),
+                )
+                .await;
+        }
+    }
+    let mut short_address = SENDER_VMAC.octets().to_vec();
+    short_address.extend_from_slice(&group.to_octets()[..17]);
+    let frame = raw_frame(Bvlc6Function::FORWARDED_NPDU.to_raw(), &short_address);
+    receiver
+        .handle_datagram(
+            &frame,
+            &datagram(&frame, BACNET_IPV6_MULTICAST_SITE_LOCAL, None),
+        )
+        .await;
+
+    assert!(rx.try_recv().is_err());
+    assert_eq!(receiver.vmac_table.lookup(&SENDER_VMAC).await, None);
+    assert_eq!(
+        receiver
+            .forwarded_group_origin_drops
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    let expected = Bip6ReceiveCounters {
+        malformed_forwarded_npdu: 4,
+        malformed_payload: 1,
+        ..Bip6ReceiveCounters::default()
+    };
+    assert_eq!(receiver.drops.snapshot(), expected);
 }
 
 /// The transport reports the receiver's count.

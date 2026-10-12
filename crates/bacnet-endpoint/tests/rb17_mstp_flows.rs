@@ -13,6 +13,9 @@
 //! Evidence level: simulator (LoopbackSerial), NOT physical bench or
 //! on-wire conformance; timing qualification is RB-26, routing is RB-25.
 
+#[path = "support/mstp_wire.rs"]
+mod mstp_wire;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,9 +33,8 @@ use bacnet_server::server::__endpoint_EndpointResponder as EndpointResponder;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::{
-    LoopbackSerial, MasterNode, MstpConfig, MstpExecutionMode, MstpTransport, SerialPort,
+    LoopbackSerial, MstpConfig, MstpExecutionMode, MstpTransport, SerialPort,
 };
-use bacnet_transport::mstp_frame::{decode_frame, encode_frame, FrameType, MstpFrame};
 use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort, TransportProvenance};
 use bacnet_types::enums::{
     ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, Segmentation,
@@ -41,6 +43,9 @@ use bacnet_types::enums::{
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::{error::Error, MacAddr};
 use bytes::{Bytes, BytesMut};
+use mstp_wire::{
+    decode_frame, encode_frame, pfm_frame, reply_to_poll, token_frame, FrameType, MstpFrame,
+};
 use tokio::sync::{mpsc, oneshot, RwLock};
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -177,19 +182,25 @@ impl Harness {
         what: &str,
         mut is_data: impl FnMut(&MstpFrame) -> bool,
     ) -> MstpFrame {
-        for _ in 0..8 {
-            self.peer_send(&token_frame(SESSION_MAC, PEER_MAC)).await;
-            let frame = self
-                .wait_for(what, |f| {
-                    is_data(f)
-                        || matches!(
-                            f.frame_type,
-                            FrameType::PollForMaster | FrameType::Token | FrameType::ReplyPostponed
-                        )
-                })
-                .await;
+        // The peer plays the session's only other master: it hands over the
+        // token, answers a Poll For Master addressed to it, and passes back
+        // every token it is given. A poll for another address is left to time
+        // out; a token sent while the session polls would be an unexpected
+        // frame there (Clause 9.5.6.8) and cost the token.
+        self.peer_send(&token_frame(SESSION_MAC, PEER_MAC)).await;
+        for _ in 0..256 {
+            let frame = self.wait_for(what, |_| true).await;
             if is_data(&frame) {
                 return frame;
+            }
+            match frame.frame_type {
+                FrameType::PollForMaster if frame.destination == PEER_MAC => {
+                    self.peer_send(&reply_to_poll(SESSION_MAC, PEER_MAC)).await;
+                }
+                FrameType::Token if frame.destination == PEER_MAC => {
+                    self.peer_send(&token_frame(SESSION_MAC, PEER_MAC)).await;
+                }
+                _ => {}
             }
         }
         panic!("token drive did not deliver {what}");
@@ -198,24 +209,6 @@ impl Harness {
     async fn shutdown(mut self) {
         self.session.stop().await.expect("session must stop");
         self.drain.abort();
-    }
-}
-
-fn token_frame(dest: u8, src: u8) -> MstpFrame {
-    MstpFrame {
-        frame_type: FrameType::Token,
-        destination: dest,
-        source: src,
-        data: Bytes::new(),
-    }
-}
-
-fn pfm_frame(dest: u8, src: u8) -> MstpFrame {
-    MstpFrame {
-        frame_type: FrameType::PollForMaster,
-        destination: dest,
-        source: src,
-        data: Bytes::new(),
     }
 }
 
@@ -347,24 +340,24 @@ async fn token_during_work_impl(mode: MstpExecutionMode) {
         .expect("arm suspension");
     h.peer_send(&data_expecting(1, 55)).await;
     // Token + PFM arrive while the application works (order vs dispatch is
-    // deliberately uncontrolled); both must be honored without breaking the
-    // pending reply ownership.
+    // deliberately uncontrolled). Neither may break the pending reply
+    // ownership: ReplyPostponed still goes to the requester. The core keeps
+    // the Token for after the reply and drops the poll, which it could only
+    // answer late (Clause 9.5.6.9 leaves both pending while answering).
     h.peer_send(&token_frame(SESSION_MAC, PEER_MAC)).await;
     h.peer_send(&pfm_frame(SESSION_MAC, PEER_MAC)).await;
     let mut postponed = false;
-    let mut pfm_reply = false;
     let mut early_data: Option<MstpFrame> = None;
     for _ in 0..16 {
         let frame = h.next_frame().await;
         match frame.frame_type {
             FrameType::ReplyPostponed if frame.destination == PEER_MAC => postponed = true,
-            FrameType::ReplyToPollForMaster if frame.destination == PEER_MAC => pfm_reply = true,
             FrameType::BACnetDataNotExpectingReply if frame.destination == PEER_MAC => {
                 early_data = Some(frame);
             }
             _ => {}
         }
-        if postponed && pfm_reply {
+        if postponed {
             break;
         }
     }
@@ -372,7 +365,6 @@ async fn token_during_work_impl(mode: MstpExecutionMode) {
         postponed,
         "MAC must release ReplyPostponed during application work"
     );
-    assert!(pfm_reply, "PFM must be answered during application work");
     // Ownership preserved: the token opportunity delivers the postponed
     // response to the original requester (possibly already observed above).
     match early_data {
@@ -460,34 +452,45 @@ impl TransportPort for StallTransport {
 
 #[tokio::test]
 async fn mstp_queue_and_admission_bounds_release() {
-    // (a) MAC TX queue: 256-deep; the 257th send is WouldBlock, and an
-    // oversized NPDU is rejected at the standard-frame seam (both release
-    // without sending).
-    let mut node = MasterNode::new(MstpConfig {
-        this_station: SESSION_MAC,
-        max_master: 7,
-        max_info_frames: 1,
-        baud_rate: 9600,
-    })
-    .unwrap();
+    // (a) MAC TX queue: 256 unicast NPDUs deep; the 257th send is
+    // WouldBlock, and an oversized NPDU is rejected at the standard-frame
+    // seam (both release without sending). Nobody gives the station the
+    // token, so nothing leaves the queue.
+    let (serial, _peer) = LoopbackSerial::pair();
+    let mut transport = MstpTransport::new(
+        serial,
+        MstpConfig {
+            this_station: SESSION_MAC,
+            max_master: 7,
+            max_info_frames: 1,
+            baud_rate: 9600,
+            extended_frames: false,
+        },
+    );
+    let _npdus = transport.start().await.expect("transport must start");
     for _ in 0..256 {
-        node.queue_npdu(PEER_MAC, Bytes::from_static(&[0x01, 0x00, 0x10]))
+        transport
+            .send_unicast(&[0x01, 0x00, 0x10], &[PEER_MAC])
+            .await
             .unwrap();
     }
-    let full = node
-        .queue_npdu(PEER_MAC, Bytes::from_static(&[0x01]))
+    let full = transport
+        .send_unicast(&[0x01], &[PEER_MAC])
+        .await
         .unwrap_err();
     assert!(
         full.to_string().contains("TX queue full"),
         "queue-full must be WouldBlock: {full}"
     );
-    let big = node
-        .queue_npdu(PEER_MAC, Bytes::from(vec![0u8; 502]))
+    let big = transport
+        .send_unicast(&[0u8; 502], &[PEER_MAC])
+        .await
         .unwrap_err();
     assert!(
         big.to_string().contains("exceeds standard-frame maximum"),
         "oversized NPDU must be rejected: {big}"
     );
+    transport.stop().await.expect("transport must stop");
 
     // (b) Endpoint egress (capacity 1, session task stalled in StallTransport):
     // the first send occupies the task (proven via `send_started`, not

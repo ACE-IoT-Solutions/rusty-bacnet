@@ -35,8 +35,10 @@ with `default-features = false, features = ["alloc"]`. Each crate needs `std`
 `bacnet-encoding` logs nothing. `bytes` has to build for the target too: on
 one without atomic compare-and-swap, such as ARMv6-M, that takes its
 `extra-platforms` feature and a `portable-atomic` backend the firmware
-chooses. CI builds all three for ARMv7E-M and RISC-V, and `bacnet-types` for
-ARMv6-M as well (`scripts/ci/check-no-std.sh`).
+chooses. CI builds all three for ARMv6-M, ARMv7E-M and RISC-V
+(`scripts/ci/check-no-std.sh`), on ARMv6-M with `portable-atomic`'s
+`critical-section` backend, and runs their tests and doctests with `alloc`
+and without `std` ([CI](ci.md#no_std-checks)).
 
 ### Enums (`bacnet_enum!` macro)
 
@@ -670,7 +672,8 @@ in their Confirmed-Request header. The codec helper
 saturates larger unsigned values at 1476. This conversion does not shrink raw
 byte budgets or I-Am values. It is separate from the exact-code encoder API.
 
-Built-in B/IP, B/IPv6, Ethernet and SC declare local APDU 1476; MS/TP declares 480.
+Built-in B/IP, B/IPv6, Ethernet and SC declare local APDU 1476; MS/TP declares 480,
+or 1476 with extended frames on (`MstpConfig::extended_frames`).
 Both registered B/IP port snapshots use local capacity independently of the
 Device/server ceiling. SC nodes advertise and enforce local NPDU 1478, including
 the two-byte plain NPDU header, on Hub, accepted-direct and outbound-direct
@@ -817,6 +820,26 @@ and `forwarded_group_origin_drops()` counts it (#1493). Otherwise a forged
 I-Am could bind a device to a group, and the answer to a request would go to
 every node in it.
 
+A well-formed BVLC-Result, Read-BDT-ACK or Read-FDT-ACK that no request was
+waiting for is counted in `bvlc_client_snapshot().unmatched_responses`. Every
+other datagram the receive path drops is counted in `receive_counters()`, a
+`ReceiveCounters` snapshot with one field per reason (#1624): failed socket
+reads; a datagram a per-address broadcast listener doesn't keep, because it
+wasn't sent to this link's broadcast address or came in on another
+interface; a header that is too short, not B/IP or of the wrong Length; a
+BVLC function that doesn't fit the address it was sent to; a management
+request over the rate limit; an unknown function; a payload that doesn't fit
+its function (a malformed response also shows in the client snapshot's
+`malformed_responses`, whether or not a request was waiting for it); this
+node's own echo; a Forwarded-NPDU from outside a BBMD's BDT; and an NPDU the
+network-layer channel couldn't take because it was full or, once the network
+layer stopped reading, closed. Each drop counts once, and the totals survive
+a restart. A header that fails to decode and a
+malformed BVLC response, which used to log a warning for each datagram, now
+log at debug, so a flood of them can't flood the log; the counters carry the
+signal. A full channel still warns, at most once every 10 seconds, with the
+number of NPDUs dropped since the last warning.
+
 ### BIP6 (IPv6)
 
 ```rust
@@ -860,6 +883,54 @@ A Forwarded-NPDU whose original source address is an IPv6 multicast group, a
 group destination at any port, is malformed for the same reason as on B/IP:
 it is dropped before the network layer sees it and counted in
 `forwarded_group_origin_drops()` (#1493).
+
+The transport is never a B/IPv6 BBMD. A Register-Foreign-Device,
+Delete-Foreign-Device-Table-Entry or Distribute-Broadcast-To-Network sent to
+its own address gets that request's BVLC-Result NAK at the datagram's source
+(Annex U.4.4, U.4.5.3, U.4.5.4). So does one whose payload doesn't fit its
+function, under the same rules and quota (#1638). Annex U doesn't ask for
+that; B/IP does the same, so the sender isn't left waiting. Like the
+Address-Resolution and
+Virtual-Address-Resolution answers, a NAK only goes to an *answerable
+source*: not a group, unspecified, IPv4-mapped or port 0, and not this node's
+own address. Only an answerable source is learned into the VMAC table.
+
+A Forwarded-Address-Resolution for the node's VMAC gets an
+Address-Resolution-ACK at the asker's address the message carries, when that
+address is *usable without a scope ID* (a unicast address that isn't
+unspecified, loopback, link-local or IPv4-mapped, at a non-zero port), and
+the asker is learned (U.5). A foreign device
+takes one only by unicast from its configured BBMD. Any other node takes the
+copy a BBMD multicasts into its domain (U.4.4), from an answerable source on
+a BACnet group. It has no configured BBMD to check against, but only the node
+that owns the target VMAC answers, with one datagram.
+
+The NAKs and these answers count against two separate quotas, each per
+destination address and overall, so forged requests can't turn the node into
+a reflector and a NAK flood can't silence address resolution.
+Address-Resolution and Virtual-Address-Resolution answers stay outside both
+(#1632).
+
+Every other datagram the receive path drops is counted in
+`receive_counters()`, a `Bip6ReceiveCounters` snapshot with one field per
+reason (#1643): failed socket reads; a datagram for another link or address
+than the selected one; a header that is too short, not B/IPv6 or of the wrong
+Length; an unknown function; a payload that doesn't fit its function; a
+destination VMAC that isn't this node's; a function that doesn't fit the
+address it was sent to; a Forwarded-NPDU or Forwarded-Address-Resolution
+from an untrusted path; a Forwarded-NPDU whose NPDU is too short or
+malformed; an origin or asker address unusable without a scope ID; a request
+from an unanswerable source or this node's own address; this node's own
+echo, a Forwarded-NPDU that names it as the origin included; and an NPDU the
+network-layer channel couldn't take because it was full or closed. Each drop
+counts once, and the totals survive a restart. Two more
+fields count the replies the quotas held back, NAKs and the answers to
+Forwarded-Address-Resolution, apart from the drops. A frame that fails to
+decode, which used to log a warning for each datagram, now logs at debug. A
+full channel warns at most once every 10 seconds, with the number dropped
+since the last warning, as on B/IP. A Virtual-Address-Resolution-ACK from this
+node's own VMAC (a collision) and a BVLC-Result NAK, which anyone can send,
+log above debug at most once every 10 seconds the same way.
 
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is
@@ -1418,16 +1489,26 @@ configuration gap is closed, not the full Annex AB profile or issue #513.
 
 ### MS/TP (Serial RS-485)
 
-MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes.
+MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes. The master node state machine is the portable `bacnet-mstp-core`, driven by the transport's Tokio task, and frames come from `bacnet-mstp-codec`, re-exported as `bacnet_transport::mstp::codec` for code that builds or reads frames (see [the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)).
+
+`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate; every Clause 9 timer is derived from them. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, and a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay). Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU longer than the port sends (`Error::Encoding`) is refused at once.
+
+`MstpConfig::extended_frames` (off by default) turns on the extended frame types, 32 and 33, which carry NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a routing node and leaves them optional for others, so `BACnetRouter::start` turns the flag on for every MS/TP port it routes, through `TransportPort::prepare_for_routing`, and a device keeps it off unless it sets it. With the flag on the port sends and takes NPDUs of up to 1497 octets (`MstpTransport::max_npdu_length`) and declares an APDU limit of 1476 instead of 480; an answer over 501 octets goes back as a Type 33. Without it, an extended frame the port hears counts as an invalid frame, as on a node without COBS support. On firmware, `MstpCoreConfig::with_extended_frames` sets the flag for `bacnet-mstp-core`, which then needs buffers sized for extended frames (`ExtendedActionBuffers`, 1497-octet queue slots and 1516 octets of receive storage). On a host each port's queues reserve about 770 KiB with the flag on, against about 270 KiB without, and the core's action buffers take about 13 KiB either way.
 
 #### Host Diagnostics and Qualification
 
 Call `MstpTransport::diagnostics()` before moving the transport into its owner.
 The cloneable `mstp::MstpDiagnostics` handle returns owned
 `MstpDiagnosticsSnapshot` counts during operation and after stop/drop, without
-retaining serial ownership. Counts start at zero, saturate at `u64::MAX`, and have
-no reset. Relaxed loads are individually atomic, not a globally coherent snapshot.
-These are redacted host events, not wire timestamps or proof of peer delivery.
+retaining serial ownership. Counts start at zero and have no reset. The
+transport-boundary counts (frames sent by kind, reply timeouts, queue and
+ingress drops, serial errors, echo mismatches, late answers) saturate at
+`u64::MAX`; `mac`
+carries the core's own `MstpCounters` (frames received and delivered, invalid
+frames, frame aborts, token rotations and retries, deferred starts, late and
+expired replies, deadline misses and the queue counters), which saturate at
+`u32::MAX`. Loads are not a globally coherent snapshot. These are redacted
+host events, not wire timestamps or proof of peer delivery.
 See the [qualification method](mstp-qualification.md) and
 [unrun result template](mstp-qualification-result.json) for before/after deltas,
 the #707 rerun matrix, independent capture requirements and explicit non-claims.
@@ -1461,8 +1542,8 @@ without changing frame order, drain boundaries, turnaround deadlines or the
 still require that original reactor to remain running.
 
 `start()` reports thread/runtime creation failures without falling back to the
-application pool. `stop()` waits for task and isolated-runtime teardown, clears
-the transmit queue and sets the node to Idle. `abort()` and drop request
+application pool. `stop()` waits for task and isolated-runtime teardown; queued
+NPDUs go with the task, and later sends are refused. `abort()` and drop request
 cancellation and release transport-owned state without waiting. Blocking calls
 must return before their resources can be released; cancellation is not a drain
 or rollback of driver-accepted bytes. As before, stopping does not make a
@@ -1572,7 +1653,53 @@ not possible, the caller must handle the failed port; dropping the wrapper is no
 an asynchronous drain. Unix `TokioSerialPort` uses the native serial backend's
 `tcdrain`-backed synchronous flush on a blocking worker, keeping the stream alive
 and exclusive until the syscall returns. This does not qualify adapter or driver
-on-wire timing. Auto-direction and kernel RS-485 writes remain unchanged.
+on-wire timing.
+
+#### Echo
+
+Whether a port hears its own frames depends on the transceiver wiring: with
+the receiver enable tied to the driver enable it hears nothing, while a
+transceiver whose receiver stays on (many USB RS-485 cables) returns every
+octet. The transport must know, or it would take its own Token, heard back,
+for its successor using the token. Declare an echoing port with
+`with_echo(Echo::full())` on `TokioSerialPort` (or `LoopbackSerial`);
+`GpioDirectionPort` reports its inner port's setting, and the default is
+`Echo::None`.
+
+With `Echo::Full { grace }` the transport hunts for the frame it sent in the
+octets it reads after it. Octets that could begin the echo are held back and
+dropped once the whole frame has matched. An octet that does not fit passes
+on to the core, with as few of the held octets as it takes: a stray octet
+before the echo (a peer's trailing pad octet) passes on and the echo behind
+it is still dropped, and a peer's frame that only starts like the echo
+passes on whole. Passed-on octets carry the time of the read that released
+them. The frame is reported complete at the first octet that passes on, when
+the echo has matched, or at the end of the grace, before the core is fed
+anything read after it.
+
+The grace is how long after the frame's end its echo may still be arriving:
+`Echo::full()` gives `DEFAULT_ECHO_GRACE`, 40 ms, room for a USB adapter's
+receive latency (FTDI parts hold received octets back for up to 16 ms by
+default); `start()` refuses a zero grace (`Echo::validate`). The hunt goes on
+past the grace: an echo already under way is still matched as it continues,
+and one not begun is looked for during one more grace, whose end releases
+what it held. The hunt stops at the station's next start (probe-held octets
+pass on before it, and what the other phases still hold is dropped once the
+start is confirmed) or, while an echo under way is still being matched,
+after T_frame_abort of silence (the probe ends at its own deadline). Held octets that waited longer than
+T_frame_abort are dropped as a stale fragment. `echo_mismatches`,
+`echo_missing` and `echo_fragments_dropped` in the diagnostics show a port
+declared wrongly.
+
+```rust
+use std::time::Duration;
+use bacnet_transport::mstp::Echo;
+
+let serial = TokioSerialPort::open(&config)?.with_echo(Echo::full());
+// Or with a grace of its own, for an adapter with a short latency timer:
+let serial = TokioSerialPort::open(&config)?
+    .with_echo(Echo::Full { grace: Duration::from_millis(10) });
+```
 
 #### SerialPort Trait
 
@@ -1585,17 +1712,21 @@ pub trait SerialPort: Send + Sync + 'static {
     fn write(&self, data: &[u8]) -> impl Future<Output = Result<(), Error>> + Send;
     fn drain(&self) -> impl Future<Output = Result<(), Error>> + Send;
     fn read(&self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Error>> + Send;
-    fn drain(&self) -> impl Future<Output = Result<(), Error>> + Send;
-    fn drain_physical(&self) -> impl Future<Output = Result<(), Error>> + Send;
+    fn echo(&self) -> Echo { Echo::None }
 }
 ```
 
-`write()` may report driver acceptance before transmission finishes. `drain()`
-reports completion of all accepted output, including the UART shift register.
-Its default implementation returns an unsupported-operation error, preserving
-existing custom backends without falsely claiming completion. Custom backends
-used for software direction control must implement this operation. The loopback
-backend completes writes in memory and drains immediately.
+`write()` may report driver acceptance before transmission finishes; the
+transport writes one whole frame per call, and only once the core has confirmed
+the frame may start. `drain()` reports completion of all accepted output,
+including the UART shift register. Its default implementation returns an
+unsupported-operation error, preserving existing custom backends without
+falsely claiming completion; the transport then times each frame by its
+octets at the baud rate. Custom backends used for software direction control
+must implement this operation. `read()` must be cancel safe: the transport
+drops a pending read to service a deadline, and polls one once, without
+waiting, to collect octets already there before it starts a frame. The
+loopback backend completes writes in memory and drains immediately.
 
 ### Loopback Transport
 
@@ -1730,7 +1861,11 @@ devices are cut first. The global packet and byte limits also apply.
 
 Throttled targets, a full queue and failed sends are counted in
 `fanout_counters()` and logged; a stopped fanout worker or an encoding failure
-is only logged. None of them fail the local broadcast. The forward is queued
+is only logged. A full queue and a failed send warn at most once every 10
+seconds, with the number since the last warning, and log the rest at debug,
+as does a Forwarded-NPDU the receive path fails to send to the local subnet; a
+stopped worker, which only happens as the transport stops, logs at debug
+(#1643). None of them fail the local broadcast. The forward is queued
 before the local send and does not depend on it, so in BBMD mode an `Err` from
 `send_broadcast` can follow a forward that was already queued.
 
@@ -4402,6 +4537,7 @@ let drops = sc_client.transport().npdu_drop_counts();
 let outgoing = bip_client.transport().bvlc_client_snapshot();
 let management = bip_client.transport().management_counters();
 let fanout = bip_client.transport().fanout_counters();
+let dropped = bip_client.transport().receive_counters(); // datagrams dropped on receipt, by reason
 let fdt = bip_client.transport().fdt_counters(); // None unless a BBMD
 let bbmd = bip_client.transport().bbmd_state().cloned(); // Option<Arc<std::sync::Mutex<BbmdState>>>
 

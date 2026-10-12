@@ -9,12 +9,14 @@ repository.workspace = true
 keywords = ["bacnet", "mstp", "embedded", "no-std"]
 categories = ["embedded", "network-programming", "no-std"]
 
-# No feature needs std: each one only adds a FrameSink impl.
+# No feature needs std. Each adds a FrameSink impl, except crc32k-table,
+# which computes the CRC-32K from a 1 KiB table instead of a 64-octet one.
 [features]
 default = []
 alloc = []
 bytes = ["alloc", "dep:bytes"]
 heapless = ["dep:heapless"]
+crc32k-table = []
 
 [dependencies]
 bytes = { workspace = true, optional = true }

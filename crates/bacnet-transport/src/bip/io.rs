@@ -13,11 +13,13 @@ use bacnet_types::MacAddr;
 
 use crate::bbmd::{self, BbmdState};
 use crate::bvll::{encode_bip_mac, encode_bvll, BvllMessage};
-use crate::port::{ReceivedNpdu, TransportProvenance};
+use crate::npdu_channel::{self, Refused};
+use crate::port::ReceivedNpdu;
 
 use super::fanout::FanoutDispatcher;
 use super::ingress::Delivery;
 use super::rate_limit::{is_covered_management_request, ManagementRateLimiter};
+use super::receive_counters::{DropReason, ReceiveDrops};
 
 /// Context for the BIP receive loop — holds all shared state needed to
 /// process incoming BVLL messages.
@@ -34,6 +36,9 @@ pub(super) struct RecvContext {
     /// Refuses a UDP source (#1504) or a Forwarded-NPDU origin (#1493)
     /// that is a group address.
     pub(super) group_sources: super::groups::GroupSources,
+    /// Where the datagrams this loop drops are counted (#1624), shared with
+    /// the transport.
+    pub(super) drops: Arc<ReceiveDrops>,
     #[cfg(test)]
     pub(super) force_dbtn_forward_failure: bool,
 }
@@ -49,28 +54,41 @@ fn complete_pending_bvlc_response(
         .complete(&BvllMessage::from(frame), sender)
 }
 
-/// An NPDU this transport received, for the network layer.
-fn received_npdu(
+/// Hand an NPDU this transport received up to the network layer, or count
+/// it dropped when the channel is full or closed. `frame` names its kind for
+/// the log. The channel's slot is reserved before the NPDU is copied, so a
+/// drop costs no allocation.
+fn hand_up(
+    ctx: &RecvContext,
     npdu: &[u8],
     source_mac: MacAddr,
     link_layer_group: bool,
-    function: BvlcFunction,
-    udp_source: ([u8; 4], u16),
-    forwarded_from: Option<([u8; 4], u16)>,
-) -> ReceivedNpdu {
-    ReceivedNpdu {
-        direct_response: None,
-        npdu: Bytes::copy_from_slice(npdu),
-        source_mac,
-        link_layer_group,
-        data_attributes: Vec::new(),
-        provenance: TransportProvenance::unverified_bip(
-            function.to_raw(),
-            udp_source,
-            forwarded_from,
-        ),
-        reply_tx: None,
+    frame: &'static str,
+) {
+    let npdu = || Bytes::copy_from_slice(npdu);
+    match npdu_channel::hand_up(&ctx.npdu_tx, npdu, source_mac, link_layer_group) {
+        Ok(()) => {}
+        Err(Refused::Full) => {
+            ctx.drops.npdu_channel_full(frame);
+        }
+        Err(Refused::Closed) => {
+            ctx.drops.count(DropReason::NpduChannelClosed);
+            debug!(
+                frame,
+                "B/IP: NPDU channel closed, dropping an incoming frame"
+            );
+        }
     }
+}
+
+/// Whether `mac` is this node's own address, counting the frame as its own
+/// echo when it is.
+fn own_echo(mac: &[u8], ctx: &RecvContext) -> bool {
+    let own = mac == ctx.local_mac;
+    if own {
+        ctx.drops.count(DropReason::OwnEcho);
+    }
+    own
 }
 
 /// Handle a BVLL frame whose header the codec accepted. `delivery` says how
@@ -91,6 +109,7 @@ pub(super) async fn handle_bvll_message(
             Err(poison) => poison.into_inner().check_now(sender.0),
         };
         if !allowed {
+            ctx.drops.count(DropReason::RateLimited);
             debug!(
                 function = frame.function.to_raw(),
                 ip = %Ipv4Addr::from(sender.0),
@@ -106,49 +125,23 @@ pub(super) async fn handle_bvll_message(
     match message {
         Bvll::OriginalUnicastNpdu(npdu) => {
             let source_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
-            if *source_mac == ctx.local_mac[..] {
+            if own_echo(&source_mac, ctx) {
                 return;
             }
             // From the datagram's address, not its BVLC function, so a
             // group-addressed confirmed request is never answered as a
             // directed one (Clause 5.4.5.1).
             let group = delivery == Delivery::Broadcast;
-            if ctx
-                .npdu_tx
-                .try_send(received_npdu(
-                    npdu,
-                    source_mac,
-                    group,
-                    BvlcFunction::ORIGINAL_UNICAST_NPDU,
-                    sender,
-                    None,
-                ))
-                .is_err()
-            {
-                warn!("BIP: NPDU channel full, dropping incoming unicast frame");
-            }
+            hand_up(ctx, npdu, source_mac, group, "unicast");
         }
 
         Bvll::OriginalBroadcastNpdu(npdu) => {
             let source_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
-            if *source_mac == ctx.local_mac[..] {
+            if own_echo(&source_mac, ctx) {
                 return;
             }
 
-            if ctx
-                .npdu_tx
-                .try_send(received_npdu(
-                    npdu,
-                    source_mac,
-                    true,
-                    BvlcFunction::ORIGINAL_BROADCAST_NPDU,
-                    sender,
-                    None,
-                ))
-                .is_err()
-            {
-                warn!("BIP: NPDU channel full, dropping incoming broadcast frame");
-            }
+            hand_up(ctx, npdu, source_mac, true, "broadcast");
 
             // If BBMD, forward as Forwarded-NPDU to BDT peers + FDT entries
             if let Some(bbmd) = &ctx.bbmd {
@@ -166,7 +159,7 @@ pub(super) async fn handle_bvll_message(
                         .collect();
                     fanout.dispatch_forwarded_npdu(sender.0, sender.1, npdu, addrs, dedup_count);
                 } else {
-                    let _ = forward_npdu(&ctx.socket, npdu, sender.0, sender.1, &targets).await;
+                    let _ = forward_npdu(ctx, npdu, sender.0, sender.1, &targets).await;
                 }
             }
         }
@@ -176,7 +169,7 @@ pub(super) async fn handle_bvll_message(
             // out of it (Annex J.2.5).
             let (orig_ip, orig_port) = (origin.ip().octets(), origin.port());
             let source_mac = MacAddr::from(encode_bip_mac(orig_ip, orig_port));
-            if *source_mac == ctx.local_mac[..] || !ctx.group_sources.admits_origin(&source_mac) {
+            if own_echo(&source_mac, ctx) || !ctx.group_sources.admits_origin(&source_mac) {
                 return;
             }
 
@@ -184,7 +177,7 @@ pub(super) async fn handle_bvll_message(
             if let Some(bbmd) = &ctx.bbmd {
                 // A local rebroadcast retains the remote embedded origin. The
                 // self BDT row must not turn its UDP echo into peer traffic.
-                if encode_bip_mac(sender.0, sender.1) == ctx.local_mac {
+                if own_echo(&encode_bip_mac(sender.0, sender.1), ctx) {
                     return;
                 }
                 let (is_bdt_peer, needs_local_broadcast) = {
@@ -195,6 +188,7 @@ pub(super) async fn handle_bvll_message(
                     )
                 };
                 if !is_bdt_peer {
+                    ctx.drops.count(DropReason::ForwardedNotFromPeer);
                     debug!(
                         "Rejecting FORWARDED_NPDU from non-BDT sender {:?}:{}",
                         Ipv4Addr::from(sender.0),
@@ -203,20 +197,7 @@ pub(super) async fn handle_bvll_message(
                     return;
                 }
 
-                if ctx
-                    .npdu_tx
-                    .try_send(received_npdu(
-                        npdu,
-                        source_mac,
-                        true,
-                        BvlcFunction::FORWARDED_NPDU,
-                        sender,
-                        Some((orig_ip, orig_port)),
-                    ))
-                    .is_err()
-                {
-                    warn!("BIP: NPDU channel full, dropping forwarded frame");
-                }
+                hand_up(ctx, npdu, source_mac, true, "forwarded");
 
                 // Forward to FDT entries (BDT peers don't need it — they got it directly)
                 let (fdt_targets, dedup_count) = {
@@ -234,8 +215,7 @@ pub(super) async fn handle_bvll_message(
                     debug!("Forwarded-NPDU arrived by broadcast; skipping local rebroadcast");
                 } else if needs_local_broadcast {
                     let local_dest = SocketAddrV4::new(ctx.broadcast_addr, ctx.broadcast_port);
-                    let _ = send_forwarded_npdu(&ctx.socket, local_dest, orig_ip, orig_port, npdu)
-                        .await;
+                    let _ = send_forwarded_npdu(ctx, local_dest, orig_ip, orig_port, npdu).await;
                 }
                 if let Some(fanout) = &ctx.fanout {
                     let addrs: Vec<SocketAddrV4> = fdt_targets
@@ -244,21 +224,10 @@ pub(super) async fn handle_bvll_message(
                         .collect();
                     fanout.dispatch_forwarded_npdu(orig_ip, orig_port, npdu, addrs, dedup_count);
                 } else {
-                    let _ = forward_npdu(&ctx.socket, npdu, orig_ip, orig_port, &fdt_targets).await;
+                    let _ = forward_npdu(ctx, npdu, orig_ip, orig_port, &fdt_targets).await;
                 }
-            } else if ctx
-                .npdu_tx
-                .try_send(received_npdu(
-                    npdu,
-                    source_mac,
-                    true,
-                    BvlcFunction::FORWARDED_NPDU,
-                    sender,
-                    Some((orig_ip, orig_port)),
-                ))
-                .is_err()
-            {
-                warn!("BIP: NPDU channel full, dropping forwarded frame");
+            } else {
+                hand_up(ctx, npdu, source_mac, true, "forwarded");
             }
         }
 
@@ -370,6 +339,7 @@ async fn handle_malformed(
     sender: ([u8; 4], u16),
     ctx: &RecvContext,
 ) {
+    ctx.drops.count(DropReason::of_decode_error(&error));
     if let Some(nak) = frame.function.nak() {
         debug!(error = %error, "Refusing a malformed BVLL management request");
         send_bvlc_result(&ctx.socket, sender, nak).await;
@@ -380,7 +350,7 @@ async fn handle_malformed(
         | BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK
         | BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK => {
             if !complete_pending_bvlc_response(frame, sender, ctx) {
-                warn!(error = %error, "Received malformed BVLC response");
+                debug!(error = %error, "Received malformed BVLC response");
             }
         }
         _ => debug!(
@@ -396,7 +366,7 @@ async fn handle_malformed(
 async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &RecvContext) {
     let nak = BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK;
     let source_mac = MacAddr::from(encode_bip_mac(sender.0, sender.1));
-    if *source_mac == ctx.local_mac[..] {
+    if own_echo(&source_mac, ctx) {
         return;
     }
     // Non-BBMD: reject with NAK (spec J.4.5)
@@ -416,20 +386,7 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
         return;
     }
 
-    if ctx
-        .npdu_tx
-        .try_send(received_npdu(
-            npdu,
-            source_mac,
-            true,
-            BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
-            sender,
-            None,
-        ))
-        .is_err()
-    {
-        warn!("BIP: NPDU channel full, dropping distributed broadcast frame");
-    }
+    hand_up(ctx, npdu, source_mac, true, "distributed broadcast");
 
     let (targets, dedup_count) = {
         let mut state = bbmd::lock(bbmd);
@@ -444,7 +401,7 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
         warn!("Forced DBTN forwarding failure");
         false
     } else {
-        send_forwarded_npdu(&ctx.socket, local_dest, sender.0, sender.1, npdu).await
+        send_forwarded_npdu(ctx, local_dest, sender.0, sender.1, npdu).await
     };
 
     let remote_ok = if let Some(fanout) = &ctx.fanout {
@@ -454,7 +411,7 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
             .collect();
         fanout.dispatch_forwarded_npdu(sender.0, sender.1, npdu, addrs, dedup_count)
     } else {
-        forward_npdu(&ctx.socket, npdu, sender.0, sender.1, &targets).await
+        forward_npdu(ctx, npdu, sender.0, sender.1, &targets).await
     };
 
     if !(local_ok && remote_ok) {
@@ -540,8 +497,11 @@ fn forwarded_npdu(orig_ip: [u8; 4], orig_port: u16, npdu: &[u8]) -> Option<Bytes
     }
 }
 
+/// Send `npdu` from `orig_ip:orig_port` to `dest` as a Forwarded-NPDU. A
+/// failed send is logged through the throttle in
+/// [`ReceiveDrops::forward_failed`].
 async fn send_forwarded_npdu(
-    socket: &UdpSocket,
+    ctx: &RecvContext,
     dest: SocketAddrV4,
     orig_ip: [u8; 4],
     orig_port: u16,
@@ -550,21 +510,23 @@ async fn send_forwarded_npdu(
     let Some(buf) = forwarded_npdu(orig_ip, orig_port, npdu) else {
         return false;
     };
-    match socket.send_to(&buf, dest).await {
+    match ctx.socket.send_to(&buf, dest).await {
         Ok(_) => true,
         Err(e) => {
-            warn!(error = %e, dest = %dest, "Failed to send Forwarded-NPDU");
+            ctx.drops.forward_failed(&e, dest);
             false
         }
     }
 }
 
-/// Forward an NPDU as Forwarded-NPDU to a list of targets.
+/// Forward an NPDU as Forwarded-NPDU to a list of targets, logging a failed
+/// send as [`send_forwarded_npdu`] does. Only a receive context without a
+/// fan-out worker, as in some tests, forwards this way.
 ///
 /// Yields between sends for large target lists to avoid starving the recv loop
 /// when there are many FDT entries (up to 512).
 async fn forward_npdu(
-    socket: &UdpSocket,
+    ctx: &RecvContext,
     npdu: &[u8],
     orig_ip: [u8; 4],
     orig_port: u16,
@@ -581,9 +543,9 @@ async fn forward_npdu(
 
     for (i, &(ip, port)) in targets.iter().enumerate() {
         let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
-        if let Err(e) = socket.send_to(&frame, dest).await {
+        if let Err(e) = ctx.socket.send_to(&frame, dest).await {
             all_sent = false;
-            warn!(error = %e, dest = %dest, "Failed to forward NPDU");
+            ctx.drops.forward_failed(&e, dest);
         }
         // Yield every 32 sends to let the recv loop process incoming packets
         if i % 32 == 31 {

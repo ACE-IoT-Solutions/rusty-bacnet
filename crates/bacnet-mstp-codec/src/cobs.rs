@@ -1,258 +1,202 @@
-//! COBS/XOR-0x55 primitives used by Extended MS/TP frames.
+//! The two encoded fields of an extended frame (Clause 9.10), Encoded Data
+//! then Encoded CRC-32K: how the codec writes them, and how it checks and
+//! decodes them on receipt.
 //!
-//! The Extended MS/TP wire format applies ordinary Consistent Overhead Byte
-//! Stuffing to each field and then XORs every resulting octet with `0x55`.
-//! These routines deliberately do not append a COBS delimiter: fields are
-//! length-delimited by the surrounding frame format.
+//! COBS takes every zero octet out of a field. It splits the octets into code
+//! blocks: a code octet, then the data octets up to the next zero, at most
+//! 254 of them. The code is one more than that count. Every code below 0xFF
+//! also stands for one zero after its octets; at the end of the field that
+//! zero is a "phantom" one the encoder adds and the decoder drops. A block of
+//! 254 octets, code 0xFF, stands for no zero, and when one ends the field no
+//! block follows for the phantom zero (Clause 9.10.1, Annex T). Each octet
+//! of both fields then goes out XORed with 0x55, so neither can hold the
+//! first preamble octet.
 
-use core::fmt;
+use crate::crc::crc32k_update;
+use crate::{FrameError, FrameSink};
 
-/// Failure returned by a COBS/XOR-0x55 operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CobsError {
-    /// The encoded input contains no code octet.
-    EmptyInput,
-    /// A code octet decoded to zero.
-    InvalidCode {
-        /// Offset of the invalid code octet in the encoded field.
-        offset: usize,
-    },
-    /// An encoded data octet would decode to zero instead of using a COBS
-    /// block boundary.
-    NonCanonicalZero {
-        /// Offset of the encoded data octet.
-        offset: usize,
-    },
-    /// A code octet claims bytes beyond the end of the field.
-    CodeExceedsInput {
-        /// Offset of the code octet in the encoded field.
-        offset: usize,
-        /// Decoded code value.
-        code: u8,
-        /// Number of encoded data octets remaining after the code.
-        available: usize,
-    },
-    /// The caller's output storage cannot hold the complete result.
-    OutputExhausted {
-        /// Exact output size required by the operation.
-        needed: usize,
-        /// Caller-provided output capacity.
-        available: usize,
-    },
-}
+/// What each octet of both encoded fields is XORed with on the wire: the
+/// first preamble octet (Clause 9.10.2).
+const MASK: u8 = 0x55;
+/// Most data octets one code block holds: the block with code 0xFF.
+const MAX_RUN: usize = 254;
+/// Length of the second encoded field: COBS adds one octet to the four CRC
+/// octets.
+pub(crate) const ENCODED_CRC_LENGTH: usize = 5;
+/// The Length field of an extended frame counts its two encoded fields less
+/// these two octets, so a receiver without COBS skips the right number of
+/// octets (Clause 9.3).
+pub(crate) const LENGTH_ADJUSTMENT: usize = 2;
 
-impl fmt::Display for CobsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyInput => f.write_str("COBS input is empty"),
-            Self::InvalidCode { offset } => write!(f, "invalid COBS code at offset {offset}"),
-            Self::NonCanonicalZero { offset } => {
-                write!(f, "non-canonical zero-valued COBS data at offset {offset}")
-            }
-            Self::CodeExceedsInput {
-                offset,
-                code,
-                available,
-            } => write!(
-                f,
-                "COBS code {code} at offset {offset} exceeds {available} available bytes"
-            ),
-            Self::OutputExhausted { needed, available } => {
-                write!(f, "COBS output exhausted: need {needed}, have {available}")
-            }
-        }
-    }
-}
-
-/// Return the exact number of bytes produced by [`cobs_encode_xor55`].
-pub const fn cobs_encoded_len(input: &[u8]) -> usize {
-    let mut read = 0;
-    let mut nonzero = 0;
-    let mut codes = 0;
-    while read < input.len() {
-        codes += 1;
-        let mut run = 0;
-        while read < input.len() && run < 254 && input[read] != 0 {
-            read += 1;
-            run += 1;
-            nonzero += 1;
-        }
-        if read < input.len() && input[read] == 0 {
-            read += 1;
-            if run == 254 && read < input.len() {
-                // A full block cannot itself signal the zero that follows
-                // it, so reserve a standalone code-1 block for that zero.
-                codes += 1;
-            }
-            // A trailing zero is represented by a final empty block.  This
-            // is real input, unlike the phantom block that must not follow a
-            // non-zero field ending exactly at a 254-byte block boundary.
-            if read == input.len() {
-                codes += 1;
-                if run == 254 {
-                    // A full block does not imply a zero before the next
-                    // code.  Keep a final empty code so a trailing zero is
-                    // represented without making a full non-zero block grow
-                    // a phantom zero.
-                    codes += 1;
-                }
-            }
-        }
-    }
-    if codes == 0 {
-        1
-    } else {
-        nonzero + codes
-    }
-}
-
-/// Encode one field using ordinary COBS followed by XOR with `0x55`.
-///
-/// The complete required capacity is checked before writing, so an exhausted
-/// output buffer is an all-or-nothing error.
-pub fn cobs_encode_xor55(input: &[u8], output: &mut [u8]) -> Result<usize, CobsError> {
-    let needed = cobs_encoded_len(input);
-    if output.len() < needed {
-        return Err(CobsError::OutputExhausted {
-            needed,
-            available: output.len(),
-        });
-    }
-
-    if input.is_empty() {
-        output[0] = 0x01 ^ 0x55;
-        return Ok(1);
-    }
-
-    let mut read = 0;
-    let mut write = 0;
-    while read < input.len() {
-        let code_offset = write;
-        write += 1;
-        let mut code = 1u8;
-        while read < input.len() && code != 0xFF && input[read] != 0 {
-            output[write] = input[read] ^ 0x55;
-            write += 1;
-            read += 1;
-            code += 1;
-        }
-        output[code_offset] = code ^ 0x55;
-        if read < input.len() && input[read] == 0 {
-            read += 1;
-            if code == 0xFF && read < input.len() {
-                output[write] = 0x01 ^ 0x55;
-                write += 1;
-            }
-            if read == input.len() {
-                output[write] = 0x01 ^ 0x55;
-                write += 1;
-                if code == 0xFF {
-                    output[write] = 0x01 ^ 0x55;
-                    write += 1;
-                }
-                break;
-            }
-        }
-    }
-    Ok(write)
-}
-
-/// Validate an XOR-0x55 COBS field and return its decoded length.
-fn decoded_len(input: &[u8]) -> Result<usize, CobsError> {
-    if input.is_empty() {
-        return Err(CobsError::EmptyInput);
-    }
-    let mut read = 0;
-    let mut needed = 0;
-    while read < input.len() {
-        let offset = read;
-        let code = input[read] ^ 0x55;
-        if code == 0 {
-            return Err(CobsError::InvalidCode { offset });
-        }
-        read += 1;
-        let available = input.len() - read;
-        let data_len = code as usize - 1;
-        if data_len > available {
-            return Err(CobsError::CodeExceedsInput {
-                offset,
-                code,
-                available,
-            });
-        }
-        if let Some(relative) = input[read..read + data_len]
+/// Call `block` with each code block of `data` in order, as its code and its
+/// data octets, unmasked.
+fn for_each_block(data: &[u8], mut block: impl FnMut(u8, &[u8])) {
+    let mut rest = data;
+    loop {
+        let run = rest
             .iter()
-            .position(|octet| *octet == 0x55)
-        {
-            return Err(CobsError::NonCanonicalZero {
-                offset: read + relative,
-            });
-        }
-        needed += data_len;
-        read += data_len;
-        if read < input.len() && code != 0xFF {
-            needed += 1;
+            .take(MAX_RUN)
+            .take_while(|&&octet| octet != 0)
+            .count();
+        let (octets, tail) = rest.split_at(run);
+        // At most 254, so the code fits an octet.
+        block(run as u8 + 1, octets);
+        rest = tail;
+        if run == MAX_RUN {
+            if rest.is_empty() {
+                return;
+            }
+        } else {
+            // The block stands for the zero that follows its octets, or at
+            // the end for the phantom zero, after which nothing is left.
+            match rest.split_first() {
+                Some((_, after_zero)) => rest = after_zero,
+                None => return,
+            }
         }
     }
-    Ok(needed)
 }
 
-/// Decode one XOR-0x55 COBS field into caller-owned storage.
-///
-/// Validation and capacity checks complete before any output byte is written.
-pub fn cobs_decode_xor55(input: &[u8], output: &mut [u8]) -> Result<usize, CobsError> {
-    let needed = decoded_len(input)?;
-    if output.len() < needed {
-        return Err(CobsError::OutputExhausted {
-            needed,
-            available: output.len(),
+/// The Length field of an extended frame carrying `data`: its Encoded Data
+/// field, plus the Encoded CRC-32K field, less two (Clause 9.3).
+pub(crate) fn frame_length(data: &[u8]) -> usize {
+    let mut encoded = 0;
+    for_each_block(data, |_, octets| encoded += 1 + octets.len());
+    encoded + ENCODED_CRC_LENGTH - LENGTH_ADJUSTMENT
+}
+
+/// Octets [`write_fields`] gathers before each write to the sink.
+const CHUNK: usize = 32;
+
+/// Masked octets on their way to a sink, a chunk at a time, with the CRC-32K
+/// of everything written so far.
+struct Output<'s, S: FrameSink + ?Sized> {
+    sink: &'s mut S,
+    chunk: [u8; CHUNK],
+    used: usize,
+    crc: u32,
+    result: Result<(), FrameError>,
+}
+
+impl<S: FrameSink + ?Sized> Output<'_, S> {
+    /// Add the masked code blocks of `data`.
+    fn blocks(&mut self, data: &[u8]) {
+        for_each_block(data, |code, octets| {
+            self.push(code);
+            for &octet in octets {
+                self.push(octet);
+            }
         });
     }
-    decode_validated(input, output);
-    Ok(needed)
+
+    fn push(&mut self, octet: u8) {
+        if self.used == CHUNK {
+            self.flush();
+        }
+        self.chunk[self.used] = octet ^ MASK;
+        self.used += 1;
+    }
+
+    /// Write what is gathered. After a failed write, nothing more is.
+    fn flush(&mut self) {
+        let chunk = &self.chunk[..self.used];
+        self.crc = crc32k_update(self.crc, chunk);
+        if self.result.is_ok() {
+            self.result = self.sink.write(chunk);
+        }
+        self.used = 0;
+    }
 }
 
-/// Decode an XOR-0x55 COBS field in place.
-pub fn cobs_decode_xor55_in_place(buffer: &mut [u8]) -> Result<usize, CobsError> {
-    let needed = decoded_len(buffer)?;
-    // COBS decoding never expands a field, so each write is at or behind its
-    // read cursor. Copying backwards is unnecessary and would complicate the
-    // zero-insertion boundary.
+/// Write both encoded fields for `data` to `sink`.
+///
+/// The CRC-32K covers the Encoded Data field as it goes on the wire; its
+/// complement goes into the second field low octet first (Clause 9.10.2).
+pub(crate) fn write_fields<S: FrameSink + ?Sized>(
+    data: &[u8],
+    sink: &mut S,
+) -> Result<(), FrameError> {
+    let mut output = Output {
+        sink,
+        chunk: [0; CHUNK],
+        used: 0,
+        crc: u32::MAX,
+        result: Ok(()),
+    };
+    output.blocks(data);
+    output.flush();
+    let crc = !output.crc;
+    output.blocks(&crc.to_le_bytes());
+    output.flush();
+    output.result
+}
+
+/// The length of the data that `field`, one masked encoded field, decodes
+/// to. `None` when a code octet is zero or claims more octets than the field
+/// has left, the two faults Clause 9.10.3 checks for.
+///
+/// Like the procedure there, it accepts what a strict encoder never sends: a
+/// data octet that decodes to zero, or a final empty block after a full one.
+fn decoded_length(field: &[u8]) -> Option<usize> {
     let mut read = 0;
-    let mut write = 0;
-    while read < buffer.len() {
-        let code = buffer[read] ^ 0x55;
-        read += 1;
-        let data_len = code as usize - 1;
-        for _ in 0..data_len {
-            buffer[write] = buffer[read] ^ 0x55;
-            write += 1;
-            read += 1;
+    let mut length = 0;
+    while let Some(&octet) = field.get(read) {
+        let code = usize::from(octet ^ MASK);
+        if code == 0 || code > field.len() - read {
+            return None;
         }
-        if read < buffer.len() && code != 0xFF {
-            buffer[write] = 0;
+        read += code;
+        length += code - 1;
+        if code != 0xFF && read < field.len() {
+            length += 1;
+        }
+    }
+    Some(length)
+}
+
+/// Decode `field`, which [`decoded_length`] accepted, over itself and return
+/// the length of the decoded data at its start. Each octet is written no
+/// later than it is read, so nothing is overwritten before it is used.
+fn decode_in_place(field: &mut [u8]) -> usize {
+    let (mut read, mut write) = (0, 0);
+    while read < field.len() {
+        let code = usize::from(field[read] ^ MASK);
+        read += 1;
+        let end = (read + code.saturating_sub(1)).min(field.len());
+        while read < end {
+            field[write] = field[read] ^ MASK;
+            read += 1;
+            write += 1;
+        }
+        if code != 0xFF && read < field.len() {
+            field[write] = 0;
             write += 1;
         }
     }
-    debug_assert_eq!(write, needed);
-    Ok(needed)
+    write
 }
 
-fn decode_validated(input: &[u8], output: &mut [u8]) {
-    let mut read = 0;
-    let mut write = 0;
-    while read < input.len() {
-        let code = input[read] ^ 0x55;
-        read += 1;
-        let data_len = code as usize - 1;
-        for _ in 0..data_len {
-            output[write] = input[read] ^ 0x55;
-            write += 1;
-            read += 1;
-        }
-        if read < input.len() && code != 0xFF {
-            output[write] = 0;
-            write += 1;
-        }
-    }
+/// Check an extended frame's encoded fields, `fields`: the Encoded Data,
+/// then the five octets of the Encoded CRC-32K. Return the length of the
+/// data they carry, or `None` when either field breaks COBS's rules or the
+/// CRC-32K doesn't match. Clause 9.10.3 treats both as a bad CRC.
+pub(crate) fn check_fields(fields: &[u8]) -> Option<usize> {
+    let split = fields.len().checked_sub(ENCODED_CRC_LENGTH)?;
+    let (data, crc_field) = fields.split_at(split);
+    let length = decoded_length(data)?;
+    let mut crc = [0u8; ENCODED_CRC_LENGTH];
+    crc.copy_from_slice(crc_field);
+    // Five octets that pass always decode to four.
+    decoded_length(&crc)?;
+    decode_in_place(&mut crc);
+    let received = u32::from_le_bytes([crc[0], crc[1], crc[2], crc[3]]);
+    (received == !crc32k_update(u32::MAX, data)).then_some(length)
+}
+
+/// Decode the Encoded Data field at the start of `fields`, which
+/// [`check_fields`] accepted, over itself, and return the length of the data
+/// now at its start.
+pub(crate) fn decode_data_in_place(fields: &mut [u8]) -> usize {
+    let encoded = fields.len() - ENCODED_CRC_LENGTH;
+    decode_in_place(&mut fields[..encoded])
 }

@@ -12,6 +12,7 @@ use bacnet_mstp_core::{
 
 /// Queues whose slots hold more than a standard frame's data.
 type BigQueues = HeaplessQueues<4, 4, 1500>;
+type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn config() -> MstpCoreConfig {
     MstpCoreConfig {
@@ -41,7 +42,15 @@ fn next_frame_after_token<Q: QueueStorage>(core: &mut MasterCore<'_, Q>) -> Fram
 #[test]
 fn enqueue_refuses_an_npdu_longer_than_a_standard_frame() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), BigQueues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        BigQueues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     for destination in [2, 0xFF] {
         assert_eq!(
             core.enqueue_npdu(
@@ -70,7 +79,8 @@ fn an_oversize_npdu_already_queued_is_dropped_and_the_token_moves_on() {
         .enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, 0, None)
         .unwrap();
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), queues, &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(config(), queues, &mut rx, &mut actions, Instant::ZERO).unwrap();
     let header = next_frame_after_token(&mut core);
     assert_eq!(
         (header.frame_type, header.destination),
@@ -85,7 +95,8 @@ fn an_oversize_npdu_already_queued_is_dropped_and_the_token_moves_on() {
         .enqueue_npdu(2, &[0; 600], NetworkPriority::Normal, 0, None)
         .unwrap();
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), queues, &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(config(), queues, &mut rx, &mut actions, Instant::ZERO).unwrap();
     let header = next_frame_after_token(&mut core);
     assert_eq!(header.frame_type, FrameType::PollForMaster);
     assert_eq!(core.state(), MasterState::PollForMaster);
@@ -146,10 +157,12 @@ impl QueueStorage for Overstating {
 #[test]
 fn a_queue_overstating_an_npdu_length_cannot_hold_the_token() {
     let mut rx = [0; 64];
+    let mut actions = Actions::new();
     let mut core = MasterCore::new(
         config(),
         Overstating(HeaplessQueues::new()),
         &mut rx,
+        &mut actions,
         Instant::ZERO,
     )
     .unwrap();

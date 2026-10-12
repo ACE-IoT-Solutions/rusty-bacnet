@@ -17,28 +17,21 @@ use super::*;
 /// reports can only be later than the requester's last octet.
 const REPLY_GUARD: Duration = Duration::from_millis(1);
 
-impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
-    ProfileMasterCore<'rx, Q, NPDU, FRAME>
-{
+impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Hand a request to the application and open its reply window.
     pub(super) fn begin_request(
         &mut self,
-        frame: &OwnedFrame<NPDU>,
+        frame: Frame<'_>,
         now: Instant,
     ) -> Result<(), CoreError> {
         let id = RequestId::new(self.next_request_generation);
         self.next_request_generation = self.next_request_generation.wrapping_add(1);
-        let send_by = now + self.config.t_reply_delay;
-        // Never before the end of T_reply_delay, which a reply may use in
-        // full. Defensive: at the lowest baud rate validation allows, the
-        // cutoff still falls just after T_reply_delay.
-        let give_up =
-            (now + MIN_REPLY_TIMEOUT - self.config.octet_time() - REPLY_GUARD).max(send_by);
+        let window = self.reply_window(now);
         let request = PendingRequest {
             id,
             source: frame.header.source,
-            decide_by: send_by - self.config.reply_transmit_margin,
-            window: ReplyWindow { send_by, give_up },
+            decide_by: window.send_by - self.config.reply_transmit_margin,
+            window,
         };
         self.pending_request = Some(request);
         self.set_state(MasterState::AnswerDataRequest);
@@ -63,6 +56,12 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
     /// decision is refused that way, [`ReplyDecision::Abandoned`] included,
     /// and the request is dropped unanswered and counted in
     /// [`MstpCounters::expired_requests`].
+    ///
+    /// A data answer longer than this station sends
+    /// ([`MstpCoreConfig::max_npdu_length`]) is refused with
+    /// [`CoreError::ReplyOversize`]. With extended frames on, one of 502
+    /// octets or more goes out as BACnet Extended Data Not Expecting Reply
+    /// (Type 33), whatever the type of the request.
     pub fn complete_request(
         &mut self,
         id: RequestId,
@@ -82,11 +81,14 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             ReplyDecision::Data(_) if now >= request.decide_by => {
                 return Err(CoreError::RequestExpired);
             }
-            ReplyDecision::Data(data) if data.len() > NPDU => {
+            ReplyDecision::Data(data) if data.len() > self.config.max_npdu_length() => {
                 return Err(CoreError::ReplyOversize {
                     length: data.len(),
-                    maximum: NPDU,
+                    maximum: self.config.max_npdu_length(),
                 });
+            }
+            ReplyDecision::Data(data) if data.len() > MAX_STANDARD_MPDU_DATA => {
+                (FrameType::BACnetExtendedDataNotExpectingReply, data)
             }
             ReplyDecision::Data(data) => (FrameType::BACnetDataNotExpectingReply, data),
             ReplyDecision::Postponed | ReplyDecision::Cancelled => {
@@ -97,13 +99,13 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
                 return self.enter_idle(now);
             }
         };
-        self.queue_frame_until(
+        self.queue_frame(
             frame_type,
             request.source,
             payload,
             PostTransmit::Idle,
+            Origin::Answer(request.window),
             now,
-            Some(request.window),
         )?;
         self.pending_request = None;
         Ok(())
@@ -120,6 +122,29 @@ impl<'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
             Err(CoreError::RequestExpired) => Ok(()),
             result => result,
         }
+    }
+
+    /// The window for answering a frame that asked for a reply (a data
+    /// request or Test_Request) and ended at `now`: T_reply_delay, then the
+    /// requester's shortest T_reply_timeout.
+    pub(super) fn reply_window(&self, now: Instant) -> ReplyWindow {
+        let send_by = now + self.config.t_reply_delay;
+        // Never before the end of T_reply_delay, which a reply may use in
+        // full. Defensive: at the lowest baud rate validation allows, the
+        // cutoff still falls just after T_reply_delay.
+        let give_up =
+            (now + MIN_REPLY_TIMEOUT - self.config.octet_time() - REPLY_GUARD).max(send_by);
+        ReplyWindow { send_by, give_up }
+    }
+
+    /// The window for answering a Poll For Master that ended at `now`:
+    /// T_usage_delay, then the poller's shortest T_usage_timeout (Clauses
+    /// 9.5.3 and 9.5.6.8), less one octet and the guard as for a reply.
+    pub(super) fn poll_reply_window(&self, now: Instant) -> ReplyWindow {
+        let send_by = now + self.config.t_usage_delay;
+        let give_up =
+            (now + MIN_USAGE_TIMEOUT - self.config.octet_time() - REPLY_GUARD).max(send_by);
+        ReplyWindow { send_by, give_up }
     }
 
     /// Drop a request unanswered because its requester may have stopped

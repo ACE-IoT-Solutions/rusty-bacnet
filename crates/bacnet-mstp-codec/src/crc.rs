@@ -1,4 +1,5 @@
-//! Clause 9.6 CRC implementations.
+//! The CRCs of Clause 9.6: the header CRC-8, the data CRC-16, and the
+//! CRC-32K of extended frames.
 
 const CRC8_TABLE: [u8; 256] = {
     let mut table = [0u8; 256];
@@ -103,38 +104,116 @@ pub fn crc16_valid(data_with_crc: &[u8]) -> bool {
     crc16(&data_with_crc[..split]) == stored
 }
 
-/// Compute the reflected CRC-32K used by Extended MS/TP.
-pub fn crc32k(data: &[u8]) -> u32 {
-    !crc32k_accumulate_all(data)
-}
+/// The CRC-32K (Koopman) generator of Clause 9.6.3, bit-reversed for a
+/// register that shifts right, least significant bit first (Annex G.3).
+const CRC32K_POLYNOMIAL: u32 = 0xEB31_D82E;
 
-/// Compute the running CRC-32K state, including any transmitted CRC bytes.
-pub fn crc32k_accumulate_all(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFF;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ CRC32K_POLY
-            } else {
-                crc >> 1
-            };
-        }
+/// The register after `bits` shifts of `crc` with no new input.
+const fn crc32k_shift(mut crc: u32, bits: u32) -> u32 {
+    let mut bit = 0;
+    while bit < bits {
+        crc = if crc & 1 != 0 {
+            (crc >> 1) ^ CRC32K_POLYNOMIAL
+        } else {
+            crc >> 1
+        };
+        bit += 1;
     }
     crc
 }
 
-/// Verify a little-endian transmitted CRC-32K field.
-pub fn crc32k_valid(data_with_crc: &[u8]) -> bool {
-    if data_with_crc.len() < 4 {
-        return false;
+/// One entry per octet value: 1 KiB, one lookup per octet. Unit tests build
+/// both tables, whichever the features pick.
+#[cfg(any(feature = "crc32k-table", test))]
+const CRC32K_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        table[i] = crc32k_shift(i as u32, 8);
+        i += 1;
     }
-    let split = data_with_crc.len() - 4;
-    let stored = u32::from_le_bytes([
-        data_with_crc[split],
-        data_with_crc[split + 1],
-        data_with_crc[split + 2],
-        data_with_crc[split + 3],
-    ]);
-    crc32k(&data_with_crc[..split]) == stored
+    table
+};
+
+/// One entry per nibble value: 64 octets, two lookups per octet.
+#[cfg(any(not(feature = "crc32k-table"), test))]
+const CRC32K_NIBBLES: [u32; 16] = {
+    let mut table = [0u32; 16];
+    let mut i = 0;
+    while i < 16 {
+        table[i] = crc32k_shift(i as u32, 4);
+        i += 1;
+    }
+    table
+};
+
+/// Accumulate one octet into the register with the 256-entry table.
+#[cfg(any(feature = "crc32k-table", test))]
+fn crc32k_octet_by_table(crc: u32, byte: u8) -> u32 {
+    (crc >> 8) ^ CRC32K_TABLE[((crc ^ u32::from(byte)) & 0xFF) as usize]
+}
+
+/// Accumulate one octet into the register with the 16-entry table.
+#[cfg(any(not(feature = "crc32k-table"), test))]
+fn crc32k_octet_by_nibbles(crc: u32, byte: u8) -> u32 {
+    let crc = crc ^ u32::from(byte);
+    let crc = (crc >> 4) ^ CRC32K_NIBBLES[(crc & 0x0F) as usize];
+    (crc >> 4) ^ CRC32K_NIBBLES[(crc & 0x0F) as usize]
+}
+
+/// Accumulate `data` into the CRC-32K register `crc`.
+pub(crate) fn crc32k_update(crc: u32, data: &[u8]) -> u32 {
+    #[cfg(feature = "crc32k-table")]
+    let octet = crc32k_octet_by_table;
+    #[cfg(not(feature = "crc32k-table"))]
+    let octet = crc32k_octet_by_nibbles;
+    data.iter().fold(crc, |crc, &byte| octet(crc, byte))
+}
+
+/// Compute the CRC-32K of an extended frame's Encoded Data field: the
+/// complement of the register, which goes out low octet first, COBS-encoded
+/// as the Encoded CRC-32K field (Clauses 9.6.3, 9.10.2).
+///
+/// By default the codec works it out with a 16-entry table, two lookups per
+/// octet. The `crc32k-table` feature uses a 256-entry table instead, one
+/// lookup per octet, for about 1 KiB more flash. The results are the same.
+pub fn crc32k(data: &[u8]) -> u32 {
+    !crc32k_update(u32::MAX, data)
+}
+
+/// Compute the running CRC-32K register over `data` from its all-ones start,
+/// without the final complement. Run over the Encoded Data and then the four
+/// CRC octets decoded from a good frame's Encoded CRC-32K field, it ends at
+/// [`CRC32K_RESIDUAL`](crate::CRC32K_RESIDUAL).
+pub fn crc32k_accumulate_all(data: &[u8]) -> u32 {
+    crc32k_update(u32::MAX, data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{crc32k_octet_by_nibbles, crc32k_octet_by_table, crc32k_shift};
+
+    /// Both tables against eight plain shifts, for every octet value from
+    /// several register states, so the default test run covers the table the
+    /// `crc32k-table` feature selects as well as the default one.
+    #[test]
+    fn both_crc32k_tables_match_the_bitwise_register() {
+        let registers = [
+            0,
+            u32::MAX,
+            1,
+            0x8000_0000,
+            0x0843_323B,
+            0x1234_5678,
+            0xEDCB_A987,
+            0x5555_AAAA,
+        ];
+        for register in registers {
+            for byte in 0..=u8::MAX {
+                let bitwise = crc32k_shift(register ^ u32::from(byte), 8);
+                assert_eq!(crc32k_octet_by_table(register, byte), bitwise);
+                assert_eq!(crc32k_octet_by_nibbles(register, byte), bitwise);
+            }
+        }
+    }
 }

@@ -10,6 +10,7 @@ use bacnet_mstp_core::{
 };
 
 type Queues = HeaplessQueues<4, 4>;
+type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn config() -> MstpCoreConfig {
     MstpCoreConfig {
@@ -45,7 +46,15 @@ fn poll_transmit(core: &mut MasterCore<'_, Queues>) -> TransmitId {
 #[test]
 fn completion_without_a_confirmed_start_is_refused_and_counted() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let due = queue_a_transmit(&mut core);
     let id = poll_transmit(&mut core);
     assert_eq!(
@@ -72,7 +81,15 @@ fn completion_without_a_confirmed_start_is_refused_and_counted() {
 fn an_aborted_transmit_leaves_no_stale_actions() {
     // The adapter never polls the transmit; the watchdog aborts it.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     queue_a_transmit(&mut core);
     let watchdog = core.next_deadline().unwrap();
     core.on_deadline(watchdog).unwrap();
@@ -85,7 +102,15 @@ fn an_aborted_transmit_leaves_no_stale_actions() {
 
     // Polled up to the direction change only: the frame is still withdrawn.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     queue_a_transmit(&mut core);
     assert_eq!(
         core.poll_action(),
@@ -102,11 +127,20 @@ fn receive_storage_must_hold_a_header() {
     assert_eq!(MIN_RX_STORAGE, 8);
     for length in [0, MIN_RX_STORAGE - 1] {
         let mut rx = vec![0u8; length];
+        let mut actions = Actions::new();
         assert!(matches!(
-            MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO),
+            MasterCore::new(config(), Queues::new(), &mut rx, &mut actions, Instant::ZERO),
             Err(CoreError::ReceiveStorageTooSmall { length: got, minimum: 8 }) if got == length
         ));
     }
     let mut rx = [0u8; MIN_RX_STORAGE];
-    assert!(MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).is_ok());
+    let mut actions = Actions::new();
+    assert!(MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO
+    )
+    .is_ok());
 }

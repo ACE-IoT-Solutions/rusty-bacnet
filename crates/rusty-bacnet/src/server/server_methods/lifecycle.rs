@@ -76,6 +76,7 @@ impl BACnetServer {
                     self.mstp_mac,
                     self.mstp_max_master,
                     self.mstp_max_info_frames,
+                    self.mstp_extended_frames,
                 )?)
             } else {
                 None

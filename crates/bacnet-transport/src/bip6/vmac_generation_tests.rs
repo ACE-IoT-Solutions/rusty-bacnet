@@ -4,17 +4,17 @@ use std::time::Duration;
 use bacnet_types::error::Error;
 use tokio::net::UdpSocket;
 
+use super::frame::encoded;
 use super::vmac_table::derive_vmac_from_device_instance;
 use super::{
-    encode_address_resolution_ack, generate_random_vmac, Bip6ForeignDeviceConfig, Bip6Transport,
-    Bip6Vmac, MAX_VMAC_RETRIES,
+    generate_random_vmac, Bip6ForeignDeviceConfig, Bip6Transport, Bip6Vmac, Bvll6, MAX_VMAC_RETRIES,
 };
 use crate::port::TransportPort;
 use crate::port_ownership::lost_port;
 
 #[test]
 fn generate_random_vmac_produces_3_bytes() {
-    let vmac = generate_random_vmac().unwrap();
+    let vmac = generate_random_vmac().unwrap().octets();
     assert_eq!(vmac.len(), 3);
     assert_eq!(vmac[0] & 0xC0, 0x40);
 }
@@ -67,7 +67,11 @@ async fn peer_probe_collision_fails_startup_without_publishing_socket() {
         let peer = UdpSocket::bind("[::1]:0").await.unwrap();
         let peer_task = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            let probe = encode_address_resolution_ack(&vmac, &vmac);
+            let probe = encoded(&Bvll6::AddressResolutionAck {
+                source: vmac,
+                destination: vmac,
+            })
+            .unwrap();
             for _ in 0..20 {
                 let _ = peer.send_to(&probe, destination).await;
                 tokio::time::sleep(Duration::from_millis(10)).await;

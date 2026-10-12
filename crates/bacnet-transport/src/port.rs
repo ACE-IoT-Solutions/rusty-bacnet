@@ -496,6 +496,16 @@ pub trait TransportPort: Send + Sync {
         ))
     }
 
+    /// Prepare the transport to be a port of a router, before it starts.
+    ///
+    /// `bacnet_network`'s `BACnetRouter` calls it on every port it routes,
+    /// right before starting it. A data link whose standard asks more of a
+    /// routing node than of other nodes turns that on here: MS/TP turns on
+    /// extended frames, which Clause 9.3 requires of routing nodes
+    /// ([`MstpConfig::extended_frames`](crate::mstp::MstpConfig::extended_frames)).
+    /// The default does nothing. Wrappers must delegate.
+    fn prepare_for_routing(&mut self) {}
+
     /// Start the transport. Returns a receiver for incoming NPDUs.
     ///
     /// The transport spawns a background receive task that decodes incoming

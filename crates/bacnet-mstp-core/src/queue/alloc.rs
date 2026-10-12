@@ -13,8 +13,13 @@ use super::{
 
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
+///
+/// `N` is the longest NPDU a slot holds, as for
+/// [`HeaplessQueues`](super::HeaplessQueues): 501 octets by default, and
+/// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
+/// a core with extended frames on.
 #[derive(Debug)]
-pub struct AllocQueuesProfile<const N: usize> {
+pub struct AllocQueues<const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: Vec<Item<N>>,
     broadcast: Vec<Item<N>>,
     unicast_capacity: usize,
@@ -28,13 +33,7 @@ pub struct AllocQueuesProfile<const N: usize> {
     network_control_counters: QueueCounters,
 }
 
-/// Allocation-backed standard-profile queues (501-byte NPDU slots).
-pub type AllocQueues = AllocQueuesProfile<MAX_NPDU_LEN>;
-
-/// Allocation-backed Extended MS/TP queues (1497-byte NPDU slots).
-pub type ExtendedAllocQueues = AllocQueuesProfile<MAX_EXTENDED_MPDU_DATA>;
-
-impl<const N: usize> AllocQueuesProfile<N> {
+impl<const N: usize> AllocQueues<N> {
     /// Construct independently bounded queues.
     pub fn new(unicast_capacity: usize, broadcast_capacity: usize) -> Self {
         Self::with_control_capacity(unicast_capacity, broadcast_capacity, 2)
@@ -181,84 +180,19 @@ impl<const N: usize> AllocQueuesProfile<N> {
     }
 }
 
-impl<const N: usize> Default for AllocQueuesProfile<N> {
+impl<const N: usize> Default for AllocQueues<N> {
     fn default() -> Self {
         Self::new(256, 256)
     }
 }
 
-impl<const N: usize> AllocQueuesProfile<N> {
-    fn enqueue_class(
-        &mut self,
-        class: QueueClass,
-        destination: u8,
-        payload: &[u8],
-        priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
-        let kind = QueueKind::from_destination(destination);
-        if payload.len() > N {
-            self.class_counters_mut(class, kind).record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
-        }
-        if expired(expires_at, now) {
-            self.class_counters_mut(class, kind).record_drop_expired();
-            return Err(QueueRejectReason::Expired);
-        }
-        let (capacity, length) = match class {
-            QueueClass::Data => (
-                match kind {
-                    QueueKind::Unicast => self.unicast_capacity,
-                    QueueKind::Broadcast => self.broadcast_capacity,
-                },
-                match kind {
-                    QueueKind::Unicast => self.unicast.len(),
-                    QueueKind::Broadcast => self.broadcast.len(),
-                },
-            ),
-            QueueClass::NetworkControl => {
-                (self.network_control_capacity, self.network_control.len())
-            }
-        };
-        if length >= capacity {
-            self.class_counters_mut(class, kind).record_drop_full();
-            return Err(QueueRejectReason::Full);
-        }
-        let mut owned = Item {
-            destination,
-            priority,
-            enqueued_at: now,
-            expires_at,
-            sequence: self.sequence,
-            service_wait: 0,
-            len: payload.len(),
-            payload: [0; N],
-        };
-        owned.payload[..payload.len()].copy_from_slice(payload);
-        self.sequence = self.sequence.wrapping_add(1);
-        match class {
-            QueueClass::Data => match kind {
-                QueueKind::Unicast => self.unicast.push(owned),
-                QueueKind::Broadcast => self.broadcast.push(owned),
-            },
-            QueueClass::NetworkControl => self.network_control.push(owned),
-        }
-        let depth = match class {
-            QueueClass::Data => match kind {
-                QueueKind::Unicast => self.unicast.len(),
-                QueueKind::Broadcast => self.broadcast.len(),
-            },
-            QueueClass::NetworkControl => self.network_control.len(),
-        };
-        self.class_counters_mut(class, kind).record_enqueue(depth);
-        Ok(())
-    }
-}
-
-impl<const N: usize> QueueStorage for AllocQueuesProfile<N> {
+impl<const N: usize> QueueStorage for AllocQueues<N> {
     fn set_starvation_limit(&mut self, limit: u8) {
         self.starvation_limit = limit;
+    }
+
+    fn max_npdu_length(&self) -> usize {
+        N
     }
 
     fn enqueue_npdu(
@@ -269,26 +203,50 @@ impl<const N: usize> QueueStorage for AllocQueuesProfile<N> {
         now: u64,
         expires_at: Option<u64>,
     ) -> Result<(), QueueRejectReason> {
-        self.enqueue_class(
-            QueueClass::Data,
+        let kind = QueueKind::from_destination(destination);
+        if payload.len() > N {
+            self.counters_mut(kind).record_drop_oversize();
+            return Err(QueueRejectReason::Oversize);
+        }
+        if expired(expires_at, now) {
+            self.counters_mut(kind).record_drop_expired();
+            return Err(QueueRejectReason::Expired);
+        }
+        let capacity = match kind {
+            QueueKind::Unicast => self.unicast_capacity,
+            QueueKind::Broadcast => self.broadcast_capacity,
+        };
+        let length = match kind {
+            QueueKind::Unicast => self.unicast.len(),
+            QueueKind::Broadcast => self.broadcast.len(),
+        };
+        if length >= capacity {
+            self.counters_mut(kind).record_drop_full();
+            return Err(QueueRejectReason::Full);
+        }
+        let mut owned = Item {
             destination,
             payload,
             priority,
             now,
             expires_at,
-        )
-    }
-
-    fn enqueue_npdu_class(
-        &mut self,
-        class: QueueClass,
-        destination: u8,
-        payload: &[u8],
-        priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
-        self.enqueue_class(class, destination, payload, priority, now, expires_at)
+            sequence: self.sequence,
+            service_wait: 0,
+            len: payload.len(),
+            payload: [0; N],
+        };
+        owned.payload[..payload.len()].copy_from_slice(payload);
+        self.sequence = self.sequence.wrapping_add(1);
+        match kind {
+            QueueKind::Unicast => self.unicast.push(owned),
+            QueueKind::Broadcast => self.broadcast.push(owned),
+        }
+        let depth = match kind {
+            QueueKind::Unicast => self.unicast.len(),
+            QueueKind::Broadcast => self.broadcast.len(),
+        };
+        self.counters_mut(kind).record_enqueue(depth);
+        Ok(())
     }
 
     fn expire(&mut self, now: u64) -> usize {

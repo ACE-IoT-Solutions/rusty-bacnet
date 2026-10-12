@@ -115,6 +115,8 @@ pub struct BACnetServer {
     mstp_mac: u8,
     mstp_max_master: u8,
     mstp_max_info_frames: u8,
+    /// Extended MS/TP frames (Types 32 and 33), off by default (#1611).
+    mstp_extended_frames: bool,
     // Passwords
     dcc_password: Option<String>,
     mutation_policy: bacnet_server::mutation::MutationPolicy,

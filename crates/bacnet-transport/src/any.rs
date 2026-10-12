@@ -136,6 +136,19 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             _ => None,
         }
     }
+    fn prepare_for_routing(&mut self) {
+        match self {
+            Self::Bip(t) => t.prepare_for_routing(),
+            Self::Mstp(t) => t.prepare_for_routing(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.prepare_for_routing(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.prepare_for_routing(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.prepare_for_routing(),
+            Self::Loopback(t) => t.prepare_for_routing(),
+        }
+    }
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         match self {
             Self::Bip(t) => t.start().await,
@@ -484,6 +497,7 @@ mod tests {
             max_master: 127,
             max_info_frames: 1,
             baud_rate: 9600,
+            extended_frames: false,
         };
         let mstp = MstpTransport::new(serial, config);
         let any: AnyTransport<LoopbackSerial> = AnyTransport::Mstp(mstp);

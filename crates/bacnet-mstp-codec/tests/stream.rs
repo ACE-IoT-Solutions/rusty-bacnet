@@ -48,7 +48,7 @@ fn stream_resync_and_bad_data_crc_discard() {
         decoder.push_slice(&wire),
         DecodeEvent::Malformed {
             discard: used,
-            error: FrameError::DataCrcMismatch { data_length: 2 },
+            error: FrameError::DataCrcMismatch { length: 2 },
             destination: Some(0),
         }
     );
@@ -223,16 +223,37 @@ fn malformed_candidates_carry_a_trusted_destination() {
     let mut storage = [0u8; 64];
     let mut decoder = StreamDecoder::new(&mut storage);
 
-    // Reserved COBS type 34 to station 5: header good, so the destination is known.
-    let fields = [0x22, 0x05, 0x01, 0x00, 0x00];
+    // Reserved COBS type 34 to station 5 with the smallest COBS Length: a
+    // good header, so the destination is known, and the frame's other seven
+    // octets are skipped as they arrive.
+    let fields = [0x22, 0x05, 0x01, 0x00, 0x05];
     let mut cobs = PREAMBLE.to_vec();
     cobs.extend_from_slice(&fields);
     cobs.push(crc8(&fields));
     assert_eq!(
         decoder.push_slice(&cobs),
         DecodeEvent::Malformed {
-            discard: 1,
+            discard: 15,
             error: FrameError::UnsupportedCobsFrame { raw_type: 0x22 },
+            destination: Some(5),
+        }
+    );
+    assert_eq!(drain(&mut decoder), []);
+    assert_eq!(decoder.phase(), StreamPhase::Data);
+    assert_eq!(decoder.push_slice(&[0x55; 7]), DecodeEvent::NeedMore);
+    assert_eq!(decoder.phase(), StreamPhase::Sync);
+
+    // A COBS header whose Length is out of range is a bad header: its
+    // destination is known, but only its first octet goes.
+    let fields = [0x20, 0x05, 0x01, 0x00, 0x04];
+    let mut short = PREAMBLE.to_vec();
+    short.extend_from_slice(&fields);
+    short.push(crc8(&fields));
+    assert_eq!(
+        decoder.push_slice(&short),
+        DecodeEvent::Malformed {
+            discard: 1,
+            error: FrameError::InvalidCobsLength { length: 4 },
             destination: Some(5),
         }
     );
@@ -253,7 +274,8 @@ fn malformed_candidates_carry_a_trusted_destination() {
 
 /// A frame longer than the whole storage used to wedge the decoder: every
 /// later push failed with `BufferExhausted` until `reset()`. Now the decoder
-/// reports it once, as soon as the header shows its size, and keeps going.
+/// reports it once, as soon as the header shows its size, skips the rest of
+/// it by count, and keeps going.
 #[test]
 fn frame_longer_than_storage_is_reported_once_then_decoding_resumes() {
     let long = encode(Frame::new(
@@ -272,7 +294,7 @@ fn frame_longer_than_storage_is_reported_once_then_decoding_resumes() {
     for (index, &byte) in long.iter().chain(&token).enumerate() {
         match decoder.push(byte) {
             DecodeEvent::Malformed {
-                discard: 1,
+                discard: 13,
                 error: FrameError::FrameTooLong { needed, capacity },
                 destination,
             } => {
@@ -317,7 +339,7 @@ fn full_storage_with_an_unfinishable_frame_recovers() {
     assert_eq!(
         decoder.push_slice(&long[..12]),
         DecodeEvent::Malformed {
-            discard: 1,
+            discard: 13,
             error: FrameError::FrameTooLong {
                 needed: 13,
                 capacity: 12

@@ -63,6 +63,7 @@ fn test_ctx(
         fanout: None,
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     }
 }
 

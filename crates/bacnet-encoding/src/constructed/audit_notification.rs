@@ -33,8 +33,14 @@ pub fn encode_audit_notification(
             notification.target_priority.unwrap()
         )));
     }
-    validate_raw_value(notification.target_value.as_deref(), "target-value")?;
-    validate_raw_value(notification.current_value.as_deref(), "current-value")?;
+    validate_raw_value(
+        notification.target_value.as_deref(),
+        "AuditNotification target-value",
+    )?;
+    validate_raw_value(
+        notification.current_value.as_deref(),
+        "AuditNotification current-value",
+    )?;
     check_encoded_recipient(&notification.source_device)?;
     check_encoded_recipient(&notification.target_device)?;
 
@@ -109,12 +115,13 @@ fn encode_raw_value(buf: &mut BytesMut, field_tag: u8, value: &[u8]) {
     tags::encode_closing_tag(buf, field_tag);
 }
 
-fn validate_raw_value(value: Option<&[u8]>, field: &str) -> Result<(), Error> {
+/// Check a raw value before encoding it. `what` names it in the error, written
+/// out whole, so a value that passes builds no label (#1645).
+fn validate_raw_value(value: Option<&[u8]>, what: &str) -> Result<(), Error> {
     let Some(value) = value else {
         return Ok(());
     };
-    validate_tlv_sequence(value, &format!("AuditNotification {field}"))
-        .map_err(|error| Error::Encoding(error.to_string()))
+    validate_tlv_sequence(value, what).map_err(|error| Error::Encoding(error.to_string()))
 }
 
 /// Decode one bare `BACnetAuditNotification` starting at `offset`.

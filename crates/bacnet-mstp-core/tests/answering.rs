@@ -10,6 +10,7 @@ use bacnet_mstp_core::{
 };
 
 type Queues = HeaplessQueues<4, 4>;
+type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn ms(value: u64) -> Instant {
     Instant::from_micros(value * 1_000)
@@ -75,7 +76,15 @@ fn data_is_delivered_and_a_token_kept_while_answering() {
     let data = Frame::new(FrameType::BACnetDataNotExpectingReply, 1, 5, &[7]);
     for (first, second) in [(token, data), (data, token)] {
         let mut rx = [0; 64];
-        let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = MasterCore::new(
+            config(),
+            Queues::new(),
+            &mut rx,
+            &mut actions,
+            Instant::ZERO,
+        )
+        .unwrap();
         core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
             .unwrap();
         let id = receive_request(&mut core);
@@ -115,11 +124,19 @@ fn frames_wanting_a_prompt_answer_are_dropped_and_counted() {
         Frame::new(FrameType::TestRequest, 1, 5, &[1]),
     ] {
         let mut rx = [0; 64];
-        let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        let mut actions = Actions::new();
+        let mut core = MasterCore::new(
+            config(),
+            Queues::new(),
+            &mut rx,
+            &mut actions,
+            Instant::ZERO,
+        )
+        .unwrap();
         let id = receive_request(&mut core);
         core.on_validated_frame(frame, ms(10)).unwrap();
         assert_eq!(
-            core.counters().discarded_while_answering,
+            core.counters().discarded_while_busy,
             1,
             "{:?}",
             frame.header.frame_type
@@ -136,7 +153,15 @@ fn frames_wanting_a_prompt_answer_are_dropped_and_counted() {
 #[test]
 fn broadcast_data_is_delivered_while_answering() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let id = receive_request(&mut core);
     for (kind, npdu) in [
         (FrameType::BACnetDataExpectingReply, [1u8, 0x04]),
@@ -154,14 +179,22 @@ fn broadcast_data_is_delivered_while_answering() {
             }
         );
     }
-    assert_eq!(core.counters().discarded_while_answering, 0);
+    assert_eq!(core.counters().discarded_while_busy, 0);
     assert_eq!(core.snapshot().request_id, Some(id));
 }
 
 #[test]
 fn a_later_frame_replaces_a_kept_token() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let id = receive_request(&mut core);
     core.on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), ms(10))
         .unwrap();
@@ -176,7 +209,15 @@ fn a_later_frame_replaces_a_kept_token() {
 #[test]
 fn a_kept_token_is_used_when_the_request_is_abandoned() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let id = receive_request(&mut core);
     core.on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), ms(10))
         .unwrap();
@@ -217,7 +258,15 @@ fn the_reply_window_closes_under_steady_line_activity() {
     // The noise keeps the reply waiting until the requester may have given
     // up; the next noise drops the reply instead of holding the core.
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let last = reply_under_noise(&mut core, |now| now <= GIVE_UP + Duration::from_millis(1));
     assert!(last >= GIVE_UP);
     assert_eq!(core.counters().expired_requests, 1);
@@ -233,7 +282,15 @@ fn the_reply_window_closes_under_steady_line_activity() {
 #[test]
 fn the_reply_window_closes_on_time_even_while_the_turnaround_moves() {
     let mut rx = [0; 64];
-    let mut core = MasterCore::new(config(), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
     let last = reply_under_noise(&mut core, |now| now <= ms(252));
     // The turnaround would end after the window closes, so the window is
     // the deadline.

@@ -1,10 +1,12 @@
-//! Byte sinks for [`Bvll::encode_to_sink`](crate::Bvll::encode_to_sink).
+//! Byte sinks for [`Bvll::encode_to_sink`](crate::Bvll::encode_to_sink) and
+//! [`Bvll6::encode_to_sink`](crate::ipv6::Bvll6::encode_to_sink).
 
-use crate::BvllError;
+use core::fmt;
 
-/// A destination for encoded BVLL octets.
+/// A destination for encoded BVLL octets, shared by the B/IP and the
+/// B/IPv6 encoders.
 ///
-/// [`Bvll::encode_to_sink`](crate::Bvll::encode_to_sink) asks for
+/// The encoders ask for
 /// [`remaining_capacity`](BvllSink::remaining_capacity) first. A sink that
 /// reports one is never handed a message that does not fit, so the fixed
 /// sinks in this crate never hold part of a message. A sink that reports
@@ -16,8 +18,31 @@ pub trait BvllSink {
     fn remaining_capacity(&self) -> Option<usize>;
 
     /// Append `bytes`, or fail without appending any of them.
-    fn write(&mut self, bytes: &[u8]) -> Result<(), BvllError>;
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull>;
 }
+
+/// A [`BvllSink`] had no room for a write.
+///
+/// Each encoder reports it as its own error's `BufferExhausted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SinkFull {
+    /// Octets the write needed.
+    pub needed: usize,
+    /// Room the sink had.
+    pub available: usize,
+}
+
+impl fmt::Display for SinkFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "sink full: need {}, have {}",
+            self.needed, self.available
+        )
+    }
+}
+
+impl core::error::Error for SinkFull {}
 
 /// Writes at the front of the slice and advances it past what was written,
 /// so after a successful encode the slice holds the unused tail.
@@ -26,9 +51,9 @@ impl BvllSink for &mut [u8] {
         Some(self.len())
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), BvllError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         if self.len() < bytes.len() {
-            return Err(BvllError::BufferExhausted {
+            return Err(SinkFull {
                 needed: bytes.len(),
                 available: self.len(),
             });
@@ -46,13 +71,12 @@ impl<const N: usize> BvllSink for heapless::Vec<u8, N> {
         Some(N - self.len())
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), BvllError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         let available = N - self.len();
-        self.extend_from_slice(bytes)
-            .map_err(|_| BvllError::BufferExhausted {
-                needed: bytes.len(),
-                available,
-            })
+        self.extend_from_slice(bytes).map_err(|_| SinkFull {
+            needed: bytes.len(),
+            available,
+        })
     }
 }
 
@@ -62,7 +86,7 @@ impl BvllSink for alloc::vec::Vec<u8> {
         None
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), BvllError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         self.extend_from_slice(bytes);
         Ok(())
     }
@@ -74,7 +98,7 @@ impl BvllSink for bytes::BytesMut {
         None
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), BvllError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         self.extend_from_slice(bytes);
         Ok(())
     }

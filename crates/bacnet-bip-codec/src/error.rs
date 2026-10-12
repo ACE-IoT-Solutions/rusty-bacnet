@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use crate::BvlcFunction;
+use crate::{BvlcFunction, SinkFull};
 
 /// A BVLL message could not be decoded or encoded.
 ///
@@ -123,3 +123,12 @@ impl fmt::Display for BvllError {
 }
 
 impl core::error::Error for BvllError {}
+
+impl From<SinkFull> for BvllError {
+    fn from(full: SinkFull) -> Self {
+        Self::BufferExhausted {
+            needed: full.needed,
+            available: full.available,
+        }
+    }
+}
