@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, warn};
 
 use super::forwarding::forward_unicast;
+use super::group_dadr::GroupDadr;
 use super::local_control::{LocalControl, OwnAddresses};
 use super::{IngressContext, SendRequest};
 use crate::layer::count_drop;
@@ -224,7 +225,8 @@ pub(super) fn refuse_address_too_long(
 /// next router with one hop spent. Nothing answers a reject, so one this
 /// router cannot route is dropped: a DNET it has no route to, the global
 /// broadcast DNET, or the arrival network, where the sender could have
-/// reached the node itself.
+/// reached the node itself. One for a DADR that is a group on a directly
+/// connected port is dropped and counted in `group_dadr_drops` (#1677).
 pub(super) async fn route_received_reject(
     table: &Mutex<RouterTable>,
     send_txs: &[mpsc::Sender<SendRequest>],
@@ -244,6 +246,10 @@ pub(super) async fn route_received_reject(
     let Some(route) = table.lock().await.lookup(dnet).cloned() else {
         return;
     };
+    // Not to a group on a directly connected port: dropped and counted.
+    if local.group_dadr(&route, &ctx.npdu) != GroupDadr::No {
+        return;
+    }
     forward_unicast(
         send_txs,
         &route,

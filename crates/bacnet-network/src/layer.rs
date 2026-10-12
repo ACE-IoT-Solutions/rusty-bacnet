@@ -342,17 +342,18 @@ pub struct NetworkLayer<T: TransportPort> {
     global_broadcast_dadr_drops: Arc<AtomicU64>,
     broadcast_pdu_type_drops: Arc<AtomicU64>,
     local_network_number: LocalNetworkNumber,
-    /// The transport's group destinations, taken when the layer is made
-    /// and again when the transport starts and knows its own addresses, so a
-    /// send never calls back into the transport to judge its destination.
-    group_destinations: GroupDestinations,
+    /// The group destinations the transport's local broadcast stands for,
+    /// taken when the layer is made and again when the transport starts and
+    /// knows its own addresses, so a send never calls back into the
+    /// transport to judge its destination.
+    local_broadcasts: GroupDestinations,
 }
 
 impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// Create a new network layer wrapping the given transport.
     pub fn new(transport: T) -> Self {
         Self {
-            group_destinations: transport.group_destinations(),
+            local_broadcasts: transport.local_broadcast_destinations(),
             transport,
             response_scope: Default::default(),
             dispatch_task: None,
@@ -370,25 +371,29 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// With no DNET, the link's broadcast MAC or any other group address
     /// ([`TransportPort::is_group_destination`]) makes this a local
     /// broadcast, which may carry only an Unconfirmed-Request APDU (Clause
-    /// 6.3). An Unconfirmed-Request to one goes out as the link's local
-    /// broadcast, through `send_broadcast`, since B/IP refuses a unicast to
-    /// a group address (#1677). The layer judges by the rule the transport
-    /// gives ([`TransportPort::group_destinations`]), taken when the layer
-    /// is made and when it starts; a transport that gives none keeps every
-    /// send as addressed. Anything
-    /// else goes to the transport as
-    /// given, and B/IP refuses it there; this layer doesn't refuse it
-    /// itself, so that is the caller's to keep: `BACnetClient`, the
-    /// endpoint's egress and its requester, which take caller-chosen MACs,
-    /// refuse anything else to it (#1479). The server refuses one for the
-    /// confirmed requests it starts itself, to event recipients, Channel and
-    /// Command targets, audit recipients and bound devices (#1493). Its replies and COV
-    /// notifications go to the source a request came from, and the server,
-    /// the client and the endpoint ignore a confirmed request from a group
-    /// source MAC (#1504), so none of those goes to a group on this link. A
-    /// routed request's SADR is another network's to judge: a reply to a
-    /// group SADR is dropped only where the final router is a
-    /// [`BACnetRouter`](crate::router::BACnetRouter).
+    /// 6.3).
+    ///
+    /// An Unconfirmed-Request to one of
+    /// [`TransportPort::local_broadcast_destinations`] goes out as the
+    /// link's local broadcast, through `send_broadcast`, since B/IP refuses a
+    /// unicast to a group address (#1677). On B/IP those are the groups at
+    /// the link's own UDP port. The layer takes that rule when it is made
+    /// and when it starts, so no send calls back into the transport; a
+    /// transport that gives no rule has every send go as addressed.
+    ///
+    /// Anything else goes to the transport as given, and B/IP refuses a
+    /// group address there. This layer doesn't refuse it itself, so that is
+    /// the caller's to keep: `BACnetClient`, the endpoint's egress and its
+    /// requester, which take caller-chosen MACs, refuse anything but an
+    /// Unconfirmed-Request to one (#1479). The server refuses one for the
+    /// confirmed requests it starts itself, to event recipients, Channel
+    /// and Command targets, audit recipients and bound devices (#1493). Its
+    /// replies and COV notifications go to the source a request came from,
+    /// and the server, the client and the endpoint ignore a confirmed
+    /// request from a group source MAC (#1504), so none of those goes to a
+    /// group on this link. A routed request's SADR is another network's to
+    /// judge: a reply to a group SADR is dropped only where the final router
+    /// is a [`BACnetRouter`](crate::router::BACnetRouter).
     pub async fn send_apdu(
         &self,
         apdu: &[u8],
@@ -429,7 +434,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         let unconfirmed = apdu
             .first()
             .is_some_and(|&first| PduType::from_raw(first >> 4) == PduType::UNCONFIRMED_REQUEST);
-        if unconfirmed && self.group_destinations.contains(destination_mac) {
+        if unconfirmed && self.local_broadcasts.contains(destination_mac) {
             return self
                 .transport
                 .send_broadcast_with_data_attributes(&buf, data_attributes)

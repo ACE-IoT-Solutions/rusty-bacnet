@@ -140,7 +140,6 @@ impl Harness {
     }
 
     pub(super) async fn dispatch(&mut self, ctx: IngressContext) {
-        let group_dadr_drops = std::sync::atomic::AtomicU64::new(0);
         dispatch_network_message(
             &self.table,
             &self.discovery,
@@ -148,7 +147,6 @@ impl Harness {
             &ctx,
             &self.gate,
             &self.local,
-            (&[], &group_dadr_drops),
         )
         .await;
     }

@@ -1,9 +1,10 @@
 //! `send_apdu` to a group address of the link (#1677, L22).
 //!
 //! With no DNET, a group address is the link's local broadcast, so an
-//! Unconfirmed-Request to one goes out through `send_broadcast`: B/IP
-//! refuses a unicast to a group address. Anything else goes to the
-//! transport as given, where B/IP refuses it.
+//! Unconfirmed-Request to one at the link's own UDP port goes out through
+//! `send_broadcast`: B/IP refuses a unicast to a group address. Anything
+//! else, a group at another port (another B/IP network) included, goes to
+//! the transport as given, where B/IP refuses it.
 
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
@@ -21,8 +22,14 @@ const CONFIRMED: [u8; 4] = [0x00, 0x05, 0x01, 0x0C];
 /// A send the layer asked of the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Sent {
-    Unicast { mac: Vec<u8>, npdu: Vec<u8> },
-    Broadcast { npdu: Vec<u8> },
+    Unicast {
+        mac: Vec<u8>,
+        npdu: Vec<u8>,
+    },
+    Broadcast {
+        npdu: Vec<u8>,
+        attributes: Vec<DataAttribute>,
+    },
 }
 
 /// A B/IP transport whose sends are recorded. A unicast goes on to it, so
@@ -52,8 +59,17 @@ impl TransportPort for Recorded {
     }
 
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
+        self.send_broadcast_with_data_attributes(npdu, &[]).await
+    }
+
+    async fn send_broadcast_with_data_attributes(
+        &self,
+        npdu: &[u8],
+        data_attributes: &[DataAttribute],
+    ) -> Result<(), Error> {
         let sent = Sent::Broadcast {
             npdu: npdu.to_vec(),
+            attributes: data_attributes.to_vec(),
         };
         self.sent.lock().unwrap().push(sent);
         Ok(())
@@ -78,6 +94,10 @@ impl TransportPort for Recorded {
     fn group_destinations(&self) -> GroupDestinations {
         self.inner.group_destinations()
     }
+
+    fn local_broadcast_destinations(&self) -> GroupDestinations {
+        self.inner.local_broadcast_destinations()
+    }
 }
 
 #[tokio::test]
@@ -89,8 +109,10 @@ async fn an_unconfirmed_request_to_a_group_address_goes_out_as_a_local_broadcast
         sent: Arc::clone(&sent),
     });
     let _rx = net.start().await.unwrap();
-    let port = net.transport().inner.local_mac()[4..].to_vec();
-    let at = |ip: [u8; 4]| [&ip[..], &port].concat();
+    let mac = net.transport().inner.local_mac();
+    let port = u16::from_be_bytes([mac[4], mac[5]]);
+    let at_port = |ip: [u8; 4], port: u16| [&ip[..], &port.to_be_bytes()].concat();
+    let at = |ip: [u8; 4]| at_port(ip, port);
     let p = NetworkPriority::NORMAL;
     let groups = [
         at([192, 0, 2, 255]),
@@ -111,18 +133,31 @@ async fn an_unconfirmed_request_to_a_group_address_goes_out_as_a_local_broadcast
     // One device's address still takes a unicast.
     let peer = at([127, 0, 0, 1]);
     net.send_apdu(&WHO_IS, &peer, false, p).await.unwrap();
-    // A confirmed request goes to the transport as given, which refuses it.
-    let refused = net.send_apdu(&CONFIRMED, &groups[0], true, p).await;
-    let error = refused.unwrap_err();
-    assert!(error.to_string().contains("group address"), "{error}");
+    // A confirmed request goes to the transport as given, which refuses it,
+    // and so does a Who-Is for a group at another port: another B/IP
+    // network's, which this link's broadcast doesn't reach.
+    let elsewhere = at_port(
+        [255, 255, 255, 255],
+        port.checked_add(1).unwrap_or(port - 1),
+    );
+    for (apdu, to) in [(&CONFIRMED[..], &groups[0]), (&WHO_IS[..], &elsewhere)] {
+        let refused = net.send_apdu(apdu, to, true, p).await;
+        let error = refused.unwrap_err();
+        assert!(error.to_string().contains("group address"), "{error}");
+    }
 
     let local_broadcast = [&[0x01, 0x00][..], &WHO_IS].concat();
     let mut expected = vec![
         Sent::Broadcast {
-            npdu: local_broadcast.clone()
+            npdu: local_broadcast.clone(),
+            attributes: Vec::new(),
         };
-        groups.len() + 1
+        groups.len()
     ];
+    expected.push(Sent::Broadcast {
+        npdu: local_broadcast.clone(),
+        attributes: attributes.to_vec(),
+    });
     expected.push(Sent::Unicast {
         mac: peer,
         npdu: local_broadcast,
@@ -130,6 +165,10 @@ async fn an_unconfirmed_request_to_a_group_address_goes_out_as_a_local_broadcast
     expected.push(Sent::Unicast {
         mac: groups[0].clone(),
         npdu: [&[0x01, 0x04][..], &CONFIRMED].concat(),
+    });
+    expected.push(Sent::Unicast {
+        mac: elsewhere,
+        npdu: [&[0x01, 0x04][..], &WHO_IS].concat(),
     });
     assert_eq!(*sent.lock().unwrap(), expected);
     net.stop().await.unwrap();
@@ -157,7 +196,8 @@ async fn the_group_rule_follows_the_port_bound_at_start() {
     assert_eq!(
         *sent.lock().unwrap(),
         [Sent::Broadcast {
-            npdu: local_broadcast
+            npdu: local_broadcast,
+            attributes: Vec::new(),
         }]
     );
     net.stop().await.unwrap();

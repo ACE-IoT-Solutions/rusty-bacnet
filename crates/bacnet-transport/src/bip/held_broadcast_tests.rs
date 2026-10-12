@@ -223,3 +223,54 @@ async fn held_broadcasts_count_as_discarded_when_the_node_stops() {
     let again = device.ctx.node.snapshot().foreign_registration;
     assert_eq!((again.broadcasts_held, again.broadcasts_discarded), (2, 2));
 }
+
+/// Broadcasts made while released ones go queue behind them, up to the
+/// hold's 16; one more is refused as a full hold, counted.
+#[tokio::test(start_paused = true)]
+async fn the_queue_behind_released_broadcasts_is_bounded() {
+    let device = Device::new(Duration::from_secs(10)).await;
+    device.sink.yield_on_send(true);
+    broadcast(&device, 0).await.unwrap();
+    device.at(13).await;
+    device.bbmd_says(0).await;
+    tokio::task::yield_now().await;
+    for n in 1..=16 {
+        broadcast(&device, n).await.unwrap();
+    }
+    let full = broadcast(&device, 17).await.unwrap_err();
+    assert!(full.to_string().contains("no room to hold"), "{full}");
+    device.at(20).await;
+    let sent: Vec<_> = device.sent().into_iter().skip(1).collect();
+    let expected: Vec<_> = (0..=16).map(|n| (13, distribute(n))).collect();
+    assert_eq!(sent, expected);
+    let registration = device.ctx.node.snapshot().foreign_registration;
+    assert_eq!(registration.broadcasts_hold_full, 1);
+    assert_eq!(device.ctx.node.send_counters().npdu_too_long, 0);
+}
+
+/// A stop drops what is queued behind released broadcasts, counted as
+/// discarded.
+#[tokio::test(start_paused = true)]
+async fn queued_broadcasts_count_as_discarded_when_the_node_stops() {
+    let device = Device::new(Duration::from_secs(10)).await;
+    device.sink.yield_on_send(true);
+    broadcast(&device, 0).await.unwrap();
+    device.at(13).await;
+    device.bbmd_says(0).await;
+    tokio::task::yield_now().await;
+    broadcast(&device, 1).await.unwrap();
+    broadcast(&device, 2).await.unwrap();
+    device.ctx.node.stop();
+    device.at(20).await;
+    let sent: Vec<_> = device.sent().into_iter().skip(1).collect();
+    assert_eq!(sent, [(13, distribute(0))], "nothing queued went out");
+    let registration = device.ctx.node.snapshot().foreign_registration;
+    assert_eq!(
+        (
+            registration.broadcasts_held,
+            registration.broadcasts_released,
+            registration.broadcasts_discarded,
+        ),
+        (1, 1, 2)
+    );
+}

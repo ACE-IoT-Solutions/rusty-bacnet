@@ -34,6 +34,7 @@ use tokio::sync::{oneshot, Notify};
 use tracing::{debug, info, warn};
 
 use super::client_snapshot::{ClientRecord, ForeignRegistrationSnapshot};
+use super::foreign_device::HELD_BROADCASTS;
 use super::rate_limit::ManagementRateLimiter;
 use super::send_counters::SendRefusals;
 use super::BipSocket;
@@ -164,11 +165,13 @@ pub(super) struct NodeState {
     attempt_started: Option<CoreInstant>,
     /// Broadcasts held for the first registration.
     held: VecDeque<Bytes>,
-    /// Broadcasts for the driver to send, in order: those held, once
-    /// released, and any made while those still wait.
+    /// Held broadcasts released, for the driver to send.
     release: Vec<Bytes>,
-    /// The driver is sending broadcasts from `release`. A broadcast made
-    /// meanwhile queues behind them, so none overtakes another.
+    /// Broadcasts made while released ones still wait for the driver, which
+    /// sends them next, so none overtakes another. At most
+    /// [`HELD_BROADCASTS`]; one more is refused as a full hold.
+    queued: Vec<Bytes>,
+    /// The driver is sending broadcasts it took from `release` and `queued`.
     releasing: bool,
     /// A refusal was logged at warn, and the next ones go at debug until a
     /// success or the lease's end.
@@ -298,6 +301,7 @@ impl NodeHandle {
                 attempt_started: None,
                 held: VecDeque::new(),
                 release: Vec::new(),
+                queued: Vec::new(),
                 releasing: false,
                 refusal_warned: false,
                 stopped: false,
@@ -380,7 +384,8 @@ impl NodeHandle {
     /// Whether a foreign device's broadcast of `npdu` goes now, from the
     /// caller. Otherwise the node keeps it: held until it releases or drops
     /// it, or queued behind released broadcasts the driver hasn't sent yet,
-    /// so that broadcasts go in the order they were made.
+    /// so that broadcasts go in the order they were made. That queue takes
+    /// as many as the hold; one more is refused and counted as a full hold.
     pub(super) fn admit_broadcast(&self, npdu: &[u8]) -> Result<bool, Error> {
         self.with(|state, now| {
             let admission = state
@@ -388,10 +393,20 @@ impl NodeHandle {
                 .admit_broadcast(now)
                 .map_err(|refusal| self.refuse_send(refusal))?;
             let copy = || Bytes::copy_from_slice(npdu);
+            let waiting = state.releasing || !state.release.is_empty() || !state.queued.is_empty();
             match admission {
                 Admission::Hold => state.held.push_back(copy()),
-                Admission::Send if state.releasing || !state.release.is_empty() => {
-                    state.release.push(copy());
+                Admission::Send if waiting => {
+                    if state.queued.len() >= usize::from(HELD_BROADCASTS) {
+                        if !state.stopped {
+                            self.record.absorb(&NodeCounters {
+                                broadcasts_hold_full: 1,
+                                ..NodeCounters::default()
+                            });
+                        }
+                        return Err(self.refuse_send(SendRefusal::HoldFull));
+                    }
+                    state.queued.push(copy());
                 }
                 Admission::Send => return Ok(true),
             }
@@ -430,11 +445,13 @@ impl NodeHandle {
     }
 
     /// Stop: requests in flight fail as their channel closes, none starts,
-    /// and nothing more is sent or counted. Broadcasts still held count as
-    /// discarded, so every held broadcast counts as released or discarded.
+    /// and nothing more is sent or counted. Broadcasts still held or queued
+    /// count as discarded, so every held broadcast counts as released or
+    /// discarded, and every queued one as sent or discarded.
     pub(super) fn stop(&self) {
         let mut state = self.lock();
-        let discarded = u32::try_from(state.held.len()).unwrap_or(u32::MAX);
+        let kept = state.held.len() + state.queued.len();
+        let discarded = u32::try_from(kept).unwrap_or(u32::MAX);
         if discarded > 0 && !state.stopped {
             self.record.absorb(&NodeCounters {
                 broadcasts_discarded: discarded,
@@ -446,6 +463,7 @@ impl NodeHandle {
         state.register = None;
         state.held.clear();
         state.release.clear();
+        state.queued.clear();
         state.releasing = false;
     }
 
@@ -511,16 +529,18 @@ impl NodeHandle {
         }
     }
 
-    /// Send the broadcasts in `release`, in order, with those made while
-    /// they go. Under the lock, `releasing` is cleared only once nothing is
-    /// left, so a broadcast made after that goes from its caller, after
-    /// these.
+    /// Send the broadcasts in `release`, then those queued behind them, in
+    /// order, with any queued while they go. Under the lock, `releasing` is
+    /// cleared only once nothing is left, so a broadcast made after that
+    /// goes from its caller, after these.
     async fn send_releases(&self) {
         loop {
             let batch = {
                 let mut state = self.lock();
-                state.releasing = !state.release.is_empty();
-                std::mem::take(&mut state.release)
+                let mut batch = std::mem::take(&mut state.release);
+                batch.append(&mut state.queued);
+                state.releasing = !batch.is_empty();
+                batch
             };
             if batch.is_empty() {
                 return;

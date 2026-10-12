@@ -803,6 +803,16 @@ impl TransportPort for BipTransport {
         let groups = self.groups();
         crate::port::GroupDestinations::new(move |mac| groups.contains(mac))
     }
+
+    /// The group destinations at this link's own UDP port (#1677): a group
+    /// address at another port belongs to another B/IP network, so a send
+    /// there is refused rather than sent as this link's broadcast.
+    fn local_broadcast_destinations(&self) -> crate::port::GroupDestinations {
+        let (groups, port) = (self.groups(), self.port);
+        crate::port::GroupDestinations::new(move |mac| {
+            groups.contains(mac) && codec::address_from_slice(mac).is_ok_and(|a| a.port() == port)
+        })
+    }
 }
 
 impl Drop for BipTransport {

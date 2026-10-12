@@ -81,6 +81,7 @@ mod control_messages;
 pub mod control_policy;
 mod dispatch;
 mod forwarding;
+mod group_dadr;
 mod local_control;
 mod options;
 mod reject;
@@ -90,6 +91,7 @@ pub use control_policy::{ControlAuthContext, ControlAuthorizer, ControlClass};
 pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
 pub use control_policy::{ControlServiceCounters, ControlTrust};
 use dispatch::PortDispatch;
+use group_dadr::GroupRules;
 use local_control::{LocalControl, OwnAddresses};
 pub use options::{LocalApduReceiver, NetworkControlReceiver, RouterOptions, StartedRouter};
 
@@ -431,11 +433,14 @@ impl BACnetRouter {
     /// [`TransportPort::group_destinations`],
     /// so a custom transport that keeps the default recognizes none. The
     /// router delivers it nowhere and answers it with no reject. A network
-    /// message routed to such a DADR is dropped and counted too: it must not
-    /// reach every router on that network as a broadcast. An
-    /// Unconfirmed-Request for such a DADR isn't counted: it goes out on that
-    /// port as a local broadcast, and reaches this router's application
-    /// where a DLEN 0 broadcast would (#1677).
+    /// message routed to such a DADR, or a Reject-Message-To-Network relayed
+    /// to one, is dropped and counted too: it must not reach every router on
+    /// that network as a broadcast. An Unconfirmed-Request for one of the
+    /// groups the port's broadcast stands for
+    /// ([`TransportPort::local_broadcast_destinations`]) isn't counted: it
+    /// goes out on that port as a local broadcast, and reaches this router's
+    /// application where a DLEN 0 broadcast would (#1677). On B/IP, one for a
+    /// group at another UDP port, another B/IP network, is counted.
     pub fn group_dadr_drops(&self) -> u64 {
         self.group_dadr_drops.load(Ordering::Relaxed)
     }
@@ -477,6 +482,7 @@ impl BACnetRouter {
         let mut port_networks = Vec::new();
         let mut port_local_macs = Vec::new();
         let mut port_groups = Vec::new();
+        let mut port_local_broadcasts = Vec::new();
 
         for port in &mut ports {
             // A routing node may owe its data link more than other nodes:
@@ -487,8 +493,8 @@ impl BACnetRouter {
             port_networks.push(port.network_number);
             port_local_macs.push(MacAddr::from_slice(port.transport.local_mac()));
             port_groups.push(port.transport.group_destinations());
+            port_local_broadcasts.push(port.transport.local_broadcast_destinations());
         }
-        let port_groups = Arc::new(port_groups);
 
         // Move transports into sender tasks
         for port in ports {
@@ -574,20 +580,27 @@ impl BACnetRouter {
         let broadcast_pdu_type_drops = Arc::new(AtomicU64::new(0));
         let group_dadr_drops = Arc::new(AtomicU64::new(0));
         let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
-        let local_control = Arc::new(LocalControl::new(
-            OwnAddresses::new(
-                port_networks
-                    .iter()
-                    .zip(&port_local_macs)
-                    .map(|(&network, mac)| NpduAddress {
-                        network,
-                        mac_address: mac.clone(),
-                    })
-                    .collect(),
-            ),
-            network_control,
-            Arc::clone(&network_control_ingress_sequence),
-        ));
+        let local_control = Arc::new(
+            LocalControl::new(
+                OwnAddresses::new(
+                    port_networks
+                        .iter()
+                        .zip(&port_local_macs)
+                        .map(|(&network, mac)| NpduAddress {
+                            network,
+                            mac_address: mac.clone(),
+                        })
+                        .collect(),
+                ),
+                network_control,
+                Arc::clone(&network_control_ingress_sequence),
+            )
+            .with_groups(GroupRules::new(
+                port_groups,
+                port_local_broadcasts,
+                Arc::clone(&group_dadr_drops),
+            )),
+        );
 
         for (port_idx, rx) in port_receivers.into_iter().enumerate() {
             let port = PortDispatch {
@@ -598,8 +611,6 @@ impl BACnetRouter {
                 address_length_drops: Arc::clone(&address_length_drops),
                 global_broadcast_dadr_drops: Arc::clone(&global_broadcast_dadr_drops),
                 broadcast_pdu_type_drops: Arc::clone(&broadcast_pdu_type_drops),
-                group_dadr_drops: Arc::clone(&group_dadr_drops),
-                port_groups: Arc::clone(&port_groups),
                 local_tx: local_tx.clone(),
                 send_txs: Arc::clone(&send_txs),
                 port_idx,

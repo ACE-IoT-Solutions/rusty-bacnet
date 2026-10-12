@@ -3,7 +3,9 @@
 //! multicast address. Anything but an Unconfirmed-Request is dropped and
 //! counted before it reaches the B/IP port (#1504); an Unconfirmed-Request
 //! goes out there as a local broadcast (#1677), since B/IP refuses a
-//! unicast to a group address.
+//! unicast to a group address. A group at another UDP port belongs to
+//! another B/IP network, so an Unconfirmed-Request for one is dropped and
+//! counted too.
 
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
@@ -73,6 +75,10 @@ impl TransportPort for Recorded {
 
     fn group_destinations(&self) -> GroupDestinations {
         self.inner.group_destinations()
+    }
+
+    fn local_broadcast_destinations(&self) -> GroupDestinations {
+        self.inner.local_broadcast_destinations()
     }
 }
 
@@ -145,6 +151,13 @@ impl TransportPort for Port {
             Self::Bip(bip) => bip.group_destinations(),
         }
     }
+
+    fn local_broadcast_destinations(&self) -> GroupDestinations {
+        match self {
+            Self::Mstp(mstp) => mstp.local_broadcast_destinations(),
+            Self::Bip(bip) => bip.local_broadcast_destinations(),
+        }
+    }
 }
 
 fn station(station: u8) -> MstpConfig {
@@ -177,7 +190,14 @@ fn routed(dadr: [u8; 6], apdu: &[u8]) -> Vec<u8> {
 async fn mstp_six_byte_bip_group_destinations_reach_the_bip_port_only_as_broadcasts() {
     let (router_serial, peer_serial) = LoopbackSerial::pair();
     let sent = Arc::new(Mutex::new(Vec::new()));
-    let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::new(192, 0, 2, 255));
+    // A known port, so the groups at it and at another can be named.
+    let port = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let other = port.checked_add(1).unwrap_or(port - 1);
+    let bip = BipTransport::new(Ipv4Addr::LOCALHOST, port, Ipv4Addr::new(192, 0, 2, 255));
     let ports = vec![
         RouterPort {
             transport: Port::Mstp(MstpTransport::new(router_serial, station(0))),
@@ -206,18 +226,29 @@ async fn mstp_six_byte_bip_group_destinations_reach_the_bip_port_only_as_broadca
     .expect("the router announces itself");
     sent.lock().unwrap().clear();
 
+    let at = |ip: [u8; 4], port: u16| {
+        let [high, low] = port.to_be_bytes();
+        [ip[0], ip[1], ip[2], ip[3], high, low]
+    };
     let groups = [
-        [192, 0, 2, 255, 0xBA, 0xC0],
-        [255, 255, 255, 255, 0xBA, 0xC0],
-        [239, 1, 2, 3, 0xBA, 0xC0],
+        at([192, 0, 2, 255], port),
+        at([255, 255, 255, 255], port),
+        at([239, 1, 2, 3], port),
     ];
-    // An Error PDU for each group, then a Who-Is for each.
+    let elsewhere = [at([192, 0, 2, 255], other), at([255, 255, 255, 255], other)];
+    // An Error PDU for each group, then a Who-Is for each, and a Who-Is for
+    // groups at another port.
     let not_unconfirmed = [0x50, 0x01, 0x0C, 0x91, 0x02, 0x91, 0x1F];
     let who_is = [0x10, 0x08];
     for apdu in [&not_unconfirmed[..], &who_is[..]] {
         for dadr in groups {
             peer.send_unicast(&routed(dadr, apdu), &[0]).await.unwrap();
         }
+    }
+    for dadr in elsewhere {
+        peer.send_unicast(&routed(dadr, &who_is), &[0])
+            .await
+            .unwrap();
     }
     timeout(Duration::from_secs(10), async {
         while sent.lock().unwrap().len() < groups.len() {
@@ -243,7 +274,10 @@ async fn mstp_six_byte_bip_group_destinations_reach_the_bip_port_only_as_broadca
         );
         assert_eq!(npdu.payload.as_ref(), who_is);
     }
-    assert_eq!(router.group_dadr_drops(), groups.len() as u64);
+    assert_eq!(
+        router.group_dadr_drops(),
+        (groups.len() + elsewhere.len()) as u64
+    );
     router.stop().await;
     peer.stop().await.unwrap();
 }

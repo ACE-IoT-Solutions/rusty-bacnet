@@ -11,10 +11,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use bacnet_encoding::npdu::NpduAddress;
+use bacnet_encoding::npdu::{Npdu, NpduAddress};
 
+use super::group_dadr::{GroupDadr, GroupRules};
 use super::{BACnetRouter, IngressContext};
 use crate::layer::{next_ingress_sequence, AdmissionSender, ReceivedNetworkControl};
+use crate::router_table::RouteEntry;
 
 /// The router's own address on each port, by port index: the network the
 /// port is attached to, with the router's MAC on that link.
@@ -44,6 +46,8 @@ impl OwnAddresses {
 pub(super) struct LocalControl {
     /// The router's own address on each port.
     addresses: OwnAddresses,
+    /// What each port's group destinations let through (#1504, #1677).
+    groups: GroupRules,
     /// The opted-in consumer, if any.
     tx: Option<AdmissionSender<ReceivedNetworkControl>>,
     /// Source of [`ReceivedNetworkControl::ingress_sequence`].
@@ -58,9 +62,21 @@ impl LocalControl {
     ) -> Self {
         Self {
             addresses,
+            groups: GroupRules::default(),
             tx,
             ingress_sequence,
         }
+    }
+
+    /// The same, judging a DADR by `groups`.
+    pub(super) fn with_groups(self, groups: GroupRules) -> Self {
+        Self { groups, ..self }
+    }
+
+    /// What becomes of `npdu`, which this router would deliver on the port
+    /// `route` names, when its DADR is a group there.
+    pub(super) fn group_dadr(&self, route: &RouteEntry, npdu: &Npdu) -> GroupDadr {
+        self.groups.check(route, npdu)
     }
 
     /// The router's own address on each port, which also tells the reject

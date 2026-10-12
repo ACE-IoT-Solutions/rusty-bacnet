@@ -88,3 +88,29 @@ async fn a_run_of_refusals_warns_once() {
     let registration = device.ctx.node.snapshot().foreign_registration;
     assert_eq!((registration.accepted, registration.refused), (2, 4));
 }
+
+/// A registration and a lapse each end a run of refusals too: a refusal
+/// after either warns again.
+#[tokio::test(start_paused = true)]
+async fn a_registration_or_a_lapse_ends_a_run_of_refusals() {
+    let (logs, _guard) = LogCapture::start();
+    let device = Device::new(Duration::from_secs(10)).await;
+    // Refused at first, registered at 10 s from that attempt, refused again.
+    device.at(13).await;
+    device.bbmd_says(0x30).await;
+    device.at(10_013).await;
+    device.bbmd_says(0).await;
+    device.at(20_013).await;
+    device.bbmd_says(0x30).await;
+    // Every attempt lost from 30 s: the lease, from 10 s, lapses at 70 s,
+    // and the attempt at 75 s is refused.
+    device.at(75_013).await;
+    device.bbmd_says(0x30).await;
+
+    let warn = Level::WARN;
+    assert_eq!(logs.levels(REFUSED), [warn, warn, warn]);
+    assert_eq!(logs.levels(REGISTERED), [Level::INFO]);
+    assert_eq!(logs.levels(LAPSED), [warn]);
+    let registration = device.ctx.node.snapshot().foreign_registration;
+    assert_eq!((registration.refused, registration.lapses), (3, 1));
+}

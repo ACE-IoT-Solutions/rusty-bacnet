@@ -185,3 +185,33 @@ async fn a_network_message_for_a_group_dadr_is_dropped_and_counted() {
     assert_eq!(fixture.router.group_dadr_drops(), 2);
     fixture.stop().await;
 }
+
+/// A Reject-Message-To-Network the router relays toward the node it names
+/// isn't relayed to a group DADR either: it is dropped and counted.
+#[tokio::test]
+async fn a_relayed_reject_for_a_group_dadr_is_dropped_and_counted() {
+    let mut fixture = RouterFixture::start_with_group_on_b(GROUP).await;
+    // A reject about network 5000, which this router doesn't know, so the
+    // routing table is left as it is.
+    let reject = Npdu {
+        is_network_message: true,
+        message_type: Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw()),
+        destination: Some(NpduAddress {
+            network: 2000,
+            mac_address: MacAddr::from_slice(&[GROUP]),
+        }),
+        hop_count: 255,
+        payload: Bytes::from_static(&[0x01, 0x13, 0x88]),
+        ..Npdu::default()
+    };
+    let mut bytes = BytesMut::new();
+    encode_npdu(&mut bytes, &reject).unwrap();
+    fixture.send_from_a(&bytes).await;
+    fixture.send_from_a(&routed(2000, 0x0B, &APDU)).await;
+
+    let (first, to) = next_from_router(&mut fixture.from_router_b).await;
+    assert_eq!(to.as_deref(), Some(&[0x0B][..]), "the reject went nowhere");
+    assert!(!first.is_network_message);
+    assert_eq!(fixture.router.group_dadr_drops(), 1);
+    fixture.stop().await;
+}
