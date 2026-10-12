@@ -995,19 +995,21 @@ one.
 ## Fuzzing
 
 [`.github/workflows/fuzz.yml`](../.github/workflows/fuzz.yml) fuzzes the
-MS/TP and B/IP codecs with [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz),
-which drives libFuzzer (#1610). No check here is required for merging: every
-job's name starts with `Fuzz:`, so none can pass for `CI OK` or `Native OK`,
-and the release's [CI gate](#ci-gate) reads only `ci.yml` and
-`native-tests.yml` runs.
+MS/TP and B/IP codecs (#1610) and the MS/TP master core (#1640) with
+[cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz), which drives libFuzzer.
+No check here is required for merging: every job's name starts with `Fuzz:`,
+so none can pass for `CI OK` or `Native OK`, and the release's
+[CI gate](#ci-gate) reads only `ci.yml` and `native-tests.yml` runs.
 
-**Targets.** Each codec has a fuzz crate, `crates/<codec>/fuzz`, outside the
-workspace, with its own `Cargo.lock`. Its `src/lib.rs` holds what its targets
-share: for MS/TP, an encoder and a frame check written from the wire layout
-with bit-at-a-time CRCs (the CRC-32K included) and a COBS of its own, without
-calling the codec, so a fault the codec's encode and decode share can't
-cancel out; for both, a check that encodes through every sink. The oracle of
-each target is in the doc comment at the top of its file.
+**Targets.** Each fuzzed crate has a fuzz crate, `crates/<crate>/fuzz`,
+outside the workspace, with its own `Cargo.lock`. Its `src/lib.rs` holds what
+its targets share: for the MS/TP codec, an encoder and a frame check written
+from the wire layout with bit-at-a-time CRCs (the CRC-32K included) and a COBS
+of its own, without calling the codec, so a fault the codec's encode and
+decode share can't cancel out; for both codecs, a check that encodes through
+every sink; for the core, the harness that drives it and the checker that
+judges it. The oracle of each target is in the doc comment at the top of its
+file.
 
 | Target | Input | Oracle |
 | --- | --- | --- |
@@ -1016,6 +1018,7 @@ each target is in the doc comment at the top of its file.
 | `mstp_stream` | valid standard and extended frames, frames of the reserved COBS types, frames damaged past the header, raw noise and noise without `0x55`, pushed into 1 to 2,117 octets of storage in pieces of any size, with empty pushes, drains and resets | each push checked against a shadow of the decoder's buffer and of any skip in progress: refusals, `NeedMore`, `Invalid` (one noise run), `Malformed` (error, discard, destination, and whether it skips the frame by count) and `Frame` (with its decoded data), the buffered length and the phase; never wedged; at the end, frames in order and each once, and every guaranteed generated frame delivered at its offset |
 | `bip_decode`, `bip6_decode` | any octets | no panic; an accepted datagram re-encodes to itself, unless its result code is one the annex doesn't define |
 | `bip_encode`, `bip6_encode` | any `Bvll` or `Bvll6`, some within 8 octets of the 65,535-octet limit on either side | the octets the Annex J.2 or U.2 layout gives, built field by field; an undefined result code and a message too long for the Length field refused; sinks as for `mstp_encode`; each result decodes back to an equal message |
+| `mstp_core` | one `MasterCore`, its address, Max_Master, Max_Info_Frames, timers, extended frames and storage from the input, then up to 2,048 steps with injected time: octets, receive errors and silences; whole frames of every type for it, another station or broadcast, on the line or from a host assembler, some damaged; deadlines on time or late; the adapter's starts (some refused or deferred), completions with or without echo, and aborts; queued NPDUs, oversize ones included; request decisions; calls stamped in the past | after every step, by a checker that reads only the line and the adapter's side, never the core's state: no panic; data, Tokens and polls only while the station holds the token, as the frames on the line show it, or as a token retry, a successor search or token generation when Clause 9.5.6 allows them, and otherwise only answers to what was asked, once and in time; at most Max_Info_Frames data frames per token use; poll sweeps one address at a time within Max_Master; T_turnaround before every frame; queues and delivery slots within their sizes; the adapter contract on every action (one frame at a time, starts only for polled frames, completion only after a start, echo ignored, payloads in the action buffers); deliveries matching frames heard; earlier stamps refused as clock regressions |
 
 A generated frame in `mstp_stream` is guaranteed when it fits the storage, no
 reset falls inside it, and no `0x55` lies between it and the anchor: the end
@@ -1028,9 +1031,21 @@ after a good header (too long for the storage, a reserved COBS type, or data
 that fails its check) hides nothing: the decoder skips exactly the octets its
 header declares (#1609).
 
+`mstp_core`'s checker rebuilds the line with a stream decoder of its own and
+follows the token through the master state machine at the level the line
+shows: free, held, or passed and watched for its successor's use. Where the
+line can't tell what the core did (a late deadline it didn't service, a
+frame its decoder may or may not count as invalid, a waiting frame it
+dropped silently on the way back to IDLE), the checker allows each choice the
+core could have made, so it can miss a fault there but never fails a correct
+core. A fault planted in the core, taking up a Token addressed to another
+station, failed the target within two seconds from an empty corpus; one more
+data frame per token use than allowed failed it within ten.
+
 **When.** On a PR to `dev` or `main` that changes
-`crates/bacnet-mstp-codec/**` or `crates/bacnet-bip-codec/**` (fuzz crates
-included), the workflow, `.github/ci-pins.env`, `scripts/ci/fuzz.sh` or
+`crates/bacnet-mstp-codec/**`, `crates/bacnet-bip-codec/**` or
+`crates/bacnet-mstp-core/**` (fuzz crates included), the workflow,
+`.github/ci-pins.env`, `scripts/ci/fuzz.sh` or
 `scripts/ci/install-tools.sh`, each target runs for 60 seconds. Twice a
 week (Sundays and Wednesdays at 03:41 UTC, on `dev`) and by hand, each runs
 for 10 minutes. A newer push to the PR cancels its older run; scheduled and
@@ -1074,23 +1089,23 @@ in.
 
 **Lockfiles.** Each fuzz crate's `Cargo.lock` is committed, and every build
 checks it first, so the fuzz builds use the dependencies it names. It also
-records what the root `Cargo.toml` sets for the codec: its version and the
-workspace's requirements for its dependencies. A version bump or a moved
-requirement leaves the lockfile stale, so `ci.yml`'s required Lint job checks
-both lockfiles too (`bash scripts/ci/fuzz.sh lock --check`, any toolchain).
-`bash scripts/ci/fuzz.sh lock` brings them up to date: cargo re-resolves only
-the entries the manifests no longer allow and keeps every other dependency
-where it was. Run it with the release's version bump (step 1 of
-[the release](#trigger-and-dry-run)) and in any PR that changes a workspace
-dependency of a codec, and commit the lockfiles. When such a change moves a
-dependency the fuzz crate also names itself (`bytes`, `heapless`) to a new
-major version, update the fuzz crate's `Cargo.toml` to match, or the sinks
-won't build.
+records what the root `Cargo.toml` sets for the crate it fuzzes: its version
+and the workspace's requirements for its dependencies. A version bump or a
+moved requirement leaves the lockfile stale, so `ci.yml`'s required Lint job
+checks every lockfile too (`bash scripts/ci/fuzz.sh lock --check`, any
+toolchain). `bash scripts/ci/fuzz.sh lock` brings them up to date: cargo
+re-resolves only the entries the manifests no longer allow and keeps every
+other dependency where it was. Run it with the release's version bump (step 1
+of [the release](#trigger-and-dry-run)) and in any PR that changes a
+workspace dependency of a fuzzed crate, and commit the lockfiles. When such a
+change moves a dependency the fuzz crate also names itself (`bytes`,
+`heapless`) to a new major version, update the fuzz crate's `Cargo.toml` to
+match, or the sinks won't build.
 
 Cargo Deny's gate doesn't cover the fuzz crates: they are unpublished CI
 tools whose binaries never ship. **Fuzz: advisories** checks their
 advisories; their bans and sources pass too
-(`cargo deny --manifest-path crates/<codec>/fuzz/Cargo.toml check`), and
+(`cargo deny --manifest-path crates/<crate>/fuzz/Cargo.toml check`), and
 their licenses fail only because libFuzzer's `NCSA` (in `libfuzzer-sys`)
 isn't on the allow list and the fuzz crates name no license.
 
@@ -1104,6 +1119,7 @@ bash scripts/ci/fuzz.sh list                          # the targets
 bash scripts/ci/fuzz.sh check                         # lockfiles, rustfmt, clippy
 bash scripts/ci/fuzz.sh build                         # every target
 bash scripts/ci/fuzz.sh run mstp_stream 60            # one target for 60 seconds
+bash scripts/ci/fuzz.sh run mstp_core 600             # the master core for 10 minutes
 FUZZ_WORK=/tmp/fuzz bash scripts/ci/fuzz.sh run bip_encode 600 -max_len=16384
 ```
 
@@ -1127,11 +1143,12 @@ cargo +nightly-2026-08-15 fuzz run --target "$host" mstp_stream /tmp/fuzz-mstp_s
 ```
 
 `fuzz fmt` prints a structure-aware target's input (frames, noise, pushes) as
-the target decoded it. Decide whether the codec or the oracle is wrong; the
-oracle's reasoning is in the target's doc comment. Turn a codec bug into a
-regression test in the codec's own `tests/`, fix it, and check that the replay
-passes. `bash scripts/ci/fuzz.sh tmin <target> <input>` minimizes an input
-further.
+the target decoded it. Decide whether the crate or the oracle is wrong; the
+oracle's reasoning is in the target's doc comment (for `mstp_core`, in its
+`src/checker.rs`, and the panic names the step, the time and what the checker
+believed about the token). Turn a bug into a regression test in the fuzzed
+crate's own `tests/`, fix it, and check that the replay passes. `bash
+scripts/ci/fuzz.sh tmin <target> <input>` minimizes an input further.
 
 ## Local checks
 

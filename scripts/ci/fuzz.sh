@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Checks, builds and runs the codecs' cargo-fuzz targets (#1610) with the
-# nightly toolchain that .github/ci-pins.env pins as RUST_FUZZ_NIGHTLY.
-# .github/workflows/fuzz.yml runs it, and it runs the same way locally (see
-# docs/ci.md, "Fuzzing"):
+# Checks, builds and runs the cargo-fuzz targets of the codecs (#1610) and
+# the MS/TP master core (#1640) with the nightly toolchain that
+# .github/ci-pins.env pins as RUST_FUZZ_NIGHTLY. .github/workflows/fuzz.yml
+# runs it, and it runs the same way locally (see docs/ci.md, "Fuzzing"):
 #
 #   fuzz.sh list                     one "<crate> <target>" line per target
 #   fuzz.sh matrix                   the same as a JSON array, for fuzz.yml
@@ -19,7 +19,7 @@
 #                                    possible; --check fails instead
 #
 # The fuzz crates are crates/*/fuzz, each a workspace of its own with its own
-# Cargo.lock, which records the workspace version of the codec it fuzzes and
+# Cargo.lock, which records the workspace version of the crate it fuzzes and
 # the workspace's requirements for its dependencies: a version bump or a moved
 # requirement leaves it stale until `fuzz.sh lock`. Every build checks it
 # first, and so does ci.yml's Lint job, with `lock --check`. `lock` needs no
@@ -215,12 +215,12 @@ case $command in
       --check) for crate in "${crates[@]}"; do locked "$crate"; done ;;
       '')
         # Without --locked, cargo re-resolves only the entries the manifests
-        # no longer allow, the codec's own version included, and keeps every
-        # other dependency where the lockfile has it. That fails when a moved
-        # requirement lands on a dependency the fuzz crate names itself too
-        # (bytes, heapless): its locked version satisfies the fuzz crate, so
-        # cargo keeps it. Then unlock the codec's dependencies and resolve
-        # them again.
+        # no longer allow, the fuzzed crate's own version included, and
+        # keeps every other dependency where the lockfile has it. That fails
+        # when a moved requirement lands on a dependency the fuzz crate names
+        # itself too (bytes, heapless): its locked version satisfies the fuzz
+        # crate, so cargo keeps it. Then unlock the fuzzed crate's
+        # dependencies and resolve them again.
         for crate in "${crates[@]}"; do
           manifest=$root/crates/$crate/fuzz/Cargo.toml
           if ! cargo fetch --quiet --manifest-path "$manifest" 2>/dev/null; then
