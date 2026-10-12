@@ -26,23 +26,32 @@
 #   lm3s6965evb     4228 / 2100 / 2536
 #   netduinoplus2   4228 / 2100 / 2536
 #   sifive_e        4100 / 2020 / 2464
+#
+# The mstp rows were measured again on 2026-10-12, same toolchain and QEMU,
+# when the MS/TP core stopped copying each received frame onto the stack
+# (#1611): about 1.4 KB shallower on every board.
+#
+#   microbit        3208
+#   lm3s6965evb     2780
+#   netduinoplus2   2780
+#   sifive_e        2644
 
 [microbit]
-mstp = 5840
+mstp = 4016
 bip = 2784
 apdu = 3472
 
 [lm3s6965evb]
-mstp = 5296
+mstp = 3488
 bip = 2640
 apdu = 3184
 
 [netduinoplus2]
-mstp = 5296
+mstp = 3488
 bip = 2640
 apdu = 3184
 
 [sifive_e]
-mstp = 5136
+mstp = 3312
 bip = 2528
 apdu = 3088
