@@ -1,5 +1,6 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use tokio::net::UdpSocket;
@@ -9,9 +10,10 @@ use tracing::{debug, warn};
 use bacnet_bip_codec::{
     BdtEntries, BvlcFunction, BvlcResultCode, Bvll, BvllError, BvllFrame, FdtEntries,
 };
+use bacnet_bip_core::bbmd::{Arrival, ForwardedRefusal};
 use bacnet_types::MacAddr;
 
-use crate::bbmd::{self, BbmdState};
+use crate::bbmd::{self, BbmdState, Forward};
 use crate::bvll::{encode_bip_mac, encode_bvll, BvllMessage};
 use crate::npdu_channel::{self, Refused};
 use crate::port::ReceivedNpdu;
@@ -145,22 +147,10 @@ pub(super) async fn handle_bvll_message(
 
             // If BBMD, forward as Forwarded-NPDU to BDT peers + FDT entries
             if let Some(bbmd) = &ctx.bbmd {
-                let (targets, dedup_count) = {
-                    let mut state = bbmd::lock(bbmd);
-                    let before = state.fdt_counters().destinations_deduplicated;
-                    let targets = state.forwarding_targets(sender.0, sender.1);
-                    let after = state.fdt_counters().destinations_deduplicated;
-                    (targets, after.saturating_sub(before))
-                };
-                if let Some(fanout) = &ctx.fanout {
-                    let addrs = targets
-                        .into_iter()
-                        .map(|(ip, port)| SocketAddrV4::new(Ipv4Addr::from(ip), port))
-                        .collect();
-                    fanout.dispatch_forwarded_npdu(sender.0, sender.1, npdu, addrs, dedup_count);
-                } else {
-                    let _ = forward_npdu(ctx, npdu, sender.0, sender.1, &targets).await;
-                }
+                let source = socket_address(sender);
+                let forward =
+                    bbmd::lock(bbmd).forward_original_broadcast(source, npdu, Instant::now());
+                let _ = forward_remote(ctx, npdu, forward).await;
             }
         }
 
@@ -180,52 +170,53 @@ pub(super) async fn handle_bvll_message(
                 if own_echo(&encode_bip_mac(sender.0, sender.1), ctx) {
                     return;
                 }
-                let (is_bdt_peer, needs_local_broadcast) = {
-                    let state = bbmd::lock(bbmd);
-                    (
-                        state.is_bdt_peer(sender.0, sender.1),
-                        state.forwarded_npdu_needs_local_broadcast(sender.0, sender.1),
-                    )
+                // Only a BDT peer's is delivered and forwarded: to the
+                // foreign devices (the peers had it from its first BBMD), and
+                // to the local subnet when the peer's two-hop row sent it to
+                // this BBMD alone. One that came by broadcast already reached
+                // the subnet, whatever the row says (Annex J.4.5); never
+                // rebroadcasting it also ends any loop through a BDT row that
+                // is this BBMD under another address.
+                let arrival = match delivery {
+                    Delivery::Broadcast => Arrival::Broadcast,
+                    Delivery::Unicast => Arrival::Unicast,
                 };
-                if !is_bdt_peer {
-                    ctx.drops.count(DropReason::ForwardedNotFromPeer);
-                    debug!(
-                        "Rejecting FORWARDED_NPDU from non-BDT sender {:?}:{}",
-                        Ipv4Addr::from(sender.0),
-                        sender.1
-                    );
-                    return;
-                }
+                let decision = bbmd::lock(bbmd).forward_forwarded_npdu(
+                    socket_address(sender),
+                    arrival,
+                    origin,
+                    npdu,
+                    local_broadcast(ctx),
+                    Instant::now(),
+                );
+                let forward = match decision {
+                    Ok(forward) => forward,
+                    Err(refusal) => {
+                        ctx.drops.count(match refusal {
+                            ForwardedRefusal::NotFromPeer => DropReason::ForwardedNotFromPeer,
+                            ForwardedRefusal::OwnEcho => DropReason::OwnEcho,
+                        });
+                        debug!(
+                            "Rejecting FORWARDED_NPDU from non-BDT sender {:?}:{}",
+                            Ipv4Addr::from(sender.0),
+                            sender.1
+                        );
+                        return;
+                    }
+                };
 
                 hand_up(ctx, npdu, source_mac, true, "forwarded");
 
-                // Forward to FDT entries (BDT peers don't need it — they got it directly)
-                let (fdt_targets, dedup_count) = {
-                    let mut state = bbmd::lock(bbmd);
-                    let before = state.fdt_counters().destinations_deduplicated;
-                    let targets = state.fdt_forwarding_targets(orig_ip, orig_port);
-                    let after = state.fdt_counters().destinations_deduplicated;
-                    (targets, after.saturating_sub(before))
-                };
-                // Annex J.4.5: one that came by broadcast already reached the
-                // local subnet, whatever the sender's BDT mask says. Never
-                // rebroadcasting it also ends any loop through a BDT row that
-                // is this BBMD under another address.
-                if needs_local_broadcast && delivery == Delivery::Broadcast {
-                    debug!("Forwarded-NPDU arrived by broadcast; skipping local rebroadcast");
-                } else if needs_local_broadcast {
-                    let local_dest = SocketAddrV4::new(ctx.broadcast_addr, ctx.broadcast_port);
-                    let _ = send_forwarded_npdu(ctx, local_dest, orig_ip, orig_port, npdu).await;
+                match forward.local_broadcast {
+                    Some(local_dest) => {
+                        let _ = send_forwarded_npdu(ctx, local_dest, origin, npdu).await;
+                    }
+                    None if delivery == Delivery::Broadcast => {
+                        debug!("Forwarded-NPDU arrived by broadcast; no local rebroadcast");
+                    }
+                    None => {}
                 }
-                if let Some(fanout) = &ctx.fanout {
-                    let addrs: Vec<SocketAddrV4> = fdt_targets
-                        .into_iter()
-                        .map(|(ip, port)| SocketAddrV4::new(Ipv4Addr::from(ip), port))
-                        .collect();
-                    fanout.dispatch_forwarded_npdu(orig_ip, orig_port, npdu, addrs, dedup_count);
-                } else {
-                    let _ = forward_npdu(ctx, npdu, orig_ip, orig_port, &fdt_targets).await;
-                }
+                let _ = forward_remote(ctx, npdu, forward).await;
             } else {
                 hand_up(ctx, npdu, source_mac, true, "forwarded");
             }
@@ -375,44 +366,39 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
         return;
     };
 
-    // If BBMD, verify sender is a registered foreign device
-    if !bbmd::lock(bbmd).is_registered_foreign_device(sender.0, sender.1) {
-        debug!(
-            "Rejecting DISTRIBUTE_BROADCAST_TO_NETWORK from non-registered sender {:?}:{}",
-            Ipv4Addr::from(sender.0),
-            sender.1
-        );
-        send_bvlc_result(&ctx.socket, sender, nak).await;
-        return;
-    }
+    // If BBMD, only a registered foreign device may distribute
+    let decision = bbmd::lock(bbmd).forward_distribute_broadcast(
+        socket_address(sender),
+        npdu,
+        local_broadcast(ctx),
+        Instant::now(),
+    );
+    let forward = match decision {
+        Ok(forward) => forward,
+        Err(code) => {
+            debug!(
+                "Rejecting DISTRIBUTE_BROADCAST_TO_NETWORK from non-registered sender {:?}:{}",
+                Ipv4Addr::from(sender.0),
+                sender.1
+            );
+            send_bvlc_result(&ctx.socket, sender, code).await;
+            return;
+        }
+    };
 
     hand_up(ctx, npdu, source_mac, true, "distributed broadcast");
 
-    let (targets, dedup_count) = {
-        let mut state = bbmd::lock(bbmd);
-        let before = state.fdt_counters().destinations_deduplicated;
-        let targets = state.forwarding_targets(sender.0, sender.1);
-        let after = state.fdt_counters().destinations_deduplicated;
-        (targets, after.saturating_sub(before))
-    };
-
-    let local_dest = SocketAddrV4::new(ctx.broadcast_addr, ctx.broadcast_port);
     let local_ok = if should_force_dbtn_forward_failure(ctx) {
         warn!("Forced DBTN forwarding failure");
         false
     } else {
-        send_forwarded_npdu(ctx, local_dest, sender.0, sender.1, npdu).await
+        match forward.local_broadcast {
+            Some(local_dest) => send_forwarded_npdu(ctx, local_dest, forward.origin, npdu).await,
+            None => true,
+        }
     };
 
-    let remote_ok = if let Some(fanout) = &ctx.fanout {
-        let addrs: Vec<SocketAddrV4> = targets
-            .into_iter()
-            .map(|(ip, port)| SocketAddrV4::new(Ipv4Addr::from(ip), port))
-            .collect();
-        fanout.dispatch_forwarded_npdu(sender.0, sender.1, npdu, addrs, dedup_count)
-    } else {
-        forward_npdu(ctx, npdu, sender.0, sender.1, &targets).await
-    };
+    let remote_ok = forward_remote(ctx, npdu, forward).await;
 
     if !(local_ok && remote_ok) {
         send_bvlc_result(&ctx.socket, sender, nak).await;
@@ -481,13 +467,37 @@ fn should_force_dbtn_forward_failure(_ctx: &RecvContext) -> bool {
     false
 }
 
-/// Encode a Forwarded-NPDU carrying `npdu` from `orig_ip:orig_port`.
-fn forwarded_npdu(orig_ip: [u8; 4], orig_port: u16, npdu: &[u8]) -> Option<BytesMut> {
+/// `sender` as a socket address.
+fn socket_address(sender: ([u8; 4], u16)) -> SocketAddrV4 {
+    SocketAddrV4::new(Ipv4Addr::from(sender.0), sender.1)
+}
+
+/// This subnet's B/IP broadcast address, where a BBMD rebroadcasts.
+fn local_broadcast(ctx: &RecvContext) -> SocketAddrV4 {
+    SocketAddrV4::new(ctx.broadcast_addr, ctx.broadcast_port)
+}
+
+/// Send `forward`'s peer and foreign-device destinations a Forwarded-NPDU
+/// carrying `npdu`: through the fan-out worker's queue and budgets, or, in a
+/// receive context without one, directly. Whether it was queued or sent.
+async fn forward_remote(ctx: &RecvContext, npdu: &[u8], forward: Forward) -> bool {
+    let origin = forward.origin;
+    match &ctx.fanout {
+        Some(fanout) => fanout.dispatch_forwarded_npdu(
+            origin.ip().octets(),
+            origin.port(),
+            npdu,
+            forward.remote,
+            forward.deduplicated,
+        ),
+        None => forward_npdu(ctx, npdu, origin, &forward.remote).await,
+    }
+}
+
+/// Encode a Forwarded-NPDU carrying `npdu` from `origin`.
+fn forwarded_npdu(origin: SocketAddrV4, npdu: &[u8]) -> Option<BytesMut> {
     let mut buf = BytesMut::with_capacity(10 + npdu.len());
-    let message = Bvll::ForwardedNpdu {
-        origin: SocketAddrV4::new(Ipv4Addr::from(orig_ip), orig_port),
-        npdu,
-    };
+    let message = Bvll::ForwardedNpdu { origin, npdu };
     match encode_bvll(&mut buf, &message) {
         Ok(()) => Some(buf),
         Err(e) => {
@@ -497,17 +507,15 @@ fn forwarded_npdu(orig_ip: [u8; 4], orig_port: u16, npdu: &[u8]) -> Option<Bytes
     }
 }
 
-/// Send `npdu` from `orig_ip:orig_port` to `dest` as a Forwarded-NPDU. A
-/// failed send is logged through the throttle in
-/// [`ReceiveDrops::forward_failed`].
+/// Send `npdu` from `origin` to `dest` as a Forwarded-NPDU. A failed send
+/// is logged through the throttle in [`ReceiveDrops::forward_failed`].
 async fn send_forwarded_npdu(
     ctx: &RecvContext,
     dest: SocketAddrV4,
-    orig_ip: [u8; 4],
-    orig_port: u16,
+    origin: SocketAddrV4,
     npdu: &[u8],
 ) -> bool {
-    let Some(buf) = forwarded_npdu(orig_ip, orig_port, npdu) else {
+    let Some(buf) = forwarded_npdu(origin, npdu) else {
         return false;
     };
     match ctx.socket.send_to(&buf, dest).await {
@@ -528,21 +536,19 @@ async fn send_forwarded_npdu(
 async fn forward_npdu(
     ctx: &RecvContext,
     npdu: &[u8],
-    orig_ip: [u8; 4],
-    orig_port: u16,
-    targets: &[([u8; 4], u16)],
+    origin: SocketAddrV4,
+    targets: &[SocketAddrV4],
 ) -> bool {
     if targets.is_empty() {
         return true;
     }
-    let Some(buf) = forwarded_npdu(orig_ip, orig_port, npdu) else {
+    let Some(buf) = forwarded_npdu(origin, npdu) else {
         return false;
     };
     let frame = buf.freeze();
     let mut all_sent = true;
 
-    for (i, &(ip, port)) in targets.iter().enumerate() {
-        let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
+    for (i, &dest) in targets.iter().enumerate() {
         if let Err(e) = ctx.socket.send_to(&frame, dest).await {
             all_sent = false;
             ctx.drops.forward_failed(&e, dest);

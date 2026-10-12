@@ -13,6 +13,7 @@ categories = ["network-programming"]
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-bip-codec = { workspace = true, features = ["bytes"] }
+bacnet-bip-core = { workspace = true }
 bacnet-mstp-codec = { workspace = true, features = ["alloc"] }
 bacnet-mstp-core = { workspace = true, features = ["alloc"] }
 bytes = { workspace = true, features = ["std"] }
@@ -53,6 +54,7 @@ serial-gpio = ["serial", "dep:gpiocdev"]
 ethernet = []
 
 [dev-dependencies]
+proptest.workspace = true
 rcgen.workspace = true
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 

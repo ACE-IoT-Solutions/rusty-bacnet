@@ -1,23 +1,45 @@
 //! BBMD (BACnet/IP Broadcast Management Device) state and tables.
 //!
-//! Manages the Broadcast Distribution Table (BDT) and Foreign Device Table
-//! (FDT) per ASHRAE 135-2020 Annex J. Pure state/logic — no async or I/O.
+//! The Broadcast Distribution Table (BDT), the Foreign Device Table (FDT)
+//! and the forwarding rules of ASHRAE 135-2020 Annex J are
+//! `bacnet-bip-core`'s ([`bacnet_bip_core::bbmd`]). [`BbmdState`] runs them
+//! on the host: it maps `std::time::Instant` onto the core's clock, keeps
+//! the host's own policy around them (the foreign-device access list and
+//! rate limit, the Delete-FDT-Entry access list, the counters), and converts
+//! between the core's codec rows and this module's [`BdtEntry`] and
+//! [`FdtEntry`]. Pure state and logic: no async or I/O.
 
-use std::collections::{hash_map::Entry, HashMap, HashSet};
-use std::net::SocketAddrV4;
-use std::time::{Duration, Instant};
+use std::net::{Ipv4Addr, SocketAddrV4};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcResultCode, FdtEntries};
+use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, RegistrationRefusal, TWO_HOP_MASK};
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 
 use crate::bvll::bvll_error;
 
+mod clock;
+mod forward;
 mod policy;
 mod tables;
+#[cfg(test)]
+use clock::core_duration;
+use clock::CoreClock;
+pub(crate) use forward::Forward;
 use policy::ForeignDeviceRateTracker;
 pub use policy::{FdtCounters, ForeignDevicePolicy};
 pub(crate) use tables::{lock, LiveTables};
+
+/// Rows the BDT holds, this BBMD's own row included.
+const MAX_BDT: usize = 128;
+/// Registrations the FDT holds.
+const MAX_FDT: usize = 128;
+
+/// Both tables, sized for the host.
+type Tables = core_bbmd::Tables<MAX_BDT, MAX_FDT>;
 
 /// A Broadcast Distribution Table entry — one peer BBMD.
 ///
@@ -35,7 +57,9 @@ pub struct BdtEntry {
 
 /// A Foreign Device Table entry — one registered foreign device.
 ///
-/// [`FdtEntry::wire_entry_at`] gives its wire form, [`crate::bvll::FdtEntry`].
+/// A copy of a registration, which [`BbmdState::fdt`] makes; changing it
+/// changes nothing in the table. [`FdtEntry::wire_entry_at`] gives its wire
+/// form, [`crate::bvll::FdtEntry`].
 #[derive(Debug, Clone)]
 pub struct FdtEntry {
     /// IPv4 address of the foreign device.
@@ -49,13 +73,22 @@ pub struct FdtEntry {
 }
 
 impl FdtEntry {
-    /// Grace period in seconds added beyond TTL before expiry.
-    const GRACE_PERIOD: u64 = 30;
+    /// This entry as the core's registration, on a clock whose midpoint is
+    /// the registration time, and that clock.
+    fn registration(&self) -> (core_bbmd::Registration, CoreClock) {
+        let clock = CoreClock::new(self.registered_at);
+        let registration = core_bbmd::Registration {
+            address: address(self.ip, self.port),
+            ttl: self.ttl,
+            registered_at: clock.to_core(self.registered_at),
+        };
+        (registration, clock)
+    }
 
     /// Whether this entry has expired (TTL + grace period) relative to `now`.
     pub fn is_expired_at(&self, now: Instant) -> bool {
-        let total = Duration::from_secs(self.ttl as u64 + Self::GRACE_PERIOD);
-        now.saturating_duration_since(self.registered_at) > total
+        let (registration, clock) = self.registration();
+        registration.is_expired_at(clock.to_core(now))
     }
 
     /// Whether this entry has expired (TTL + grace period).
@@ -65,9 +98,8 @@ impl FdtEntry {
 
     /// Seconds remaining including the 30-second grace period relative to `now`.
     pub fn seconds_remaining_at(&self, now: Instant) -> u16 {
-        let elapsed = now.saturating_duration_since(self.registered_at).as_secs();
-        let total = self.ttl as u64 + Self::GRACE_PERIOD;
-        total.saturating_sub(elapsed).min(u16::MAX as u64) as u16
+        let (registration, clock) = self.registration();
+        registration.seconds_remaining_at(clock.to_core(now))
     }
 
     /// Seconds remaining including the 30-second grace period.
@@ -77,20 +109,14 @@ impl FdtEntry {
 
     /// This entry as a Read-FDT-Ack reports it at `now` (Annex J.2.8.1).
     pub fn wire_entry_at(&self, now: Instant) -> codec::FdtEntry {
-        codec::FdtEntry::new(
-            SocketAddrV4::new(self.ip.into(), self.port),
-            self.ttl,
-            self.seconds_remaining_at(now),
-        )
+        let (registration, clock) = self.registration();
+        registration.wire_entry_at(clock.to_core(now))
     }
 }
 
 impl From<&BdtEntry> for codec::BdtEntry {
     fn from(entry: &BdtEntry) -> Self {
-        Self::new(
-            SocketAddrV4::new(entry.ip.into(), entry.port),
-            entry.broadcast_mask.into(),
-        )
+        Self::new(address(entry.ip, entry.port), entry.broadcast_mask.into())
     }
 }
 
@@ -104,49 +130,25 @@ impl From<codec::BdtEntry> for BdtEntry {
     }
 }
 
-/// Prefix length of a contiguous IPv4 netmask, or `None` when non-contiguous.
-fn bdt_mask_prefix_len(mask: [u8; 4]) -> Option<u32> {
-    let m = u32::from_be_bytes(mask);
-    let inv = !m;
-    (inv & inv.wrapping_add(1) == 0).then_some(m.count_ones())
+/// `ip:port` as a socket address.
+fn address(ip: [u8; 4], port: u16) -> SocketAddrV4 {
+    SocketAddrV4::new(Ipv4Addr::from(ip), port)
 }
 
-fn bdt_invalid(e: &BdtEntry, reason: &str) -> Error {
-    Error::Encoding(format!("BDT {reason}: {e:?}"))
-}
-
-/// Validate one BDT candidate entry against the issue #529 security policy.
-fn validate_bdt_entry(e: &BdtEntry) -> Result<(), Error> {
-    let mask = u32::from_be_bytes(e.broadcast_mask);
-    let ip = u32::from_be_bytes(e.ip);
-    let host = !mask;
-    let prefix = bdt_mask_prefix_len(e.broadcast_mask).unwrap_or(33);
-    let reason = if e.port == 0 {
-        "invalid port 0"
-    } else if e.ip == [0, 0, 0, 0] {
-        "unspecified IP"
-    } else if e.ip == [255, 255, 255, 255] {
-        "limited-broadcast"
-    } else if (224..=239).contains(&e.ip[0]) {
-        "multicast IP"
-    } else if prefix == 33 {
-        "non-contiguous mask"
-    } else if prefix < 8 {
-        "mask prefix too wide (< /8) or limited-broadcast target"
-    } else if prefix < 32 && ip & host == 0 {
-        "subnet network address"
-    } else if prefix < 32 && ip | mask == u32::MAX {
-        "subnet directed-broadcast"
-    } else if ip | host == u32::MAX {
-        "limited-broadcast target"
-    } else {
-        ""
-    };
-    if reason.is_empty() {
-        Ok(())
-    } else {
-        Err(bdt_invalid(e, reason))
-    }
+/// The host's error for a BDT the core refused, worded as before the core
+/// existed.
+fn bdt_error(error: BdtError) -> Error {
+    Error::Encoding(match error {
+        BdtError::Invalid { entry, reason } => {
+            format!("BDT {}: {:?}", reason.reason(), BdtEntry::from(entry))
+        }
+        BdtError::ConflictingMasks { entry } => {
+            format!("BDT conflicting masks: {:?}", BdtEntry::from(entry))
+        }
+        BdtError::Capacity { needed, capacity } => {
+            format!("BDT size {needed} exceeds maximum of {capacity} after self-entry insertion")
+        }
+    })
 }
 
 /// Validate and canonicalize a BDT candidate (issue #529) without adding the
@@ -155,38 +157,15 @@ fn validate_bdt_entry(e: &BdtEntry) -> Result<(), Error> {
 /// Byte-identical duplicates collapse in stable first-seen order; the same
 /// `(ip, port)` with different masks rejects the whole candidate.
 pub(crate) fn canonical_bdt(entries: Vec<BdtEntry>) -> Result<Vec<BdtEntry>, Error> {
-    let cap = entries.len().min(BbmdState::MAX_BDT_ENTRIES);
-    let mut seen: HashMap<([u8; 4], u16), [u8; 4]> = HashMap::with_capacity(cap);
-    let mut canonical: Vec<BdtEntry> = Vec::with_capacity(cap);
-    for entry in entries {
-        validate_bdt_entry(&entry)?;
-        match seen.entry((entry.ip, entry.port)) {
-            Entry::Occupied(o) => {
-                if *o.get() != entry.broadcast_mask {
-                    return Err(bdt_invalid(&entry, "conflicting masks"));
-                }
-            }
-            Entry::Vacant(v) => {
-                v.insert(entry.broadcast_mask);
-                canonical.push(entry);
-            }
-        }
-    }
-    Ok(canonical)
-}
-
-/// Fail when `rows`, plus a self row for `(ip, port)` if absent, would exceed
-/// [`BbmdState::MAX_BDT_ENTRIES`].
-fn check_bdt_capacity_with_self(rows: &[BdtEntry], ip: [u8; 4], port: u16) -> Result<(), Error> {
-    let has_self = rows.iter().any(|e| e.ip == ip && e.port == port);
-    let effective_len = rows.len() + usize::from(!has_self);
-    if effective_len > BbmdState::MAX_BDT_ENTRIES {
-        return Err(Error::Encoding(format!(
-            "BDT size {effective_len} exceeds maximum of {} after self-entry insertion",
-            BbmdState::MAX_BDT_ENTRIES
-        )));
-    }
-    Ok(())
+    let rows: Vec<codec::BdtEntry> = entries.iter().map(codec::BdtEntry::from).collect();
+    let mut canonical = rows.clone();
+    let len = core_bbmd::canonicalize(BdtEntries::from_entries(&rows), &mut canonical)
+        .map_err(bdt_error)?;
+    Ok(canonical[..len]
+        .iter()
+        .copied()
+        .map(BdtEntry::from)
+        .collect())
 }
 
 /// An FDT entry decoded from the wire (Read-FDT-ACK payload).
@@ -225,6 +204,11 @@ pub fn encode_bdt_entries(entries: &[BdtEntry], buf: &mut BytesMut) {
     }
 }
 
+/// Decode FDT entries from a Read-FDT-ACK payload (Annex J.2.8.1).
+pub fn decode_fdt(data: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
+    fdt_from_wire(FdtEntries::from_wire(data).map_err(bvll_error)?)
+}
+
 /// The rows of a BDT a peer sent, refusing more than
 /// [`BbmdState::MAX_BDT_ENTRIES`].
 pub fn bdt_from_wire(table: BdtEntries<'_>) -> Result<Vec<BdtEntry>, Error> {
@@ -249,21 +233,14 @@ pub fn fdt_from_wire(table: FdtEntries<'_>) -> Result<Vec<FdtEntryWire>, Error> 
     Ok(table.iter().map(FdtEntryWire::from).collect())
 }
 
-/// Decode FDT entries from a Read-FDT-ACK payload (Annex J.2.8.1).
-pub fn decode_fdt(data: &[u8]) -> Result<Vec<FdtEntryWire>, Error> {
-    fdt_from_wire(FdtEntries::from_wire(data).map_err(bvll_error)?)
-}
-
-/// BBMD state — BDT and FDT tables with forwarding logic.
+/// BBMD state: the BDT and FDT, run by `bacnet-bip-core`, and the host's
+/// policy around them.
 #[derive(Debug)]
 pub struct BbmdState {
-    bdt: Vec<BdtEntry>,
-    /// Whether the last BDT row is this BBMD's own row, appended because the
-    /// committed table lacked it (see `ensure_self_in_bdt`).
-    self_row_appended: bool,
-    fdt: Vec<FdtEntry>,
-    local_ip: [u8; 4],
-    local_port: u16,
+    /// Maps the host clock onto the core's.
+    clock: CoreClock,
+    /// Both tables. The BDT holds this BBMD's own B/IP address.
+    tables: Tables,
     /// Allowed source IPs for Delete-Foreign-Device-Table-Entry.
     /// Empty means deny all (fail closed).
     management_acl: Vec<[u8; 4]>,
@@ -278,11 +255,8 @@ impl BbmdState {
     /// Create a new BBMD with the given local address.
     pub fn new(local_ip: [u8; 4], local_port: u16) -> Self {
         Self {
-            bdt: Vec::new(),
-            self_row_appended: false,
-            fdt: Vec::new(),
-            local_ip,
-            local_port,
+            clock: CoreClock::new(Instant::now()),
+            tables: Tables::new(address(local_ip, local_port)),
             management_acl: Vec::new(),
             foreign_device_policy: None,
             rate_tracker: ForeignDeviceRateTracker::new(),
@@ -313,7 +287,8 @@ impl BbmdState {
     /// This BBMD's own B/IP address (IP and UDP port): the one given to
     /// [`Self::new`], or the one a restart of a `0.0.0.0`-bound transport chose.
     pub fn local_address(&self) -> ([u8; 4], u16) {
-        (self.local_ip, self.local_port)
+        let own = self.tables.bdt.own_address();
+        (own.ip().octets(), own.port())
     }
 
     /// Change this BBMD's own B/IP address, keeping the BDT and FDT. Only the
@@ -324,18 +299,10 @@ impl BbmdState {
     /// ordinary peer row once it no longer matches. Returns `Error::Encoding`,
     /// changing nothing, when the new self row would overflow the BDT.
     pub(crate) fn set_local_address(&mut self, ip: [u8; 4], port: u16) -> Result<(), Error> {
-        if (ip, port) == (self.local_ip, self.local_port) {
-            return Ok(());
-        }
-        check_bdt_capacity_with_self(self.configured_bdt(), ip, port)?;
-        if self.self_row_appended {
-            self.bdt.pop();
-            self.self_row_appended = false;
-        }
-        self.local_ip = ip;
-        self.local_port = port;
-        self.ensure_self_in_bdt();
-        Ok(())
+        self.tables
+            .bdt
+            .set_own_address(address(ip, port))
+            .map_err(bdt_error)
     }
 
     // -----------------------------------------------------------------------
@@ -343,64 +310,43 @@ impl BbmdState {
     // -----------------------------------------------------------------------
 
     /// Maximum number of entries in the Broadcast Distribution Table.
-    pub const MAX_BDT_ENTRIES: usize = 128;
+    pub const MAX_BDT_ENTRIES: usize = MAX_BDT;
 
     /// Replace the entire BDT.
     ///
     /// Central commit choke point for issue #529: validates and canonicalizes
-    /// the complete candidate before changing `self.bdt`. Byte-identical
+    /// the complete candidate before changing the table. Byte-identical
     /// duplicates collapse in stable first-seen order; the same `(ip, port)`
     /// with different masks rejects the whole candidate. The local BBMD is
     /// auto-inserted as `/32` when absent. Any invalid, conflicting, or
     /// over-capacity candidate returns `Error::Encoding` and preserves the
     /// previously committed table exactly.
     pub fn set_bdt(&mut self, entries: Vec<BdtEntry>) -> Result<(), Error> {
-        let canonical = canonical_bdt(entries)?;
-        check_bdt_capacity_with_self(&canonical, self.local_ip, self.local_port)?;
-        self.bdt = canonical;
-        self.self_row_appended = false;
-        self.ensure_self_in_bdt();
-        Ok(())
-    }
-
-    /// Ensure the local BBMD is included in its own BDT (spec J.4.2).
-    fn ensure_self_in_bdt(&mut self) {
-        let has_self = self
+        let rows: Vec<codec::BdtEntry> = entries.iter().map(codec::BdtEntry::from).collect();
+        self.tables
             .bdt
-            .iter()
-            .any(|e| e.ip == self.local_ip && e.port == self.local_port);
-        if !has_self {
-            self.bdt.push(BdtEntry {
-                ip: self.local_ip,
-                port: self.local_port,
-                broadcast_mask: [0xff, 0xff, 0xff, 0xff],
-            });
-            self.self_row_appended = true;
-        }
+            .set(BdtEntries::from_entries(&rows))
+            .map_err(bdt_error)
     }
 
-    /// Get the current BDT.
-    pub fn bdt(&self) -> &[BdtEntry] {
-        &self.bdt
+    /// A copy of the current BDT, this BBMD's own row included.
+    pub fn bdt(&self) -> Vec<BdtEntry> {
+        rows_of(self.tables.bdt.rows())
     }
 
     /// The BDT without the self row [`Self::set_bdt`] appended, if it did.
-    pub(crate) fn configured_bdt(&self) -> &[BdtEntry] {
-        let len = self.bdt.len() - usize::from(self.self_row_appended);
-        &self.bdt[..len]
-    }
-
-    /// Encode the BDT for a Read-BDT-ACK payload.
-    pub fn encode_bdt(&self, buf: &mut BytesMut) {
-        encode_bdt_entries(&self.bdt, buf);
+    pub(crate) fn configured_bdt(&self) -> Vec<BdtEntry> {
+        rows_of(self.tables.bdt.configured_rows())
     }
 
     /// The BDT as wire entries, for a Read-BDT-ACK (Annex J.2.4.1).
     pub fn bdt_wire_entries(&self) -> Vec<codec::BdtEntry> {
-        self.bdt.iter().map(codec::BdtEntry::from).collect()
+        self.tables.bdt.rows().to_vec()
     }
 
-    /// Decode a BDT from wire bytes (Write-BDT payload or Read-BDT-ACK payload).
+    /// Decode a BDT from wire bytes, as a persisted BDT holds it (a Write-BDT
+    /// or Read-BDT-ACK payload), refusing more than
+    /// [`Self::MAX_BDT_ENTRIES`] rows.
     pub fn decode_bdt(data: &[u8]) -> Result<Vec<BdtEntry>, Error> {
         bdt_from_wire(BdtEntries::from_wire(data).map_err(bvll_error)?)
     }
@@ -410,7 +356,7 @@ impl BbmdState {
     // -----------------------------------------------------------------------
 
     /// Maximum number of entries in the Foreign Device Table.
-    pub const MAX_FDT_ENTRIES: usize = 128;
+    pub const MAX_FDT_ENTRIES: usize = MAX_FDT;
 
     /// Register or re-register a foreign device at the current wall-clock instant.
     pub fn register_foreign_device(&mut self, ip: [u8; 4], port: u16, ttl: u16) -> BvlcResultCode {
@@ -418,6 +364,11 @@ impl BbmdState {
     }
 
     /// Register or re-register a foreign device at the given `now` instant.
+    ///
+    /// Without a policy every registration is refused. With one, the core
+    /// purges lapsed entries and checks the time-to-live; then this
+    /// policy's source list and rate limit apply, then the core's
+    /// per-source quota and reserved capacity.
     pub fn register_foreign_device_at(
         &mut self,
         ip: [u8; 4],
@@ -425,91 +376,59 @@ impl BbmdState {
         ttl: u16,
         now: Instant,
     ) -> BvlcResultCode {
-        let policy = match &self.foreign_device_policy {
-            Some(p) => p.clone(),
-            None => {
-                self.counters.registrations_rejected += 1;
-                return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
-            }
+        let Some(policy) = &self.foreign_device_policy else {
+            self.counters.registrations_rejected += 1;
+            return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
         };
-
-        // Purge expired entries before evaluating admission or capacity
-        self.purge_expired_at(now);
-
-        // Validate TTL bounds
-        if ttl == 0 || ttl < policy.min_ttl || ttl > policy.max_ttl {
-            self.counters.registrations_rejected += 1;
-            return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
-        }
-
-        // Check source ACL if configured
-        if let Some(allowed) = &policy.allowed_sources {
-            if !allowed.contains(&ip) {
+        let limits = core_bbmd::RegistrationLimits {
+            min_ttl: policy.min_ttl,
+            max_ttl: policy.max_ttl,
+            max_entries_per_source: policy.max_entries_per_source,
+            reserved_capacity: policy.reserved_capacity,
+        };
+        let reserved = policy.reserved_sources.contains(&ip);
+        let rate_tracker = &mut self.rate_tracker;
+        let admit = || {
+            policy
+                .allowed_sources
+                .as_ref()
+                .is_none_or(|allowed| allowed.contains(&ip))
+                && !rate_tracker.is_rate_exceeded(
+                    ip,
+                    now,
+                    policy.rate_window,
+                    policy.registration_rate_per_source,
+                    policy.registration_rate_global,
+                )
+        };
+        let outcome = self.tables.fdt.register(
+            address(ip, port),
+            ttl,
+            self.clock.to_core(now),
+            &limits,
+            reserved,
+            admit,
+        );
+        self.counters.registrations_expired += outcome.purged as u64;
+        match outcome.result {
+            Ok(_) => {
+                self.rate_tracker.record(ip);
+                self.counters.registrations_accepted += 1;
+                BvlcResultCode::SUCCESSFUL_COMPLETION
+            }
+            Err(refusal) => {
+                if refusal == RegistrationRefusal::TableFull {
+                    self.counters.capacity_exhausted += 1;
+                }
                 self.counters.registrations_rejected += 1;
-                return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
+                BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK
             }
         }
-
-        // Check registration rate limits
-        if self.rate_tracker.is_rate_exceeded(
-            ip,
-            now,
-            policy.rate_window,
-            policy.registration_rate_per_source,
-            policy.registration_rate_global,
-        ) {
-            self.counters.registrations_rejected += 1;
-            return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
-        }
-
-        let existing_idx = self.fdt.iter().position(|e| e.ip == ip && e.port == port);
-
-        if existing_idx.is_none() {
-            // Check per-source quota for new entries
-            let current_for_ip = self.fdt.iter().filter(|e| e.ip == ip).count();
-            if current_for_ip >= policy.max_entries_per_source {
-                self.counters.registrations_rejected += 1;
-                return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
-            }
-
-            // Check capacity pressure and reserved capacity
-            let is_reserved = policy.reserved_sources.contains(&ip);
-            let effective_limit = if is_reserved {
-                Self::MAX_FDT_ENTRIES
-            } else {
-                Self::MAX_FDT_ENTRIES.saturating_sub(policy.reserved_capacity)
-            };
-
-            if self.fdt.len() >= effective_limit {
-                self.counters.capacity_exhausted += 1;
-                self.counters.registrations_rejected += 1;
-                return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
-            }
-        }
-
-        // Admitted: record in rate tracker and mutate table
-        self.rate_tracker.record(ip);
-        if let Some(idx) = existing_idx {
-            self.fdt[idx].ttl = ttl;
-            self.fdt[idx].registered_at = now;
-        } else {
-            self.fdt.push(FdtEntry {
-                ip,
-                port,
-                ttl,
-                registered_at: now,
-            });
-        }
-
-        self.counters.registrations_accepted += 1;
-        BvlcResultCode::SUCCESSFUL_COMPLETION
     }
 
     /// Delete a foreign device entry.
     pub fn delete_foreign_device(&mut self, ip: [u8; 4], port: u16) -> BvlcResultCode {
-        let before = self.fdt.len();
-        self.fdt.retain(|e| !(e.ip == ip && e.port == port));
-        if self.fdt.len() < before {
+        if self.tables.fdt.delete(address(ip, port)) {
             BvlcResultCode::SUCCESSFUL_COMPLETION
         } else {
             BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK
@@ -518,9 +437,7 @@ impl BbmdState {
 
     /// Purge expired FDT entries at the given instant and return the number removed.
     pub fn purge_expired_at(&mut self, now: Instant) -> usize {
-        let before = self.fdt.len();
-        self.fdt.retain(|e| !e.is_expired_at(now));
-        let removed = before - self.fdt.len();
+        let removed = self.tables.fdt.purge(self.clock.to_core(now));
         self.counters.registrations_expired += removed as u64;
         removed
     }
@@ -530,29 +447,37 @@ impl BbmdState {
         self.purge_expired_at(Instant::now())
     }
 
-    /// Get the current FDT (purges expired entries first).
-    pub fn fdt(&mut self) -> &[FdtEntry] {
+    /// A copy of the current FDT (purges expired entries first).
+    pub fn fdt(&mut self) -> Vec<FdtEntry> {
         self.purge_expired();
-        &self.fdt
-    }
-
-    /// Encode the FDT for a Read-FDT-ACK payload.
-    pub fn encode_fdt(&mut self, buf: &mut BytesMut) {
-        let rows = self.fdt_wire_entries();
-        buf.reserve(rows.len() * codec::FDT_ENTRY_LENGTH);
-        for row in rows {
-            buf.extend_from_slice(&row.to_octets());
-        }
+        self.tables
+            .fdt
+            .registrations()
+            .iter()
+            .map(|registration| FdtEntry {
+                ip: registration.address.ip().octets(),
+                port: registration.address.port(),
+                ttl: registration.ttl,
+                registered_at: self.clock.to_std(registration.registered_at),
+            })
+            .collect()
     }
 
     /// The FDT as wire entries for a Read-FDT-ACK (Annex J.2.8.1), after
     /// purging expired entries.
     pub fn fdt_wire_entries(&mut self) -> Vec<codec::FdtEntry> {
-        let now = Instant::now();
+        self.fdt_wire_entries_at(Instant::now())
+    }
+
+    /// [`Self::fdt_wire_entries`] at `now`.
+    pub(crate) fn fdt_wire_entries_at(&mut self, now: Instant) -> Vec<codec::FdtEntry> {
         self.purge_expired_at(now);
-        self.fdt
+        let now = self.clock.to_core(now);
+        self.tables
+            .fdt
+            .registrations()
             .iter()
-            .map(|entry| entry.wire_entry_at(now))
+            .map(|registration| registration.wire_entry_at(now))
             .collect()
     }
 
@@ -562,21 +487,26 @@ impl BbmdState {
 
     /// Check if a sender is a BDT peer.
     pub fn is_bdt_peer(&self, ip: [u8; 4], port: u16) -> bool {
-        self.bdt.iter().any(|e| e.ip == ip && e.port == port)
+        self.tables.bdt.contains(address(ip, port))
     }
 
-    /// Whether a Forwarded-NPDU from this BDT peer still needs a local subnet broadcast.
+    /// Whether a Forwarded-NPDU from this BDT peer still needs a local
+    /// subnet broadcast: its row has the two-hop mask. The receive path
+    /// asks [`Self::forward_forwarded_npdu`], which also counts how the
+    /// datagram arrived.
     pub fn forwarded_npdu_needs_local_broadcast(&self, ip: [u8; 4], port: u16) -> bool {
-        self.bdt
-            .iter()
-            .find(|e| e.ip == ip && e.port == port)
-            .is_some_and(|e| e.broadcast_mask == [0xff, 0xff, 0xff, 0xff])
+        self.tables
+            .bdt
+            .row(address(ip, port))
+            .is_some_and(|row| row.mask == TWO_HOP_MASK)
     }
 
     /// Check if a sender is a registered (non-expired) foreign device.
     pub fn is_registered_foreign_device(&mut self, ip: [u8; 4], port: u16) -> bool {
-        self.purge_expired();
-        self.fdt.iter().any(|e| e.ip == ip && e.port == port)
+        let now = Instant::now();
+        self.purge_expired_at(now);
+        let now = self.clock.to_core(now);
+        self.tables.fdt.is_registered_at(address(ip, port), now)
     }
 
     // -----------------------------------------------------------------------
@@ -601,149 +531,52 @@ impl BbmdState {
         port: u16,
         elapsed: Duration,
     ) {
-        let entry = self
+        let mut registration = *self
+            .tables
             .fdt
-            .iter_mut()
-            .find(|entry| entry.ip == ip && entry.port == port)
+            .get(address(ip, port))
             .expect("foreign device entry exists");
-        entry.registered_at = Instant::now() - elapsed;
+        registration.registered_at = self
+            .clock
+            .to_core(Instant::now())
+            .saturating_sub(core_duration(elapsed));
+        self.tables
+            .fdt
+            .restore(registration)
+            .expect("replaces the entry");
+    }
+
+    /// Store `entry` as given, with no policy check, as the tests that
+    /// once pushed onto the old table's `Vec` did.
+    #[cfg(test)]
+    pub(crate) fn insert_fdt_entry_for_test(&mut self, entry: FdtEntry) {
+        let registration = core_bbmd::Registration {
+            address: address(entry.ip, entry.port),
+            ttl: entry.ttl,
+            registered_at: self.clock.to_core(entry.registered_at),
+        };
+        self.tables.fdt.restore(registration).expect("FDT has room");
     }
 
     #[cfg(test)]
     pub(crate) fn fdt_len_for_test(&self) -> usize {
-        self.fdt.len()
-    }
-
-    // -----------------------------------------------------------------------
-    // Forwarding targets
-    // -----------------------------------------------------------------------
-
-    /// Get all (ip, port) targets for forwarding a broadcast, excluding the
-    /// source device and the local BBMD itself. BDT entries use directed
-    /// broadcast: `target = entry.ip | !entry.broadcast_mask`.
-    /// Purges expired FDT entries.
-    pub fn forwarding_targets(
-        &mut self,
-        exclude_ip: [u8; 4],
-        exclude_port: u16,
-    ) -> Vec<([u8; 4], u16)> {
-        self.forwarding_targets_at(exclude_ip, exclude_port, Instant::now())
-    }
-
-    /// Get all (ip, port) targets for forwarding a broadcast relative to `now`,
-    /// excluding the source device and the local BBMD itself. BDT entries use directed
-    /// broadcast: `target = entry.ip | !entry.broadcast_mask`.
-    /// Purges expired FDT entries and caps FDT targets to `max_fdt_fanout`.
-    pub fn forwarding_targets_at(
-        &mut self,
-        exclude_ip: [u8; 4],
-        exclude_port: u16,
-        now: Instant,
-    ) -> Vec<([u8; 4], u16)> {
-        self.purge_expired_at(now);
-        let mut targets = Vec::new();
-        let mut seen = HashSet::new();
-
-        for entry in &self.bdt {
-            // Skip self
-            if entry.ip == self.local_ip && entry.port == self.local_port {
-                continue;
-            }
-            // Skip the original sender
-            if entry.ip == exclude_ip && entry.port == exclude_port {
-                continue;
-            }
-            let directed_broadcast = [
-                entry.ip[0] | !entry.broadcast_mask[0],
-                entry.ip[1] | !entry.broadcast_mask[1],
-                entry.ip[2] | !entry.broadcast_mask[2],
-                entry.ip[3] | !entry.broadcast_mask[3],
-            ];
-            let target = (directed_broadcast, entry.port);
-            if !seen.insert(target) {
-                self.counters.destinations_deduplicated += 1;
-            } else {
-                targets.push(target);
-            }
-        }
-
-        let max_fdt_fanout = self
-            .foreign_device_policy
-            .as_ref()
-            .map_or(32, |p| p.max_fdt_fanout);
-
-        let mut fdt_count = 0;
-        for entry in &self.fdt {
-            if entry.ip == exclude_ip && entry.port == exclude_port {
-                continue;
-            }
-            let target = (entry.ip, entry.port);
-            if !seen.insert(target) {
-                self.counters.destinations_deduplicated += 1;
-                continue;
-            }
-            if fdt_count >= max_fdt_fanout {
-                self.counters.fanout_budget_reached += 1;
-                break;
-            }
-            targets.push(target);
-            fdt_count += 1;
-        }
-
-        targets
-    }
-
-    /// Get all (ip, port) FDT targets for forwarding, excluding `(exclude_ip, exclude_port)`.
-    /// Purges expired entries, caps results to `max_fdt_fanout`, and increments
-    /// `fanout_budget_reached` if capped.
-    pub fn fdt_forwarding_targets(
-        &mut self,
-        exclude_ip: [u8; 4],
-        exclude_port: u16,
-    ) -> Vec<([u8; 4], u16)> {
-        self.fdt_forwarding_targets_at(exclude_ip, exclude_port, Instant::now())
-    }
-
-    /// Get all (ip, port) FDT targets for forwarding relative to `now`, excluding `(exclude_ip, exclude_port)`.
-    /// Purges expired entries, caps results to `max_fdt_fanout`, and increments
-    /// `fanout_budget_reached` if capped.
-    pub fn fdt_forwarding_targets_at(
-        &mut self,
-        exclude_ip: [u8; 4],
-        exclude_port: u16,
-        now: Instant,
-    ) -> Vec<([u8; 4], u16)> {
-        self.purge_expired_at(now);
-
-        let max_fdt_fanout = self
-            .foreign_device_policy
-            .as_ref()
-            .map_or(32, |p| p.max_fdt_fanout);
-
-        let mut targets = Vec::new();
-        let mut seen = HashSet::new();
-        for entry in &self.fdt {
-            if entry.ip == exclude_ip && entry.port == exclude_port {
-                continue;
-            }
-            let target = (entry.ip, entry.port);
-            if !seen.insert(target) {
-                self.counters.destinations_deduplicated += 1;
-                continue;
-            }
-            if targets.len() >= max_fdt_fanout {
-                self.counters.fanout_budget_reached += 1;
-                break;
-            }
-            targets.push(target);
-        }
-
-        targets
+        self.tables.fdt.len()
     }
 }
 
+/// `rows` as this module's entries.
+fn rows_of(rows: &[codec::BdtEntry]) -> Vec<BdtEntry> {
+    rows.iter().copied().map(BdtEntry::from).collect()
+}
+
+#[cfg(test)]
+mod differential_tests;
+
 #[cfg(test)]
 mod foreign_device_tests;
+
+#[cfg(test)]
+mod legacy;
 
 #[cfg(test)]
 mod tests;

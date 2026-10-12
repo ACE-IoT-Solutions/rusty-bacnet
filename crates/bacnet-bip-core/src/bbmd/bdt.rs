@@ -254,13 +254,24 @@ pub fn canonicalize(table: BdtEntries<'_>, out: &mut [BdtEntry]) -> Result<usize
 /// without this BBMD's own address gets a row for it, with
 /// [`TWO_HOP_MASK`], at the end; that row follows the address when
 /// [`Bdt::set_own_address`] changes it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Bdt<const N: usize> {
     rows: [BdtEntry; N],
     len: usize,
     own: SocketAddrV4,
     /// The last row is the own row that `set` appended.
     own_row_appended: bool,
+}
+
+/// Shows the rows in use, not the whole array.
+impl<const N: usize> fmt::Debug for Bdt<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Bdt")
+            .field("own", &self.own)
+            .field("rows", &self.rows())
+            .field("own_row_appended", &self.own_row_appended)
+            .finish()
+    }
 }
 
 impl<const N: usize> Bdt<N> {

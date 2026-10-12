@@ -239,7 +239,7 @@ pub(super) fn refresh_own_address(
     state: &mut BbmdState,
     ctx: &OwnAddressContext<'_>,
 ) -> Result<(), Error> {
-    let ip = ctx.own_ip(state.configured_bdt(), BdtSource::Current)?;
+    let ip = ctx.own_ip(&state.configured_bdt(), BdtSource::Current)?;
     let (old_ip, old_port) = state.local_address();
     state.set_local_address(ip.octets(), ctx.port).map_err(|e| {
         Error::Encoding(format!(

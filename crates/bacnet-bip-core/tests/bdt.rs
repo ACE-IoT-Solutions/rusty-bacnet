@@ -335,3 +335,12 @@ fn moving_the_own_address_refuses_to_overflow() {
     assert_eq!(bdt.own_address(), OWN);
     assert_eq!(bdt.rows(), rows);
 }
+
+#[test]
+fn debug_shows_only_the_rows_in_use() {
+    let mut bdt: Bdt<64> = Bdt::new(OWN);
+    set(&mut bdt, &[]).unwrap();
+    let text = format!("{bdt:?}");
+    assert!(text.contains("192.168.1.1:47808"), "{text}");
+    assert!(!text.contains("0.0.0.0"), "{text}");
+}

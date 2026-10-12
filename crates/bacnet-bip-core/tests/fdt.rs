@@ -369,3 +369,12 @@ fn refusals_say_why() {
         assert!(!refusal.to_string().is_empty());
     }
 }
+
+#[test]
+fn debug_shows_only_the_registrations_in_use() {
+    let mut fdt: Fdt<64> = Fdt::new();
+    register(&mut fdt, addr(10, 0, 0, 5, PORT), 60, T0).unwrap();
+    let text = format!("{fdt:?}");
+    assert!(text.contains("10.0.0.5:47808"), "{text}");
+    assert!(!text.contains("0.0.0.0"), "{text}");
+}

@@ -161,10 +161,17 @@ impl core::error::Error for StorageFull {}
 /// Expiry runs on the caller's clock: every call that depends on time takes
 /// `now`, and a lapsed registration stays stored, but is never forwarded to
 /// or reported, until [`Fdt::purge`] or [`Fdt::register`] removes it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Fdt<const N: usize> {
     slots: [Registration; N],
     len: usize,
+}
+
+/// Shows the registrations in use, not the whole array.
+impl<const N: usize> fmt::Debug for Fdt<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.registrations()).finish()
+    }
 }
 
 impl<const N: usize> Default for Fdt<N> {

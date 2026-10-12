@@ -481,6 +481,7 @@ version = "0.12.0"
 dependencies = [
  "aws-lc-rs",
  "bacnet-bip-codec",
+ "bacnet-bip-core",
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
@@ -490,6 +491,7 @@ dependencies = [
  "getrandom 0.3.4",
  "gpiocdev",
  "libc",
+ "proptest",
  "rcgen",
  "rustls",
  "socket2",
