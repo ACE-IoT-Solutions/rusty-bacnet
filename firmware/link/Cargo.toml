@@ -1,6 +1,6 @@
 [package]
 name = "firmware-link"
-description = "No-allocator firmware link test and size budget for the MS/TP and B/IP stacks"
+description = "Firmware link test and size budget for the MS/TP, B/IP and APDU stacks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -26,23 +26,83 @@ path = "src/bin/bip.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "alloc"
+path = "src/bin/alloc.rs"
+test = false
+bench = false
+required-features = ["alloc"]
+
+[[test]]
+name = "alloc"
+path = "tests/alloc.rs"
+required-features = ["alloc"]
+
+# `alloc`: the alloc image and its scenario (`apdu`), which link
+# bacnet-encoding and bacnet-services with `alloc`, and on bare-metal targets
+# the image's allocator and critical section, and the atomics backend where
+# the target has no compare-and-swap. On by default, so host builds, clippy,
+# rustdoc and tests cover it. The mstp and bip images build without it
+# (`--no-default-features`): with it, the lib links `alloc`, and an image
+# without a global allocator fails to link.
+[features]
+default = ["alloc"]
+alloc = [
+    "dep:bacnet-types",
+    "dep:bacnet-encoding",
+    "dep:bacnet-services",
+    "dep:bytes",
+    "dep:embedded-alloc",
+    "dep:portable-atomic",
+    "dep:critical-section",
+    "dep:riscv",
+]
+
 # Default features, so no allocator, plus each crate's heapless storage: the
-# core's queues and the BVLL codec's sink.
+# core's queues and the BVLL codec's sink. The alloc stack is `no_std` with
+# `alloc`, as the libraries document.
 [dependencies]
 bacnet-mstp-codec = { workspace = true }
 bacnet-mstp-core = { workspace = true, features = ["heapless"] }
 bacnet-bip-codec = { workspace = true, features = ["heapless"] }
 heapless = { workspace = true }
+bacnet-types = { workspace = true, features = ["alloc"], optional = true }
+bacnet-encoding = { workspace = true, features = ["alloc"], optional = true }
+bacnet-services = { workspace = true, features = ["alloc"], optional = true }
+bytes = { workspace = true, optional = true }
+
+# The host test runs the alloc scenario in the image's allocator, a
+# linked-list first fit, over an arena of the image's size.
+[dev-dependencies]
+linked_list_allocator = { workspace = true }
 
 # The runtimes only on bare-metal targets, so a host build pulls in neither.
+# The alloc image's allocator too: a host build uses std's.
+[target.'cfg(target_os = "none")'.dependencies]
+embedded-alloc = { workspace = true, optional = true }
+
+# critical-section: the alloc image implements a single-core critical
+# section on Cortex-M, which its allocator and atomics lock with, saving the
+# interrupt mask as a bool. cortex-m's implementation would bring in the
+# unmaintained bare-metal crate (RUSTSEC-2026-0110).
 [target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
 cortex-m-rt = { workspace = true }
+critical-section = { workspace = true, features = ["restore-state-bool"], optional = true }
 
 # single-hart: the images target parts with one hart, so the startup code
 # can drop its multi-hart gate; memory: its link.x includes memory.x, as
-# cortex-m-rt's does.
+# cortex-m-rt's does. riscv: its single-hart critical section, for the
+# alloc image as on Cortex-M above.
 [target.'cfg(all(target_arch = "riscv32", target_os = "none"))'.dependencies]
 riscv-rt = { workspace = true, features = ["single-hart", "memory"] }
+riscv = { workspace = true, features = ["critical-section-single-hart"], optional = true }
+
+# Targets without atomic compare-and-swap (ARMv6-M, RV32IMC): bytes takes its
+# atomics from portable-atomic, whose backend the image chooses, as only a
+# firmware may: the critical section above. No library chooses one.
+[target.'cfg(all(target_os = "none", not(target_has_atomic = "ptr")))'.dependencies]
+bytes = { workspace = true, features = ["extra-platforms"], optional = true }
+portable-atomic = { workspace = true, features = ["critical-section"], optional = true }
 
 [lints]
 workspace = true
