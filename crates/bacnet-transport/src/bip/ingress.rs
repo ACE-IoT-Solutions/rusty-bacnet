@@ -1,18 +1,18 @@
-//! The B/IP receive loop, and what it does with one datagram before the BVLL
-//! handler sees it: check that the BVLC function fits the address the
-//! datagram was sent to, and say how it arrived.
+//! The B/IP receive loop, and what it tells the node about one datagram:
+//! its source, what its destination address was for this node, and which
+//! socket read it.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use bacnet_bip_codec::{BvlcFunction, BvllFrame};
+use bacnet_bip_core::node::{Addressed, Datagram, Discard, LocalAddresses, Path};
 use tracing::{debug, warn};
 
 use crate::udp_metadata::{DestinationReceiver, IpVersion, ReceivedDatagram};
 
-use super::io::{handle_bvll_message, RecvContext};
+use super::io::{receive, RecvContext};
 use super::receive_counters::{DropReason, ReceiveDrops};
 use super::socket::{BipSocket, BoundSockets};
 
@@ -178,90 +178,6 @@ pub(super) fn receive_failed(
     }
 }
 
-/// How a datagram reached the B/IP socket, from its destination address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Delivery {
-    /// Sent to the configured broadcast address or 255.255.255.255, so every
-    /// B/IP device on the subnet received it too.
-    Broadcast,
-    /// Any other destination.
-    Unicast,
-}
-
-impl Delivery {
-    /// Classify a datagram by its destination. An OS that flags the datagram
-    /// as unicast delivery overrides a broadcast destination.
-    pub(super) fn of(
-        destination: IpAddr,
-        configured_broadcast: Ipv4Addr,
-        os_group_delivery: Option<bool>,
-    ) -> Self {
-        let broadcast = matches!(destination, IpAddr::V4(ip) if ip == configured_broadcast || ip == Ipv4Addr::BROADCAST)
-            && os_group_delivery != Some(false);
-        if broadcast {
-            Self::Broadcast
-        } else {
-            Self::Unicast
-        }
-    }
-}
-
-/// How an inbound datagram arrived, or `None` when its BVLC function does not
-/// fit the address it was sent to.
-///
-/// Annex J tells the two Original functions apart by where they are sent. An
-/// Original-Unicast-NPDU carries a directed NPDU to one node's own address
-/// (J.2.11, J.3); an Original-Broadcast-NPDU carries a local broadcast, sent to
-/// the subnet's broadcast address (J.4.1). A datagram that mixes the two is
-/// dropped here, before its NPDU reaches the network layer.
-/// An Original-Unicast-NPDU sent to a broadcast address reached every B/IP
-/// node on the subnet, so a confirmed request in it would draw an answer from
-/// each of them.
-///
-/// Where an interface bind's configured broadcast address is also its own
-/// address, as in a loopback test, the BVLC function picks the reading. A
-/// wildcard bind never counts the configured broadcast address as its own, so
-/// there an Original-Unicast-NPDU sent to it is dropped. The handler reports
-/// the delivery returned here as an Original-Unicast-NPDU's
-/// `link_layer_group`, so the flag and this check cannot disagree.
-pub(super) fn admitted_delivery(
-    function: BvlcFunction,
-    destination: IpAddr,
-    local_ip: Ipv4Addr,
-    configured_broadcast: Ipv4Addr,
-    local_unicast_ips: &[Ipv4Addr],
-    wildcard_bind: bool,
-    os_group_delivery: Option<bool>,
-) -> Option<Delivery> {
-    // A wildcard bind accepts unicast only to one of the host's listed
-    // addresses, on every OS (#952).
-    let local_unicast = match destination {
-        IpAddr::V4(ip) if wildcard_bind => {
-            ip != configured_broadcast
-                && ip != Ipv4Addr::BROADCAST
-                && !ip.is_multicast()
-                && local_unicast_ips.contains(&ip)
-        }
-        IpAddr::V4(ip) => ip == local_ip,
-        IpAddr::V6(_) => false,
-    } && os_group_delivery != Some(true);
-    let unicast = local_unicast.then_some(Delivery::Unicast);
-    let broadcast = (Delivery::of(destination, configured_broadcast, os_group_delivery)
-        == Delivery::Broadcast)
-        .then_some(Delivery::Broadcast);
-
-    match function {
-        f if f == BvlcFunction::ORIGINAL_UNICAST_NPDU => unicast,
-        f if f == BvlcFunction::ORIGINAL_BROADCAST_NPDU => broadcast,
-        // A Forwarded-NPDU may arrive by direct unicast or by a configured
-        // directed/limited broadcast, and counts as a broadcast when the
-        // address fits both. All BVLL management requests and responses are
-        // point-to-point and must arrive as actual unicast.
-        f if f == BvlcFunction::FORWARDED_NPDU => broadcast.or(unicast),
-        _ => unicast,
-    }
-}
-
 /// Whether the configured broadcast address is one of this host's own
 /// non-loopback addresses, as on a /32 or point-to-point link set up by
 /// mistake. Broadcasts sent there reach only this host. Loopback tests use the
@@ -275,10 +191,9 @@ pub(super) fn broadcast_is_own_address(
 }
 
 /// This node's own addresses, which an inbound datagram's destination is
-/// judged against.
+/// judged against, besides the node's own address and its subnet's
+/// broadcast address, which its link holds.
 pub(super) struct IngressAddresses {
-    /// The IP address in this node's B/IP MAC.
-    pub(super) local_ip: Ipv4Addr,
     /// The host's IPv4 addresses, which a wildcard bind takes unicast to.
     pub(super) unicast_ips: Vec<Ipv4Addr>,
     /// Whether the socket is bound to 0.0.0.0 rather than an interface.
@@ -302,37 +217,83 @@ pub(super) fn arrived_elsewhere(listener_interface: Option<u32>, arrival: Option
     matches!((listener_interface, arrival), (Some(own), Some(arrival)) if arrival != 0 && own != arrival)
 }
 
-/// Whether a broadcast listener keeps a datagram: one sent to this link's
-/// broadcast address that came in on the transport's own interface. Unicast
-/// to a local address no socket on the port is bound to also reaches a
-/// wildcard listener (macOS and the BSDs), and a listener gets the
-/// broadcasts of every interface on the port (#1538). Neither is this
-/// transport's, and another node on this port may share the listener, so
-/// whatever such a datagram holds, it is counted and dropped before its
-/// frame is read.
-fn listener_keeps(
-    received: &ReceivedDatagram,
+/// What `destination` was for this node (Annex J.2.11, J.2.12, J.3, J.4.1):
+/// its own unicast address, the broadcast address, both or neither. A
+/// wildcard bind takes unicast only to one of the host's listed addresses,
+/// on every OS (#952), and never counts the broadcast address as its own.
+pub(super) fn addressed(
+    destination: IpAddr,
+    os_group_delivery: Option<bool>,
     local: &IngressAddresses,
     ctx: &RecvContext,
-) -> bool {
-    let delivery = Delivery::of(
-        received.destination,
-        ctx.broadcast_addr,
-        received.os_group_delivery,
-    );
-    if delivery != Delivery::Broadcast {
-        ctx.drops.count(DropReason::ListenerMismatch);
+) -> Addressed {
+    let IpAddr::V4(destination) = destination else {
+        return Addressed::default();
+    };
+    let link = ctx.node.link();
+    let addresses = LocalAddresses {
+        own: *link.address.ip(),
+        broadcast: *link.subnet.broadcast.ip(),
+        wildcard: local.wildcard_bind.then_some(local.unicast_ips.as_slice()),
+    };
+    Addressed::classify(destination, os_group_delivery, &addresses)
+}
+
+/// Hand one received datagram to the node, and do what it decides. A
+/// broadcast listener keeps only broadcasts sent to this link's broadcast
+/// address that came in on the transport's own interface (#1538): unicast
+/// to a local address no socket on the port is bound to also reaches a
+/// wildcard listener (macOS and the BSDs), and a listener gets the
+/// broadcasts of every interface on the port. Neither is this transport's,
+/// and another node on this port may share the listener, so the node drops
+/// such a datagram before its frame is read.
+pub(super) async fn handle_datagram(
+    data: &[u8],
+    received: &ReceivedDatagram,
+    arrival: Arrival,
+    local: &IngressAddresses,
+    ctx: &RecvContext,
+) {
+    // An IPv4 socket reports only IPv4 peers: any other is unusable
+    // metadata, as in `receive_failed`.
+    let SocketAddr::V4(source) = received.peer else {
+        ctx.drops.count(DropReason::ReceiveError);
+        return;
+    };
+    let path = match arrival {
+        Arrival::Primary => Path::Primary,
+        Arrival::BroadcastListener => Path::Listener {
+            other_interface: arrived_elsewhere(local.listener_interface, received.arrival_index),
+        },
+    };
+    let datagram = Datagram {
+        payload: data,
+        source,
+        to: addressed(received.destination, received.os_group_delivery, local, ctx),
+        path,
+        // A datagram the buffer cut short fails the read (`receive_failed`).
+        truncated: false,
+    };
+    if let Some(Discard::ListenerMismatch { other_interface }) = receive(&datagram, ctx).await {
+        log_listener_mismatch(other_interface, received, local);
+    }
+}
+
+/// Log a datagram a broadcast listener didn't keep: the first one that
+/// arrived on another interface at warn, the rest at debug.
+fn log_listener_mismatch(
+    other_interface: bool,
+    received: &ReceivedDatagram,
+    local: &IngressAddresses,
+) {
+    if !other_interface {
         debug!(
             destination = %received.destination,
             "Dropping a datagram not sent to this link's broadcast address on the B/IP broadcast listener"
         );
-        return false;
+        return;
     }
     let (own, arrival) = (local.listener_interface, received.arrival_index);
-    if !arrived_elsewhere(own, arrival) {
-        return true;
-    }
-    ctx.drops.count(DropReason::ListenerMismatch);
     if local.interface_mismatch_seen.swap(true, Ordering::Relaxed) {
         debug!(
             ?own,
@@ -349,69 +310,4 @@ fn listener_keeps(
              transport's; if its interface changed since start, restart the transport"
         );
     }
-    false
-}
-
-/// Decode one received datagram and hand it to the BVLL handler, unless its
-/// UDP source is a group address, a broadcast listener doesn't keep it, or
-/// its BVLC function does not fit its destination.
-pub(super) async fn handle_datagram(
-    data: &[u8],
-    received: &ReceivedDatagram,
-    arrival: Arrival,
-    local: &IngressAddresses,
-    ctx: &RecvContext,
-) {
-    // An IPv4 socket reports only IPv4 peers: any other is unusable
-    // metadata, as in `receive_failed`.
-    let SocketAddr::V4(peer) = received.peer else {
-        ctx.drops.count(DropReason::ReceiveError);
-        return;
-    };
-    // A group source goes before anything in the frame is read (#1504).
-    if !ctx.group_sources.admits_sender(peer) {
-        return;
-    }
-    if arrival == Arrival::BroadcastListener && !listener_keeps(received, local, ctx) {
-        return;
-    }
-    // Per datagram, so at debug: a flood of them must not flood the log at
-    // warn. The counters carry the signal (#1624).
-    let frame = match BvllFrame::decode(data) {
-        Ok(frame) => frame,
-        Err(e) => {
-            ctx.drops.count(DropReason::of_decode_error(&e));
-            debug!(error = %e, "Failed to decode BVLL frame");
-            return;
-        }
-    };
-    let Some(delivery) = admitted_delivery(
-        frame.function,
-        received.destination,
-        local.local_ip,
-        ctx.broadcast_addr,
-        &local.unicast_ips,
-        local.wildcard_bind,
-        received.os_group_delivery,
-    ) else {
-        ctx.drops.count(DropReason::DestinationMismatch);
-        debug!(
-            function = frame.function.to_raw(),
-            destination = %received.destination,
-            "Dropping BVLL/IP destination mismatch"
-        );
-        return;
-    };
-    // Where the configured broadcast address is also the interface's own,
-    // as in a loopback test, a unicast function sent to it passes both
-    // checks above as a unicast; the listener still keeps broadcasts only.
-    if arrival == Arrival::BroadcastListener && delivery != Delivery::Broadcast {
-        ctx.drops.count(DropReason::ListenerMismatch);
-        debug!(
-            destination = %received.destination,
-            "Dropping unicast on the B/IP broadcast listener"
-        );
-        return;
-    }
-    handle_bvll_message(frame, (peer.ip().octets(), peer.port()), delivery, ctx).await;
 }

@@ -255,7 +255,9 @@ impl BipEndpointBuilder {
     /// [`foreign_device_policy`](Self::foreign_device_policy) /
     /// [`bbmd_management_acl`](Self::bbmd_management_acl) without it fail
     /// [`build_transport`](Self::build_transport) with a typed
-    /// [`Error::Encoding`].
+    /// [`Error::Encoding`]. A BBMD can't also register as a foreign device
+    /// ([`register_as_foreign_device`](Self::register_as_foreign_device)):
+    /// starting it fails (#1622).
     pub fn enable_bbmd(mut self, bdt: Vec<BdtEntry>) -> Self {
         self.bbmd_bdt = Some(bdt);
         self
@@ -296,7 +298,9 @@ impl BipEndpointBuilder {
     /// Registers this endpoint as a foreign device (before start).
     ///
     /// Local Number controls have foreign DBTN/retry wire coverage; broader
-    /// foreign-device behavior remains experimental.
+    /// foreign-device behavior remains experimental. A B/IP transport is in
+    /// one mode: with [`enable_bbmd`](Self::enable_bbmd) too, the endpoint
+    /// builds, but starting it fails (#1622).
     pub fn register_as_foreign_device(mut self, config: ForeignDeviceConfig) -> Self {
         self.foreign_device = Some(config);
         self

@@ -78,7 +78,8 @@ pub struct NodeCounters {
     /// [`Policy::accept_table`](super::Policy::accept_table).
     pub malformed_responses: u32,
     /// Distribute-Broadcast-To-Network NAKs from the foreign device's own
-    /// BBMD, taken as a sign it lost the registration.
+    /// BBMD, taken as a sign it lost the registration: with
+    /// [`Retry::Backoff`](super::Retry::Backoff) only.
     pub renewal_hints: u32,
     /// Leases that ended with nothing newer proven.
     pub lapses: u32,

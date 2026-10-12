@@ -302,6 +302,9 @@ fn listener_addresses(interface: Ipv4Addr, broadcast: Ipv4Addr) -> Vec<Ipv4Addr>
 pub(super) struct BipSocket {
     socket: UdpSocket,
     _network_port_lease: Option<Arc<()>>,
+    /// Where a test's sends go instead of the network.
+    #[cfg(test)]
+    sink: Option<super::send_sink::SendSink>,
 }
 
 impl BipSocket {
@@ -309,7 +312,27 @@ impl BipSocket {
         Self {
             socket,
             _network_port_lease: lease,
+            #[cfg(test)]
+            sink: None,
         }
+    }
+
+    /// A socket whose sends go to `sink`, for tests.
+    #[cfg(test)]
+    pub(super) fn recording(socket: UdpSocket, sink: super::send_sink::SendSink) -> Self {
+        Self {
+            sink: Some(sink),
+            ..Self::new(socket, None)
+        }
+    }
+
+    /// Send one datagram. Every send of the transport goes through here.
+    pub(super) async fn send_to(&self, buf: &[u8], target: SocketAddrV4) -> io::Result<usize> {
+        #[cfg(test)]
+        if let Some(sink) = &self.sink {
+            return sink.send(buf, target);
+        }
+        self.socket.send_to(buf, target).await
     }
 }
 

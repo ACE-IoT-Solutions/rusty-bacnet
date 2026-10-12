@@ -46,13 +46,16 @@ pub enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Retry {
     /// One renewal interval after the attempt before started, whatever
-    /// came of it.
+    /// came of it. A Distribute-Broadcast-To-Network NAK from the BBMD
+    /// changes nothing.
     AtRenewal,
     /// After a failure, sooner: one response timeout after it, doubling
     /// with each failure in a row, and never later than
     /// [`Retry::AtRenewal`] would. After a success, one renewal interval
     /// into the lease it proved, which is at once when that lease started
-    /// with an earlier, unanswered attempt.
+    /// with an earlier, unanswered attempt. A Distribute-Broadcast-To-Network
+    /// NAK from the BBMD that answers nothing pulls the next attempt forward
+    /// ([`Node::resolve`](super::Node::resolve)).
     Backoff,
 }
 

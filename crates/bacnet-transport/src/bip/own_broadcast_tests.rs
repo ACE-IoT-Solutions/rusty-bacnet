@@ -98,7 +98,7 @@ fn hand_wired_bbmd(
     let bbmd = Arc::new(std::sync::Mutex::new(state));
     transport.own_broadcast = Some(OwnBroadcastForwarder::new(Arc::clone(&bbmd), dispatcher));
     transport.bbmd = Some(bbmd);
-    transport.socket = Some(Arc::clone(socket));
+    transport.wire_for_test(Arc::clone(socket));
     (transport, rx)
 }
 

@@ -1,15 +1,11 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::Arc;
 use std::time::Duration;
 
-use bacnet_bip_codec::Bvll;
+use bacnet_bip_core::node::{ConfigError, Foreign, ForwardedTrust, Groups, Retry};
 use bacnet_types::error::Error;
-use tokio::time::Instant;
 
-use super::{
-    bvlc_response::BvlcResponseKind, client_management::ManagementClient, BipSocket, BipTransport,
-};
-use crate::bvll::encode_bip_mac;
+use super::node::core_duration;
+use super::BipTransport;
 
 /// Configuration for automatic foreign-device registration. Its positive TTL
 /// is sent unchanged; the independent renewal interval controls local attempts.
@@ -42,34 +38,43 @@ impl ForeignDeviceConfig {
         // second. This remains below half of the smallest positive wire TTL.
         Ok(interval.max(Duration::from_millis(100)))
     }
-}
 
-pub(super) async fn run(
-    socket: Arc<BipSocket>,
-    management: Arc<ManagementClient>,
-    config: ForeignDeviceConfig,
-    interval: Duration,
-) {
-    let target = encode_bip_mac(config.bbmd_ip.octets(), config.bbmd_port);
-    loop {
-        // One attempt at a time, with no catch-up burst after a delayed poll.
-        // Short intervals also bound response waiting, so a silent peer cannot
-        // hold the slot for the full manual-request timeout on every renewal.
-        let next = Instant::now() + interval;
-        management.schedule(next);
-        if let Err(error) = management
-            .request(
-                &socket,
-                &target,
-                Bvll::RegisterForeignDevice { ttl: config.ttl },
-                BvlcResponseKind::Result,
-                interval.min(BipTransport::BVLC_RESPONSE_TIMEOUT),
-            )
-            .await
-        {
-            tracing::debug!(bbmd = %SocketAddrV4::new(config.bbmd_ip, config.bbmd_port), %error,
-                "Foreign registration attempt did not return a matched result");
+    /// Refuse, before any I/O, a BBMD no device could register with: one
+    /// at port 0, at the unspecified address, or at a group address of a
+    /// link whose broadcast IP is `broadcast` on `interface`. One at the
+    /// transport's own address is refused once it is bound, when the node
+    /// starts.
+    pub(super) fn check_bbmd(&self, broadcast: Ipv4Addr, interface: Ipv4Addr) -> Result<(), Error> {
+        // Only the IP test is read, so the broadcast's port doesn't matter.
+        let groups = Groups {
+            broadcast: SocketAddrV4::new(broadcast, 0),
+            interface,
+        };
+        let refusal = if self.bbmd_port == 0 {
+            ConfigError::BbmdPort
+        } else if self.bbmd_ip.is_unspecified() || groups.contains_ip(self.bbmd_ip) {
+            ConfigError::BbmdAddress
+        } else {
+            return Ok(());
+        };
+        Err(Error::Encoding(refusal.to_string()))
+    }
+
+    /// The node engine's registration, renewed every `interval`
+    /// ([`Self::interval`]) as before: an attempt waits for its result at
+    /// most that interval or the manual helpers' timeout, whichever is
+    /// shorter; the next goes one interval after the last one started,
+    /// whatever came of it; broadcasts go at once, and Forwarded-NPDUs are
+    /// taken from any sender.
+    pub(super) fn engine(&self, interval: Duration) -> Foreign {
+        Foreign {
+            bbmd: SocketAddrV4::new(self.bbmd_ip, self.bbmd_port),
+            ttl: self.ttl,
+            renewal: core_duration(interval),
+            response_timeout: core_duration(interval.min(BipTransport::BVLC_RESPONSE_TIMEOUT)),
+            retry: Retry::AtRenewal,
+            hold: 0,
+            trust: ForwardedTrust::AnySender,
         }
-        tokio::time::sleep_until(next).await;
     }
 }

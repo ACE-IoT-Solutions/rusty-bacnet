@@ -184,6 +184,33 @@ fn distribute_nak_pulls_the_renewal_forward() {
 }
 
 #[test]
+fn at_renewal_takes_no_hint_from_a_distribute_nak() {
+    // Today's schedule, as the hosted transport keeps it until it backs off.
+    let mut node = start(Foreign {
+        retry: Retry::AtRenewal,
+        ..foreign()
+    });
+    act(&mut node, at(0));
+    bbmd_says(&mut node, SUCCESS, at(10));
+    act(&mut node, at(10));
+    assert_eq!(
+        bbmd_says(&mut node, DBTN_NAK, at(20_000)),
+        Said::Unmatched {
+            code: Some(DBTN_NAK),
+            late: false
+        }
+    );
+    assert!(act(&mut node, at(20_000)).0.is_none());
+    assert_eq!(node.next_deadline(), Some(at(30_000)));
+    let counters = node.take_counters();
+    assert_eq!(
+        (counters.renewal_hints, counters.unmatched_responses),
+        (0, 1)
+    );
+    assert_eq!(counters.last_unmatched_result, Some(DBTN_NAK));
+}
+
+#[test]
 fn renewal_is_independent_of_ttl() {
     // A NAT router may forget a mapping in 30 s or less, whatever the
     // time-to-live the BBMD keeps.

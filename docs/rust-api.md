@@ -825,20 +825,22 @@ waiting for is counted in `bvlc_client_snapshot().unmatched_responses`. Every
 other datagram the receive path drops is counted in `receive_counters()`, a
 `ReceiveCounters` snapshot with one field per reason (#1624): failed socket
 reads; a datagram a per-address broadcast listener doesn't keep, because it
-wasn't sent to this link's broadcast address or came in on another
-interface; a header that is too short, not B/IP or of the wrong Length; a
-BVLC function that doesn't fit the address it was sent to; a management
-request over the rate limit; an unknown function; a payload that doesn't fit
-its function (a malformed response also shows in the client snapshot's
-`malformed_responses`, whether or not a request was waiting for it); this
-node's own echo; a Forwarded-NPDU from outside a BBMD's BDT; and an NPDU the
-network-layer channel couldn't take because it was full or, once the network
-layer stopped reading, closed. Each drop counts once, and the totals survive
-a restart. A header that fails to decode and a
-malformed BVLC response, which used to log a warning for each datagram, now
-log at debug, so a flood of them can't flood the log; the counters carry the
-signal. A full channel still warns, at most once every 10 seconds, with the
-number of NPDUs dropped since the last warning.
+wasn't sent to this link's broadcast address or came in on another interface;
+a header that is too short, not B/IP or of the wrong Length; a BVLC function
+that doesn't fit the address it was sent to; a management request over the
+rate limit; an unknown function; a payload that doesn't fit its function (a
+malformed response also shows in the client snapshot's `malformed_responses`,
+whether or not a request was waiting for it); this node's own echo; a request
+the node would refuse with a NAK, from a source no reply can reach (the
+unspecified address, port 0 or the node itself), which gets no NAK (#1622); a
+Forwarded-NPDU from outside a BBMD's BDT; and an NPDU the network-layer
+channel couldn't take because it was full or, once the network layer stopped
+reading, closed. Each drop counts once, and the totals survive a restart. A
+header that fails to decode and a malformed BVLC response, which used to log a
+warning for each datagram, now log at debug, so a flood of them can't flood
+the log; the counters carry the signal. A full channel still warns, at most
+once every 10 seconds, with the number of NPDUs dropped since the last
+warning.
 
 ### BIP6 (IPv6)
 
@@ -4624,13 +4626,14 @@ with `generic_builder()` over a BBMD-mode `BipTransport` reports live values.
 
 `bvlc_client_snapshot()` instead describes this transport's own outgoing
 Read-BDT, Write-BDT, Read-FDT, Delete-FDT and Register-FD exchanges, including
-automatic registration. Each function reports successful local UDP sends,
-valid matched ACKs, matched result counts and the latest result code, response
-timeouts, local errors, malformed replies, and calls refused because the
-single management slot was busy. Sending a datagram is not a BBMD receipt.
-The snapshot uses fixed-size counters and a short synchronous lock; polling it
-does not send traffic. Totals belong to this transport instance and survive
-stop/start; last-result fields clear. BBMD-side counters keep their existing meanings.
+automatic registration, which the `bacnet-bip-core` node engine runs (#1622).
+Each function reports successful local UDP sends, valid matched ACKs, matched
+result counts and the latest result code, response timeouts, local errors,
+malformed replies, and calls refused because the single management slot was
+busy. Sending a datagram is not a BBMD receipt. The snapshot uses fixed-size
+counters and a short synchronous lock; polling it does not send traffic.
+Totals belong to this transport instance and survive stop/start; last-result
+fields clear. BBMD-side counters keep their existing meanings.
 
 Response matching checks the peer address and the operation. Read requests
 accept their typed ACK or their own NAK; requests answered by a Result accept
@@ -4673,9 +4676,20 @@ effective interval also drives `next_attempt_in` and response waiting.
 The automatic worker waits at most the smaller of the effective interval
 and three seconds for each result, then schedules another attempt; busy manual
 requests cause a locally counted busy refusal and a retry on the next interval.
-There is no catch-up burst after a delayed attempt. One-shot
-`register_foreign_device_bvlc` calls retain their three-second response wait
-and permit zero-TTL requests; they do not switch broadcast mode.
+There is no catch-up burst after a delayed attempt. The first attempt is
+admitted at `start()` and sent when the transport's driver task first runs,
+so a manual request made at once finds the slot busy.
+One-shot `register_foreign_device_bvlc` calls retain their three-second
+response wait and permit zero-TTL requests; they do not switch broadcast mode.
+A foreign device refuses the requests a success answers (Register,
+Delete-FDT-Entry and Write-BDT) to its own BBMD, whose registration it
+manages; send them from a transport in normal mode, as the CLI does, or to
+another BBMD. `start()` also refuses a BBMD address no device could register
+with: the unspecified address, a group address or port 0 before any I/O, and
+the transport's own address once bound (#1622).
+A transport is in one B/IP mode: `start()` fails, before any I/O, on one set
+up both as a BBMD (`enable_bbmd`) and as a foreign device, since the two
+broadcast differently; run them on separate transports (#938, #1622).
 
 `build()` means the client is running locally. Poll `last_outcome` for a
 matched acceptance or refusal; a send failure or timeout leaves the remote

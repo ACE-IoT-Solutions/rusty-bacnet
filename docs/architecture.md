@@ -19,7 +19,7 @@ Foundations
   bacnet-bip-core       B/IP behaviour: a sans-IO node engine, BBMD tables and forwarding
                         (no_std; no allocator)
   bacnet-transport      Data-link transports and framing (B/IP, B/IPv6 BVLL via bacnet-bip-codec;
-                        the B/IP BBMD via bacnet-bip-core)
+                        the B/IP node and BBMD via bacnet-bip-core)
   bacnet-network        Network layer, BACnetRouter, RouterTable
   bacnet-objects        BACnetObject, ObjectDatabase, object implementations
 
@@ -257,7 +257,30 @@ BBMD mode, in two layers:
 
 The engine has no buffers: deliveries borrow the datagram, and every send is
 a `Bvll` the caller encodes. A node that is not a BBMD links no BBMD code.
-The Tokio B/IP transport doesn't use it yet; it moves onto it next (#1622).
+
+The Tokio `BipTransport` runs on it (#1622):
+
+- **The link decides without a lock.** The receive loop builds a `Datagram`
+  for each read (its source, what its destination was for this node, which
+  socket read it) and acts on what `Link::receive` returns: an NPDU handed
+  up, a NAK, a response matched under the node's lock, the BBMD's share for
+  `BbmdState`, or a drop counted in `receive_counters()`. The send paths ask
+  `Link::unicast` and `Link::broadcast`; only a foreign device's broadcast
+  takes the node's lock.
+- **The node sits behind a std mutex**, which a response, a foreign
+  device's broadcast, a management request and the timer take, never across
+  an await. After each call its actions are drained under that lock: a
+  request that timed out fails at once, and a registration attempt (or the
+  broadcasts held for one) waits for one driver task, which makes every such
+  send and sleeps until the node's next deadline. Its counts are added to
+  the transport's `bvlc_client_snapshot()`, which survives a restart.
+- **Two clocks, which never meet.** The node runs on Tokio time from the
+  start, so paused-time tests drive it; the BBMD keeps its std clock. No time
+  on one is compared with a time on the other.
+- **Settings.** It runs with one exchange slot, shared by the management
+  helpers and registration, attempts one renewal interval apart whatever came
+  of the one before, no broadcasts held, Forwarded-NPDUs taken from any
+  sender, and no datagram budget: what the transport did before the engine.
 
 ### Testing MS/TP without hardware
 

@@ -7,7 +7,7 @@ use core::net::SocketAddrV4;
 use bacnet_bip_codec::{BvlcResultCode, Bvll, BvllError};
 
 use super::actions::{Action, Actions};
-use super::config::{ConfigError, Link, Mode};
+use super::config::{ConfigError, Link, Mode, Retry};
 use super::counters::{add, bump, NodeCounters, RegisterAttempt};
 use super::exchange::{
     Early, ExchangeId, ExchangeRefusal, Exchanges, Key, LocalFailure, Operation, Phase,
@@ -164,7 +164,8 @@ impl<const X: usize> Node<X> {
     /// malformed BVLC-Result never completes anything. A
     /// Distribute-Broadcast-To-Network NAK from a foreign device's own BBMD
     /// that matches nothing says the BBMD has no registration for it (Annex
-    /// J.4.5), and pulls the next attempt forward.
+    /// J.4.5), and with [`Retry::Backoff`] pulls the next attempt forward;
+    /// [`Retry::AtRenewal`] keeps its schedule.
     pub fn resolve<'d>(&mut self, response: Response<'d>, now: Instant) -> Inbound<'d> {
         // An attempt that falls due now goes after the match: it isn't sent
         // yet, so the response can't be its answer.
@@ -250,7 +251,7 @@ impl<const X: usize> Node<X> {
             if let (Mode::Foreign(foreign), Some(lifecycle)) =
                 (&self.link.mode, &mut self.lifecycle)
             {
-                if foreign.bbmd == peer {
+                if foreign.bbmd == peer && foreign.retry == Retry::Backoff {
                     bump(&mut self.counters.renewal_hints);
                     lifecycle.hint(now);
                 }
