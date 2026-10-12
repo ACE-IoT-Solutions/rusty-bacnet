@@ -534,8 +534,10 @@ impl BbmdState {
         self.subnet_mask = mask;
     }
 
-    /// Check if a sender is a registered (non-expired) foreign device.
-    pub fn is_registered_foreign_device(&mut self, ip: [u8; 4], port: u16) -> bool {
+    /// Check if a sender is a registered (non-expired) foreign device, for
+    /// tests (#1669).
+    #[cfg(test)]
+    pub(crate) fn is_registered_foreign_device(&mut self, ip: [u8; 4], port: u16) -> bool {
         let now = Instant::now();
         self.purge_expired_at(now);
         let now = self.clock.to_core(now);
