@@ -7,6 +7,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         &self.local_mac
     }
 
+    /// The transport the server's network layer runs on, for its
+    /// transport-specific state: a B/IPv6 server's `local_address()`, which
+    /// a peer turns into this server's VMAC with `resolve_virtual_address`,
+    /// or a transport's counters. `None` once the server no longer holds its
+    /// network layer.
+    pub fn transport(&self) -> Option<&T> {
+        self.network.as_deref().map(NetworkLayer::transport)
+    }
+
     /// Get a reference to the shared object database.
     ///
     /// Objects read through this handle return raw standalone data. A built-in

@@ -12,7 +12,7 @@ use bacnet_encoding::apdu::{decode_apdu, Apdu, SimpleAck};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip6::{
-    decode_bip6_mac, decode_bvll6, encode_bvll6, Bip6Transport, Bip6Vmac, Bvll6,
+    decode_bvll6, encode_bvll6, vmac_from_device_instance, Bip6Transport, Bip6Vmac, Bvll6,
     BACNET_IPV6_MULTICAST_LINK_LOCAL,
 };
 use bacnet_types::enums::{ObjectType, PropertyIdentifier, UnconfirmedServiceChoice};
@@ -124,11 +124,13 @@ async fn an_original_unicast_sent_to_the_multicast_group_is_not_answered() {
         .build()
         .await
         .unwrap();
-    let (_, port) = decode_bip6_mac(server.local_mac()).unwrap();
-    let server_vmac = {
-        let bytes = DEVICE.to_be_bytes();
-        Bip6Vmac::new([bytes[1], bytes[2], bytes[3]])
-    };
+    let port = server.transport().unwrap().local_address().unwrap().port();
+    let server_vmac = vmac_from_device_instance(DEVICE).unwrap();
+    assert_eq!(
+        server.local_mac(),
+        server_vmac.octets(),
+        "the MAC is the VMAC"
+    );
     let client = socket(Ipv6Addr::LOCALHOST, index).unwrap();
     let to_group = SocketAddrV6::new(BACNET_IPV6_MULTICAST_LINK_LOCAL, port, 0, index);
     let to_server = SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0);
