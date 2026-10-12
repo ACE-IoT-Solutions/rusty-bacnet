@@ -4,8 +4,8 @@
 //! - `bvll`: BVLL (BACnet Virtual Link Layer) encode/decode for BACnet/IP (Annex J)
 //! - `bip`: BACnet/IP over UDP transport
 //! - `bbmd`: BBMD state tables and forwarding logic
-//! - `mstp_frame`: MS/TP frame encode/decode with CRC-8/CRC-16 (Clause 9)
-//! - `mstp`: MS/TP token-passing transport over RS-485
+//! - `mstp`: MS/TP token-passing transport over RS-485, driving the portable
+//!   `bacnet-mstp-core` master with frames from `bacnet-mstp-codec` (Clause 9)
 //! - `sc_frame`: BACnet/SC BVLC-SC frame encode/decode (Annex AB)
 //! - `sc`: BACnet/SC hub-and-spoke transport over WebSocket
 //! - `any`: Type-erased transport enum for mixed-transport routing
@@ -22,7 +22,6 @@ pub mod ethernet;
 mod local_addresses;
 pub mod loopback;
 pub mod mstp;
-pub mod mstp_frame;
 #[cfg(feature = "serial")]
 pub mod mstp_serial;
 pub mod port;

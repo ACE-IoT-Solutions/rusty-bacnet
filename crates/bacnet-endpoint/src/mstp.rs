@@ -187,47 +187,36 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
         self
     }
 
-    /// Validates addressing without consuming the serial owner.
+    /// Validates the MS/TP configuration without consuming the serial owner.
     ///
-    /// Mirrors `MasterNode` addressing (`max_master <= 127`,
-    /// `this_station <= max_master`); returns a typed
-    /// [`Error::Encoding`] otherwise.
+    /// Runs the transport's own checks ([`MstpConfig::validate`]):
+    /// `max_master <= 127`, `this_station <= max_master`,
+    /// `max_info_frames >= 1` and a baud rate Clause 9 timing allows; returns
+    /// a typed [`Error::Encoding`] otherwise.
     pub fn validate_only(&self) -> Result<(), Error> {
-        Self::validate_addressing(self.this_station, self.max_master)
+        self.config().validate()
     }
 
-    fn validate_addressing(this_station: u8, max_master: u8) -> Result<(), Error> {
-        // Mirror `MasterNode::new` so misconfiguration fails fast at
-        // composition time: master-only endpoint, station within the ring.
-        if max_master > 127 {
-            return Err(Error::Encoding(format!(
-                "MS/TP endpoint: max_master {max_master} exceeds MAX_MASTER (127)"
-            )));
-        }
-        if this_station > max_master {
-            return Err(Error::Encoding(format!(
-                "MS/TP endpoint: this_station {this_station} exceeds configured max_master ({max_master})"
-            )));
-        }
-        Ok(())
-    }
-
-    /// Builds the concrete MS/TP transport, taking the serial owner once.
-    ///
-    /// Validates addressing first, then takes the serial port by value: a
-    /// second call returns `"MS/TP endpoint serial owner is missing"`.
-    pub fn build_transport(mut self) -> Result<MstpTransport<S>, Error> {
-        Self::validate_addressing(self.this_station, self.max_master)?;
-        let serial = self
-            .serial
-            .take()
-            .ok_or_else(|| Error::Encoding("MS/TP endpoint serial owner is missing".into()))?;
-        let config = MstpConfig {
+    fn config(&self) -> MstpConfig {
+        MstpConfig {
             this_station: self.this_station,
             max_master: self.max_master,
             max_info_frames: self.max_info_frames,
             baud_rate: self.baud_rate,
-        };
+        }
+    }
+
+    /// Builds the concrete MS/TP transport, taking the serial owner once.
+    ///
+    /// Validates the configuration first, then takes the serial port by
+    /// value: a second call returns `"MS/TP endpoint serial owner is missing"`.
+    pub fn build_transport(mut self) -> Result<MstpTransport<S>, Error> {
+        let config = self.config();
+        config.validate()?;
+        let serial = self
+            .serial
+            .take()
+            .ok_or_else(|| Error::Encoding("MS/TP endpoint serial owner is missing".into()))?;
         Ok(MstpTransport::new(serial, config).with_execution_mode(self.execution_mode))
     }
 
@@ -239,7 +228,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// identity must fit the 480 APDU bound; the standalone
     /// [`SessionConfig`] 480 default is kept untouched otherwise.
     pub fn build_session(mut self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
-        Self::validate_addressing(self.this_station, self.max_master)?;
+        self.config().validate()?;
         if let Some(identity) = self.identity.as_ref() {
             // Respect the transport's advertised standard-frame/APDU bounds:
             // never compose an identity that invites oversized responses.

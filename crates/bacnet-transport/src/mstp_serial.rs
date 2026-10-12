@@ -24,7 +24,7 @@ use tokio_serial::SerialStream;
 
 use bacnet_types::error::Error;
 
-use crate::mstp::SerialPort;
+use crate::mstp::{Echo, SerialPort};
 
 #[cfg(any(target_os = "linux", test))]
 mod kernel_rs485;
@@ -84,8 +84,16 @@ pub fn available_ports() -> Result<Vec<String>, Error> {
 /// assumes the hardware handles direction switching automatically (USB
 /// RS-485 adapters). On Linux, call [`enable_kernel_rs485`](Self::enable_kernel_rs485)
 /// to use kernel-managed RTS direction control.
+///
+/// Whether the port hears its own frames is a matter of wiring, which the
+/// port cannot detect: it reports [`Echo::None`] unless built
+/// [`with_echo`](Self::with_echo). Kernel RS-485 as configured here leaves
+/// the kernel's receive-during-transmit flag off, so drivers that honour it
+/// suppress the echo; a USB adapter whose transceiver keeps its receiver on
+/// returns every octet it sends and needs [`Echo::Full`].
 pub struct TokioSerialPort {
     inner: Arc<Mutex<SerialStream>>,
+    echo: Echo,
 }
 
 impl TokioSerialPort {
@@ -96,7 +104,15 @@ impl TokioSerialPort {
             .map_err(|e| Error::Encoding(format!("Serial open failed: {e}")))?;
         Ok(Self {
             inner: Arc::new(Mutex::new(stream)),
+            echo: Echo::None,
         })
+    }
+
+    /// Declare what the port's receiver hears while it transmits (see
+    /// [`Echo`]); the MS/TP transport drops an echo it is told about.
+    pub fn with_echo(mut self, echo: Echo) -> Self {
+        self.echo = echo;
+        self
     }
 
     /// Enable Linux kernel RS-485 mode via `TIOCSRS485` ioctl.
@@ -197,6 +213,10 @@ impl SerialPort for TokioSerialPort {
             .read(buf)
             .await
             .map_err(|e| Error::Encoding(format!("Serial read failed: {e}")))
+    }
+
+    fn echo(&self) -> Echo {
+        self.echo
     }
 }
 
@@ -424,6 +444,13 @@ impl<S: SerialPort> SerialPort for GpioDirectionPort<S> {
 
     async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
         self.direction.read(&self.inner, self, buf).await
+    }
+
+    /// The inner port's: whether the receiver hears the line while DE is
+    /// asserted depends on how its enable is wired, which the inner port
+    /// declares.
+    fn echo(&self) -> Echo {
+        self.inner.echo()
     }
 }
 

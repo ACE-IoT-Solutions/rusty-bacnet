@@ -1,4 +1,5 @@
 //! One real serial/MAC owner; gates observe admission without replacing transport behavior.
+use crate::mstp_wire::{decode_frame, encode_frame, FrameType, MstpFrame};
 use bacnet_client::client::{BACnetClient, ClientConfig};
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
 use bacnet_objects::{analog::AnalogInputObject, database::ObjectDatabase};
@@ -6,7 +7,6 @@ use bacnet_server::server::{BACnetServer, ServerConfig};
 use bacnet_transport::{
     any::AnyTransport,
     mstp::{LoopbackSerial, MstpConfig, MstpExecutionMode, MstpTransport, SerialPort},
-    mstp_frame::{decode_frame, encode_frame, FrameType, MstpFrame},
     port::{ReceivedNpdu, TransportPort},
 };
 use bacnet_types::error::Error;
@@ -245,25 +245,85 @@ impl Peer {
             [1, 0x80, 0x13, (number >> 8) as u8, number as u8, 0]
         );
     }
+    /// The node's next data frame. The peer plays the node's only other
+    /// master: it hands over the token, answers a Poll For Master addressed
+    /// to it, and passes back every token it is given. A poll for another
+    /// address is left to time out; a token sent while the node polls would
+    /// be an unexpected frame there (Clause 9.5.6.8) and cost the token.
     pub async fn data(&mut self) -> MstpFrame {
         bounded(async {
+            self.frame(FrameType::Token, NODE, &[]).await.unwrap();
             loop {
-                self.frame(FrameType::Token, NODE, &[]).await.unwrap();
-                loop {
-                    let frame = self.writes.recv().await.expect("serial owner disappeared");
-                    assert_eq!(frame.source, NODE);
-                    match frame.frame_type {
-                        FrameType::BACnetDataNotExpectingReply
-                        | FrameType::BACnetDataExpectingReply => return frame,
-                        FrameType::PollForMaster | FrameType::Token => break,
-                        FrameType::ReplyPostponed => {}
-                        other => panic!("unexpected frame {other:?}"),
+                let frame = self.writes.recv().await.expect("serial owner disappeared");
+                assert_eq!(frame.source, NODE);
+                match frame.frame_type {
+                    FrameType::BACnetDataNotExpectingReply
+                    | FrameType::BACnetDataExpectingReply => return frame,
+                    FrameType::PollForMaster if frame.destination == PEER => {
+                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                            .await
+                            .unwrap();
                     }
+                    FrameType::Token if frame.destination == PEER => {
+                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    }
+                    FrameType::PollForMaster | FrameType::ReplyPostponed => {}
+                    other => panic!("unexpected frame {other:?}"),
                 }
             }
         })
         .await
     }
+    /// Wait until the node passes the token to the peer, answering its
+    /// polls on the way: a master sends a request only while it holds the
+    /// token.
+    pub async fn await_token(&mut self) {
+        bounded(async {
+            loop {
+                let frame = self.writes.recv().await.expect("serial owner disappeared");
+                assert_eq!(frame.source, NODE);
+                match frame.frame_type {
+                    FrameType::PollForMaster if frame.destination == PEER => {
+                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                            .await
+                            .unwrap();
+                    }
+                    FrameType::Token if frame.destination == PEER => return,
+                    _ => {}
+                }
+            }
+        })
+        .await
+    }
+
+    /// The node's answer to a request the peer sent while holding the
+    /// token. After Reply Postponed the peer passes the token on, so the
+    /// node can send the answer with it.
+    pub async fn answer(&mut self) -> MstpFrame {
+        bounded(async {
+            loop {
+                let frame = self.writes.recv().await.expect("serial owner disappeared");
+                assert_eq!(frame.source, NODE);
+                match frame.frame_type {
+                    FrameType::BACnetDataNotExpectingReply => return frame,
+                    FrameType::ReplyPostponed => {
+                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    }
+                    FrameType::PollForMaster if frame.destination == PEER => {
+                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                            .await
+                            .unwrap();
+                    }
+                    FrameType::Token if frame.destination == PEER => {
+                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+    }
+
     pub async fn assert_released(&mut self, gates: &Gates) {
         bounded(gates.serial_dropped.acquire())
             .await

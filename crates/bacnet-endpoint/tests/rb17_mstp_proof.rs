@@ -23,6 +23,9 @@
 //! session station (simulator control, not conformance traffic); the MAC's
 //! own self-organization is the backstop, never the primary driver.
 
+#[path = "support/mstp_wire.rs"]
+mod mstp_wire;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,7 +41,6 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::mstp::{LoopbackSerial, MstpExecutionMode, MstpTransport, SerialPort};
-use bacnet_transport::mstp_frame::{decode_frame, encode_frame, FrameType, MstpFrame};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{
     ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, Segmentation,
@@ -47,6 +49,7 @@ use bacnet_types::enums::{
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::{Bytes, BytesMut};
+use mstp_wire::{decode_frame, encode_frame, reply_to_poll, token_frame, FrameType, MstpFrame};
 use tokio::sync::mpsc;
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -180,8 +183,8 @@ impl Harness {
     }
 
     /// Drives token opportunities until a data frame matching `is_data`
-    /// arrives (bounded rounds, event-driven). Token answers without data
-    /// (PFM/Token) and `ReplyPostponed` only trigger a retry: whichever of
+    /// arrives (bounded rounds, event-driven). Frames without that data
+    /// (PFM/Token/`ReplyPostponed`) only keep the ring turning: whichever of
     /// the egress-queue fill vs MAC reply wins the race, the outcome is the
     /// same postponed identity delivered token-owned.
     async fn drive_token_until_data(
@@ -189,19 +192,25 @@ impl Harness {
         what: &str,
         mut is_data: impl FnMut(&MstpFrame) -> bool,
     ) -> MstpFrame {
-        for _ in 0..8 {
-            self.peer_send(&token_frame(SESSION_MAC, PEER_MAC)).await;
-            let frame = self
-                .wait_for(what, |f| {
-                    is_data(f)
-                        || matches!(
-                            f.frame_type,
-                            FrameType::PollForMaster | FrameType::Token | FrameType::ReplyPostponed
-                        )
-                })
-                .await;
+        // The peer plays the session's only other master: it hands over the
+        // token, answers a Poll For Master addressed to it, and passes back
+        // every token it is given. A poll for another address is left to time
+        // out; a token sent while the session polls would be an unexpected
+        // frame there (Clause 9.5.6.8) and cost the token.
+        self.peer_send(&token_frame(SESSION_MAC, PEER_MAC)).await;
+        for _ in 0..256 {
+            let frame = self.wait_for(what, |_| true).await;
             if is_data(&frame) {
                 return frame;
+            }
+            match frame.frame_type {
+                FrameType::PollForMaster if frame.destination == PEER_MAC => {
+                    self.peer_send(&reply_to_poll(SESSION_MAC, PEER_MAC)).await;
+                }
+                FrameType::Token if frame.destination == PEER_MAC => {
+                    self.peer_send(&token_frame(SESSION_MAC, PEER_MAC)).await;
+                }
+                _ => {}
             }
         }
         panic!("token drive did not deliver {what}");
@@ -210,15 +219,6 @@ impl Harness {
     async fn shutdown(mut self) {
         self.session.stop().await.expect("session must stop");
         self.drain.abort();
-    }
-}
-
-fn token_frame(dest: u8, src: u8) -> MstpFrame {
-    MstpFrame {
-        frame_type: FrameType::Token,
-        destination: dest,
-        source: src,
-        data: Bytes::new(),
     }
 }
 

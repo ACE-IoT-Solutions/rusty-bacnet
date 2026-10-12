@@ -1,6 +1,8 @@
 //! Local Number controls through actual MS/TP frames and the full-server,
 //! shared-endpoint and standalone-client owners.
 //! LoopbackSerial evidence only; no RS-485 timing or hardware qualification.
+#[path = "support/mstp_wire.rs"]
+mod mstp_wire;
 #[path = "mstp_network_numbers/support.rs"]
 mod support;
 use bacnet_client::client::BACnetClient;
@@ -8,7 +10,7 @@ use bacnet_encoding::{
     apdu::{decode_apdu, Apdu},
     npdu::decode_npdu,
 };
-use bacnet_transport::{mstp::MstpExecutionMode, mstp_frame::FrameType, port::TransportPort};
+use bacnet_transport::{mstp::codec::FrameType, mstp::MstpExecutionMode, port::TransportPort};
 use bacnet_types::{
     enums::{ObjectType, PropertyIdentifier},
     primitives::ObjectIdentifier,
@@ -95,10 +97,11 @@ async fn responder_progress(peer: &mut Peer) {
     // Independent ReadProperty: analog-input 1 / present-value, Invoke ID 42.
     // NPDU version1/expecting-reply, confirmed unsegmented APDU, max-APDU480.
     let request = [1, 4, 0, 3, 42, 12, 0x0c, 0, 0, 0, 1, 0x19, 85];
+    peer.await_token().await;
     bounded(peer.frame(FrameType::BACnetDataExpectingReply, NODE, &request))
         .await
         .unwrap();
-    let frame = peer.data().await;
+    let frame = peer.answer().await;
     assert_eq!(frame.destination, PEER);
     let npdu = decode_npdu(frame.data).unwrap();
     assert!(!npdu.is_network_message);
