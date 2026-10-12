@@ -124,8 +124,8 @@ async fn polling() -> (Bus, Sent) {
     (bus, poll)
 }
 
-/// U3, POLL_FOR_MASTER. A valid frame other than a Reply To Poll For Master
-/// for this station drops the token: IDLE (ReceivedUnexpectedFrame, Clause
+/// U3, POLL_FOR_MASTER. A valid frame other than an answer to this station's
+/// poll drops the token: IDLE (ReceivedUnexpectedFrame, Clause
 /// 9.5.6.8). No further poll and no token pass follow.
 #[tokio::test(start_paused = true)]
 async fn u3_unexpected_frame_in_poll_for_master_drops_the_token() {

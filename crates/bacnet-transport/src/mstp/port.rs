@@ -110,8 +110,7 @@ impl<S: SerialPort> MstpTransport<S> {
             .queues
             .enqueue(destination, npdu, link.clock.now(), link.queue_max_age);
         let counts = &self.diagnostics.counters;
-        let (unicast, broadcast) = link.queues.stats();
-        counts.publish_queues(unicast, broadcast);
+        counts.publish_queues(&link.queues);
         match result {
             Ok(()) => Ok(()),
             Err(EnqueueError::Closed) => Err(Error::Transport(std::io::Error::new(
@@ -292,7 +291,8 @@ impl LoopbackSerial {
     }
 
     /// Set whether this port hears its own writes. With [`Echo::Full`] each
-    /// write is delivered to this port's own reader first, then to the peer.
+    /// write is delivered to this port's own reader first, then to the peer;
+    /// its grace is what the port reports to the transport.
     pub fn with_echo(mut self, echo: Echo) -> Self {
         self.echo = echo;
         self
@@ -301,7 +301,7 @@ impl LoopbackSerial {
 
 impl SerialPort for LoopbackSerial {
     async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        if self.echo == Echo::Full {
+        if matches!(self.echo, Echo::Full { .. }) {
             if let Some(own) = self.own.upgrade() {
                 own.send(data.to_vec())
                     .await
@@ -320,7 +320,9 @@ impl SerialPort for LoopbackSerial {
     }
 
     async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
-        // Serve leftover bytes first
+        // Hold the remainder's lock across the receive, so nothing taken off
+        // the channel waits on a later await: a read dropped at any await
+        // point loses no data.
         let mut leftover = self.leftover.lock().await;
         if !leftover.is_empty() {
             let len = leftover.len().min(buf.len());
@@ -328,18 +330,13 @@ impl SerialPort for LoopbackSerial {
             leftover.drain(..len);
             return Ok(len);
         }
-        drop(leftover);
-
         let mut rx = self.rx.lock().await;
         match rx.recv().await {
             Some(data) => {
                 let len = data.len().min(buf.len());
                 buf[..len].copy_from_slice(&data[..len]);
-                // Buffer excess bytes for next read
-                if data.len() > buf.len() {
-                    let mut leftover = self.leftover.lock().await;
-                    leftover.extend_from_slice(&data[buf.len()..]);
-                }
+                // Keep what did not fit for the next read.
+                leftover.extend_from_slice(&data[len..]);
                 Ok(len)
             }
             None => Err(Error::Encoding("loopback channel closed".into())),

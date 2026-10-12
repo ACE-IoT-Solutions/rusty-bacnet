@@ -70,7 +70,8 @@ and mark saturated fields indeterminate rather than claiming exact counts.
 | `outbound_queue_full`, `outbound_oversize` | Rejected queue admissions / oversize queued NPDU or direct reply. Not-started and invalid-MAC errors are excluded. |
 | `ingress_full`, `ingress_closed` | Failed NPDU delivery because the bounded receive channel was full / closed. |
 | `serial_read_errors`, `serial_write_errors` | Completed serial calls returning errors; write and drain errors abort the frame. |
-| `echo_mismatches`, `echo_missing` | On a port declared with `Echo::Full`: frames whose echo differed from what was sent, or did not fully arrive within the echo grace. |
+| `echo_mismatches`, `echo_missing` | On a port declared with `Echo::Full`: frames whose echo differed from what was sent or was cut short (what differed went to the core as line activity), and frames with no echo at all within the grace. |
+| `late_answers_queued`, `late_answers_dropped`, `late_answers_expired` | Application answers that came after Reply Postponed (or after the core gave up) and were queued for the token; reply channels given up because more than eight were waiting, or at the queue's maximum age. |
 | `mac.frames_received`, `mac.npdus_delivered`, `mac.frames_delivered` | Valid frames the core's decoder assembled (any destination), and data it passed up. |
 | `mac.parser_errors`, `mac.frame_aborts` | Frames invalid for this station per the receive rules (bad header, or bad data for this station or broadcast), and partial frames abandoned by T_frame_abort (100 ms on a host) or at a transmit start. Chunk gaps under 100 ms are not aborts. |
 | `mac.deadline_misses` | Deadlines the MAC task serviced 1 ms or more late. |

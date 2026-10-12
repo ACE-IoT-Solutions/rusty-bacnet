@@ -29,11 +29,17 @@
 //!   what the receiver hears is the station's own echo, which the core
 //!   ignores; a frame it was part way through receiving is dropped then.
 //!
-//! An adapter on a host serial API, which hands over chunks without
-//! per-octet times, assembles frames itself and reports them with
+//! An adapter on a host serial API, which hands over octets in chunks
+//! without per-octet times, still feeds every octet to
+//! [`MasterCore::on_octet`], stamped with the time of the read that returned
+//! it: a stamp can only be late, which only defers the station's own sends,
+//! and the core's own decoder then assembles every frame. That is what the
+//! host MS/TP transport in `bacnet-transport` does, with a longer
+//! T_frame_abort for chunk gaps. A backend that assembles frames in
+//! hardware, and so has no octets to feed, reports them with
 //! [`MasterCore::on_host_activity`], [`MasterCore::on_validated_frame`] and
-//! [`MasterCore::on_invalid_frame`]; the same rules apply, and an assembler
-//! drops its own partial frame at a confirmed start.
+//! [`MasterCore::on_invalid_frame`] instead; the same rules apply, and such
+//! an assembler drops its own partial frame at a confirmed start.
 //!
 //! Line activity never makes the core abandon a frame it is waiting to send
 //! on its own: the frame waits for the line to go quiet. Only the evidence

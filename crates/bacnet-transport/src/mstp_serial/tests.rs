@@ -322,8 +322,8 @@ async fn unix_serial_with_echo_drops_its_own_frames() {
         inner: Arc::new(Mutex::new(stream)),
         echo: Echo::None,
     }
-    .with_echo(Echo::Full);
-    assert_eq!(serial.echo(), Echo::Full);
+    .with_echo(Echo::full());
+    assert_eq!(serial.echo(), Echo::full());
     let config = MstpConfig {
         this_station: 3,
         max_master: 7,

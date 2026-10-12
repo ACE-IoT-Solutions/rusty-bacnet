@@ -27,7 +27,9 @@ pub use bacnet_mstp_core::{MstpCounters, QueueCounters};
 
 mod adapter;
 mod diagnostics;
+mod echo;
 mod queues;
+mod replies;
 pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot};
 
 // ---------------------------------------------------------------------------
@@ -46,15 +48,40 @@ pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot};
 /// The transport must know which: the core counts what it hears after a
 /// transmission as line activity, and its own Token heard back would look
 /// like the successor using the token. With [`Echo::Full`] the transport
-/// drops as many received octets as it sent, before it reports the
-/// transmission complete to the core.
+/// compares what it reads after a frame with what it sent and drops the
+/// octets that match, in order; the first octet that does not match, and
+/// everything after it, goes to the core as line activity. It never drops
+/// an octet it cannot match to the frame, so a peer's octets always reach
+/// the core.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Echo {
     /// Nothing the port sends comes back to its receiver.
     #[default]
     None,
     /// Every octet the port sends comes back to its receiver, in order.
-    Full,
+    Full {
+        /// How long after the frame's last octet its echo may still be
+        /// arriving before the transport reports the frame complete
+        /// regardless. An echo already under way then is still recognized
+        /// and dropped as it continues, up to this station's next frame; an
+        /// echo not begun by then is looked for during one more grace.
+        /// [`Echo::full`] uses [`DEFAULT_ECHO_GRACE`].
+        grace: std::time::Duration,
+    },
+}
+
+/// The echo grace of [`Echo::full`]: room for a USB adapter's receive
+/// latency, which holds received octets back for up to 16 ms by default on
+/// FTDI parts, plus host scheduling.
+pub const DEFAULT_ECHO_GRACE: std::time::Duration = std::time::Duration::from_millis(40);
+
+impl Echo {
+    /// [`Echo::Full`] with [`DEFAULT_ECHO_GRACE`].
+    pub const fn full() -> Self {
+        Self::Full {
+            grace: DEFAULT_ECHO_GRACE,
+        }
+    }
 }
 
 /// Abstraction over an RS-485 serial port.
@@ -278,6 +305,10 @@ mod diagnostics_tests;
 mod echo_tests;
 #[cfg(test)]
 pub(crate) mod execution_tests;
+#[cfg(test)]
+mod late_answer_tests;
+#[cfg(test)]
+mod late_echo_tests;
 #[cfg(test)]
 mod reply_tests;
 #[cfg(test)]

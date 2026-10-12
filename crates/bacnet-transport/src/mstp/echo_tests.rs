@@ -12,15 +12,15 @@ use crate::port::TransportPort;
 const T_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 const TICK: Duration = Duration::from_millis(1);
 
-const ECHOING: Port = Port {
-    echo: Echo::Full,
+pub(super) const ECHOING: Port = Port {
+    echo: Echo::full(),
     echoes: true,
     drain: DrainMode::Immediate,
 };
 
 /// The port declares an echo, and the test scripts what comes back.
-const SCRIPTED_ECHO: Port = Port {
-    echo: Echo::Full,
+pub(super) const SCRIPTED_ECHO: Port = Port {
+    echo: Echo::full(),
     echoes: false,
     drain: DrainMode::Immediate,
 };
@@ -76,26 +76,34 @@ async fn octets_after_the_echo_in_one_read_are_line_activity() {
     bus.stop().await;
 }
 
-/// An echo that differs from what was sent (a collision, or noise) is still
-/// the station's own transmission time and is dropped; it is counted.
+/// An echo that differs from what was sent (a collision, or noise) is not
+/// dropped: the station cannot tell it from a peer's octets, so all of it
+/// reaches the core, in order, and is counted. Here the core finds an
+/// invalid frame, which in POLL_FOR_MASTER counts as no answer at once
+/// (SendNextPFM, Clause 9.5.6.8): the next poll does not wait for
+/// T_usage_timeout.
 #[tokio::test(start_paused = true)]
-async fn a_corrupted_echo_is_dropped_and_counted() {
+async fn a_corrupted_echo_is_fed_and_counted() {
     let mut bus = Bus::start_with(config(3, 4), SCRIPTED_ECHO).await;
     bus.send(FrameType::Token, 3, 4, &[]);
     let poll = bus.next().await;
     let mut echo = encode(poll.frame_type, poll.destination, poll.source, &[]);
     echo[4] ^= 0x40;
-    bus.send_raw(&echo);
-    // The poll goes unanswered: the next one follows T_usage_timeout later.
+    bus.until(poll.end + TICK).await;
+    let heard = bus.send_raw(&echo);
     let next = bus.next().await;
     assert_eq!(
         (next.frame_type, next.destination),
         (FrameType::PollForMaster, 0)
     );
-    assert!(next.start >= poll.end + T_USAGE_TIMEOUT);
+    assert!(next.start >= heard + bus.turnaround);
+    assert!(next.start < poll.end + T_USAGE_TIMEOUT, "{next:?}");
     let counts = bus.transport.diagnostics().snapshot();
     assert_eq!(counts.echo_mismatches, 1);
-    assert_eq!(counts.mac.parser_errors, 0, "the echo reached the core");
+    assert_eq!(
+        counts.mac.parser_errors, 1,
+        "the octets did not reach the core"
+    );
     bus.stop().await;
 }
 
@@ -108,7 +116,7 @@ async fn a_missing_echo_is_counted_after_the_grace() {
     let poll = bus.next().await;
     let next = bus.next().await;
     assert_eq!(next.frame_type, FrameType::PollForMaster);
-    assert!(next.start >= poll.end + super::adapter::ECHO_GRACE);
+    assert!(next.start >= poll.end + super::DEFAULT_ECHO_GRACE);
     let counts = bus.transport.diagnostics().snapshot();
     assert!(counts.echo_missing >= 1);
     bus.stop().await;
@@ -168,14 +176,14 @@ async fn a_write_error_aborts_the_frame() {
     bus.stop().await;
 }
 
-/// The same on [`LoopbackSerial`] built with [`Echo::Full`]: a station
+/// The same on [`LoopbackSerial`] built with [`Echo::full`]: a station
 /// generating a token polls address after address, each poll's echo
 /// dropped. Fed to the core, its own poll heard in POLL_FOR_MASTER would be
 /// an unexpected frame and end the search (Clause 9.5.6.8).
 #[tokio::test(start_paused = true)]
 async fn loopback_with_echo_polls_on_past_its_own_echo() {
     let (serial, peer) = LoopbackSerial::pair();
-    let mut transport = MstpTransport::new(serial.with_echo(Echo::Full), config(3, 7));
+    let mut transport = MstpTransport::new(serial.with_echo(Echo::full()), config(3, 7));
     let _npdus = transport.start().await.unwrap();
     let mut buf = [0u8; 64];
     for destination in [4, 5, 6] {

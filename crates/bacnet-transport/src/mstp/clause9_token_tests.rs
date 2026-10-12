@@ -20,7 +20,7 @@ const TICK: Duration = Duration::from_millis(1);
 /// below Npoll (50) and polls for a master once it reaches it (SendToken and
 /// SendMaintenancePFM, Clause 9.5.6.5). ReceivedReplyToPFM sets TokenCount
 /// to zero (Clause 9.5.6.8), so after joining a ring the station passes the
-/// token 50 times, and answers the 51st token with a Poll For Master to the
+/// token 50 times, and answers the 51st token with a `PollForMaster` to the
 /// first address after it.
 #[tokio::test(start_paused = true)]
 async fn u1_maintenance_poll_follows_npoll_token_passes() {
@@ -50,8 +50,8 @@ async fn u1_maintenance_poll_follows_npoll_token_passes() {
     bus.stop().await;
 }
 
-/// U2. In POLL_FOR_MASTER the station waits T_usage_timeout for a Reply To
-/// Poll For Master (Clause 9.5.6.8, SendNextPFM and the others). A polled
+/// U2. In POLL_FOR_MASTER the station waits T_usage_timeout for an answer
+/// to its poll (Clause 9.5.6.8, SendNextPFM and the others). A polled
 /// master may take up to T_usage_delay (15 ms) to answer (Clause 9.5.3), so
 /// an answer that starts 15 ms after the poll makes it the successor, and
 /// without one the next poll waits the full T_usage_timeout (20 ms).
@@ -93,7 +93,7 @@ async fn u2_poll_for_master_waits_the_usage_timeout() {
 /// U5, the slot. With no traffic, a master leaves IDLE after T_no_token
 /// (LostToken, Clause 9.5.6.2) and generates a token once the silence
 /// reaches T_no_token + T_slot × TS (GenerateToken, Clause 9.5.6.7), with
-/// a Poll For Master to TS + 1. The slot is measured from the last activity
+/// a `PollForMaster` to TS + 1. The slot is measured from the last activity
 /// on the line, here the moment the station started.
 #[tokio::test(start_paused = true)]
 async fn u5_token_generation_uses_the_stations_own_slot() {

@@ -1422,7 +1422,8 @@ The cloneable `mstp::MstpDiagnostics` handle returns owned
 `MstpDiagnosticsSnapshot` counts during operation and after stop/drop, without
 retaining serial ownership. Counts start at zero and have no reset. The
 transport-boundary counts (frames sent by kind, reply timeouts, queue and
-ingress drops, serial errors, echo mismatches) saturate at `u64::MAX`; `mac`
+ingress drops, serial errors, echo mismatches, late answers) saturate at
+`u64::MAX`; `mac`
 carries the core's own `MstpCounters` (frames received and delivered, invalid
 frames, frame aborts, token rotations and retries, deferred starts, late and
 expired replies, deadline misses and the queue counters), which saturate at
@@ -1581,17 +1582,32 @@ the receiver enable tied to the driver enable it hears nothing, while a
 transceiver whose receiver stays on (many USB RS-485 cables) returns every
 octet. The transport must know, or it would take its own Token, heard back,
 for its successor using the token. Declare an echoing port with
-`with_echo(Echo::Full)` on `TokioSerialPort` (or `LoopbackSerial`);
+`with_echo(Echo::full())` on `TokioSerialPort` (or `LoopbackSerial`);
 `GpioDirectionPort` reports its inner port's setting, and the default is
-`Echo::None`. With `Echo::Full` the transport drops as many received octets as
-it sent, within 20 ms of the frame's end, before it reports the frame
-complete to the core; `echo_mismatches` and `echo_missing` in the diagnostics
-show a port declared wrongly.
+`Echo::None`.
+
+With `Echo::Full { grace }` the transport compares the octets it reads after
+a frame with the frame. Matching octets are held back and dropped once the
+whole frame has matched; at the first octet that differs, the frame is
+reported complete and everything held and read goes to the core in order,
+so a peer's octets are never dropped, even where the echo should have been.
+The grace is how long after the frame's end its echo may still be arriving
+before the frame is reported complete regardless: `Echo::full()` gives
+`DEFAULT_ECHO_GRACE`, 40 ms, room for a USB adapter's receive latency (FTDI
+parts hold received octets back for up to 16 ms by default). An echo already
+under way when the grace runs out is still matched and dropped as it
+continues, up to the station's next frame, and one not begun is looked for
+during one more grace. `echo_mismatches` and `echo_missing` in the
+diagnostics show a port declared wrongly.
 
 ```rust
+use std::time::Duration;
 use bacnet_transport::mstp::Echo;
 
-let serial = TokioSerialPort::open(&config)?.with_echo(Echo::Full);
+let serial = TokioSerialPort::open(&config)?.with_echo(Echo::full());
+// Or with a grace of its own, for an adapter with a short latency timer:
+let serial = TokioSerialPort::open(&config)?
+    .with_echo(Echo::Full { grace: Duration::from_millis(10) });
 ```
 
 #### SerialPort Trait

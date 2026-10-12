@@ -26,52 +26,29 @@
 //! [`MasterCore::on_deadline`] with the time it actually woke. A deadline
 //! serviced a millisecond or more late counts in the core's
 //! `deadline_misses`, published in [`MstpDiagnosticsSnapshot::mac`](super::MstpDiagnosticsSnapshot::mac).
+//! Reads are served first when both are ready, and a deadline that is
+//! already due is serviced right after each read, so a port that is always
+//! readable cannot hold a deadline back.
 //!
 //! # Sending a frame
 //!
 //! After every call into the core the task polls its actions until none is
 //! left. `SetDirection` needs nothing here: every [`SerialPort`] switches
-//! its own transceiver as it writes. A handed-over frame is sent in four
-//! steps, following the core's transmit contract:
-//!
-//! 1. Octets already waiting in the port are read without blocking and fed
-//!    to the core, stamped with the time of the read. They are line
-//!    activity, and may make the core take the frame back.
-//! 2. [`MasterCore::on_transmit_started`]; on any refusal the frame is
-//!    dropped (a deferred one comes back as a new transmit).
-//! 3. [`SerialPort::write`], then [`SerialPort::drain`]. The frame is
-//!    complete when the drain returns, but never before its time on the wire
-//!    at the configured baud rate has passed since the start: a port without
-//!    a drain is timed that way alone, and one whose drain returns early (a
-//!    USB adapter still shifting bits out) is held to it. A write or drain
-//!    error aborts the frame.
-//! 4. On a port with [`Echo::Full`], as many octets as were sent are read
-//!    and dropped, within [`ECHO_GRACE`] of the frame's end; octets after
-//!    them are kept. Then [`MasterCore::on_transmit_complete`] is stamped
-//!    with the frame's end, and the kept octets are fed after it, stamped
-//!    with the time of their read.
-//!
-//! Per port kind: `TokioSerialPort` writes to the driver and drains with
-//! `tcdrain` on Unix (on Windows it has no drain, so the wire time is used);
-//! its echo is whatever the hardware does, `Echo::None` unless configured.
-//! Kernel RS-485 is the same port with the kernel switching RTS around each
-//! write. `GpioDirectionPort` drains inside its write and holds the driver
-//! for its post-transmit delay before switching back, so the frame
-//! completes when its write returns; its echo is the inner port's.
-//! [`LoopbackSerial`](super::LoopbackSerial) delivers at once and is timed by
-//! the wire time, echoing only when built with [`Echo::Full`].
+//! its own transceiver as it writes. The `transmit` module sends each frame
+//! the core hands over, following the core's transmit contract, and strips
+//! its echo on a port that has one.
 //!
 //! # Answering a request
 //!
 //! A data-expecting-reply frame for this station goes up with a one-use
 //! reply channel. An answer through it goes to
 //! [`MasterCore::complete_request`]; a dropped channel asks the core for
-//! Reply Postponed. Once the core has finished the request (answered, sent
-//! Reply Postponed at its decision deadline, or given up) the channel is
-//! closed, so a late answer fails at the sender and the application sends it
-//! the ordinary way. An answer that reached the channel too late for the
-//! core is queued as an ordinary NPDU to the requester, to go out with the
-//! next token, as Clause 9.5.6.9 has a deferred reply do.
+//! Reply Postponed. Once the core has finished the request without the
+//! answer (Reply Postponed at its decision deadline, or the requester may
+//! have stopped waiting), the channel is kept in a small deferred set, and
+//! an answer that comes later is queued as an ordinary NPDU to the
+//! requester, to go out when this station holds the token, as Clause
+//! 9.5.6.9 has a deferred reply do. The `replies` module bounds the set.
 
 use std::future::Future;
 use std::ops::Range;
@@ -81,31 +58,27 @@ use std::time::Duration;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC, MAX_STANDARD_FRAME_LENGTH};
 use bacnet_mstp_core::{
-    Action, ActionBuffers, CoreError, Direction, MasterCore, MasterState, MstpCoreConfig,
-    QueueRejectReason, ReplyDecision, RequestId, TransmitFailure, TransmitId,
+    Action, ActionBuffers, CoreError, Direction, Duration as CoreDuration, MasterCore, MasterState,
+    MstpCoreConfig, QueueRejectReason, ReplyDecision, RequestId, TransmitId,
     DEFAULT_DELIVERY_SLOTS,
 };
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use super::diagnostics::{increment, Counters};
-use super::queues::{npdu_priority, CoreClock, SharedQueues};
+use super::echo::{EchoFilter, Filtered};
+use super::queues::{CoreClock, EnqueueError, SharedQueues};
+use super::replies::{Finished, Late, Replies, Resolved};
 use super::{Echo, SerialPort};
 use crate::port::{ReceivedNpdu, TransportProvenance};
 
-/// How long after a frame's end its echo may still be arriving: room for a
-/// USB adapter's receive latency timer (16 ms by default on FTDI parts).
-pub(super) const ECHO_GRACE: Duration = Duration::from_millis(20);
+mod transmit;
 
 /// Octets asked for in one serial read.
 const READ_CHUNK: usize = 512;
-
-/// Reads at most in the non-blocking drain before a start, so a line that
-/// never falls quiet cannot hold the task there.
-const DRAIN_READS: usize = 8;
 
 type Core<'a> = MasterCore<'a, SharedQueues>;
 
@@ -133,6 +106,7 @@ impl<S: SerialPort> Task<S> {
         let _closed = CloseOnExit(queues.clone());
         let mut rx_storage = vec![0u8; MAX_STANDARD_FRAME_LENGTH];
         let mut buffers = Box::new(ActionBuffers::<DEFAULT_DELIVERY_SLOTS>::new());
+        let shared = queues.clone();
         let mut core =
             match MasterCore::new(config, queues, &mut rx_storage, &mut buffers, clock.now()) {
                 Ok(core) => core,
@@ -141,17 +115,21 @@ impl<S: SerialPort> Task<S> {
                     return;
                 }
             };
+        let max_age = Duration::from_micros(config.queue_max_age.as_micros());
         let mut mac = Mac {
             echo: serial.echo(),
             serial,
             clock,
             npdus,
             counts,
+            queues: shared,
+            queue_max_age: config.queue_max_age,
             octet_time: Duration::from_micros(config.octet_time().as_micros()),
             read_buf: vec![0; READ_CHUNK],
             tx_frame: Vec::with_capacity(MAX_STANDARD_FRAME_LENGTH),
             outgoing: None,
-            reply: None,
+            replies: Replies::new(max_age),
+            filter: EchoFilter::default(),
         };
         mac.run(&mut core).await;
     }
@@ -199,13 +177,6 @@ struct Outgoing {
     kind: SentKind,
 }
 
-/// A request delivered upward whose answer may still come back.
-struct PendingReply {
-    id: RequestId,
-    requester: u8,
-    rx: oneshot::Receiver<Bytes>,
-}
-
 /// An action copied out of the core, so its borrow ends.
 enum Polled {
     Idle,
@@ -227,12 +198,17 @@ struct Mac<S> {
     clock: CoreClock,
     npdus: mpsc::Sender<ReceivedNpdu>,
     counts: Arc<Counters>,
+    /// The core's queues, for late answers (queued as a send call queues)
+    /// and for publishing their counters.
+    queues: SharedQueues,
+    queue_max_age: CoreDuration,
     octet_time: Duration,
     read_buf: Vec<u8>,
-    /// The octets of the frame being sent.
+    /// The octets of the frame handed over last.
     tx_frame: Vec<u8>,
     outgoing: Option<Outgoing>,
-    reply: Option<PendingReply>,
+    replies: Replies,
+    filter: EchoFilter,
 }
 
 impl<S: SerialPort> Mac<S> {
@@ -252,37 +228,45 @@ impl<S: SerialPort> Mac<S> {
             // the deadline against the activity it has been given.
             tokio::select! {
                 biased;
-                decision = wait_reply(&mut self.reply), if self.reply.is_some() => {
-                    self.answer(core, decision.ok());
-                }
-                read = self.serial.read(&mut self.read_buf) => match read {
-                    Ok(0) => {}
-                    Ok(count) => {
-                        let now = self.clock.now();
-                        self.receive(core, 0..count, now);
-                    }
-                    Err(error) => {
-                        self.read_failed(&error);
-                        return;
-                    }
+                resolved = self.replies.resolved(), if self.replies.waiting() => match resolved {
+                    Resolved::Current(answer) => self.answer(core, answer),
+                    Resolved::Late(late) => self.late(late),
                 },
+                read = self.serial.read(&mut self.read_buf) => {
+                    match read {
+                        Ok(0) => {}
+                        Ok(count) => {
+                            let now = self.clock.now();
+                            self.receive(core, 0..count, now);
+                        }
+                        Err(error) => {
+                            self.read_failed(&error);
+                            return;
+                        }
+                    }
+                    self.overdue(core);
+                }
                 () = tokio::time::sleep_until(wake), if deadline.is_some() => self.deadline(core),
             }
         }
     }
 
-    /// Carry out the core's actions, release a finished request's reply
+    /// Carry out the core's actions, defer a finished request's reply
     /// channel, and publish the counters.
     fn settle(&mut self, core: &mut Core<'_>) {
         self.drain_actions(core);
         let finished = self
-            .reply
-            .as_ref()
-            .is_some_and(|reply| core.snapshot().request_id != Some(reply.id));
+            .replies
+            .current_id()
+            .is_some_and(|id| core.snapshot().request_id != Some(id));
         if finished {
-            self.release_reply(core);
+            self.finish_request();
         }
-        self.counts.publish(core.counters());
+        let expired = self.replies.prune(tokio::time::Instant::now());
+        for _ in 0..expired {
+            increment(&self.counts.late_answers_expired);
+        }
+        self.counts.publish(core.counters(), &self.queues);
     }
 
     /// Poll the core until it has nothing left.
@@ -303,7 +287,7 @@ impl<S: SerialPort> Mac<S> {
                     destination,
                     npdu,
                     request,
-                } => self.deliver(core, source, destination, npdu, request),
+                } => self.deliver(source, destination, npdu, request),
                 Polled::Frame(frame_type, source) => {
                     debug!(
                         ?frame_type,
@@ -347,26 +331,11 @@ impl<S: SerialPort> Mac<S> {
     }
 
     /// Hand an NPDU up; a request gets a one-use reply channel.
-    fn deliver(
-        &mut self,
-        core: &mut Core<'_>,
-        source: u8,
-        destination: u8,
-        npdu: Bytes,
-        request: Option<RequestId>,
-    ) {
+    fn deliver(&mut self, source: u8, destination: u8, npdu: Bytes, request: Option<RequestId>) {
         let reply_tx = request.map(|id| {
             // The core holds one request at a time, so an older one is over.
-            if self.reply.is_some() {
-                self.release_reply(core);
-            }
-            let (tx, rx) = oneshot::channel();
-            self.reply = Some(PendingReply {
-                id,
-                requester: source,
-                rx,
-            });
-            tx
+            self.finish_request();
+            self.replies.open(id, source)
         });
         let result = self.npdus.try_send(ReceivedNpdu {
             direct_response: None,
@@ -382,69 +351,124 @@ impl<S: SerialPort> Mac<S> {
         self.counts.delivery(&result);
     }
 
-    /// Close the reply channel of a request the core has finished. An
-    /// answer already in it was too late for the core: queue it.
-    fn release_reply(&mut self, core: &mut Core<'_>) {
-        let Some(mut reply) = self.reply.take() else {
-            return;
-        };
-        reply.rx.close();
-        if let Ok(answer) = reply.rx.try_recv() {
-            self.enqueue_late_answer(core, reply.requester, &answer);
+    /// The core finished the current request without its answer: keep the
+    /// channel for a late answer, or queue one already there.
+    fn finish_request(&mut self) {
+        match self.replies.finish_current(tokio::time::Instant::now()) {
+            Some(Finished::Answer { requester, answer }) => {
+                self.enqueue_late_answer(requester, &answer);
+            }
+            Some(Finished::Deferred { dropped_oldest }) => {
+                if dropped_oldest {
+                    increment(&self.counts.late_answers_dropped);
+                }
+            }
+            Some(Finished::Closed) | None => {}
         }
     }
 
-    /// The application answered a request, or dropped its reply channel.
+    /// A deferred channel resolved.
+    fn late(&mut self, late: Late) {
+        match late {
+            Late::Answer { requester, answer } => self.enqueue_late_answer(requester, &answer),
+            Late::Expired => increment(&self.counts.late_answers_expired),
+            Late::Closed => {}
+        }
+    }
+
+    /// The application answered the current request, or dropped its channel.
     fn answer(&mut self, core: &mut Core<'_>, answer: Option<Bytes>) {
-        let Some(reply) = self.reply.take() else {
+        let Some(current) = self.replies.take_current() else {
             return;
         };
         let now = self.clock.now();
         let Some(answer) = answer else {
-            if let Err(error) = core.complete_request(reply.id, ReplyDecision::Postponed, now) {
+            if let Err(error) = core.complete_request(current.id, ReplyDecision::Postponed, now) {
                 debug!(?error, "MS/TP request already finished");
             }
             return;
         };
-        match core.complete_request(reply.id, ReplyDecision::Data(&answer), now) {
+        match core.complete_request(current.id, ReplyDecision::Data(&answer), now) {
             Ok(()) => {}
             Err(CoreError::ReplyOversize { length, maximum }) => {
                 increment(&self.counts.outbound_oversize);
                 warn!("MS/TP application reply length {length} exceeds standard-frame maximum {maximum}");
                 // No answer can be sent, so the request is postponed.
-                let _ = core.complete_request(reply.id, ReplyDecision::Postponed, now);
+                let _ = core.complete_request(current.id, ReplyDecision::Postponed, now);
             }
             // Past the decision deadline, or the request is gone: the core
             // sends or has sent Reply Postponed, and the answer follows with
             // the token.
-            Err(_) => self.enqueue_late_answer(core, reply.requester, &answer),
+            Err(_) => self.enqueue_late_answer(current.requester, &answer),
         }
     }
 
-    fn enqueue_late_answer(&mut self, core: &mut Core<'_>, requester: u8, answer: &[u8]) {
-        let priority = npdu_priority(answer);
-        match core.enqueue_npdu(requester, answer, priority, self.clock.now()) {
-            Ok(()) => {}
-            Err(QueueRejectReason::Oversize) => increment(&self.counts.outbound_oversize),
-            Err(QueueRejectReason::Full) => increment(&self.counts.outbound_queue_full),
-            Err(reason) => debug!(?reason, "MS/TP late answer not queued"),
+    /// Queue an answer the core no longer takes, as a send call would queue
+    /// it, so it goes out when this station holds the token.
+    fn enqueue_late_answer(&mut self, requester: u8, answer: &[u8]) {
+        let result = self
+            .queues
+            .enqueue(requester, answer, self.clock.now(), self.queue_max_age);
+        match result {
+            Ok(()) => increment(&self.counts.late_answers_queued),
+            Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
+                increment(&self.counts.outbound_oversize);
+            }
+            Err(EnqueueError::Rejected(QueueRejectReason::Full)) => {
+                increment(&self.counts.outbound_queue_full);
+            }
+            Err(error) => debug!(?error, "MS/TP late answer not queued"),
         }
     }
 
-    /// Feed the octets `range` of the read buffer to the core, all stamped
-    /// `now`, carrying out the actions after each.
+    /// Feed the octets `range` of the read buffer to the core through the
+    /// echo filter, all stamped `now`, carrying out the actions after each.
     fn receive(
         &mut self,
         core: &mut Core<'_>,
         range: Range<usize>,
         now: bacnet_mstp_core::Instant,
     ) {
+        let released = self.filter.expire(tokio::time::Instant::now());
+        self.release(core, released, now);
         for index in range {
             let octet = self.read_buf[index];
-            if let Err(error) = core.on_octet(octet, now) {
-                debug!(?error, "MS/TP core refused an octet");
+            match self.filter.push(octet) {
+                Filtered::Held | Filtered::Echo => {}
+                Filtered::Release { held, mismatch } => {
+                    if mismatch {
+                        increment(&self.counts.echo_mismatches);
+                    }
+                    self.release(core, held, now);
+                    self.feed(core, octet, now);
+                }
             }
-            self.drain_actions(core);
+        }
+    }
+
+    /// Feed the first `held` octets the echo filter held back.
+    fn release(&mut self, core: &mut Core<'_>, held: usize, now: bacnet_mstp_core::Instant) {
+        for index in 0..held {
+            let octet = self.filter.held(held)[index];
+            self.feed(core, octet, now);
+        }
+    }
+
+    /// Feed one octet to the core and carry out the actions.
+    fn feed(&mut self, core: &mut Core<'_>, octet: u8, now: bacnet_mstp_core::Instant) {
+        if let Err(error) = core.on_octet(octet, now) {
+            debug!(?error, "MS/TP core refused an octet");
+        }
+        self.drain_actions(core);
+    }
+
+    /// Service the core's deadline if it is already due.
+    fn overdue(&mut self, core: &mut Core<'_>) {
+        if core
+            .next_deadline()
+            .is_some_and(|deadline| deadline <= self.clock.now())
+        {
+            self.deadline(core);
         }
     }
 
@@ -468,154 +492,13 @@ impl<S: SerialPort> Mac<S> {
         increment(&self.counts.serial_read_errors);
         warn!("MS/TP serial read error: {error}");
     }
-
-    /// Send the frame the core handed over (see the module docs).
-    async fn transmit(&mut self, core: &mut Core<'_>) -> Result<(), ReadFailed> {
-        self.drain_input(core).await?;
-        let Some(outgoing) = self.outgoing.take() else {
-            return Ok(());
-        };
-        let started = tokio::time::Instant::now();
-        if let Err(error) = core.on_transmit_started(outgoing.id, self.clock.at(started)) {
-            debug!(?error, "MS/TP transmit start refused");
-            return Ok(());
-        }
-        let octets = u32::try_from(self.tx_frame.len()).unwrap_or(u32::MAX);
-        let wire_end = started + self.octet_time * octets;
-        let sent = match self.serial.write(&self.tx_frame).await {
-            Ok(()) => match self.serial.drain().await {
-                Err(Error::Transport(error)) if error.kind() == std::io::ErrorKind::Unsupported => {
-                    Ok(())
-                }
-                drained => drained,
-            },
-            Err(error) => {
-                // The failed write may have queued part of the frame.
-                let _ = self.serial.drain().await;
-                Err(error)
-            }
-        };
-        if let Err(error) = sent {
-            increment(&self.counts.serial_write_errors);
-            warn!("MS/TP write error: {error}");
-            let now = self.clock.now();
-            if let Err(error) = core.on_transmit_aborted(outgoing.id, TransmitFailure::Io, now) {
-                debug!(?error, "MS/TP abort refused");
-            }
-            return Ok(());
-        }
-        // The frame ended when the drain returned, or at its wire time if
-        // that is later. The timer may wake a little after that; the core is
-        // told the end itself.
-        let ended = wire_end.max(tokio::time::Instant::now());
-        if tokio::time::Instant::now() < ended {
-            tokio::time::sleep_until(ended).await;
-        }
-        let after_echo = match self.echo {
-            Echo::None => None,
-            Echo::Full => self.take_echo(ended).await?,
-        };
-        match core.on_transmit_complete(outgoing.id, self.clock.at(ended)) {
-            Ok(()) => self.count_sent(outgoing.kind),
-            Err(error) => debug!(?error, "MS/TP completion refused"),
-        }
-        self.drain_actions(core);
-        if let Some((range, read_at)) = after_echo {
-            self.receive(core, range, read_at);
-        }
-        Ok(())
-    }
-
-    /// Read without waiting and feed the core what is already there, until
-    /// nothing is or the core takes the frame back.
-    async fn drain_input(&mut self, core: &mut Core<'_>) -> Result<(), ReadFailed> {
-        for _ in 0..DRAIN_READS {
-            let Some(read) = poll_once(self.serial.read(&mut self.read_buf)).await else {
-                return Ok(());
-            };
-            match read {
-                Ok(0) => return Ok(()),
-                Ok(count) => {
-                    let now = self.clock.now();
-                    self.receive(core, 0..count, now);
-                }
-                Err(error) => {
-                    self.read_failed(&error);
-                    return Err(ReadFailed);
-                }
-            }
-            if self.outgoing.is_none() {
-                return Ok(());
-            }
-        }
-        Ok(())
-    }
-
-    /// Read and drop the echo of the frame just sent: as many octets as it
-    /// has, arriving by [`ECHO_GRACE`] after `ended`. Return octets read
-    /// after the echo, with the time of their read.
-    async fn take_echo(
-        &mut self,
-        ended: tokio::time::Instant,
-    ) -> Result<Option<(Range<usize>, bacnet_mstp_core::Instant)>, ReadFailed> {
-        let grace_end = ended + ECHO_GRACE;
-        let mut matched = 0;
-        let mut mismatch = false;
-        let mut kept = None;
-        while matched < self.tx_frame.len() {
-            let read = tokio::select! {
-                biased;
-                read = self.serial.read(&mut self.read_buf) => read,
-                () = tokio::time::sleep_until(grace_end) => {
-                    increment(&self.counts.echo_missing);
-                    break;
-                }
-            };
-            let count = match read {
-                Ok(count) => count,
-                Err(error) => {
-                    self.read_failed(&error);
-                    return Err(ReadFailed);
-                }
-            };
-            let echo = count.min(self.tx_frame.len() - matched);
-            mismatch |= self.read_buf[..echo] != self.tx_frame[matched..matched + echo];
-            matched += echo;
-            if echo < count {
-                kept = Some((echo..count, self.clock.now()));
-                break;
-            }
-        }
-        if mismatch {
-            increment(&self.counts.echo_mismatches);
-        }
-        Ok(kept)
-    }
-
-    fn count_sent(&self, kind: SentKind) {
-        let counter = match kind {
-            SentKind::DataExpectingReply => &self.counts.der_tx,
-            SentKind::DirectAnswer => &self.counts.dner_tx_direct,
-            SentKind::QueuedData => &self.counts.dner_tx_queued,
-            SentKind::ReplyPostponed => &self.counts.reply_postponed_tx,
-            SentKind::Other => return,
-        };
-        increment(counter);
-    }
-}
-
-/// Wait for the application's answer to the pending request.
-async fn wait_reply(reply: &mut Option<PendingReply>) -> Result<Bytes, oneshot::error::RecvError> {
-    match reply {
-        Some(reply) => (&mut reply.rx).await,
-        None => std::future::pending().await,
-    }
 }
 
 /// Poll `future` once: its output if it is ready now, otherwise `None`, and
-/// the future is dropped.
+/// the future is dropped. It runs outside Tokio's cooperative budget, so a
+/// spent budget cannot make a ready read look pending.
 async fn poll_once<F: Future>(future: F) -> Option<F::Output> {
-    let mut future = std::pin::pin!(future);
+    let mut future = std::pin::pin!(tokio::task::unconstrained(future));
     std::future::poll_fn(|cx| {
         Poll::Ready(match future.as_mut().poll(cx) {
             Poll::Ready(output) => Some(output),

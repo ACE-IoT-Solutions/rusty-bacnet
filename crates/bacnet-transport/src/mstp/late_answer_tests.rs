@@ -1,0 +1,134 @@
+//! Answers that come after the core has finished their request: kept in a
+//! bounded set and sent with the token (Clause 9.5.6.9 DeferredReply), or
+//! given up and counted.
+
+use bacnet_mstp_codec::FrameType;
+use bytes::Bytes;
+use tokio::sync::oneshot;
+use tokio::time::{Duration, Instant};
+
+use super::replies::DEFERRED_REPLIES;
+use super::test_support::{config, Bus, Sent};
+
+const REQUEST: &[u8] = &[1, 0x04, 0x10];
+const ANSWER: &[u8] = &[1, 0x00, 0x30];
+
+/// Station `source` asks station 3 for a reply, once `after` has ended and
+/// T_turnaround passed; the application keeps the reply channel. Returns
+/// the station's Reply Postponed and the channel.
+async fn postponed(bus: &mut Bus, after: Instant, source: u8) -> (Sent, oneshot::Sender<Bytes>) {
+    bus.until(after + bus.turnaround).await;
+    bus.send(FrameType::BACnetDataExpectingReply, 3, source, REQUEST);
+    let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
+    let sent = bus.next().await;
+    assert_eq!(
+        (sent.frame_type, sent.destination),
+        (FrameType::ReplyPostponed, source)
+    );
+    (sent, reply)
+}
+
+/// After Reply Postponed the application's answer is still taken, and goes
+/// out as a data frame to the requester when the station next holds the
+/// token, as a deferred reply does.
+#[tokio::test(start_paused = true)]
+async fn an_answer_after_reply_postponed_goes_out_with_the_token() {
+    let mut bus = Bus::start(config(3, 4)).await;
+    let token = bus.join(4).await;
+    let (sent, reply) = postponed(&mut bus, token.end, 4).await;
+    reply
+        .send(Bytes::from_static(ANSWER))
+        .expect("the channel is kept after Reply Postponed");
+    bus.until(sent.end + Duration::from_millis(5)).await;
+    bus.send(FrameType::Token, 3, 4, &[]);
+    let answer = bus.next().await;
+    assert_eq!(
+        (
+            answer.frame_type,
+            answer.destination,
+            answer.data.as_slice()
+        ),
+        (FrameType::BACnetDataNotExpectingReply, 4, ANSWER)
+    );
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.late_answers_queued, 1);
+    assert_eq!(counts.reply_postponed_tx, 1);
+    bus.stop().await;
+}
+
+/// An answer older than the queue's maximum age (5 s by default) would be
+/// refused as expired once queued, so the channel is given up then: the
+/// answer never goes out, and the give-up is counted.
+#[tokio::test(start_paused = true)]
+async fn an_answer_after_the_queue_age_is_dropped() {
+    let mut bus = Bus::start(config(3, 4)).await;
+    let token = bus.join(4).await;
+    let (sent, reply) = postponed(&mut bus, token.end, 4).await;
+    bus.until(sent.end + Duration::from_secs(5) + Duration::from_millis(30))
+        .await;
+    assert!(reply.is_closed(), "the channel outlived the queue age");
+    assert!(reply.send(Bytes::from_static(ANSWER)).is_err());
+    // The station runs on alone; none of its frames carries the answer.
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        let Ok(sent) = tokio::time::timeout_at(until, bus.next()).await else {
+            break;
+        };
+        assert_ne!(sent.data, ANSWER, "an expired answer went out");
+    }
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.late_answers_expired, 1);
+    assert_eq!(counts.late_answers_queued, 0);
+    bus.stop().await;
+}
+
+/// At most eight finished requests keep their channels: a ninth drops the
+/// oldest, counted, whose sender then fails; the newest still works.
+#[tokio::test(start_paused = true)]
+async fn a_full_set_drops_the_oldest() {
+    let mut bus = Bus::start(config(3, 127)).await;
+    let mut after = Instant::now();
+    let mut replies = Vec::new();
+    for source in 0..=DEFERRED_REPLIES as u8 {
+        let (sent, reply) = postponed(&mut bus, after, 10 + source).await;
+        after = sent.end;
+        replies.push(reply);
+    }
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.late_answers_dropped, 1);
+    assert!(replies[0].is_closed(), "the oldest was kept");
+    let newest = replies.pop().unwrap();
+    newest.send(Bytes::from_static(ANSWER)).unwrap();
+    // Taken once the last Reply Postponed has left.
+    bus.until(after + Duration::from_millis(1)).await;
+    assert_eq!(
+        bus.transport.diagnostics().snapshot().late_answers_queued,
+        1
+    );
+    bus.stop().await;
+}
+
+/// A channel whose sender is dropped leaves the set at once: after eight
+/// dropped ones, eight more requests fit without dropping any.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_sender_leaves_nothing_behind() {
+    let mut bus = Bus::start(config(3, 127)).await;
+    let mut after = Instant::now();
+    for round in 0..2u8 {
+        let mut replies = Vec::new();
+        for source in 0..DEFERRED_REPLIES as u8 {
+            let (sent, reply) = postponed(&mut bus, after, 10 + source).await;
+            after = sent.end;
+            replies.push(reply);
+        }
+        if round == 0 {
+            drop(replies);
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.late_answers_dropped, 0);
+    assert_eq!(counts.late_answers_expired, 0);
+    bus.stop().await;
+}

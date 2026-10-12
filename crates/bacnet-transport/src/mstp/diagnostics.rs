@@ -4,7 +4,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use bacnet_mstp_core::{MstpCounters, QueueCounters};
+use bacnet_mstp_core::MstpCounters;
+
+use super::queues::SharedQueues;
 
 /// Owned, redacted MS/TP counts. All fields start at zero, and there is no
 /// reset; use before/after snapshots for a run. The transport-boundary
@@ -58,13 +60,25 @@ pub struct MstpDiagnosticsSnapshot {
     /// is reported to the core as aborted.
     pub serial_write_errors: u64,
     /// Frames sent on a port with [`Echo::Full`](super::Echo::Full) whose
-    /// echo differed from what was sent: a collision, line noise, or octets
-    /// that were already waiting when the frame started.
+    /// echo differed from what was sent, or was cut short: a collision,
+    /// line noise, octets that were already waiting when the frame started,
+    /// or an echo missing its first octets. What did not match went to the
+    /// core as line activity.
     pub echo_mismatches: u64,
-    /// Frames sent on a port with [`Echo::Full`](super::Echo::Full) whose
-    /// echo had not fully arrived within the echo grace after the frame
-    /// ended. A port configured with echo that does not echo shows here.
+    /// Frames sent on a port with [`Echo::Full`](super::Echo::Full) none of
+    /// whose echo had arrived within the echo grace after the frame ended. A
+    /// port declared with an echo that does not echo shows here.
     pub echo_missing: u64,
+    /// Application answers that came after the core had finished their
+    /// request (it had sent Reply Postponed, or given up), queued as
+    /// ordinary NPDUs to the requester, to go out with the token.
+    pub late_answers_queued: u64,
+    /// Reply channels of finished requests given up because more than the
+    /// transport keeps (eight) were waiting: the oldest goes.
+    pub late_answers_dropped: u64,
+    /// Reply channels of finished requests given up at the queue's maximum
+    /// age, answered after it or not at all.
+    pub late_answers_expired: u64,
     /// The master core's counters ([`MstpCounters`]), with its queues'.
     pub mac: MstpCounters,
 }
@@ -142,6 +156,9 @@ counters!(
     serial_write_errors,
     echo_mismatches,
     echo_missing,
+    late_answers_queued,
+    late_answers_dropped,
+    late_answers_expired,
 );
 
 pub(super) fn increment(counter: &AtomicU64) {
@@ -153,17 +170,24 @@ pub(super) fn increment(counter: &AtomicU64) {
 }
 
 impl Counters {
-    /// Publish the core's counters.
-    pub(super) fn publish(&self, mac: MstpCounters) {
+    /// Publish the core's counters. The queue counters are read from the
+    /// queues while the published copy is locked, as [`Self::publish_queues`]
+    /// reads them, so whichever of the two publishes last has the newest,
+    /// and they never go backwards.
+    pub(super) fn publish(&self, mac: MstpCounters, queues: &SharedQueues) {
         let mut published = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
-        if *published != mac {
-            *published = mac;
-        }
+        let (unicast, broadcast) = queues.stats();
+        *published = MstpCounters {
+            unicast,
+            broadcast,
+            ..mac
+        };
     }
 
     /// Publish the queues' counters after a send changed them.
-    pub(super) fn publish_queues(&self, unicast: QueueCounters, broadcast: QueueCounters) {
+    pub(super) fn publish_queues(&self, queues: &SharedQueues) {
         let mut published = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
+        let (unicast, broadcast) = queues.stats();
         published.unicast = unicast;
         published.broadcast = broadcast;
     }
@@ -207,20 +231,22 @@ fn cloned_handles_share_concurrent_saturating_updates() {
 #[cfg(test)]
 #[test]
 fn published_core_counters_appear_in_snapshots() {
+    use bacnet_mstp_core::{Duration, Instant};
+
     let handle = MstpDiagnostics::new();
+    let queues = SharedQueues::new();
     let mac = MstpCounters {
         frames_received: 3,
         ..MstpCounters::default()
     };
-    handle.counters.publish(mac);
-    let unicast = QueueCounters {
-        drops_full: 2,
-        ..QueueCounters::default()
-    };
-    handle
-        .counters
-        .publish_queues(unicast, QueueCounters::default());
+    handle.counters.publish(mac, &queues);
+    let age = Duration::from_secs(1);
+    queues.enqueue(5, &[1, 0], Instant::ZERO, age).unwrap();
+    handle.counters.publish_queues(&queues);
     let snapshot = handle.snapshot();
     assert_eq!(snapshot.mac.frames_received, 3);
-    assert_eq!(snapshot.mac.unicast.drops_full, 2);
+    assert_eq!(snapshot.mac.unicast.enqueued, 1);
+    // A later publish of older core counters keeps the queues' newest.
+    handle.counters.publish(mac, &queues);
+    assert_eq!(handle.snapshot().mac.unicast.enqueued, 1);
 }

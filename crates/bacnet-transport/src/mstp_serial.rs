@@ -90,7 +90,7 @@ pub fn available_ports() -> Result<Vec<String>, Error> {
 /// [`with_echo`](Self::with_echo). Kernel RS-485 as configured here leaves
 /// the kernel's receive-during-transmit flag off, so drivers that honour it
 /// suppress the echo; a USB adapter whose transceiver keeps its receiver on
-/// returns every octet it sends and needs [`Echo::Full`].
+/// returns every octet it sends and needs [`Echo::full`].
 pub struct TokioSerialPort {
     inner: Arc<Mutex<SerialStream>>,
     echo: Echo,

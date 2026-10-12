@@ -92,8 +92,8 @@ async fn loopback_serial_pair_and_echo() {
     assert_eq!(a.echo(), Echo::None);
 
     // An echoing port hears its own write first, then its peer's.
-    let a = a.with_echo(Echo::Full);
-    assert_eq!(a.echo(), Echo::Full);
+    let a = a.with_echo(Echo::full());
+    assert_eq!(a.echo(), Echo::full());
     a.write(&[1, 2]).await.unwrap();
     b.write(&[3]).await.unwrap();
     let n = a.read(&mut buf).await.unwrap();

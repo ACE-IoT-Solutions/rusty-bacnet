@@ -35,6 +35,7 @@ pub(super) struct WireSerial {
     own: mpsc::UnboundedSender<Vec<u8>>,
     writes: mpsc::UnboundedSender<(Instant, Vec<u8>)>,
     port: Port,
+    echoing: Arc<AtomicBool>,
     fail_writes: Arc<AtomicBool>,
 }
 
@@ -66,7 +67,7 @@ impl SerialPort for WireSerial {
             )));
         }
         let _ = self.writes.send((Instant::now(), data.to_vec()));
-        if self.port.echoes {
+        if self.echoing.load(Ordering::SeqCst) {
             let _ = self.own.send(data.to_vec());
         }
         Ok(())
@@ -139,6 +140,9 @@ pub(super) struct Bus {
     input: mpsc::UnboundedSender<Vec<u8>>,
     writes: mpsc::UnboundedReceiver<(Instant, Vec<u8>)>,
     pub(super) fail_writes: Arc<AtomicBool>,
+    /// Whether each write comes back to the station, as `Port::echoes`
+    /// started it; a test can turn it off to script the echo itself.
+    pub(super) echoing: Arc<AtomicBool>,
     /// One octet's time on the wire.
     pub(super) octet: Duration,
     /// T_turnaround: 40 bit times.
@@ -157,6 +161,7 @@ impl Bus {
         let (input, rx) = mpsc::unbounded_channel();
         let (write_tx, writes) = mpsc::unbounded_channel();
         let fail_writes = Arc::new(AtomicBool::new(false));
+        let echoing = Arc::new(AtomicBool::new(port.echoes));
         let baud = u64::from(config.baud_rate);
         let station = config.this_station;
         let serial = WireSerial {
@@ -165,6 +170,7 @@ impl Bus {
             own: input.clone(),
             writes: write_tx,
             port,
+            echoing: echoing.clone(),
             fail_writes: fail_writes.clone(),
         };
         let mut transport = MstpTransport::new(serial, config);
@@ -175,6 +181,7 @@ impl Bus {
             input,
             writes,
             fail_writes,
+            echoing,
             octet: Duration::from_micros((10_000_000u64).div_ceil(baud)),
             turnaround: Duration::from_micros((40_000_000u64).div_ceil(baud)),
             station,

@@ -71,8 +71,8 @@ async fn a_later_answer_is_not_held_for_another_turnaround() {
 }
 
 /// Without an answer the core sends Reply Postponed at its decision
-/// deadline, inside T_reply_delay, and closes the channel: a late answer
-/// fails at the sender, which then sends it the ordinary way.
+/// deadline, inside T_reply_delay. The channel stays open for a late answer,
+/// which goes out with the token (see `late_answer_tests`).
 #[tokio::test(start_paused = true)]
 async fn no_answer_gets_reply_postponed_before_the_reply_delay() {
     let mut bus = Bus::start(config(3, 127)).await;
@@ -86,7 +86,7 @@ async fn no_answer_gets_reply_postponed_before_the_reply_delay() {
     assert!(sent.start <= at + DECISION + TICK);
     assert!(sent.start < at + Duration::from_millis(250));
     tokio::task::yield_now().await;
-    assert!(reply.send(Bytes::from_static(&[1, 0, 0x30])).is_err());
+    assert!(reply.send(Bytes::from_static(&[1, 0, 0x30])).is_ok());
     bus.stop().await;
 }
 
@@ -147,28 +147,113 @@ async fn an_oversized_answer_is_postponed_and_counted() {
     bus.stop().await;
 }
 
-/// An answer handed over at the decision deadline either makes it (sent as
-/// the reply) or finds Reply Postponed already chosen; then it is not lost
-/// but queued, and goes out with the station's next token.
+/// An answer handed over around the decision deadline is never lost. Before
+/// it, the answer is the reply. After it, Reply Postponed has gone out and
+/// the answer follows with the station's next token. Exactly at it, either
+/// may happen, depending on which the task sees first; the test checks the
+/// branch that ran.
 #[tokio::test(start_paused = true)]
-async fn an_answer_at_the_deadline_is_never_lost() {
-    let mut bus = Bus::start(config(3, 4)).await;
-    let token = bus.join(4).await;
-    bus.until(token.end + bus.turnaround).await;
-    let at = bus.send(FrameType::BACnetDataExpectingReply, 3, 4, REQUEST);
-    let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
-    bus.until(at + DECISION).await;
-    let accepted = reply.send(Bytes::from_static(&[1, 0, 0x31])).is_ok();
-    let first = bus.next().await;
-    assert_eq!(first.destination, 4);
-    if first.frame_type == FrameType::ReplyPostponed && accepted {
-        bus.until(first.end + bus.turnaround).await;
-        bus.send(FrameType::Token, 3, 4, &[]);
-        let late = bus.next().await;
-        assert_eq!(late.frame_type, FrameType::BACnetDataNotExpectingReply);
-        assert_eq!(late.data, [1, 0, 0x31]);
-    } else if accepted {
-        assert_eq!(first.frame_type, FrameType::BACnetDataNotExpectingReply);
+async fn an_answer_around_the_deadline_is_never_lost() {
+    for (offset, expect_direct) in [(-1i32, Some(true)), (0, None), (1, Some(false))] {
+        let mut bus = Bus::start(config(3, 4)).await;
+        let token = bus.join(4).await;
+        bus.until(token.end + bus.turnaround).await;
+        let at = bus.send(FrameType::BACnetDataExpectingReply, 3, 4, REQUEST);
+        let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
+        let when = if offset < 0 {
+            at + DECISION - TICK
+        } else {
+            at + DECISION + TICK * offset.unsigned_abs()
+        };
+        bus.until(when).await;
+        reply
+            .send(Bytes::from_static(&[1, 0, 0x31]))
+            .expect("the channel is open on both sides of the deadline");
+        let first = bus.next().await;
+        assert_eq!(first.destination, 4);
+        let direct = match first.frame_type {
+            FrameType::BACnetDataNotExpectingReply => {
+                assert_eq!(first.data, [1, 0, 0x31]);
+                true
+            }
+            FrameType::ReplyPostponed => {
+                bus.until(first.end + bus.turnaround).await;
+                bus.send(FrameType::Token, 3, 4, &[]);
+                let late = bus.next().await;
+                assert_eq!(late.frame_type, FrameType::BACnetDataNotExpectingReply);
+                assert_eq!(late.data, [1, 0, 0x31]);
+                bus.until(late.end + TICK).await;
+                false
+            }
+            other => panic!("offset {offset}: {other:?} answered the request"),
+        };
+        if let Some(expected) = expect_direct {
+            assert_eq!(direct, expected, "offset {offset} ms");
+        }
+        let counts = bus.transport.diagnostics().snapshot();
+        assert_eq!(
+            counts.late_answers_queued,
+            u64::from(!direct),
+            "offset {offset} ms"
+        );
+        assert_eq!(
+            counts.reply_postponed_tx,
+            u64::from(!direct),
+            "offset {offset} ms"
+        );
+        bus.stop().await;
     }
-    bus.stop().await;
+}
+
+/// A port whose read is always ready (here it returns nothing, as a closed
+/// pseudo-terminal does) cannot hold back the core's deadlines: reads win
+/// the task's select, but a deadline already due is serviced after each
+/// one, so Reply Postponed still goes out within T_reply_delay. Real time:
+/// the always-ready read never lets a paused clock advance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_always_readable_port_still_meets_the_reply_deadline() {
+    use super::{MstpTransport, SerialPort};
+    use crate::port::TransportPort;
+
+    struct Babbling {
+        request: std::sync::Mutex<Option<Vec<u8>>>,
+        writes: tokio::sync::mpsc::UnboundedSender<(Instant, Vec<u8>)>,
+    }
+
+    impl SerialPort for Babbling {
+        async fn write(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
+            let _ = self.writes.send((Instant::now(), data.to_vec()));
+            Ok(())
+        }
+
+        async fn read(&self, buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
+            let request = self.request.lock().unwrap().take();
+            Ok(request.map_or(0, |octets| {
+                buf[..octets.len()].copy_from_slice(&octets);
+                octets.len()
+            }))
+        }
+    }
+
+    let (writes, mut written) = tokio::sync::mpsc::unbounded_channel();
+    let request = super::test_support::encode(FrameType::BACnetDataExpectingReply, 3, 7, REQUEST);
+    let port = Babbling {
+        request: std::sync::Mutex::new(Some(request)),
+        writes,
+    };
+    let mut transport = MstpTransport::new(port, config(3, 127));
+    let started = Instant::now();
+    let mut npdus = transport.start().await.unwrap();
+    let _reply = npdus.recv().await.unwrap().reply_tx.unwrap();
+    let (at, octets) = tokio::time::timeout(Duration::from_secs(2), written.recv())
+        .await
+        .expect("a due deadline was starved by reads")
+        .unwrap();
+    assert_eq!(octets[2], FrameType::ReplyPostponed.to_raw());
+    assert!(
+        at < started + Duration::from_millis(250),
+        "{:?}",
+        at - started
+    );
+    transport.stop().await.unwrap();
 }
