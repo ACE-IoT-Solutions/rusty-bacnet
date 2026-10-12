@@ -15,8 +15,9 @@
 # that nothing in a stack needs std or a symbol only a hosted target or the
 # firmware provides, such as an atomic library call or a critical section,
 # and that mstp and bip need no allocator: their build fails with "no global
-# memory allocator found" if anything in them uses alloc. Nothing runs the
-# images; the scenarios they link are checked natively by firmware/link/tests.
+# memory allocator found" if anything in them uses alloc. CI never runs the
+# images; the scenarios they link are checked natively by firmware/link/tests,
+# and scripts/emu/emulate-firmware.sh runs them under QEMU by hand.
 #
 # The crate's `alloc` feature, on by default, links alloc into its lib, so
 # mstp and bip build with --no-default-features and apdu with it on. Per

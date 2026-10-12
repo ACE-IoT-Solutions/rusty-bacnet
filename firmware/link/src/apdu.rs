@@ -25,9 +25,21 @@
 //! value, and the messages the decoders' errors carry. The image gives its
 //! allocator an arena of [`ARENA`] octets.
 //!
-//! `tests/apdu.rs` runs it natively and compares the whole summary, then
-//! runs it again in the image's allocator over an arena of that size. The
-//! `apdu` image (`src/bin/apdu.rs`) links it.
+//! `tests/apdu.rs` runs it natively and compares the whole summary with
+//! `expected()`, then runs it again in the image's allocator over an arena
+//! of that size. The `apdu` image (`src/bin/apdu.rs`) links it, and its
+//! emulation build checks the emulated CPU's summary against the same.
+
+// Only the host tests and the emulation build compare summaries, so the
+// link test's images build without it. Unlike the other scenarios' consts,
+// a function leaves anonymous constants in the lib's codegen unit even when
+// nothing calls it, and they would renumber the local labels in a RISC-V
+// image's symbol table.
+#[cfg(any(not(target_os = "none"), feature = "emulate"))]
+mod expected;
+
+#[cfg(any(not(target_os = "none"), feature = "emulate"))]
+pub use expected::expected;
 
 use bacnet_encoding::apdu::{
     decode_apdu, encode_apdu, Apdu, ComplexAck, ConfirmedRequest, UnconfirmedRequest,
