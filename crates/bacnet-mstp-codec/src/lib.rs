@@ -67,7 +67,7 @@
 //! - [`MAX_COBS_FRAME_LENGTH`] (2053): every frame whose header passes, a
 //!   COBS-encoded one at the largest Length included.
 //!
-//! A frame longer than the storage is reported once; see
+//! A frame longer than the storage is reported once and skipped; see
 //! [`StreamDecoder`].
 //!
 //! # Features

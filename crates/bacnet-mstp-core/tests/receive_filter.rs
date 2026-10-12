@@ -221,8 +221,8 @@ fn a_frame_too_long_for_storage_counts_only_for_this_station() {
 #[test]
 fn a_reserved_cobs_frame_counts_only_for_this_station() {
     // Reserved COBS type 34 with a Length of 506, inside the COBS range: a
-    // good header of a type the codec doesn't decode. Its body would follow
-    // as noise; here it never comes.
+    // good header of a type the codec doesn't decode. The codec would skip
+    // the rest of the frame by count; here it never comes.
     let header = |destination| raw_header(0x22, destination, 5, 506);
     assert!(!counted_invalid(600, &header(OTHER)));
     assert!(counted_invalid(600, &header(STATION)));

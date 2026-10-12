@@ -104,7 +104,7 @@ pub enum FrameError {
     /// slice. Nothing was stored.
     BufferExhausted {
         /// Octets this call had to store: the encoded frame, or the pushed
-        /// slice.
+        /// slice less the octets of a frame the decoder is skipping.
         needed: usize,
         /// Free room at the time of the call: the sink's remaining capacity,
         /// or the decoder's capacity less what it already buffers.
