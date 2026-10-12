@@ -97,6 +97,24 @@
 //! # }
 //! ```
 //!
+//! # Extended frames
+//!
+//! [`MstpCoreConfig::extended_frames`] turns on BACnet Extended Data
+//! Expecting Reply and Not Expecting Reply (Types 32 and 33), which carry
+//! NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a
+//! routing node and leaves them optional for any other, so the flag is off
+//! by default, and a core without it behaves, and costs, as one built
+//! before it existed. With it on, every buffer must hold an extended frame:
+//! receive storage of
+//! [`MAX_EXTENDED_FRAME_LENGTH`](bacnet_mstp_codec::MAX_EXTENDED_FRAME_LENGTH),
+//! [`ExtendedActionBuffers`], queues whose slots hold
+//! [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA)
+//! octets (such as `HeaplessQueues<U, B, MAX_EXTENDED_MPDU_DATA>`), and so a
+//! `MasterCore<'_, Q, MAX_EXTENDED_MPDU_DATA>`. [`MasterCore::new`] refuses
+//! smaller ones, naming the buffer. The sizes are const generics with
+//! standard defaults, so a firmware image that leaves the flag off builds
+//! exactly the code it did.
+//!
 //! # A local policy
 //!
 //! When a NO_TOKEN deadline is serviced after this station's token
@@ -129,11 +147,11 @@ mod queue;
 mod state;
 
 pub use actions::{
-    Action, ActionBuffers, Direction, RequestId, TransmitFailure, TransmitId,
-    DEFAULT_DELIVERY_SLOTS,
+    Action, ActionBuffers, Direction, ExtendedActionBuffers, RequestId, TransmitFailure,
+    TransmitId, DEFAULT_DELIVERY_SLOTS,
 };
 pub use clock::{Duration, Instant, Monotonic, SimClock};
-pub use config::{ConfigError, LocalDurationField, LocalLimitField, MstpCoreConfig};
+pub use config::{ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, MstpCoreConfig};
 pub use counters::{MstpCounters, QueueCounters};
 #[cfg(feature = "alloc")]
 pub use queue::AllocQueues;

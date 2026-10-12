@@ -111,6 +111,10 @@ impl QueueStorage for Overstating {
         self.0.set_starvation_limit(limit);
     }
 
+    fn max_npdu_length(&self) -> usize {
+        self.0.max_npdu_length()
+    }
+
     fn enqueue_npdu(
         &mut self,
         destination: u8,

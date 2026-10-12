@@ -80,9 +80,11 @@ pub enum QueueRejectReason {
     /// The destination queue has no free slot.
     Full,
     /// The payload is too long: larger than the queue's owned slot or, from
-    /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than a
-    /// standard frame's 501 octets. A dequeue also returns it when it dropped
-    /// an item too long for the caller's scratch.
+    /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than
+    /// the station sends
+    /// ([`MstpCoreConfig::max_npdu_length`](crate::MstpCoreConfig::max_npdu_length)).
+    /// A dequeue also returns it when it dropped an item too long for the
+    /// caller's scratch.
     Oversize,
     /// The supplied expiry is at or before the enqueue time, or an item
     /// reached its expiry boundary while waiting.
@@ -145,6 +147,12 @@ pub trait QueueStorage {
     /// Apply the core's service-opportunity starvation limit.
     fn set_starvation_limit(&mut self, limit: u8);
 
+    /// The longest NPDU one queue slot holds. A core with
+    /// [`MstpCoreConfig::extended_frames`](crate::MstpCoreConfig::extended_frames)
+    /// on refuses queues whose slots hold less than
+    /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA).
+    fn max_npdu_length(&self) -> usize;
+
     /// Add a payload to the destination queue.
     ///
     /// `expires_at` is an absolute timestamp in the same monotonically
@@ -175,8 +183,9 @@ pub trait QueueStorage {
     ///
     /// If `scratch` is too small, the item is dropped, counted in
     /// `drops_oversize`, and [`QueueRejectReason::Oversize`] is returned. The
-    /// core's scratch holds a standard frame's data, so such an item could
-    /// never be sent; leaving it queued would keep it at the head.
+    /// core's scratch holds the longest NPDU its delivery slots do, so such
+    /// an item could never be sent; leaving it queued would keep it at the
+    /// head.
     fn dequeue_into(
         &mut self,
         now: u64,
@@ -214,6 +223,10 @@ pub trait QueueStorage {
 impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
     fn set_starvation_limit(&mut self, limit: u8) {
         (**self).set_starvation_limit(limit);
+    }
+
+    fn max_npdu_length(&self) -> usize {
+        (**self).max_npdu_length()
     }
 
     fn enqueue_npdu(
@@ -338,6 +351,11 @@ const DEFAULT_STARVATION_LIMIT: u8 = 16;
 #[cfg(feature = "heapless")]
 #[derive(Debug)]
 /// Heapless, independently bounded unicast and broadcast queues.
+///
+/// `U` and `B` are the unicast and broadcast capacities, and `N` the longest
+/// NPDU a slot holds: a standard frame's 501 octets by default, and
+/// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
+/// a core with extended frames on.
 ///
 /// [`Self::new`] is a `const fn` whose result is all zero bits, so the
 /// queues can live in a zero-initialized static (`.bss`) and be lent to the
@@ -465,6 +483,10 @@ impl<const U: usize, const B: usize, const N: usize> Default for HeaplessQueues<
 impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQueues<U, B, N> {
     fn set_starvation_limit(&mut self, limit: u8) {
         self.starvation_limit = Some(limit);
+    }
+
+    fn max_npdu_length(&self) -> usize {
+        N
     }
 
     fn enqueue_npdu(

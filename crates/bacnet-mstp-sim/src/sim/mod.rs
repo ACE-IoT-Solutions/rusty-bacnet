@@ -7,10 +7,12 @@ mod medium;
 
 use std::collections::BTreeMap;
 
-use bacnet_mstp_codec::{StreamDecoder, MAX_STANDARD_FRAME_LENGTH};
+use bacnet_mstp_codec::{
+    FrameHeader, StreamDecoder, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
+};
 use bacnet_mstp_core::{
-    ActionBuffers, AllocQueues, Duration, Instant, MasterCore, MasterState, NetworkPriority,
-    QueueRejectReason, RequestId, TransmitId,
+    AllocQueues, Duration, ExtendedActionBuffers, Instant, MasterCore, MasterState,
+    NetworkPriority, QueueRejectReason, RequestId, TransmitId,
 };
 
 use crate::event::{Class, Key, Queue};
@@ -23,8 +25,11 @@ use crate::wire::WireTiming;
 
 use master::MasterNode;
 
-/// The core type every simulated master runs.
-pub type SimCore = MasterCore<'static, AllocQueues>;
+/// The core type every simulated master runs. Its queues and action buffers
+/// are sized for extended frames whether the master's configuration takes
+/// them or not, so masters with and without the flag share one type; the
+/// receive storage follows the flag (see [`MasterSpec::extended_frames`]).
+pub type SimCore = MasterCore<'static, AllocQueues<MAX_EXTENDED_MPDU_DATA>, MAX_EXTENDED_MPDU_DATA>;
 
 /// Run-wide settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,7 +244,7 @@ impl Sim {
             station,
             kind: NodeKind::Scripted(Box::new(ScriptedNode {
                 script: Box::new(script),
-                decoder: StreamDecoder::new(leak_storage(2 * MAX_STANDARD_FRAME_LENGTH)),
+                decoder: StreamDecoder::new(leak_storage(2 * MAX_EXTENDED_FRAME_LENGTH)),
                 last_character: None,
             })),
             driving: None,
@@ -595,8 +600,9 @@ fn leak_storage(length: usize) -> &'static mut [u8] {
 }
 
 /// The action buffers a powered-on core borrows for its whole life, kept
-/// like [`leak_storage`]'s, with the default delivery slots.
-fn leak_action_buffers() -> &'static mut ActionBuffers {
+/// like [`leak_storage`]'s, with the default delivery slots, sized for
+/// extended frames.
+fn leak_action_buffers() -> &'static mut ExtendedActionBuffers {
     Box::leak(Box::default())
 }
 
@@ -609,16 +615,27 @@ fn tie_of(driver: Driver) -> u16 {
     }
 }
 
+/// The header and decoded data of the octets of one whole frame, standard
+/// or extended (decoded on a copy, since COBS decodes in place), or `None`
+/// when they aren't exactly one valid frame of a type the codec decodes.
+pub(crate) fn decode_whole(octets: &[u8]) -> Option<(FrameHeader, Vec<u8>)> {
+    let mut copy = octets.to_vec();
+    match bacnet_mstp_codec::decode_frame_in_place(&mut copy) {
+        Ok((frame, used)) if used == octets.len() => Some((frame.header, frame.data.to_vec())),
+        _ => None,
+    }
+}
+
 /// A one-line summary of a frame's octets for the trace.
 fn describe(octets: &[u8]) -> String {
-    match bacnet_mstp_codec::decode_frame(octets) {
-        Ok((frame, used)) if used == octets.len() => format!(
+    match decode_whole(octets) {
+        Some((header, _)) => format!(
             "{:?} {}->{} ({} octets)",
-            frame.header.frame_type,
-            frame.header.source,
-            frame.header.destination,
+            header.frame_type,
+            header.source,
+            header.destination,
             octets.len()
         ),
-        _ => format!("{} undecodable octets", octets.len()),
+        None => format!("{} undecodable octets", octets.len()),
     }
 }

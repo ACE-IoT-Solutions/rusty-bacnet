@@ -48,8 +48,12 @@
 //! ideal: every receiver sees the same line at the same instant.
 //!
 //! **Masters and their adapters.** Each master runs a core over
-//! [`AllocQueues`](bacnet_mstp_core::AllocQueues). After every call into
-//! the core its adapter polls actions until the core is idle:
+//! [`AllocQueues`](bacnet_mstp_core::AllocQueues). A master built with
+//! [`MasterSpec::extended_frames`] takes and sends extended frames (Types
+//! 32 and 33), as a routing node must; one without counts them as invalid
+//! frames, as a node without COBS support does, so a ring can mix the two.
+//! After every call into the core its adapter polls actions until the core
+//! is idle:
 //!
 //! - It records [`Action::SetDirection`](bacnet_mstp_core::Action).
 //! - For a transmit, after [`AdapterSpec::start_delay`] it calls
@@ -142,12 +146,11 @@
 //! - **Host-style input.** Received octets go through `on_octet` one at a
 //!   time. The chunked `on_validated_frame` and `on_host_activity` paths of
 //!   a host adapter are not exercised.
-//! - **Extended (COBS-encoded) frames**, which the codec handles but the
-//!   core does not take yet.
 //!
-//! Each powered-on core borrows a receive buffer for its whole life, so the
-//! simulator leaks one 512-octet buffer per power-up; scenarios power nodes
-//! up a bounded number of times.
+//! Each powered-on core borrows its receive buffer and action buffers for
+//! its whole life, so the simulator leaks them on every power-up, about
+//! 14 KB with the action buffers sized for extended frames; scenarios power
+//! nodes up a bounded number of times.
 //!
 //! # Adding a scenario
 //!

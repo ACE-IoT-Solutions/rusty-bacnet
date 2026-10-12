@@ -12,7 +12,8 @@
 //!   they are queued, because the stream decoder reuses its receive buffer.
 
 use bacnet_mstp_codec::{
-    Frame, FrameError, FrameHeader, FrameType, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
+    Frame, FrameError, FrameHeader, FrameType, HEADER_LENGTH, MAX_EXTENDED_FRAME_LENGTH,
+    MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 
 /// The physical direction requested for the serial transceiver.
@@ -124,7 +125,10 @@ pub enum Action<'a> {
         /// Complete encoded frame, including preamble and CRCs.
         frame: &'a [u8],
     },
-    /// Deliver a validated NPDU to the network layer.
+    /// Deliver a validated NPDU to the network layer, from a BACnet data
+    /// frame: standard (Types 5 and 6) or, with
+    /// [`MstpCoreConfig::extended_frames`](crate::MstpCoreConfig::extended_frames)
+    /// on, extended (Types 32 and 33).
     DeliverNpdu {
         /// Source MS/TP station.
         source: u8,
@@ -174,28 +178,54 @@ pub const DEFAULT_DELIVERY_SLOTS: usize = 8;
 /// returns, which the core borrows for as long as it lives, as it borrows its
 /// receive storage.
 ///
-/// It holds the frame this station is sending, at most one at a time, and
-/// `DELIVERIES` slots for received data waiting to be polled, each with room
-/// for a standard frame's 501 octets. That is the core's only large state
-/// besides its queues and receive storage, which is why the caller owns it:
-/// [`Self::new`] is a `const fn` that zeroes everything, so on a
-/// microcontroller the buffers can live in a zero-initialized static
-/// (`.bss`), and the core itself stays small enough to build on the stack
-/// (see the crate docs).
+/// It holds the frame this station is sending, at most one at a time, in a
+/// buffer of `FRAME` octets, and `DELIVERIES` slots for received data
+/// waiting to be polled, each with room for `NPDU` octets. That is the
+/// core's only large state besides its queues and receive storage, which is
+/// why the caller owns it: [`Self::new`] is a `const fn` that zeroes
+/// everything, so on a microcontroller the buffers can live in a
+/// zero-initialized static (`.bss`), and the core itself stays small enough
+/// to build on the stack (see the crate docs).
 ///
 /// `DELIVERIES` must be at least one, or [`Self::new`] fails to compile. One
 /// is enough for an adapter that polls every action after each call into the
 /// core, since a call completes at most one frame. More let an adapter leave
 /// deliveries waiting while it handles other events. A delivery that finds
-/// every slot full is dropped and counted in
+/// every slot full, or is longer than a slot, is dropped and counted in
 /// [`MstpCounters::delivery_drops`](crate::MstpCounters::delivery_drops); a
 /// data request dropped that way is answered with Reply Postponed.
-pub struct ActionBuffers<const DELIVERIES: usize = DEFAULT_DELIVERY_SLOTS> {
-    frame: [u8; MAX_STANDARD_FRAME_LENGTH],
-    deliveries: [DeliverySlot; DELIVERIES],
+///
+/// # Sizes
+///
+/// The defaults are a standard frame's: `NPDU` 501 octets and `FRAME`
+/// [`MAX_STANDARD_FRAME_LENGTH`]. A core with
+/// [`MstpCoreConfig::extended_frames`](crate::MstpCoreConfig::extended_frames)
+/// on needs room for extended frames, [`ExtendedActionBuffers`]: `NPDU`
+/// [`MAX_EXTENDED_MPDU_DATA`] and `FRAME` [`MAX_EXTENDED_FRAME_LENGTH`].
+/// `NPDU` also sizes the core's own scratch for a queued NPDU, on the stack
+/// of the call that sends it, which is why the core carries it as its own
+/// parameter. `FRAME` must hold any standard frame and, when `NPDU` is more
+/// than 501, an extended frame carrying `NPDU` octets, or [`Self::new`]
+/// fails to compile.
+pub struct ActionBuffers<
+    const DELIVERIES: usize = DEFAULT_DELIVERY_SLOTS,
+    const NPDU: usize = MAX_STANDARD_MPDU_DATA,
+    const FRAME: usize = MAX_STANDARD_FRAME_LENGTH,
+> {
+    frame: [u8; FRAME],
+    deliveries: [DeliverySlot<NPDU>; DELIVERIES],
 }
 
-impl<const DELIVERIES: usize> ActionBuffers<DELIVERIES> {
+/// [`ActionBuffers`] sized for extended frames, as
+/// [`MstpCoreConfig::extended_frames`](crate::MstpCoreConfig::extended_frames)
+/// needs: delivery slots of [`MAX_EXTENDED_MPDU_DATA`] octets and a frame
+/// buffer of [`MAX_EXTENDED_FRAME_LENGTH`].
+pub type ExtendedActionBuffers<const DELIVERIES: usize = DEFAULT_DELIVERY_SLOTS> =
+    ActionBuffers<DELIVERIES, MAX_EXTENDED_MPDU_DATA, MAX_EXTENDED_FRAME_LENGTH>;
+
+impl<const DELIVERIES: usize, const NPDU: usize, const FRAME: usize>
+    ActionBuffers<DELIVERIES, NPDU, FRAME>
+{
     /// Zeroed buffers with `DELIVERIES` delivery slots.
     #[must_use]
     pub const fn new() -> Self {
@@ -203,24 +233,43 @@ impl<const DELIVERIES: usize> ActionBuffers<DELIVERIES> {
             assert!(
                 DELIVERIES > 0,
                 "an MS/TP core needs one delivery slot at least"
-            )
+            );
+            assert!(
+                FRAME >= frame_room(NPDU),
+                "FRAME can't hold the longest frame the core may send with NPDU-octet slots"
+            );
         };
         Self {
-            frame: [0; MAX_STANDARD_FRAME_LENGTH],
+            frame: [0; FRAME],
             deliveries: [DeliverySlot::EMPTY; DELIVERIES],
         }
     }
 }
 
-impl<const DELIVERIES: usize> Default for ActionBuffers<DELIVERIES> {
+impl<const DELIVERIES: usize, const NPDU: usize, const FRAME: usize> Default
+    for ActionBuffers<DELIVERIES, NPDU, FRAME>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// The longest frame a core with `npdu`-octet delivery slots may send: any
+/// standard frame (a reply or a Test_Response carries up to 501 octets),
+/// and an extended frame carrying `npdu` octets when that is more: its
+/// encoded data grows by at most one octet in 254, and its CRC field takes
+/// five.
+const fn frame_room(npdu: usize) -> usize {
+    if npdu <= MAX_STANDARD_MPDU_DATA {
+        MAX_STANDARD_FRAME_LENGTH
+    } else {
+        PREAMBLE.len() + HEADER_LENGTH + npdu + npdu.div_ceil(254) + 5
+    }
+}
+
 /// One received data field waiting to be polled.
 #[derive(Clone, Copy)]
-struct DeliverySlot {
+struct DeliverySlot<const NPDU: usize> {
     /// The request bound to an NPDU that asks for a reply.
     request_id: Option<RequestId>,
     /// The raw type of the frame the data came in, which says how it is
@@ -229,10 +278,10 @@ struct DeliverySlot {
     source: u8,
     destination: u8,
     length: u16,
-    data: [u8; MAX_STANDARD_MPDU_DATA],
+    data: [u8; NPDU],
 }
 
-impl DeliverySlot {
+impl<const NPDU: usize> DeliverySlot<NPDU> {
     /// All zero bits, so zeroed buffers can live in `.bss`.
     const EMPTY: Self = Self {
         request_id: None,
@@ -240,12 +289,12 @@ impl DeliverySlot {
         source: 0,
         destination: 0,
         length: 0,
-        data: [0; MAX_STANDARD_MPDU_DATA],
+        data: [0; NPDU],
     };
 }
 
 /// A delivery was dropped: every slot was full, or the data was longer than
-/// a standard frame carries.
+/// a slot holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeliveryRefused;
 
@@ -276,28 +325,30 @@ struct QueuedTransmit {
 /// absorbed: an adapter that falls behind finds one switch to receive, not a
 /// backlog. That is why a control action can never be refused for want of
 /// room.
-pub(crate) struct ActionQueue<'b> {
+pub(crate) struct ActionQueue<'b, const NPDU: usize> {
     /// A switch back to receive waits, ahead of any transmit.
     receive: bool,
     transmit: Option<QueuedTransmit>,
-    frame: &'b mut [u8; MAX_STANDARD_FRAME_LENGTH],
+    frame: &'b mut [u8],
     frame_length: usize,
-    deliveries: &'b mut [DeliverySlot],
+    deliveries: &'b mut [DeliverySlot<NPDU>],
     /// The oldest waiting delivery.
     head: usize,
     /// How many deliveries wait.
     waiting: usize,
 }
 
-impl<'b> ActionQueue<'b> {
+impl<'b, const NPDU: usize> ActionQueue<'b, NPDU> {
     /// An empty queue over the caller's buffers. Whatever they held is
     /// overwritten before it is read.
-    pub(crate) fn new<const DELIVERIES: usize>(buffers: &'b mut ActionBuffers<DELIVERIES>) -> Self {
+    pub(crate) fn new<const DELIVERIES: usize, const FRAME: usize>(
+        buffers: &'b mut ActionBuffers<DELIVERIES, NPDU, FRAME>,
+    ) -> Self {
         let ActionBuffers { frame, deliveries } = buffers;
         Self {
             receive: false,
             transmit: None,
-            frame,
+            frame: &mut frame[..],
             frame_length: 0,
             deliveries,
             head: 0,
@@ -311,7 +362,7 @@ impl<'b> ActionQueue<'b> {
             self.transmit.is_none(),
             "a queued transmit still needs the frame buffer"
         );
-        self.frame_length = frame.encode_into(&mut self.frame[..])?;
+        self.frame_length = frame.encode_into(self.frame)?;
         Ok(())
     }
 
@@ -355,7 +406,7 @@ impl<'b> ActionQueue<'b> {
         request_id: Option<RequestId>,
     ) -> Result<(), DeliveryRefused> {
         let length = u16::try_from(data.len()).map_err(|_| DeliveryRefused)?;
-        if data.len() > MAX_STANDARD_MPDU_DATA || self.waiting == self.deliveries.len() {
+        if data.len() > NPDU || self.waiting == self.deliveries.len() {
             return Err(DeliveryRefused);
         }
         let slot = &mut self.deliveries[wrap(self.head + self.waiting, self.deliveries.len())];
@@ -402,14 +453,12 @@ impl<'b> ActionQueue<'b> {
         let slot = &self.deliveries[index];
         let data = &slot.data[..usize::from(slot.length)];
         match FrameType::from_raw(slot.frame_type) {
-            FrameType::BACnetDataExpectingReply | FrameType::BACnetDataNotExpectingReply => {
-                Action::DeliverNpdu {
-                    source: slot.source,
-                    destination: slot.destination,
-                    npdu: data,
-                    request_id: slot.request_id,
-                }
-            }
+            frame_type if carries_npdu(frame_type) => Action::DeliverNpdu {
+                source: slot.source,
+                destination: slot.destination,
+                npdu: data,
+                request_id: slot.request_id,
+            },
             frame_type => Action::DeliverFrame {
                 frame_type,
                 source: slot.source,
@@ -418,6 +467,18 @@ impl<'b> ActionQueue<'b> {
             },
         }
     }
+}
+
+/// Whether a frame of this type carries a BACnet NPDU: BACnet data expecting
+/// a reply or not, standard (Types 5 and 6) or extended (32 and 33).
+pub(crate) const fn carries_npdu(frame_type: FrameType) -> bool {
+    matches!(
+        frame_type,
+        FrameType::BACnetDataExpectingReply
+            | FrameType::BACnetDataNotExpectingReply
+            | FrameType::BACnetExtendedDataExpectingReply
+            | FrameType::BACnetExtendedDataNotExpectingReply
+    )
 }
 
 /// `index` wrapped into a ring of `length` slots, for an index less than
@@ -441,14 +502,14 @@ mod tests {
     }
 
     /// Encode a one-octet test frame and queue it as transmit `id`.
-    fn queue_frame(actions: &mut ActionQueue<'_>, id: u32, octet: u8) {
+    fn queue_frame(actions: &mut ActionQueue<'_, MAX_STANDARD_MPDU_DATA>, id: u32, octet: u8) {
         actions
             .encode_frame(Frame::new(FrameType::TestRequest, 2, 1, &[octet]))
             .unwrap();
         actions.queue_transmit(TransmitId::new(id));
     }
 
-    fn polled_frame(actions: &mut ActionQueue<'_>) -> (TransmitId, u8) {
+    fn polled_frame(actions: &mut ActionQueue<'_, MAX_STANDARD_MPDU_DATA>) -> (TransmitId, u8) {
         match actions.poll() {
             Action::Transmit { id, frame } => (id, frame[8]),
             other => panic!("expected a transmit, got {other:?}"),

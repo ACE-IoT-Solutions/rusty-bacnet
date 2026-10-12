@@ -1,5 +1,10 @@
 //! Configuration and Clause 9 timing validation for the MS/TP master core.
 
+use bacnet_mstp_codec::{
+    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH,
+    MAX_STANDARD_MPDU_DATA,
+};
+
 use crate::clock::Duration;
 
 const MAX_MASTER_ADDRESS: u8 = 127;
@@ -14,6 +19,8 @@ pub(crate) const MIN_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 /// Default for [`MstpCoreConfig::reply_transmit_margin`], the value the host
 /// MS/TP transport reserves.
 const DEFAULT_REPLY_TRANSMIT_MARGIN: Duration = Duration::from_millis(25);
+/// Default for [`MstpCoreConfig::transmit_watchdog`].
+const DEFAULT_TRANSMIT_WATCHDOG: Duration = Duration::from_secs(1);
 
 /// A configuration value that violates a protocol or local safety bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +163,52 @@ pub enum ConfigError {
         /// Supplied percentage value.
         value: u8,
     },
+    /// With [`MstpCoreConfig::extended_frames`] on, the transmit watchdog
+    /// would abort the longest extended frame before its last octet left:
+    /// 1516 octets take 1.58 s at 9600 baud.
+    /// [`MstpCoreConfig::with_extended_frames`] sets one that covers it.
+    TransmitWatchdogTooShort {
+        /// Supplied watchdog.
+        value: Duration,
+        /// The longest frame's time on the wire,
+        /// [`MstpCoreConfig::longest_frame_time`].
+        minimum: Duration,
+    },
+    /// [`MstpCoreConfig::extended_frames`] is on, but a buffer the core was
+    /// given can't hold the largest extended frame or NPDU. Only
+    /// [`MasterCore::new`](crate::MasterCore::new) reports it, since only it
+    /// sees the buffers.
+    ExtendedStorageTooSmall {
+        /// The buffer that is too small.
+        buffer: CoreBuffer,
+        /// Its size in octets.
+        length: usize,
+        /// The size extended frames need: the longest extended frame on the
+        /// wire for the receive storage and the transmit frame, the longest
+        /// NPDU one carries for a delivery slot and a queue slot.
+        minimum: usize,
+    },
+}
+
+/// The buffers [`ConfigError::ExtendedStorageTooSmall`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreBuffer {
+    /// The receive storage, which must hold
+    /// [`MAX_EXTENDED_FRAME_LENGTH`](bacnet_mstp_codec::MAX_EXTENDED_FRAME_LENGTH)
+    /// octets.
+    ReceiveStorage,
+    /// The [`ActionBuffers`](crate::ActionBuffers) frame buffer, its `FRAME`,
+    /// which must hold as much.
+    TransmitFrame,
+    /// Each [`ActionBuffers`](crate::ActionBuffers) delivery slot, its
+    /// `NPDU`, which must hold
+    /// [`MAX_EXTENDED_MPDU_DATA`]
+    /// octets.
+    DeliverySlot,
+    /// Each queue slot, as
+    /// [`QueueStorage::max_npdu_length`](crate::QueueStorage::max_npdu_length)
+    /// reports it, which must hold as much.
+    QueueSlot,
 }
 
 /// Names of local duration settings used by [`ConfigError::ZeroLocalDuration`].
@@ -247,6 +300,33 @@ pub struct MstpCoreConfig {
     pub starvation_limit: u8,
     /// Maximum time allowed for one platform transmit operation.
     pub transmit_watchdog: Duration,
+
+    /// Take and send extended frames: BACnet Extended Data Expecting Reply
+    /// and Not Expecting Reply (Types 32 and 33), which carry NPDUs of 502
+    /// to 1497 octets COBS-encoded (Clauses 9.3.9, 9.3.10). Off by default.
+    ///
+    /// Clause 9.3 requires COBS-encoded frames of a routing node and leaves
+    /// them optional for any other node, so a router turns this on for
+    /// every MS/TP port it routes and a device leaves it off unless it wants
+    /// the larger NPDUs.
+    ///
+    /// - **Off**, the core is a node without COBS support. It refuses an
+    ///   NPDU over 501 octets, and an extended frame it hears counts as an
+    ///   invalid frame when it is for this station or broadcast.
+    /// - **On**, a Type 32 for this station is a data request like a Type 5,
+    ///   and a Type 33 data like a Type 6, a reply to this station's request
+    ///   included; broadcasts of either go up as for Types 5 and 6. A
+    ///   reserved COBS type (34-127) is checked and, with a good CRC-32K,
+    ///   taken as a valid frame of a type the core doesn't know (Clause
+    ///   9.5.4.9). An NPDU of 502 to 1497 octets, queued or as a reply, goes
+    ///   out as Type 32 when it expects a reply and Type 33 otherwise.
+    ///   [`MasterCore::new`](crate::MasterCore::new) then needs buffers
+    ///   sized for extended frames, and refuses smaller ones with
+    ///   [`ConfigError::ExtendedStorageTooSmall`]. The transmit watchdog
+    ///   must cover the longest extended frame's time on the wire
+    ///   ([`ConfigError::TransmitWatchdogTooShort`]);
+    ///   [`Self::with_extended_frames`] sets both.
+    pub extended_frames: bool,
 }
 
 impl Default for MstpCoreConfig {
@@ -401,6 +481,12 @@ impl MstpCoreConfig {
                 field: LocalDurationField::TransmitWatchdog,
             });
         }
+        if self.extended_frames && self.transmit_watchdog < self.longest_frame_time() {
+            return Err(ConfigError::TransmitWatchdogTooShort {
+                value: self.transmit_watchdog,
+                minimum: self.longest_frame_time(),
+            });
+        }
         if self.broadcast_unicast_ratio == 0 {
             return Err(ConfigError::ZeroLocalLimit {
                 field: LocalLimitField::BroadcastUnicastRatio,
@@ -448,8 +534,49 @@ impl MstpCoreConfig {
             broadcast_unicast_ratio: 1,
             multiple_frame_ratio: 100,
             starvation_limit: 8,
-            transmit_watchdog: Duration::from_secs(1),
+            transmit_watchdog: DEFAULT_TRANSMIT_WATCHDOG,
+            extended_frames: false,
         }
+    }
+
+    /// The longest NPDU this configuration sends or takes: 1497 octets with
+    /// [`Self::extended_frames`] on (Clauses 9.3.9, 9.3.10), else 501
+    /// (Clauses 9.3.6, 9.3.7).
+    #[must_use]
+    pub const fn max_npdu_length(&self) -> usize {
+        if self.extended_frames {
+            MAX_EXTENDED_MPDU_DATA
+        } else {
+            MAX_STANDARD_MPDU_DATA
+        }
+    }
+
+    /// The time the longest frame this configuration sends takes on the
+    /// wire: [`MAX_EXTENDED_FRAME_LENGTH`] octets with
+    /// [`Self::extended_frames`] on, else [`MAX_STANDARD_FRAME_LENGTH`].
+    #[must_use]
+    pub const fn longest_frame_time(&self) -> Duration {
+        let octets = if self.extended_frames {
+            MAX_EXTENDED_FRAME_LENGTH
+        } else {
+            MAX_STANDARD_FRAME_LENGTH
+        };
+        Duration::from_micros(self.octet_time().as_micros().saturating_mul(octets as u64))
+    }
+
+    /// This configuration with [`Self::extended_frames`] on, and a transmit
+    /// watchdog long enough for the longest extended frame: at least that
+    /// frame's time on the wire plus the default watchdog of one second.
+    #[must_use]
+    pub const fn with_extended_frames(mut self) -> Self {
+        self.extended_frames = true;
+        let needed = self
+            .longest_frame_time()
+            .saturating_add(DEFAULT_TRANSMIT_WATCHDOG);
+        if self.transmit_watchdog.as_micros() < needed.as_micros() {
+            self.transmit_watchdog = needed;
+        }
+        self
     }
 }
 
@@ -606,6 +733,46 @@ mod tests {
             config.validate(),
             Err(ConfigError::MultipleFrameRatioOutOfRange { value: 101 })
         );
+    }
+
+    /// Clause 9.3 sizes: the longest extended frame, 1516 octets, takes
+    /// 1.58 s at 9600 baud, longer than the default watchdog, so extended
+    /// frames need a longer one; `with_extended_frames` sets it, and leaves
+    /// a longer one alone. Without the flag nothing changes.
+    #[test]
+    fn extended_frames_need_a_watchdog_that_covers_the_longest_frame() {
+        let standard = MstpCoreConfig::default();
+        assert!(!standard.extended_frames);
+        assert_eq!(standard.transmit_watchdog, Duration::from_secs(1));
+        assert_eq!(
+            standard.longest_frame_time(),
+            Duration::from_micros(511 * 1_042)
+        );
+
+        let flagged = MstpCoreConfig {
+            extended_frames: true,
+            ..MstpCoreConfig::default()
+        };
+        let longest = Duration::from_micros(1_516 * 1_042);
+        assert_eq!(flagged.longest_frame_time(), longest);
+        assert_eq!(
+            flagged.validate(),
+            Err(ConfigError::TransmitWatchdogTooShort {
+                value: Duration::from_secs(1),
+                minimum: longest,
+            })
+        );
+
+        let extended = MstpCoreConfig::default().with_extended_frames();
+        assert!(extended.extended_frames);
+        assert_eq!(extended.transmit_watchdog, longest + Duration::from_secs(1));
+        assert_eq!(extended.validate(), Ok(()));
+        let patient = MstpCoreConfig {
+            transmit_watchdog: Duration::from_secs(9),
+            ..MstpCoreConfig::default()
+        }
+        .with_extended_frames();
+        assert_eq!(patient.transmit_watchdog, Duration::from_secs(9));
     }
 
     #[test]

@@ -1,13 +1,18 @@
 //! Clause 9.5.6 master state machine.
 
 use bacnet_mstp_codec::{
-    DecodeEvent, Frame, FrameError, FrameHeader, FrameType, StreamDecoder, StreamPhase,
-    BROADCAST_MAC, HEADER_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase, BROADCAST_MAC,
+    HEADER_LENGTH, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA,
+    PREAMBLE,
 };
 
-use crate::actions::{Action, ActionBuffers, ActionQueue, RequestId, TransmitFailure, TransmitId};
+use crate::actions::{
+    carries_npdu, Action, ActionBuffers, ActionQueue, RequestId, TransmitFailure, TransmitId,
+};
 use crate::clock::{Duration, Instant};
-use crate::config::{ConfigError, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT};
+use crate::config::{
+    ConfigError, CoreBuffer, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT,
+};
 use crate::counters::{MstpCounters, QueueCounters};
 use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
 
@@ -101,7 +106,8 @@ pub enum CoreError {
     /// or the requester may have stopped waiting, so the request was released
     /// unanswered.
     RequestExpired,
-    /// The reply is too large for a standard MS/TP frame.
+    /// The reply is longer than this station sends: 501 octets, or 1497
+    /// with [`MstpCoreConfig::extended_frames`] on.
     ReplyOversize {
         /// Supplied reply length.
         length: usize,
@@ -210,13 +216,6 @@ struct ActiveTransmit {
     post: PostTransmit,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct OwnedFrame {
-    header: FrameHeader,
-    length: usize,
-    data: [u8; MAX_STANDARD_MPDU_DATA],
-}
-
 /// Synchronous, allocation-free MS/TP master core.
 ///
 /// # Driving it
@@ -263,6 +262,14 @@ struct OwnedFrame {
 /// value is small, so [`Self::new`] can return it on a microcontroller's
 /// stack; the crate docs show the pattern.
 ///
+/// `NPDU` is the size of the [`ActionBuffers`] delivery slots, which the
+/// core takes from them, and of the scratch it copies a queued NPDU into on
+/// the stack to send it. It defaults to a standard frame's 501 octets, so a
+/// core without extended frames costs what it always did; one with
+/// [`MstpCoreConfig::extended_frames`] on needs
+/// [`MAX_EXTENDED_MPDU_DATA`]
+/// (see [`ExtendedActionBuffers`](crate::ExtendedActionBuffers)).
+///
 /// # Late token generation (a local policy)
 ///
 /// Clause 9.5.6.7 lets a station generate a token only while the line's
@@ -275,11 +282,11 @@ struct OwnedFrame {
 /// [`MstpCounters::missed_generation_slots`]. It departs from the clause only
 /// when the deadline is serviced after the slot has closed; on time, the
 /// first slot is used.
-pub struct MasterCore<'rx, Q: QueueStorage> {
+pub struct MasterCore<'rx, Q: QueueStorage, const NPDU: usize = MAX_STANDARD_MPDU_DATA> {
     config: MstpCoreConfig,
     queues: Q,
     decoder: StreamDecoder<'rx>,
-    actions: ActionQueue<'rx>,
+    actions: ActionQueue<'rx, NPDU>,
     state: MasterState,
     next_station: u8,
     poll_station: u8,
@@ -305,26 +312,37 @@ pub struct MasterCore<'rx, Q: QueueStorage> {
     counters: MstpCounters,
 }
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Construct a core over caller-owned storage.
     ///
     /// `rx_storage` is the stream decoder's buffer for [`Self::on_octet`].
     /// Size it for the largest frame this station accepts:
     /// [`MAX_STANDARD_FRAME_LENGTH`](bacnet_mstp_codec::MAX_STANDARD_FRAME_LENGTH)
-    /// takes any standard frame. A longer frame addressed to this station or
-    /// broadcast counts as an invalid frame (Clause 9.5.4.4), at its header;
-    /// one for another station is skipped. The core takes no extended frame
-    /// yet: one the storage holds counts the same way at its last octet.
-    /// Storage shorter than [`MIN_RX_STORAGE`] is refused.
+    /// takes any standard frame, and
+    /// [`MAX_EXTENDED_FRAME_LENGTH`] any extended frame
+    /// that carries a BACnet NPDU. A longer frame addressed to this station
+    /// or broadcast counts as an invalid frame (Clause 9.5.4.4), at its
+    /// header; one for another station is skipped. Without
+    /// [`MstpCoreConfig::extended_frames`] an extended frame the storage
+    /// holds counts the same way at its last octet. Storage shorter than
+    /// [`MIN_RX_STORAGE`] is refused.
     ///
     /// `action_buffers` holds the frame this station sends and the received
-    /// data waiting to be polled; its `DELIVERIES` sets how much may wait.
-    /// Whatever either buffer held is overwritten before it is read.
-    pub fn new<const DELIVERIES: usize>(
+    /// data waiting to be polled; its `DELIVERIES` sets how much may wait,
+    /// and its `NPDU` how long each may be (see [`ActionBuffers`]). Whatever
+    /// either buffer held is overwritten before it is read.
+    ///
+    /// With [`MstpCoreConfig::extended_frames`] on, every buffer must hold
+    /// what an extended frame needs: the receive storage and the action
+    /// buffers' frame [`MAX_EXTENDED_FRAME_LENGTH`] octets, and a delivery
+    /// slot and a queue slot ([`QueueStorage::max_npdu_length`])
+    /// [`MAX_EXTENDED_MPDU_DATA`]. A smaller one is refused with
+    /// [`ConfigError::ExtendedStorageTooSmall`], naming it.
+    pub fn new<const DELIVERIES: usize, const FRAME: usize>(
         config: MstpCoreConfig,
         mut queues: Q,
         rx_storage: &'rx mut [u8],
-        action_buffers: &'rx mut ActionBuffers<DELIVERIES>,
+        action_buffers: &'rx mut ActionBuffers<DELIVERIES, NPDU, FRAME>,
         now: Instant,
     ) -> Result<Self, CoreError> {
         config.validate()?;
@@ -334,11 +352,42 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                 minimum: MIN_RX_STORAGE,
             });
         }
+        if config.extended_frames {
+            for (buffer, length, minimum) in [
+                (
+                    CoreBuffer::ReceiveStorage,
+                    rx_storage.len(),
+                    MAX_EXTENDED_FRAME_LENGTH,
+                ),
+                (CoreBuffer::TransmitFrame, FRAME, MAX_EXTENDED_FRAME_LENGTH),
+                (CoreBuffer::DeliverySlot, NPDU, MAX_EXTENDED_MPDU_DATA),
+                (
+                    CoreBuffer::QueueSlot,
+                    queues.max_npdu_length(),
+                    MAX_EXTENDED_MPDU_DATA,
+                ),
+            ] {
+                if length < minimum {
+                    return Err(CoreError::Config(ConfigError::ExtendedStorageTooSmall {
+                        buffer,
+                        length,
+                        minimum,
+                    }));
+                }
+            }
+        }
         queues.set_starvation_limit(config.starvation_limit);
+        let decoder = StreamDecoder::new(rx_storage);
         Ok(Self {
             config,
             queues,
-            decoder: StreamDecoder::new(rx_storage),
+            // A node with COBS support checks every COBS type's encoded
+            // fields, the reserved ones included (Clause 9.5.4.9).
+            decoder: if config.extended_frames {
+                decoder.with_reserved_cobs()
+            } else {
+                decoder
+            },
             actions: ActionQueue::new(action_buffers),
             state: MasterState::Idle,
             next_station: config.station,
@@ -391,7 +440,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Return the counters snapshot, including current queue statistics.
     ///
     /// The queue counters come from the queue storage, plus the NPDUs the
-    /// core itself refused or dropped as too long for a standard frame.
+    /// core itself refused or dropped as too long to send
+    /// ([`MstpCoreConfig::max_npdu_length`]).
     pub fn counters(&self) -> MstpCounters {
         let merge = |queue: QueueCounters, core: QueueCounters| QueueCounters {
             drops_oversize: queue.drops_oversize.saturating_add(core.drops_oversize),
@@ -408,9 +458,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     /// Queue an NPDU with an absolute expiry derived from configuration.
     ///
-    /// An NPDU longer than a standard frame carries (501 octets) is refused
-    /// with [`QueueRejectReason::Oversize`] and counted in its queue's
-    /// `drops_oversize`, whatever the queue storage could hold.
+    /// An NPDU longer than this station sends
+    /// ([`MstpCoreConfig::max_npdu_length`]: 501 octets, or 1497 with
+    /// extended frames on) is refused with [`QueueRejectReason::Oversize`]
+    /// and counted in its queue's `drops_oversize`, whatever the queue
+    /// storage could hold. With extended frames on, one of 502 octets or
+    /// more goes out in an extended frame.
     pub fn enqueue_npdu(
         &mut self,
         destination: u8,
@@ -421,7 +474,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         if now < self.last_now {
             return Err(QueueRejectReason::Expired);
         }
-        if npdu.len() > MAX_STANDARD_MPDU_DATA {
+        if npdu.len() > self.config.max_npdu_length() {
             self.record_oversize_npdu(QueueKind::from_destination(destination));
             return Err(QueueRejectReason::Oversize);
         }
@@ -564,7 +617,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
     }
 
-    /// Count an NPDU refused or dropped as too long for a standard frame.
+    /// Count an NPDU refused or dropped as too long to send.
     fn record_oversize_npdu(&mut self, kind: QueueKind) {
         let queue = match kind {
             QueueKind::Unicast => &mut self.counters.unicast,

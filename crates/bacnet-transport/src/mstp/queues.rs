@@ -116,6 +116,10 @@ impl QueueStorage for SharedQueues {
         self.lock().queues.set_starvation_limit(limit);
     }
 
+    fn max_npdu_length(&self) -> usize {
+        self.lock().queues.max_npdu_length()
+    }
+
     fn enqueue_npdu(
         &mut self,
         destination: u8,

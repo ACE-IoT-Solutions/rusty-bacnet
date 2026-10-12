@@ -567,7 +567,7 @@ mod allocation_test {
     fn alloc_queues_and_core_do_not_allocate_after_construction() {
         let mut rx = [0; 1024];
         let mut actions = Actions::new();
-        let queues = AllocQueues::new(4, 4);
+        let queues = AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 4);
         let mut core = MasterCore::new(
             standard_config(1, 2),
             queues,
