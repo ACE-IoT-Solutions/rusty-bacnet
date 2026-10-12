@@ -926,4 +926,6 @@ mod client_management_tests;
 #[cfg(test)]
 mod foreign_lifecycle_tests;
 #[cfg(test)]
+mod registration_schedule_tests;
+#[cfg(test)]
 mod registration_tests;

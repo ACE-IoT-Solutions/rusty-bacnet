@@ -4607,7 +4607,7 @@ with `generic_builder()` over a BBMD-mode `BipTransport` reports live values.
 
 `bvlc_client_snapshot()` instead describes this transport's own outgoing
 Read-BDT, Write-BDT, Read-FDT, Delete-FDT and Register-FD exchanges, including
-automatic registration. Each function reports successful local UDP sends,
+automatic registration, which the `bacnet-bip-core` node engine runs (#1622). Each function reports successful local UDP sends,
 valid matched ACKs, matched result counts and the latest result code, response
 timeouts, local errors, malformed replies, and calls refused because the
 single management slot was busy. Sending a datagram is not a BBMD receipt.
@@ -4656,9 +4656,16 @@ effective interval also drives `next_attempt_in` and response waiting.
 The automatic worker waits at most the smaller of the effective interval
 and three seconds for each result, then schedules another attempt; busy manual
 requests cause a locally counted busy refusal and a retry on the next interval.
-There is no catch-up burst after a delayed attempt. One-shot
-`register_foreign_device_bvlc` calls retain their three-second response wait
-and permit zero-TTL requests; they do not switch broadcast mode.
+There is no catch-up burst after a delayed attempt. The first attempt is
+taken up at `start()`, so a manual request made at once finds the slot busy.
+One-shot `register_foreign_device_bvlc` calls retain their three-second
+response wait and permit zero-TTL requests; they do not switch broadcast mode.
+A foreign device refuses the requests a success answers (Register,
+Delete-FDT-Entry and Write-BDT) to its own BBMD, whose registration it
+manages; send them from a transport in normal mode, as the CLI does, or to
+another BBMD. `start()` also refuses a BBMD address no device could register
+with: the unspecified address, a group address, port 0 or the transport's
+own address (#1622).
 A transport is in one B/IP mode: `start()` fails, before any I/O, on one set
 up both as a BBMD (`enable_bbmd`) and as a foreign device, since the two
 broadcast differently; run them on separate transports (#938, #1622).

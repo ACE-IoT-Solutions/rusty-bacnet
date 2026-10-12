@@ -137,6 +137,84 @@ async fn foreign_attempt_results_renewal_and_restart_are_observable() {
     transport.stop().await.unwrap();
 }
 
+/// A foreign device manages its own registration: it refuses the requests
+/// a success answers (Register, Delete-FDT-Entry, Write-BDT) to its BBMD,
+/// without sending them, and takes the others, and any to another peer.
+#[tokio::test]
+async fn foreign_mode_refuses_manual_requests_that_could_change_its_registration() {
+    let (peer, mut transport) = peer_and_transport().await;
+    let _rx = transport.start().await.unwrap();
+    let source = registration(&peer).await;
+    peer.send_to(&[0x81, 0, 0, 6, 0, 0], source).await.unwrap();
+    observed(&transport, |s| s.foreign_registration.accepted == 1).await;
+    let bbmd = encode_bip_mac(
+        Ipv4Addr::LOCALHOST.octets(),
+        peer.local_addr().unwrap().port(),
+    );
+    let refusals = [
+        transport.register_foreign_device_bvlc(&bbmd, 60).await,
+        transport
+            .delete_fdt_entry(&bbmd, [10, 0, 0, 2], 47808)
+            .await,
+        transport.write_bdt(&bbmd, &[]).await,
+    ];
+    for refusal in refusals {
+        let error = refusal.unwrap_err();
+        assert!(matches!(error, Error::Encoding(_)), "{error:?}");
+        assert!(
+            error.to_string().contains("managed automatically"),
+            "{error}"
+        );
+    }
+    let snapshot = transport.bvlc_client_snapshot();
+    assert_eq!(snapshot.write_bdt.sent + snapshot.delete_fdt_entry.sent, 0);
+    assert_eq!(snapshot.register_foreign_device.sent, 1);
+    assert_eq!(snapshot.foreign_registration.attempts, 1);
+    {
+        let read = transport.read_bdt(&bbmd);
+        tokio::pin!(read);
+        let mut packet = [0; 64];
+        let (len, source) = tokio::select! {
+            result = &mut read => panic!("request finished early: {result:?}"),
+            received = peer.recv_from(&mut packet) => received.unwrap(),
+        };
+        assert_eq!(&packet[..len], &[0x81, 2, 0, 4]);
+        peer.send_to(&[0x81, 3, 0, 4], source).await.unwrap();
+        assert!(read.await.unwrap().is_empty());
+    }
+    transport.stop().await.unwrap();
+}
+
+/// No device could register with a BBMD at the unspecified address, a
+/// group address, port 0 or the transport's own address, so `start()`
+/// refuses one and binds nothing that stays.
+#[tokio::test]
+async fn foreign_mode_refuses_a_bbmd_no_device_could_register_with() {
+    let own = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let own_port = own.local_addr().unwrap().port();
+    drop(own);
+    for (bbmd_ip, bbmd_port) in [
+        (Ipv4Addr::UNSPECIFIED, 47808),
+        (Ipv4Addr::BROADCAST, 47808),
+        (Ipv4Addr::new(224, 0, 0, 1), 47808),
+        (Ipv4Addr::LOCALHOST, 0),
+        (Ipv4Addr::LOCALHOST, own_port),
+    ] {
+        let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, own_port, Ipv4Addr::BROADCAST);
+        transport.register_as_foreign_device(ForeignDeviceConfig {
+            bbmd_ip,
+            bbmd_port,
+            ttl: 60,
+            renewal_interval: None,
+        });
+        let error = transport.start().await.unwrap_err();
+        assert!(matches!(error, Error::Encoding(_)), "{error:?}");
+        assert!(error.to_string().contains("BBMD"), "{error}");
+        assert!(transport.socket.is_none());
+        assert!(!transport.bvlc_client_snapshot().running);
+    }
+}
+
 #[tokio::test]
 async fn foreign_silent_attempt_times_out_then_renews_without_claiming_acceptance() {
     let (peer, mut transport) = peer_and_transport().await;

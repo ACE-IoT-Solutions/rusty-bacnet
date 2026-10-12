@@ -40,8 +40,8 @@ time-to-live limits, a per-address quota and reserved capacity, and asks
 your own admission check (an access list, a rate limit) in between.
 Registrations expire on your clock, with the 30-second grace period.
 
-The Tokio B/IP transport in `bacnet-transport` runs its BBMD on this crate,
-and is moving onto the node engine.
+The Tokio B/IP transport in `bacnet-transport` runs its node and its BBMD on
+this crate.
 
 ## Example
 
