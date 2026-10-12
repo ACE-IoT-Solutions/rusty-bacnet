@@ -41,11 +41,11 @@
 # flash / ram:
 #
 #   thumbv7m mstp     17852 / 1060 / 0 /  5544   19936 /  5544
-#   thumbv7m bip      13060 / 1048 / 0 /   376   15132 /   376
+#   thumbv7m bip       8936 /  976 / 0 /   132   10936 /   132
 #   thumbv6m mstp     18684 / 1060 / 0 /  5544   19936 /  5544
-#   thumbv6m bip      16312 / 1052 / 0 /   376   17556 /   376
+#   thumbv6m bip      10468 /  980 / 0 /   132   11640 /   132
 #   riscv32imc mstp   19592 / 1348 / 0 /  5544   20962 /  5544
-#   riscv32imc bip    17292 / 1588 / 0 /   376   18902 /   376
+#   riscv32imc bip    11820 / 1524 / 0 /   132   13366 /   132
 #   thumbv7m apdu     37504 / 5188 / 0 /  1056   43716 /  1056
 #   thumbv6m apdu     39920 / 5188 / 0 /  1056   45300 /  1056
 #   riscv32imc apdu   45356 / 5832 / 0 /  1056   51210 /  1056
@@ -63,12 +63,6 @@
 # the RAM unchanged. The CRC-32K's 1 KiB table (the codec's `crc32k-table`
 # feature) would add about 0.95 KB more. The apdu rows are from when that
 # image was added (#1635).
-#
-# The bip rows were measured again on 2026-10-12, same toolchain, when the
-# image gained the BBMD scenario of bacnet-bip-core (#1623), whose tables
-# of four rows live in the image's static: 4.2-5.9 KB more flash and 244
-# octets more RAM. On ARMv6-M, copying a 6-octet B/IP address between two
-# parts of that static links compiler-builtins' memmove, about 1.3 KB.
 
 [thumbv7m-none-eabi.mstp]
 text = 20000
@@ -81,12 +75,12 @@ fmt_functions = 0
 div64_functions = 0
 
 [thumbv7m-none-eabi.bip]
-text = 14640
-rodata = 1184
+text = 10016
+rodata = 1104
 data = 64
-bss = 432
-flash = 16960
-ram = 432
+bss = 160
+flash = 12256
+ram = 160
 fmt_functions = 0
 div64_functions = 0
 
@@ -111,12 +105,12 @@ fmt_functions = 0
 div64_functions = 0
 
 [thumbv6m-none-eabi.bip]
-text = 18272
-rodata = 1184
+text = 11728
+rodata = 1104
 data = 64
-bss = 432
-flash = 19664
-ram = 432
+bss = 160
+flash = 13040
+ram = 160
 fmt_functions = 0
 div64_functions = 0
 
@@ -141,12 +135,12 @@ fmt_functions = 0
 div64_functions = 0
 
 [riscv32imc-unknown-none-elf.bip]
-text = 19376
-rodata = 1792
+text = 13248
+rodata = 1712
 data = 64
-bss = 432
-flash = 21184
-ram = 432
+bss = 160
+flash = 14976
+ram = 160
 fmt_functions = 0
 div64_functions = 0
 

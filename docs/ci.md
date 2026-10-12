@@ -207,8 +207,7 @@ reliably within one LTO image:
 - `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
   features, plus the core's `heapless` queues), with no global allocator;
 - `bip` links `bacnet-bip-codec` (default features, plus its `heapless`
-  sink), both its B/IP and its B/IPv6 messages, and `bacnet-bip-core`'s
-  BBMD, with no global allocator;
+  sink), both its B/IP and its B/IPv6 messages, with no global allocator;
 - `apdu` links `bacnet-encoding` and `bacnet-services` (and through them
   `bacnet-types`) without default features and with `alloc`, the way a
   firmware uses them, with a global allocator over a fixed arena.
@@ -243,13 +242,7 @@ targets, so a crate that needs one builds only with a backend such as
     variant in the same storage: three datagrams written by hand from the
     Annex U.2 layouts, a Forwarded-NPDU's origin, and B/IPv6 rejections,
     among them a B/IP type octet, the deleted function 0x0B and an
-    address of the wrong length. Last, `bip::bbmd::run` runs a BBMD of
-    `bacnet-bip-core` with four-row tables in the image's static: it sets
-    a BDT with a one-hop and a two-hop peer, registers foreign devices
-    until the table is full, takes each forwarding decision (a local
-    broadcast, a peer's Forwarded-NPDU, a foreign device's
-    Distribute-Broadcast-To-Network, and refusals of the last two), lets
-    a registration lapse and reads the table's acknowledgement rows.
+    address of the wrong length.
   - `apdu::run` follows a client that finds a device behind a router and
     reads its analog input: a Who-Is, the device's I-Am as the router
     passes it on, a ReadProperty request for Present_Value and the

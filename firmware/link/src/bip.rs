@@ -21,14 +21,12 @@
 //!   nearly full sink.
 //!
 //! The B/IPv6 part ([`ipv6::run`]) does the same for its twelve messages and
-//! its own rejections, and the BBMD part ([`bbmd::run`]) runs
-//! `bacnet-bip-core`'s tables and forwarding decisions.
+//! its own rejections.
 //!
 //! `tests/bip.rs` runs it natively and compares the whole summary with
 //! [`EXPECTED`]; the `bip` image (`src/bin/bip.rs`) links it, and its
 //! emulation build checks the emulated CPU's summary against the same.
 
-pub mod bbmd;
 mod expected;
 pub mod ipv6;
 
@@ -49,8 +47,8 @@ const WIRE_LENGTH: usize = 64;
 /// before it writes.
 pub type Sink = heapless::Vec<u8, WIRE_LENGTH>;
 
-/// Storage the scenario works in besides its stack: an encode buffer, the
-/// sink, and the BBMD part's tables.
+/// Storage the scenario works in besides its stack: an encode buffer and
+/// the sink.
 ///
 /// The image keeps it in a static, so the linker counts it in `.bss`.
 pub struct Memory {
@@ -58,8 +56,6 @@ pub struct Memory {
     wire: [u8; WIRE_LENGTH],
     /// The same messages encoded through the sink.
     sink: Sink,
-    /// The BBMD part's tables and destinations.
-    bbmd: bbmd::Storage,
 }
 
 impl Memory {
@@ -68,7 +64,6 @@ impl Memory {
         Self {
             wire: [0; WIRE_LENGTH],
             sink: Sink::new(),
-            bbmd: bbmd::Storage::new(),
         }
     }
 }
@@ -200,8 +195,6 @@ pub struct Summary {
     pub errors: u8,
     /// What the B/IPv6 part saw.
     pub ipv6: ipv6::Summary,
-    /// What the BBMD part saw.
-    pub bbmd: bbmd::Summary,
 }
 
 impl Summary {
@@ -223,7 +216,6 @@ impl Summary {
             rejections: [None; REJECTIONS],
             errors: 0,
             ipv6: ipv6::Summary::new(),
-            bbmd: bbmd::Summary::new(),
         }
     }
 
@@ -238,7 +230,7 @@ impl Summary {
 /// It never panics on a failed call: it counts the failure in
 /// [`Summary::errors`] and carries on.
 pub fn run(memory: &mut Memory) -> Summary {
-    let Memory { wire, sink, bbmd } = memory;
+    let Memory { wire, sink } = memory;
     let mut summary = Summary::new();
     for message in &MESSAGES {
         round_trip(message, wire, sink, &mut summary);
@@ -254,7 +246,6 @@ pub fn run(memory: &mut Memory) -> Summary {
     }
     summary.rejections = rejections(wire, sink);
     summary.ipv6 = ipv6::run(wire, sink);
-    summary.bbmd = bbmd::run(bbmd);
     summary
 }
 

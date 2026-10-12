@@ -2,9 +2,8 @@
 # The firmware link test (#1626, #1635): build firmware/link's images, one
 # per stack, as bare-metal binaries for each target, and check their sizes
 # against firmware/link/size-budget.toml. mstp (the MS/TP codec and core) and
-# bip (the BVLL codec and the BBMD core) have no global allocator; apdu
-# (bacnet-encoding and bacnet-services, no_std with alloc) has one, over a
-# fixed arena.
+# bip (the BVLL codec) have no global allocator; apdu (bacnet-encoding and
+# bacnet-services, no_std with alloc) has one, over a fixed arena.
 #
 #   check-firmware-link.sh [<triple>...]             check the default targets
 #                                                    below, or these

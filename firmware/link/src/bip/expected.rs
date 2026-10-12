@@ -12,9 +12,6 @@ use bacnet_bip_codec::{
     BdtEntry, BvlcFunction, BvlcResultCode, Bvll, BvllError, FdtEntries, FdtEntry, PayloadShape,
 };
 
-use bacnet_bip_core::bbmd::{ForwardedRefusal, RegistrationRefusal, Target, Via};
-
-use super::bbmd::{self, Sent, DEVICES, LOCAL_BROADCAST, LOCAL_DEVICE, ORIGIN, OWN, TWO_HOP};
 use super::{ipv6, Summary};
 
 const fn address(octets: [u8; 4], port: u16) -> SocketAddrV4 {
@@ -115,118 +112,6 @@ const IPV6: ipv6::Summary = ipv6::Summary {
     errors: 0,
 };
 
-const fn peer(destination: SocketAddrV4) -> Option<Target> {
-    Some(Target {
-        destination,
-        via: Via::Peer,
-    })
-}
-
-const fn device(index: usize) -> Option<Target> {
-    Some(Target {
-        destination: DEVICES[index],
-        via: Via::ForeignDevice,
-    })
-}
-
-const LOCAL: Option<Target> = Some(Target {
-    destination: LOCAL_BROADCAST,
-    via: Via::LocalBroadcast,
-});
-
-/// The one-hop peer's subnet broadcast: 10.0.0.1 under a /24 mask.
-const ONE_HOP_SUBNET: SocketAddrV4 = address([10, 0, 0, 255], 47808);
-
-/// What the BBMD part reports.
-const BBMD: bbmd::Summary = bbmd::Summary {
-    // The two peers and the own row, added.
-    bdt_rows: Some(3),
-    // Four rows: the fifth device finds no room, and a time-to-live of 0 is
-    // refused before the table is looked at.
-    accepted: 4,
-    refusals: [
-        Some(RegistrationRefusal::TableFull),
-        Some(RegistrationRefusal::TimeToLive),
-    ],
-    // Both peers (the one-hop one at its subnet's broadcast), then the
-    // devices in registration order until the budget of three runs out.
-    original: Some(Sent {
-        origin: LOCAL_DEVICE,
-        targets: [
-            peer(ONE_HOP_SUBNET),
-            peer(TWO_HOP),
-            device(0),
-            device(1),
-            device(2),
-            None,
-            None,
-            None,
-            None,
-        ],
-        capped: true,
-    }),
-    // Two-hop: the local subnet first, then the devices; not the peers.
-    forwarded: Some(Sent {
-        origin: ORIGIN,
-        targets: [
-            LOCAL,
-            device(0),
-            device(1),
-            device(2),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ],
-        capped: true,
-    }),
-    not_from_peer: Some(ForwardedRefusal::NotFromPeer),
-    // The local subnet, both peers, and the three other devices, which the
-    // budget just covers.
-    distributed: Some(Sent {
-        origin: DEVICES[1],
-        targets: [
-            LOCAL,
-            peer(ONE_HOP_SUBNET),
-            peer(TWO_HOP),
-            device(0),
-            device(2),
-            device(3),
-            None,
-            None,
-            None,
-        ],
-        capped: false,
-    }),
-    unregistered: Some(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK),
-    // 61 s on, the second device (30 s and the 30 s grace) has lapsed.
-    purged: 1,
-    own: Some(Sent {
-        origin: OWN,
-        targets: [
-            peer(ONE_HOP_SUBNET),
-            peer(TWO_HOP),
-            device(0),
-            device(2),
-            device(3),
-            None,
-            None,
-            None,
-            None,
-        ],
-        capped: false,
-    }),
-    // Each row's time-to-live plus 30 s, less the 61 s gone.
-    fdt: [
-        Some(FdtEntry::new(DEVICES[0], 60, 29)),
-        Some(FdtEntry::new(DEVICES[2], 300, 269)),
-        Some(FdtEntry::new(DEVICES[3], 60, 29)),
-        None,
-    ],
-    errors: 0,
-};
-
 /// The one entry of the golden FDT acknowledgement.
 const GOLDEN_FDT: [FdtEntry; 1] = [FdtEntry::new(address([10, 0, 0, 5], 47808), 60, 45)];
 
@@ -313,5 +198,4 @@ pub const EXPECTED: Summary = Summary {
     ],
     errors: 0,
     ipv6: IPV6,
-    bbmd: BBMD,
 };
