@@ -338,6 +338,44 @@ fn over_long_addresses_carry_what_a_reject_needs() {
     agree(&frame).unwrap();
 }
 
+/// DNET 9 with a 19-octet DADR, then SNET `snet` with an SADR of `sadr`
+/// octets (SLEN = `sadr`), a hop count and an APDU.
+fn behind_a_long_dadr(snet: u16, sadr: u8) -> Vec<u8> {
+    let mut frame = vec![0x01, 0x28, 0x00, 0x09, 19];
+    frame.extend_from_slice(&[0xEE; 19]);
+    frame.extend_from_slice(&snet.to_be_bytes());
+    frame.push(sadr);
+    frame.extend((0..sadr).map(|octet| octet + 1));
+    frame.extend_from_slice(&[0xFF, 0x10, 0x08]);
+    frame
+}
+
+#[test]
+fn only_a_source_the_parser_takes_is_named_behind_a_long_dadr() {
+    let source = |frame: &[u8]| match Npdu::parse(frame) {
+        Err(ParseError::AddressTooLong {
+            field: AddressField::Destination,
+            source,
+            ..
+        }) => source.map(|source| (source.network, source.mac.len())),
+        other => panic!("{other:?}"),
+    };
+    // The longest SADR the bound allows is named whole.
+    let frame = behind_a_long_dadr(1, 18);
+    assert_eq!(source(&frame), Some((1, 18)));
+    agree(&frame).unwrap();
+    // One octet more, an empty SADR, or a reserved SNET names nothing.
+    for frame in [
+        behind_a_long_dadr(1, 19),
+        behind_a_long_dadr(1, 0),
+        behind_a_long_dadr(0, 1),
+        behind_a_long_dadr(0xFFFF, 1),
+    ] {
+        assert_eq!(source(&frame), None, "{frame:02x?}");
+        agree(&frame).unwrap();
+    }
+}
+
 #[test]
 fn malformations_are_named() {
     let cases: [(&[u8], Malformed); 7] = [

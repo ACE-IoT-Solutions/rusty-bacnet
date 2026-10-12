@@ -3,12 +3,18 @@
 //! A router asked to reach a network it has no route to sends a
 //! Who-Is-Router for it before refusing the message (Clause 6.6.3.1).
 //! [`Discovery`] decides when to send one: at most once per network per
-//! cooldown (5 s by default), for up to `D` networks at a time, each
-//! forgotten after its age (30 s) at the next sweep. Messages that wait for
-//! an answer are refused at once, not buffered, and the hosted router
-//! refuses them with reject reason 1; once the answer has taught the table
-//! a route, the next message takes it. Network 0 and 0xFFFF are never
-//! looked for, and a cancelled `Discovery` looks for nothing more.
+//! cooldown ([`Discovery::COOLDOWN`] in the hosted router), for up to `D`
+//! networks at a time, each forgotten past its age
+//! ([`Discovery::MAX_AGE`]) at the next sweep. Messages that wait for an
+//! answer are refused at once, not buffered, and the hosted router refuses
+//! them with reject reason 1; once the answer has taught the table a route,
+//! the next message takes it. Network 0 and 0xFFFF are never looked for,
+//! and a cancelled `Discovery` looks for nothing more.
+//!
+//! The cooldown and the age come with each call, from the router's options,
+//! so [`Discovery::new`] is all zero bits.
+
+use core::fmt;
 
 use crate::{Duration, Instant};
 
@@ -19,20 +25,31 @@ struct Entry {
     solicited: Instant,
 }
 
-/// Unused storage.
+/// Unused storage: all zero bits.
 const NO_ENTRY: Entry = Entry {
     network: 0,
     solicited: Instant::ZERO,
 };
 
 /// The networks a router is looking for: up to `D`, sorted by number.
-#[derive(Debug, Clone)]
+///
+/// [`new`](Self::new) is a `const fn` whose result is all zero bits, so it
+/// can live in a zero-initialized static (`.bss`).
+#[derive(Clone)]
 pub struct Discovery<const D: usize> {
     entries: [Entry; D],
     len: usize,
-    cooldown: Duration,
-    max_age: Duration,
     cancelled: bool,
+}
+
+/// The searches remembered, not the unused storage.
+impl<const D: usize> fmt::Debug for Discovery<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Discovery")
+            .field("entries", &self.stored())
+            .field("cancelled", &self.cancelled)
+            .finish()
+    }
 }
 
 impl<const D: usize> Default for Discovery<D> {
@@ -48,30 +65,22 @@ impl<const D: usize> Discovery<D> {
     /// The hosted router's age at which the sweep forgets a search.
     pub const MAX_AGE: Duration = Duration::from_secs(30);
 
-    /// Nothing looked for yet, with the default cooldown and age.
+    /// Nothing looked for yet: all zero bits.
     pub const fn new() -> Self {
         Self {
             entries: [NO_ENTRY; D],
             len: 0,
-            cooldown: Self::COOLDOWN,
-            max_age: Self::MAX_AGE,
             cancelled: false,
         }
-    }
-
-    /// Set the cooldown and age for later calls.
-    pub fn set_timing(&mut self, cooldown: Duration, max_age: Duration) {
-        self.cooldown = cooldown;
-        self.max_age = max_age;
     }
 
     /// Whether to send a Who-Is-Router for `network` now; when it says so,
     /// the search is recorded at `now`.
     ///
-    /// No: when cancelled, for network 0 or 0xFFFF, within the cooldown of
-    /// the last search for it, or when `D` other networks are being looked
-    /// for already.
-    pub fn should_solicit(&mut self, network: u16, now: Instant) -> bool {
+    /// No: when cancelled, for network 0 or 0xFFFF, within `cooldown` of the
+    /// last search for it, or when `D` other networks are being looked for
+    /// already.
+    pub fn should_solicit(&mut self, network: u16, now: Instant, cooldown: Duration) -> bool {
         if self.cancelled || network == 0 || network == 0xFFFF {
             return false;
         }
@@ -82,7 +91,7 @@ impl<const D: usize> Discovery<D> {
         match self.find(network) {
             Ok(index) => {
                 let last = self.entries[index].solicited;
-                if now.saturating_duration_since(last) < self.cooldown {
+                if now.saturating_duration_since(last) < cooldown {
                     return false;
                 }
                 self.entries[index] = entry;
@@ -97,15 +106,25 @@ impl<const D: usize> Discovery<D> {
         true
     }
 
-    /// Forget every search older than the age at `now`, calling `expired`
-    /// with each network in ascending order, and return how many.
-    pub fn expire(&mut self, now: Instant, mut expired: impl FnMut(u16)) -> usize {
+    /// Forget every search more than `max_age` old at `now`, calling
+    /// `expired` with each network in ascending order, and return how many.
+    ///
+    /// Every call comes before anything is forgotten, so an `expired` that
+    /// panics leaves the searches as they were.
+    pub fn expire(
+        &mut self,
+        now: Instant,
+        max_age: Duration,
+        mut expired: impl FnMut(u16),
+    ) -> usize {
+        let old = |entry: &Entry| now.saturating_duration_since(entry.solicited) > max_age;
+        for entry in self.stored().iter().filter(|entry| old(entry)) {
+            expired(entry.network);
+        }
         let mut kept = 0;
         for index in 0..self.len {
             let entry = self.entries[index];
-            if now.saturating_duration_since(entry.solicited) > self.max_age {
-                expired(entry.network);
-            } else {
+            if !old(&entry) {
                 self.entries[kept] = entry;
                 kept += 1;
             }
@@ -144,7 +163,13 @@ impl<const D: usize> Discovery<D> {
         self.len == 0
     }
 
+    /// The searches remembered, sorted by network.
+    fn stored(&self) -> &[Entry] {
+        &self.entries[..self.len]
+    }
+
     fn find(&self, network: u16) -> Result<usize, usize> {
-        self.entries[..self.len].binary_search_by_key(&network, |entry| entry.network)
+        self.stored()
+            .binary_search_by_key(&network, |entry| entry.network)
     }
 }

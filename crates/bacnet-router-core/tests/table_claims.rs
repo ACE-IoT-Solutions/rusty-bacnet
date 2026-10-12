@@ -5,15 +5,16 @@
 mod support;
 
 use bacnet_router_core::table::{ClaimCounters, Convergence, Learned, Reachability};
+use bacnet_router_core::table::{Refusal, Timing};
 use bacnet_router_core::{Instant, Mac, PortId};
 use support::{
     expire_pending, learned_hardened as learned_table, mac, port, purge, secs, Hosted, BASE,
-    CORROBORATION_WINDOW, HOLD_DOWN, NANO,
+    CORROBORATION_WINDOW, HOLD_DOWN, NANO, TIMING,
 };
 
 fn claim(table: &mut Hosted, port: u8, now: Instant) -> bool {
     table
-        .apply_claim(3000, PortId(port), mac(&[2]), now)
+        .apply_claim(3000, PortId(port), mac(&[2]), now, &TIMING)
         .applied()
 }
 
@@ -28,7 +29,7 @@ fn corroboration_inclusive_deadline_and_expiry_restart() {
         let now = BASE;
         let seen = table.lookup(3000).unwrap().last_seen;
         assert_eq!(
-            table.apply_claim(3000, port(1), mac(&[2]), now),
+            table.apply_claim(3000, port(1), mac(&[2]), now, &TIMING),
             Learned::Held
         );
         assert_eq!(table.lookup(3000).unwrap().port, port(0));
@@ -132,11 +133,15 @@ fn absent_current_port_direct_and_reserved_claims_remain_immediate() {
     assert_eq!(table.pending_count(), 0);
     assert!(!claim(&mut table, 1, now)); // The refresh discarded the earlier vote.
     table.add_direct(3000, port(0));
-    for net in [0, 0xffff, 3000] {
+    for (net, refusal) in [
+        (0, Refusal::Reserved),
+        (0xffff, Refusal::Reserved),
+        (3000, Refusal::Direct),
+    ] {
         for _ in 0..2 {
             assert_eq!(
-                table.apply_claim(net, port(1), Mac::EMPTY, now),
-                Learned::Refused
+                table.apply_claim(net, port(1), Mac::EMPTY, now, &TIMING),
+                Learned::Refused(refusal)
             );
         }
     }
@@ -156,14 +161,14 @@ fn absent_current_port_direct_and_reserved_claims_remain_immediate() {
 fn pending_claim_preserves_busy_and_reject_records_until_apply() {
     let mut table = learned_table();
     let now = BASE;
-    table.apply_reject(3000, port(0), 2, now);
+    table.apply_reject(3000, port(0), 2, now, &TIMING);
     assert!(!claim(&mut table, 1, now));
     assert_eq!(
         table.lookup(3000).unwrap().busy_until,
         Some(now + HOLD_DOWN)
     );
     assert_eq!(table.held_since(3000, port(0)), Some(now));
-    table.apply_reject(3000, port(0), 1, now);
+    table.apply_reject(3000, port(0), 1, now, &TIMING);
     assert_eq!(table.claim_counters().reject_dampened_hold_down, 1);
     assert!(claim(&mut table, 1, now));
     assert_eq!(table.holds().count(), 0);
@@ -196,7 +201,7 @@ fn cleanup_never_leaves_pending_without_a_learned_route() {
                 table.remove(3000);
             }
             "reject_remove" => {
-                table.apply_reject(3000, port(0), 0, now);
+                table.apply_reject(3000, port(0), 0, now, &TIMING);
             }
             "aging" => assert_eq!(purge(&mut table, now, secs(60)), [3000]),
             "direct" => {
@@ -214,8 +219,12 @@ fn cleanup_never_leaves_pending_without_a_learned_route() {
         assert_eq!(table.pending_count(), 0, "{cleanup}");
         assert_eq!(table.claim_counters().pending_expired, 0, "{cleanup}");
         table.add_learned(4000, port(0), Mac::EMPTY, now);
-        assert!(table.apply_claim(4000, port(0), Mac::EMPTY, now).applied());
-        assert!(!table.apply_claim(4000, port(1), Mac::EMPTY, now).applied());
+        assert!(table
+            .apply_claim(4000, port(0), Mac::EMPTY, now, &TIMING)
+            .applied());
+        assert!(!table
+            .apply_claim(4000, port(1), Mac::EMPTY, now, &TIMING)
+            .applied());
         assert_eq!(table.pending_count(), 1);
     }
 }
@@ -228,7 +237,7 @@ fn pending_store_is_bounded_and_networks_are_independent() {
         table.add_learned(net, port(0), Mac::EMPTY, now);
         for challenger in 1..=10 {
             assert!(!table
-                .apply_claim(net, port(challenger), Mac::EMPTY, now)
+                .apply_claim(net, port(challenger), Mac::EMPTY, now, &TIMING)
                 .applied());
             assert_eq!(table.pending_count(), usize::from(net));
             let learned = table.routes().filter(|(_, route)| !route.direct).count();
@@ -236,7 +245,9 @@ fn pending_store_is_bounded_and_networks_are_independent() {
         }
     }
     for net in 1..=256u16 {
-        assert!(table.apply_claim(net, port(10), Mac::EMPTY, now).applied());
+        assert!(table
+            .apply_claim(net, port(10), Mac::EMPTY, now, &TIMING)
+            .applied());
         assert_eq!(table.pending_count(), 256 - usize::from(net));
     }
     assert_eq!(
@@ -279,7 +290,7 @@ fn standard_converges_on_single_claim_under_sustained_traffic() {
         table.touch(3000, BASE + secs(i));
     }
     assert_eq!(
-        table.apply_claim(3000, port(1), mac(&[2]), BASE + secs(51)),
+        table.apply_claim(3000, port(1), mac(&[2]), BASE + secs(51), &TIMING),
         Learned::Moved {
             from: port(0),
             flaps: 1
@@ -298,7 +309,9 @@ fn standard_converges_on_single_claim_under_sustained_traffic() {
 fn hardened_holds_then_reaps_then_recovers() {
     let mut table = Hosted::new_hardened();
     table.add_learned(3000, port(0), mac(&[1]), BASE);
-    assert!(!table.apply_claim(3000, port(1), mac(&[2]), BASE).applied());
+    assert!(!table
+        .apply_claim(3000, port(1), mac(&[2]), BASE, &TIMING)
+        .applied());
     assert_eq!(table.lookup(3000).unwrap().port, port(0));
     assert_eq!(table.pending_count(), 1);
     // The sweep clears the slot so a single-shot advertiser does not linger:
@@ -309,10 +322,10 @@ fn hardened_holds_then_reaps_then_recovers() {
     assert_eq!(table.claim_counters().pending_expired, 1);
     // A fresh challenger pends again, and an immediate repeat corroborates.
     assert!(!table
-        .apply_claim(3000, port(1), mac(&[2]), BASE + secs(62))
+        .apply_claim(3000, port(1), mac(&[2]), BASE + secs(62), &TIMING)
         .applied());
     assert!(table
-        .apply_claim(3000, port(1), mac(&[2]), BASE + secs(63))
+        .apply_claim(3000, port(1), mac(&[2]), BASE + secs(63), &TIMING)
         .applied());
     assert_eq!(table.lookup(3000).unwrap().port, port(1));
     assert_eq!(table.claim_counters().corroborated_applied, 1);
@@ -326,7 +339,13 @@ fn hardened_alternation_never_converges_robustness_only() {
     table.add_learned(3000, port(0), mac(&[1]), BASE);
     for i in 0..10u64 {
         assert!(!table
-            .apply_claim(3000, port(1 + (i % 2) as u8), mac(&[2]), BASE + secs(i))
+            .apply_claim(
+                3000,
+                port(1 + (i % 2) as u8),
+                mac(&[2]),
+                BASE + secs(i),
+                &TIMING
+            )
             .applied());
         assert_eq!(table.lookup(3000).unwrap().port, port(0));
     }
@@ -337,12 +356,25 @@ fn hardened_alternation_never_converges_robustness_only() {
 #[test]
 fn the_corroboration_window_follows_the_timing_and_the_mode_can_change() {
     let mut table = learned_table();
-    let mut timing = table.timing();
-    timing.corroboration = secs(5);
-    table.set_timing(timing);
-    assert!(!claim(&mut table, 1, BASE));
-    assert!(!claim(&mut table, 1, BASE + secs(5) + NANO));
-    assert!(claim(&mut table, 1, BASE + secs(10)));
+    let timing = Timing {
+        corroboration: secs(5),
+        ..Timing::DEFAULT
+    };
+    let short = |table: &mut Hosted, port: u8, now: Instant| {
+        table
+            .apply_claim(3000, PortId(port), mac(&[2]), now, &timing)
+            .applied()
+    };
+    assert!(!short(&mut table, 1, BASE));
+    assert!(!short(&mut table, 1, BASE + secs(5) + NANO));
+    assert!(short(&mut table, 1, BASE + secs(10)));
+    // The sweep reads the same window.
+    assert!(!short(&mut table, 2, BASE + secs(11)));
+    let mut expired = Vec::new();
+    table.expire_pending(BASE + secs(16), &timing, |net| expired.push(net));
+    assert!(expired.is_empty());
+    table.expire_pending(BASE + secs(16) + NANO, &timing, |net| expired.push(net));
+    assert_eq!(expired, [3000]);
 
     // Back to standard: the next claim moves the route at once, and drops
     // whatever was pending without counting it.

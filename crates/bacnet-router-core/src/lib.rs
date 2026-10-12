@@ -7,7 +7,8 @@
 //! caller picks with const generics; and time is an [`Instant`] the caller
 //! passes to each call that needs one. It reads no clock and opens no
 //! socket, and nothing on a routing decision formats text or divides a
-//! 64-bit value.
+//! 64-bit value. The table and the discovery state keep no timers of their
+//! own, so both start as all zero bits and can live in `.bss`.
 //!
 //! [`Instant`] and [`Duration`] are `bacnet-time`'s, in nanoseconds,
 //! re-exported here: the types `bacnet-mstp-core` and `bacnet-bip-core`
@@ -54,6 +55,12 @@
 //! and arrival port on reject-driven changes; hardened convergence, which
 //! waits for a second claim before moving a route to another port; and a
 //! discovery cooldown, cap and expiry.
+//!
+//! One rule departs from the clause, for now: a received reject with a
+//! reason other than 1 or 2 removes the learned route, where Clause
+//! 6.6.3.5 changes the table for those two reasons only. The hosted router
+//! does the same today, and the core keeps it for parity until the fix
+//! called R2 in #1679.
 //!
 //! # Features
 //!

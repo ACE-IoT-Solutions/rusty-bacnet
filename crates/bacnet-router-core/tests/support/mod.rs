@@ -10,11 +10,14 @@
 
 #![allow(dead_code)]
 
-use bacnet_router_core::table::Table;
+use bacnet_router_core::table::{Table, Timing};
 use bacnet_router_core::{Duration, Instant, Mac, PortId};
 
 /// The hosted router's sizes: 256 routes, 1,024 hold-down records.
 pub type Hosted = Table<256, 1024>;
+
+/// The hosted router's timers, which the suites pass to each call.
+pub const TIMING: Timing = Timing::DEFAULT;
 
 /// An instant well after the epoch, so tests can step back from it.
 pub const BASE: Instant = Instant::from_secs(1_000);
@@ -81,7 +84,7 @@ pub fn purge(table: &mut Hosted, now: Instant, max_age: Duration) -> Vec<u16> {
 /// Every pending claim [`Table::expire_pending`] drops, in its order.
 pub fn expire_pending(table: &mut Hosted, now: Instant) -> Vec<u16> {
     let mut expired = Vec::new();
-    let count = table.expire_pending(now, |network| expired.push(network));
+    let count = table.expire_pending(now, &TIMING, |network| expired.push(network));
     assert_eq!(count, expired.len());
     expired
 }

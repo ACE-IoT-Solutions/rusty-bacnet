@@ -207,21 +207,29 @@ proptest! {
 
 #[test]
 fn writers_refuse_what_does_not_fit() {
-    let mut out = [0u8; 5];
+    // A refusal writes nothing at all, not even the part that would fit.
+    let untouched = |out: &[u8]| out.iter().all(|&octet| octet == 0xA5);
+    let mut out = [0xA5u8; 5];
     assert_eq!(Networks::write([1, 2, 3], &mut out), None);
-    assert_eq!(Networks::write([1, 2], &mut out), Some(4));
-    assert_eq!(RoutingEntries::write([(1, 1)], &mut out), Some(5));
+    assert!(untouched(&out));
     assert_eq!(RoutingEntries::write([(1, 1), (2, 1)], &mut out), None);
-    assert_eq!(RoutingEntries::write([], &mut out[..1]), Some(1));
-    assert_eq!(out[0], 0);
+    assert!(untouched(&out));
     assert_eq!(RoutingEntries::write([], &mut []), None);
 
+    assert_eq!(Networks::write([1, 2], &mut out), Some(4));
+    assert_eq!(out, [0x00, 0x01, 0x00, 0x02, 0xA5]);
+    assert_eq!(RoutingEntries::write([(1, 1)], &mut out), Some(5));
+    assert_eq!(out, [1, 0x00, 0x01, 1, 0]);
+    assert_eq!(RoutingEntries::write([], &mut out[..1]), Some(1));
+    assert_eq!(out[0], 0);
+
     // The count octet names at most 255 entries.
-    let mut big = vec![0u8; 1 + 256 * RoutingEntries::ENTRY_LEN];
+    let mut big = vec![0xA5u8; 1 + 256 * RoutingEntries::ENTRY_LEN];
     assert_eq!(
         RoutingEntries::write((0..256).map(|n| (n, 1)), &mut big),
         None
     );
+    assert!(untouched(&big));
     let len = RoutingEntries::write((0..255).map(|n| (n, 1)), &mut big).unwrap();
     assert_eq!(RoutingEntries::parse(&big[..len]).unwrap().count(), 255);
 }

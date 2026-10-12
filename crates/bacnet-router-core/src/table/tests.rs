@@ -2,10 +2,12 @@
 //! Ported from `bacnet-network`'s `router_table_reject_tests.rs` and
 //! `router_table_corroboration_tests.rs`.
 
-use super::{ClaimCounters, Reachability, Table};
+use super::{ClaimCounters, Reachability, Table, Timing};
 use crate::{Duration, Instant, Mac, PortId};
 
 type Hosted = Table<256, 1024>;
+
+const TIMING: Timing = Timing::DEFAULT;
 
 const BASE: Instant = Instant::from_secs(1_000);
 const MAX: u64 = u64::MAX;
@@ -16,7 +18,7 @@ fn learned(table: &mut Hosted) {
 
 fn claim(table: &mut Hosted, port: u8, now: Instant) -> bool {
     table
-        .apply_claim(3000, PortId(port), Mac::from_array([2]), now)
+        .apply_claim(3000, PortId(port), Mac::from_array([2]), now, &TIMING)
         .applied()
 }
 
@@ -38,9 +40,9 @@ fn counters_saturate_without_affecting_decisions_and_snapshots_are_owned() {
     let now = BASE;
     for _ in 0..2 {
         table.add_learned(3000, PortId(0), Mac::EMPTY, now);
-        table.apply_reject(3000, PortId(0), 1, now);
-        table.apply_reject(3000, PortId(0), 1, now);
-        table.apply_reject(3000, PortId(0), 2, now);
+        table.apply_reject(3000, PortId(0), 1, now, &TIMING);
+        table.apply_reject(3000, PortId(0), 1, now, &TIMING);
+        table.apply_reject(3000, PortId(0), 2, now, &TIMING);
         assert_eq!(
             table.lookup(3000).unwrap().reachability,
             Reachability::Unreachable
@@ -121,7 +123,7 @@ fn the_eviction_count_saturates() {
     table.counters.hold_evicted = MAX - 1;
     for network in [10, 20] {
         table.add_learned(network, PortId(0), Mac::EMPTY, BASE);
-        table.apply_reject(network, PortId(0), 1, BASE);
+        table.apply_reject(network, PortId(0), 1, BASE, &TIMING);
     }
     assert_eq!(table.claim_counters().hold_evicted, MAX);
     assert_eq!(table.claim_counters().reject_applied, 2);

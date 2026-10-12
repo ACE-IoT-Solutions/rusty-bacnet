@@ -1,6 +1,8 @@
 //! Received rejects and their hold-down records.
 
-use super::{Reachability, Table};
+use core::fmt;
+
+use super::{Reachability, Table, Timing};
 use crate::message::reason;
 use crate::{Instant, PortId};
 
@@ -17,6 +19,9 @@ pub enum RejectEffect {
     HeldDown,
 }
 
+// PR 2: `Hold`, `Table::held_since` and `Table::holds` are public for the
+// tests and for diagnostics; the router engine's API may narrow them.
+
 /// When a reject from one arrival port last changed one network's route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hold {
@@ -28,7 +33,7 @@ pub struct Hold {
     pub since: Instant,
 }
 
-/// Unused pool storage.
+/// Unused pool storage: all zero bits.
 const NO_HOLD: Hold = Hold {
     network: 0,
     port: PortId(0),
@@ -36,10 +41,17 @@ const NO_HOLD: Hold = Hold {
 };
 
 /// Up to `H` hold-down records, unordered, at most one per network and port.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct Holds<const H: usize> {
     records: [Hold; H],
     len: usize,
+}
+
+/// The records kept, not the unused storage.
+impl<const H: usize> fmt::Debug for Holds<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.stored()).finish()
+    }
 }
 
 impl<const H: usize> Holds<H> {
@@ -109,18 +121,20 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// reject is the router's business, not the table's.
     ///
     /// Reason 1 marks a learned route unreachable. Reason 2 marks it busy
-    /// for [`Timing::busy_for`](super::Timing::busy_for), unless it is
-    /// unreachable or still busy: a repeat never extends the deadline. Any
-    /// other reason removes it. A reject that would change nothing, or one
-    /// within [`Timing::hold_down`](super::Timing::hold_down) of the last
-    /// change applied from the same port, is ignored and counted, and moves
-    /// neither the window nor the deadline. Direct routes never change.
+    /// for [`Timing::busy_for`], unless it is unreachable or still busy: a
+    /// repeat never extends the deadline. Any other reason removes it, which
+    /// departs from Clause 6.6.3.5 and is kept for parity with the hosted
+    /// router until the fix called R2 in #1679. A reject that would change
+    /// nothing, or one within [`Timing::hold_down`] of the last change
+    /// applied from the same port, is ignored and counted, and moves neither
+    /// the window nor the deadline. Direct routes never change.
     pub fn apply_reject(
         &mut self,
         network: u16,
         port: PortId,
         reason: u8,
         now: Instant,
+        timing: &Timing,
     ) -> RejectEffect {
         let changes = self.lookup(network).is_some_and(|route| {
             // The effective state counts: a busy deadline may have passed
@@ -141,7 +155,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
         let held_down = self
             .holds
             .since(network, port)
-            .is_some_and(|since| now.saturating_duration_since(since) < self.timing.hold_down);
+            .is_some_and(|since| now.saturating_duration_since(since) < timing.hold_down);
         let counters = &mut self.counters;
         if !changes || held_down {
             counters.reject_dampened = counters.reject_dampened.saturating_add(1);
@@ -158,7 +172,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
         counters.reject_applied = counters.reject_applied.saturating_add(1);
         match reason {
             reason::NOT_DIRECTLY_CONNECTED => self.mark_unreachable(network),
-            reason::ROUTER_BUSY => self.mark_busy(network, now + self.timing.busy_for),
+            reason::ROUTER_BUSY => self.mark_busy(network, now + timing.busy_for),
             // Removal drops every port's record for the network too.
             _ => {
                 self.remove(network);

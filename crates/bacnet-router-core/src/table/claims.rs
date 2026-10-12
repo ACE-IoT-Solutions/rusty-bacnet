@@ -1,6 +1,6 @@
 //! Learning: claims, convergence, flap detection and management writes.
 
-use super::{is_reserved, Convergence, Pending, Route, Table};
+use super::{is_reserved, Convergence, Pending, Route, Table, Timing};
 use crate::{Duration, Instant, Mac, PortId};
 
 /// A route that moves port again within this long of its last move counts
@@ -10,12 +10,22 @@ const FLAP_WINDOW: Duration = Duration::from_secs(60);
 /// Moves within the window at which a route is reported as flapping.
 const FLAP_WARNING: u8 = 3;
 
+/// Why a learning claim changed nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// Network 0 or 0xFFFF, which name no single network.
+    Reserved,
+    /// The network is directly attached, and learning never changes that.
+    Direct,
+    /// The network is new and the table is full.
+    Full,
+}
+
 /// What a learning claim did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Learned {
-    /// Nothing: network 0 or 0xFFFF, a direct route, or no room for a new
-    /// network.
-    Refused,
+    /// Nothing, for the reason given.
+    Refused(Refusal),
     /// Hardened convergence holds the move until a second claim.
     Held,
     /// A new route, or a refresh through the same port.
@@ -49,7 +59,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// pending claim for the network is dropped without counting. Under
     /// [`Convergence::Hardened`], a claim that would move a learned route to
     /// another port is held until a second claim for the same network and
-    /// port arrives within the corroboration window, inclusive; the second
+    /// port arrives within [`Timing::corroboration`], inclusive; the second
     /// supplies the next hop. A claim for another port takes the pending
     /// slot over, and one past the window starts it again. The held route
     /// keeps forwarding as it was.
@@ -59,6 +69,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
         port: PortId,
         next_hop: Mac,
         now: Instant,
+        timing: &Timing,
     ) -> Learned {
         // Only a stored route can have a pending claim.
         let Ok(index) = self.find(network) else {
@@ -71,8 +82,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
         let counters = &mut self.counters;
         let pending = match pending {
             Some(pending)
-                if now.saturating_duration_since(pending.first_seen)
-                    > self.timing.corroboration =>
+                if now.saturating_duration_since(pending.first_seen) > timing.corroboration =>
             {
                 counters.pending_expired = counters.pending_expired.saturating_add(1);
                 None
@@ -104,11 +114,11 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// [`add_learned`](Self::add_learned).
     pub fn learn(&mut self, network: u16, port: PortId, next_hop: Mac, now: Instant) -> Learned {
         if is_reserved(network) {
-            return Learned::Refused;
+            return Learned::Refused(Refusal::Reserved);
         }
         if let Some(existing) = self.lookup(network) {
             if existing.direct {
-                return Learned::Refused;
+                return Learned::Refused(Refusal::Direct);
             }
             if existing.port != port {
                 let flaps = match existing.last_port_change {
@@ -131,18 +141,26 @@ impl<const R: usize, const H: usize> Table<R, H> {
                 };
             }
         }
+        // Reserved and direct are ruled out above, so only room is left.
         if self.add_learned(network, port, next_hop, now) {
             Learned::Applied
         } else {
-            Learned::Refused
+            Learned::Refused(Refusal::Full)
         }
     }
 
-    /// Drop every pending claim older than the corroboration window at
+    /// Drop every pending claim older than [`Timing::corroboration`] at
     /// `now`, calling `expired` with each network in ascending order, and
-    /// return how many. Each counts as expired.
-    pub fn expire_pending(&mut self, now: Instant, mut expired: impl FnMut(u16)) -> usize {
-        let window = self.timing.corroboration;
+    /// return how many. Each counts as expired. A claim is dropped and
+    /// counted before its call, so an `expired` that panics leaves the table
+    /// consistent.
+    pub fn expire_pending(
+        &mut self,
+        now: Instant,
+        timing: &Timing,
+        mut expired: impl FnMut(u16),
+    ) -> usize {
+        let window = timing.corroboration;
         let mut count = 0;
         for slot in &mut self.slots[..self.len] {
             if slot
@@ -196,6 +214,9 @@ impl<const R: usize, const H: usize> Table<R, H> {
             _ => false,
         }
     }
+
+    // PR 2: the router engine records these three itself; once its API is
+    // in, they may narrow to the crate.
 
     /// Count a learning claim the router applied.
     pub fn record_learned(&mut self) {

@@ -23,6 +23,9 @@
 //!   extends a route's life. Busy and Available marks touch neither.
 //! - **Rejects** ([`Table::apply_reject`]): reason 1 marks a learned route
 //!   unreachable and reason 2 busy for 30 s; any other reason removes it.
+//!   That last rule departs from Clause 6.6.3.5, which changes the table for
+//!   reasons 1 and 2 only; it is kept for parity with the hosted router until
+//!   the fix called R2 in #1679 lands.
 //!   Each change starts a 30 s hold-down for its network and arrival port,
 //!   during which further reject-driven changes from that port are ignored.
 //!   Hold-down records live in their own pool of `H`; a full pool evicts the
@@ -34,13 +37,20 @@
 //!
 //! [`ClaimCounters`] counts the outcomes. The counts saturate and never
 //! change a decision.
+//!
+//! The table stores no timers: the calls that need the busy period, the
+//! hold-down or the corroboration window take a [`Timing`], which the
+//! router's options own. So [`Table::new`] is all zero bits, and a table in
+//! a `static` costs firmware no flash for an initial image.
 
 mod claims;
 mod holds;
 
+use core::fmt;
+
 use crate::{Duration, Instant, Mac, PortId};
 
-pub use claims::Learned;
+pub use claims::{Learned, Refusal};
 pub use holds::{Hold, RejectEffect};
 
 /// How far a route can be used.
@@ -96,28 +106,40 @@ pub struct Route {
 }
 
 impl Route {
+    /// All zero bits: what an unused slot holds.
+    const ZERO: Self = Self {
+        port: PortId(0),
+        direct: false,
+        next_hop: Mac::EMPTY,
+        last_seen: None,
+        last_used: None,
+        reachability: Reachability::Reachable,
+        busy_until: None,
+        flap_count: 0,
+        last_port_change: None,
+    };
+
     /// A directly attached network on `port`.
     pub const fn direct(port: PortId) -> Self {
-        Self {
-            port,
-            direct: true,
-            next_hop: Mac::EMPTY,
-            last_seen: None,
-            last_used: None,
-            reachability: Reachability::Reachable,
-            busy_until: None,
-            flap_count: 0,
-            last_port_change: None,
-        }
+        let mut route = Self::ZERO;
+        route.port = port;
+        route.direct = true;
+        route
     }
 
     /// A network reached through `next_hop` on `port`, confirmed `now`.
     pub const fn learned(port: PortId, next_hop: Mac, now: Instant) -> Self {
-        let mut route = Self::direct(port);
-        route.direct = false;
+        let mut route = Self::ZERO;
+        route.port = port;
         route.next_hop = next_hop;
         route.last_seen = Some(now);
         route
+    }
+
+    /// Whether flow control from the router at `peer` on `port` covers it:
+    /// learned, through that port, with that next router.
+    fn served_via(&self, port: PortId, peer: &[u8]) -> bool {
+        !self.direct && self.port == port && self.next_hop == *peer
     }
 }
 
@@ -168,7 +190,8 @@ pub struct ClaimCounters {
     pub hold_evicted: u64,
 }
 
-/// The table's timers.
+/// The table's timers, which the router's options own and pass to each
+/// call that needs one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timing {
     /// How long reject reason 2 marks a route busy.
@@ -203,10 +226,10 @@ struct Slot {
     pending: Option<Pending>,
 }
 
-/// An unused slot.
+/// An unused slot: all zero bits.
 const VACANT: Slot = Slot {
     network: 0,
-    route: Route::direct(PortId(0)),
+    route: Route::ZERO,
     pending: None,
 };
 
@@ -216,14 +239,35 @@ const fn is_reserved(network: u16) -> bool {
 }
 
 /// A routing table of up to `R` routes and `H` hold-down records.
-#[derive(Debug, Clone)]
+///
+/// A full table refuses a new network: [`add_direct`](Self::add_direct)
+/// and [`add_learned`](Self::add_learned) return `false`, and
+/// [`learn`](Self::learn) and [`apply_claim`](Self::apply_claim) return
+/// [`Refusal::Full`]. Routes it holds can still be refreshed, moved and
+/// removed. A router keeps its route cap at or below `R`, so the cap, which
+/// it counts, is met first.
+///
+/// [`new`](Self::new) is a `const fn` whose result is all zero bits, so a
+/// table can live in a zero-initialized static (`.bss`).
+#[derive(Clone)]
 pub struct Table<const R: usize, const H: usize> {
     slots: [Slot; R],
     len: usize,
     holds: holds::Holds<H>,
     counters: ClaimCounters,
     convergence: Convergence,
-    timing: Timing,
+}
+
+/// The routes and holds stored, not the unused storage.
+impl<const R: usize, const H: usize> fmt::Debug for Table<R, H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Table")
+            .field("routes", &self.stored())
+            .field("holds", &self.holds)
+            .field("counters", &self.counters)
+            .field("convergence", &self.convergence)
+            .finish()
+    }
 }
 
 impl<const R: usize, const H: usize> Default for Table<R, H> {
@@ -236,7 +280,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// How many routes it can hold.
     pub const CAPACITY: usize = R;
 
-    /// An empty table with standard convergence and the default timers.
+    /// An empty table with standard convergence: all zero bits.
     pub const fn new() -> Self {
         Self {
             slots: [VACANT; R],
@@ -257,7 +301,6 @@ impl<const R: usize, const H: usize> Table<R, H> {
                 hold_evicted: 0,
             },
             convergence: Convergence::Standard,
-            timing: Timing::DEFAULT,
         }
     }
 
@@ -277,16 +320,6 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// The convergence mode.
     pub const fn convergence(&self) -> Convergence {
         self.convergence
-    }
-
-    /// Set the timers for later calls.
-    pub fn set_timing(&mut self, timing: Timing) {
-        self.timing = timing;
-    }
-
-    /// The timers.
-    pub const fn timing(&self) -> Timing {
-        self.timing
     }
 
     /// The claim counts so far.
@@ -372,25 +405,26 @@ impl<const R: usize, const H: usize> Table<R, H> {
         Some(route)
     }
 
-    /// Every route, in ascending network order.
-    pub fn routes(&self) -> impl Iterator<Item = (u16, &Route)> + '_ {
+    /// Every route, in ascending network order. This and the other listings
+    /// can be cloned, so a writer can count before it writes.
+    pub fn routes(&self) -> impl Iterator<Item = (u16, &Route)> + Clone + '_ {
         self.stored().iter().map(|slot| (slot.network, &slot.route))
     }
 
     /// Every network, in ascending order.
-    pub fn networks(&self) -> impl Iterator<Item = u16> + '_ {
+    pub fn networks(&self) -> impl Iterator<Item = u16> + Clone + '_ {
         self.stored().iter().map(|slot| slot.network)
     }
 
     /// The networks reached through `port`, in ascending order.
-    pub fn networks_on_port(&self, port: PortId) -> impl Iterator<Item = u16> + '_ {
+    pub fn networks_on_port(&self, port: PortId) -> impl Iterator<Item = u16> + Clone + '_ {
         self.routes()
             .filter(move |(_, route)| route.port == port)
             .map(|(network, _)| network)
     }
 
     /// The networks reached through any port but `port`, in ascending order.
-    pub fn networks_not_on_port(&self, port: PortId) -> impl Iterator<Item = u16> + '_ {
+    pub fn networks_not_on_port(&self, port: PortId) -> impl Iterator<Item = u16> + Clone + '_ {
         self.routes()
             .filter(move |(_, route)| route.port != port)
             .map(|(network, _)| network)
@@ -434,11 +468,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// marked, and neither timestamp moves.
     pub fn mark_busy(&mut self, network: u16, deadline: Instant) {
         if let Some(slot) = self.slot_mut(network) {
-            let route = &mut slot.route;
-            if !route.direct && route.reachability != Reachability::Unreachable {
-                route.reachability = Reachability::Busy;
-                route.busy_until = Some(deadline);
-            }
+            busy(&mut slot.route, deadline);
         }
     }
 
@@ -446,12 +476,35 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// Direct routes and timestamps are untouched.
     pub fn mark_available(&mut self, network: u16) {
         if let Some(slot) = self.slot_mut(network) {
-            let route = &mut slot.route;
-            if !route.direct {
-                route.reachability = Reachability::Reachable;
-                route.busy_until = None;
+            available(&mut slot.route);
+        }
+    }
+
+    /// [`mark_busy`](Self::mark_busy) every route served via the router at
+    /// `peer` on `port`, as a Router-Busy from it that lists no network asks,
+    /// and return how many were marked. Unreachable routes stay unreachable.
+    pub fn mark_busy_via_peer(&mut self, port: PortId, peer: &[u8], deadline: Instant) -> usize {
+        let mut marked = 0;
+        for slot in &mut self.slots[..self.len] {
+            if slot.route.served_via(port, peer) && busy(&mut slot.route, deadline) {
+                marked += 1;
             }
         }
+        marked
+    }
+
+    /// [`mark_available`](Self::mark_available) every route served via the
+    /// router at `peer` on `port`, as a Router-Available from it that lists
+    /// no network asks, and return how many there were.
+    pub fn mark_available_via_peer(&mut self, port: PortId, peer: &[u8]) -> usize {
+        let mut marked = 0;
+        for slot in &mut self.slots[..self.len] {
+            if slot.route.served_via(port, peer) {
+                available(&mut slot.route);
+                marked += 1;
+            }
+        }
+        marked
     }
 
     /// Mark a learned route unreachable, keeping it in the table. Direct
@@ -472,7 +525,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// has one, is intersected with it.
     pub fn is_served_via_peer(&self, network: u16, port: PortId, peer: &[u8]) -> bool {
         self.lookup(network)
-            .is_some_and(|route| !route.direct && route.port == port && route.next_hop == *peer)
+            .is_some_and(|route| route.served_via(port, peer))
     }
 
     /// The networks [`is_served_via_peer`](Self::is_served_via_peer) holds
@@ -482,11 +535,9 @@ impl<const R: usize, const H: usize> Table<R, H> {
         &'t self,
         port: PortId,
         peer: &'t [u8],
-    ) -> impl Iterator<Item = u16> + 't {
+    ) -> impl Iterator<Item = u16> + Clone + 't {
         self.routes()
-            .filter(move |(_, route)| {
-                !route.direct && route.port == port && route.next_hop == *peer
-            })
+            .filter(move |(_, route)| route.served_via(port, peer))
             .map(|(network, _)| network)
     }
 
@@ -529,23 +580,30 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// Remove every learned route last confirmed more than `max_age` before
     /// `now`, calling `purged` with each network in ascending order, and
     /// return how many. Direct routes never age.
+    ///
+    /// Every call comes before anything is removed, so a `purged` that
+    /// panics leaves the table as it was.
     pub fn purge_stale(
         &mut self,
         now: Instant,
         max_age: Duration,
         mut purged: impl FnMut(u16),
     ) -> usize {
-        let mut kept = 0;
-        for index in 0..self.len {
-            let slot = self.slots[index];
-            let stale = !slot.route.direct
+        let stale = |slot: &Slot| {
+            !slot.route.direct
                 && slot
                     .route
                     .last_seen
-                    .is_some_and(|seen| now.saturating_duration_since(seen) > max_age);
-            if stale {
+                    .is_some_and(|seen| now.saturating_duration_since(seen) > max_age)
+        };
+        for slot in self.stored().iter().filter(|slot| stale(slot)) {
+            purged(slot.network);
+        }
+        let mut kept = 0;
+        for index in 0..self.len {
+            let slot = self.slots[index];
+            if stale(&slot) {
                 self.holds.forget(slot.network);
-                purged(slot.network);
             } else {
                 self.slots[kept] = slot;
                 kept += 1;
@@ -555,6 +613,25 @@ impl<const R: usize, const H: usize> Table<R, H> {
         self.slots[kept..self.len].fill(VACANT);
         self.len = kept;
         removed
+    }
+}
+
+/// Mark `route` busy until `deadline` unless it is direct or unreachable;
+/// `true` when it was marked.
+fn busy(route: &mut Route, deadline: Instant) -> bool {
+    let marks = !route.direct && route.reachability != Reachability::Unreachable;
+    if marks {
+        route.reachability = Reachability::Busy;
+        route.busy_until = Some(deadline);
+    }
+    marks
+}
+
+/// Make `route` reachable unless it is direct.
+fn available(route: &mut Route) {
+    if !route.direct {
+        route.reachability = Reachability::Reachable;
+        route.busy_until = None;
     }
 }
 

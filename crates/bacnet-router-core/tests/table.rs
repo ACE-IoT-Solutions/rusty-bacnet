@@ -7,10 +7,10 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use bacnet_router_core::table::{Learned, Reachability, Table};
+use bacnet_router_core::table::{Learned, Reachability, Refusal, Table};
 use bacnet_router_core::{Mac, PortId};
 use proptest::prelude::*;
-use support::{mac, port, purge, secs, Hosted, BASE, NANO};
+use support::{mac, port, purge, secs, Hosted, BASE, NANO, TIMING};
 
 #[test]
 fn add_direct_and_lookup() {
@@ -230,8 +230,37 @@ fn add_learned_flap_rejects_direct_route() {
     let mut table = Hosted::new();
     table.add_direct(1000, port(0));
     let result = table.learn(1000, port(1), mac(&[10, 0, 2, 1]), BASE);
-    assert_eq!(result, Learned::Refused);
+    assert_eq!(result, Learned::Refused(Refusal::Direct));
     assert!(table.lookup(1000).unwrap().direct);
+}
+
+#[test]
+fn the_flap_window_is_sixty_seconds_exclusive() {
+    // A move just inside 60 s of the last counts toward the warning.
+    let mut table = Hosted::new();
+    table.learn(3000, port(0), Mac::EMPTY, BASE);
+    table.learn(3000, port(1), Mac::EMPTY, BASE);
+    let inside = table.learn(3000, port(0), Mac::EMPTY, BASE + secs(60) - NANO);
+    assert_eq!(
+        inside,
+        Learned::Moved {
+            from: port(1),
+            flaps: 2
+        }
+    );
+    // One exactly 60 s after starts the count again.
+    let mut table = Hosted::new();
+    table.learn(3000, port(0), Mac::EMPTY, BASE);
+    table.learn(3000, port(1), Mac::EMPTY, BASE);
+    let outside = table.learn(3000, port(0), Mac::EMPTY, BASE + secs(60));
+    assert_eq!(
+        outside,
+        Learned::Moved {
+            from: port(1),
+            flaps: 1
+        }
+    );
+    assert_eq!(table.lookup(3000).unwrap().flap_count, 1);
 }
 
 #[test]
@@ -279,6 +308,20 @@ fn clear_expired_busy_clears_elapsed_deadlines() {
     let mut table = Hosted::new();
     table.add_learned(3000, port(0), mac(&[1, 2, 3]), BASE);
     table.mark_busy(3000, BASE - secs(1));
+    assert_eq!(table.clear_expired_busy(BASE), 1);
+    let entry = table.lookup(3000).unwrap();
+    assert_eq!(entry.reachability, Reachability::Reachable);
+    assert!(entry.busy_until.is_none());
+}
+
+#[test]
+fn clear_expired_busy_clears_a_deadline_of_exactly_now() {
+    let mut table = Hosted::new();
+    table.add_learned(3000, port(0), mac(&[1]), BASE);
+    table.mark_busy(3000, BASE);
+    // Just before the deadline the mark stays; at it, the sweep clears it.
+    assert_eq!(table.clear_expired_busy(BASE - NANO), 0);
+    assert_eq!(table.lookup(3000).unwrap().reachability, Reachability::Busy);
     assert_eq!(table.clear_expired_busy(BASE), 1);
     let entry = table.lookup(3000).unwrap();
     assert_eq!(entry.reachability, Reachability::Reachable);
@@ -345,7 +388,7 @@ fn same_port_refresh_updates_seen_preserves_used() {
     table.add_learned(3000, port(0), mac(&[1]), BASE);
     table.touch(3000, BASE + secs(10));
     assert!(table
-        .apply_claim(3000, port(0), mac(&[2]), BASE + secs(20))
+        .apply_claim(3000, port(0), mac(&[2]), BASE + secs(20), &TIMING)
         .applied());
     let entry = table.lookup(3000).unwrap();
     assert_eq!(entry.last_seen, Some(BASE + secs(20)));
@@ -423,7 +466,23 @@ fn a_full_table_refuses_new_networks_and_keeps_serving_old_ones() {
     assert!(table.is_full());
     assert!(!table.add_direct(2, port(0)));
     assert!(!table.add_learned(8, port(1), mac(&[7]), BASE));
-    assert_eq!(table.learn(8, port(1), mac(&[7]), BASE), Learned::Refused);
+    assert_eq!(
+        table.learn(8, port(1), mac(&[7]), BASE),
+        Learned::Refused(Refusal::Full)
+    );
+    assert_eq!(
+        table.apply_claim(8, port(1), mac(&[7]), BASE, &TIMING),
+        Learned::Refused(Refusal::Full)
+    );
+    // The three refusals stay apart on a full table.
+    assert_eq!(
+        table.learn(0xFFFF, port(1), mac(&[7]), BASE),
+        Learned::Refused(Refusal::Reserved)
+    );
+    assert_eq!(
+        table.learn(1, port(1), mac(&[7]), BASE),
+        Learned::Refused(Refusal::Direct)
+    );
     // Refreshing or moving a stored network still works.
     assert!(table.add_learned(9, port(1), mac(&[6]), BASE + secs(1)));
     assert!(table.learn(9, port(0), mac(&[5]), BASE + secs(2)).applied());
@@ -437,6 +496,55 @@ fn a_full_table_refuses_new_networks_and_keeps_serving_old_ones() {
     assert!(!table.add_direct(0xFFFF, port(0)));
     assert!(!table.add_learned(0xFFFF, port(0), Mac::EMPTY, BASE));
     assert_eq!(table.len(), 1);
+}
+
+#[test]
+fn debug_shows_the_stored_routes_only() {
+    let mut table: Table<64, 64> = Table::new();
+    assert_eq!(
+        format!("{table:?}").matches("Slot").count(),
+        0,
+        "an empty table prints no slots"
+    );
+    table.add_learned(3000, port(1), mac(&[7]), BASE);
+    table.apply_reject(3000, port(1), 2, BASE, &TIMING);
+    let text = format!("{table:?}");
+    assert_eq!(text.matches("Slot").count(), 1, "{text}");
+    assert_eq!(text.matches("Hold").count(), 1, "{text}");
+    assert!(text.contains("network: 3000"), "{text}");
+}
+
+#[test]
+fn a_panicking_purge_callback_leaves_the_table_whole() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let mut table = Hosted::new();
+    table.add_direct(1000, port(0));
+    for network in [3000, 3001, 3002] {
+        table.add_learned(network, port(1), mac(&[7]), BASE);
+    }
+    table.apply_reject(3001, port(1), 2, BASE, &TIMING);
+    let before: Vec<u16> = table.networks().collect();
+    let mut calls = 0;
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        table.purge_stale(BASE + secs(301), secs(300), |_| {
+            calls += 1;
+            if calls == 2 {
+                panic!("callback");
+            }
+        })
+    }));
+    assert!(unwound.is_err());
+    // Nothing was removed, so the routes, their order and the hold-down
+    // records are all still there and a later sweep works as usual.
+    assert_eq!(table.networks().collect::<Vec<_>>(), before);
+    assert_eq!(table.held_since(3001, port(1)), Some(BASE));
+    assert_eq!(
+        purge(&mut table, BASE + secs(301), secs(300)),
+        [3000, 3001, 3002]
+    );
+    assert_eq!(table.networks().collect::<Vec<_>>(), [1000]);
+    assert_eq!(table.holds().count(), 0);
 }
 
 /// An operation on the table, for the model test.

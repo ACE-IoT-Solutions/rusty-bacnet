@@ -10,46 +10,51 @@
 //! The views check layout only. Policy, such as which network numbers a
 //! router may learn, stays with the router.
 
-/// Message types (Clause 6.2.4), grouped by what they are for.
+/// Message types (Clause 6.2.4), grouped by what a router does with them,
+/// and by name within a group.
 pub mod code {
-    // Finding routers and the networks behind them.
-    /// Asks which router reaches a network, or every network.
-    pub const WHO_IS_ROUTER_TO_NETWORK: u8 = 0x00;
-    /// Lists networks reachable through the sender.
+    // Routing discovery: finding the router that reaches a network, and
+    // the refusal a router sends when it can't route a message.
+    /// A router's list of what it reaches; this router learns from it.
     pub const I_AM_ROUTER_TO_NETWORK: u8 = 0x01;
-    /// Offers a network reachable through a connection not yet open.
+    /// A route on offer; kept only where the table has none.
     pub const I_COULD_BE_ROUTER_TO_NETWORK: u8 = 0x02;
-
-    // Refusal and flow control.
-    /// Tells the originator why a message was not routed.
+    /// A refusal with its reason, carried back to whoever sent the message.
     pub const REJECT_MESSAGE_TO_NETWORK: u8 = 0x03;
-    /// Asks that traffic for some networks be held back.
-    pub const ROUTER_BUSY_TO_NETWORK: u8 = 0x04;
-    /// Lets that traffic go again.
-    pub const ROUTER_AVAILABLE_TO_NETWORK: u8 = 0x05;
+    /// A route query, answered here or searched for beyond.
+    pub const WHO_IS_ROUTER_TO_NETWORK: u8 = 0x00;
 
-    // Routing-table management.
-    /// Updates or queries a router's table.
+    // Busy and available: flow control between routers.
+    /// Lifts a hold on traffic.
+    pub const ROUTER_AVAILABLE_TO_NETWORK: u8 = 0x05;
+    /// Puts a hold on traffic, which lapses on its own.
+    pub const ROUTER_BUSY_TO_NETWORK: u8 = 0x04;
+
+    // The routing table: updates, queries and their answers.
+    /// A table update, or a query with a count of 0.
     pub const INITIALIZE_ROUTING_TABLE: u8 = 0x06;
-    /// Acknowledges an update, or carries a queried table.
+    /// What comes back for one.
     pub const INITIALIZE_ROUTING_TABLE_ACK: u8 = 0x07;
 
-    // Point-to-point connections, which this stack doesn't open.
-    /// Asks a half-router to open a connection.
-    pub const ESTABLISH_CONNECTION_TO_NETWORK: u8 = 0x08;
-    /// Asks a router to close one.
+    // Connections over point-to-point links, which this stack doesn't open.
+    /// Counted and otherwise ignored here.
     pub const DISCONNECT_CONNECTION_TO_NETWORK: u8 = 0x09;
+    /// Logged and otherwise ignored here.
+    pub const ESTABLISH_CONNECTION_TO_NETWORK: u8 = 0x08;
 
-    // Network numbers.
-    /// Asks for the local network's number.
-    pub const WHAT_IS_NETWORK_NUMBER: u8 = 0x12;
-    /// Announces the local network's number.
+    // The network number of the local network.
+    /// The number, and whether it was configured.
     pub const NETWORK_NUMBER_IS: u8 = 0x13;
+    /// The question that number answers.
+    pub const WHAT_IS_NETWORK_NUMBER: u8 = 0x12;
 
-    /// The first of the types the 2020 edition removed (the old security
-    /// messages); [`SECURITY_LAST`] is the last.
+    // Vendor and reserved ranges.
+    /// The first vendor-proprietary type; these carry a vendor ID.
+    pub const PROPRIETARY_FIRST: u8 = crate::npdu::PROPRIETARY_FIRST;
+    /// The first of the security types that are no longer defined;
+    /// [`SECURITY_LAST`] is the last.
     pub const SECURITY_FIRST: u8 = 0x0A;
-    /// The last of the removed security types.
+    /// The last of those security types.
     pub const SECURITY_LAST: u8 = 0x11;
 }
 
@@ -121,15 +126,20 @@ impl<'a> Networks<'a> {
     }
 
     /// Write `networks` as a list into `out`, returning its length, or
-    /// `None` if they don't all fit.
-    pub fn write(networks: impl IntoIterator<Item = u16>, out: &mut [u8]) -> Option<usize> {
-        let mut at = 0;
-        for network in networks {
-            out.get_mut(at..at + 2)?
-                .copy_from_slice(&network.to_be_bytes());
-            at += 2;
+    /// `None`, with nothing written, if they don't all fit. The iterator is
+    /// cloned to count the networks before any octet is written.
+    pub fn write<I>(networks: I, out: &mut [u8]) -> Option<usize>
+    where
+        I: IntoIterator<Item = u16>,
+        I::IntoIter: Clone,
+    {
+        let networks = networks.into_iter();
+        let len = networks.clone().count().checked_mul(2)?;
+        let out = out.get_mut(..len)?;
+        for (pair, network) in out.as_chunks_mut::<2>().0.iter_mut().zip(networks) {
+            *pair = network.to_be_bytes();
         }
-        Some(at)
+        Some(len)
     }
 }
 
@@ -336,20 +346,25 @@ impl<'a> RoutingEntries<'a> {
     }
 
     /// Write a count and an entry with no Port Info for each (network,
-    /// Port ID) pair into `out`, returning the length, or `None` when they
-    /// don't fit or number more than 255.
-    pub fn write(entries: impl IntoIterator<Item = (u16, u8)>, out: &mut [u8]) -> Option<usize> {
-        let mut count: u8 = 0;
-        let mut at = 1;
-        for (network, port_id) in entries {
-            count = count.checked_add(1)?;
+    /// Port ID) pair into `out`, returning the length, or `None`, with
+    /// nothing written, when they don't fit or number more than 255. The
+    /// iterator is cloned to count the entries before any octet is written.
+    pub fn write<I>(entries: I, out: &mut [u8]) -> Option<usize>
+    where
+        I: IntoIterator<Item = (u16, u8)>,
+        I::IntoIter: Clone,
+    {
+        let entries = entries.into_iter();
+        let count = u8::try_from(entries.clone().count()).ok()?;
+        let len = 1 + usize::from(count) * Self::ENTRY_LEN;
+        let (first, rest) = out.get_mut(..len)?.split_first_mut()?;
+        *first = count;
+        // Four octets each: ENTRY_LEN.
+        for (slot, (network, port_id)) in rest.as_chunks_mut::<4>().0.iter_mut().zip(entries) {
             let [high, low] = network.to_be_bytes();
-            out.get_mut(at..at + Self::ENTRY_LEN)?
-                .copy_from_slice(&[high, low, port_id, 0]);
-            at += Self::ENTRY_LEN;
+            *slot = [high, low, port_id, 0];
         }
-        *out.first_mut()? = count;
-        Some(at)
+        Some(len)
     }
 }
 
