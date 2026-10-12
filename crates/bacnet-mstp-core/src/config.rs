@@ -19,8 +19,12 @@ pub(crate) const MIN_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 /// Default for [`MstpCoreConfig::reply_transmit_margin`], the value the host
 /// MS/TP transport reserves.
 const DEFAULT_REPLY_TRANSMIT_MARGIN: Duration = Duration::from_millis(25);
-/// Default for [`MstpCoreConfig::transmit_watchdog`].
+/// Default for [`MstpCoreConfig::transmit_watchdog`] where it clears the
+/// longest frame.
 const DEFAULT_TRANSMIT_WATCHDOG: Duration = Duration::from_secs(1);
+/// Kept in [`MstpCoreConfig::minimum_transmit_watchdog`] beyond the longest
+/// frame and T_postdrive, for the adapter to report the completion.
+const WATCHDOG_COMPLETION_MARGIN: Duration = Duration::from_millis(1);
 
 /// A configuration value that violates a protocol or local safety bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,15 +167,18 @@ pub enum ConfigError {
         /// Supplied percentage value.
         value: u8,
     },
-    /// With [`MstpCoreConfig::extended_frames`] on, the transmit watchdog
-    /// would abort the longest extended frame before its last octet left:
-    /// 1516 octets take 1.58 s at 9600 baud.
-    /// [`MstpCoreConfig::with_extended_frames`] sets one that covers it.
+    /// The transmit watchdog would abort the longest frame this
+    /// configuration sends before the driver could go off: a standard frame
+    /// of 511 octets takes 1.06 s at 4800 baud, and an extended one of 1516
+    /// octets 1.58 s at 9600. See
+    /// [`MstpCoreConfig::minimum_transmit_watchdog`]; the baud-rate
+    /// constructors and [`MstpCoreConfig::with_extended_frames`] set one
+    /// that clears it.
     TransmitWatchdogTooShort {
         /// Supplied watchdog.
         value: Duration,
-        /// The longest frame's time on the wire,
-        /// [`MstpCoreConfig::longest_frame_time`].
+        /// The shortest watchdog accepted,
+        /// [`MstpCoreConfig::minimum_transmit_watchdog`].
         minimum: Duration,
     },
     /// [`MstpCoreConfig::extended_frames`] is on, but a buffer the core was
@@ -297,12 +304,20 @@ pub struct MstpCoreConfig {
     pub multiple_frame_ratio: u8,
     /// Number of service opportunities after which an item is promoted.
     pub starvation_limit: u8,
-    /// Maximum time allowed for one platform transmit operation.
+    /// Maximum time allowed for one platform transmit operation, from its
+    /// confirmed start to its completion.
+    ///
+    /// It must clear [`Self::minimum_transmit_watchdog`], the longest
+    /// frame's time on the wire plus T_postdrive, or validation refuses it
+    /// with [`ConfigError::TransmitWatchdogTooShort`]. The baud-rate
+    /// constructors give one second, or, where the longest standard frame
+    /// would not fit in that (below about 5.1 kbaud), the longest frame's
+    /// time plus one second.
     pub transmit_watchdog: Duration,
 
-    /// Take and send extended frames: BACnet Extended Data Expecting Reply
-    /// and Not Expecting Reply (Types 32 and 33), which carry NPDUs of 502
-    /// to 1497 octets COBS-encoded (Clauses 9.3.9, 9.3.10). Off by default.
+    /// Take and send extended frames, Types 32 and 33, which carry NPDUs of
+    /// 502 to 1497 octets COBS-encoded (Clauses 9.3.9, 9.3.10). Off by
+    /// default.
     ///
     /// Clause 9.3 requires COBS-encoded frames of a routing node and leaves
     /// them optional for any other node, so a router turns this on for
@@ -322,7 +337,7 @@ pub struct MstpCoreConfig {
     ///   [`MasterCore::new`](crate::MasterCore::new) then needs buffers
     ///   sized for extended frames, and refuses smaller ones with
     ///   [`ConfigError::ExtendedStorageTooSmall`]. The transmit watchdog
-    ///   must cover the longest extended frame's time on the wire
+    ///   must clear the longest extended frame
     ///   ([`ConfigError::TransmitWatchdogTooShort`]);
     ///   [`Self::with_extended_frames`] sets both.
     pub extended_frames: bool,
@@ -480,10 +495,10 @@ impl MstpCoreConfig {
                 field: LocalDurationField::TransmitWatchdog,
             });
         }
-        if self.extended_frames && self.transmit_watchdog < self.longest_frame_time() {
+        if self.transmit_watchdog < self.minimum_transmit_watchdog() {
             return Err(ConfigError::TransmitWatchdogTooShort {
                 value: self.transmit_watchdog,
-                minimum: self.longest_frame_time(),
+                minimum: self.minimum_transmit_watchdog(),
             });
         }
         if self.broadcast_unicast_ratio == 0 {
@@ -510,7 +525,7 @@ impl MstpCoreConfig {
     }
 
     const fn for_baud_rate_unchecked(baud_rate: u32) -> Self {
-        Self {
+        let config = Self {
             station: 0,
             max_master: MAX_MASTER_ADDRESS,
             max_info_frames: 1,
@@ -535,7 +550,8 @@ impl MstpCoreConfig {
             starvation_limit: 8,
             transmit_watchdog: DEFAULT_TRANSMIT_WATCHDOG,
             extended_frames: false,
-        }
+        };
+        config.with_covering_watchdog()
     }
 
     /// The longest NPDU this configuration sends or takes: 1497 octets with
@@ -563,17 +579,39 @@ impl MstpCoreConfig {
         Duration::from_micros(self.octet_time().as_micros().saturating_mul(octets as u64))
     }
 
+    /// The shortest [`Self::transmit_watchdog`] validation accepts: the
+    /// longest frame's time on the wire ([`Self::longest_frame_time`]) plus
+    /// T_postdrive, which the watchdog's span from the confirmed start to
+    /// completion also covers, plus 1 ms for the adapter to report the
+    /// completion, the lateness at which the core counts a deadline missed
+    /// ([`LATE_DEADLINE`](crate::LATE_DEADLINE)). A watchdog at this floor
+    /// leaves nothing more for a slow adapter; the constructors' defaults
+    /// leave a second or more.
+    #[must_use]
+    pub const fn minimum_transmit_watchdog(&self) -> Duration {
+        self.longest_frame_time()
+            .saturating_add(self.t_postdrive)
+            .saturating_add(WATCHDOG_COMPLETION_MARGIN)
+    }
+
     /// This configuration with [`Self::extended_frames`] on, and a transmit
-    /// watchdog long enough for the longest extended frame: at least that
-    /// frame's time on the wire plus the default watchdog of one second.
+    /// watchdog that clears the longest extended frame: the one it has if
+    /// that clears it already, otherwise that frame's time on the wire plus
+    /// one second.
     #[must_use]
     pub const fn with_extended_frames(mut self) -> Self {
         self.extended_frames = true;
-        let needed = self
-            .longest_frame_time()
-            .saturating_add(DEFAULT_TRANSMIT_WATCHDOG);
-        if self.transmit_watchdog.as_micros() < needed.as_micros() {
-            self.transmit_watchdog = needed;
+        self.with_covering_watchdog()
+    }
+
+    /// This configuration, with a transmit watchdog that clears
+    /// [`Self::minimum_transmit_watchdog`]: the one it has if it does, else
+    /// the longest frame's time plus the default one second.
+    const fn with_covering_watchdog(mut self) -> Self {
+        if self.transmit_watchdog.as_micros() < self.minimum_transmit_watchdog().as_micros() {
+            self.transmit_watchdog = self
+                .longest_frame_time()
+                .saturating_add(DEFAULT_TRANSMIT_WATCHDOG);
         }
         self
     }
@@ -734,12 +772,13 @@ mod tests {
         );
     }
 
-    /// Clause 9.3 sizes: the longest extended frame, 1516 octets, takes
-    /// 1.58 s at 9600 baud, longer than the default watchdog, so extended
-    /// frames need a longer one; `with_extended_frames` sets it, and leaves
-    /// a longer one alone. Without the flag nothing changes.
+    /// The watchdog must outlast the longest frame plus T_postdrive and the
+    /// 1 ms completion margin, with extended frames on or off. At 9600 baud
+    /// one second clears a standard frame (511 octets, 0.53 s) but not an
+    /// extended one (1516 octets, 1.58 s): `with_extended_frames` raises it
+    /// to that frame's time plus one second, and leaves a longer one alone.
     #[test]
-    fn extended_frames_need_a_watchdog_that_covers_the_longest_frame() {
+    fn the_watchdog_must_outlast_the_longest_frame() {
         let standard = MstpCoreConfig::default();
         assert!(!standard.extended_frames);
         assert_eq!(standard.transmit_watchdog, Duration::from_secs(1));
@@ -747,20 +786,45 @@ mod tests {
             standard.longest_frame_time(),
             Duration::from_micros(511 * 1_042)
         );
+        // T_postdrive at 9600 baud is 15 bit times, 1562 us.
+        assert_eq!(
+            standard.minimum_transmit_watchdog(),
+            Duration::from_micros(511 * 1_042 + 1_562 + 1_000)
+        );
 
         let flagged = MstpCoreConfig {
             extended_frames: true,
             ..MstpCoreConfig::default()
         };
         let longest = Duration::from_micros(1_516 * 1_042);
+        let minimum = longest + Duration::from_micros(1_562 + 1_000);
         assert_eq!(flagged.longest_frame_time(), longest);
+        assert_eq!(flagged.minimum_transmit_watchdog(), minimum);
         assert_eq!(
             flagged.validate(),
             Err(ConfigError::TransmitWatchdogTooShort {
                 value: Duration::from_secs(1),
-                minimum: longest,
+                minimum,
             })
         );
+        // Exactly at the boundary: one microsecond short is refused, the
+        // floor itself accepted.
+        let short = MstpCoreConfig {
+            transmit_watchdog: minimum - Duration::from_micros(1),
+            ..flagged
+        };
+        assert_eq!(
+            short.validate(),
+            Err(ConfigError::TransmitWatchdogTooShort {
+                value: minimum - Duration::from_micros(1),
+                minimum,
+            })
+        );
+        let at_floor = MstpCoreConfig {
+            transmit_watchdog: minimum,
+            ..flagged
+        };
+        assert_eq!(at_floor.validate(), Ok(()));
 
         let extended = MstpCoreConfig::default().with_extended_frames();
         assert!(extended.extended_frames);
@@ -772,6 +836,46 @@ mod tests {
         }
         .with_extended_frames();
         assert_eq!(patient.transmit_watchdog, Duration::from_secs(9));
+        // Fast enough for one second to clear the extended floor: kept.
+        let fast = MstpCoreConfig::for_baud_rate(115_200)
+            .unwrap()
+            .with_extended_frames();
+        assert_eq!(fast.transmit_watchdog, Duration::from_secs(1));
+        assert_eq!(fast.validate(), Ok(()));
+    }
+
+    /// Below about 5.1 kbaud the longest standard frame alone outlasts one
+    /// second (511 octets take 1.06 s at 4800 baud), so the rule applies
+    /// without extended frames too. The constructors then default to that
+    /// frame's time plus one second, and a hand-built one-second watchdog
+    /// is refused. At the standard rates nothing changes.
+    #[test]
+    fn low_baud_rates_get_a_watchdog_that_outlasts_a_standard_frame() {
+        let slow = MstpCoreConfig::for_baud_rate(4_800).unwrap();
+        // One octet takes 2084 us, T_postdrive 3125 us.
+        let longest = Duration::from_micros(511 * 2_084);
+        assert_eq!(slow.longest_frame_time(), longest);
+        assert_eq!(slow.transmit_watchdog, longest + Duration::from_secs(1));
+        assert!(slow.transmit_watchdog >= Duration::from_millis(1_070));
+        assert_eq!(slow.validate(), Ok(()));
+
+        let hand_built = MstpCoreConfig {
+            transmit_watchdog: Duration::from_secs(1),
+            ..slow
+        };
+        assert_eq!(
+            hand_built.validate(),
+            Err(ConfigError::TransmitWatchdogTooShort {
+                value: Duration::from_secs(1),
+                minimum: longest + Duration::from_micros(3_125 + 1_000),
+            })
+        );
+        // The lowest rate validation takes still gets a valid default.
+        assert!(MstpCoreConfig::for_baud_rate(2_667).is_ok());
+        for baud in [9_600, 19_200, 38_400, 57_600, 76_800, 115_200] {
+            let config = MstpCoreConfig::for_baud_rate(baud).unwrap();
+            assert_eq!(config.transmit_watchdog, Duration::from_secs(1), "{baud}");
+        }
     }
 
     #[test]

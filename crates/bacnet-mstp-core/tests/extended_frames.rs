@@ -1,6 +1,6 @@
-//! Extended frames (#1611): BACnet Extended Data Expecting Reply and Not
-//! Expecting Reply (Types 32 and 33) with `MstpCoreConfig::extended_frames`
-//! on, the reserved COBS types, and the buffers the flag needs (Clauses 9.3,
+//! Extended frames (#1611): the extended frame types, 32 and 33, with
+//! `MstpCoreConfig::extended_frames` on, the reserved COBS types, and the
+//! buffers the flag needs (Clauses 9.3,
 //! 9.3.9, 9.3.10, 9.5.4.9, 9.5.6). The flag-off path is the rest of the
 //! suite, unchanged.
 
@@ -12,9 +12,10 @@ use bacnet_mstp_codec::{
     MAX_STANDARD_MPDU_DATA,
 };
 use bacnet_mstp_core::{
-    Action, ActionBuffers, ConfigError, CoreBuffer, CoreError, Direction, Duration,
+    Action, ActionBuffers, ConfigError, CoreBuffer, CoreError, DequeuedNpdu, Direction, Duration,
     ExtendedActionBuffers, HeaplessQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    NetworkPriority, QueueRejectReason, ReplyDecision, RequestId,
+    NetworkPriority, QueueCounters, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
+    ReplyDecision, RequestId,
 };
 
 type Queues = HeaplessQueues<4, 4, MAX_EXTENDED_MPDU_DATA>;
@@ -272,6 +273,84 @@ fn extended_frames_need_extended_buffers() {
     assert_eq!(config(true).max_npdu_length(), MAX_EXTENDED_MPDU_DATA);
 }
 
+/// Queues with extended slots behind a storage type that doesn't override
+/// `QueueStorage::max_npdu_length`, so it reports the default.
+struct Unsized(Queues);
+
+impl QueueStorage for Unsized {
+    fn set_starvation_limit(&mut self, limit: u8) {
+        self.0.set_starvation_limit(limit);
+    }
+
+    fn enqueue_npdu(
+        &mut self,
+        destination: u8,
+        payload: &[u8],
+        priority: NetworkPriority,
+        now: u64,
+        expires_at: Option<u64>,
+    ) -> Result<(), QueueRejectReason> {
+        self.0
+            .enqueue_npdu(destination, payload, priority, now, expires_at)
+    }
+
+    fn expire(&mut self, now: u64) -> usize {
+        self.0.expire(now)
+    }
+
+    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+        self.0.peek(now)
+    }
+
+    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+        self.0.peek_kind(kind, now)
+    }
+
+    fn dequeue_kind_into(
+        &mut self,
+        kind: QueueKind,
+        now: u64,
+        scratch: &mut [u8],
+    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        self.0.dequeue_kind_into(kind, now, scratch)
+    }
+
+    fn depth(&self, kind: QueueKind) -> usize {
+        self.0.depth(kind)
+    }
+
+    fn stats(&self, kind: QueueKind) -> QueueCounters {
+        self.0.stats(kind)
+    }
+}
+
+/// Storage that doesn't say how long its slots are reports a standard
+/// frame's 501 octets, so extended frames refuse it: the default fails
+/// closed. The same queues saying 1497 are taken.
+#[test]
+fn queue_storage_that_does_not_say_is_refused_for_extended_frames() {
+    let mut rx = vec![0u8; MAX_EXTENDED_FRAME_LENGTH];
+    let mut actions: Box<Actions> = Box::default();
+    let unsized_queues = Unsized(Queues::new());
+    assert_eq!(unsized_queues.max_npdu_length(), MAX_STANDARD_MPDU_DATA);
+    let result = MasterCore::new(
+        config(true),
+        unsized_queues,
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    );
+    assert_eq!(
+        result.map(drop),
+        Err(CoreError::Config(ConfigError::ExtendedStorageTooSmall {
+            buffer: CoreBuffer::QueueSlot,
+            length: MAX_STANDARD_MPDU_DATA,
+            minimum: MAX_EXTENDED_MPDU_DATA,
+        }))
+    );
+    assert_eq!(Queues::new().max_npdu_length(), MAX_EXTENDED_MPDU_DATA);
+}
+
 /// Clauses 9.3.9, 9.3.10 and 9.5.6.3 (SendAndWait, SendNoWait): with the
 /// flag on, an NPDU of 502 to 1497 octets goes out extended, Type 32 when it
 /// expects a reply and Type 33 otherwise; a longer one is refused. Without
@@ -470,6 +549,70 @@ fn a_postponed_type_32_request_is_answered_with_the_token() {
         decoded(&octets),
         (FrameType::BACnetExtendedDataNotExpectingReply, PEER, answer)
     );
+}
+
+/// Clause 9.5.6.9 and the core's handling of a frame that completes while
+/// it answers (L05): a second Type 32 for this station is dropped and
+/// counted in `discarded_while_busy`, since an answer after this station's
+/// own would come too late, while a Type 33 and a broadcast Type 32 still go
+/// up. The first request stays the one being answered.
+#[test]
+fn a_type_32_for_a_station_answering_a_request_is_discarded() {
+    for host in [false, true] {
+        let mut storage = Storage::new();
+        let mut core = storage.core(true);
+        let first = npdu(900, true);
+        let last = feed(
+            &mut core,
+            &encode(Frame::new(
+                FrameType::BACnetExtendedDataExpectingReply,
+                STATION,
+                PEER,
+                &first,
+            )),
+            Instant::ZERO,
+        );
+        let (.., id) = next_delivery(&mut core);
+        assert_eq!(core.state(), MasterState::AnswerDataRequest);
+        let second = npdu(700, true);
+        let more = npdu(600, false);
+        let frames = [
+            (
+                FrameType::BACnetExtendedDataExpectingReply,
+                STATION,
+                &second,
+            ),
+            (
+                FrameType::BACnetExtendedDataNotExpectingReply,
+                STATION,
+                &more,
+            ),
+            (
+                FrameType::BACnetExtendedDataExpectingReply,
+                BROADCAST_MAC,
+                &second,
+            ),
+        ];
+        let mut at = last;
+        for (frame_type, destination, data) in frames {
+            let frame = Frame::new(frame_type, destination, OTHER, data);
+            at += Duration::from_millis(1);
+            if host {
+                core.on_validated_frame(frame, at).unwrap();
+            } else {
+                at = feed(&mut core, &encode(frame), at);
+            }
+        }
+        assert_eq!(core.counters().discarded_while_busy, 1, "host {host}");
+        assert_eq!(next_delivery(&mut core), (OTHER, STATION, more, None));
+        assert_eq!(
+            next_delivery(&mut core),
+            (OTHER, BROADCAST_MAC, second.clone(), None)
+        );
+        assert_eq!(core.poll_action(), Action::Idle);
+        assert_eq!(core.state(), MasterState::AnswerDataRequest);
+        assert_eq!(core.snapshot().request_id, id);
+    }
 }
 
 /// Clause 9.5.6.4 (ReceivedReply, ReceivedUnexpectedFrame): a Type 33 for

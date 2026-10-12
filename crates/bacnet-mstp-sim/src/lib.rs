@@ -52,6 +52,10 @@
 //! [`MasterSpec::extended_frames`] takes and sends extended frames (Types
 //! 32 and 33), as a routing node must; one without counts them as invalid
 //! frames, as a node without COBS support does, so a ring can mix the two.
+//! Every master's queues and action buffers are sized for extended frames
+//! (see [`SimCore`]), so the simulator doesn't run the core's standard-size
+//! instantiation that firmware uses; with the flag off the behaviour is the
+//! same.
 //! After every call into the core its adapter polls actions until the core
 //! is idle:
 //!

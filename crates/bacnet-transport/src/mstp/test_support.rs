@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
+use bacnet_mstp_codec::{decode_frame_in_place, Frame, FrameType};
 use bacnet_types::error::Error;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{Duration, Instant};
@@ -209,7 +209,10 @@ impl Bus {
     /// The next frame the station writes, however long it takes.
     pub(super) async fn next(&mut self) -> Sent {
         let (start, octets) = self.writes.recv().await.expect("the station runs");
-        let (frame, consumed) = decode_frame(&octets).expect("the station writes valid frames");
+        // In place on a copy, so an extended frame decodes too.
+        let mut copy = octets.clone();
+        let (frame, consumed) =
+            decode_frame_in_place(&mut copy).expect("the station writes valid frames");
         assert_eq!(consumed, octets.len(), "one frame per write");
         let count = u32::try_from(octets.len()).unwrap();
         Sent {

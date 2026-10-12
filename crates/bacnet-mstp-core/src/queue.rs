@@ -150,8 +150,15 @@ pub trait QueueStorage {
     /// The longest NPDU one queue slot holds. A core with
     /// [`MstpCoreConfig::extended_frames`](crate::MstpCoreConfig::extended_frames)
     /// on refuses queues whose slots hold less than
-    /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA).
-    fn max_npdu_length(&self) -> usize;
+    /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA);
+    /// nothing else reads it.
+    ///
+    /// The default is a standard frame's 501 octets, so storage that doesn't
+    /// say is refused for extended frames: it fails closed. Storage whose
+    /// slots hold extended NPDUs overrides it.
+    fn max_npdu_length(&self) -> usize {
+        bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA
+    }
 
     /// Add a payload to the destination queue.
     ///

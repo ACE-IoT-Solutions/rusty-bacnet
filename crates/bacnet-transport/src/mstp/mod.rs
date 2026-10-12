@@ -242,9 +242,8 @@ pub struct MstpConfig {
     /// rest) are derived (default: 9600). The core needs at least 2667 baud,
     /// so that 40 bit times of turnaround fit inside T_usage_delay.
     pub baud_rate: u32,
-    /// Take and send extended frames, BACnet Extended Data Expecting Reply
-    /// and Not Expecting Reply (Types 32 and 33), for NPDUs of up to 1497
-    /// octets (default: off). Clause 9.3 requires them of a routing node and
+    /// Take and send extended frames, Types 32 and 33, for NPDUs of up to
+    /// 1497 octets (default: off). Clause 9.3 requires them of a routing node and
     /// leaves them optional for any other, so `bacnet_network`'s
     /// `BACnetRouter` turns this on for every MS/TP port it routes (see
     /// [`TransportPort::prepare_for_routing`](crate::port::TransportPort::prepare_for_routing)),
@@ -253,6 +252,11 @@ pub struct MstpConfig {
     /// the longest extended frame
     /// ([`MstpCoreConfig::with_extended_frames`]). See
     /// [`MstpCoreConfig::extended_frames`] for what the core does with it.
+    ///
+    /// Memory per port: the queues reserve 512 slots, about 770 KiB with the
+    /// flag on (1497-octet slots) against about 270 KiB without; pages a
+    /// queue never fills are usually not committed. The core's action
+    /// buffers, about 13 KiB, are sized for extended frames either way.
     pub extended_frames: bool,
 }
 

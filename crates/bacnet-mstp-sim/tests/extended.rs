@@ -1,6 +1,5 @@
-//! Extended frames (#1611): BACnet Extended Data Expecting Reply and Not
-//! Expecting Reply (Types 32 and 33) between masters that take them, and a
-//! ring where one master doesn't.
+//! Extended frames (#1611): Types 32 and 33 between masters that take
+//! them, and a ring where one master doesn't.
 
 mod common;
 

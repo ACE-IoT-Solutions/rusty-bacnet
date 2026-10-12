@@ -29,6 +29,12 @@ use master::MasterNode;
 /// are sized for extended frames whether the master's configuration takes
 /// them or not, so masters with and without the flag share one type; the
 /// receive storage follows the flag (see [`MasterSpec::extended_frames`]).
+///
+/// So a master without the flag runs with 1497-octet delivery and queue
+/// slots, not the 501-octet default instantiation a firmware build uses.
+/// Its behaviour is the same: the flag, not the slot size, decides what it
+/// takes and sends, and the core refuses an NPDU over 501 octets at the
+/// queue whatever the slots hold.
 pub type SimCore = MasterCore<'static, AllocQueues<MAX_EXTENDED_MPDU_DATA>, MAX_EXTENDED_MPDU_DATA>;
 
 /// Run-wide settings.

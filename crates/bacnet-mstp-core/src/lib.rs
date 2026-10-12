@@ -99,12 +99,12 @@
 //!
 //! # Extended frames
 //!
-//! [`MstpCoreConfig::extended_frames`] turns on BACnet Extended Data
-//! Expecting Reply and Not Expecting Reply (Types 32 and 33), which carry
-//! NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a
-//! routing node and leaves them optional for any other, so the flag is off
-//! by default, and a core without it behaves, and costs, as one built
-//! before it existed. With it on, every buffer must hold an extended frame:
+//! [`MstpCoreConfig::extended_frames`] turns on the extended frame types,
+//! 32 and 33, which carry NPDUs of 502 to 1497 octets COBS-encoded. Clause
+//! 9.3 requires them of a routing node and leaves them optional for any
+//! other, so the flag is off by default, and a core without it behaves as
+//! one built before it existed. With it on, every buffer must hold an
+//! extended frame:
 //! receive storage of
 //! [`MAX_EXTENDED_FRAME_LENGTH`](bacnet_mstp_codec::MAX_EXTENDED_FRAME_LENGTH),
 //! [`ExtendedActionBuffers`], queues whose slots hold
@@ -112,8 +112,9 @@
 //! octets (such as `HeaplessQueues<U, B, MAX_EXTENDED_MPDU_DATA>`), and so a
 //! `MasterCore<'_, Q, MAX_EXTENDED_MPDU_DATA>`. [`MasterCore::new`] refuses
 //! smaller ones, naming the buffer. The sizes are const generics with
-//! standard defaults, so a firmware image that leaves the flag off builds
-//! exactly the code it did.
+//! standard defaults, so a firmware image that leaves the flag off costs no
+//! more RAM or flash than before: its buffers keep their standard sizes,
+//! and the flag's branches are small.
 //!
 //! # A local policy
 //!

@@ -2,11 +2,12 @@
 //! `MstpConfig`, the port's NPDU and APDU limits, the router's hook, and a
 //! 1497-octet NPDU between two transports (Clauses 9.3, 9.3.9, 9.3.10).
 
-use bacnet_mstp_codec::{MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA};
+use bacnet_mstp_codec::{FrameType, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA};
 use bytes::Bytes;
 use tokio::time::Duration;
 
-use super::test_support::config;
+use super::echo_tests::ECHOING;
+use super::test_support::{config, encode, Bus};
 use super::*;
 use crate::any::AnyTransport;
 use crate::port::TransportPort;
@@ -157,4 +158,39 @@ async fn a_long_npdu_is_refused_by_what_the_port_sends() {
         assert_eq!(transport.diagnostics().snapshot().outbound_oversize, 2);
         transport.stop().await.unwrap();
     }
+}
+
+/// On a port that hears its own frames, the echo of a 1516-octet extended
+/// frame comes back over three 512-octet reads, and the transport strips it
+/// whole: nothing of it reaches the core as a frame from this station's
+/// address or an invalid frame, and the token pass follows T_turnaround
+/// after the frame, as after a standard one.
+#[tokio::test(start_paused = true)]
+async fn the_echo_of_an_extended_frame_is_stripped_whole() {
+    let config = MstpConfig {
+        extended_frames: true,
+        ..config(3, 4)
+    };
+    let mut bus = Bus::start_with(config, ECHOING).await;
+    let token = bus.join(4).await;
+    let long = npdu(MAX_EXTENDED_MPDU_DATA, false, 0x77);
+    let wire = encode(FrameType::BACnetExtendedDataNotExpectingReply, 4, 3, &long);
+    assert!(wire.len() > 2 * 512, "the echo spans three reads");
+    bus.transport.send_unicast(&long, &[4]).await.unwrap();
+    bus.return_token(&token, 4).await;
+    let sent = bus.next().await;
+    assert_eq!(
+        (sent.frame_type, sent.destination, &sent.data),
+        (FrameType::BACnetExtendedDataNotExpectingReply, 4, &long)
+    );
+    let pass = bus.next().await;
+    assert_eq!((pass.frame_type, pass.destination), (FrameType::Token, 4));
+    assert!(pass.start >= sent.end + bus.turnaround);
+    assert!(pass.start <= sent.end + bus.turnaround + Duration::from_millis(1));
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.mac.own_address_frames, 0);
+    assert_eq!(counts.mac.parser_errors, 0);
+    assert_eq!((counts.echo_mismatches, counts.echo_missing), (0, 0));
+    assert!(bus.npdus.try_recv().is_err(), "nothing went up");
+    bus.stop().await;
 }
