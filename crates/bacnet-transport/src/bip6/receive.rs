@@ -17,8 +17,9 @@ use crate::udp_metadata::ReceivedDatagram;
 
 use super::frame::encoded;
 use super::ingress::{
-    destination_vmac_matches, forwarded_npdu_is_trusted, forwarded_source_is_usable,
-    group_destination, is_configured_bbmd, original_destination_matches, LocalBinding,
+    destination_vmac_matches, forwarded_address_resolution_is_trusted, forwarded_npdu_is_trusted,
+    forwarded_source_is_usable, group_destination, is_answerable_source,
+    original_destination_matches, LocalBinding,
 };
 use super::port::is_bip6_group;
 use super::reply_limit::ReplyLimiter;
@@ -63,9 +64,13 @@ pub(super) struct Receiver {
     /// Forwarded-NPDUs refused for a group origin (#1493), shared with the
     /// transport.
     pub(super) forwarded_group_origin_drops: Arc<AtomicU64>,
-    /// The quota the NAKs, and the Address-Resolution-ACKs answering a
-    /// Forwarded-Address-Resolution, count against.
-    pub(super) replies: ReplyLimiter,
+    /// The quota the NAKs for BBMD requests count against.
+    pub(super) nak_quota: ReplyLimiter,
+    /// The quota the Address-Resolution-ACKs answering a
+    /// Forwarded-Address-Resolution count against. It is separate from
+    /// `nak_quota`, so a flood of BBMD requests, which anyone can send from
+    /// many addresses, can't spend the budget these answers need.
+    pub(super) far_ack_quota: ReplyLimiter,
 }
 
 impl Receiver {
@@ -163,16 +168,20 @@ impl Receiver {
             return None;
         }
         // A Forwarded-Address-Resolution names the address its answer goes
-        // to, so it is taken only from a sender this node can vouch for: the
-        // BBMD it registers with as a foreign device. Any other node has no
-        // configured BBMD to check the sender against, so it takes none, not
-        // even the copy a BBMD multicasts to its own domain (U.4.4).
+        // to, so the path it came by decides whether it is answered.
         if function == Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION
-            && !is_configured_bbmd(received.peer, self.foreign_bbmd)
+            && !forwarded_address_resolution_is_trusted(
+                received.peer,
+                received.destination,
+                received.os_group_delivery,
+                &self.binding(),
+                self.foreign_bbmd,
+            )
         {
             debug!(
                 peer = %received.peer,
-                "Dropping Forwarded-Address-Resolution not sent by this node's BBMD"
+                destination = %received.destination,
+                "Dropping Forwarded-Address-Resolution from an untrusted path"
             );
             return None;
         }
@@ -207,9 +216,14 @@ impl Receiver {
         }
     }
 
-    /// `message` for `to`, unless the reply quota for `to` is spent.
-    fn limited(&self, to: SocketAddrV6, message: Bvll6<'static>) -> Option<Reply> {
-        if !self.replies.admit_now(*to.ip()) {
+    /// `message` for `to`, unless `quota` for `to` is spent.
+    fn limited(
+        &self,
+        quota: &ReplyLimiter,
+        to: SocketAddrV6,
+        message: Bvll6<'static>,
+    ) -> Option<Reply> {
+        if !quota.admit_now(*to.ip()) {
             debug!(
                 to = %to,
                 function = message.function().to_raw(),
@@ -227,28 +241,29 @@ impl Receiver {
     /// checked, and return the reply it calls for.
     ///
     /// This transport is never a B/IPv6 BBMD. Annex U's receive-side rules
-    /// for a node that isn't one, against what the transport does:
+    /// for a node that isn't one, against what the transport does. "Usable
+    /// source" means one [`is_answerable_source`] admits.
     ///
     /// | Message | Annex U asks | This transport | Clause |
     /// | --- | --- | --- | --- |
     /// | BVLC-Result | No reply: it reports on a request this node sent | Logged, a NAK at error level | U.2.1 |
     /// | Original-Unicast-NPDU | Take the NPDU when the destination VMAC is this node's, else discard | Handed up when sent to this node's address and VMAC | U.2.2, U.3 |
     /// | Original-Broadcast-NPDU | Take the NPDU | Handed up when sent to a BACnet multicast group | U.2.3, U.4 |
-    /// | Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker | Answered to the datagram's source when sent to a BACnet group and targeting this VMAC; outside the reply quota | U.2.4, U.5 |
-    /// | Forwarded-Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker's address it carries | A foreign device answers one sent to it by its configured BBMD when the target is its VMAC and the carried address is usable, within the quota; every other one is dropped | U.2.5, U.4.4, U.5 |
+    /// | Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker | Answered at a usable source when sent to a BACnet group and targeting this VMAC; no quota | U.2.4, U.5 |
+    /// | Forwarded-Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker's address it carries | Taken by a foreign device only by unicast from its configured BBMD, and by any other node only from a BACnet group with a usable source. Answered at the carried address when the target is this VMAC and that address is usable; the asker is then learned. FAR-answer quota | U.2.5, U.4.4, U.5 |
     /// | Address-Resolution-ACK | Update the VMAC table; discard one for another VMAC | Learned when sent to this node's address and VMAC | U.2.6, U.3, U.5 |
-    /// | Virtual-Address-Resolution | Unicast a Virtual-Address-Resolution-ACK to the asker | Answered when sent to this node's address; outside the quota | U.2.7, U.5 |
+    /// | Virtual-Address-Resolution | Unicast a Virtual-Address-Resolution-ACK to the asker | Answered at a usable source when sent to this node's address; no quota | U.2.7, U.5 |
     /// | Virtual-Address-Resolution-ACK | Update the VMAC table; discard one for another VMAC | Learned when sent to this node's address and VMAC; one naming this node's VMAC as its source is logged as a collision | U.2.8, U.3, U.5 |
     /// | Forwarded-NPDU | Take the NPDU as from its original source | Handed up from a BACnet group, or in foreign mode from the configured BBMD, when the original address is usable; that address is learned | U.2.9, U.4.4 |
-    /// | Register-Foreign-Device | Reply with its NAK | Its NAK to the datagram's source when sent to this node's address, within the quota | U.4.5.3 |
+    /// | Register-Foreign-Device | Reply with its NAK | Its NAK at a usable source other than this node's own address, when sent to this node's address. NAK quota | U.4.5.3 |
     /// | Delete-Foreign-Device-Table-Entry | Reply with its NAK | The same | U.4.5.4 |
     /// | Distribute-Broadcast-To-Network | Reply with its NAK | The same | U.4.4 |
     /// | Function 0x0B | Nothing: its clause was removed | Dropped as unknown before dispatch | U.2.12 |
     ///
-    /// The quota is [`ReplyLimiter`]'s. A reply goes either to the
-    /// datagram's source or, for a Forwarded-Address-Resolution from the
-    /// configured BBMD, to the asker's address that message carries; never
-    /// anywhere else.
+    /// The quotas are two [`ReplyLimiter`]s. A reply goes either to the
+    /// datagram's source or, for a Forwarded-Address-Resolution that came by
+    /// a trusted path ([`forwarded_address_resolution_is_trusted`]), to the
+    /// asker's address that message carries; never anywhere else.
     pub(super) async fn dispatch(
         &self,
         message: Bvll6<'_>,
@@ -352,7 +367,7 @@ impl Receiver {
                 // A node receiving VAR at its unicast B/IPv6 address
                 // answers with its own VMAC and the requester's VMAC.
                 Some(Reply {
-                    to: received.peer,
+                    to: reply_address(received.peer)?.into(),
                     message: Bvll6::VirtualAddressResolutionAck {
                         source: self.vmac,
                         destination: source,
@@ -362,14 +377,15 @@ impl Receiver {
 
             Bvll6::AddressResolution { source, target } => {
                 // AR: sender wants to know our B/IPv6 address from our VMAC.
-                // Outside the reply quota, like VAR: a flood must not stop
-                // this node answering another node's VMAC collision probe.
+                // Outside the reply quotas: a flood must not stop this node
+                // answering another node's VMAC collision probe, which is
+                // an AR for the prober's own VMAC.
                 if target != self.vmac {
                     return None;
                 }
                 debug!(vmac = ?self.vmac, "Received AR for our VMAC, sending AR-Ack");
                 Some(Reply {
-                    to: received.peer,
+                    to: reply_address(received.peer)?.into(),
                     message: Bvll6::AddressResolutionAck {
                         source: self.vmac,
                         destination: source,
@@ -385,9 +401,9 @@ impl Receiver {
                 if target != self.vmac {
                     return None;
                 }
-                // The answer goes to the asker, at the address the BBMD
-                // vouched for. That address carries no scope ID, so it must
-                // be one usable without one, as a Forwarded-NPDU's must.
+                // The answer goes to the asker, at the address the message
+                // carries. That address has no scope ID, so it must be one
+                // usable without one, as a Forwarded-NPDU's origin must.
                 let asker = SocketAddrV6::from(original_address);
                 if !forwarded_source_is_usable(asker) {
                     debug!(
@@ -396,6 +412,11 @@ impl Receiver {
                     );
                     return None;
                 }
+                // The VMAC table follows incoming messages (U.5). The asker
+                // is learned under the same guards as the answer (a trusted
+                // path, this node's VMAC as the target, a usable address),
+                // even when the quota then holds the answer back.
+                self.vmac_table.learn(original_source, asker).await;
                 debug!(
                     vmac = ?self.vmac,
                     asker = %asker,
@@ -405,7 +426,7 @@ impl Receiver {
                     source: self.vmac,
                     destination: original_source,
                 };
-                self.limited(asker, ack)
+                self.limited(&self.far_ack_quota, asker, ack)
             }
 
             Bvll6::AddressResolutionAck { source, .. } => {
@@ -446,32 +467,37 @@ impl Receiver {
             | Bvll6::DeleteForeignDeviceTableEntry { .. }
             | Bvll6::DistributeBroadcastToNetwork { .. } => {
                 let code = message.function().nak()?;
+                let source = reply_address(received.peer)?;
+                // This node never sends itself one, so a request from its own
+                // address is forged; refusing it would only NAK this node.
+                if encode_bip6_mac(*source.ip(), source.port()) == self.local_mac {
+                    debug!(
+                        function = message.function().to_raw(),
+                        "Dropping a BBMD request from this node's own address"
+                    );
+                    return None;
+                }
                 debug!(
                     function = message.function().to_raw(),
-                    peer = %received.peer,
+                    peer = %source,
                     "Refusing a BBMD request: this node is not a BBMD"
                 );
                 let nak = Bvll6::BvlcResult {
                     source: self.vmac,
                     code,
                 };
-                self.limited(reply_address(received.peer)?, nak)
+                self.limited(&self.nak_quota, source, nak)
             }
         }
     }
 }
 
-/// The address to answer a request at: the datagram's source, unless no
-/// node could send from it. IPv6 forbids a multicast source address, so a
-/// datagram claiming one is forged, and an answer to it would reach every
-/// member of the group.
+/// The address to answer a request at: the datagram's source, unless an
+/// answer there could reach more than one node or none
+/// ([`is_answerable_source`]).
 fn reply_address(peer: SocketAddr) -> Option<SocketAddrV6> {
     match peer {
-        SocketAddr::V6(peer)
-            if !peer.ip().is_multicast() && !peer.ip().is_unspecified() && peer.port() != 0 =>
-        {
-            Some(peer)
-        }
+        SocketAddr::V6(source) if is_answerable_source(peer) => Some(source),
         _ => {
             debug!(peer = %peer, "Not answering a request from an address no node sends from");
             None

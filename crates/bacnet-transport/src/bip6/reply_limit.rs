@@ -10,11 +10,16 @@
 //! address and in total, the pattern the B/IPv4 transport uses for its BBMD
 //! management requests (`bip::rate_limit`). It is its own type rather than
 //! that one, which is keyed by IPv4 address and private to the B/IPv4
-//! transport.
+//! transport. The receive loop keeps one for the NAKs and another for the
+//! Forwarded-Address-Resolution answers, so a NAK flood can't spend the
+//! budget those answers need.
 //!
 //! The answers to Address-Resolution and Virtual-Address-Resolution stay
-//! outside it: another node's VMAC collision check depends on them, and a
-//! flood that spent the quota would otherwise silence them.
+//! outside both: each is one datagram back to its sender, and a spent quota
+//! would silence them. Another node's VMAC collision probe is an
+//! Address-Resolution for its own VMAC (see the transport's startup), and a
+//! Virtual-Address-Resolution is how a peer learns this node's VMAC before
+//! it sends a unicast (U.5).
 //!
 //! Over-quota replies are dropped silently: none of these answers is
 //! retried by the transport, and the requester's own timeout covers the loss.

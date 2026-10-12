@@ -121,11 +121,9 @@ fn original_function_requires_matching_ip_destination_and_vmac() {
         &binding(local_ip, local_vmac, &[local_ip], false),
         Some(true),
     ));
-    // The requests this node answers by unicast, at an address the request
-    // names, must come to its own address: a group delivery would draw an
-    // answer from every member.
+    // The BBMD requests this node refuses must come to its own address: a
+    // group delivery would draw a NAK from every member.
     for function in [
-        Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION,
         Bvlc6Function::REGISTER_FOREIGN_DEVICE,
         Bvlc6Function::DELETE_FOREIGN_DEVICE_TABLE_ENTRY,
         Bvlc6Function::DISTRIBUTE_BROADCAST_TO_NETWORK,

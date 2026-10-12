@@ -863,14 +863,23 @@ it is dropped before the network layer sees it and counted in
 
 The transport is never a B/IPv6 BBMD. A Register-Foreign-Device,
 Delete-Foreign-Device-Table-Entry or Distribute-Broadcast-To-Network sent to
-its own address gets that request's BVLC-Result NAK, at the datagram's source
-(Annex U.4.4, U.4.5.3, U.4.5.4). A foreign device also answers a
-Forwarded-Address-Resolution for its VMAC with an Address-Resolution-ACK, but
-only one its configured BBMD sends it, and only when the asker's address in
-the message is a usable unicast one; any other is dropped (U.5). Those replies
-count against a per-address and overall quota, so forged requests can't turn
-the node into a reflector. Address-Resolution and Virtual-Address-Resolution
-answers stay outside it (#1632).
+its own address gets that request's BVLC-Result NAK at the datagram's source,
+unless that source is a group, unspecified, port 0 or this node's own address
+(Annex U.4.4, U.4.5.3, U.4.5.4).
+
+A Forwarded-Address-Resolution for the node's VMAC gets an
+Address-Resolution-ACK at the asker's address the message carries, when that
+address is a usable unicast one, and the asker is learned (U.5). A foreign
+device takes one only by unicast from its configured BBMD. Any other node
+takes the copy a BBMD multicasts into its domain (U.4.4), from a unicast
+source on a BACnet group. It has no configured BBMD to check against, but
+only the node that owns the target VMAC answers, with one datagram.
+
+The NAKs and these answers count against two separate quotas, each per
+destination address and overall, so forged requests can't turn the node into
+a reflector and a NAK flood can't silence address resolution.
+Address-Resolution and Virtual-Address-Resolution answers stay outside both
+(#1632).
 
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is

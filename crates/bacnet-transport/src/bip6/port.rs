@@ -398,7 +398,8 @@ impl TransportPort for Bip6Transport {
                 .map(|fd| (fd.bbmd_ip, fd.bbmd_port)),
             vmac_table: self.vmac_table.clone(),
             forwarded_group_origin_drops: Arc::clone(&self.forwarded_group_origin_drops),
-            replies: ReplyLimiter::default(),
+            nak_quota: ReplyLimiter::default(),
+            far_ack_quota: ReplyLimiter::default(),
         };
         let recv_task = tokio::spawn(receiver.run());
 
