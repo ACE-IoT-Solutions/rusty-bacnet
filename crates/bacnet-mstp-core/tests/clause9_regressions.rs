@@ -671,3 +671,61 @@ fn a_successor_search_past_one_above_max_master_starts_at_ns_plus_one() {
         (FrameType::PollForMaster, 3)
     );
 }
+
+/// With a successor above Max_Master, the address after PS never equals NS,
+/// so the maintenance polls every 50 token uses (Clause 9.5.6.5) would walk
+/// on round to this station itself. They poll every other address, then the
+/// sweep ends as ResetMaintenancePFM ends it. Found in review of the core
+/// fuzz target (#1640).
+#[test]
+fn maintenance_polls_never_reach_this_station_with_a_successor_above_max_master() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    core.on_deadline(ms(500)).unwrap();
+    core.on_deadline(ms(510)).unwrap();
+    let (poll, _) = take_transmit(&mut core, ms(510));
+    finish(&mut core, poll, ms(511));
+    validated(
+        &mut core,
+        FrameType::ReplyToPollForMaster,
+        1,
+        130,
+        &[],
+        ms(512),
+    );
+    core.on_deadline(ms(517)).unwrap();
+    let (token, _) = take_transmit(&mut core, ms(517));
+    finish(&mut core, token, ms(518));
+
+    // Station 130 hands the token straight back, round after round; after a
+    // poll the wait times out and the token goes to 130 again.
+    let mut polls = Vec::new();
+    for round in 0..60u64 {
+        let at = 600 + 100 * round;
+        validated(&mut core, FrameType::Token, 1, 130, &[], ms(at));
+        core.on_deadline(ms(at + 5)).unwrap();
+        let (first, header) = take_transmit(&mut core, ms(at + 5));
+        finish(&mut core, first, ms(at + 6));
+        if header.frame_type == FrameType::PollForMaster {
+            polls.push((round, header.destination));
+            core.on_deadline(ms(at + 26)).unwrap();
+            let (token, header) = take_transmit(&mut core, ms(at + 26));
+            assert_eq!(header.destination, 130);
+            finish(&mut core, token, ms(at + 27));
+        } else {
+            assert_eq!(
+                (header.frame_type, header.destination),
+                (FrameType::Token, 130)
+            );
+        }
+    }
+    assert_eq!(polls, [(50, 2), (51, 3), (52, 0)]);
+}

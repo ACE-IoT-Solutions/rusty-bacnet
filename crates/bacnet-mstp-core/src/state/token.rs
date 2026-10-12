@@ -220,7 +220,13 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 self.retry_token_count = 0;
                 return self.queue_token(self.next_station, Origin::Holder, now);
             }
-            if next_ps == self.next_station {
+            // The maintenance sweep ends (ResetMaintenancePFM, Clause
+            // 9.5.6.5) when the address after PS is NS. A successor above
+            // Max_Master, a station outside the master range that answered a
+            // poll, is never that address, so the sweep also ends before it
+            // would reach this station's own: every other address has been
+            // polled by then, and a station never polls itself.
+            if next_ps == self.next_station || next_ps == self.config.station {
                 self.poll_station = self.config.station;
                 self.token_count = 1;
                 if self.sole_master {
