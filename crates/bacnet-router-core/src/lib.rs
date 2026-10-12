@@ -16,6 +16,9 @@
 //!   to `bacnet-encoding`'s decoder field for field by a property test, and
 //!   a writer that refuses an NPDU too long for its buffer before writing an
 //!   octet.
+//! - [`message`]: the network-layer messages a router reads and sends:
+//!   their type codes, the reject reasons, and allocation-free views and
+//!   writers for their payloads.
 //!
 //! A port is identified by its index, a [`PortId`]; its MAC is a [`Mac`] of
 //! up to [`MAX_MAC_LEN`] octets.
@@ -30,6 +33,7 @@
 //! | --- | --- | --- |
 //! | The control octet says which NPCI fields follow, and they follow in one fixed order; a zero DNET, a zero or all-ones SNET and an empty SADR make the NPDU invalid | 6.2, 6.2.2, 6.2.2.1 | `tests/npdu_view.rs`: `view_agrees_with_decode_npdu` |
 //! | A DLEN or SLEN past any data link's address width is told apart from other faults, carrying the DNET and the source a reason-6 reject needs | 6.2.2.2, 6.4.4 | `tests/npdu_view.rs`: `over_long_addresses_carry_what_a_reject_needs` |
+//! | Each network-layer message's payload is read whole or not at all, and written in the layout the clause gives it | 6.4 | `tests/message.rs` |
 //!
 //! Beyond the clause, the view holds addresses to 18 octets, as the hosted
 //! codec does (#1141), tested in the same file.
@@ -42,6 +46,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod message;
 pub mod npdu;
 
 pub use bacnet_time::{Duration, Instant};

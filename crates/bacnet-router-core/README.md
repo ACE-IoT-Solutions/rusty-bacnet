@@ -22,6 +22,9 @@ a firmware router image come first (#1679).
   does, field for field, which a property test checks; an address longer
   than any data link uses is reported apart, with what a router needs to
   address its reject.
+- `message`: the network-layer message types and reject reasons, and views
+  and writers for the messages' data: network lists, rejects, routing-table
+  entries and the rest.
 
 ## Example
 
