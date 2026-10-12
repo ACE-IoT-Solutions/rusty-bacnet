@@ -100,6 +100,12 @@ impl<const H: usize> Holds<H> {
         true
     }
 
+    /// Drop every record.
+    pub(super) fn clear(&mut self) {
+        self.records[..self.len].fill(NO_HOLD);
+        self.len = 0;
+    }
+
     /// Drop every record for `network`: fresh learning or removal re-arms it.
     pub(super) fn forget(&mut self, network: u16) {
         let mut kept = 0;

@@ -73,10 +73,12 @@
 pub mod discovery;
 pub mod message;
 pub mod npdu;
+pub mod router;
 pub mod table;
 
 pub use bacnet_time::{Duration, Instant};
 pub use npdu::{Mac, MacTooLong};
+pub use router::{Router, Storage};
 
 /// The largest NPDU a B/IP or MS/TP port carries, in octets (Table 6-1;
 /// MS/TP needs extended frames for it, Clause 9.3).

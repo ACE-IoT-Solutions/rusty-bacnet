@@ -304,6 +304,16 @@ impl<const R: usize, const H: usize> Table<R, H> {
         }
     }
 
+    /// Forget every route, hold-down record and count, keeping the
+    /// convergence mode: what [`new`](Self::new) gives, without building a
+    /// second table.
+    pub(crate) fn clear(&mut self) {
+        self.slots[..self.len].fill(VACANT);
+        self.len = 0;
+        self.holds.clear();
+        self.counters = ClaimCounters::default();
+    }
+
     /// An empty table with hardened convergence.
     pub const fn new_hardened() -> Self {
         let mut table = Self::new();
