@@ -187,6 +187,10 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         self.withdraw_transmit(id);
         self.forget_pending();
         if tx.started {
+            // The driver was on until now, and each octet it sent restarted
+            // the line's silence (Clause 9.5.5.1), so T_no_token and the
+            // generation slots run from here, as they do from a completion.
+            self.last_activity = now;
             self.counters
                 .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
         }
