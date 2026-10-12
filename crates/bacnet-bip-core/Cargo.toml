@@ -1,6 +1,6 @@
 [package]
 name = "bacnet-bip-core"
-description = "Portable no-std BACnet/IP behaviour (Annex J): BBMD tables and broadcast forwarding"
+description = "Portable no-std BACnet/IP behaviour (Annex J): a sans-IO node engine, BBMD tables and broadcast forwarding"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
