@@ -111,14 +111,8 @@ pub struct BACnetServer {
     sc_heartbeat_timeout_ms: Option<u64>,
     // IPv6 config
     ipv6_interface: Option<String>,
-    // MS/TP config
-    serial_port: Option<String>,
-    mstp_baud: u32,
-    mstp_mac: u8,
-    mstp_max_master: u8,
-    mstp_max_info_frames: u8,
-    /// Extended MS/TP frames (Types 32 and 33), off by default (#1611).
-    mstp_extended_frames: bool,
+    /// The MS/TP keywords, `serial_port` included.
+    mstp: crate::mstp_py::MstpOptions,
     // Passwords
     dcc_password: Option<String>,
     mutation_policy: bacnet_server::mutation::MutationPolicy,

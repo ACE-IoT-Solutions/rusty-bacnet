@@ -1,10 +1,12 @@
 //! Helpers for constructing MS/TP transports from Python kwargs.
 
+use std::time::Duration;
+
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use bacnet_transport::any::AnyTransport;
-use bacnet_transport::mstp::{MstpConfig, MstpTransport};
+use bacnet_transport::mstp::{Echo, MstpConfig, MstpTransport};
 use bacnet_transport::mstp_serial::{self, SerialConfig, TokioSerialPort};
 use bacnet_types::error::Error;
 
@@ -49,36 +51,87 @@ pub(crate) fn validate_mstp_config(
     Ok(path)
 }
 
-/// Open an MS/TP transport from Python kwargs. `mstp_extended_frames` turns
-/// on extended frames (Types 32 and 33, NPDUs up to 1497 octets).
-pub fn build_mstp_transport(
-    serial_port: Option<&str>,
-    mstp_baud: u32,
-    mstp_mac: u8,
-    mstp_max_master: u8,
-    mstp_max_info_frames: u8,
-    mstp_extended_frames: bool,
-) -> PyResult<AnyTransport<PySerial>> {
+const ECHO_GRACE_WITHOUT_ECHO_ERROR: &str = "mstp_echo_grace_ms needs mstp_echo=True";
+const ZERO_ECHO_GRACE_ERROR: &str = "mstp_echo_grace_ms must be at least 1";
+
+/// The MS/TP keywords of `BACnetClient` and `BACnetServer`, kept as given:
+/// they are checked when the transport is built, before the port opens.
+#[derive(Debug, Clone)]
+pub(crate) struct MstpOptions {
+    pub(crate) serial_port: Option<String>,
+    pub(crate) baud: u32,
+    pub(crate) mac: u8,
+    pub(crate) max_master: u8,
+    pub(crate) max_info_frames: u8,
+    /// Extended frames (Types 32 and 33, NPDUs up to 1497 octets), off by
+    /// default (#1611).
+    pub(crate) extended_frames: bool,
+    /// The adapter returns every octet this station sends, and the
+    /// transport strips that echo (#1653).
+    pub(crate) echo: bool,
+    /// How long after a frame its echo may still be arriving, in
+    /// milliseconds; `None` is the transport's default grace.
+    pub(crate) echo_grace_ms: Option<u32>,
+}
+
+impl MstpOptions {
+    /// What the port's receiver hears while it transmits, as the echo
+    /// keywords declare it. A grace needs the echo on, and must not be zero,
+    /// which [`Echo::validate`] refuses too.
+    fn port_echo(&self) -> PyResult<Echo> {
+        let echo = match (self.echo, self.echo_grace_ms) {
+            (false, None) => Echo::None,
+            (false, Some(_)) => {
+                return Err(PyValueError::new_err(ECHO_GRACE_WITHOUT_ECHO_ERROR));
+            }
+            (true, None) => Echo::full(),
+            (true, Some(grace)) => Echo::Full {
+                grace: Duration::from_millis(u64::from(grace)),
+            },
+        };
+        echo.validate()
+            .map_err(|_| PyValueError::new_err(ZERO_ECHO_GRACE_ERROR))?;
+        Ok(echo)
+    }
+
+    fn config(&self) -> MstpConfig {
+        MstpConfig {
+            this_station: self.mac,
+            max_master: self.max_master,
+            max_info_frames: self.max_info_frames,
+            baud_rate: self.baud,
+            extended_frames: self.extended_frames,
+        }
+    }
+}
+
+/// Open an MS/TP transport from Python kwargs, all checked before the port
+/// opens.
+pub(crate) fn build_mstp_transport(options: &MstpOptions) -> PyResult<AnyTransport<PySerial>> {
+    let serial = open_port(options)?;
+    Ok(AnyTransport::Mstp(MstpTransport::new(
+        serial,
+        options.config(),
+    )))
+}
+
+/// Check the options, then open the serial port they name, declaring the
+/// echo they ask for.
+fn open_port(options: &MstpOptions) -> PyResult<TokioSerialPort> {
     let path = validate_mstp_config(
-        serial_port,
-        mstp_baud,
-        mstp_mac,
-        mstp_max_master,
-        mstp_max_info_frames,
+        options.serial_port.as_deref(),
+        options.baud,
+        options.mac,
+        options.max_master,
+        options.max_info_frames,
     )?;
+    let echo = options.port_echo()?;
     let serial = TokioSerialPort::open(&SerialConfig {
         port_name: path.to_string(),
-        baud_rate: mstp_baud,
+        baud_rate: options.baud,
     })
     .map_err(serial_error)?;
-    let config = MstpConfig {
-        this_station: mstp_mac,
-        max_master: mstp_max_master,
-        max_info_frames: mstp_max_info_frames,
-        baud_rate: mstp_baud,
-        extended_frames: mstp_extended_frames,
-    };
-    Ok(AnyTransport::Mstp(MstpTransport::new(serial, config)))
+    Ok(serial.with_echo(echo))
 }
 
 /// A serial failure as RuntimeError, with the serial layer's own message.
@@ -184,24 +237,42 @@ mod tests {
         }
     }
 
-    #[test]
-    fn valid_configuration_reaches_serial_open() {
-        Python::initialize();
+    fn missing_serial_path() -> String {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir()
+        std::env::temp_dir()
             .join(format!("rusty-bacnet-missing-{unique}"))
-            .join("serial-device");
-        let result = build_mstp_transport(
-            Some(path.to_string_lossy().as_ref()),
-            115_200,
-            1,
-            127,
-            255,
-            true,
-        );
+            .join("serial-device")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn options() -> MstpOptions {
+        MstpOptions {
+            serial_port: Some(missing_serial_path()),
+            baud: 38_400,
+            mac: 1,
+            max_master: 127,
+            max_info_frames: 1,
+            extended_frames: false,
+            echo: false,
+            echo_grace_ms: None,
+        }
+    }
+
+    #[test]
+    fn valid_configuration_reaches_serial_open() {
+        Python::initialize();
+        let result = build_mstp_transport(&MstpOptions {
+            baud: 115_200,
+            max_info_frames: 255,
+            extended_frames: true,
+            echo: true,
+            echo_grace_ms: Some(25),
+            ..options()
+        });
         let err = match result {
             Ok(_) => panic!("nonexistent serial device unexpectedly opened"),
             Err(err) => err,
@@ -216,5 +287,166 @@ mod tests {
                 "{message}"
             );
         });
+    }
+
+    /// The echo keywords declare the port's echo: none by default, the
+    /// transport's default grace with `mstp_echo` alone, or the grace given.
+    #[test]
+    fn echo_keywords_declare_the_ports_echo() {
+        let cases = [
+            (false, None, Echo::None),
+            (true, None, Echo::full()),
+            (
+                true,
+                Some(25),
+                Echo::Full {
+                    grace: Duration::from_millis(25),
+                },
+            ),
+        ];
+        for (echo, echo_grace_ms, expected) in cases {
+            let options = MstpOptions {
+                echo,
+                echo_grace_ms,
+                ..options()
+            };
+            assert_eq!(options.port_echo().unwrap(), expected, "{options:?}");
+        }
+    }
+
+    /// A zero grace, or any grace without the echo, is refused before the
+    /// port opens.
+    #[test]
+    fn echo_keywords_are_checked_before_open() {
+        Python::initialize();
+        let cases = [
+            (true, Some(0), ZERO_ECHO_GRACE_ERROR),
+            (false, Some(0), ECHO_GRACE_WITHOUT_ECHO_ERROR),
+            (false, Some(25), ECHO_GRACE_WITHOUT_ECHO_ERROR),
+        ];
+        for (echo, echo_grace_ms, message) in cases {
+            let options = MstpOptions {
+                echo,
+                echo_grace_ms,
+                ..options()
+            };
+            assert_py_error(build_mstp_transport(&options), message, true);
+        }
+    }
+
+    /// A pseudo-terminal from Python's `os.openpty`: both descriptors, and
+    /// the path of the side a serial port opens. The tests that use one are
+    /// Linux only: the serial backend's baud-rate ioctl refuses a
+    /// pseudo-terminal on macOS.
+    #[cfg(target_os = "linux")]
+    fn pseudo_terminal() -> ((i32, i32), String) {
+        Python::initialize();
+        Python::attach(|py| -> PyResult<((i32, i32), String)> {
+            let os = py.import("os")?;
+            let fds: (i32, i32) = os.call_method0("openpty")?.extract()?;
+            let path: String = os.call_method1("ttyname", (fds.1,))?.extract()?;
+            Ok((fds, path))
+        })
+        .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close(fds: (i32, i32)) {
+        Python::attach(|py| -> PyResult<()> {
+            let os = py.import("os")?;
+            os.call_method1("close", (fds.0,))?;
+            os.call_method1("close", (fds.1,))?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// The serial stream registers with the reactor of the runtime it opens
+    /// in, so a port opens inside one.
+    #[cfg(target_os = "linux")]
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// The port the keywords open declares the echo they ask for, its grace
+    /// included.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_opened_port_declares_the_echo() {
+        use bacnet_transport::mstp::SerialPort;
+
+        let (fds, path) = pseudo_terminal();
+        let runtime = runtime();
+        let _context = runtime.enter();
+        let at_path = MstpOptions {
+            serial_port: Some(path),
+            ..options()
+        };
+        let cases = [
+            (at_path.clone(), Echo::None),
+            (
+                MstpOptions {
+                    echo: true,
+                    ..at_path.clone()
+                },
+                Echo::full(),
+            ),
+            (
+                MstpOptions {
+                    echo: true,
+                    echo_grace_ms: Some(25),
+                    ..at_path
+                },
+                Echo::Full {
+                    grace: Duration::from_millis(25),
+                },
+            ),
+        ];
+        for (options, expected) in cases {
+            let serial = open_port(&options).unwrap();
+            assert_eq!(serial.echo(), expected, "{options:?}");
+        }
+        close(fds);
+    }
+
+    /// The echo reaches the running transport. A pseudo-terminal returns
+    /// nothing the station sends, so a station built with `mstp_echo` counts
+    /// its first frame's echo missing once the grace has passed; without
+    /// the echo declared, nothing would count it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_built_transport_waits_for_the_declared_echo() {
+        use bacnet_transport::port::TransportPort;
+
+        let (fds, path) = pseudo_terminal();
+        let options = MstpOptions {
+            serial_port: Some(path),
+            echo: true,
+            echo_grace_ms: Some(10),
+            ..options()
+        };
+        let counted = runtime().block_on(async {
+            let AnyTransport::Mstp(mut transport) = build_mstp_transport(&options).unwrap() else {
+                panic!("not an MS/TP transport");
+            };
+            let diagnostics = transport.diagnostics();
+            let _npdus = transport.start().await.unwrap();
+            // The first frame, a Poll For Master, goes out once T_no_token
+            // has passed, about half a second after the start.
+            let counted = tokio::time::timeout(Duration::from_secs(5), async {
+                while diagnostics.snapshot().echo_missing == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .is_ok();
+            transport.stop().await.unwrap();
+            counted
+        });
+        close(fds);
+        assert!(counted, "the station never counted an echo missing");
     }
 }

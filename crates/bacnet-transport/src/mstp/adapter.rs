@@ -31,11 +31,13 @@
 //!
 //! # Deadlines
 //!
-//! The task sleeps until [`MasterCore::next_deadline`], mapped onto Tokio
-//! time from the moment the transport started, and stamps
-//! [`MasterCore::on_deadline`] with the time it actually woke. A deadline
-//! serviced a millisecond or more late counts in the core's
-//! `deadline_misses`, published in [`MstpDiagnosticsSnapshot::mac`](super::MstpDiagnosticsSnapshot::mac).
+//! The task sleeps until the earliest of [`MasterCore::next_deadline`]
+//! (mapped onto Tokio time from the moment the transport started), the echo
+//! filter's next deadline and the first expiry in the deferred reply set
+//! (see below). It stamps [`MasterCore::on_deadline`] with the time it
+//! actually woke. A deadline serviced a millisecond or more late counts in
+//! the core's `deadline_misses`, published in
+//! [`MstpDiagnosticsSnapshot::mac`](super::MstpDiagnosticsSnapshot::mac).
 //! Reads are served first when both are ready, and a deadline that is
 //! already due is serviced right after each read, so a port that is always
 //! readable cannot hold a deadline back.
@@ -60,7 +62,17 @@
 //! requester, to go out when this station holds the token, as Clause
 //! 9.5.6.9 has a deferred reply do. It keeps its request's expiry (arrival
 //! plus the queue's maximum age) in the queue. The `replies` module bounds
-//! the set.
+//! the set; the task wakes at each channel's expiry to drop it, so an idle
+//! station holds no channel past its age.
+//!
+//! # End of file
+//!
+//! A read that returns no octets is the port's end of file (see
+//! [`SerialPort::read`]). The task lets other work run after one, and ends
+//! at the [`END_OF_FILE_READS`]th in a row, as it does at a read error: it
+//! counts it in `serial_read_errors` and logs it, and its end closes the
+//! NPDU channel and refuses later sends. Reads that return octets in
+//! between start the count again.
 
 use std::future::Future;
 use std::ops::Range;
@@ -93,6 +105,11 @@ mod transmit;
 
 /// Octets asked for in one serial read.
 const READ_CHUNK: usize = 512;
+
+/// Reads in a row that return no octets after which the task takes the
+/// port to be at its end of file. More than one, so that a single empty read
+/// from a port that breaks the contract does not end it.
+pub(super) const END_OF_FILE_READS: u32 = 3;
 
 type Core<'a> = MasterCore<'a, SharedQueues, MAX_EXTENDED_MPDU_DATA>;
 
@@ -150,6 +167,7 @@ impl<S: SerialPort> Task<S> {
             outgoing: None,
             replies: Replies::new(max_age),
             filter: EchoFilter::new(Duration::from_millis(super::HOST_FRAME_ABORT_MS)),
+            empty_reads: 0,
         };
         mac.run(&mut core).await;
     }
@@ -164,7 +182,8 @@ impl Drop for CloseOnExit {
     }
 }
 
-/// The serial port failed a read; the task ends.
+/// The serial port failed a read, or reached its end of file; the task
+/// ends.
 struct ReadFailed;
 
 /// What a frame being sent counts as in the diagnostics.
@@ -240,6 +259,8 @@ struct Mac<S> {
     tx_frame: Vec<u8>,
     outgoing: Option<Outgoing>,
     filter: EchoFilter,
+    /// Reads in a row that returned no octets.
+    empty_reads: u32,
 }
 
 impl<S: SerialPort> Mac<S> {
@@ -252,11 +273,14 @@ impl<S: SerialPort> Mac<S> {
                 }
                 continue;
             }
-            let deadline = core.next_deadline().map(|at| self.clock.instant(at));
-            let wake = match (deadline, self.filter.deadline()) {
-                (Some(core), Some(filter)) => Some(core.min(filter)),
-                (core, filter) => core.or(filter),
-            };
+            let wake = [
+                core.next_deadline().map(|at| self.clock.instant(at)),
+                self.filter.deadline(),
+                self.replies.next_expiry(),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             let sleep =
                 wake.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3_600));
             // Input before a deadline at the same moment: the core judges
@@ -268,18 +292,15 @@ impl<S: SerialPort> Mac<S> {
                     Resolved::Late(late) => self.late(late),
                 },
                 read = self.serial.read(&mut self.read_buf) => {
-                    match read {
-                        // Nothing read: let other work, an abort included,
-                        // run before the next read.
+                    match self.outcome(read) {
+                        // Nothing read, short of the end of file: let other
+                        // work, an abort included, run before the next read.
                         Ok(0) => tokio::task::yield_now().await,
                         Ok(count) => {
                             let now = self.clock.now();
                             self.receive(core, 0..count, now);
                         }
-                        Err(error) => {
-                            self.read_failed(&error);
-                            return;
-                        }
+                        Err(ReadFailed) => return,
                     }
                     self.timers(core);
                 }
@@ -568,9 +589,32 @@ impl<S: SerialPort> Mac<S> {
         }
     }
 
-    fn read_failed(&self, error: &Error) {
-        increment(&self.counts.serial_read_errors);
-        warn!("MS/TP serial read error: {error}");
+    /// Take what a read returned: the count of octets read, zero for an
+    /// empty read short of the end of file, or [`ReadFailed`] for an error
+    /// or the end of file, counted and logged.
+    fn outcome(&mut self, read: Result<usize, Error>) -> Result<usize, ReadFailed> {
+        match read {
+            Ok(0) => {
+                self.empty_reads = self.empty_reads.saturating_add(1);
+                if self.empty_reads < END_OF_FILE_READS {
+                    return Ok(0);
+                }
+                increment(&self.counts.serial_read_errors);
+                warn!(
+                    "MS/TP serial port at end of file: {END_OF_FILE_READS} reads in a row returned nothing"
+                );
+                Err(ReadFailed)
+            }
+            Ok(count) => {
+                self.empty_reads = 0;
+                Ok(count)
+            }
+            Err(error) => {
+                increment(&self.counts.serial_read_errors);
+                warn!("MS/TP serial read error: {error}");
+                Err(ReadFailed)
+            }
+        }
     }
 }
 

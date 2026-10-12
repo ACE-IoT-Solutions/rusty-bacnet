@@ -82,7 +82,17 @@ pub fn available_ports() -> Result<Vec<String>, Error> {
 ///
 /// Wraps `tokio_serial::SerialStream` for async RS-485 I/O. By default,
 /// assumes the hardware handles direction switching automatically (USB
-/// RS-485 adapters). On Linux, call [`enable_kernel_rs485`](Self::enable_kernel_rs485)
+/// RS-485 adapters).
+// The method exists only on Linux, so the link does too: a link to it would
+// be broken in docs built for any other platform.
+#[cfg_attr(
+    target_os = "linux",
+    doc = " On Linux, call [`enable_kernel_rs485`](Self::enable_kernel_rs485)"
+)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    doc = " On Linux, call `enable_kernel_rs485`"
+)]
 /// to use kernel-managed RTS direction control.
 ///
 /// Whether the port hears its own frames is a matter of wiring, which the

@@ -1025,7 +1025,33 @@ mod wpm_validation_tests;
 mod write_priority_tests;
 
 impl<T: TransportPort + 'static> BACnetClient<T> {
-    /// Create a generic builder that accepts a pre-built transport.
+    /// Create a generic builder that accepts a pre-built transport, such as
+    /// an MS/TP port. A serial port opened with `TokioSerialPort::open` (the
+    /// `serial` feature) takes the place of the in-memory line here; give
+    /// the [`MstpConfig`](bacnet_transport::mstp::MstpConfig) the port's
+    /// baud rate, which its timers follow.
+    ///
+    /// ```
+    /// use bacnet_client::client::BACnetClient;
+    /// use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), bacnet_types::error::Error> {
+    /// let (serial, _line) = LoopbackSerial::pair();
+    /// let config = MstpConfig {
+    ///     this_station: 1,
+    ///     max_master: 127,
+    ///     baud_rate: 76_800,
+    ///     ..MstpConfig::default()
+    /// };
+    /// let mut client = BACnetClient::generic_builder()
+    ///     .transport(MstpTransport::new(serial, config))
+    ///     .build()
+    ///     .await?;
+    /// client.stop().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn generic_builder() -> ClientBuilder<T> {
         ClientBuilder {
             config: ClientConfig::default(),

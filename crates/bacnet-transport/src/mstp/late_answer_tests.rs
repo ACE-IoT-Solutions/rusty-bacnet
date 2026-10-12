@@ -82,6 +82,37 @@ async fn an_answer_after_the_queue_age_is_dropped() {
     bus.stop().await;
 }
 
+/// The channel goes at its expiry even when nothing else happens then: the
+/// task wakes for it. Traffic between other stations keeps the station in
+/// IDLE until shortly before the expiry, then the line falls quiet, so the
+/// station's own next deadline (T_no_token after that traffic, 500 ms) comes
+/// well after the expiry.
+#[tokio::test(start_paused = true)]
+async fn a_channel_expires_on_time_on_a_quiet_line() {
+    const TICK: Duration = Duration::from_millis(1);
+    let mut bus = Bus::start(config(3, 4)).await;
+    let token = bus.join(4).await;
+    bus.until(token.end + bus.turnaround).await;
+    let arrived = bus.send(FrameType::BACnetDataExpectingReply, 3, 4, REQUEST);
+    let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
+    let sent = bus.next().await;
+    assert_eq!(sent.frame_type, FrameType::ReplyPostponed);
+    let expires = arrived + Duration::from_secs(5);
+    let mut at = sent.end + Duration::from_millis(300);
+    while at + Duration::from_millis(100) <= expires {
+        bus.until(at).await;
+        bus.send(FrameType::BACnetDataNotExpectingReply, 9, 4, &[1, 0, 1]);
+        at += Duration::from_millis(300);
+    }
+    bus.until(expires - TICK).await;
+    assert!(!reply.is_closed(), "the channel went before its expiry");
+    bus.until(expires + TICK).await;
+    assert!(reply.is_closed(), "the channel outlived its expiry");
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.late_answers_expired, 1);
+    bus.stop().await;
+}
+
 /// At most eight finished requests keep their channels: a ninth drops the
 /// oldest, counted, whose sender then fails; the newest still works.
 #[tokio::test(start_paused = true)]
