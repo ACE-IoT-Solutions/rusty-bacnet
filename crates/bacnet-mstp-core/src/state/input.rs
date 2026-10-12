@@ -38,7 +38,7 @@
 
 use super::*;
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Feed one wire-timestamped octet through the incremental codec.
     ///
     /// `now` is when the octet arrived. When it completes a frame, every
@@ -75,8 +75,13 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     ///
     /// A frame the codec would not have decoded is refused with
     /// [`CoreError::Frame`] and changes nothing, not even the core's clock:
-    /// more data than a standard frame carries (501 octets), source 255, or
-    /// a COBS-encoded type.
+    /// more data than its type carries, source 255, or, without
+    /// [`MstpCoreConfig::extended_frames`], a COBS-encoded type. A standard
+    /// type carries up to 501 octets. With extended frames on, Types 32 and
+    /// 33 carry up to 1497 and are taken as Types 5 and 6 are, and a
+    /// reserved COBS type (34-127), whatever its length, is a valid frame of
+    /// a type the core doesn't know (Clause 9.5.4.9): the assembler checked
+    /// its CRC-32K.
     ///
     /// - **Echo.** Between a confirmed transmit start and its completion the
     ///   frame is the station's own echo and is ignored, as octets are. A
@@ -93,16 +98,23 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     ///   feed back its own echo once the transmission has completed.
     pub fn on_validated_frame(&mut self, frame: Frame<'_>, now: Instant) -> Result<(), CoreError> {
         let header = frame.header;
-        if frame.data.len() > MAX_STANDARD_MPDU_DATA {
+        let extended = self.config.extended_frames && header.frame_type.is_cobs();
+        let maximum = match header.frame_type {
+            _ if !extended => MAX_STANDARD_MPDU_DATA,
+            frame_type if frame_type.is_extended_data() => MAX_EXTENDED_MPDU_DATA,
+            // A reserved type's data is never used.
+            _ => usize::MAX,
+        };
+        if frame.data.len() > maximum {
             return Err(CoreError::Frame(FrameError::Oversize {
                 length: frame.data.len(),
-                maximum: MAX_STANDARD_MPDU_DATA,
+                maximum,
             }));
         }
         if header.source == BROADCAST_MAC {
             return Err(CoreError::Frame(FrameError::BroadcastSource));
         }
-        if header.frame_type.is_cobs() {
+        if header.frame_type.is_cobs() && !extended {
             return Err(CoreError::Frame(FrameError::UnsupportedCobsFrame {
                 raw_type: header.frame_type.to_raw(),
             }));
@@ -112,7 +124,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             return Ok(());
         }
         self.note_bus_activity(now, 1)?;
-        self.process_owned_frame(Self::copy_frame(frame), now)
+        self.process_frame(frame, now)
     }
 
     /// Report a frame that a host-side assembler found invalid, as the core's

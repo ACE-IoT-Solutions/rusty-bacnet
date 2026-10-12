@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Abort an expired partial receive and report whether it had progressed
     /// beyond preamble search into a candidate HEADER or DATA frame. The data
     /// phase includes the codec skipping a dropped frame by count, whatever
@@ -31,42 +31,56 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Push one octet, then drain the decoder with empty pushes until it needs
     /// more input, as its stream protocol asks, acting on each frame and each
     /// dropped candidate on the way.
+    ///
+    /// A frame is acted on where the decoder holds it, with no copy: the
+    /// decoder is lent out of the core for the drain, so the frame can borrow
+    /// its storage while the core changes state. Nothing that a frame or a
+    /// dropped candidate leads to touches the decoder, and it is back in
+    /// place before this returns, whatever the outcome.
     pub(super) fn decode_octet(&mut self, byte: u8, now: Instant) -> Result<(), CoreError> {
+        let mut decoder = core::mem::replace(&mut self.decoder, StreamDecoder::new(&mut []));
+        let result = self.drain_decoder(&mut decoder, byte, now);
+        self.decoder = decoder;
+        result
+    }
+
+    fn drain_decoder(
+        &mut self,
+        decoder: &mut StreamDecoder<'rx>,
+        byte: u8,
+        now: Instant,
+    ) -> Result<(), CoreError> {
         let octet = [byte];
         let mut input: &[u8] = &octet;
         loop {
-            let mut frame = None;
-            let mut dropped = None;
-            match self.decoder.push_slice(input) {
+            let dropped = match decoder.push_slice(input) {
                 DecodeEvent::NeedMore => return Ok(()),
-                DecodeEvent::Invalid { .. } => {}
-                // The core doesn't take extended frames yet: one that the
-                // storage was large enough to decode is dropped as the
-                // codec used to drop every COBS type, but at its last
-                // octet rather than at its header.
-                DecodeEvent::Frame { frame: decoded, .. }
-                    if decoded.header.frame_type.is_cobs() =>
+                DecodeEvent::Invalid { .. } => None,
+                // A node without COBS support has no extended frames: one
+                // that the storage was large enough to decode is dropped as
+                // such a node drops it, but at its last octet rather than at
+                // its header (the decoder skips reserved types for it).
+                DecodeEvent::Frame { frame, .. }
+                    if frame.header.frame_type.is_cobs() && !self.config.extended_frames =>
                 {
-                    dropped = Some((
+                    Some((
                         FrameError::UnsupportedCobsFrame {
-                            raw_type: decoded.header.frame_type.to_raw(),
+                            raw_type: frame.header.frame_type.to_raw(),
                         },
-                        Some(decoded.header.destination),
+                        Some(frame.header.destination),
                     ))
                 }
-                DecodeEvent::Frame { frame: decoded, .. } => {
-                    frame = Some(Self::copy_frame(decoded))
+                DecodeEvent::Frame { frame, .. } => {
+                    self.process_frame(frame, now)?;
+                    None
                 }
                 DecodeEvent::Malformed {
                     error, destination, ..
-                } => dropped = Some((error, destination)),
+                } => Some((error, destination)),
                 // Only storage too small to hold a header refuses one octet.
-                DecodeEvent::Error(error) => dropped = Some((error, None)),
-            }
+                DecodeEvent::Error(error) => Some((error, None)),
+            };
             input = &[];
-            if let Some(frame) = frame {
-                self.process_owned_frame(frame, now)?;
-            }
             if let Some((error, destination)) = dropped {
                 if self.dropped_candidate_is_invalid(error, destination) {
                     self.counters.record_parser_error();
@@ -110,16 +124,6 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
     }
 
-    pub(super) fn copy_frame(frame: Frame<'_>) -> OwnedFrame {
-        let mut data = [0; MAX_STANDARD_MPDU_DATA];
-        data[..frame.data.len()].copy_from_slice(frame.data);
-        OwnedFrame {
-            header: frame.header,
-            length: frame.data.len(),
-            data,
-        }
-    }
-
     pub(super) fn invalid_frame_event(&mut self, now: Instant) -> Result<(), CoreError> {
         // While a frame of this station's waits, its octets were only
         // activity for that frame (see the `pending` module). While one is
@@ -137,9 +141,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         Ok(())
     }
 
-    pub(super) fn process_owned_frame(
+    /// Act on a valid frame, from the core's own decoder or a host assembler.
+    pub(super) fn process_frame(
         &mut self,
-        frame: OwnedFrame,
+        frame: Frame<'_>,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.counters.record_frame_received();
@@ -149,11 +154,11 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         if frame.header.source == self.config.station {
             self.counters.record_own_address_frame();
         }
-        if self.frame_while_pending(&frame, now)? {
+        if self.frame_while_pending(frame, now)? {
             return Ok(());
         }
         if self.pending_request.is_some() || self.state == MasterState::AnswerDataRequest {
-            self.frame_while_busy(&frame, true);
+            self.frame_while_busy(frame, true);
             return Ok(());
         }
         // A complete valid frame proves that another station began using the
@@ -178,11 +183,11 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             self.protocol_deadline = Some(now + self.config.t_no_token);
             return Ok(());
         }
+        let for_us = frame.header.destination == self.config.station;
+        let broadcast = frame.header.destination == BROADCAST_MAC;
         match frame.header.frame_type {
-            FrameType::Token if frame.header.destination == self.config.station => {
-                self.use_received_token(now)
-            }
-            FrameType::PollForMaster if frame.header.destination == self.config.station => {
+            FrameType::Token if for_us => self.use_received_token(now),
+            FrameType::PollForMaster if for_us => {
                 let window = self.poll_reply_window(now);
                 self.queue_frame(
                     FrameType::ReplyToPollForMaster,
@@ -193,37 +198,39 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                     now,
                 )
             }
-            FrameType::BACnetDataNotExpectingReply
-                if frame.header.destination == self.config.station
-                    || frame.header.destination == BROADCAST_MAC =>
-            {
-                self.deliver(&frame, None);
+            // ReceivedDataNoReply, and BroadcastDataNeedingReply for data
+            // that asks for a reply but went to everyone: up, without a
+            // request (Clause 9.5.6.2).
+            frame_type if is_data_not_expecting_reply(frame_type) && (for_us || broadcast) => {
+                self.deliver(frame, None);
                 Ok(())
             }
-            FrameType::BACnetDataExpectingReply if frame.header.destination == BROADCAST_MAC => {
-                self.deliver(&frame, None);
+            frame_type if is_data_expecting_reply(frame_type) && broadcast => {
+                self.deliver(frame, None);
                 Ok(())
             }
-            FrameType::BACnetDataExpectingReply
-                if frame.header.destination == self.config.station =>
-            {
-                self.begin_request(&frame, now)
+            // ReceivedDataNeedingReply.
+            frame_type if is_data_expecting_reply(frame_type) && for_us => {
+                self.begin_request(frame, now)
             }
-            FrameType::TestRequest if frame.header.destination == self.config.station => {
+            FrameType::TestRequest if for_us => {
                 let window = self.reply_window(now);
                 self.queue_frame(
                     FrameType::TestResponse,
                     frame.header.source,
-                    &frame.data[..frame.length],
+                    frame.data,
                     PostTransmit::Idle,
                     Origin::Answer(window),
                     now,
                 )
             }
-            _ if self.goes_up_whole(&frame) => {
-                self.deliver(&frame, None);
+            _ if self.goes_up_whole(frame) => {
+                self.deliver(frame, None);
                 Ok(())
             }
+            // ReceivedUnwantedFrame: for another station, or a type this
+            // node doesn't know, a reserved COBS type with a good CRC-32K
+            // included (Clause 9.5.4.9).
             _ => Ok(()),
         }
     }
@@ -235,13 +242,13 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// (ReceivedDataNoReply). Whether a proprietary type asks for a reply is
     /// the vendor's to define; the core knows of none that does, so it
     /// treats every one as needing none, broadcast included.
-    fn goes_up_whole(&self, frame: &OwnedFrame) -> bool {
+    fn goes_up_whole(&self, frame: Frame<'_>) -> bool {
         let header = frame.header;
         let for_us =
             header.destination == self.config.station || header.destination == BROADCAST_MAC;
         for_us
             && (header.frame_type == FrameType::TestResponse
-                || (header.frame_type.is_proprietary() && frame.length >= 2))
+                || (header.frame_type.is_proprietary() && frame.data.len() >= 2))
     }
 
     /// A station answered this station's Poll For Master: it becomes the
@@ -287,15 +294,15 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     ///
     /// Any frame but delivered data replaces a remembered Token, as a newer
     /// frame replaces a pending one in the receive state machine.
-    pub(super) fn frame_while_busy(&mut self, frame: &OwnedFrame, keep_token: bool) {
+    pub(super) fn frame_while_busy(&mut self, frame: Frame<'_>, keep_token: bool) {
         let header = frame.header;
         let for_us = header.destination == self.config.station;
         let broadcast = header.destination == BROADCAST_MAC;
         match header.frame_type {
-            FrameType::BACnetDataNotExpectingReply if for_us || broadcast => {
+            frame_type if is_data_not_expecting_reply(frame_type) && (for_us || broadcast) => {
                 self.deliver(frame, None);
             }
-            FrameType::BACnetDataExpectingReply if broadcast => {
+            frame_type if is_data_expecting_reply(frame_type) && broadcast => {
                 self.deliver(frame, None);
             }
             _ if self.goes_up_whole(frame) => {
@@ -305,6 +312,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             FrameType::Token
             | FrameType::PollForMaster
             | FrameType::BACnetDataExpectingReply
+            | FrameType::BACnetExtendedDataExpectingReply
             | FrameType::TestRequest
             | FrameType::ReplyToPollForMaster
                 if for_us =>
@@ -320,25 +328,28 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// the answer, whichever station sent it; the source is not compared with
     /// the station that was asked.
     ///
-    /// A data reply or a Test_Response is passed up (ReceivedReply). Any
-    /// other frame, a proprietary one included since the core knows no
-    /// proprietary reply, is unexpected: the station goes to IDLE without
-    /// passing it up, and drops the token (ReceivedUnexpectedFrame).
-    fn process_wait_for_reply(&mut self, frame: OwnedFrame, now: Instant) -> Result<(), CoreError> {
+    /// A data reply, standard or extended, or a Test_Response is passed up
+    /// (ReceivedReply). Any other frame, a proprietary one included since the
+    /// core knows no proprietary reply, is unexpected: the station goes to
+    /// IDLE without passing it up, and drops the token
+    /// (ReceivedUnexpectedFrame). So is a reserved COBS type with a good
+    /// CRC-32K, a valid frame of a type this node doesn't know (Clause
+    /// 9.5.4.9).
+    fn process_wait_for_reply(&mut self, frame: Frame<'_>, now: Instant) -> Result<(), CoreError> {
+        let frame_type = frame.header.frame_type;
         let is_reply = frame.header.destination == self.config.station
-            && matches!(
-                frame.header.frame_type,
-                FrameType::BACnetDataNotExpectingReply
-                    | FrameType::TestResponse
-                    | FrameType::ReplyPostponed
-            );
+            && (is_data_not_expecting_reply(frame_type)
+                || matches!(
+                    frame_type,
+                    FrameType::TestResponse | FrameType::ReplyPostponed
+                ));
         if !is_reply {
             self.set_state(MasterState::Idle);
             self.protocol_deadline = Some(now + self.config.t_no_token);
             return Ok(());
         }
-        if frame.header.frame_type != FrameType::ReplyPostponed {
-            self.deliver(&frame, None);
+        if frame_type != FrameType::ReplyPostponed {
+            self.deliver(frame, None);
         }
         self.set_state(MasterState::DoneWithToken);
         self.drive_token(now)
@@ -346,18 +357,16 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     /// Queue a frame's data for the layers above: BACnet data as an NPDU,
     /// anything else whole. Return whether it was queued; data that finds
-    /// every delivery slot full is dropped and counted.
-    pub(super) fn deliver(&mut self, frame: &OwnedFrame, request_id: Option<RequestId>) -> bool {
+    /// every delivery slot full, or is longer than one, is dropped and
+    /// counted.
+    pub(super) fn deliver(&mut self, frame: Frame<'_>, request_id: Option<RequestId>) -> bool {
         let header = frame.header;
         match self
             .actions
-            .enqueue_delivery(header, &frame.data[..frame.length], request_id)
+            .enqueue_delivery(header, frame.data, request_id)
         {
             Ok(()) => {
-                if matches!(
-                    header.frame_type,
-                    FrameType::BACnetDataExpectingReply | FrameType::BACnetDataNotExpectingReply
-                ) {
+                if carries_npdu(header.frame_type) {
                     self.counters.record_npdu_delivered();
                 } else {
                     self.counters.record_frame_delivered();
@@ -370,4 +379,22 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             }
         }
     }
+}
+
+/// BACnet data that asks for a reply: Type 5, or Type 32 for a longer NPDU
+/// (Clauses 9.3.6, 9.3.9). The core sees a Type 32 only with extended
+/// frames on.
+fn is_data_expecting_reply(frame_type: FrameType) -> bool {
+    matches!(
+        frame_type,
+        FrameType::BACnetDataExpectingReply | FrameType::BACnetExtendedDataExpectingReply
+    )
+}
+
+/// BACnet data that doesn't: Type 6, or Type 33 (Clauses 9.3.7, 9.3.10).
+fn is_data_not_expecting_reply(frame_type: FrameType) -> bool {
+    matches!(
+        frame_type,
+        FrameType::BACnetDataNotExpectingReply | FrameType::BACnetExtendedDataNotExpectingReply
+    )
 }

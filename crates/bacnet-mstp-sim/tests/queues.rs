@@ -112,3 +112,48 @@ fn a_high_max_info_frames_does_not_hold_the_token_on_an_empty_queue() {
     assert_eq!(next.start, second.end + sim.timing().bits(40));
     sim.assert_no_violations();
 }
+
+/// Clause 9.3 and the transmit watchdog: at 4800 baud the largest standard
+/// frame takes 1.06 s on the wire, longer than a one-second watchdog. The
+/// default for that rate outlasts it, so the frame goes out whole, nothing
+/// is aborted, and the token moves on.
+#[test]
+fn the_largest_standard_frame_goes_out_whole_at_4800_baud() {
+    const SLOWER: u32 = 4_800;
+    let mut sim = Sim::new(SimConfig::new(SLOWER));
+    for station in [0, 3] {
+        sim.add_master(MasterSpec::new(station, 3, SLOWER));
+    }
+    let mut largest = vec![0x3Cu8; MAX_STANDARD_MPDU_DATA];
+    largest[0] = 0x01;
+    largest[1] = 0x00;
+    sim.enqueue(ms(1_500), 3, 0, &largest);
+    sim.run_until(ms(8_000));
+    let sent = sent_by(sim.frames(), 3, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].octets.len(), MAX_STANDARD_FRAME_LENGTH);
+    assert!(sent[0].end - sent[0].start > millis(1_000));
+    assert!(sim
+        .deliveries(0)
+        .iter()
+        .any(|delivery| delivery.data == largest));
+    let counters = sim.core(3).unwrap().counters();
+    assert_eq!(counters.cancelled_sends, 0);
+    assert_eq!(counters.frames_transmitted, sent_by_count(sim.frames(), 3));
+    assert_eq!(
+        token_users(sim.frames(), ms(6_000))
+            .into_iter()
+            .collect::<Vec<u8>>(),
+        [0, 3]
+    );
+    assert!(!sim.perturbed());
+    sim.assert_no_violations();
+}
+
+/// Clean frames `source` sent.
+fn sent_by_count(frames: &[bacnet_mstp_sim::WireFrame], source: u8) -> u32 {
+    frames
+        .iter()
+        .filter(|frame| frame.is_clean() && frame.source() == Some(source))
+        .count() as u32
+}

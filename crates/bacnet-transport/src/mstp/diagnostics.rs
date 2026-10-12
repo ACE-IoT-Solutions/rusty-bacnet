@@ -244,7 +244,7 @@ fn published_core_counters_appear_in_snapshots() {
     use bacnet_mstp_core::{Duration, Instant};
 
     let handle = MstpDiagnostics::new();
-    let queues = SharedQueues::new();
+    let queues = SharedQueues::new(false);
     let mac = MstpCounters {
         frames_received: 3,
         ..MstpCounters::default()

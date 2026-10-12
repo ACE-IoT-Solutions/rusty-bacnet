@@ -11,10 +11,15 @@ use super::{
 
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
+///
+/// `N` is the longest NPDU a slot holds, as for
+/// [`HeaplessQueues`](super::HeaplessQueues): 501 octets by default, and
+/// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
+/// a core with extended frames on.
 #[derive(Debug)]
-pub struct AllocQueues {
-    unicast: Vec<Item<MAX_STANDARD_MPDU_DATA>>,
-    broadcast: Vec<Item<MAX_STANDARD_MPDU_DATA>>,
+pub struct AllocQueues<const N: usize = MAX_STANDARD_MPDU_DATA> {
+    unicast: Vec<Item<N>>,
+    broadcast: Vec<Item<N>>,
     unicast_capacity: usize,
     broadcast_capacity: usize,
     sequence: u64,
@@ -23,7 +28,7 @@ pub struct AllocQueues {
     broadcast_counters: QueueCounters,
 }
 
-impl AllocQueues {
+impl<const N: usize> AllocQueues<N> {
     /// Construct independently bounded queues.
     pub fn new(unicast_capacity: usize, broadcast_capacity: usize) -> Self {
         Self::with_starvation_limit(unicast_capacity, broadcast_capacity, 16)
@@ -112,15 +117,19 @@ impl AllocQueues {
     }
 }
 
-impl Default for AllocQueues {
+impl<const N: usize> Default for AllocQueues<N> {
     fn default() -> Self {
         Self::new(256, 256)
     }
 }
 
-impl QueueStorage for AllocQueues {
+impl<const N: usize> QueueStorage for AllocQueues<N> {
     fn set_starvation_limit(&mut self, limit: u8) {
         self.starvation_limit = limit;
+    }
+
+    fn max_npdu_length(&self) -> usize {
+        N
     }
 
     fn enqueue_npdu(
@@ -132,7 +141,7 @@ impl QueueStorage for AllocQueues {
         expires_at: Option<u64>,
     ) -> Result<(), QueueRejectReason> {
         let kind = QueueKind::from_destination(destination);
-        if payload.len() > MAX_STANDARD_MPDU_DATA {
+        if payload.len() > N {
             self.counters_mut(kind).record_drop_oversize();
             return Err(QueueRejectReason::Oversize);
         }
@@ -160,7 +169,7 @@ impl QueueStorage for AllocQueues {
             sequence: self.sequence,
             service_wait: 0,
             len: payload.len(),
-            payload: [0; MAX_STANDARD_MPDU_DATA],
+            payload: [0; N],
         };
         owned.payload[..payload.len()].copy_from_slice(payload);
         self.sequence = self.sequence.wrapping_add(1);

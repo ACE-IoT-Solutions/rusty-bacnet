@@ -464,6 +464,7 @@ async fn mstp_queue_and_admission_bounds_release() {
             max_master: 7,
             max_info_frames: 1,
             baud_rate: 9600,
+            extended_frames: false,
         },
     );
     let _npdus = transport.start().await.expect("transport must start");

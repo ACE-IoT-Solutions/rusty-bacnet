@@ -672,7 +672,8 @@ in their Confirmed-Request header. The codec helper
 saturates larger unsigned values at 1476. This conversion does not shrink raw
 byte budgets or I-Am values. It is separate from the exact-code encoder API.
 
-Built-in B/IP, B/IPv6, Ethernet and SC declare local APDU 1476; MS/TP declares 480.
+Built-in B/IP, B/IPv6, Ethernet and SC declare local APDU 1476; MS/TP declares 480,
+or 1476 with extended frames on (`MstpConfig::extended_frames`).
 Both registered B/IP port snapshots use local capacity independently of the
 Device/server ceiling. SC nodes advertise and enforce local NPDU 1478, including
 the two-byte plain NPDU header, on Hub, accepted-direct and outbound-direct
@@ -1457,7 +1458,9 @@ configuration gap is closed, not the full Annex AB profile or issue #513.
 
 MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes. The master node state machine is the portable `bacnet-mstp-core`, driven by the transport's Tokio task, and frames come from `bacnet-mstp-codec`, re-exported as `bacnet_transport::mstp::codec` for code that builds or reads frames (see [the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)).
 
-`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate; every Clause 9 timer is derived from them. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, and a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay). Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU over 501 octets (`Error::Encoding`) is refused at once.
+`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate; every Clause 9 timer is derived from them. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, and a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay). Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU longer than the port sends (`Error::Encoding`) is refused at once.
+
+`MstpConfig::extended_frames` (off by default) turns on the extended frame types, 32 and 33, which carry NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a routing node and leaves them optional for others, so `BACnetRouter::start` turns the flag on for every MS/TP port it routes, through `TransportPort::prepare_for_routing`, and a device keeps it off unless it sets it. With the flag on the port sends and takes NPDUs of up to 1497 octets (`MstpTransport::max_npdu_length`) and declares an APDU limit of 1476 instead of 480; an answer over 501 octets goes back as a Type 33. Without it, an extended frame the port hears counts as an invalid frame, as on a node without COBS support. On firmware, `MstpCoreConfig::with_extended_frames` sets the flag for `bacnet-mstp-core`, which then needs buffers sized for extended frames (`ExtendedActionBuffers`, 1497-octet queue slots and 1516 octets of receive storage). On a host each port's queues reserve about 770 KiB with the flag on, against about 270 KiB without, and the core's action buffers take about 13 KiB either way.
 
 #### Host Diagnostics and Qualification
 

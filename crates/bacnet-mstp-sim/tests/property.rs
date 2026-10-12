@@ -1,7 +1,8 @@
-//! Scenario (i): randomized runs. Each seed builds a ring, drives traffic
-//! through it and injects noise, damaged octets, power cuts, joins and a slow
-//! adapter for most of a run, then leaves it quiet; every invariant must hold
-//! throughout, and the ring must be whole again at the end.
+//! Scenario (i): randomized runs. Each seed builds a ring, some of whose
+//! masters take extended frames, drives traffic through it and injects
+//! noise, damaged octets, power cuts, joins and a slow adapter for most of a
+//! run, then leaves it quiet; every invariant must hold throughout, and the
+//! ring must be whole again at the end.
 //!
 //! Run it alone with `cargo nextest run -p bacnet-mstp-sim -E 'binary(property)'`.
 //! `MSTP_SIM_SEEDS=<n>` runs more seeds; `MSTP_SIM_SEED=<seed>` runs one;
@@ -31,8 +32,23 @@ struct Plan {
     stations: Vec<u8>,
 }
 
-fn reply_policy(rng: &mut SimRng) -> ReplyPolicy {
-    let payload = vec![0x01, 0x00, rng.byte()];
+/// An NPDU of 502 to 1497 octets, which only an extended frame carries.
+fn long_npdu(rng: &mut SimRng, expecting_reply: bool) -> Vec<u8> {
+    let length = rng.range(502, 1_498) as usize;
+    let mut npdu = rng.bytes(length);
+    npdu[0] = 0x01;
+    npdu[1] = if expecting_reply { 0x04 } else { 0x00 };
+    npdu
+}
+
+/// How a station's application answers. One that takes extended frames
+/// sometimes answers with an NPDU only an extended frame carries.
+fn reply_policy(rng: &mut SimRng, extended: bool) -> ReplyPolicy {
+    let payload = if extended && rng.chance(30) {
+        long_npdu(rng, false)
+    } else {
+        vec![0x01, 0x00, rng.byte()]
+    };
     match rng.below(4) {
         0 => ReplyPolicy::Answer {
             delay: Duration::from_millis(rng.range(1, 30)),
@@ -75,7 +91,10 @@ fn plan(seed: u64) -> Plan {
     // Tusage_delay (15 ms) even at 9600 baud.
     let slow = stations[rng.below(count as u64) as usize];
     let joiner = stations[rng.below(count as u64) as usize];
-    for &station in &stations {
+    // About half the masters take extended frames (Types 32 and 33); the
+    // rest count them as invalid frames, as nodes without COBS support do.
+    let extended: Vec<bool> = stations.iter().map(|_| rng.chance(50)).collect();
+    for (&station, &extended) in stations.iter().zip(&extended) {
         let mut adapter = AdapterSpec {
             deadline_jitter: Duration::from_micros(rng.range(0, 900)),
             echo: rng.chance(20),
@@ -88,9 +107,12 @@ fn plan(seed: u64) -> Plan {
             .max_info_frames(rng.range(1, 4) as u8)
             .queues(8, 8)
             .adapter(adapter)
-            .reply(reply_policy(&mut rng));
+            .reply(reply_policy(&mut rng, extended));
         if station == joiner {
             spec = spec.unpowered();
+        }
+        if extended {
+            spec = spec.extended_frames();
         }
         sim.add_master(spec);
     }
@@ -100,8 +122,9 @@ fn plan(seed: u64) -> Plan {
     );
 
     // Traffic while the faults last, a quarter of it requests to other
-    // masters.
-    for &station in &stations {
+    // masters. A master that takes extended frames sends a tenth of its
+    // NPDUs in them, whether the receiver takes them or not.
+    for (&station, &extended) in stations.iter().zip(&extended) {
         let mut at = rng.range(600, 900);
         while at < FAULTS_UNTIL {
             let to = if rng.chance(15) {
@@ -110,7 +133,12 @@ fn plan(seed: u64) -> Plan {
                 stations[rng.below(count as u64) as usize]
             };
             let request = to != 0xFF && to != station && rng.chance(25);
-            sim.enqueue(ms(at), station, to, &npdu(request, rng.byte()));
+            let npdu = if extended && rng.chance(10) {
+                long_npdu(&mut rng, request)
+            } else {
+                npdu(request, rng.byte())
+            };
+            sim.enqueue(ms(at), station, to, &npdu);
             at += rng.range(60, 300);
         }
     }

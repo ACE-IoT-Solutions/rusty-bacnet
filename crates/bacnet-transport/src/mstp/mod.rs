@@ -242,6 +242,22 @@ pub struct MstpConfig {
     /// rest) are derived (default: 9600). The core needs at least 2667 baud,
     /// so that 40 bit times of turnaround fit inside T_usage_delay.
     pub baud_rate: u32,
+    /// Take and send extended frames, Types 32 and 33, for NPDUs of up to
+    /// 1497 octets (default: off). Clause 9.3 requires them of a routing node and
+    /// leaves them optional for any other, so `bacnet_network`'s
+    /// `BACnetRouter` turns this on for every MS/TP port it routes (see
+    /// [`TransportPort::prepare_for_routing`](crate::port::TransportPort::prepare_for_routing)),
+    /// and a device keeps it off unless set here. With it on the port takes
+    /// APDUs of 1476 octets instead of 480, and its transmit watchdog covers
+    /// the longest extended frame
+    /// ([`MstpCoreConfig::with_extended_frames`]). See
+    /// [`MstpCoreConfig::extended_frames`] for what the core does with it.
+    ///
+    /// Memory per port: the queues reserve 512 slots, about 770 KiB with the
+    /// flag on (1497-octet slots) against about 270 KiB without; pages a
+    /// queue never fills are usually not committed. The core's action
+    /// buffers, about 13 KiB, are sized for extended frames either way.
+    pub extended_frames: bool,
 }
 
 impl Default for MstpConfig {
@@ -251,6 +267,7 @@ impl Default for MstpConfig {
             max_master: codec::MAX_MASTER,
             max_info_frames: 1,
             baud_rate: 9600,
+            extended_frames: false,
         }
     }
 }
@@ -268,6 +285,27 @@ impl MstpConfig {
         self.core_config().map(drop)
     }
 
+    /// The longest NPDU the port sends or takes: 1497 octets with
+    /// [`Self::extended_frames`] on, 501 otherwise.
+    pub fn max_npdu_length(&self) -> usize {
+        if self.extended_frames {
+            codec::MAX_EXTENDED_MPDU_DATA
+        } else {
+            codec::MAX_STANDARD_MPDU_DATA
+        }
+    }
+
+    /// The longest APDU the port carries, as the network layer sees it:
+    /// [`Self::max_npdu_length`] less room for the network header, 1476
+    /// octets with extended frames and 480 without.
+    pub fn max_apdu_length(&self) -> u16 {
+        if self.extended_frames {
+            1476
+        } else {
+            480
+        }
+    }
+
     /// The core configuration this one maps onto.
     pub(crate) fn core_config(&self) -> Result<MstpCoreConfig, Error> {
         let mut config = MstpCoreConfig::for_baud_rate(self.baud_rate)
@@ -276,6 +314,9 @@ impl MstpConfig {
         config.max_master = self.max_master;
         config.max_info_frames = self.max_info_frames;
         config.t_frame_abort = CoreDuration::from_millis(HOST_FRAME_ABORT_MS);
+        if self.extended_frames {
+            config = config.with_extended_frames();
+        }
         config
             .validate()
             .map_err(|error| self.config_error(error))?;
@@ -322,6 +363,8 @@ mod diagnostics_tests;
 mod echo_tests;
 #[cfg(test)]
 pub(crate) mod execution_tests;
+#[cfg(test)]
+mod extended_tests;
 #[cfg(test)]
 mod late_answer_tests;
 #[cfg(test)]

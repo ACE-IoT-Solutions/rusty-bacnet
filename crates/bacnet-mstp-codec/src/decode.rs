@@ -24,8 +24,10 @@ pub(crate) struct ValidFrame {
 }
 
 /// Check the preamble and the header at the start of `input`, in the order
-/// [`decode_frame`] lists.
-pub(crate) fn check_header(input: &[u8]) -> Result<GoodHeader, FrameError> {
+/// [`decode_frame`] lists. With `reserved_cobs`, a reserved COBS type
+/// (34-127) whose header passes is accepted, so that its encoded fields are
+/// checked as an extended frame's are.
+pub(crate) fn check_header(input: &[u8], reserved_cobs: bool) -> Result<GoodHeader, FrameError> {
     if input.len() < DATA_OFFSET {
         return Err(FrameError::TooShort {
             needed: DATA_OFFSET,
@@ -44,16 +46,20 @@ pub(crate) fn check_header(input: &[u8]) -> Result<GoodHeader, FrameError> {
     let frame_type = FrameType::from_raw(input[2]);
     let (destination, source) = (input[3], input[4]);
     let length = usize::from(u16::from_be_bytes([input[5], input[6]]));
-    check_header_fields(frame_type, source, length)?;
+    match check_header_fields(frame_type, source, length) {
+        Err(FrameError::UnsupportedCobsFrame { .. }) if reserved_cobs => {}
+        result => result?,
+    }
     Ok(GoodHeader {
         header: FrameHeader::new(frame_type, destination, source),
         length,
     })
 }
 
-/// Check the whole frame at the start of `input` without changing it.
-pub(crate) fn check_frame(input: &[u8]) -> Result<ValidFrame, FrameError> {
-    let GoodHeader { header, length } = check_header(input)?;
+/// Check the whole frame at the start of `input` without changing it; see
+/// [`check_header`] for `reserved_cobs`.
+pub(crate) fn check_frame(input: &[u8], reserved_cobs: bool) -> Result<ValidFrame, FrameError> {
+    let GoodHeader { header, length } = check_header(input, reserved_cobs)?;
     let consumed = wire_length(length);
     if input.len() < consumed {
         return Err(FrameError::Truncated {
@@ -77,8 +83,8 @@ pub(crate) fn check_frame(input: &[u8]) -> Result<ValidFrame, FrameError> {
     })
 }
 
-/// Decode the extended frame that [`check_frame`] accepted at the start of
-/// `input` in place, so its data starts where its Encoded Data field did.
+/// Decode the COBS-encoded frame that [`check_frame`] accepted at the start
+/// of `input` in place, so its data starts where its Encoded Data field did.
 pub(crate) fn decode_extended_in_place(input: &mut [u8], valid: &ValidFrame) {
     if valid.header.frame_type.is_cobs() {
         cobs::decode_data_in_place(&mut input[DATA_OFFSET..valid.consumed]);
@@ -118,13 +124,13 @@ pub(crate) fn decode_extended_in_place(input: &mut [u8], valid: &ValidFrame) {
 /// # Ok::<(), FrameError>(())
 /// ```
 pub fn decode_frame(input: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
-    let frame_type = check_header(input)?.header.frame_type;
+    let frame_type = check_header(input, false)?.header.frame_type;
     if frame_type.is_cobs() {
         return Err(FrameError::ExtendedFrame {
             raw_type: frame_type.to_raw(),
         });
     }
-    let valid = check_frame(input)?;
+    let valid = check_frame(input, false)?;
     let frame = Frame {
         header: valid.header,
         data: &input[DATA_OFFSET..DATA_OFFSET + valid.data_length],
@@ -156,7 +162,7 @@ pub fn decode_frame(input: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
 /// # Ok::<(), FrameError>(())
 /// ```
 pub fn decode_frame_in_place(input: &mut [u8]) -> Result<(Frame<'_>, usize), FrameError> {
-    let valid = check_frame(input)?;
+    let valid = check_frame(input, false)?;
     decode_extended_in_place(input, &valid);
     let frame = Frame {
         header: valid.header,

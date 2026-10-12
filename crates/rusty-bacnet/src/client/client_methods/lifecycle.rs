@@ -23,6 +23,7 @@ impl BACnetClient {
         mstp_mac=1,
         mstp_max_master=127,
         mstp_max_info_frames=1,
+        mstp_extended_frames=false,
         sc_device_uuid=None,
         share_port_by_address=false,
         min_request_interval_ms=0
@@ -46,6 +47,7 @@ impl BACnetClient {
         mstp_mac: u8,
         mstp_max_master: u8,
         mstp_max_info_frames: u8,
+        mstp_extended_frames: bool,
         sc_device_uuid: Option<Vec<u8>>,
         share_port_by_address: bool,
         min_request_interval_ms: u64,
@@ -83,6 +85,7 @@ impl BACnetClient {
             mstp_mac,
             mstp_max_master,
             mstp_max_info_frames,
+            mstp_extended_frames,
             min_request_interval_ms,
         })
     }
@@ -111,6 +114,7 @@ impl BACnetClient {
         let mstp_mac = slf.borrow().mstp_mac;
         let mstp_max_master = slf.borrow().mstp_max_master;
         let mstp_max_info_frames = slf.borrow().mstp_max_info_frames;
+        let mstp_extended_frames = slf.borrow().mstp_extended_frames;
         let min_request_interval_ms = slf.borrow().min_request_interval_ms;
 
         crate::py_async::future_into_py(py, async move {
@@ -173,6 +177,7 @@ impl BACnetClient {
                     mstp_mac,
                     mstp_max_master,
                     mstp_max_info_frames,
+                    mstp_extended_frames,
                 )?,
                 other => {
                     return Err(PyRuntimeError::new_err(format!(

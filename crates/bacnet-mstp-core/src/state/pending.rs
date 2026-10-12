@@ -108,7 +108,7 @@ impl PendingSend {
     }
 }
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Encode a frame and send it once the line has been quiet for
     /// T_turnaround: at once if it already has, otherwise from the deadline.
     ///
@@ -194,7 +194,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// IDLE, which takes it up.
     pub(super) fn frame_while_pending(
         &mut self,
-        frame: &OwnedFrame,
+        frame: Frame<'_>,
         now: Instant,
     ) -> Result<bool, CoreError> {
         let Some(pending) = self.pending_send else {

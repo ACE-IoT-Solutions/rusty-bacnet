@@ -1,10 +1,20 @@
 //! The Tokio adapter that drives the portable master core.
 //!
 //! The transport's task owns the [`MasterCore`], its receive storage and a
-//! boxed [`ActionBuffers`]; the core borrows the two buffers for as long as
-//! the task's future lives, so they go away with the task, whether it ends
-//! or is aborted. The core's queues are shared with the send calls (see the
-//! `queues` module).
+//! boxed [`ExtendedActionBuffers`]; the core borrows the two buffers for as
+//! long as the task's future lives, so they go away with the task, whether
+//! it ends or is aborted. The core's queues are shared with the send calls
+//! (see the `queues` module).
+//!
+//! # Extended frames
+//!
+//! The action buffers and the core's NPDU scratch are always sized for
+//! extended frames, whatever the configuration: on a host they cost only
+//! memory, and one core type serves both settings. What changes behaviour
+//! follows [`MstpConfig::extended_frames`](super::MstpConfig::extended_frames):
+//! the core's flag, the receive storage (a standard frame's, or an extended
+//! one's), and the queues' slot size, which is what refuses an NPDU too long
+//! to send at the send call.
 //!
 //! # Input: the octet path
 //!
@@ -58,10 +68,13 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
-use bacnet_mstp_codec::{FrameType, BROADCAST_MAC, MAX_STANDARD_FRAME_LENGTH};
+use bacnet_mstp_codec::{
+    FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
+    MAX_STANDARD_FRAME_LENGTH,
+};
 use bacnet_mstp_core::{
-    Action, ActionBuffers, CoreError, Direction, MasterCore, MasterState, MstpCoreConfig,
-    QueueRejectReason, ReplyDecision, RequestId, TransmitId, DEFAULT_DELIVERY_SLOTS,
+    Action, CoreError, Direction, ExtendedActionBuffers, MasterCore, MasterState, MstpCoreConfig,
+    QueueRejectReason, ReplyDecision, RequestId, TransmitId,
 };
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -81,7 +94,7 @@ mod transmit;
 /// Octets asked for in one serial read.
 const READ_CHUNK: usize = 512;
 
-type Core<'a> = MasterCore<'a, SharedQueues>;
+type Core<'a> = MasterCore<'a, SharedQueues, MAX_EXTENDED_MPDU_DATA>;
 
 /// The transport's task: everything it needs, moved in at start.
 pub(super) struct Task<S> {
@@ -105,8 +118,15 @@ impl<S: SerialPort> Task<S> {
             counts,
         } = self;
         let _closed = CloseOnExit(queues.clone());
-        let mut rx_storage = vec![0u8; MAX_STANDARD_FRAME_LENGTH];
-        let mut buffers = Box::new(ActionBuffers::<DEFAULT_DELIVERY_SLOTS>::new());
+        let mut rx_storage = vec![
+            0u8;
+            if config.extended_frames {
+                MAX_EXTENDED_FRAME_LENGTH
+            } else {
+                MAX_STANDARD_FRAME_LENGTH
+            }
+        ];
+        let mut buffers: Box<ExtendedActionBuffers> = Box::default();
         let shared = queues.clone();
         let mut core =
             match MasterCore::new(config, queues, &mut rx_storage, &mut buffers, clock.now()) {
@@ -126,7 +146,7 @@ impl<S: SerialPort> Task<S> {
             queues: shared,
             octet_time: Duration::from_micros(config.octet_time().as_micros()),
             read_buf: vec![0; READ_CHUNK],
-            tx_frame: Vec::with_capacity(MAX_STANDARD_FRAME_LENGTH),
+            tx_frame: Vec::with_capacity(MAX_EXTENDED_FRAME_LENGTH),
             outgoing: None,
             replies: Replies::new(max_age),
             filter: EchoFilter::new(Duration::from_millis(super::HOST_FRAME_ABORT_MS)),
@@ -162,9 +182,17 @@ impl SentKind {
     /// request, so a data frame is that answer.
     fn of(frame: &[u8], answering: bool) -> Self {
         match frame.get(2).copied().map(FrameType::from_raw) {
-            Some(FrameType::BACnetDataExpectingReply) => Self::DataExpectingReply,
-            Some(FrameType::BACnetDataNotExpectingReply) if answering => Self::DirectAnswer,
-            Some(FrameType::BACnetDataNotExpectingReply) => Self::QueuedData,
+            Some(
+                FrameType::BACnetDataExpectingReply | FrameType::BACnetExtendedDataExpectingReply,
+            ) => Self::DataExpectingReply,
+            Some(
+                FrameType::BACnetDataNotExpectingReply
+                | FrameType::BACnetExtendedDataNotExpectingReply,
+            ) if answering => Self::DirectAnswer,
+            Some(
+                FrameType::BACnetDataNotExpectingReply
+                | FrameType::BACnetExtendedDataNotExpectingReply,
+            ) => Self::QueuedData,
             Some(FrameType::ReplyPostponed) => Self::ReplyPostponed,
             _ => Self::Other,
         }
@@ -407,7 +435,7 @@ impl<S: SerialPort> Mac<S> {
             Ok(()) => {}
             Err(CoreError::ReplyOversize { length, maximum }) => {
                 increment(&self.counts.outbound_oversize);
-                warn!("MS/TP application reply length {length} exceeds standard-frame maximum {maximum}");
+                warn!("MS/TP application reply length {length} exceeds the port's maximum NPDU {maximum}");
                 // No answer can be sent, so the request is postponed.
                 let _ = core.complete_request(current.id, ReplyDecision::Postponed, now);
             }
@@ -571,6 +599,12 @@ mod tests {
         assert_eq!(SentKind::of(&frame(6), true), SentKind::DirectAnswer);
         assert_eq!(SentKind::of(&frame(6), false), SentKind::QueuedData);
         assert_eq!(SentKind::of(&frame(7), true), SentKind::ReplyPostponed);
+        assert_eq!(
+            SentKind::of(&frame(0x20), false),
+            SentKind::DataExpectingReply
+        );
+        assert_eq!(SentKind::of(&frame(0x21), true), SentKind::DirectAnswer);
+        assert_eq!(SentKind::of(&frame(0x21), false), SentKind::QueuedData);
         assert_eq!(SentKind::of(&frame(0), false), SentKind::Other);
         assert_eq!(SentKind::of(&[0x55], false), SentKind::Other);
     }
