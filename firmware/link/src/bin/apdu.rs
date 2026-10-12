@@ -6,11 +6,16 @@
 //! hands the allocator the arena, then runs [`firmware_link::apdu::run`] once
 //! on the hand-written datagrams. Those and the summary pass through
 //! [`core::hint::black_box`], so none of the work can be optimized away, and
-//! then it loops. Nothing runs it: building it proves that `bacnet-encoding`
-//! and `bacnet-services` link `no_std` with `alloc`, with no symbol only a
-//! hosted target provides, and `scripts/ci/check-firmware-link.sh` checks
-//! its sizes. On a host the binary is a stub; `tests/apdu.rs` runs the
-//! scenario there.
+//! then it loops. CI never runs it: building it proves that
+//! `bacnet-encoding` and `bacnet-services` link `no_std` with `alloc`, with
+//! no symbol only a hosted target provides, and
+//! `scripts/ci/check-firmware-link.sh` checks its sizes. On a host the
+//! binary is a stub; `tests/apdu.rs` runs the scenario there.
+//!
+//! The emulation build (the `emulate` feature) swaps in the reset entry of
+//! `emulated`, which runs under QEMU by hand: it runs the same scenario, and
+//! the `emulate` module checks the summary against
+//! `firmware_link::apdu::expected()` and reports through semihosting.
 //!
 //! The image, not a library, chooses what only a firmware may:
 //!
@@ -24,7 +29,8 @@
 //!
 //! The only `unsafe` code is what the allocator, the critical section and
 //! the runtimes need: the arena's hand-over, the Cortex-M critical section,
-//! and the code the runtimes' entry macros generate.
+//! and the code the runtimes' entry macros generate; and in the emulation
+//! build, the `emulate` module's.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
@@ -54,7 +60,7 @@ mod heap {
 }
 
 /// Cortex-M (ARMv6-M and ARMv7-M), on cortex-m-rt.
-#[cfg(all(target_os = "none", target_arch = "arm"))]
+#[cfg(all(target_os = "none", target_arch = "arm", not(feature = "emulate")))]
 mod image {
     use core::hint::black_box;
 
@@ -132,7 +138,7 @@ mod single_core {
 }
 
 /// RISC-V (RV32IMC, the ESP32-C3 class), on riscv-rt.
-#[cfg(all(target_os = "none", target_arch = "riscv32"))]
+#[cfg(all(target_os = "none", target_arch = "riscv32", not(feature = "emulate")))]
 mod image {
     use core::hint::black_box;
 
@@ -151,6 +157,41 @@ mod image {
         loop {
             core::hint::spin_loop();
         }
+    }
+}
+
+// The emulation build's harness, documented in its file.
+#[cfg(all(target_os = "none", feature = "emulate"))]
+mod emulate;
+
+/// The emulation build's reset entry, on either runtime: `image`'s, with the
+/// summary going to the harness instead of `black_box`. The datagrams still
+/// pass through `black_box`, so the scenario can't be worked out at compile
+/// time.
+#[cfg(all(target_os = "none", feature = "emulate"))]
+mod emulated {
+    use core::hint::black_box;
+
+    use firmware_link::apdu::{expected, run, DATAGRAMS};
+
+    /// Links riscv's single-hart critical section, as in `image`.
+    #[cfg(target_arch = "riscv32")]
+    use riscv as _;
+
+    /// On Cortex-M, as `image::main`.
+    #[cfg(target_arch = "arm")]
+    #[cortex_m_rt::entry]
+    fn main() -> ! {
+        super::heap::init();
+        crate::emulate::finish(&run(black_box(&DATAGRAMS)), expected)
+    }
+
+    /// On RISC-V, as `image::main`.
+    #[cfg(target_arch = "riscv32")]
+    #[riscv_rt::entry]
+    fn main() -> ! {
+        super::heap::init();
+        crate::emulate::finish(&run(black_box(&DATAGRAMS)), expected)
     }
 }
 

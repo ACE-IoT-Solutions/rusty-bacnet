@@ -15,11 +15,15 @@
 //! - **Capacity:** fill the unicast queue and offer an NPDU too long for a
 //!   standard frame.
 //!
-//! `tests/mstp.rs` runs it natively and compares the whole summary; the
-//! `mstp` image (`src/bin/mstp.rs`) links it.
+//! `tests/mstp.rs` runs it natively and compares the whole summary with
+//! [`EXPECTED`]; the `mstp` image (`src/bin/mstp.rs`) links it, and its
+//! emulation build checks the emulated CPU's summary against the same.
 
 mod codec;
+mod expected;
 mod link;
+
+pub use expected::EXPECTED;
 
 use bacnet_mstp_codec::{FrameType, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA};
 use bacnet_mstp_core::{ActionBuffers, HeaplessQueues, MasterCore, MasterState};

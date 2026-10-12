@@ -140,6 +140,10 @@ riscv = "0.16.1"
 # The host test of the apdu image's arena (#1635): the allocator
 # embedded-alloc's `llff` heap wraps, here with its own spin lock.
 linked_list_allocator = "0.10.6"
+# The firmware link test's emulation build (#1626): its images print and
+# exit under QEMU through semihosting, on Cortex-M and RISC-V alike, without
+# cortex-m and the unmaintained bare-metal crate it depends on.
+semihosting = { version = "0.1.25", features = ["stdio"] }
 
 [workspace.lints.rust]
 # Workspace floor. `bacnet-transport` overrides nothing: each FFI site
@@ -167,3 +171,10 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# The same images built to run under QEMU (#1626), which
+# scripts/emu/emulate-firmware.sh builds with the `emulate` feature and a
+# board's. A profile of their own keeps them out of target/<triple>/firmware,
+# where the link test reads the images it measures.
+[profile.emulate]
+inherits = "firmware"

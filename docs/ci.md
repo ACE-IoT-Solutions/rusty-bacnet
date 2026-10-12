@@ -263,9 +263,10 @@ targets, so a crate that needs one builds only with a backend such as
   `tests/apdu.rs` run them and compare each whole summary, so the
   behaviour is checked natively, in every `--workspace` test run on Linux,
   macOS and Windows. Each image's reset entry calls its scenario, passing
-  the inputs and the summary through `core::hint::black_box`. Nothing runs
-  the images, under an emulator or otherwise: building them proves that
-  they link, and measures them.
+  the inputs and the summary through `core::hint::black_box`. CI never
+  runs the images: building them proves that they link, and measures them.
+  The [emulation check](#emulation-manual), run by hand, runs them on
+  emulated boards.
 - **The apdu image's allocator and atomics.** A library never chooses
   these; the image does, as a firmware would, and only on bare-metal
   targets (a host build uses std's allocator):
@@ -400,7 +401,8 @@ targets, so a crate that needs one builds only with a backend such as
   (3,360 octets for `HeaplessQueues<4, 2>`) and `ActionBuffers<1>` (1,028),
   5,544 octets in all with the codec part's buffers. The core itself, 504
   octets on these targets, is built on the stack. `.bss` doesn't count the
-  stack. `cargo nextest run -p firmware-link` prints the host sizes from the
+  stack; the [emulation check](#emulation-manual) measures how deep it goes.
+  `cargo nextest run -p firmware-link` prints the host sizes from the
   `ram_sizes` test. The apdu image's `.bss` is its 1 KiB arena and the
   allocator's 32-octet state: what its scenario builds lives in the arena
   or on the stack, and `heap_fits_the_arena` measures the arena's use.
@@ -419,6 +421,126 @@ bash scripts/ci/check-firmware-link.sh --suggest             # budgets as the im
 cargo nextest run -p firmware-link                           # the scenarios, natively
 python3 scripts/ci/test-firmware-size.py                     # the size helper's tests
 ```
+
+### Emulation (manual)
+
+The [firmware link test](#firmware-link-test) builds its images and CI never
+runs them. `scripts/emu/emulate-firmware.sh` (#1626) runs them, on boards
+QEMU emulates, so each stack's code executes on the instruction set it was
+built for. It is a manual check, run at intervals such as a toolchain bump
+or a change to a `no_std` crate's hot paths: no push, pull request or
+schedule runs it, and no required check depends on it.
+
+- **What runs.** The `emulate` feature of `firmware-link`, with one board
+  feature, builds an emulation build of each image (mstp, bip and apdu).
+  Its reset entry runs the same scenario as the link test's image, with
+  its input still behind `black_box`, then checks the summary against the
+  one the host test asserts: `firmware_link::mstp::EXPECTED`,
+  `bip::EXPECTED` and `apdu::expected()`, shared by both so they can't
+  drift. It prints the summary and a verdict through semihosting and exits
+  with a status QEMU passes on (below). The build uses the `emulate`
+  profile, the `firmware` profile under its own name, so the link test's
+  images in `target/<triple>/firmware` stay as they were; they are built
+  without the feature, and are byte for byte what they were before it
+  existed.
+- **Semihosting** comes from the `semihosting` crate (taiki-e), which
+  covers Arm M-profile and RISC-V without `cortex-m`, whose `bare-metal`
+  dependency Cargo Deny refuses (RUSTSEC-2026-0110). It is a bare-metal,
+  optional dependency with no dependencies of its own, so host builds never
+  compile it; `Cargo.lock` lists it, so Cargo Deny covers it.
+- **Boards.** Each has its own memory layout in `firmware/link/boards/`,
+  which `build.rs` takes instead of the generic `memory.x` when the board's
+  feature is on; the sizes come from QEMU's own memory map (`info mtree`).
+
+  | Board (`board-*` feature) | QEMU machine | CPU | Target | Flash, RAM | Why |
+  | --- | --- | --- | --- | --- | --- |
+  | `microbit` | `microbit` | nRF51822, Cortex-M0 | `thumbv6m-none-eabi` | 256 KiB at 0, 16 KiB at `0x20000000` | QEMU's ARMv6-M board, and the smallest RAM, the tightest fit for the stacks |
+  | `lm3s6965evb` | `lm3s6965evb` | LM3S6965, Cortex-M3 | `thumbv7m-none-eabi` | 256 KiB at 0, 64 KiB at `0x20000000` | The classic Cortex-M3 target for QEMU, the same sizes as the link test's layout (`mps2-an385` would do too) |
+  | `netduinoplus2` | `netduinoplus2` | STM32F405, Cortex-M4F | `thumbv7em-none-eabihf` | 1 MiB at `0x08000000`, 128 KiB at `0x20000000` | The link test's addresses, with an FPU, which cortex-m-rt turns on for an `eabihf` target |
+  | `sifive-e` | `sifive_e` | SiFive E31, RV32IMAC | `riscv32imc-unknown-none-elf` | 512 KiB of the XIP flash from `0x20400000`, 16 KiB at `0x80000000` | Like an MCU: code runs in place from flash and data lives in a small RAM, unlike `virt`, which loads everything into its RAM. RV32IMC code runs unchanged on an RV32IMAC core |
+
+  `thumbv7em-none-eabihf` isn't one of the link test's targets. Its images
+  build there too, a little smaller than `thumbv7m-none-eabi`'s, within
+  that target's budgets (flash 18,364, 10,872 and 43,628 octets for mstp,
+  bip and apdu); adding it to `FIRMWARE_TARGETS` needs budget tables of
+  its own.
+- **Exit statuses.** QEMU exits with the image's status. A run fails on
+  any status but 0:
+
+  | Status | Meaning | What the image prints |
+  | --- | --- | --- |
+  | 0 | The summary is as expected, with stack paint to spare | `summary: …`, then `PASS <image> on <board> (<target>): …; stack peak N of M octets` |
+  | 1 | The summary differs | `expected:` and `actual:`, each pretty-printed so they diff field by field, then `FAIL …` |
+  | 2 | The summary is as expected, but no stack paint is left: the stack may have run into the statics | `FAIL …` |
+  | 3 | The CPU faulted | `FAIL …: HardFault at pc …` on Cortex-M, `exception <mcause> at pc …` on RISC-V |
+  | 101 | The image panicked | `FAIL …: panicked at <file>:<line>:<column>:` and the message |
+  | 124 | Still running at the timeout (30 s by default), so the runner killed it | Whatever it printed before. A hang, or a fault before the handlers could report |
+
+  For a fault, look up the program counter in the emulation build, such as
+  `target/thumbv6m-none-eabi/emulate/mstp`, with `llvm-objdump -d` or
+  `addr2line`. On `lm3s6965evb`, QEMU warns that the board's Ethernet
+  controller "has no peer"; nothing uses it, and the warning is harmless.
+- **Stack.** At reset the runtime paints the stack, from the end of the
+  statics to the top of RAM, with `0xCCCC_CCCC`: cortex-m-rt's
+  `paint-stack` feature on Cortex-M, and on RISC-V a `__pre_init` in
+  assembly, which riscv-rt's `pre-init` feature calls before RAM is set up.
+  After the scenario the harness scans up from the bottom for the first
+  word that lost the paint, before it builds the expected summary or
+  prints anything, and reports that depth as the peak. It counts the
+  words the scenario's frames wrote, so a frame's untouched padding goes
+  uncounted, and it covers the emulation build, which runs the same
+  scenario code with the same profile as the link test's image. The peaks,
+  measured with Rust 1.99.0 and QEMU 10.0.13, in octets (the stack's room
+  in parentheses, all of RAM above the statics):
+
+  | Target (board) | mstp | bip | apdu |
+  | --- | --- | --- | --- |
+  | `thumbv6m-none-eabi` (`microbit`) | 4,552 (10,840) | 2,220 (16,252) | 2,768 (15,328) |
+  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 4,056 | 2,100 | 2,536 |
+  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 4,056 | 2,100 | 2,536 |
+  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 3,960 (10,840) | 2,020 (16,252) | 2,464 (15,328) |
+
+  So the MS/TP image needs about 9.6 KB of RAM on ARMv6-M: 5,544 octets of
+  statics and 4.5 KB of stack. Nothing budgets the stack yet; these numbers
+  are a record, to compare with after a change.
+- **The runner.** `emulate-firmware.sh` builds the images on the host with
+  the pinned toolchain (clippy first, as the link test does), then hands
+  them to `scripts/emu/run-qemu.sh`, which runs each on its board with a
+  timeout, prints what it reports and a table of results, and exits
+  non-zero if any failed. By default that happens in a Docker image built
+  from `scripts/emu/Dockerfile` on first use and tagged
+  `rusty-bacnet-emu:<the first 12 hex digits of the Dockerfile's SHA-256>`,
+  so editing the file builds a new image. It is reproducible: Debian 13.7
+  slim pinned by its index digest (amd64 and arm64), apt pointed at the
+  Debian snapshot archive at the date that image was built from, and
+  `qemu-system-arm` and `qemu-system-riscv` pinned to version
+  `1:10.0.13+ds-0+deb13u1` (QEMU 10.0.13). The image takes about 330 MB;
+  remove it with `docker image rm rusty-bacnet-emu:<tag>`. The container
+  gets no network and read-only mounts of the images and `scripts/emu`.
+  `--native` runs the same `run-qemu.sh` on the host's QEMU instead
+  (Homebrew's `qemu` on a Mac), whose version may differ.
+
+```bash
+rustup target add thumbv6m-none-eabi thumbv7m-none-eabi thumbv7em-none-eabihf riscv32imc-unknown-none-elf
+bash scripts/emu/emulate-firmware.sh                     # every board, QEMU in Docker
+bash scripts/emu/emulate-firmware.sh microbit sifive_e   # some boards
+bash scripts/emu/emulate-firmware.sh --native            # the QEMU on PATH (brew install qemu)
+bash scripts/emu/emulate-firmware.sh --timeout 60        # seconds per image (default 30)
+```
+
+- **The workflow.** `.github/workflows/emulation.yml` runs the script, with
+  Docker, on GitHub's `ubuntu-24.04` runner. Its only trigger is
+  `workflow_dispatch`: start it from the Actions tab ("Emulation", then
+  "Run workflow" on a branch) or with `gh workflow run emulation.yml --ref
+  <branch>`, and follow it with `gh run watch`. Its one job, "Emulation:
+  firmware images under QEMU", reads the repository and nothing else. It
+  isn't part of `CI OK` or `Native OK`, and `scripts/release/ci_gate.py`
+  reads only `ci.yml` and `native-tests.yml` runs, so it can never stand in
+  for either.
+- **Cost.** On an Apple M5 with Docker Desktop, the twelve runs take about
+  a second each once the images are built; the builds, clippy included,
+  about a minute from a cold target directory; and the Docker image about
+  30 s the first time.
 
 ### Runner
 
@@ -519,7 +641,8 @@ The Lint job's "Check the pins" step fails when:
   scripts/ci/check-firmware-link.sh --suggest` prints a budget table for each
   image, each size plus 12% (see [Firmware link test](#firmware-link-test)).
   Copy the tables into the file, and the sizes the check then prints into
-  its comments.
+  its comments. Then run the [emulation check](#emulation-manual) and
+  update the stack peaks it records.
 - **MSRV:** `Cargo.toml`'s `rust-version`, `RUST_MSRV` and
   `scripts/ci/check-msrv.sh` together.
 - **Fuzz nightly:** `RUST_FUZZ_NIGHTLY`, normally to a nightly of the
