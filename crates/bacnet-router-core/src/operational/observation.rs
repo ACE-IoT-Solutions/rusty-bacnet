@@ -1,7 +1,7 @@
 //! Exactly-once observation adapters for the typed router boundaries.
 //!
 //! These methods intentionally observe the result returned by one owner at a
-//! time.  They do not inspect a broadcast report, wrap an [`Egress`], or infer
+//! time.  They do not inspect a broadcast report, wrap an [`Egress`](crate::Egress), or infer
 //! a second transmission from a generated rejection descriptor.  The caller
 //! therefore has one unambiguous place to record each terminal result.
 
