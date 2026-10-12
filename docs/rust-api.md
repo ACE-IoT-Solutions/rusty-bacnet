@@ -845,6 +845,14 @@ the log; the counters carry the signal. A full channel still warns, at most
 once every 10 seconds, with the number of NPDUs dropped since the last
 warning.
 
+The transport sends NPDUs up to 1497 octets, the most a B/IP data link
+carries (Table 6-1); a BBMD's Forwarded-NPDU of one is a 1507-octet datagram.
+A longer NPDU, unicast or broadcast, fails with `Error::Encoding` before
+anything is sent, and counts in `send_counters().npdu_too_long`, whose totals
+survive a restart (#1622). A router forwarding one onto a B/IP port logs the
+failed send, but doesn't tell the sender yet; the Reject-Message-To-Network
+for it comes with #1665.
+
 ### BIP6 (IPv6)
 
 ```rust
@@ -4605,6 +4613,7 @@ let outgoing = bip_client.transport().bvlc_client_snapshot();
 let management = bip_client.transport().management_counters();
 let fanout = bip_client.transport().fanout_counters();
 let dropped = bip_client.transport().receive_counters(); // datagrams dropped on receipt, by reason
+let refused = bip_client.transport().send_counters(); // NPDUs refused on send, by reason
 let fdt = bip_client.transport().fdt_counters(); // None unless a BBMD
 let bbmd = bip_client.transport().bbmd_state().cloned(); // Option<Arc<std::sync::Mutex<BbmdState>>>
 

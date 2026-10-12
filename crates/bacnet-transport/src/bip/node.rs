@@ -35,6 +35,7 @@ use tracing::{debug, info, warn};
 
 use super::client_snapshot::{ClientRecord, ForeignRegistrationSnapshot};
 use super::rate_limit::ManagementRateLimiter;
+use super::send_counters::SendRefusals;
 use super::BipSocket;
 use crate::bbmd;
 use crate::bvll::{bvll_error, encode_bvll, BvllMessage};
@@ -236,6 +237,8 @@ pub(super) struct NodeHandle {
     clock: HostClock,
     socket: Arc<BipSocket>,
     record: Arc<ClientRecord>,
+    /// Where the sends the link refuses are counted.
+    refusals: Arc<SendRefusals>,
     /// A foreign device's renewal interval.
     renewal: Option<CoreDuration>,
     state: Mutex<NodeState>,
@@ -244,15 +247,17 @@ pub(super) struct NodeHandle {
 }
 
 impl NodeHandle {
-    /// The node on `link`, sending from `socket` and counting into
-    /// `record`. A foreign device's first registration attempt is admitted
-    /// at once and sent when the driver first runs, which is also when what
-    /// the node counted for it reaches `record`, as with the registration
-    /// worker before the engine.
+    /// The node on `link`, sending from `socket`, counting its exchanges
+    /// into `record` and the sends its link refuses into `refusals`. A
+    /// foreign device's first registration attempt is admitted at once and
+    /// sent when the driver first runs, which is also when what the node
+    /// counted for it reaches `record`, as with the registration worker
+    /// before the engine.
     pub(super) fn new(
         link: Link,
         socket: Arc<BipSocket>,
         record: Arc<ClientRecord>,
+        refusals: Arc<SendRefusals>,
     ) -> Result<Self, Error> {
         let clock = HostClock::new();
         let node = HostNode::new(link, clock.now()).map_err(config_error)?;
@@ -265,6 +270,7 @@ impl NodeHandle {
             clock,
             socket,
             record,
+            refusals,
             renewal,
             state: Mutex::new(NodeState {
                 node,
@@ -293,6 +299,12 @@ impl NodeHandle {
     /// The socket every send leaves from.
     pub(super) fn socket(&self) -> &Arc<BipSocket> {
         &self.socket
+    }
+
+    /// The error for a send the link refused, counted.
+    pub(super) fn refuse_send(&self, refusal: SendRefusal) -> Error {
+        self.refusals.count(refusal);
+        send_refusal(refusal)
     }
 
     fn lock(&self) -> MutexGuard<'_, NodeState> {
@@ -348,7 +360,10 @@ impl NodeHandle {
     /// is kept until the node releases or drops it.
     pub(super) fn admit_broadcast(&self, npdu: &[u8]) -> Result<Admission, Error> {
         self.with(|state, now| {
-            let admission = state.node.admit_broadcast(now).map_err(send_refusal)?;
+            let admission = state
+                .node
+                .admit_broadcast(now)
+                .map_err(|refusal| self.refuse_send(refusal))?;
             if admission == Admission::Hold {
                 state.held.push_back(Bytes::copy_from_slice(npdu));
             }
@@ -496,6 +511,6 @@ fn config_error(error: ConfigError) -> Error {
     Error::Encoding(error.to_string())
 }
 
-pub(super) fn send_refusal(refusal: SendRefusal) -> Error {
+fn send_refusal(refusal: SendRefusal) -> Error {
     Error::Encoding(refusal.to_string())
 }

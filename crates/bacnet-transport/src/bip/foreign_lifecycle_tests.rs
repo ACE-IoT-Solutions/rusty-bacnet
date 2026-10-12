@@ -417,7 +417,8 @@ async fn check_tiny_interval_pacing(busy: bool, local_error: bool) {
         bacnet_bip_core::node::Mode::Foreign(config.engine(interval)),
     );
     let record = Arc::new(client_snapshot::ClientRecord::default());
-    let node = Arc::new(node::NodeHandle::new(link, socket, Arc::clone(&record)).unwrap());
+    let node = node::NodeHandle::new(link, socket, Arc::clone(&record), Arc::default());
+    let node = Arc::new(node.unwrap());
     let started = tokio::time::Instant::now();
     let worker = tokio::spawn(Arc::clone(&node).drive());
     // For the busy case, the first attempt fails at once and frees its
