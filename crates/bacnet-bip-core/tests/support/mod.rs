@@ -5,9 +5,8 @@
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
-use bacnet_bip_core::bbmd::{
-    Context, LocalSubnet, RegistrationLimits, Reservation, Tables, Target,
-};
+use bacnet_bip_core::bbmd::{Context, RegistrationLimits, Reservation, Tables, Target};
+use bacnet_bip_core::LocalSubnet;
 use bacnet_bip_core::{Duration, Instant};
 
 /// The default B/IP port.

@@ -170,8 +170,8 @@ pub(super) fn warn_if_broadcast_may_leave_another_interface(
 
 /// The mask of the subnet `ip`, this BBMD's own address, is on, as the
 /// host reports it; `None`, logged at debug, when it can't say. A peer's
-/// Forwarded-NPDU sent from that subnet isn't broadcast on it again (Annex
-/// J.4.5). An all-zero mask would put every sender on the subnet, so it
+/// Forwarded-NPDU sent from that subnet at the BBMD's own port isn't
+/// broadcast on it again (Annex J.4.5). An all-zero mask would put every sender on the subnet, so it
 /// counts as unknown. Listing adapters can be slow, so it runs on a
 /// blocking thread.
 pub(super) async fn subnet_mask_of(ip: Ipv4Addr) -> Option<Ipv4Addr> {

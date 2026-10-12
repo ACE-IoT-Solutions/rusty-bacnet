@@ -7,7 +7,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::{Duration, Instant};
 
 use bacnet_bip_codec::BvlcResultCode;
-use bacnet_bip_core::bbmd::ForwardRefusal;
+use bacnet_bip_core::bbmd::{DistributeRefusal, ForwardRefusal};
 use bacnet_bip_core::Arrival;
 
 use super::*;
@@ -115,7 +115,7 @@ fn a_registration_lapses_just_after_its_ttl_plus_the_grace_period() {
         LOCAL_BROADCAST,
         now + nanosecond,
     );
-    assert_eq!(refused.unwrap_err(), ForwardRefusal::NotRegistered);
+    assert_eq!(refused.unwrap_err(), DistributeRefusal::NotRegistered);
     assert_eq!(bbmd.fdt_counters().registrations_expired, 1);
 
     let now = t0 + Duration::from_secs(90);
@@ -131,7 +131,7 @@ fn a_registration_lapses_just_after_its_ttl_plus_the_grace_period() {
         LOCAL_BROADCAST,
         now + nanosecond,
     );
-    assert_eq!(refused.unwrap_err(), ForwardRefusal::NotRegistered);
+    assert_eq!(refused.unwrap_err(), DistributeRefusal::NotRegistered);
 }
 
 /// Without a policy a message goes to at most 32 foreign devices: the
@@ -238,4 +238,37 @@ fn only_an_accepted_forward_purges() {
     assert!(forward.remote.is_empty(), "the lapsed device gets nothing");
     assert_eq!(bbmd.fdt_len_for_test(), 0);
     assert_eq!(bbmd.fdt_counters().registrations_expired, 1);
+}
+
+/// The receive path applies the subnet mask the host reported: a peer on
+/// this BBMD's subnet at its own port reached the subnet's devices itself,
+/// one at another port serves another B/IP network there (Annex J.1.2).
+#[test]
+fn the_receive_path_skips_the_rebroadcast_for_a_peer_on_the_own_subnet_and_port() {
+    let neighbour = ([10, 0, 0, 2], OWN.1);
+    let other_network = ([10, 0, 0, 3], OWN.1 + 1);
+    let remote = ([10, 9, 0, 1], OWN.1);
+    let mut bbmd = bbmd(ForeignDevicePolicy::default());
+    let rows = [neighbour, other_network, remote].map(|(ip, port)| BdtEntry {
+        ip,
+        port,
+        broadcast_mask: [255; 4],
+    });
+    bbmd.set_bdt(rows.to_vec()).unwrap();
+    let now = Instant::now();
+    let origin = at([10, 9, 0, 7], 0xBAC0);
+    let local = |bbmd: &mut BbmdState, (ip, port): ([u8; 4], u16)| {
+        bbmd.forward_forwarded_npdu(at(ip, port), Arrival::Unicast, origin, LOCAL_BROADCAST, now)
+            .unwrap()
+            .local_broadcast
+    };
+
+    // Without a mask every peer's unicast forward is rebroadcast.
+    for peer in [neighbour, other_network, remote] {
+        assert_eq!(local(&mut bbmd, peer), Some(LOCAL_BROADCAST), "{peer:?}");
+    }
+    bbmd.set_subnet_mask(Some(Ipv4Addr::new(255, 255, 255, 0)));
+    assert_eq!(local(&mut bbmd, neighbour), None);
+    assert_eq!(local(&mut bbmd, other_network), Some(LOCAL_BROADCAST));
+    assert_eq!(local(&mut bbmd, remote), Some(LOCAL_BROADCAST));
 }

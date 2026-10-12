@@ -251,8 +251,8 @@ pub struct BbmdState {
     /// Both tables. The BDT holds this BBMD's own B/IP address.
     tables: Tables,
     /// The mask of the subnet this BBMD's own address is on, when the host
-    /// reports it: a peer's Forwarded-NPDU sent from that subnet isn't
-    /// broadcast on it again (Annex J.4.5).
+    /// reports it: a peer's Forwarded-NPDU sent from that subnet at this
+    /// BBMD's own port isn't broadcast on it again (Annex J.4.5).
     subnet_mask: Option<Ipv4Addr>,
     /// Allowed source IPs for Delete-Foreign-Device-Table-Entry.
     /// Empty means deny all (fail closed).
@@ -439,7 +439,7 @@ impl BbmdState {
                     self.counters.capacity_exhausted += 1;
                 }
                 self.counters.registrations_rejected += 1;
-                BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK
+                refusal.result_code()
             }
         }
     }
@@ -511,7 +511,8 @@ impl BbmdState {
     /// Whether a Forwarded-NPDU that this BDT peer sent by unicast is also
     /// broadcast on this BBMD's subnet (Annex J.4.5): this BBMD's own BDT
     /// row has the two-hop mask, so peers send to it alone, and the peer
-    /// isn't on this BBMD's subnet. The sender's own row doesn't matter. One
+    /// isn't on this BBMD's subnet at its own port (once the transport has
+    /// the subnet's mask). The sender's own row doesn't matter. One
     /// that arrives by broadcast never is; see
     /// [`Tables::rebroadcasts_forwarded`](core_bbmd::Tables::rebroadcasts_forwarded).
     pub fn forwarded_npdu_needs_local_broadcast(&self, ip: [u8; 4], port: u16) -> bool {

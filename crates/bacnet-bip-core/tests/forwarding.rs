@@ -6,8 +6,8 @@ mod support;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::Bvll;
-use bacnet_bip_core::bbmd::{Context, ForwardRefusal, LocalSubnet, Tables, Target, Via};
-use bacnet_bip_core::{Arrival, Instant};
+use bacnet_bip_core::bbmd::{Context, DistributeRefusal, ForwardRefusal, Tables, Target, Via};
+use bacnet_bip_core::{Arrival, Instant, LocalSubnet};
 use support::{
     addr, context, destinations, register_all, row, secs, storage, tables, Small, LOCAL_BROADCAST,
     MASK_24, MASK_32, OWN, PORT, SUBNET,
@@ -339,7 +339,10 @@ fn the_rebroadcast_rule_alone() {
     let two_hop_own = tables(&[row(ONE_HOP, MASK_24)]);
     let one_hop_own = tables(&[row(OWN, MASK_24), row(TWO_HOP, MASK_32)]);
     let unset = Small::new(OWN);
-    let neighbour = addr(192, 168, 1, 77, 47809);
+    // On this subnet: at this BBMD's own port, and at another, where
+    // another B/IP network shares the subnet (Annex J.1.2).
+    let neighbour = addr(192, 168, 1, 77, PORT);
+    let other_network = addr(192, 168, 1, 77, 47809);
     for (tables, mask, sender, arrival, expected) in [
         (&two_hop_own, None, ONE_HOP, Arrival::Unicast, true),
         (&two_hop_own, None, ONE_HOP, Arrival::Broadcast, false),
@@ -350,6 +353,13 @@ fn the_rebroadcast_rule_alone() {
             neighbour,
             Arrival::Unicast,
             false,
+        ),
+        (
+            &two_hop_own,
+            Some(MASK_24),
+            other_network,
+            Arrival::Unicast,
+            true,
         ),
         (
             &two_hop_own,
@@ -483,7 +493,7 @@ fn the_local_broadcast_is_not_deduplicated_against_peers() {
 fn only_a_live_registration_may_distribute() {
     let tables = site();
     let mut out = storage();
-    let nak = Err(ForwardRefusal::NotRegistered);
+    let nak = Err(DistributeRefusal::NotRegistered);
     assert_eq!(
         tables.distribute_broadcast(&context(T0), &SUBNET, LOCAL_DEVICE, NPDU, &mut out),
         nak
@@ -579,15 +589,14 @@ fn larger_tables_work_the_same() {
 
 #[test]
 fn refusals_carry_the_nak_annex_j_gives() {
-    for (refusal, code) in [
-        (ForwardRefusal::NotFromPeer, None),
-        (ForwardRefusal::OwnEcho, None),
-        (
-            ForwardRefusal::NotRegistered,
-            Some(bacnet_bip_codec::BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK),
-        ),
-    ] {
-        assert_eq!(refusal.result_code(), code, "{refusal:?}");
+    for refusal in [ForwardRefusal::NotFromPeer, ForwardRefusal::OwnEcho] {
+        assert_eq!(refusal.result_code(), None, "{refusal:?}");
         assert!(!refusal.to_string().is_empty());
     }
+    let refusal = DistributeRefusal::NotRegistered;
+    assert_eq!(
+        refusal.result_code(),
+        bacnet_bip_codec::BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK
+    );
+    assert!(!refusal.to_string().is_empty());
 }

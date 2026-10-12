@@ -1799,10 +1799,15 @@ may send its broadcasts from another interface, and their echo is then not
 recognised as its own. A BBMD rebroadcasts a peer's Forwarded-NPDU on its
 subnet only when the peer sent it to the BBMD alone (Annex J.4.5): its own
 BDT row has the all-ones mask, so peers send to it by unicast, the datagram
-arrived by unicast, and the sender isn't on the BBMD's subnet (as the host
-reports its mask at start). With the subnet's mask in its own row, peers
-send to the subnet's directed broadcast address and every device there has
-the message already. Either way it goes to the foreign devices. Never
+arrived by unicast, and the sender isn't on the BBMD's subnet at the BBMD's
+own UDP port. A peer on the subnet at another port serves another B/IP
+network there (Annex J.1.2), so its forward is still rebroadcast. The
+transport asks the host for the subnet's mask at start; without one (behind
+NAT, where the own address is a global one, or on an OS with no lookup) a
+forward from a peer on the BBMD's own subnet is rebroadcast too. With the
+subnet's mask in its own row, peers send to the subnet's directed broadcast
+address and every device there has the message already. Either way it goes
+to the foreign devices. Never
 rebroadcasting one that arrived by broadcast (to the configured broadcast
 address or 255.255.255.255) also stops a BDT row that is the BBMD itself
 under another address from looping a broadcast.

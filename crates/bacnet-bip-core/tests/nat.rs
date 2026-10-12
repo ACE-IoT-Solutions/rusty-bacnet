@@ -16,10 +16,9 @@ use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{
-    BdtError, Context, ForwardRefusal, InvalidEntry, LocalSubnet, Reservation, Tables, Target, Via,
-    TWO_HOP_MASK,
+    BdtError, Context, ForwardRefusal, InvalidEntry, Reservation, Tables, Target, Via, TWO_HOP_MASK,
 };
-use bacnet_bip_core::{Arrival, Instant};
+use bacnet_bip_core::{Arrival, Instant, LocalSubnet};
 use support::{addr, destinations};
 
 const NAT_PORT: u16 = 47809;

@@ -74,5 +74,5 @@ pub use fdt::{
     Reservation, StorageFull, GRACE_PERIOD_SECS,
 };
 pub use forward::{
-    Context, Distribution, Fanout, ForwardRefusal, LocalSubnet, Tables, Target, Via,
+    Context, DistributeRefusal, Distribution, Fanout, ForwardRefusal, Tables, Target, Via,
 };

@@ -663,17 +663,30 @@ impl TransportPort for BipTransport {
             host: &local_unicast_ips,
             route_ip,
         };
+        // With the own address goes the mask of the subnet it is on, looked
+        // up at each start: a peer's forward sent from that subnet isn't
+        // broadcast there again (Annex J.4.5). A first start looks it up
+        // before it consumes the configuration, so a start cancelled at the
+        // lookup is retried whole.
         let bbmd_ip = if let Some(config) = &self.bbmd_config {
-            let state = initial_bbmd_state(config, self.bdt_persist_path.as_deref(), &own_address)?;
+            let mut state =
+                initial_bbmd_state(config, self.bdt_persist_path.as_deref(), &own_address)?;
             let (ip, _) = state.local_address();
+            state.set_subnet_mask(subnet_mask_of(Ipv4Addr::from(ip)).await);
             self.bbmd_config = None;
             self.bbmd = Some(Arc::new(std::sync::Mutex::new(state)));
             Some(ip)
         } else if let Some(bbmd) = self.bbmd.as_ref().filter(|_| wildcard_bind) {
-            // An explicit interface keeps its IP and port across restarts.
-            let mut state = bbmd::lock(bbmd);
-            refresh_own_address(&mut state, &own_address)?;
-            Some(state.local_address().0)
+            // An explicit interface keeps its IP and port, and its mask,
+            // across restarts. No lock is held across the lookup.
+            let ip = {
+                let mut state = bbmd::lock(bbmd);
+                refresh_own_address(&mut state, &own_address)?;
+                state.local_address().0
+            };
+            let mask = subnet_mask_of(Ipv4Addr::from(ip)).await;
+            bbmd::lock(bbmd).set_subnet_mask(mask);
+            Some(ip)
         } else {
             None
         };
@@ -683,13 +696,6 @@ impl TransportPort for BipTransport {
                 Ipv4Addr::from(ip),
                 self.broadcast_address,
             );
-        }
-        // The subnet the BBMD's own address is on, looked up at each start
-        // as the address is: a peer's forward sent from it isn't broadcast
-        // there again (Annex J.4.5). The lock is taken after the lookup.
-        if let (Some(bbmd), Some(ip)) = (self.bbmd.as_ref(), bbmd_ip) {
-            let mask = subnet_mask_of(Ipv4Addr::from(ip)).await;
-            bbmd::lock(bbmd).set_subnet_mask(mask);
         }
         let local_ip = match bbmd_ip {
             Some(ip) => Ipv4Addr::from(ip),

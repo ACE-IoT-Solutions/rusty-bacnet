@@ -12,7 +12,7 @@
 //!   registration, and where each broadcast is forwarded (Annex J.4, J.5).
 //! - [`Arrival`]: whether a datagram was addressed to the node or to its
 //!   subnet's broadcast address, which the rules above and a node's own
-//!   both depend on.
+//!   both depend on, and [`LocalSubnet`], the subnet it reaches that way.
 //!
 //! A sans-IO engine for a B/IP node in normal and foreign-device mode will
 //! join it here.
@@ -27,9 +27,11 @@
 
 mod arrival;
 pub mod bbmd;
+mod subnet;
 mod time;
 
 pub use arrival::Arrival;
+pub use subnet::LocalSubnet;
 pub use time::{Duration, Instant};
 
 /// The README's example, compiled and run as a doctest.

@@ -205,7 +205,8 @@ The core decides; the transport does the I/O and keeps the host's policy:
   distribution address (its address ORed with its inverted mask) and the
   foreign devices; a peer's Forwarded-NPDU to the foreign devices and, when
   it came to this BBMD alone, the local subnet (its own BDT row is two-hop,
-  it arrived by unicast, and its sender isn't on this subnet); a
+  it arrived by unicast, and its sender isn't on this subnet at this BBMD's
+  UDP port); a
   registered foreign device's Distribute-Broadcast-To-Network to the local
   subnet, the peers and the other foreign devices, or its NAK; the BBMD's own
   broadcasts. Each decision writes its destinations into storage the caller

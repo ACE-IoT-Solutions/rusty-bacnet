@@ -176,9 +176,9 @@ pub(super) async fn handle_bvll_message(
                 // to the local subnet when it came to this BBMD alone, which
                 // this BBMD's own two-hop row and a unicast arrival tell
                 // (Annex J.4.5). One that came by broadcast, or from a sender
-                // on this subnet, already reached it; never rebroadcasting
-                // one that came by broadcast also ends any loop through a BDT
-                // row that is this BBMD under another address.
+                // on this subnet at this port, already reached it; never
+                // rebroadcasting one that came by broadcast also ends any loop
+                // through a BDT row that is this BBMD under another address.
                 let arrival = match delivery {
                     Delivery::Broadcast => Arrival::Broadcast,
                     Delivery::Unicast => Arrival::Unicast,
@@ -193,13 +193,10 @@ pub(super) async fn handle_bvll_message(
                 let forward = match decision {
                     Ok(forward) => forward,
                     Err(refusal) => {
-                        // The own-echo check above makes OwnEcho unreachable;
-                        // a Forwarded-NPDU is never refused as unregistered.
+                        // The own-echo check above makes OwnEcho unreachable.
                         ctx.drops.count(match refusal {
                             ForwardRefusal::OwnEcho => DropReason::OwnEcho,
-                            ForwardRefusal::NotFromPeer | ForwardRefusal::NotRegistered => {
-                                DropReason::ForwardedNotFromPeer
-                            }
+                            ForwardRefusal::NotFromPeer => DropReason::ForwardedNotFromPeer,
                         });
                         debug!(
                             "Rejecting FORWARDED_NPDU from non-BDT sender {:?}:{}",
@@ -386,8 +383,7 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
                 Ipv4Addr::from(sender.0),
                 sender.1
             );
-            let code = refusal.result_code().unwrap_or(nak);
-            send_bvlc_result(&ctx.socket, sender, code).await;
+            send_bvlc_result(&ctx.socket, sender, refusal.result_code()).await;
             return;
         }
     };

@@ -10,9 +10,9 @@ use std::net::SocketAddrV4;
 use std::time::Instant;
 
 use bacnet_bip_core::bbmd::{
-    Context, Distribution, Fanout, ForwardRefusal, LocalSubnet, Target, Via,
+    Context, DistributeRefusal, Distribution, Fanout, ForwardRefusal, Target, Via,
 };
-use bacnet_bip_core::Arrival;
+use bacnet_bip_core::{Arrival, LocalSubnet};
 
 use super::{address, BbmdState, Tables};
 
@@ -132,7 +132,7 @@ impl BbmdState {
         npdu: &[u8],
         local_broadcast: SocketAddrV4,
         now: Instant,
-    ) -> Result<Forward, ForwardRefusal> {
+    ) -> Result<Forward, DistributeRefusal> {
         self.purge_expired_at(now);
         let cx = self.decision_context(now);
         let subnet = self.local_subnet(local_broadcast);

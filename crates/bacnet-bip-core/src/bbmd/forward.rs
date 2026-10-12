@@ -10,7 +10,7 @@ use core::fmt;
 use super::bdt::{distribution_address, Bdt, TWO_HOP_MASK};
 use super::fdt::Fdt;
 use crate::time::Instant;
-use crate::Arrival;
+use crate::{Arrival, LocalSubnet};
 
 /// What kind of destination a [`Target`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,21 +52,6 @@ pub struct Context {
     /// Most foreign devices one message goes to; the rest are skipped and
     /// [`Fanout::fanout_capped`] is set. A local budget, not Annex J's.
     pub fdt_fanout: usize,
-}
-
-/// This BBMD's own IP subnet, for the decisions that can send to it:
-/// [`Tables::forwarded_npdu`] and [`Tables::distribute_broadcast`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocalSubnet {
-    /// The subnet's B/IP broadcast address: its directed broadcast address
-    /// (or 255.255.255.255) at the B/IP port.
-    pub broadcast: SocketAddrV4,
-    /// The mask of the subnet this BBMD's own B/IP address is on, when the
-    /// caller knows it. With it, a peer's Forwarded-NPDU sent from an
-    /// address on the subnet isn't broadcast there again: the subnet heard
-    /// it first hand. Leave it `None` when it isn't known, or when the own
-    /// address isn't on the subnet, as behind NAT.
-    pub mask: Option<Ipv4Addr>,
 }
 
 /// Destinations written to the caller's storage, and how the list was cut.
@@ -118,31 +103,23 @@ impl<'n, 'o> Distribution<'n, 'o> {
     }
 }
 
-/// Why a BBMD neither delivers nor forwards a broadcast it received (Annex
-/// J.4.5). [`ForwardRefusal::result_code`] gives the BVLC-Result to answer
-/// the sender with, where Annex J has one.
+/// Why a BBMD neither delivers nor forwards a Forwarded-NPDU (Annex J.4.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForwardRefusal {
-    /// A Forwarded-NPDU from a sender with no BDT row: only peers' are
-    /// acted on. It goes unanswered.
+    /// The sender has no BDT row: only peers' are acted on.
     NotFromPeer,
-    /// A Forwarded-NPDU from this BBMD's own address: the echo of its own
-    /// rebroadcast, which its own row would otherwise pass as a peer's. It
-    /// goes unanswered.
+    /// The sender is this BBMD's own address: the echo of its own
+    /// rebroadcast, which its own row would otherwise pass as a peer's.
     OwnEcho,
-    /// A Distribute-Broadcast-To-Network from a sender holding no live
-    /// registration. It is answered with a NAK.
-    NotRegistered,
 }
 
 impl ForwardRefusal {
-    /// The BVLC-Result to answer the sender with, or `None` when the
-    /// message goes unanswered.
+    /// The BVLC-Result to answer the sender with: none, since Annex J has
+    /// no answer to a Forwarded-NPDU.
     #[must_use]
     pub const fn result_code(self) -> Option<BvlcResultCode> {
         match self {
             Self::NotFromPeer | Self::OwnEcho => None,
-            Self::NotRegistered => Some(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK),
         }
     }
 }
@@ -152,6 +129,34 @@ impl fmt::Display for ForwardRefusal {
         f.write_str(match self {
             Self::NotFromPeer => "Forwarded-NPDU from a sender that is no BDT peer",
             Self::OwnEcho => "Forwarded-NPDU from this BBMD's own address",
+        })
+    }
+}
+
+impl core::error::Error for ForwardRefusal {}
+
+/// Why a BBMD neither delivers nor distributes a
+/// Distribute-Broadcast-To-Network (Annex J.4.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistributeRefusal {
+    /// The sender holds no registration live at [`Context::now`].
+    NotRegistered,
+}
+
+impl DistributeRefusal {
+    /// The BVLC-Result to answer the sender with: the
+    /// Distribute-Broadcast-To-Network NAK.
+    #[must_use]
+    pub const fn result_code(self) -> BvlcResultCode {
+        match self {
+            Self::NotRegistered => BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK,
+        }
+    }
+}
+
+impl fmt::Display for DistributeRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             Self::NotRegistered => {
                 "Distribute-Broadcast-To-Network from a sender with no live registration"
             }
@@ -159,7 +164,7 @@ impl fmt::Display for ForwardRefusal {
     }
 }
 
-impl core::error::Error for ForwardRefusal {}
+impl core::error::Error for DistributeRefusal {}
 
 /// A BBMD's two tables, and its forwarding decisions over them.
 ///
@@ -287,10 +292,13 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     /// row, which every BDT gives the same mask (J.4.3.2). With
     /// [`TWO_HOP_MASK`] they send to this BBMD by unicast; with the subnet's
     /// mask, to the subnet's directed broadcast address, so every device
-    /// there has it already. A datagram that `arrival`ed by broadcast, or
-    /// whose sender is on this BBMD's subnet (by `subnet_mask`, when known),
-    /// reached the subnet too. This doesn't check that `sender` is a peer;
-    /// [`forwarded_npdu`](Self::forwarded_npdu) does.
+    /// there has it already. A datagram that `arrival`ed by broadcast
+    /// reached the subnet too, and so did one whose sender is on this BBMD's
+    /// subnet (by `subnet_mask`, when known) at this BBMD's own UDP port:
+    /// that peer's own broadcasts reach this network's devices. A peer on
+    /// the subnet at another port serves another B/IP network there (Annex
+    /// J.1.2), so its forward is still broadcast. This doesn't check that
+    /// `sender` is a peer; [`forwarded_npdu`](Self::forwarded_npdu) does.
     #[must_use]
     pub fn rebroadcasts_forwarded(
         &self,
@@ -300,16 +308,19 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     ) -> bool {
         let own = self.bdt.own_address();
         let peers_send_here = self.bdt.row(own).is_none_or(|row| row.mask == TWO_HOP_MASK);
-        let sender_on_subnet = subnet_mask
-            .is_some_and(|mask| (sender.ip().to_bits() ^ own.ip().to_bits()) & mask.to_bits() == 0);
+        let sender_on_subnet = sender.port() == own.port()
+            && subnet_mask.is_some_and(|mask| {
+                (sender.ip().to_bits() ^ own.ip().to_bits()) & mask.to_bits() == 0
+            });
         peers_send_here && arrival == Arrival::Unicast && !sender_on_subnet
     }
 
     /// A Distribute-Broadcast-To-Network from `sender` (Annex J.4.5).
     ///
     /// Only a foreign device registered and live at [`Context::now`] may ask;
-    /// anyone else is refused with [`ForwardRefusal::NotRegistered`], whose
-    /// [`result_code`](ForwardRefusal::result_code) is the NAK to send. The caller delivers
+    /// anyone else is refused with [`DistributeRefusal::NotRegistered`],
+    /// whose [`result_code`](DistributeRefusal::result_code) is the NAK to
+    /// send. The caller delivers
     /// an accepted one to its own network layer. It goes out as a
     /// Forwarded-NPDU with `sender` as its origin: first to the subnet's
     /// broadcast address, then to the
@@ -321,9 +332,9 @@ impl<const B: usize, const F: usize> Tables<B, F> {
         sender: SocketAddrV4,
         npdu: &'n [u8],
         out: &'o mut [Target],
-    ) -> Result<Distribution<'n, 'o>, ForwardRefusal> {
+    ) -> Result<Distribution<'n, 'o>, DistributeRefusal> {
         if !self.fdt.is_registered_at(sender, cx.now) {
-            return Err(ForwardRefusal::NotRegistered);
+            return Err(DistributeRefusal::NotRegistered);
         }
         let mut writer = Writer::new(out);
         writer.push_local(subnet.broadcast);
