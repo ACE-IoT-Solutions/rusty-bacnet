@@ -35,8 +35,10 @@ with `default-features = false, features = ["alloc"]`. Each crate needs `std`
 `bacnet-encoding` logs nothing. `bytes` has to build for the target too: on
 one without atomic compare-and-swap, such as ARMv6-M, that takes its
 `extra-platforms` feature and a `portable-atomic` backend the firmware
-chooses. CI builds all three for ARMv7E-M and RISC-V, and `bacnet-types` for
-ARMv6-M as well (`scripts/ci/check-no-std.sh`).
+chooses. CI builds all three for ARMv6-M, ARMv7E-M and RISC-V
+(`scripts/ci/check-no-std.sh`), on ARMv6-M with `portable-atomic`'s
+`critical-section` backend, and runs their tests and doctests with `alloc`
+and without `std` ([CI](ci.md#no_std-checks)).
 
 ### Enums (`bacnet_enum!` macro)
 

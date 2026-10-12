@@ -140,6 +140,30 @@ fn no_token_uses_station_slot_and_resets_after_new_silence_epoch() {
     assert_eq!(core.next_deadline(), Some(at(1001)));
 }
 
+/// #1618 item 1, a local recovery policy: a NO_TOKEN deadline serviced
+/// after this station's slot (Clause 9.5.6.7) has closed opens the window
+/// again a whole cycle of slots, T_slot x (Max_Master + 1), later, and the
+/// token generated there is counted. On time, the first slot is used.
+#[test]
+fn a_missed_generation_slot_comes_round_again_and_is_counted() {
+    for (serviced, generated, missed) in [(530, 530, 0), (545, 570, 1)] {
+        let mut rx = [0; 1024];
+        let mut core =
+            MasterCore::new(standard_config(3, 3), Queues::new(), &mut rx, Instant::ZERO).unwrap();
+        core.on_deadline(at(500)).unwrap();
+        assert_eq!(core.next_deadline(), Some(at(530)));
+        core.on_deadline(at(serviced)).unwrap();
+        if serviced != generated {
+            assert_eq!(core.state(), MasterState::NoToken);
+            assert_eq!(core.next_deadline(), Some(at(generated)));
+            core.on_deadline(at(generated)).unwrap();
+        }
+        assert_eq!(core.state(), MasterState::PollForMaster);
+        assert_eq!(core.counters().token_regenerations, 1);
+        assert_eq!(core.counters().missed_generation_slots, missed);
+    }
+}
+
 #[test]
 fn poll_for_master_uses_usage_timeout_not_slot() {
     let mut rx = [0; 1024];

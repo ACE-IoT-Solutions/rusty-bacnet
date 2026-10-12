@@ -9,14 +9,17 @@ use crate::actions::{
     Action, ActionEnqueueError, ActionQueue, Direction, RequestId, TransmitFailure, TransmitId,
 };
 use crate::clock::{Duration, Instant};
-use crate::config::{ConfigError, MstpCoreConfig, MIN_REPLY_TIMEOUT};
+use crate::config::{ConfigError, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT};
 use crate::counters::{MstpCounters, QueueCounters};
 use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
 
+mod pending;
 mod receive;
 mod reply;
 mod token;
 mod transmission;
+
+use pending::{Origin, PendingSend};
 
 /// The smallest receive storage [`MasterCore::new`] accepts: a preamble and
 /// a header, the size of the shortest frame.
@@ -109,7 +112,14 @@ pub enum CoreError {
         maximum: usize,
     },
     /// The transmit identifier is stale or does not match the active transfer.
+    /// A frame the core took back before its start was confirmed (see
+    /// [`MasterCore::on_transmit_started`]) is stale too.
     StaleTransmit,
+    /// The line was active within T_turnaround of the reported start, so the
+    /// frame was taken back to wait for a quiet line again (Clause 9.5.5.1).
+    /// Send nothing for this id; the frame comes back as a new
+    /// [`Action::Transmit`] unless its waiting rules drop it.
+    TransmitDeferred,
     /// A transmit-start event was reported more than once.
     TransmitAlreadyStarted,
     /// Completion was reported for a transmit whose start was never confirmed.
@@ -166,13 +176,14 @@ struct PendingRequest {
     window: ReplyWindow,
 }
 
-/// When a reply to a received request may still go out.
+/// When an answer to a received frame may still go out.
 #[derive(Debug, Clone, Copy)]
 struct ReplyWindow {
-    /// The end of T_reply_delay. A reply that starts later is counted late.
+    /// The end of T_reply_delay, or of T_usage_delay for Reply To Poll For
+    /// Master. An answer that starts later is counted late.
     send_by: Instant,
-    /// The requester's shortest possible reply timeout. From here on it may
-    /// be transmitting again, so nothing is sent.
+    /// When the asker may stop waiting, at its shortest timeout. From here
+    /// on it may be transmitting again, so nothing is sent.
     give_up: Instant,
 }
 
@@ -185,33 +196,16 @@ enum PostTransmit {
     PollForMaster,
 }
 
+/// A frame handed to the adapter, from the hand-over until it completes or
+/// is aborted or taken back.
 #[derive(Debug, Clone, Copy)]
 struct ActiveTransmit {
     id: TransmitId,
     asserted_at: Instant,
+    /// The adapter confirmed the start; until then the frame is also still
+    /// the waiting [`PendingSend`].
     started: bool,
     post: PostTransmit,
-    reply: Option<ReplyWindow>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PendingSend {
-    length: usize,
-    frame: [u8; MAX_STANDARD_FRAME_LENGTH],
-    post: PostTransmit,
-    earliest: Instant,
-    reply: Option<ReplyWindow>,
-}
-
-impl PendingSend {
-    /// When the core must look at this send again: once the turnaround has
-    /// passed, or, for a reply, when its window closes if that comes first.
-    fn deadline(&self) -> Instant {
-        match self.reply {
-            Some(reply) => core::cmp::min(self.earliest, reply.give_up),
-            None => self.earliest,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -222,6 +216,47 @@ struct OwnedFrame {
 }
 
 /// Synchronous, allocation-free MS/TP master core.
+///
+/// # Driving it
+///
+/// Feed it what the line does, timestamped by the caller's monotonic clock:
+/// [`Self::on_octet`] or [`Self::on_receive_error`] for each received
+/// character (or [`Self::on_validated_frame`] and [`Self::on_host_activity`]
+/// from a host-side assembler), and [`Self::on_deadline`] at
+/// [`Self::next_deadline`]. After each call, carry out the actions from
+/// [`Self::poll_action`] until it returns [`Action::Idle`].
+///
+/// A transmit goes through three calls. Poll [`Action::Transmit`]; when the
+/// driver is about to go on, call [`Self::on_transmit_started`] and drive the
+/// line only if it returns `Ok`; at the final stop bit, call
+/// [`Self::on_transmit_complete`]. Until the start is confirmed, keep
+/// receiving and feed the core what arrives, draining the receive FIFO or
+/// DMA buffer right before the start call (octets stamped with the drain
+/// time are safe: a later stamp can only defer the start). Line activity in
+/// that time pushes the frame back (Clause 9.5.5.1), and the core may take
+/// the frame back on its own, queueing [`Direction::Receive`] before the
+/// start; drop the frame then. Octets received after the confirmed start
+/// are taken for the station's own echo and ignored.
+///
+/// Line activity only delays a frame the core waits to send. A frame is
+/// dropped, and counted, only on the evidence its sending state watches for
+/// (another station using the token after a retry, or active while this one
+/// generates a token) or at a time limit taken from that state. The crate's
+/// `src/state/pending.rs` tables every frame that can wait, with its rules
+/// and clauses.
+///
+/// # Late token generation (a local policy)
+///
+/// Clause 9.5.6.7 lets a station generate a token only while the line's
+/// silence lies inside the station's own slot, and gives it no way on once
+/// that slot has gone by in silence: read literally, a sole master whose
+/// NO_TOKEN deadline was serviced late would wait there for ever. The core
+/// opens the station's window again every T_slot × (Max_Master + 1) of
+/// continued silence instead, which keeps every station's turn in the same
+/// order, and counts each token generated that way in
+/// [`MstpCounters::missed_generation_slots`]. It departs from the clause only
+/// when the deadline is serviced after the slot has closed; on time, the
+/// first slot is used.
 pub struct MasterCore<'rx, Q: QueueStorage> {
     config: MstpCoreConfig,
     queues: Q,
@@ -377,14 +412,17 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// A candidate the codec drops counts as an invalid frame only as
     /// Clause 9.5.4 would count it for this station; see
     /// [`DecodeEvent::Malformed`].
+    ///
+    /// Once a transmit's start is confirmed, octets are taken for the
+    /// station's own echo and ignored until it completes. Before that they
+    /// are line activity like any other (see [`Self::on_transmit_started`]).
     pub fn on_octet(&mut self, byte: u8, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
-        if self.active_transmit.is_some() {
-            return Ok(()); // The platform should suppress local echo.
+        if self.transmitting() {
+            return Ok(());
         }
         let timed_out_candidate = self.abort_partial_if_late(now);
-        self.note_bus_activity(now);
-        self.cancel_pending_send_on_activity(now)?;
+        self.note_bus_activity(now, 1)?;
         if timed_out_candidate {
             self.invalid_frame_event(now)?;
         }
@@ -404,6 +442,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// [`CoreError::Frame`] and changes nothing, not even the core's clock:
     /// more data than a standard frame carries (501 octets), source 255, or
     /// a COBS-encoded type.
+    ///
+    /// How this host path treats the station's own echo, frames whose source
+    /// is this station, and a frame its assembler was part way through when
+    /// a transmit start is confirmed, is still open: #1617 settles them.
     pub fn on_validated_frame(&mut self, frame: Frame<'_>, now: Instant) -> Result<(), CoreError> {
         let header = frame.header;
         if frame.data.len() > MAX_STANDARD_MPDU_DATA {
@@ -421,8 +463,7 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             }));
         }
         self.observe_time(now)?;
-        self.note_bus_activity(now);
-        self.cancel_pending_send_on_activity(now)?;
+        self.note_bus_activity(now, 1)?;
         self.process_owned_frame(Self::copy_frame(frame), now)
     }
 
@@ -431,51 +472,31 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Host serial APIs do not preserve reliable per-octet timestamps. This
     /// updates silence and token-use accounting without feeding the exact
     /// inter-octet parser used by [`Self::on_octet`].
+    ///
+    /// Like [`Self::on_octet`], it is ignored as echo only once a transmit's
+    /// start is confirmed.
     pub fn on_host_activity(&mut self, octets: usize, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
-        if self.active_transmit.is_some() || octets == 0 {
+        if self.transmitting() || octets == 0 {
             return Ok(());
         }
-        self.last_activity = now;
-        self.event_count = self
-            .event_count
-            .saturating_add(u32::try_from(octets).unwrap_or(u32::MAX));
-        self.cancel_pending_send_on_activity(now)?;
-        match self.state {
-            MasterState::NoToken => {
-                self.set_state(MasterState::Idle);
-                self.protocol_deadline = Some(now + self.config.t_no_token);
-            }
-            MasterState::Idle => self.protocol_deadline = Some(now + self.config.t_no_token),
-            MasterState::PassToken => {
-                if self.event_count > u32::from(self.config.n_min_octets) {
-                    self.set_state(MasterState::Idle);
-                    self.protocol_deadline = Some(now + self.config.t_no_token);
-                } else {
-                    self.protocol_deadline = Some(now + self.config.t_usage_timeout);
-                }
-            }
-            MasterState::PollForMaster => {
-                self.protocol_deadline = Some(now + self.config.t_usage_timeout)
-            }
-            MasterState::WaitForReply => {
-                self.protocol_deadline = Some(now + self.config.t_reply_timeout)
-            }
-            MasterState::UseToken | MasterState::DoneWithToken | MasterState::AnswerDataRequest => {
-            }
-        }
-        Ok(())
+        self.note_bus_activity(now, u32::try_from(octets).unwrap_or(u32::MAX))
     }
 
     /// Report a UART receive failure as bus activity and abort partial input.
+    ///
+    /// It is taken for the station's own echo exactly when
+    /// [`Self::on_octet`] would be: once a transmit's start is confirmed.
     pub fn on_receive_error(
         &mut self,
         _error: ReceiveError,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.observe_time(now)?;
-        self.note_bus_activity(now);
-        self.cancel_pending_send_on_activity(now)?;
+        if self.transmitting() {
+            return Ok(());
+        }
+        self.note_bus_activity(now, 1)?;
         let invalid_candidate = matches!(
             self.decoder.phase(),
             StreamPhase::Header | StreamPhase::Data
@@ -540,128 +561,6 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         }
     }
 
-    /// Confirm that the platform is about to start the matching UART transfer.
-    ///
-    /// Call it after polling [`Action::Transmit`] and before enabling the
-    /// line driver, and send only if it returns `Ok`. After any error for a
-    /// transmit, or once it is aborted, send nothing more for its id.
-    ///
-    /// A reply that starts after T_reply_delay still goes out and is counted
-    /// in [`MstpCounters::late_replies`]. One that would start once the
-    /// requester may have stopped waiting is refused with
-    /// [`CoreError::RequestExpired`] and counted as an expired request.
-    pub fn on_transmit_started(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
-        let tx = self
-            .active_transmit
-            .filter(|tx| tx.id == id)
-            .ok_or(CoreError::StaleTransmit)?;
-        if tx.started {
-            self.counters.record_adapter_error();
-            return Err(CoreError::TransmitAlreadyStarted);
-        }
-        if let Some(reply) = tx.reply {
-            if now >= reply.give_up {
-                self.actions.purge_transmit(id);
-                self.actions
-                    .enqueue_direction(Direction::Receive)
-                    .map_err(|_| CoreError::ActionCapacity)?;
-                self.active_transmit = None;
-                self.counters.record_expired_request();
-                self.enter_idle(now)?;
-                return Err(CoreError::RequestExpired);
-            }
-            if now > reply.send_by {
-                self.counters.record_late_reply();
-            }
-        }
-        let tx = self.active_transmit.as_mut().expect("checked above");
-        tx.started = true;
-        tx.asserted_at = now;
-        Ok(())
-    }
-
-    /// Report that the final stop bit for the matching generation left UART.
-    ///
-    /// Report it before feeding the core any octet or frame that arrived
-    /// after the transmission ended, so they are judged in the state the
-    /// transmission leads to.
-    ///
-    /// The start must have been confirmed first. Completion without it is
-    /// refused with [`CoreError::TransmitNotStarted`] and counted in
-    /// [`MstpCounters::adapter_errors`]; the transmit stays active until it
-    /// is started and completed, aborted, or caught by the watchdog.
-    pub fn on_transmit_complete(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
-        let tx = self
-            .active_transmit
-            .filter(|tx| tx.id == id)
-            .ok_or(CoreError::StaleTransmit)?;
-        if !tx.started {
-            self.counters.record_adapter_error();
-            return Err(CoreError::TransmitNotStarted);
-        }
-        self.actions
-            .enqueue_direction(Direction::Receive)
-            .map_err(|_| CoreError::ActionCapacity)?;
-        self.active_transmit = None;
-        self.last_activity = now;
-        self.counters
-            .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
-        self.counters.record_frame_transmitted();
-        match tx.post {
-            PostTransmit::Idle => self.enter_idle(now),
-            PostTransmit::ContinueToken => {
-                self.set_state(MasterState::UseToken);
-                self.drive_token(now)
-            }
-            PostTransmit::WaitForReply => {
-                self.set_state(MasterState::WaitForReply);
-                self.protocol_deadline = Some(now + self.config.t_reply_timeout);
-                Ok(())
-            }
-            PostTransmit::PassToken => {
-                self.set_state(MasterState::PassToken);
-                self.event_count = 0;
-                self.protocol_deadline = Some(now + self.config.t_usage_timeout);
-                self.counters.record_token_rotation();
-                Ok(())
-            }
-            PostTransmit::PollForMaster => {
-                self.set_state(MasterState::PollForMaster);
-                self.protocol_deadline = Some(now + self.config.t_usage_timeout);
-                Ok(())
-            }
-        }
-    }
-
-    /// Abort the matching transmit and restore logical receive direction.
-    ///
-    /// Its actions not yet polled are withdrawn, so the next action is the
-    /// switch back to receive.
-    pub fn on_transmit_aborted(
-        &mut self,
-        id: TransmitId,
-        _reason: TransmitFailure,
-        now: Instant,
-    ) -> Result<(), CoreError> {
-        self.observe_time(now)?;
-        let tx = self
-            .active_transmit
-            .filter(|tx| tx.id == id)
-            .ok_or(CoreError::StaleTransmit)?;
-        self.actions.purge_transmit(id);
-        self.actions
-            .enqueue_direction(Direction::Receive)
-            .map_err(|_| CoreError::ActionCapacity)?;
-        self.active_transmit = None;
-        self.counters
-            .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
-        self.set_state(MasterState::Idle);
-        self.protocol_deadline = Some(now + self.config.t_no_token);
-        self.take_pending_token(now)
-    }
-
     /// Return the next action, or [`Action::Idle`] when no action is pending.
     pub fn poll_action(&mut self) -> Action<'_> {
         self.actions.poll_action().unwrap_or(Action::Idle)
@@ -696,56 +595,39 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
         Ok(())
     }
 
-    fn note_bus_activity(&mut self, now: Instant) {
+    /// Line activity that is not this station's own echo, worth `events`
+    /// toward EventCount (Clause 9.5.6). A frame of this station's that waits
+    /// to go out takes it under its own rules (see the `pending` module);
+    /// otherwise the current state's timers and transitions apply.
+    fn note_bus_activity(&mut self, now: Instant, events: u32) -> Result<(), CoreError> {
         self.last_activity = now;
-        self.event_count = self.event_count.saturating_add(1);
+        self.event_count = self.event_count.saturating_add(events);
+        if self.pending_send.is_some() {
+            return self.pending_activity(now);
+        }
         match self.state {
             MasterState::NoToken => {
                 self.set_state(MasterState::Idle);
                 self.protocol_deadline = Some(now + self.config.t_no_token);
             }
             MasterState::Idle => self.protocol_deadline = Some(now + self.config.t_no_token),
-            MasterState::PassToken | MasterState::PollForMaster => {
-                self.protocol_deadline = Some(now + self.config.t_usage_timeout);
-                if self.state == MasterState::PassToken
-                    && self.event_count > u32::from(self.config.n_min_octets)
-                {
+            MasterState::PassToken => {
+                if self.event_count > u32::from(self.config.n_min_octets) {
                     self.set_state(MasterState::Idle);
                     self.protocol_deadline = Some(now + self.config.t_no_token);
+                } else {
+                    self.protocol_deadline = Some(now + self.config.t_usage_timeout);
                 }
             }
+            MasterState::PollForMaster => {
+                self.protocol_deadline = Some(now + self.config.t_usage_timeout);
+            }
             MasterState::WaitForReply => {
-                self.protocol_deadline = Some(now + self.config.t_reply_timeout)
+                self.protocol_deadline = Some(now + self.config.t_reply_timeout);
             }
-            _ => {}
-        }
-    }
-
-    /// Line activity while a frame waits out T_turnaround.
-    ///
-    /// A reply waits a fresh turnaround from this activity, unless the
-    /// requester may have stopped waiting: then the reply is dropped as
-    /// expired and the core goes idle, so the frame now arriving (perhaps the
-    /// requester passing the token on) is handled there. Any other frame is
-    /// dropped, counted in [`MstpCounters::cancelled_sends`].
-    fn cancel_pending_send_on_activity(&mut self, now: Instant) -> Result<(), CoreError> {
-        let Some(pending) = self.pending_send.as_mut() else {
-            return Ok(());
-        };
-        if let Some(reply) = pending.reply {
-            if now >= reply.give_up {
-                self.pending_send = None;
-                self.counters.record_expired_request();
-                return self.enter_idle(now);
+            MasterState::UseToken | MasterState::DoneWithToken | MasterState::AnswerDataRequest => {
             }
-            pending.earliest = self.last_activity + self.config.t_turnaround;
-            self.protocol_deadline = Some(pending.deadline());
-            return Ok(());
         }
-        self.pending_send = None;
-        self.counters.record_cancelled_send();
-        self.set_state(MasterState::Idle);
-        self.protocol_deadline = Some(now + self.config.t_no_token);
         Ok(())
     }
 

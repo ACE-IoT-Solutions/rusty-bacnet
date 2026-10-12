@@ -223,16 +223,9 @@ pub struct Report {
     /// Stretches in which more than one master held a token it had generated
     /// itself, each within [`Tolerance::generation_race`].
     pub generation_races: Vec<Episode>,
-    /// Starts a slow adapter made within Tturnaround of activity whose first
-    /// character arrived after its core had handed it the frame. Each is a
-    /// violation unless [`Tolerance::slow_adapter_blind_spot`] is set.
-    pub blind_spot_starts: u32,
-    /// Clean frames a master with a slow adapter never counted because they
-    /// arrived between its core handing a frame over and the adapter
-    /// confirming the start. Each is a violation unless
-    /// [`Tolerance::slow_adapter_blind_spot`] is set.
-    pub blind_spot_frames: u32,
-    /// Transmit starts the core refused because a reply's window had closed.
+    /// Transmit starts the core refused: a reply's window had closed, or the
+    /// line was active within Tturnaround of the start, so the frame waited
+    /// again.
     pub refused_starts: u32,
     /// Application answers the core refused as late, queued instead.
     pub late_answers: u32,
@@ -263,12 +256,6 @@ pub struct Tolerance {
     /// before its own timer fires, so timing variation must break it; see
     /// [`AdapterSpec::deadline_jitter`](crate::AdapterSpec::deadline_jitter).
     pub generation_race: Duration,
-    /// Accept what a slow adapter's core misses between handing a frame
-    /// over and the adapter confirming its start: the core ignores octets in
-    /// that window as its own echo, so it can start within Tturnaround of
-    /// activity that first reached it after the hand-over, and lose a peer's
-    /// frame whole. A core bug, #1625; see the crate documentation.
-    pub slow_adapter_blind_spot: bool,
     /// Accept collisions a slow or late adapter causes: its core handed the
     /// frame over before the other frame's first character arrived, and only
     /// the adapter's delay made them overlap.
@@ -279,13 +266,11 @@ pub struct Tolerance {
 
 impl Default for Tolerance {
     /// Strict: no duplicate token, generation races resolved within two
-    /// seconds, and no blind-spot starts, slow-adapter collisions or
-    /// scripted collisions.
+    /// seconds, and no slow-adapter or scripted collisions.
     fn default() -> Self {
         Self {
             duplicate_token: Duration::ZERO,
             generation_race: Duration::from_secs(2),
-            slow_adapter_blind_spot: false,
             slow_adapter_collisions: false,
             scripted_collisions: false,
         }

@@ -174,15 +174,14 @@ fn with_no_answer_the_requester_waits_treply_timeout() {
 /// the requester's shortest Treply_timeout is withheld, so it cannot collide
 /// with the requester passing the token on.
 ///
-/// The withheld case also shows the slow-adapter blind spot (#1625, see
-/// `known_gaps.rs`): the requester's token pass arrives while the doomed
-/// reply still waits in the adapter, the core takes it for its own echo, and
-/// the requester has to send the token again.
+/// In the withheld case the requester's token pass arrives while the doomed
+/// reply still waits in the adapter. The responder hears it (#1625): the
+/// pass's first character, after the cutoff, drops the reply, and the Token
+/// is taken up, so the requester never has to send it again.
 #[test]
 fn a_reply_the_adapter_starts_late_goes_out_until_the_requester_may_give_up() {
     let outcome = |start_delay: u64| {
-        let mut config = SimConfig::new(BAUD);
-        config.tolerance.slow_adapter_blind_spot = true;
+        let config = SimConfig::new(BAUD);
         let mut sim = requester_and_responder_with(
             config,
             ReplyPolicy::Answer {
@@ -235,22 +234,18 @@ fn a_reply_the_adapter_starts_late_goes_out_until_the_requester_may_give_up() {
         .any(|delivery| delivery.npdu == ANSWER));
     sim.assert_no_violations();
 
-    assert_eq!(sim.report().blind_spot_frames, 0);
-
     // Would start at 260 ms: withheld, and the requester times out at 255 ms.
     let (sim, request_end) = outcome(40);
     let frames = sim.frames();
     let next = first_after(frames, request_end, |_| true).expect("a frame after the request");
     assert!(next.is(FrameType::Token, 0, 3), "{next}");
     assert_eq!(next.start, request_end + millis(255));
-    assert_eq!(sim.report().refused_starts, 1);
+    // Taken back before the adapter got to it: no start was refused.
+    assert_eq!(sim.report().refused_starts, 0);
     assert_eq!(sim.core(3).unwrap().counters().expired_requests, 1);
     assert_eq!(sim.report().collisions.len(), 0);
-    // The blind spot's cost (#1625): station 3 missed that token, and 0 sent
-    // it again. Once #1625 is fixed station 3 hears it: update these.
-    assert_eq!(sim.report().blind_spot_frames, 1);
-    let again = first_after(frames, next.end, |_| true).expect("the second token");
-    assert!(again.is(FrameType::Token, 0, 3), "{again}");
-    assert_eq!(again.start, next.end + millis(20));
+    let taken_up = first_after(frames, next.end, |_| true).expect("station 3 uses the token");
+    assert_eq!(taken_up.source(), Some(3), "{taken_up}");
+    assert_eq!(taken_up.start, next.end + sim.timing().bits(40));
     sim.assert_no_violations();
 }
