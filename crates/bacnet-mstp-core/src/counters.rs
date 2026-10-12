@@ -290,6 +290,11 @@ mod tests {
         assert_eq!(counters.state_transitions, 1);
         assert_eq!(counters.frame_aborts, 1);
         assert_eq!(counters.de_assertion, Duration::from_millis(3));
+        // Intervals add up, to the nanosecond, and stop at the maximum.
+        counters.record_de_assertion(Duration::from_nanos(1_500));
+        assert_eq!(counters.de_assertion, Duration::from_nanos(3_001_500));
+        counters.record_de_assertion(Duration::MAX);
+        assert_eq!(counters.de_assertion, Duration::MAX);
 
         counters.unicast.record_enqueue(2);
         counters.unicast.record_enqueue(4);
