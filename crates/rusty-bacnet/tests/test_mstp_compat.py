@@ -62,6 +62,8 @@ MSTP_KEYWORD_ONLY = [
     "mstp_max_master",
     "mstp_max_info_frames",
     "mstp_extended_frames",
+    "mstp_echo",
+    "mstp_echo_grace_ms",
 ]
 CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + [
     "sc_device_uuid", "share_port_by_address", "min_request_interval_ms", "ipv6_device_instance",
@@ -166,7 +168,7 @@ class SignatureCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(
             [p.default for p in parameters if p.name in MSTP_KEYWORD_ONLY],
-            [None, 38_400, 1, 127, 1, False],
+            [None, 38_400, 1, 127, 1, False, False, None],
         )
 
     def test_runtime_and_stub_signatures_match_compatibility_contract(self) -> None:
@@ -283,6 +285,69 @@ class MstpRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ) as caught:
                 await server.start()
             self.assertTrue(str(caught.exception).startswith("Serial open failed"))
+
+    async def test_echo_options_reach_serial_open_for_client_and_server(
+        self,
+    ) -> None:
+        # An echoing adapter (#1653), with the default grace or one given,
+        # needs nothing more before the port opens.
+        path = nonexistent_serial_path()
+        for grace in (None, 1, 60):
+            options = {"mstp_echo": True, "mstp_echo_grace_ms": grace}
+            client = make_client(path, **options)
+            with self.subTest(kind="client", grace=grace), self.assertRaises(
+                RuntimeError
+            ) as caught:
+                await client.__aenter__()
+            self.assertTrue(str(caught.exception).startswith("Serial open failed"))
+
+            server = make_server(path, **options)
+            with self.subTest(kind="server", grace=grace), self.assertRaises(
+                RuntimeError
+            ) as caught:
+                await server.start()
+            self.assertTrue(str(caught.exception).startswith("Serial open failed"))
+
+    async def test_invalid_echo_grace_fails_before_open_for_client_and_server(
+        self,
+    ) -> None:
+        path = nonexistent_serial_path()
+        cases = [
+            (
+                {"mstp_echo": True, "mstp_echo_grace_ms": 0},
+                "mstp_echo_grace_ms must be at least 1",
+            ),
+            (
+                {"mstp_echo_grace_ms": 40},
+                "mstp_echo_grace_ms needs mstp_echo=True",
+            ),
+            (
+                {"mstp_echo": False, "mstp_echo_grace_ms": 0},
+                "mstp_echo_grace_ms needs mstp_echo=True",
+            ),
+        ]
+        for overrides, message in cases:
+            client = make_client(path, **overrides)
+            with self.subTest(kind="client", overrides=overrides), self.assertRaisesRegex(
+                ValueError, f"^{re.escape(message)}$"
+            ):
+                await client.__aenter__()
+
+            server = make_server(path, **overrides)
+            server.add_binary_value(1, "Pending")
+            with self.subTest(kind="server", overrides=overrides), self.assertRaisesRegex(
+                ValueError, f"^{re.escape(message)}$"
+            ):
+                await server.start()
+            # Refused before anything started: registration stays open.
+            server.add_binary_input(1, "After failure")
+
+    def test_negative_echo_grace_is_refused_at_construction(self) -> None:
+        path = nonexistent_serial_path()
+        with self.assertRaises(OverflowError):
+            make_client(path, mstp_echo=True, mstp_echo_grace_ms=-1)
+        with self.assertRaises(OverflowError):
+            make_server(path, mstp_echo=True, mstp_echo_grace_ms=-1)
 
     async def test_unsupported_baud_rates_fail_before_io_for_client_and_server(
         self,

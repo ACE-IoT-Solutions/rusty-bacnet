@@ -130,14 +130,8 @@ pub struct BACnetClient {
     /// The device instance whose VMAC an ipv6 client uses (H.7.2); `None`
     /// picks a random VMAC at each start.
     ipv6_device_instance: Option<u32>,
-    // MS/TP config
-    serial_port: Option<String>,
-    mstp_baud: u32,
-    mstp_mac: u8,
-    mstp_max_master: u8,
-    mstp_max_info_frames: u8,
-    /// Extended MS/TP frames (Types 32 and 33), off by default (#1611).
-    mstp_extended_frames: bool,
+    /// The MS/TP keywords, `serial_port` included.
+    mstp: crate::mstp_py::MstpOptions,
     /// Least time between confirmed requests to one destination (#1535).
     min_request_interval_ms: u64,
 }

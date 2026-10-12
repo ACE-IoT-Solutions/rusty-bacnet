@@ -24,6 +24,8 @@ impl BACnetClient {
         mstp_max_master=127,
         mstp_max_info_frames=1,
         mstp_extended_frames=false,
+        mstp_echo=false,
+        mstp_echo_grace_ms=None,
         sc_device_uuid=None,
         share_port_by_address=false,
         min_request_interval_ms=0,
@@ -49,6 +51,8 @@ impl BACnetClient {
         mstp_max_master: u8,
         mstp_max_info_frames: u8,
         mstp_extended_frames: bool,
+        mstp_echo: bool,
+        mstp_echo_grace_ms: Option<u32>,
         sc_device_uuid: Option<Vec<u8>>,
         share_port_by_address: bool,
         min_request_interval_ms: u64,
@@ -84,12 +88,16 @@ impl BACnetClient {
             sc_heartbeat_timeout_ms,
             ipv6_interface,
             ipv6_device_instance,
-            serial_port,
-            mstp_baud,
-            mstp_mac,
-            mstp_max_master,
-            mstp_max_info_frames,
-            mstp_extended_frames,
+            mstp: crate::mstp_py::MstpOptions {
+                serial_port,
+                baud: mstp_baud,
+                mac: mstp_mac,
+                max_master: mstp_max_master,
+                max_info_frames: mstp_max_info_frames,
+                extended_frames: mstp_extended_frames,
+                echo: mstp_echo,
+                echo_grace_ms: mstp_echo_grace_ms,
+            },
             min_request_interval_ms,
         })
     }
@@ -114,12 +122,7 @@ impl BACnetClient {
         let sc_heartbeat_timeout_ms = slf.borrow().sc_heartbeat_timeout_ms;
         let ipv6_interface = slf.borrow().ipv6_interface.clone();
         let ipv6_device_instance = slf.borrow().ipv6_device_instance;
-        let serial_port = slf.borrow().serial_port.clone();
-        let mstp_baud = slf.borrow().mstp_baud;
-        let mstp_mac = slf.borrow().mstp_mac;
-        let mstp_max_master = slf.borrow().mstp_max_master;
-        let mstp_max_info_frames = slf.borrow().mstp_max_info_frames;
-        let mstp_extended_frames = slf.borrow().mstp_extended_frames;
+        let mstp = slf.borrow().mstp.clone();
         let min_request_interval_ms = slf.borrow().min_request_interval_ms;
 
         crate::py_async::future_into_py(py, async move {
@@ -176,14 +179,7 @@ impl BACnetClient {
                     }
                     AnyTransport::Sc(Box::new(sc))
                 }
-                "mstp" => crate::mstp_py::build_mstp_transport(
-                    serial_port.as_deref(),
-                    mstp_baud,
-                    mstp_mac,
-                    mstp_max_master,
-                    mstp_max_info_frames,
-                    mstp_extended_frames,
-                )?,
+                "mstp" => crate::mstp_py::build_mstp_transport(&mstp)?,
                 other => {
                     return Err(PyRuntimeError::new_err(format!(
                         "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', or 'mstp'"

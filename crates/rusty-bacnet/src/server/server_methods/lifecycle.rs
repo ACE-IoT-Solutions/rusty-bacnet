@@ -70,14 +70,7 @@ impl BACnetServer {
         // registrations are moved into the startup future.
         let mut mstp_transport: Option<AnyTransport<crate::mstp_py::PySerial>> =
             if self.transport_type == "mstp" {
-                Some(crate::mstp_py::build_mstp_transport(
-                    self.serial_port.as_deref(),
-                    self.mstp_baud,
-                    self.mstp_mac,
-                    self.mstp_max_master,
-                    self.mstp_max_info_frames,
-                    self.mstp_extended_frames,
-                )?)
+                Some(crate::mstp_py::build_mstp_transport(&self.mstp)?)
             } else {
                 None
             };

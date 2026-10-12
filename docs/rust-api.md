@@ -1721,7 +1721,8 @@ octet. The transport must know, or it would take its own Token, heard back,
 for its successor using the token. Declare an echoing port with
 `with_echo(Echo::full())` on `TokioSerialPort` (or `LoopbackSerial`);
 `GpioDirectionPort` reports its inner port's setting, and the default is
-`Echo::None`.
+`Echo::None`. The Python bindings declare it with `mstp_echo=True` (see
+[MS/TP serial ports](python-api.md#mstp-serial-ports)).
 
 With `Echo::Full { grace }` the transport hunts for the frame it sent in the
 octets it reads after it. Octets that could begin the echo are held back and

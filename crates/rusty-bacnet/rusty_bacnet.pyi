@@ -1909,6 +1909,8 @@ class BACnetClient:
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
         mstp_extended_frames: bool = False,
+        mstp_echo: bool = False,
+        mstp_echo_grace_ms: Optional[int] = None,
         sc_device_uuid: Optional[bytes | bytearray] = None,
         share_port_by_address: bool = False,
         min_request_interval_ms: int = 0,
@@ -1926,6 +1928,13 @@ class BACnetClient:
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
         octets, so APDUs of up to 1476; without it MS/TP carries 480-octet
         APDUs and counts an extended frame it hears as invalid.
+
+        ``mstp_echo`` (MS/TP only, default False): the adapter returns every
+        octet this station sends (a transceiver whose receiver stays on while
+        it transmits), so the transport drops that echo rather than take it
+        for line traffic. ``mstp_echo_grace_ms`` (default None, 40 ms; needs
+        ``mstp_echo=True`` and at least 1, else ValueError at start) is how
+        long after a frame its echo may still be arriving.
 
         ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so clients and devices on other addresses
@@ -2999,6 +3008,8 @@ class BACnetServer:
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
         mstp_extended_frames: bool = False,
+        mstp_echo: bool = False,
+        mstp_echo_grace_ms: Optional[int] = None,
         max_confirmed_in_flight: int = 64,
         max_unconfirmed_in_flight: int = 32,
         max_confirmed_in_flight_per_peer: int = 16,
@@ -3037,7 +3048,11 @@ class BACnetServer:
 
         ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
-        octets, so the device accepts APDUs of up to 1476 instead of 480."""
+        octets, so the device accepts APDUs of up to 1476 instead of 480.
+
+        ``mstp_echo`` and ``mstp_echo_grace_ms`` (MS/TP only) declare an
+        adapter that returns every octet this station sends, as for
+        ``BACnetClient``."""
         ...
 
     # --- Analog objects ---
