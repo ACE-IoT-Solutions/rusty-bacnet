@@ -162,7 +162,10 @@ impl<S: SerialPort> Mac<S> {
                 }
             }
             // Checked after every read too, so a port that is always
-            // readable cannot hold the frame open past its grace.
+            // readable cannot hold the frame open past its grace. Empty
+            // reads now end the task at the third, so this is nearly
+            // unreachable for them; a read of held echo octets that lands
+            // after the grace still needs it.
             if Instant::now() >= grace_end {
                 let timed_out = self.filter.timer(Instant::now());
                 self.complete(core, outgoing, ended);

@@ -108,6 +108,16 @@ impl MstpOptions {
 /// Open an MS/TP transport from Python kwargs, all checked before the port
 /// opens.
 pub(crate) fn build_mstp_transport(options: &MstpOptions) -> PyResult<AnyTransport<PySerial>> {
+    let serial = open_port(options)?;
+    Ok(AnyTransport::Mstp(MstpTransport::new(
+        serial,
+        options.config(),
+    )))
+}
+
+/// Check the options, then open the serial port they name, declaring the
+/// echo they ask for.
+fn open_port(options: &MstpOptions) -> PyResult<TokioSerialPort> {
     let path = validate_mstp_config(
         options.serial_port.as_deref(),
         options.baud,
@@ -116,18 +126,9 @@ pub(crate) fn build_mstp_transport(options: &MstpOptions) -> PyResult<AnyTranspo
         options.max_info_frames,
     )?;
     let echo = options.port_echo()?;
-    let serial = open_serial(path, options.baud, echo)?;
-    Ok(AnyTransport::Mstp(MstpTransport::new(
-        serial,
-        options.config(),
-    )))
-}
-
-/// Open the serial port at `path`, declaring `echo`.
-fn open_serial(path: &str, baud: u32, echo: Echo) -> PyResult<TokioSerialPort> {
     let serial = TokioSerialPort::open(&SerialConfig {
         port_name: path.to_string(),
-        baud_rate: baud,
+        baud_rate: options.baud,
     })
     .map_err(serial_error)?;
     Ok(serial.with_echo(echo))
@@ -333,46 +334,24 @@ mod tests {
         }
     }
 
-    /// The port the transport is built on declares the echo the keywords
-    /// ask for. Linux only: it opens a pseudo-terminal by its path, which
-    /// the serial backend's baud-rate ioctl refuses on macOS.
+    /// A pseudo-terminal from Python's `os.openpty`: both descriptors, and
+    /// the path of the side a serial port opens. The tests that use one are
+    /// Linux only: the serial backend's baud-rate ioctl refuses a
+    /// pseudo-terminal on macOS.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn the_opened_port_declares_the_echo() {
-        use bacnet_transport::mstp::SerialPort;
-
+    fn pseudo_terminal() -> ((i32, i32), String) {
         Python::initialize();
-        let (fds, path) = Python::attach(|py| -> PyResult<((i32, i32), String)> {
+        Python::attach(|py| -> PyResult<((i32, i32), String)> {
             let os = py.import("os")?;
             let fds: (i32, i32) = os.call_method0("openpty")?.extract()?;
             let path: String = os.call_method1("ttyname", (fds.1,))?.extract()?;
             Ok((fds, path))
         })
-        .unwrap();
-        // The serial stream registers with the reactor of the runtime it
-        // opens in.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let _context = runtime.enter();
-        let cases = [
-            options(),
-            MstpOptions {
-                echo: true,
-                ..options()
-            },
-            MstpOptions {
-                echo: true,
-                echo_grace_ms: Some(25),
-                ..options()
-            },
-        ];
-        for options in cases {
-            let echo = options.port_echo().unwrap();
-            let serial = open_serial(&path, options.baud, echo).unwrap();
-            assert_eq!(serial.echo(), echo, "{options:?}");
-        }
+        .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close(fds: (i32, i32)) {
         Python::attach(|py| -> PyResult<()> {
             let os = py.import("os")?;
             os.call_method1("close", (fds.0,))?;
@@ -380,5 +359,94 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// The serial stream registers with the reactor of the runtime it opens
+    /// in, so a port opens inside one.
+    #[cfg(target_os = "linux")]
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// The port the keywords open declares the echo they ask for, its grace
+    /// included.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_opened_port_declares_the_echo() {
+        use bacnet_transport::mstp::SerialPort;
+
+        let (fds, path) = pseudo_terminal();
+        let runtime = runtime();
+        let _context = runtime.enter();
+        let at_path = MstpOptions {
+            serial_port: Some(path),
+            ..options()
+        };
+        let cases = [
+            (at_path.clone(), Echo::None),
+            (
+                MstpOptions {
+                    echo: true,
+                    ..at_path.clone()
+                },
+                Echo::full(),
+            ),
+            (
+                MstpOptions {
+                    echo: true,
+                    echo_grace_ms: Some(25),
+                    ..at_path
+                },
+                Echo::Full {
+                    grace: Duration::from_millis(25),
+                },
+            ),
+        ];
+        for (options, expected) in cases {
+            let serial = open_port(&options).unwrap();
+            assert_eq!(serial.echo(), expected, "{options:?}");
+        }
+        close(fds);
+    }
+
+    /// The echo reaches the running transport. A pseudo-terminal returns
+    /// nothing the station sends, so a station built with `mstp_echo` counts
+    /// its first frame's echo missing once the grace has passed; without
+    /// the echo declared, nothing would count it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_built_transport_waits_for_the_declared_echo() {
+        use bacnet_transport::port::TransportPort;
+
+        let (fds, path) = pseudo_terminal();
+        let options = MstpOptions {
+            serial_port: Some(path),
+            echo: true,
+            echo_grace_ms: Some(10),
+            ..options()
+        };
+        let counted = runtime().block_on(async {
+            let AnyTransport::Mstp(mut transport) = build_mstp_transport(&options).unwrap() else {
+                panic!("not an MS/TP transport");
+            };
+            let diagnostics = transport.diagnostics();
+            let _npdus = transport.start().await.unwrap();
+            // The first frame, a Poll For Master, goes out once T_no_token
+            // has passed, about half a second after the start.
+            let counted = tokio::time::timeout(Duration::from_secs(5), async {
+                while diagnostics.snapshot().echo_missing == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .is_ok();
+            transport.stop().await.unwrap();
+            counted
+        });
+        close(fds);
+        assert!(counted, "the station never counted an echo missing");
     }
 }

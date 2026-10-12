@@ -288,8 +288,8 @@ impl<S: SerialPort> Drop for MstpTransport<S> {
 ///
 /// [`Self::pair`] connects two ports: what one writes, the other reads, in
 /// whole writes (an empty write delivers nothing, and a read always returns
-/// at least one octet). Writes are delivered at once, so a frame takes no time on
-/// this "wire"; the transport times it by the baud rate (see the
+/// at least one octet). Writes are delivered at once, so a frame takes no
+/// time on this "wire"; the transport times it by the baud rate (see the
 /// [module docs](super)). By default a port does not hear its own writes;
 /// [`Self::with_echo`] makes it hear them, as a transceiver whose receiver
 /// stays on does.

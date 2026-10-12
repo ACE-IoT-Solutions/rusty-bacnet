@@ -618,7 +618,8 @@ traffic, as `TokioSerialPort::with_echo` does from Rust (see
 [Echo](rust-api.md#echo)). `mstp_echo_grace_ms` is how long after a frame its
 echo may still be arriving, 40 ms when not given, enough for a USB adapter's
 receive latency. A grace of 0, or one given without `mstp_echo=True`, raises
-`ValueError` at start, before the port opens.
+`ValueError` at start, before the port opens; a negative grace, or one above
+4294967295, raises `OverflowError` when the client or server is built.
 
 ```python
 from rusty_bacnet import BACnetClient

@@ -1934,7 +1934,9 @@ class BACnetClient:
         it transmits), so the transport drops that echo rather than take it
         for line traffic. ``mstp_echo_grace_ms`` (default None, 40 ms; needs
         ``mstp_echo=True`` and at least 1, else ValueError at start) is how
-        long after a frame its echo may still be arriving.
+        long after a frame its echo may still be arriving. A negative value,
+        or one above 4294967295, raises OverflowError when the client is
+        built.
 
         ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so clients and devices on other addresses
@@ -3052,7 +3054,8 @@ class BACnetServer:
 
         ``mstp_echo`` and ``mstp_echo_grace_ms`` (MS/TP only) declare an
         adapter that returns every octet this station sends, as for
-        ``BACnetClient``."""
+        ``BACnetClient``; a negative grace, or one above 4294967295, raises
+        OverflowError when the server is built."""
         ...
 
     # --- Analog objects ---
