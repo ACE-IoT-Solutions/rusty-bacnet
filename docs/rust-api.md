@@ -831,9 +831,11 @@ BVLC function that doesn't fit the address it was sent to; a management
 request over the rate limit; an unknown function; a payload that doesn't fit
 its function (a malformed response also shows in the client snapshot's
 `malformed_responses`, whether or not a request was waiting for it); this
-node's own echo; a Forwarded-NPDU from outside a BBMD's BDT; and an NPDU the
-network-layer channel couldn't take because it was full or, once the network
-layer stopped reading, closed. Each drop counts once, and the totals survive
+node's own echo; a request the node would refuse with a NAK, from a source
+no reply can reach (the unspecified address, port 0 or the node itself),
+which gets no NAK (#1622); a Forwarded-NPDU from outside a BBMD's BDT; and an
+NPDU the network-layer channel couldn't take because it was full or, once the
+network layer stopped reading, closed. Each drop counts once, and the totals survive
 a restart. A header that fails to decode and a
 malformed BVLC response, which used to log a warning for each datagram, now
 log at debug, so a flood of them can't flood the log; the counters carry the

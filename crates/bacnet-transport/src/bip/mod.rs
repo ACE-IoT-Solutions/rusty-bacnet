@@ -917,6 +917,8 @@ mod socket_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod unanswerable_tests;
+#[cfg(test)]
 mod wildcard_ingress_tests;
 
 #[cfg(test)]

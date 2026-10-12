@@ -130,7 +130,7 @@ pub(super) async fn receive(datagram: &Datagram<'_>, ctx: &RecvContext) -> Optio
         }
         Received::Bbmd(share) => super::bbmd_receive::handle(share, ctx).await,
         Received::Discarded(discard) => {
-            discarded(discard, datagram, ctx).await;
+            discarded(discard, datagram, ctx);
             return Some(discard);
         }
     }
@@ -138,7 +138,7 @@ pub(super) async fn receive(datagram: &Datagram<'_>, ctx: &RecvContext) -> Optio
 }
 
 /// Count a datagram the node discarded.
-async fn discarded(discard: Discard, datagram: &Datagram<'_>, ctx: &RecvContext) {
+fn discarded(discard: Discard, datagram: &Datagram<'_>, ctx: &RecvContext) {
     let source = datagram.source;
     match discard {
         Discard::GroupSource => {
@@ -148,12 +148,6 @@ async fn discarded(discard: Discard, datagram: &Datagram<'_>, ctx: &RecvContext)
         Discard::GroupOrigin => {
             ctx.group_drops.origin();
             debug!("Dropping Forwarded-NPDU whose origin is a group address");
-        }
-        Discard::UnanswerableSource => unanswerable_nak(datagram, ctx).await,
-        Discard::MalformedPayload => {
-            ctx.drops.count(DropReason::MalformedPayload);
-            debug!(function = ?datagram.payload.get(1), "Dropping a malformed BVLL message");
-            unanswerable_nak(datagram, ctx).await;
         }
         Discard::ForwardedUntrusted => {
             // Not with ForwardedTrust::AnySender, which this transport uses.
@@ -167,16 +161,6 @@ async fn discarded(discard: Discard, datagram: &Datagram<'_>, ctx: &RecvContext)
             // log at warn. The counters carry the signal (#1624).
             debug!(%source, reason = ?other, "Dropping a B/IP datagram");
         }
-    }
-}
-
-/// The NAK this transport sent, before the node engine, to a BBMD-only
-/// request from a source no reply can reach. The engine draws none; this
-/// keeps the cutover's behaviour until the change is made on its own.
-async fn unanswerable_nak(datagram: &Datagram<'_>, ctx: &RecvContext) {
-    let function = datagram.payload.get(1).copied().map(BvlcFunction::from_raw);
-    if let Some(code) = function.and_then(BvlcFunction::nak) {
-        send_bvlc_result(ctx.socket(), datagram.source, code).await;
     }
 }
 

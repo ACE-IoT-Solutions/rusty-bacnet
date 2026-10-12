@@ -24,7 +24,11 @@ use crate::warn_throttle::WarnThrottle;
 /// [`bvlc_client_snapshot`](super::BipTransport::bvlc_client_snapshot).
 /// Each field is read on its own, so a snapshot taken while datagrams arrive
 /// need not add up across fields.
+///
+/// It is `#[non_exhaustive]`, so a later counter isn't a breaking change:
+/// read its fields, or start from `Default` in a test.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ReceiveCounters {
     /// Failed socket reads. Most drop one datagram and reading goes on: one
     /// larger than the receive buffer, one without usable address metadata,
@@ -70,6 +74,12 @@ pub struct ReceiveCounters {
     /// it as their origin: mostly its own broadcasts coming back, which is
     /// routine.
     pub own_echo: u64,
+    /// Requests this node refuses with a NAK, Write-BDT and the five only a
+    /// BBMD serves, dropped unanswered instead for their source: one no node
+    /// sends from (the unspecified address, port 0 or a group address), or
+    /// this node's own address, which never sends it a request (#1622). A
+    /// malformed one counts in `malformed_payload` only.
+    pub unanswerable_request: u64,
     /// Forwarded-NPDUs a BBMD refused because their sender is not in its
     /// Broadcast Distribution Table.
     pub forwarded_not_from_peer: u64,
@@ -106,6 +116,8 @@ pub(super) enum DropReason {
     MalformedPayload,
     /// [`ReceiveCounters::own_echo`].
     OwnEcho,
+    /// [`ReceiveCounters::unanswerable_request`].
+    UnanswerableRequest,
     /// [`ReceiveCounters::forwarded_not_from_peer`].
     ForwardedNotFromPeer,
     /// [`ReceiveCounters::npdu_channel_full`].
@@ -151,10 +163,10 @@ impl DropReason {
             Discard::UnknownFunction => Self::UnknownFunction,
             Discard::MalformedPayload => Self::MalformedPayload,
             Discard::OwnEcho => Self::OwnEcho,
-            Discard::GroupSource
-            | Discard::GroupOrigin
-            | Discard::UnanswerableSource
-            | Discard::ForwardedUntrusted => return None,
+            Discard::UnanswerableSource => Self::UnanswerableRequest,
+            Discard::GroupSource | Discard::GroupOrigin | Discard::ForwardedUntrusted => {
+                return None
+            }
         })
     }
 }
@@ -175,6 +187,7 @@ pub(super) struct ReceiveDrops {
     unknown_function: AtomicU64,
     malformed_payload: AtomicU64,
     own_echo: AtomicU64,
+    unanswerable_request: AtomicU64,
     forwarded_not_from_peer: AtomicU64,
     npdu_channel_full: AtomicU64,
     npdu_channel_closed: AtomicU64,
@@ -195,6 +208,7 @@ impl ReceiveDrops {
             DropReason::UnknownFunction => &self.unknown_function,
             DropReason::MalformedPayload => &self.malformed_payload,
             DropReason::OwnEcho => &self.own_echo,
+            DropReason::UnanswerableRequest => &self.unanswerable_request,
             DropReason::ForwardedNotFromPeer => &self.forwarded_not_from_peer,
             DropReason::NpduChannelFull => &self.npdu_channel_full,
             DropReason::NpduChannelClosed => &self.npdu_channel_closed,
@@ -261,6 +275,7 @@ impl ReceiveDrops {
             unknown_function: get(&self.unknown_function),
             malformed_payload: get(&self.malformed_payload),
             own_echo: get(&self.own_echo),
+            unanswerable_request: get(&self.unanswerable_request),
             forwarded_not_from_peer: get(&self.forwarded_not_from_peer),
             npdu_channel_full: get(&self.npdu_channel_full),
             npdu_channel_closed: get(&self.npdu_channel_closed),

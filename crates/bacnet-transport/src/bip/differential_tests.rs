@@ -17,6 +17,9 @@
 //! timer fires, where the two sides' tasks may take turns in either order.
 //!
 //! Left out, each with a test of its own:
+//! - a request the node refuses with a NAK, from a source no reply can
+//!   reach (the unspecified address, port 0 or the node itself): the old
+//!   transport answered it, and the node drops it (`unanswerable_tests.rs`);
 //! - a wildcard bind whose broadcast address is its own address, the one
 //!   case where the transport's group test (on the bound 0.0.0.0) and the
 //!   node's (on its own address) differ;
@@ -39,7 +42,7 @@ use super::differential_support::{
 use super::send_sink::Sent;
 use super::ForeignDeviceConfig;
 use crate::bvll::raw_frame;
-use bacnet_bip_codec::BvlcFunction;
+use bacnet_bip_codec::{BvlcFunction, Bvll, BvllFrame};
 
 const BBMD: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 1), 0xBAC0);
 const PEER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 30), 0xBAC0);
@@ -157,6 +160,26 @@ impl<S: Side> Driver<'_, S> {
         }
     }
 
+    /// Whether the old transport answered `incoming` with a NAK the node
+    /// doesn't send: a request it refuses, from a source no reply can reach.
+    fn unanswerable(&self, incoming: &Incoming) -> bool {
+        let (source, own) = (incoming.source, self.case.config.own());
+        let unreachable = source.ip().is_unspecified() || source.port() == 0 || source == own;
+        let Ok(frame) = BvllFrame::decode(&incoming.payload) else {
+            return false;
+        };
+        if !unreachable || frame.function.nak().is_none() {
+            return false;
+        }
+        match frame.message() {
+            Err(_) | Ok(Bvll::WriteBroadcastDistributionTable(_)) => true,
+            // Its own echo, either way.
+            Ok(Bvll::DistributeBroadcastToNetwork(_)) if source == own => false,
+            // A BBMD serves the other five, as before.
+            Ok(_) => !matches!(self.case.config.mode, ModeConfig::Bbmd),
+        }
+    }
+
     fn on_sent(&mut self, sent: &Sent) {
         let Some(foreign) = self.case.config.foreign() else {
             return;
@@ -203,6 +226,9 @@ impl<S: Side> Driver<'_, S> {
                     os_group: *os_group,
                     listener: listener.filter(|_| self.case.config.listener),
                 };
+                if self.unanswerable(&incoming) {
+                    return "left out".into();
+                }
                 for _ in 0..*repeat {
                     self.side.receive(&incoming).await;
                 }
