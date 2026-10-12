@@ -819,6 +819,26 @@ and `forwarded_group_origin_drops()` counts it (#1493). Otherwise a forged
 I-Am could bind a device to a group, and the answer to a request would go to
 every node in it.
 
+A well-formed BVLC-Result, Read-BDT-ACK or Read-FDT-ACK that no request was
+waiting for is counted in `bvlc_client_snapshot().unmatched_responses`. Every
+other datagram the receive path drops is counted in `receive_counters()`, a
+`ReceiveCounters` snapshot with one field per reason (#1624): failed socket
+reads; a datagram a per-address broadcast listener doesn't keep, because it
+wasn't sent to this link's broadcast address or came in on another
+interface; a header that is too short, not B/IP or of the wrong Length; a
+BVLC function that doesn't fit the address it was sent to; a management
+request over the rate limit; an unknown function; a payload that doesn't fit
+its function (a malformed response also shows in the client snapshot's
+`malformed_responses`, whether or not a request was waiting for it); this
+node's own echo; a Forwarded-NPDU from outside a BBMD's BDT; and an NPDU the
+network-layer channel couldn't take because it was full or, once the network
+layer stopped reading, closed. Each drop counts once, and the totals survive
+a restart. A header that fails to decode and a
+malformed BVLC response, which used to log a warning for each datagram, now
+log at debug, so a flood of them can't flood the log; the counters carry the
+signal. A full channel still warns, at most once every 10 seconds, with the
+number of NPDUs dropped since the last warning.
+
 ### BIP6 (IPv6)
 
 ```rust
@@ -4376,6 +4396,7 @@ let drops = sc_client.transport().npdu_drop_counts();
 let outgoing = bip_client.transport().bvlc_client_snapshot();
 let management = bip_client.transport().management_counters();
 let fanout = bip_client.transport().fanout_counters();
+let dropped = bip_client.transport().receive_counters(); // datagrams dropped on receipt, by reason
 let fdt = bip_client.transport().fdt_counters(); // None unless a BBMD
 let bbmd = bip_client.transport().bbmd_state().cloned(); // Option<Arc<std::sync::Mutex<BbmdState>>>
 
