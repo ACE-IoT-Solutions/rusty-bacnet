@@ -193,8 +193,7 @@ pub enum ConfigError {
 /// The buffers [`ConfigError::ExtendedStorageTooSmall`] names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreBuffer {
-    /// The receive storage, which must hold
-    /// [`MAX_EXTENDED_FRAME_LENGTH`](bacnet_mstp_codec::MAX_EXTENDED_FRAME_LENGTH)
+    /// The receive storage, which must hold [`MAX_EXTENDED_FRAME_LENGTH`]
     /// octets.
     ReceiveStorage,
     /// The [`ActionBuffers`](crate::ActionBuffers) frame buffer, its `FRAME`,
