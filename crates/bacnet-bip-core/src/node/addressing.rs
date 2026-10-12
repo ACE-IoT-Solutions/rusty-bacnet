@@ -1,0 +1,141 @@
+//! What a datagram's addresses mean to this node: where it was sent, whether
+//! its sender is a group address, and whether a reply could reach it.
+
+use core::net::{Ipv4Addr, SocketAddrV4};
+
+use bacnet_bip_codec::BvlcFunction;
+
+use super::config::Link;
+use crate::Arrival;
+
+/// What a datagram's destination address was, for this node. A host
+/// builds it with [`Addressed::classify`]. Both can hold at once, as where
+/// a loopback test's broadcast address is its own; neither, for a
+/// destination that is neither (another host's unicast, a multicast group).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Addressed {
+    /// Sent to this node's own unicast address.
+    pub node: bool,
+    /// Sent to the subnet's broadcast address or 255.255.255.255.
+    pub broadcast: bool,
+}
+
+/// The addresses a destination is judged against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalAddresses<'a> {
+    /// The IP address of the node's own B/IP address.
+    pub own: Ipv4Addr,
+    /// The subnet's broadcast IP address.
+    pub broadcast: Ipv4Addr,
+    /// For a socket bound to the wildcard address, the host's own unicast
+    /// addresses: unicast to any of them is the node's. `None` for a socket
+    /// bound to `own`.
+    pub wildcard: Option<&'a [Ipv4Addr]>,
+}
+
+impl Addressed {
+    /// Classify a datagram by its destination IP address and, when the host
+    /// reports it, whether the OS delivered it to a group (`os_group`). The
+    /// OS's word overrides the address: a group delivery is never unicast
+    /// to the node, and a reported unicast never a broadcast.
+    #[must_use]
+    pub fn classify(
+        destination: Ipv4Addr,
+        os_group: Option<bool>,
+        local: &LocalAddresses<'_>,
+    ) -> Self {
+        let to_broadcast = destination == local.broadcast || destination.is_broadcast();
+        let node = match local.wildcard {
+            Some(own_ips) => {
+                !to_broadcast && !destination.is_multicast() && own_ips.contains(&destination)
+            }
+            None => destination == local.own,
+        } && os_group != Some(true);
+        Self {
+            node,
+            broadcast: to_broadcast && os_group != Some(false),
+        }
+    }
+
+    /// How a message of `function` arrived, or `None` when the function
+    /// doesn't fit the destination (Annex J.2.11, J.2.12, J.3, J.4.1).
+    ///
+    /// An Original-Unicast-NPDU must be sent to the node, an
+    /// Original-Broadcast-NPDU to the broadcast address, and a
+    /// Forwarded-NPDU to either (a broadcast when both fit). Every other
+    /// function is point-to-point, so only to the node.
+    pub(crate) fn arrival(self, function: BvlcFunction) -> Option<Arrival> {
+        let unicast = self.node.then_some(Arrival::Unicast);
+        let broadcast = self.broadcast.then_some(Arrival::Broadcast);
+        match function {
+            BvlcFunction::ORIGINAL_UNICAST_NPDU => unicast,
+            BvlcFunction::ORIGINAL_BROADCAST_NPDU => broadcast,
+            BvlcFunction::FORWARDED_NPDU => broadcast.or(unicast),
+            _ => unicast,
+        }
+    }
+}
+
+/// A link's group destinations: the B/IP addresses that reach more than one
+/// node. No node sends from one, so a datagram from one, or a
+/// Forwarded-NPDU naming one as its origin, is dropped: answering it would
+/// reach the whole group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Groups {
+    /// The link's broadcast address: its broadcast IP at the network's port.
+    pub broadcast: SocketAddrV4,
+    /// The node's own interface IP. A broadcast IP equal to it, or a
+    /// loopback one, as loopback tests set up, is a group only at the
+    /// network's port.
+    pub interface: Ipv4Addr,
+}
+
+impl Groups {
+    /// Whether `address` is a group destination: the link's broadcast
+    /// address, or any address whose IP is a group IP ([`Groups::contains_ip`]).
+    #[must_use]
+    pub fn contains(&self, address: SocketAddrV4) -> bool {
+        address == self.broadcast || self.contains_ip(*address.ip())
+    }
+
+    /// Whether `ip` is a group at any port: 255.255.255.255, a multicast
+    /// address, or the broadcast IP when it is neither loopback nor the
+    /// node's own interface. This is the test for a datagram's UDP source.
+    #[must_use]
+    pub fn contains_ip(&self, ip: Ipv4Addr) -> bool {
+        let broadcast = *self.broadcast.ip();
+        ip.is_broadcast()
+            || ip.is_multicast()
+            || (ip == broadcast && !ip.is_loopback() && ip != self.interface)
+    }
+}
+
+impl Link {
+    /// The link's group destinations.
+    #[must_use]
+    pub fn groups(&self) -> Groups {
+        Groups {
+            broadcast: self.subnet.broadcast,
+            interface: *self.address.ip(),
+        }
+    }
+
+    /// Whether `address` is this node's own B/IP address.
+    ///
+    /// The one test for the node's own echo, so an address the node is
+    /// also reached at (a NAT router's global address) can join it here.
+    #[must_use]
+    pub fn is_own(&self, address: SocketAddrV4) -> bool {
+        address == self.address
+    }
+
+    /// Whether a reply to `source` could reach a peer: not the unspecified
+    /// address, not port 0, not a group address, and not this node.
+    #[must_use]
+    pub fn is_answerable(&self, source: SocketAddrV4) -> bool {
+        !source.ip().is_unspecified()
+            && source.port() != 0
+            && !self.groups().contains_ip(*source.ip())
+            && !self.is_own(source)
+    }
+}
