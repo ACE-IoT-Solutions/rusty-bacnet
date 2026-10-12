@@ -476,6 +476,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-time"
+version = "0.12.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "bacnet-transport"
 version = "0.12.0"
 dependencies = [

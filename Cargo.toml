@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/bacnet-time",
     "crates/bacnet-types",
     "crates/bacnet-encoding",
     "crates/bacnet-services",
@@ -43,6 +44,7 @@ members = [
 # and the no_std harness are left out too: `--workspace` runs build them, and
 # `-p` picks one.
 default-members = [
+    "crates/bacnet-time",
     "crates/bacnet-types",
     "crates/bacnet-encoding",
     "crates/bacnet-services",
@@ -80,6 +82,7 @@ categories = ["network-programming", "embedded"]
 # edge, so only the entry can. Hosted crates turn std back on with
 # `features = ["std"]` on each edge. tracing keeps its defaults: only
 # bacnet-encoding's `std` feature brings it into a no_std crate.
+bacnet-time = { version = "0.12.0", path = "crates/bacnet-time" }
 bacnet-types = { version = "0.12.0", path = "crates/bacnet-types", default-features = false }
 bacnet-encoding = { version = "0.12.0", path = "crates/bacnet-encoding", default-features = false }
 bacnet-services = { version = "0.12.0", path = "crates/bacnet-services", default-features = false }

@@ -40,6 +40,7 @@ set -euo pipefail
 # One line each: the crate, then its features as a comma-separated list, or
 # `-` for none. Every line builds with --no-default-features.
 checks=(
+  "bacnet-time -"
   "bacnet-mstp-codec -"
   "bacnet-mstp-codec alloc"
   "bacnet-mstp-codec heapless"
