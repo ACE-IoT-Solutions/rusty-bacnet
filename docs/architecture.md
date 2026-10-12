@@ -16,7 +16,9 @@ Foundations
   bacnet-mstp-codec     MS/TP frame codec (no_std; by default no allocator, no deps)
   bacnet-mstp-core      MS/TP master state machine (no_std; by default no allocator)
   bacnet-bip-codec      B/IP and B/IPv6 BVLL codec (no_std; by default no allocator, no deps)
-  bacnet-transport      Data-link transports and framing (B/IP, B/IPv6 BVLL via bacnet-bip-codec)
+  bacnet-bip-core       B/IP behaviour: BBMD tables and forwarding (no_std; no allocator)
+  bacnet-transport      Data-link transports and framing (B/IP, B/IPv6 BVLL via bacnet-bip-codec;
+                        the B/IP BBMD via bacnet-bip-core)
   bacnet-network        Network layer, BACnetRouter, RouterTable
   bacnet-objects        BACnetObject, ObjectDatabase, object implementations
 
@@ -189,6 +191,44 @@ IRQ, mlock and buffer-tuning deployment guidance beyond this note; and on-wire
 hardware qualification (#502). These RT APIs are not implemented here, and #501
 remains open for its residual RT-policy/affinity and full documentation work.
 
+### The B/IP BBMD and the portable core
+
+A `BipTransport` in BBMD mode keeps its tables in a `BbmdState`, which runs
+the BBMD of `bacnet-bip-core`: a `bacnet_bip_core::bbmd::Tables<128, 128>`
+holding the BDT and the FDT in fixed arrays, and the decisions over them.
+The core decides; the transport does the I/O and keeps the host's policy:
+
+- **In the core** (`no_std`, no allocator, no clock): BDT validation and
+  canonical form, the BBMD's own row, foreign-device registration (the
+  time-to-live limits, the per-address quota, reserved capacity), expiry
+  after the time-to-live plus the 30-second grace period, and where each
+  broadcast goes (Annex J.4.5): an Original-Broadcast-NPDU to each peer's
+  distribution address (its address ORed with its inverted mask) and the
+  foreign devices; a peer's Forwarded-NPDU to the foreign devices and, when
+  it came to this BBMD alone, the local subnet (its own BDT row is two-hop,
+  it arrived by unicast, and its sender isn't on this subnet at this BBMD's
+  UDP port); a
+  registered foreign device's Distribute-Broadcast-To-Network to the local
+  subnet, the peers and the other foreign devices, or its NAK; the BBMD's own
+  broadcasts. Each decision writes its destinations into storage the caller
+  passes.
+- **In the transport**: the foreign-device source list and registration rate
+  limit (the core asks them through its admission check), the
+  Delete-FDT-Entry list, the FDT and fan-out counters, BDT persistence, the
+  management rate limiter, the fan-out queue and its budgets, and the sockets.
+
+At start the transport asks the host for the mask of the subnet the BBMD's
+own address is on, for the last of those conditions; where the host doesn't
+report one, a forward from the BBMD's own subnet is rebroadcast.
+
+`BbmdState` maps `std::time::Instant` onto the core's nanosecond clock, with
+the state's creation at the middle of its range, so every instant maps
+exactly both ways. Each decision takes the state's lock once, copies its
+destinations out, and releases it before anything is sent; no await happens
+under the lock. A purge task removes lapsed registrations every second, and
+each decision skips them either way. Firmware can drive the same
+`bacnet_bip_core::bbmd::Tables` directly, sized to fit.
+
 ### Testing MS/TP without hardware
 
 `bacnet-mstp-sim`, a test-only crate that is not published, puts several
@@ -228,7 +268,7 @@ The stack runs on a Tokio multi-threaded runtime.
 
 **Resource exhaustion caps**:
 - COV subscriptions: 1,024 max
-- BBMD FDT entries: 512
+- BBMD tables: 128 BDT rows and 128 FDT entries
 - Objects per database: 10,000
 - Router table entries: 256
 - Segment receivers: 128 (prevents DoS from abandoned segmented transfers)

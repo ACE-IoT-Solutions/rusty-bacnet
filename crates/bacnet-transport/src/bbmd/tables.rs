@@ -4,7 +4,7 @@
 //! These are the Clause 21 values the Network Port object serves, not the
 //! 10-octet BVLL rows of Read-BDT-Ack and Read-FDT-Ack.
 
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -28,14 +28,13 @@ impl BbmdState {
     /// BBMD_Broadcast_Distribution_Table entries: each peer as an IPv4 host
     /// and port, with its broadcast distribution mask.
     pub fn bdt_entries(&self) -> Vec<BACnetBDTEntry> {
-        self.bdt
+        self.tables
+            .bdt
+            .rows()
             .iter()
-            .map(|entry| BACnetBDTEntry {
-                bbmd_address: BACnetHostNPort::from_socket_addr(SocketAddr::V4(SocketAddrV4::new(
-                    Ipv4Addr::from(entry.ip),
-                    entry.port,
-                ))),
-                broadcast_mask: Some(entry.broadcast_mask),
+            .map(|row| BACnetBDTEntry {
+                bbmd_address: BACnetHostNPort::from_socket_addr(SocketAddr::V4(row.address)),
+                broadcast_mask: Some(row.mask.octets()),
             })
             .collect()
     }
@@ -51,13 +50,14 @@ impl BbmdState {
     /// period included. Unlike [`Self::fdt`] this purges nothing, so a read
     /// leaves the table and its counters alone.
     pub fn fdt_entries_at(&self, now: Instant) -> Vec<BACnetFDTEntry> {
-        self.fdt
-            .iter()
-            .filter(|entry| !entry.is_expired_at(now))
-            .map(|entry| BACnetFDTEntry {
-                address: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(entry.ip), entry.port)),
-                time_to_live: entry.ttl,
-                remaining_time_to_live: entry.seconds_remaining_at(now),
+        let now = self.clock.to_core(now);
+        self.tables
+            .fdt
+            .live_at(now)
+            .map(|registration| BACnetFDTEntry {
+                address: SocketAddr::V4(registration.address),
+                time_to_live: registration.ttl,
+                remaining_time_to_live: registration.seconds_remaining_at(now),
             })
             .collect()
     }
