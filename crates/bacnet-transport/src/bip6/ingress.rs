@@ -26,6 +26,12 @@ fn is_bacnet_ipv6_multicast(destination: Ipv6Addr) -> bool {
     )
 }
 
+/// Whether an address a message carries (a Forwarded-NPDU's origin, a
+/// Forwarded-Address-Resolution's asker) is usable without a scope ID: a
+/// unicast address that is not unspecified, loopback, link-local, or
+/// IPv4-mapped or -compatible, with a non-zero port. Stricter than
+/// [`is_answerable_source`], since the 18 octets carry no scope and name an
+/// address this node never saw a datagram from.
 pub(super) fn forwarded_source_is_usable(source: SocketAddrV6) -> bool {
     let ip = source.ip();
     source.port() != 0
@@ -50,17 +56,18 @@ pub(super) struct LocalBinding<'a> {
     pub(super) wildcard_bind: bool,
 }
 
-pub(super) fn is_local_unicast_delivery(
+/// Whether a datagram was sent to this node's own unicast address, not to a
+/// group.
+fn is_local_unicast_address(
     destination: IpAddr,
-    destination_vmac: Option<Bip6Vmac>,
     local: &LocalBinding<'_>,
     os_group_delivery: Option<bool>,
 ) -> bool {
     let LocalBinding {
         ip: local_ip,
-        vmac: local_vmac,
         unicast_ips: local_unicast_ips,
         wildcard_bind,
+        ..
     } = *local;
     let ip_matches = match destination {
         IpAddr::V6(ip) if wildcard_bind => {
@@ -71,7 +78,17 @@ pub(super) fn is_local_unicast_delivery(
         IpAddr::V6(ip) => ip == local_ip,
         IpAddr::V4(_) => false,
     };
-    ip_matches && destination_vmac == Some(local_vmac) && os_group_delivery != Some(true)
+    ip_matches && os_group_delivery != Some(true)
+}
+
+pub(super) fn is_local_unicast_delivery(
+    destination: IpAddr,
+    destination_vmac: Option<Bip6Vmac>,
+    local: &LocalBinding<'_>,
+    os_group_delivery: Option<bool>,
+) -> bool {
+    is_local_unicast_address(destination, local, os_group_delivery)
+        && destination_vmac == Some(local.vmac)
 }
 
 /// Whether a datagram was sent to a group: an IPv6 multicast address, or a
@@ -87,6 +104,12 @@ pub(super) fn group_destination(destination: IpAddr, os_group_delivery: Option<b
 /// Original-Unicast-NPDU (U.2.2, U.3), and a broadcast goes to a B/IPv6
 /// multicast group in an Original-Broadcast-NPDU (U.4). A frame that mixes the
 /// two is dropped before its NPDU reaches the network layer.
+///
+/// The unicast requests this node answers (Virtual-Address-Resolution and
+/// the three only a BBMD serves) must come to its own address too. One sent
+/// to a group is dropped, so a single forged multicast can't draw an answer
+/// from every node in the group. Forwarded-Address-Resolution's addressing
+/// depends on the mode: [`forwarded_address_resolution_is_trusted`].
 pub(super) fn original_destination_matches(
     function: Bvlc6Function,
     destination: IpAddr,
@@ -94,39 +117,88 @@ pub(super) fn original_destination_matches(
     local: &LocalBinding<'_>,
     os_group_delivery: Option<bool>,
 ) -> bool {
-    let LocalBinding {
-        ip: local_ip,
-        unicast_ips: local_unicast_ips,
-        wildcard_bind,
-        ..
-    } = *local;
     match function {
         Bvlc6Function::ORIGINAL_UNICAST_NPDU
         | Bvlc6Function::ADDRESS_RESOLUTION_ACK
         | Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION_ACK => {
             is_local_unicast_delivery(destination, destination_vmac, local, os_group_delivery)
         }
-        Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION => {
-            let ip_matches = match destination {
-                IpAddr::V6(ip) if wildcard_bind => {
-                    !ip.is_multicast()
-                        && (local_unicast_ips.contains(&ip)
-                            || (cfg!(windows) && os_group_delivery == Some(false)))
-                }
-                IpAddr::V6(ip) => ip == local_ip,
-                IpAddr::V4(_) => false,
-            };
-            ip_matches && os_group_delivery != Some(true)
+        Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION
+        | Bvlc6Function::REGISTER_FOREIGN_DEVICE
+        | Bvlc6Function::DELETE_FOREIGN_DEVICE_TABLE_ENTRY
+        | Bvlc6Function::DISTRIBUTE_BROADCAST_TO_NETWORK => {
+            is_local_unicast_address(destination, local, os_group_delivery)
         }
         Bvlc6Function::ORIGINAL_BROADCAST_NPDU | Bvlc6Function::ADDRESS_RESOLUTION => {
-            matches!(destination, IpAddr::V6(ip) if is_bacnet_ipv6_multicast(ip))
-                && os_group_delivery != Some(false)
+            is_bacnet_group_delivery(destination, os_group_delivery)
         }
-        // Forwarded-Address-Resolution is not implemented. Drop it before
-        // learning or any other state mutation. Answering one whose target
-        // is this node's VMAC is #1632.
-        Bvlc6Function::FORWARDED_ADDRESS_RESOLUTION => false,
         _ => true,
+    }
+}
+
+/// Whether a datagram's destination is a BACnet group: FF02::BAC0, FF05::BAC0
+/// or FF08::BAC0.
+fn is_bacnet_group_delivery(destination: IpAddr, os_group_delivery: Option<bool>) -> bool {
+    matches!(destination, IpAddr::V6(ip) if is_bacnet_ipv6_multicast(ip))
+        && os_group_delivery != Some(false)
+}
+
+/// Whether `peer` is an answerable source: an IPv6 source an answer would
+/// reach as one node, so neither a group, nor unspecified, nor IPv4-mapped,
+/// nor port 0. IPv6 forbids a multicast source address, so a datagram
+/// claiming one is forged, and an answer to it would reach every member of
+/// the group. The socket is IPv6-only, so an IPv4-mapped source is forged
+/// too. Link-local and loopback sources are answerable: the socket reports
+/// the scope a link-local one arrived on.
+pub(super) fn is_answerable_source(peer: SocketAddr) -> bool {
+    matches!(peer, SocketAddr::V6(peer)
+        if !peer.ip().is_multicast()
+            && !peer.ip().is_unspecified()
+            && peer.ip().to_ipv4_mapped().is_none()
+            && peer.port() != 0)
+}
+
+/// Whether `peer` is the BBMD this node registers with as a foreign device:
+/// `false` when it isn't one. A link-local BBMD never matches, since its
+/// configured address has no scope ID to tell links apart.
+fn is_configured_bbmd(peer: SocketAddr, foreign_bbmd: Option<(Ipv6Addr, u16)>) -> bool {
+    foreign_bbmd.is_some_and(|(bbmd_ip, bbmd_port)| {
+        !bbmd_ip.is_unicast_link_local()
+            && matches!(peer, SocketAddr::V6(peer) if *peer.ip() == bbmd_ip && peer.port() == bbmd_port)
+    })
+}
+
+/// Whether a Forwarded-Address-Resolution came by a path this node answers.
+///
+/// A BBMD sends one by unicast to each foreign device it serves, and by
+/// multicast into its own domain (U.4.4); the node whose VMAC it targets
+/// answers at the asker's address the message carries (U.5). Since that
+/// address comes from the message, who may send one matters:
+///
+/// - A foreign device takes one only by unicast from the BBMD it is
+///   configured to register with.
+/// - Any other node has no configured BBMD to check the sender against. It
+///   takes one that arrives on a BACnet multicast group from an answerable
+///   source ([`is_answerable_source`]). A forged one draws at most one
+///   Address-Resolution-ACK, from the one node whose VMAC it targets, so the
+///   reflection is bounded by the per-destination quota the answer counts
+///   against.
+///
+/// Either way the answer also needs the target to be this node's VMAC and
+/// the carried address to be usable without a scope ID
+/// ([`forwarded_source_is_usable`]); the receive path checks those.
+pub(super) fn forwarded_address_resolution_is_trusted(
+    peer: SocketAddr,
+    destination: IpAddr,
+    os_group_delivery: Option<bool>,
+    local: &LocalBinding<'_>,
+    foreign_bbmd: Option<(Ipv6Addr, u16)>,
+) -> bool {
+    if foreign_bbmd.is_some() {
+        is_configured_bbmd(peer, foreign_bbmd)
+            && is_local_unicast_address(destination, local, os_group_delivery)
+    } else {
+        is_bacnet_group_delivery(destination, os_group_delivery) && is_answerable_source(peer)
     }
 }
 
@@ -139,9 +211,8 @@ pub(super) fn forwarded_npdu_is_trusted(
     wildcard_bind: bool,
     foreign_bbmd: Option<(Ipv6Addr, u16)>,
 ) -> bool {
-    if let Some((bbmd_ip, bbmd_port)) = foreign_bbmd {
-        let peer_matches = !bbmd_ip.is_unicast_link_local()
-            && matches!(peer, SocketAddr::V6(peer) if *peer.ip() == bbmd_ip && peer.port() == bbmd_port);
+    if foreign_bbmd.is_some() {
+        let peer_matches = is_configured_bbmd(peer, foreign_bbmd);
         let destination_matches = match destination {
             IpAddr::V6(ip) if wildcard_bind => {
                 !ip.is_multicast()
@@ -153,7 +224,6 @@ pub(super) fn forwarded_npdu_is_trusted(
         };
         peer_matches && destination_matches && os_group_delivery != Some(true)
     } else {
-        matches!(destination, IpAddr::V6(ip) if is_bacnet_ipv6_multicast(ip))
-            && os_group_delivery != Some(false)
+        is_bacnet_group_delivery(destination, os_group_delivery)
     }
 }

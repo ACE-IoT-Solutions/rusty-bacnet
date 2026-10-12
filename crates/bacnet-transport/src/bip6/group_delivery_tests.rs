@@ -57,6 +57,8 @@ async fn receiver() -> (Receiver, mpsc::Receiver<ReceivedNpdu>) {
         foreign_bbmd: None,
         vmac_table: VmacTable::new(),
         forwarded_group_origin_drops: Arc::default(),
+        nak_quota: Default::default(),
+        far_ack_quota: Default::default(),
     };
     (receiver, rx)
 }
