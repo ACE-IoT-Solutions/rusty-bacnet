@@ -634,11 +634,18 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     }
 }
 
+/// The address after `current`: (current + 1) modulo (Max_Master + 1), as
+/// Clause 9.5.6 computes it.
 fn next_addr(current: u8, max_master: u8) -> u8 {
-    if current >= max_master {
-        0
-    } else {
-        current + 1
+    match current.cmp(&max_master) {
+        core::cmp::Ordering::Less => current + 1,
+        core::cmp::Ordering::Equal => 0,
+        // A successor above Max_Master, which a station outside the master
+        // range becomes by answering a poll, and whose failure the next
+        // search starts after (FindNewSuccessor, Clause 9.5.6.6).
+        core::cmp::Ordering::Greater => {
+            ((u32::from(current) + 1) % (u32::from(max_master) + 1)) as u8
+        }
     }
 }
 

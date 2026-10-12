@@ -615,3 +615,59 @@ fn an_aborted_frame_restarts_the_silence_before_token_generation() {
     );
     assert_eq!(core.counters().missed_generation_slots, 0);
 }
+
+/// A station above Max_Master that answers a poll becomes the successor
+/// (ReceivedReplyToPFM, Clause 9.5.6.8). When it never uses the token, the
+/// search for a new successor starts at (NS + 1) modulo (Max_Master + 1)
+/// (FindNewSuccessor, Clause 9.5.6.6): 3 for NS 130 and Max_Master 7, not
+/// 0. Found by the core fuzz target (#1640).
+#[test]
+fn a_successor_search_past_one_above_max_master_starts_at_ns_plus_one() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 7),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    core.on_deadline(ms(500)).unwrap();
+    core.on_deadline(ms(510)).unwrap();
+    let (poll, header) = take_transmit(&mut core, ms(510));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::PollForMaster, 2)
+    );
+    finish(&mut core, poll, ms(511));
+    validated(
+        &mut core,
+        FrameType::ReplyToPollForMaster,
+        1,
+        130,
+        &[],
+        ms(512),
+    );
+    core.on_deadline(ms(517)).unwrap();
+    let (token, header) = take_transmit(&mut core, ms(517));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::Token, 130)
+    );
+    finish(&mut core, token, ms(518));
+    core.on_deadline(ms(538)).unwrap();
+    let (retry, header) = take_transmit(&mut core, ms(538));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::Token, 130)
+    );
+    finish(&mut core, retry, ms(539));
+
+    core.on_deadline(ms(559)).unwrap();
+    let (_poll, header) = take_transmit(&mut core, ms(559));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::PollForMaster, 3)
+    );
+}
