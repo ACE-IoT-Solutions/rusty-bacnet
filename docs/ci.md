@@ -153,8 +153,9 @@ link.
   - `mstp::run` encodes a few frame types and decodes them with a
     `StreamDecoder`, noise and a bad CRC included. It drives a `MasterCore`
     with injected time through a token pass, a queued data frame, a poll for
-    master, a received broadcast and an answered request, carrying out each
-    action, and records each frame sent with its destination. Then it fills
+    master, a received broadcast and Test_Response and an answered request,
+    carrying out each action, and records each frame sent with its
+    destination. Then it fills
     the unicast queue and offers an NPDU too long for a standard frame.
   - `bip::run` encodes one message of each `Bvll` variant into a slice and
     into a `heapless::Vec` sink and decodes each back, and decodes three
@@ -232,16 +233,21 @@ link.
   install the toolchain again for builds that take seconds.
 - **What `.text` holds.** Each image's `.text` includes its scenario, not
   just the stack it links. The check's by-crate list shows the split: on
-  `thumbv7m-none-eabi`, the MS/TP image's 18.7 KB is about 6.3 KB of
-  `bacnet-mstp-core`, 6.4 KB of the scenario (with the core code it
-  inlines), 4.3 KB of compiler-builtins and startup code (memory copies,
-  64-bit division and the reset handler; the list shows the unmangled part
-  separately) and 1.4 KB of `bacnet-mstp-codec`.
-- **RAM.** The scenarios' buffers and the core are statics, so `.bss`
-  measures them: the core is 13,344 octets on these targets. `.bss` doesn't
-  count the stack, where `MasterCore::new` builds the core before it is
-  copied into place (#1618). `cargo nextest run -p firmware-link` prints the
-  host sizes from the `ram_sizes` test.
+  `thumbv7m-none-eabi`, the MS/TP image's 16.5 KB is about 5.7 KB of
+  `bacnet-mstp-core`, 5.7 KB of the scenario (with the core code it
+  inlines), 3.4 KB of compiler-builtins and startup code (memory copies,
+  32-bit multiplication and division, and the reset handler; the list
+  shows the unmangled part separately) and 1.4 KB of `bacnet-mstp-codec`.
+  The core divides only in 32 bits, so no image links a 64-bit division
+  routine (#1618).
+- **RAM.** The scenarios' buffers are statics, so `.bss` measures them. The
+  MS/TP image keeps everything large the core borrows in its static, the
+  firmware pattern the core's crate docs describe: receive storage, queues
+  (3,360 octets for `HeaplessQueues<4, 2>`) and `ActionBuffers<1>` (1,028),
+  5,544 octets in all with the codec part's buffers. The core itself, 504
+  octets on these targets, is built on the stack. `.bss` doesn't count the
+  stack. `cargo nextest run -p firmware-link` prints the host sizes from the
+  `ram_sizes` test.
 - **Raising a budget.** Each budget is the measured size plus 12%, rounded
   up to 16 octets. When a change grows an image on purpose, the error
   suggests a new budget; update it and the measured sizes in the file's

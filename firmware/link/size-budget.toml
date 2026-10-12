@@ -25,25 +25,29 @@
 # Measured 2026-10-11 with Rust 1.99.0, as text / rodata / data / bss, then
 # flash / ram:
 #
-#   thumbv7m mstp     18732 / 1004 / 0 / 14496   20760 / 14496
+#   thumbv7m mstp     16468 / 1004 / 0 /  5544   18496 /  5544
 #   thumbv7m bip       8936 /  976 / 0 /   132   10936 /   132
-#   thumbv6m mstp     19476 / 1004 / 0 / 14496   20672 / 14496
+#   thumbv6m mstp     17340 / 1004 / 0 /  5544   18536 /  5544
 #   thumbv6m bip      10468 /  980 / 0 /   132   11640 /   132
-#   riscv32imc mstp   20368 / 1292 / 0 / 14494   21682 / 14494
+#   riscv32imc mstp   17852 / 1292 / 0 /  5544   19166 /  5544
 #   riscv32imc bip    11820 / 1524 / 0 /   132   13366 /   132
 #
 # The bip rows were measured again on 2026-10-11, same toolchain, when the
 # image gained the B/IPv6 codec's scenario (#1621): about 4.6-6.0 KB more
 # flash, the RAM unchanged. The mstp rows were too, when the master core
-# began waiting for a quiet line before each send (#1618, #1625).
+# began waiting for a quiet line before each send (#1618, #1625), and again
+# when the core began borrowing its large buffers, dropped its control
+# ring and its 64-bit divisions, and the image switched to building the
+# core on the stack (#1617, #1618): 2.3-2.8 KB less text and 8,952 octets
+# less RAM.
 
 [thumbv7m-none-eabi.mstp]
-text = 20992
+text = 18448
 rodata = 1136
 data = 64
-bss = 16240
-flash = 23264
-ram = 16240
+bss = 6224
+flash = 20720
+ram = 6224
 fmt_functions = 0
 
 [thumbv7m-none-eabi.bip]
@@ -56,12 +60,12 @@ ram = 160
 fmt_functions = 0
 
 [thumbv6m-none-eabi.mstp]
-text = 21824
+text = 19424
 rodata = 1136
 data = 64
-bss = 16240
-flash = 23152
-ram = 16240
+bss = 6224
+flash = 20768
+ram = 6224
 fmt_functions = 0
 
 [thumbv6m-none-eabi.bip]
@@ -74,12 +78,12 @@ ram = 160
 fmt_functions = 0
 
 [riscv32imc-unknown-none-elf.mstp]
-text = 22816
+text = 20000
 rodata = 1456
 data = 64
-bss = 16240
-flash = 24288
-ram = 16240
+bss = 6224
+flash = 21472
+ram = 6224
 fmt_functions = 0
 
 [riscv32imc-unknown-none-elf.bip]
