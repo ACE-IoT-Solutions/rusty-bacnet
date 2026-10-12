@@ -186,33 +186,48 @@ async fn foreign_mode_refuses_manual_requests_that_could_change_its_registration
 }
 
 /// No device could register with a BBMD at the unspecified address, a
-/// group address, port 0 or the transport's own address, so `start()`
-/// refuses one and binds nothing that stays.
+/// group address or port 0, so `start()` refuses one before any I/O, as it
+/// does a bad renewal interval; one at the transport's own address it
+/// refuses once bound, and nothing it bound stays.
 #[tokio::test]
 async fn foreign_mode_refuses_a_bbmd_no_device_could_register_with() {
-    let own = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let own_port = own.local_addr().unwrap().port();
-    drop(own);
+    let foreign = |bbmd_ip, bbmd_port| ForeignDeviceConfig {
+        bbmd_ip,
+        bbmd_port,
+        ttl: 60,
+        renewal_interval: None,
+    };
+    let refused = |error: Error| {
+        assert!(matches!(error, Error::Encoding(_)), "{error:?}");
+        assert!(error.to_string().contains("BBMD"), "{error}");
+    };
+    let subnet = Ipv4Addr::new(192, 0, 2, 255);
     for (bbmd_ip, bbmd_port) in [
         (Ipv4Addr::UNSPECIFIED, 47808),
         (Ipv4Addr::BROADCAST, 47808),
+        (subnet, 47809),
         (Ipv4Addr::new(224, 0, 0, 1), 47808),
-        (Ipv4Addr::LOCALHOST, 0),
-        (Ipv4Addr::LOCALHOST, own_port),
+        (Ipv4Addr::new(198, 51, 100, 1), 0),
     ] {
-        let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, own_port, Ipv4Addr::BROADCAST);
-        transport.register_as_foreign_device(ForeignDeviceConfig {
-            bbmd_ip,
-            bbmd_port,
-            ttl: 60,
-            renewal_interval: None,
-        });
-        let error = transport.start().await.unwrap_err();
-        assert!(matches!(error, Error::Encoding(_)), "{error:?}");
-        assert!(error.to_string().contains("BBMD"), "{error}");
+        // A nonlocal interface would yield a transport error if the check
+        // ran after the I/O.
+        let mut transport = BipTransport::new(Ipv4Addr::new(192, 0, 2, 1), 0, subnet);
+        transport.register_as_foreign_device(foreign(bbmd_ip, bbmd_port));
+        refused(transport.start().await.unwrap_err());
         assert!(transport.socket.is_none());
         assert!(!transport.bvlc_client_snapshot().running);
     }
+
+    let own = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let own_port = own.local_addr().unwrap().port();
+    drop(own);
+    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, own_port, Ipv4Addr::BROADCAST);
+    transport.register_as_foreign_device(foreign(Ipv4Addr::LOCALHOST, own_port));
+    refused(transport.start().await.unwrap_err());
+    assert!(transport.socket.is_none());
+    assert!(!transport.bvlc_client_snapshot().running);
+    // Nothing it bound stays: the port is free again.
+    drop(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, own_port)).unwrap());
 }
 
 #[tokio::test]

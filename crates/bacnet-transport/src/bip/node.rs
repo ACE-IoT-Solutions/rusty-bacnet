@@ -229,9 +229,10 @@ pub(super) struct NodeHandle {
 
 impl NodeHandle {
     /// The node on `link`, sending from `socket` and counting into
-    /// `record`. A foreign device's first registration attempt is due at
-    /// once: the driver takes it up when it first runs, as the registration
-    /// worker did before the engine.
+    /// `record`. A foreign device's first registration attempt is admitted
+    /// at once and sent when the driver first runs, which is also when what
+    /// the node counted for it reaches `record`, as with the registration
+    /// worker before the engine.
     pub(super) fn new(
         link: Link,
         socket: Arc<BipSocket>,

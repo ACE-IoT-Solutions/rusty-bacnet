@@ -141,6 +141,10 @@ pub struct BipTransport {
     /// its default-route address) that a wildcard bind reads in `start()`.
     #[cfg(test)]
     local_ipv4_for_test: Option<std::io::Result<(Vec<Ipv4Addr>, Option<Ipv4Addr>)>>,
+    /// Runs in a stop between stopping the node and clearing the client
+    /// status, where a call racing the stop can land.
+    #[cfg(test)]
+    between_stops: Option<Box<dyn FnOnce() + Send + Sync>>,
 }
 
 impl BipTransport {
@@ -193,6 +197,8 @@ impl BipTransport {
             own_broadcast: None,
             #[cfg(test)]
             local_ipv4_for_test: None,
+            #[cfg(test)]
+            between_stops: None,
         }
     }
 
@@ -286,9 +292,12 @@ impl BipTransport {
     }
 
     /// Configure this transport as a foreign device.
-    /// Call before `start()`, which validates the TTL/renewal settings before
-    /// I/O and starts an automatic worker. Startup is local readiness, not a
-    /// BBMD receipt; use [`Self::bvlc_client_snapshot`] to observe outcomes.
+    /// Call before `start()`, which validates, before any I/O, the TTL and
+    /// renewal settings and the BBMD's address (not the unspecified address,
+    /// a group address or port 0), refuses a BBMD at the transport's own
+    /// address once bound, and starts an automatic worker. Startup is local
+    /// readiness, not a BBMD receipt; use [`Self::bvlc_client_snapshot`] to
+    /// observe outcomes.
     /// `start()` fails on a transport that is also a BBMD
     /// ([`enable_bbmd`](Self::enable_bbmd)).
     pub fn register_as_foreign_device(&mut self, config: ForeignDeviceConfig) {
@@ -424,10 +433,17 @@ impl BipTransport {
     }
 
     fn abort_background_tasks(&mut self) -> Vec<JoinHandle<()>> {
-        self.client_record.stop();
+        // The node first: once it is stopped, under its own lock, a call
+        // still running (the receive loop, the driver, a request given up)
+        // counts nothing more, so the status cleared next stays clear.
         if let Some(node) = self.node.take() {
             node.stop();
         }
+        #[cfg(test)]
+        if let Some(between) = self.between_stops.take() {
+            between();
+        }
+        self.client_record.stop();
         let mut tasks = Vec::new();
         if let Some(task) = self.node_task.take() {
             task.abort();
@@ -642,6 +658,9 @@ impl TransportPort for BipTransport {
             .as_ref()
             .map(ForeignDeviceConfig::interval)
             .transpose()?;
+        if let Some(foreign) = &self.foreign_device {
+            foreign.check_bbmd(self.broadcast_address, self.interface)?;
+        }
 
         socket::probe_interface(self.interface)?;
         // A wildcard socket, or in per-address mode one bound to the interface

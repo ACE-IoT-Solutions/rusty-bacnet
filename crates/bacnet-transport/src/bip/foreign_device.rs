@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
-use bacnet_bip_core::node::{Foreign, ForwardedTrust, Retry};
+use bacnet_bip_core::node::{ConfigError, Foreign, ForwardedTrust, Groups, Retry};
 use bacnet_types::error::Error;
 
 use super::node::core_duration;
@@ -37,6 +37,27 @@ impl ForeignDeviceConfig {
         // Limit fast replies, busy slots and local failures to ten attempts per
         // second. This remains below half of the smallest positive wire TTL.
         Ok(interval.max(Duration::from_millis(100)))
+    }
+
+    /// Refuse, before any I/O, a BBMD no device could register with: one
+    /// at port 0, at the unspecified address, or at a group address of a
+    /// link whose broadcast IP is `broadcast` on `interface`. One at the
+    /// transport's own address is refused once it is bound, when the node
+    /// starts.
+    pub(super) fn check_bbmd(&self, broadcast: Ipv4Addr, interface: Ipv4Addr) -> Result<(), Error> {
+        // Only the IP test is read, so the broadcast's port doesn't matter.
+        let groups = Groups {
+            broadcast: SocketAddrV4::new(broadcast, 0),
+            interface,
+        };
+        let refusal = if self.bbmd_port == 0 {
+            ConfigError::BbmdPort
+        } else if self.bbmd_ip.is_unspecified() || groups.contains_ip(self.bbmd_ip) {
+            ConfigError::BbmdAddress
+        } else {
+            return Ok(());
+        };
+        Err(Error::Encoding(refusal.to_string()))
     }
 
     /// The node engine's registration, renewed every `interval`

@@ -613,3 +613,55 @@ async fn a_request_given_up_after_stop_leaves_the_status_clear() {
     assert_eq!(snapshot.foreign_registration.attempts, 1);
     assert_eq!(snapshot.register_foreign_device.sent, 1);
 }
+
+/// What a call racing `stop()` can do to a manual registration in flight:
+/// give it up, or match the BBMD's success to it.
+#[derive(Clone, Copy, Debug)]
+enum Race {
+    GiveUp,
+    Answer,
+}
+
+/// A call that lands while the transport stops, after its node stopped and
+/// before the client status is cleared, changes nothing: the status stays
+/// clear, as when the old client reset and refused counts under one lock.
+#[tokio::test]
+async fn a_call_racing_stop_leaves_the_status_clear() {
+    for race in [Race::GiveUp, Race::Answer] {
+        let (_peer, target) = peer().await;
+        let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+        let _rx = transport.start().await.unwrap();
+        let node = Arc::clone(transport.node.as_ref().unwrap());
+        let peer = codec::address_from_slice(&target).unwrap();
+        let (exchange, _response) = node.begin(peer, register(60), THREE_SECONDS).unwrap();
+        exchange.sent();
+        let pending = transport.bvlc_client_snapshot().foreign_registration;
+        assert_eq!(
+            pending.last_outcome,
+            Some(ForeignRegistrationOutcome::Pending)
+        );
+        transport.between_stops = Some(Box::new(move || match race {
+            Race::GiveUp => drop(exchange),
+            Race::Answer => {
+                let frame = [0x81, 0x00, 0x00, 0x06, 0x00, 0x00];
+                let response = bacnet_bip_core::node::Response {
+                    peer,
+                    function: BvlcFunction::BVLC_RESULT,
+                    message: Ok(Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION)),
+                    accepted: true,
+                };
+                node.resolve(response, &frame, None);
+            }
+        }));
+        transport.stop().await.unwrap();
+        let stopped = transport.bvlc_client_snapshot();
+        let registration = stopped.foreign_registration;
+        assert_eq!(registration.last_outcome, None, "{race:?}");
+        assert_eq!(registration.last_ttl, None, "{race:?}");
+        assert_eq!(registration.accepted, 0, "{race:?}");
+        assert_eq!(
+            stopped.register_foreign_device.last_result, None,
+            "{race:?}"
+        );
+    }
+}
