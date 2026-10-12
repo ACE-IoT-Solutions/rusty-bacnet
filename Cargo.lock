@@ -627,6 +627,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "cast"
@@ -1996,6 +1999,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostd-harness"
+version = "0.12.0"
+dependencies = [
+ "bytes",
+ "portable-atomic",
+]
+
+[[package]]
 name = "ntapi"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2328,6 +2339,9 @@ name = "portable-atomic"
 version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
+dependencies = [
+ "critical-section",
+]
 
 [[package]]
 name = "powerfmt"
