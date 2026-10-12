@@ -2,7 +2,9 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use bacnet_mstp_core::{Action, HeaplessQueues, Instant, MasterCore, MstpCoreConfig, RequestId};
+use bacnet_mstp_core::{
+    Action, ActionBuffers, HeaplessQueues, Instant, MasterCore, MstpCoreConfig, RequestId,
+};
 use bacnet_router_adapters::{
     bip::{BipDatagramSink, BipEgress},
     composition::{
@@ -18,6 +20,7 @@ use bacnet_router_core::{
 };
 
 type Queues = HeaplessQueues<1, 1>;
+type Actions = ActionBuffers<1>;
 type Diagnostics = OperationalDiagnostics<4, 4, 4>;
 
 fn net(value: u16) -> NetworkNumber {
@@ -49,7 +52,7 @@ fn new_diagnostics() -> Diagnostics {
     diagnostics
 }
 
-fn new_mstp_core<'rx>(rx: &'rx mut [u8]) -> MasterCore<'rx, Queues> {
+fn new_mstp_core<'rx>(rx: &'rx mut [u8], actions: &'rx mut Actions) -> MasterCore<'rx, Queues> {
     MasterCore::new(
         MstpCoreConfig {
             station: 1,
@@ -58,6 +61,7 @@ fn new_mstp_core<'rx>(rx: &'rx mut [u8]) -> MasterCore<'rx, Queues> {
         },
         Queues::new(),
         rx,
+        actions,
         Instant::ZERO,
     )
     .unwrap()
@@ -131,7 +135,8 @@ fn malformed_bvll_is_preflighted_and_observed_once() {
     let mut router = RouterCore::<2, 2>::new();
     let mut diagnostics = new_diagnostics();
     let mut rx = [0; 1024];
-    let mut mstp_core = new_mstp_core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = new_mstp_core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::ZERO);
     let mut scratch = [0; 512];
 
@@ -163,7 +168,8 @@ fn unregistered_egress_is_rejected_before_raw_composition() {
     let mut router = RouterCore::<2, 2>::new();
     let mut diagnostics = Diagnostics::new();
     let mut rx = [0; 1024];
-    let mut mstp_core = new_mstp_core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = new_mstp_core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::ZERO);
     let mut scratch = [0; 512];
 
@@ -197,7 +203,8 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
     router.routes_mut().add_direct(net(200), PortId(2)).unwrap();
     let mut diagnostics = new_diagnostics();
     let mut rx = [0; 1024];
-    let mut mstp_core = new_mstp_core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = new_mstp_core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::from_micros(1));
     let mut scratch = [0; 1600];
 
@@ -238,7 +245,8 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
     let mut router = RouterCore::<2, 2>::new();
     router.routes_mut().add_direct(net(200), PortId(2)).unwrap();
     let mut rx = [0; 1024];
-    let mut mstp_core = new_mstp_core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = new_mstp_core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::ZERO);
     let mut diagnostics = new_diagnostics();
     let outcome = forward_bip_datagram_to_mstp_observed(
@@ -261,7 +269,8 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
     let mut router = RouterCore::<2, 2>::new();
     router.routes_mut().add_direct(net(200), PortId(2)).unwrap();
     let mut rx = [0; 1024];
-    let mut mstp_core = new_mstp_core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = new_mstp_core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::from_micros(2));
     mstp.set_now(Instant::from_micros(1));
     let mut diagnostics = new_diagnostics();
@@ -286,7 +295,8 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
     let mut router = RouterCore::<2, 2>::new();
     router.routes_mut().add_direct(net(200), PortId(2)).unwrap();
     let mut rx = [0; 1024];
-    let mut mstp_core = new_mstp_core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = new_mstp_core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(99), Instant::ZERO);
     let mut diagnostics = new_diagnostics();
     let outcome = forward_bip_datagram_to_mstp_observed(

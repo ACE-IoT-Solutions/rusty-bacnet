@@ -41,9 +41,6 @@ const CRC16_TABLE: [u16; 256] = {
     table
 };
 
-/// Reflected CRC-32K polynomial used by Extended MS/TP.
-const CRC32K_POLY: u32 = 0xEB31_D82E;
-
 /// Compute the reflected BACnet header CRC-8.
 pub fn crc8(data: &[u8]) -> u8 {
     let mut crc = 0xFF;

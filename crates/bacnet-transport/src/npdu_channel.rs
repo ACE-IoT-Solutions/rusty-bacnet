@@ -5,7 +5,7 @@ use bacnet_types::MacAddr;
 use bytes::Bytes;
 use tokio::sync::mpsc::{self, error::TrySendError};
 
-use crate::port::ReceivedNpdu;
+use crate::port::{ReceivedNpdu, TransportProvenance};
 
 /// Why the network layer's channel refused an NPDU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,23 +20,46 @@ pub(crate) enum Refused {
 /// delivery when `link_layer_group`. The channel's slot is reserved before
 /// `npdu` makes the NPDU's octets, so an NPDU the channel refuses costs no
 /// copy during a flood.
+#[cfg_attr(not(feature = "ipv6"), allow(dead_code))]
 pub(crate) fn hand_up(
     tx: &mpsc::Sender<ReceivedNpdu>,
     npdu: impl FnOnce() -> Bytes,
     source_mac: MacAddr,
     link_layer_group: bool,
 ) -> Result<(), Refused> {
+    hand_up_with_provenance(
+        tx,
+        npdu,
+        source_mac,
+        link_layer_group,
+        TransportProvenance::unverified(),
+    )
+}
+
+/// Hand up an NPDU while retaining transport-specific ingress metadata.
+///
+/// Like [`hand_up`], this reserves the bounded channel slot before copying
+/// the NPDU, so a refused frame remains allocation-free.
+pub(crate) fn hand_up_with_provenance(
+    tx: &mpsc::Sender<ReceivedNpdu>,
+    npdu: impl FnOnce() -> Bytes,
+    source_mac: MacAddr,
+    link_layer_group: bool,
+    provenance: TransportProvenance,
+) -> Result<(), Refused> {
     let permit = tx.try_reserve().map_err(|error| match error {
         TrySendError::Full(()) => Refused::Full,
         TrySendError::Closed(()) => Refused::Closed,
     })?;
-    permit.send(ReceivedNpdu::unverified(
-        npdu(),
+    permit.send(ReceivedNpdu {
+        direct_response: None,
+        npdu: npdu(),
         source_mac,
         link_layer_group,
-        Vec::new(),
-        None,
-    ));
+        data_attributes: Vec::new(),
+        provenance,
+        reply_tx: None,
+    });
     Ok(())
 }
 

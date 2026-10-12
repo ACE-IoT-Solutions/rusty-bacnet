@@ -24,11 +24,6 @@ fn drain(decoder: &mut StreamDecoder<'_>) -> Vec<(FrameType, u8, u8)> {
                 frame.header.destination,
                 frame.header.source,
             )),
-            DecodeEvent::ExtendedFrame { frame, .. } => frames.push((
-                frame.header.frame_type,
-                frame.header.destination,
-                frame.header.source,
-            )),
             DecodeEvent::Error(error) => panic!("unexpected stream error {error:?}"),
             DecodeEvent::Invalid { .. } | DecodeEvent::Malformed { .. } => {}
         }

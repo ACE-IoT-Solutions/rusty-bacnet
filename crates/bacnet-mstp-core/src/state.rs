@@ -14,7 +14,7 @@ use crate::config::{
     ConfigError, CoreBuffer, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT,
 };
 use crate::counters::{MstpCounters, QueueCounters};
-use crate::queue::{NetworkPriority, QueueClass, QueueKind, QueueRejectReason, QueueStorage};
+use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
 
 mod input;
 mod pending;
@@ -111,21 +111,7 @@ pub enum CoreError {
     ReplyOversize {
         /// Supplied reply length.
         length: usize,
-        /// Maximum reply length for this profile.
-        maximum: usize,
-    },
-    /// An Extended DER/DNER frame was supplied to a standard-profile core.
-    ExtendedFrameUnsupported {
-        /// Supplied extended-frame payload length.
-        length: usize,
-        /// Maximum payload length accepted by this profile.
-        maximum: usize,
-    },
-    /// An NPDU was larger than the active storage profile.
-    NpduOversize {
-        /// Supplied NPDU length.
-        length: usize,
-        /// Maximum NPDU length for this profile.
+        /// Maximum supported reply length.
         maximum: usize,
     },
     /// The transmit identifier is stale or does not match the active transfer.
@@ -315,7 +301,7 @@ pub struct MasterCore<'rx, Q: QueueStorage, const NPDU: usize = MAX_STANDARD_MPD
     pending_request: Option<PendingRequest>,
     next_request_generation: u32,
     active_transmit: Option<ActiveTransmit>,
-    pending_send: Option<PendingSend<FRAME>>,
+    pending_send: Option<PendingSend>,
     next_transmit_generation: u32,
     protocol_deadline: Option<Instant>,
     last_activity: Instant,
@@ -323,7 +309,6 @@ pub struct MasterCore<'rx, Q: QueueStorage, const NPDU: usize = MAX_STANDARD_MPD
     parser_partial: bool,
     last_now: Instant,
     consecutive_broadcast: u8,
-    consecutive_network_control: u8,
     counters: MstpCounters,
 }
 
@@ -360,7 +345,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         action_buffers: &'rx mut ActionBuffers<DELIVERIES, NPDU, FRAME>,
         now: Instant,
     ) -> Result<Self, CoreError> {
-        config.validate_frame_capacity(FRAME)?;
+        config.validate()?;
         if rx_storage.len() < MIN_RX_STORAGE {
             return Err(CoreError::ReceiveStorageTooSmall {
                 length: rx_storage.len(),
@@ -424,7 +409,6 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             parser_partial: false,
             last_now: now,
             consecutive_broadcast: 0,
-            consecutive_network_control: 0,
             counters: MstpCounters::default(),
         })
     }
@@ -469,7 +453,6 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             self.queues.stats(QueueKind::Broadcast),
             self.counters.broadcast,
         );
-        counters.network_control = self.queues.stats_class(QueueClass::NetworkControl);
         counters
     }
 
@@ -488,10 +471,6 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         priority: NetworkPriority,
         now: Instant,
     ) -> Result<(), QueueRejectReason> {
-        if npdu.len() > NPDU {
-            self.record_oversize_npdu(QueueKind::from_destination(destination));
-            return Err(QueueRejectReason::Oversize);
-        }
         if now < self.last_now {
             return Err(QueueRejectReason::Expired);
         }

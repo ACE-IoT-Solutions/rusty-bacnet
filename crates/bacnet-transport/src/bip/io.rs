@@ -14,7 +14,7 @@ use bacnet_types::MacAddr;
 use crate::bbmd::{self, BbmdState};
 use crate::bvll::{encode_bip_mac, encode_bvll, BvllMessage};
 use crate::npdu_channel::{self, Refused};
-use crate::port::ReceivedNpdu;
+use crate::port::{ReceivedNpdu, TransportProvenance};
 
 use super::fanout::FanoutDispatcher;
 use super::ingress::Delivery;
@@ -63,10 +63,21 @@ fn hand_up(
     npdu: &[u8],
     source_mac: MacAddr,
     link_layer_group: bool,
+    function: BvlcFunction,
+    udp_source: ([u8; 4], u16),
+    forwarded_from: Option<([u8; 4], u16)>,
     frame: &'static str,
 ) {
     let npdu = || Bytes::copy_from_slice(npdu);
-    match npdu_channel::hand_up(&ctx.npdu_tx, npdu, source_mac, link_layer_group) {
+    let provenance =
+        TransportProvenance::unverified_bip(function.to_raw(), udp_source, forwarded_from);
+    match npdu_channel::hand_up_with_provenance(
+        &ctx.npdu_tx,
+        npdu,
+        source_mac,
+        link_layer_group,
+        provenance,
+    ) {
         Ok(()) => {}
         Err(Refused::Full) => {
             ctx.drops.npdu_channel_full(frame);
@@ -132,7 +143,16 @@ pub(super) async fn handle_bvll_message(
             // group-addressed confirmed request is never answered as a
             // directed one (Clause 5.4.5.1).
             let group = delivery == Delivery::Broadcast;
-            hand_up(ctx, npdu, source_mac, group, "unicast");
+            hand_up(
+                ctx,
+                npdu,
+                source_mac,
+                group,
+                BvlcFunction::ORIGINAL_UNICAST_NPDU,
+                sender,
+                None,
+                "unicast",
+            );
         }
 
         Bvll::OriginalBroadcastNpdu(npdu) => {
@@ -141,7 +161,16 @@ pub(super) async fn handle_bvll_message(
                 return;
             }
 
-            hand_up(ctx, npdu, source_mac, true, "broadcast");
+            hand_up(
+                ctx,
+                npdu,
+                source_mac,
+                true,
+                BvlcFunction::ORIGINAL_BROADCAST_NPDU,
+                sender,
+                None,
+                "broadcast",
+            );
 
             // If BBMD, forward as Forwarded-NPDU to BDT peers + FDT entries
             if let Some(bbmd) = &ctx.bbmd {
@@ -197,7 +226,16 @@ pub(super) async fn handle_bvll_message(
                     return;
                 }
 
-                hand_up(ctx, npdu, source_mac, true, "forwarded");
+                hand_up(
+                    ctx,
+                    npdu,
+                    source_mac,
+                    true,
+                    BvlcFunction::FORWARDED_NPDU,
+                    sender,
+                    Some((orig_ip, orig_port)),
+                    "forwarded",
+                );
 
                 // Forward to FDT entries (BDT peers don't need it — they got it directly)
                 let (fdt_targets, dedup_count) = {
@@ -227,7 +265,16 @@ pub(super) async fn handle_bvll_message(
                     let _ = forward_npdu(ctx, npdu, orig_ip, orig_port, &fdt_targets).await;
                 }
             } else {
-                hand_up(ctx, npdu, source_mac, true, "forwarded");
+                hand_up(
+                    ctx,
+                    npdu,
+                    source_mac,
+                    true,
+                    BvlcFunction::FORWARDED_NPDU,
+                    sender,
+                    Some((orig_ip, orig_port)),
+                    "forwarded",
+                );
             }
         }
 
@@ -386,7 +433,16 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
         return;
     }
 
-    hand_up(ctx, npdu, source_mac, true, "distributed broadcast");
+    hand_up(
+        ctx,
+        npdu,
+        source_mac,
+        true,
+        BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
+        sender,
+        None,
+        "distributed broadcast",
+    );
 
     let (targets, dedup_count) = {
         let mut state = bbmd::lock(bbmd);

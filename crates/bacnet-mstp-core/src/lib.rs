@@ -154,15 +154,14 @@ pub use actions::{
 pub use clock::{Duration, Instant, Monotonic, SimClock};
 pub use config::{ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, MstpCoreConfig};
 pub use counters::{MstpCounters, QueueCounters};
+#[cfg(feature = "alloc")]
+pub use queue::AllocQueues;
 #[cfg(feature = "heapless")]
 pub use queue::HeaplessQueues;
-#[cfg(feature = "alloc")]
-pub use queue::{AllocQueues, AllocQueuesProfile, ExtendedAllocQueues};
 pub use queue::{
-    DequeuedNpdu, NetworkPriority, QueueClass, QueueItemInfo, QueueKind, QueueRejectReason,
-    QueueStorage,
+    DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
 };
 pub use state::{
-    CoreError, ExtendedMasterCore, MasterCore, MasterSnapshot, MasterState, ProfileMasterCore,
-    ReceiveError, ReplyDecision, StandardMasterCore, LATE_DEADLINE, MIN_RX_STORAGE,
+    CoreError, MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision, LATE_DEADLINE,
+    MIN_RX_STORAGE,
 };

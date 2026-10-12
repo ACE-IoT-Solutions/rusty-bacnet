@@ -26,11 +26,8 @@ pub(super) fn configure_sc_transport<W: WebSocketPort>(
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: sc.reconnect_initial_delay_ms,
             max_delay_ms: sc.reconnect_max_delay_ms,
-            max_retries: if sc.reconnect_forever {
-                u32::MAX
-            } else {
-                sc.reconnect_max_retries
-            },
+            max_retries: sc.reconnect_max_retries,
+            retry_forever: sc.reconnect_forever,
         })
 }
 

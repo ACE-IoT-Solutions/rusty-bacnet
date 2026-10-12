@@ -1,7 +1,6 @@
 //! Token ownership, maintenance polling, and queue scheduling.
 
 use super::*;
-use crate::queue::QueueClass;
 
 impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     pub(super) fn enter_no_token(&mut self, now: Instant) -> Result<(), CoreError> {
@@ -198,33 +197,6 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             }
             (true, true) => Some(QueueKind::Unicast),
         }
-    }
-
-    fn dequeue_network_control_and_send(&mut self, now: Instant) -> Result<bool, CoreError> {
-        let mut npdu = [0; NPDU];
-        let Some(item) = self
-            .queues
-            .dequeue_class_into(QueueClass::NetworkControl, now.as_micros(), &mut npdu)
-            .map_err(|_| CoreError::ActionCapacity)?
-        else {
-            return Ok(false);
-        };
-        self.consecutive_network_control = self.consecutive_network_control.saturating_add(1);
-        self.frame_count = self.frame_count.saturating_add(1);
-        let expecting = item.kind == QueueKind::Unicast && item.len >= 2 && npdu[1] & 0x04 != 0;
-        let (frame_type, post) = if expecting {
-            (
-                FrameType::BACnetDataExpectingReply,
-                PostTransmit::WaitForReply,
-            )
-        } else {
-            (
-                FrameType::BACnetDataNotExpectingReply,
-                PostTransmit::ContinueToken,
-            )
-        };
-        self.queue_frame(frame_type, item.destination, &npdu[..item.len], post, now)?;
-        Ok(true)
     }
 
     fn done_with_token(&mut self, now: Instant) -> Result<(), CoreError> {

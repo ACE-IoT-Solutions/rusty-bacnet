@@ -2,17 +2,6 @@
 
 use core::fmt;
 
-use crate::CobsError;
-
-/// The field in an Extended MS/TP frame where COBS validation failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtendedField {
-    /// The encoded NPDU field.
-    Data,
-    /// The five-octet encoded CRC field.
-    Crc,
-}
-
 /// A frame could not be encoded or decoded.
 ///
 /// Encode and decode share the variants that mean the same thing in both
@@ -124,45 +113,6 @@ pub enum FrameError {
         /// or the decoder's capacity less what it already buffers.
         available: usize,
     },
-    /// An Extended MS/TP Length value is outside the COBS envelope.
-    ExtendedLengthOutOfRange {
-        /// Header Length value, excluding the compatibility two-octet offset.
-        length: usize,
-        /// Smallest permitted header Length.
-        minimum: usize,
-        /// Largest permitted header Length.
-        maximum: usize,
-    },
-    /// An extended frame ended before its encoded fields were complete.
-    ExtendedTruncated {
-        /// Complete encoded frame length needed.
-        needed: usize,
-        /// Encoded octets currently available.
-        available: usize,
-    },
-    /// The decoded extended NPDU is outside the DER/DNER payload range.
-    ExtendedPayloadOutOfRange {
-        /// Decoded payload length.
-        length: usize,
-        /// Smallest supported decoded payload length.
-        minimum: usize,
-        /// Largest supported decoded payload length.
-        maximum: usize,
-    },
-    /// A COBS field was malformed or could not fit caller-owned storage.
-    ExtendedCobs {
-        /// Field being decoded.
-        field: ExtendedField,
-        /// Detailed COBS failure.
-        error: CobsError,
-    },
-    /// The encoded CRC field did not decode to exactly four octets.
-    ExtendedCrcLength {
-        /// Actual decoded CRC-field length.
-        length: usize,
-    },
-    /// The CRC-32K over the encoded data did not match the encoded CRC field.
-    ExtendedCrcMismatch,
 }
 
 impl fmt::Display for FrameError {
@@ -209,33 +159,6 @@ impl fmt::Display for FrameError {
             Self::BufferExhausted { needed, available } => {
                 write!(f, "buffer exhausted: need {needed}, have {available}")
             }
-            Self::ExtendedLengthOutOfRange {
-                length,
-                minimum,
-                maximum,
-            } => write!(
-                f,
-                "extended frame Length {length} outside {minimum}..={maximum}"
-            ),
-            Self::ExtendedTruncated { needed, available } => write!(
-                f,
-                "truncated extended frame: need {needed} encoded octets, have {available}"
-            ),
-            Self::ExtendedPayloadOutOfRange {
-                length,
-                minimum,
-                maximum,
-            } => write!(
-                f,
-                "extended payload length {length} outside {minimum}..={maximum}"
-            ),
-            Self::ExtendedCobs { field, error } => {
-                write!(f, "extended {field:?} COBS error: {error}")
-            }
-            Self::ExtendedCrcLength { length } => {
-                write!(f, "extended CRC decoded to {length} octets, expected 4")
-            }
-            Self::ExtendedCrcMismatch => f.write_str("extended CRC-32K mismatch"),
         }
     }
 }

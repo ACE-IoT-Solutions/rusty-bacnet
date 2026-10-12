@@ -337,7 +337,7 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
     fn max_npdu_length(&self) -> Option<usize> {
         match self {
             Self::Bip(t) => t.max_npdu_length(),
-            Self::Mstp(t) => t.max_npdu_length(),
+            Self::Mstp(t) => Some(t.max_npdu_length()),
             #[cfg(feature = "ipv6")]
             Self::Bip6(t) => t.max_npdu_length(),
             #[cfg(all(feature = "ethernet", target_os = "linux"))]

@@ -1,7 +1,6 @@
 //! Integration tests for the portable MS/TP master core.
 
 #![cfg(feature = "heapless")]
-#![doc = "Integration tests for the standard MS/TP master core."]
 
 use bacnet_mstp_codec::{Frame, FrameType, MAX_STANDARD_MPDU_DATA};
 use bacnet_mstp_core::{
@@ -25,7 +24,7 @@ fn standard_config(station: u8, max_master: u8) -> bacnet_mstp_core::MstpCoreCon
     bacnet_mstp_core::MstpCoreConfig {
         station,
         max_master,
-        ..bacnet_mstp_core::MstpCoreConfig::default()
+        ..Default::default()
     }
 }
 

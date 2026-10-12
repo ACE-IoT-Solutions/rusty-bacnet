@@ -14,8 +14,6 @@ use bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA;
 
 use crate::counters::QueueCounters;
 
-const MAX_NPDU_LEN: usize = MAX_STANDARD_MPDU_DATA;
-
 /// Destination class used by the two independently bounded queues.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueueKind {
@@ -23,19 +21,6 @@ pub enum QueueKind {
     Unicast,
     /// A frame addressed to the MS/TP broadcast MAC (`0xff`).
     Broadcast,
-}
-
-/// Traffic class used to reserve queue capacity for network-control NPDUs.
-///
-/// Data remains the compatibility default for [`QueueStorage::enqueue_npdu`].
-/// Network-control traffic must opt into the separate bounded capacity through
-/// [`QueueStorage::enqueue_npdu_class`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum QueueClass {
-    /// Ordinary application and routed data traffic.
-    Data,
-    /// Protocol network-control traffic (for example router discovery).
-    NetworkControl,
 }
 
 impl QueueKind {
@@ -116,8 +101,6 @@ pub struct DequeuedNpdu {
     pub destination: u8,
     /// Whether this was taken from the unicast or broadcast queue.
     pub kind: QueueKind,
-    /// Traffic class from which this item was dequeued.
-    pub class: QueueClass,
     /// BACnet network priority.
     pub priority: NetworkPriority,
     /// Number of bytes copied into the caller's scratch buffer.
@@ -133,8 +116,6 @@ pub struct QueueItemInfo {
     pub destination: u8,
     /// Queue class.
     pub kind: QueueKind,
-    /// Traffic class and reserved capacity from which this item came.
-    pub class: QueueClass,
     /// BACnet network priority.
     pub priority: NetworkPriority,
     /// Payload length.
@@ -193,41 +174,11 @@ pub trait QueueStorage {
         expires_at: Option<u64>,
     ) -> Result<(), QueueRejectReason>;
 
-    /// Add a payload to an explicitly selected traffic class.
-    ///
-    /// Implementations that predate reserved network-control storage retain
-    /// source compatibility: data delegates to [`Self::enqueue_npdu`], while
-    /// an unsupported control class reports a bounded full result.  Concrete
-    /// queue implementations override this method to provide their reserved
-    /// control capacity.
-    fn enqueue_npdu_class(
-        &mut self,
-        class: QueueClass,
-        destination: u8,
-        payload: &[u8],
-        priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
-        match class {
-            QueueClass::Data => self.enqueue_npdu(destination, payload, priority, now, expires_at),
-            QueueClass::NetworkControl => Err(QueueRejectReason::Full),
-        }
-    }
-
     /// Remove expired items at `now`, returning the number removed.
     fn expire(&mut self, now: u64) -> usize;
 
     /// Inspect the item that policy would service next.
     fn peek(&self, now: u64) -> Option<QueueItemInfo>;
-
-    /// Inspect the next item in one traffic class.
-    fn peek_class(&self, class: QueueClass, now: u64) -> Option<QueueItemInfo> {
-        match class {
-            QueueClass::Data => self.peek(now),
-            QueueClass::NetworkControl => None,
-        }
-    }
 
     /// Inspect the next item in one destination class.
     ///
@@ -253,19 +204,6 @@ pub trait QueueStorage {
         self.dequeue_kind_into(info.kind, now, scratch)
     }
 
-    /// Copy and remove the next item in one traffic class.
-    fn dequeue_class_into(
-        &mut self,
-        class: QueueClass,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        match class {
-            QueueClass::Data => self.dequeue_into(now, scratch),
-            QueueClass::NetworkControl => Ok(None),
-        }
-    }
-
     /// Copy and remove the next item from one destination class, with the
     /// oversize rule of [`Self::dequeue_into`].
     fn dequeue_kind_into(
@@ -278,24 +216,8 @@ pub trait QueueStorage {
     /// Current depth for one destination class.
     fn depth(&self, kind: QueueKind) -> usize;
 
-    /// Current depth of one traffic class.
-    fn depth_class(&self, class: QueueClass) -> usize {
-        match class {
-            QueueClass::Data => self.total_depth(),
-            QueueClass::NetworkControl => 0,
-        }
-    }
-
     /// Maximum depth and drop counters for one destination class.
     fn stats(&self, kind: QueueKind) -> QueueCounters;
-
-    /// Aggregate counters for one traffic class.
-    fn stats_class(&self, class: QueueClass) -> QueueCounters {
-        match class {
-            QueueClass::Data => self.stats(QueueKind::Unicast),
-            QueueClass::NetworkControl => QueueCounters::default(),
-        }
-    }
 
     /// The total number of queued NPDUs.
     fn total_depth(&self) -> usize {
@@ -385,11 +307,10 @@ struct Item<const N: usize> {
 
 #[cfg(any(feature = "alloc", feature = "heapless"))]
 impl<const N: usize> Item<N> {
-    fn info(self, kind: QueueKind, class: QueueClass) -> QueueItemInfo {
+    fn info(self, kind: QueueKind) -> QueueItemInfo {
         QueueItemInfo {
             destination: self.destination,
             kind,
-            class,
             priority: self.priority,
             len: self.len,
             enqueued_at: self.enqueued_at,
@@ -449,17 +370,15 @@ const DEFAULT_STARVATION_LIMIT: u8 = 16;
 pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: heapless::Vec<Item<N>, U>,
     broadcast: heapless::Vec<Item<N>, B>,
-    network_control: heapless::Vec<Item<N>, C>,
     sequence: u64,
     /// `None` for [`DEFAULT_STARVATION_LIMIT`], so that `new` is all zeros.
     starvation_limit: Option<u8>,
     unicast_counters: QueueCounters,
     broadcast_counters: QueueCounters,
-    network_control_counters: QueueCounters,
 }
 
 #[cfg(feature = "heapless")]
-impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQueues<U, B, N, C> {
+impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
     /// Construct queues with the default starvation limit of 16 time units.
     pub const fn new() -> Self {
         Self::with_limit(None)
@@ -474,12 +393,10 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
         Self {
             unicast: heapless::Vec::new(),
             broadcast: heapless::Vec::new(),
-            network_control: heapless::Vec::new(),
             sequence: 0,
             starvation_limit,
             unicast_counters: EMPTY_QUEUE_COUNTERS,
             broadcast_counters: EMPTY_QUEUE_COUNTERS,
-            network_control_counters: EMPTY_QUEUE_COUNTERS,
         }
     }
 
@@ -490,7 +407,7 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
     fn select(&self, now: u64) -> Option<(QueueKind, usize, QueueItemInfo)> {
         let mut selected: Option<(QueueKind, usize, QueueItemInfo)> = None;
         for (index, item) in self.unicast.iter().copied().enumerate() {
-            let info = item.info(QueueKind::Unicast, QueueClass::Data);
+            let info = item.info(QueueKind::Unicast);
             if !expired(info.expires_at, now)
                 && better(info, selected.map(|v| v.2), self.starvation_limit())
             {
@@ -498,7 +415,7 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
             }
         }
         for (index, item) in self.broadcast.iter().copied().enumerate() {
-            let info = item.info(QueueKind::Broadcast, QueueClass::Data);
+            let info = item.info(QueueKind::Broadcast);
             if !expired(info.expires_at, now)
                 && better(info, selected.map(|v| v.2), self.starvation_limit())
             {
@@ -513,7 +430,7 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
         match kind {
             QueueKind::Unicast => {
                 for (index, item) in self.unicast.iter().copied().enumerate() {
-                    let info = item.info(kind, QueueClass::Data);
+                    let info = item.info(kind);
                     if !expired(info.expires_at, now)
                         && better(info, selected.map(|v| v.1), self.starvation_limit())
                     {
@@ -523,7 +440,7 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
             }
             QueueKind::Broadcast => {
                 for (index, item) in self.broadcast.iter().copied().enumerate() {
-                    let info = item.info(kind, QueueClass::Data);
+                    let info = item.info(kind);
                     if !expired(info.expires_at, now)
                         && better(info, selected.map(|v| v.1), self.starvation_limit())
                     {
@@ -542,25 +459,6 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
         for item in &mut self.broadcast {
             item.service_wait = item.service_wait.saturating_add(1);
         }
-        for item in &mut self.network_control {
-            item.service_wait = item.service_wait.saturating_add(1);
-        }
-    }
-
-    fn select_control(&self, now: u64) -> Option<(usize, QueueItemInfo)> {
-        let mut selected: Option<(usize, QueueItemInfo)> = None;
-        for (index, item) in self.network_control.iter().copied().enumerate() {
-            let info = item.info(
-                QueueKind::from_destination(item.destination),
-                QueueClass::NetworkControl,
-            );
-            if !expired(info.expires_at, now)
-                && better(info, selected.map(|value| value.1), self.starvation_limit)
-            {
-                selected = Some((index, info));
-            }
-        }
-        selected
     }
 
     fn push_item(&mut self, kind: QueueKind, item: Item<N>) -> Result<(), QueueRejectReason> {
@@ -579,19 +477,10 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> HeaplessQue
             QueueKind::Broadcast => &mut self.broadcast_counters,
         }
     }
-
-    fn class_counters_mut(&mut self, class: QueueClass, kind: QueueKind) -> &mut QueueCounters {
-        match class {
-            QueueClass::Data => self.counters_mut(kind),
-            QueueClass::NetworkControl => &mut self.network_control_counters,
-        }
-    }
 }
 
 #[cfg(feature = "heapless")]
-impl<const U: usize, const B: usize, const N: usize, const C: usize> Default
-    for HeaplessQueues<U, B, N, C>
-{
+impl<const U: usize, const B: usize, const N: usize> Default for HeaplessQueues<U, B, N> {
     fn default() -> Self {
         Self::new()
     }
@@ -609,7 +498,6 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
 
     fn enqueue_npdu(
         &mut self,
-        class: QueueClass,
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
@@ -618,11 +506,11 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
     ) -> Result<(), QueueRejectReason> {
         let kind = QueueKind::from_destination(destination);
         if payload.len() > N {
-            self.class_counters_mut(class, kind).record_drop_oversize();
+            self.counters_mut(kind).record_drop_oversize();
             return Err(QueueRejectReason::Oversize);
         }
         if expired(expires_at, now) {
-            self.class_counters_mut(class, kind).record_drop_expired();
+            self.counters_mut(kind).record_drop_expired();
             return Err(QueueRejectReason::Expired);
         }
         let mut owned = Item {
@@ -637,64 +525,14 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         };
         owned.payload[..payload.len()].copy_from_slice(payload);
         self.sequence = self.sequence.wrapping_add(1);
-        let result = match class {
-            QueueClass::Data => self.push_item(kind, owned),
-            QueueClass::NetworkControl => self
-                .network_control
-                .push(owned)
-                .map_err(|_| QueueRejectReason::Full),
+        self.push_item(kind, owned)
+            .inspect_err(|_| self.counters_mut(kind).record_drop_full())?;
+        let depth = match kind {
+            QueueKind::Unicast => self.unicast.len(),
+            QueueKind::Broadcast => self.broadcast.len(),
         };
-        result.inspect_err(|_| {
-            self.class_counters_mut(class, kind).record_drop_full();
-        })?;
-        let depth = match class {
-            QueueClass::Data => match kind {
-                QueueKind::Unicast => self.unicast.len(),
-                QueueKind::Broadcast => self.broadcast.len(),
-            },
-            QueueClass::NetworkControl => self.network_control.len(),
-        };
-        self.class_counters_mut(class, kind).record_enqueue(depth);
+        self.counters_mut(kind).record_enqueue(depth);
         Ok(())
-    }
-}
-
-#[cfg(feature = "heapless")]
-impl<const U: usize, const B: usize, const N: usize, const C: usize> QueueStorage
-    for HeaplessQueues<U, B, N, C>
-{
-    fn set_starvation_limit(&mut self, limit: u8) {
-        self.starvation_limit = limit;
-    }
-
-    fn enqueue_npdu(
-        &mut self,
-        destination: u8,
-        payload: &[u8],
-        priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
-        self.enqueue_class(
-            QueueClass::Data,
-            destination,
-            payload,
-            priority,
-            now,
-            expires_at,
-        )
-    }
-
-    fn enqueue_npdu_class(
-        &mut self,
-        class: QueueClass,
-        destination: u8,
-        payload: &[u8],
-        priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
-        self.enqueue_class(class, destination, payload, priority, now, expires_at)
     }
 
     fn expire(&mut self, now: u64) -> usize {
@@ -721,30 +559,11 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> QueueStorag
                 index += 1;
             }
         }
-        let mut index = 0;
-        while index < self.network_control.len() {
-            if expired(self.network_control[index].expires_at, now) {
-                self.network_control.remove(index);
-                self.network_control_counters.record_drop_expired();
-                self.network_control_counters
-                    .record_dequeue(self.network_control.len());
-                removed += 1;
-            } else {
-                index += 1;
-            }
-        }
         removed
     }
 
     fn peek(&self, now: u64) -> Option<QueueItemInfo> {
         self.select(now).map(|selected| selected.2)
-    }
-
-    fn peek_class(&self, class: QueueClass, now: u64) -> Option<QueueItemInfo> {
-        match class {
-            QueueClass::Data => self.peek(now),
-            QueueClass::NetworkControl => self.select_control(now).map(|selected| selected.1),
-        }
     }
 
     fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
@@ -779,38 +598,6 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> QueueStorag
         Ok(Some(DequeuedNpdu {
             destination: item.destination,
             kind,
-            class: QueueClass::Data,
-            priority: item.priority,
-            len: item.len,
-            sequence: item.sequence,
-        }))
-    }
-
-    fn dequeue_class_into(
-        &mut self,
-        class: QueueClass,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        if class == QueueClass::Data {
-            return self.dequeue_into(now, scratch);
-        }
-        self.expire(now);
-        let Some((index, info)) = self.select_control(now) else {
-            return Ok(None);
-        };
-        if scratch.len() < info.len {
-            return Err(QueueRejectReason::Oversize);
-        }
-        let item = self.network_control.remove(index);
-        self.network_control_counters
-            .record_dequeue(self.network_control.len());
-        self.bump_waits();
-        scratch[..item.len].copy_from_slice(&item.payload[..item.len]);
-        Ok(Some(DequeuedNpdu {
-            destination: item.destination,
-            kind: QueueKind::from_destination(item.destination),
-            class,
             priority: item.priority,
             len: item.len,
             sequence: item.sequence,
@@ -824,57 +611,10 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> QueueStorag
         }
     }
 
-    fn depth_class(&self, class: QueueClass) -> usize {
-        match class {
-            QueueClass::Data => self.unicast.len() + self.broadcast.len(),
-            QueueClass::NetworkControl => self.network_control.len(),
-        }
-    }
-
     fn stats(&self, kind: QueueKind) -> QueueCounters {
         match kind {
             QueueKind::Unicast => self.unicast_counters,
             QueueKind::Broadcast => self.broadcast_counters,
-        }
-    }
-
-    fn stats_class(&self, class: QueueClass) -> QueueCounters {
-        match class {
-            QueueClass::Data => QueueCounters {
-                depth: self
-                    .unicast_counters
-                    .depth
-                    .saturating_add(self.broadcast_counters.depth),
-                high_water: self
-                    .unicast_counters
-                    .high_water
-                    .saturating_add(self.broadcast_counters.high_water),
-                enqueued: self
-                    .unicast_counters
-                    .enqueued
-                    .saturating_add(self.broadcast_counters.enqueued),
-                dequeued: self
-                    .unicast_counters
-                    .dequeued
-                    .saturating_add(self.broadcast_counters.dequeued),
-                drops_full: self
-                    .unicast_counters
-                    .drops_full
-                    .saturating_add(self.broadcast_counters.drops_full),
-                drops_oversize: self
-                    .unicast_counters
-                    .drops_oversize
-                    .saturating_add(self.broadcast_counters.drops_oversize),
-                drops_expired: self
-                    .unicast_counters
-                    .drops_expired
-                    .saturating_add(self.broadcast_counters.drops_expired),
-                drops_starved: self
-                    .unicast_counters
-                    .drops_starved
-                    .saturating_add(self.broadcast_counters.drops_starved),
-            },
-            QueueClass::NetworkControl => self.network_control_counters,
         }
     }
 }
@@ -883,6 +623,6 @@ impl<const U: usize, const B: usize, const N: usize, const C: usize> QueueStorag
 mod alloc;
 
 #[cfg(feature = "alloc")]
-pub use alloc::{AllocQueues, AllocQueuesProfile, ExtendedAllocQueues};
+pub use alloc::AllocQueues;
 #[cfg(all(test, any(feature = "alloc", feature = "heapless")))]
 mod tests;

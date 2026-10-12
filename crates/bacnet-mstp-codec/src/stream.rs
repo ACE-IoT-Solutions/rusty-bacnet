@@ -187,10 +187,6 @@ enum InternalEvent {
         data_length: usize,
         consumed: usize,
     },
-    ExtendedFrame {
-        consumed: usize,
-        decoded_length: usize,
-    },
     Invalid {
         discard: usize,
     },
@@ -386,13 +382,7 @@ impl<'a> StreamDecoder<'a> {
             | FrameError::UnexpectedData { .. }
             | FrameError::MissingVendorId { .. }
             | FrameError::FrameTooLong { .. }
-            | FrameError::BufferExhausted { .. }
-            | FrameError::ExtendedLengthOutOfRange { .. }
-            | FrameError::ExtendedTruncated { .. }
-            | FrameError::ExtendedPayloadOutOfRange { .. }
-            | FrameError::ExtendedCobs { .. }
-            | FrameError::ExtendedCrcLength { .. }
-            | FrameError::ExtendedCrcMismatch => None,
+            | FrameError::BufferExhausted { .. } => None,
         };
         match error {
             FrameError::TooShort { needed, .. } => self.wait_for_header(needed),

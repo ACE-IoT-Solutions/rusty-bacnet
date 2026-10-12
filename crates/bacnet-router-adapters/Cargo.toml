@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 keywords = ["bacnet", "router", "mstp", "embedded", "no-std"]
 categories = ["embedded", "network-programming", "no-std"]
+publish = false
 
 [features]
 default = []

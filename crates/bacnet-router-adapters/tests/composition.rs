@@ -13,7 +13,8 @@ use mstp::{ExtendedMstpEgress, MstpEgress};
 
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
-    Action, ExtendedMasterCore, HeaplessQueues, Instant, MasterCore, MstpCoreConfig, ReplyDecision,
+    Action, ActionBuffers, ExtendedActionBuffers, HeaplessQueues, Instant, MasterCore,
+    MstpCoreConfig, ReplyDecision,
 };
 use bacnet_router_core::{
     encode_forwarded_npdu, AdmissionOutcome, BipDecodeError, Egress, EgressDestination,
@@ -22,6 +23,9 @@ use bacnet_router_core::{
 };
 
 type Queues = HeaplessQueues<1, 1>;
+type Actions = ActionBuffers<1>;
+type ExtendedQueues = HeaplessQueues<1, 1, 1497>;
+type ExtendedActions = ExtendedActionBuffers<1>;
 
 fn net(value: u16) -> NetworkNumber {
     NetworkNumber::new(value).unwrap()
@@ -54,7 +58,7 @@ fn bip_caps(port: u8, network: u16) -> PortCapabilities {
     }
 }
 
-fn core<'rx>(rx: &'rx mut [u8]) -> MasterCore<'rx, Queues> {
+fn core<'rx>(rx: &'rx mut [u8], actions: &'rx mut Actions) -> MasterCore<'rx, Queues> {
     MasterCore::new(
         MstpCoreConfig {
             station: 1,
@@ -63,20 +67,26 @@ fn core<'rx>(rx: &'rx mut [u8]) -> MasterCore<'rx, Queues> {
         },
         Queues::new(),
         rx,
+        actions,
         Instant::ZERO,
     )
     .unwrap()
 }
 
-fn extended_core<'rx>(rx: &'rx mut [u8]) -> ExtendedMasterCore<'rx, Queues> {
-    ExtendedMasterCore::new(
+fn extended_core<'rx>(
+    rx: &'rx mut [u8],
+    actions: &'rx mut ExtendedActions,
+) -> MasterCore<'rx, ExtendedQueues, 1497> {
+    MasterCore::new(
         MstpCoreConfig {
             station: 1,
             max_master: 2,
             ..MstpCoreConfig::default()
-        },
-        Queues::new(),
+        }
+        .with_extended_frames(),
+        ExtendedQueues::new(),
         rx,
+        actions,
         Instant::ZERO,
     )
     .unwrap()
@@ -152,7 +162,8 @@ impl BipDatagramSink for Sink {
 fn strict_bip_failure_precedes_router_or_queue_mutation() {
     let mut router = RouterCore::<2, 2>::new();
     let mut rx = [0; 1024];
-    let mut mstp_core = core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::from_micros(1));
     let mut scratch = [0; 512];
     let error = forward_bip_datagram_to_mstp(
@@ -196,7 +207,8 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
     let mut datagram = [0; 1600];
     let datagram_len = encode_forwarded_npdu(&mut datagram, origin, &npdu).unwrap();
     let mut rx = [0; 1024];
-    let mut mstp_core = core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::from_micros(1));
     let mut scratch = [0; 512];
     let (context, outcome) = forward_bip_datagram_to_mstp(
@@ -233,7 +245,9 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
         match mstp.core_mut().poll_action() {
             Action::Transmit { frame, .. } => break frame,
             Action::Idle | Action::SetDirection(_) => {}
-            Action::DeliverNpdu { .. } => panic!("unexpected delivery"),
+            Action::DeliverNpdu { .. } | Action::DeliverFrame { .. } => {
+                panic!("unexpected delivery")
+            }
         }
     };
     let (frame, _) = decode_frame(frame).unwrap();
@@ -257,7 +271,8 @@ fn bip_broadcast_requires_the_explicit_broadcast_policy() {
     let mut datagram = [0; 1600];
     let datagram_len = encode_forwarded_npdu(&mut datagram, origin, &npdu).unwrap();
     let mut rx = [0; 1024];
-    let mut mstp_core = core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::ZERO);
     let mut scratch = [0; 512];
 
@@ -293,7 +308,8 @@ fn bip_to_explicit_extended_mstp_profile_is_admitted() {
     let mut datagram = [0; 1600];
     let datagram_len = encode_forwarded_npdu(&mut datagram, origin, &npdu).unwrap();
     let mut rx = [0; 1600];
-    let mut extended_core = extended_core(&mut rx);
+    let mut actions = ExtendedActions::new();
+    let mut extended_core = extended_core(&mut rx, &mut actions);
     let mut mstp = ExtendedMstpEgress::new(&mut extended_core, PortId(2), Instant::from_micros(1));
     let mut scratch = [0; 1600];
 
@@ -328,7 +344,8 @@ fn bip_to_explicit_extended_mstp_profile_is_admitted() {
 fn bip_to_mstp_rejects_opaque_port_kind_before_decode() {
     let mut router = RouterCore::<2, 2>::new();
     let mut rx = [0; 1024];
-    let mut mstp_core = core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::ZERO);
     let mut scratch = [0; 512];
     let error = forward_bip_datagram_to_mstp(
@@ -549,7 +566,8 @@ fn binding_full_expired_invalid_and_timeout_are_explicit() {
 #[test]
 fn binding_calls_core_on_reply_and_timeout_without_hidden_payload_storage() {
     let mut rx = [0; 1024];
-    let mut mstp = core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp = core(&mut rx, &mut actions);
     mstp.on_validated_frame(
         Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 1]),
         Instant::from_micros(1),
@@ -576,7 +594,8 @@ fn binding_calls_core_on_reply_and_timeout_without_hidden_payload_storage() {
     assert_eq!(mstp.snapshot().request_id, None);
 
     let mut rx = [0; 1024];
-    let mut mstp = core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp = core(&mut rx, &mut actions);
     mstp.on_validated_frame(
         Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 1]),
         Instant::from_micros(1),
@@ -601,7 +620,8 @@ fn binding_calls_core_on_reply_and_timeout_without_hidden_payload_storage() {
 #[test]
 fn extended_profile_binding_completion_and_timeout_use_profile_core() {
     let mut rx = [0; 1600];
-    let mut mstp = extended_core(&mut rx);
+    let mut actions = ExtendedActions::new();
+    let mut mstp = extended_core(&mut rx, &mut actions);
     mstp.on_validated_frame(
         Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 1]),
         Instant::from_micros(1),
@@ -629,7 +649,8 @@ fn extended_profile_binding_completion_and_timeout_use_profile_core() {
     assert_eq!(mstp.snapshot().request_id, None);
 
     let mut rx = [0; 1600];
-    let mut mstp = extended_core(&mut rx);
+    let mut actions = ExtendedActions::new();
+    let mut mstp = extended_core(&mut rx, &mut actions);
     mstp.on_validated_frame(
         Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 1]),
         Instant::from_micros(1),
@@ -654,7 +675,8 @@ fn extended_profile_binding_completion_and_timeout_use_profile_core() {
 #[test]
 fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
     let mut rx = [0; 1024];
-    let mut mstp_core = core(&mut rx);
+    let mut actions = Actions::new();
+    let mut mstp_core = core(&mut rx, &mut actions);
     let mut mstp = MstpEgress::new(&mut mstp_core, PortId(2), Instant::ZERO);
     let destination = EgressDestination::Unicast(LinkAddress::try_from_slice(&[5]).unwrap());
     let accepted = [0; 501];

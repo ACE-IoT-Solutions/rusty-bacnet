@@ -111,7 +111,6 @@ mod cobs;
 mod crc;
 mod decode;
 mod error;
-mod extended;
 mod frame;
 mod sink;
 mod stream;

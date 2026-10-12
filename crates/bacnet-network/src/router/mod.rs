@@ -605,11 +605,15 @@ impl BACnetRouter {
         let mut port_groups = Vec::new();
         let mut port_max_npdu_lengths = Vec::new();
 
-        for port in &mut ports {
+        for (config_index, port) in ports.iter_mut().enumerate() {
             // A routing node may owe its data link more than other nodes:
             // MS/TP turns on extended frames here (Clause 9.3).
             port.transport.prepare_for_routing();
-            let rx = port.transport.start().await?;
+            let transport_kind = port.transport.transport_kind().to_owned();
+            let identity = format_transport_identity(&port.transport);
+            let rx = port.transport.start().await.map_err(|error| {
+                contextualize_port_start_error(error, config_index, &transport_kind, &identity)
+            })?;
             port_receivers.push(rx);
             port_networks.push(port.network_number);
             port_local_macs.push(MacAddr::from_slice(port.transport.local_mac()));

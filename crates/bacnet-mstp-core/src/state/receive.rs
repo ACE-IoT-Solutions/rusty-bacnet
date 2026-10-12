@@ -74,20 +74,6 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                     self.process_frame(frame, now)?;
                     None
                 }
-                DecodeEvent::ExtendedFrame { frame: decoded, .. } => {
-                    if NPDU < MAX_EXTENDED_MPDU_DATA || decoded.data.len() > NPDU {
-                        dropped = Some((
-                            FrameError::ExtendedPayloadOutOfRange {
-                                length: decoded.data.len(),
-                                minimum: MIN_EXTENDED_MPDU_DATA,
-                                maximum: NPDU,
-                            },
-                            Some(decoded.header.destination),
-                        ));
-                    } else {
-                        frame = Some(Self::copy_extended_frame(decoded));
-                    }
-                }
                 DecodeEvent::Malformed {
                     error, destination, ..
                 } => Some((error, destination)),
@@ -134,13 +120,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             | FrameError::UnexpectedData { .. }
             | FrameError::MissingVendorId { .. }
             | FrameError::Truncated { .. }
-            | FrameError::BufferExhausted { .. }
-            | FrameError::ExtendedLengthOutOfRange { .. }
-            | FrameError::ExtendedTruncated { .. }
-            | FrameError::ExtendedPayloadOutOfRange { .. }
-            | FrameError::ExtendedCobs { .. }
-            | FrameError::ExtendedCrcLength { .. }
-            | FrameError::ExtendedCrcMismatch => true,
+            | FrameError::BufferExhausted { .. } => true,
         }
     }
 

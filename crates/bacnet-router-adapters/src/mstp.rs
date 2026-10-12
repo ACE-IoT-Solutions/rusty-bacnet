@@ -6,11 +6,9 @@
 //! observable at the router boundary and avoids an unbounded adapter-side
 //! staging path.
 
-use bacnet_mstp_core::{
-    Instant, NetworkPriority, ProfileMasterCore, QueueRejectReason, QueueStorage,
-};
+use bacnet_mstp_core::{Instant, MasterCore, NetworkPriority, QueueRejectReason, QueueStorage};
 use bacnet_router_core::{
-    AdmissionOutcome, Egress, EgressDestination, EgressRequest, LinkAddress, PortId, TrafficClass,
+    AdmissionOutcome, Egress, EgressDestination, EgressRequest, LinkAddress, PortId,
 };
 
 /// The MS/TP link-layer broadcast station address.
@@ -48,14 +46,8 @@ impl MstpPeerCapability {
 /// The timestamp is explicit so an ESP-IDF adapter can use the same monotonic
 /// epoch as its owning MS/TP core.  Call [`Self::set_now`] before admitting a
 /// later batch; the adapter never reads a platform clock implicitly.
-pub struct MstpEgress<
-    'core,
-    'rx,
-    Q: QueueStorage,
-    const NPDU: usize = STANDARD_MSTP_MAX_NPDU,
-    const FRAME: usize = STANDARD_MSTP_FRAME_STORAGE,
-> {
-    core: &'core mut ProfileMasterCore<'rx, Q, NPDU, FRAME>,
+pub struct MstpEgress<'core, 'rx, Q: QueueStorage, const NPDU: usize = STANDARD_MSTP_MAX_NPDU> {
+    core: &'core mut MasterCore<'rx, Q, NPDU>,
     port: PortId,
     now: Instant,
     /// The greatest timestamp offered to this adapter so far.
@@ -69,19 +61,15 @@ pub struct MstpEgress<
 }
 
 /// Adapter bound to the standard 501-byte MS/TP storage profile.
-pub type StandardMstpEgress<'core, 'rx, Q> =
-    MstpEgress<'core, 'rx, Q, STANDARD_MSTP_MAX_NPDU, STANDARD_MSTP_FRAME_STORAGE>;
+pub type StandardMstpEgress<'core, 'rx, Q> = MstpEgress<'core, 'rx, Q, STANDARD_MSTP_MAX_NPDU>;
 
 /// Adapter bound to the extended DER/DNER storage profile.
-pub type ExtendedMstpEgress<'core, 'rx, Q> =
-    MstpEgress<'core, 'rx, Q, EXTENDED_MSTP_MAX_NPDU, EXTENDED_MSTP_FRAME_STORAGE>;
+pub type ExtendedMstpEgress<'core, 'rx, Q> = MstpEgress<'core, 'rx, Q, EXTENDED_MSTP_MAX_NPDU>;
 
-impl<'core, 'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
-    MstpEgress<'core, 'rx, Q, NPDU, FRAME>
-{
+impl<'core, 'rx, Q: QueueStorage, const NPDU: usize> MstpEgress<'core, 'rx, Q, NPDU> {
     /// Bind an MS/TP core to one router port and an explicit monotonic time.
     pub const fn new(
-        core: &'core mut ProfileMasterCore<'rx, Q, NPDU, FRAME>,
+        core: &'core mut MasterCore<'rx, Q, NPDU>,
         port: PortId,
         now: Instant,
     ) -> Self {
@@ -113,7 +101,7 @@ impl<'core, 'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
     }
 
     /// Borrow the underlying MS/TP core after the adapter operation.
-    pub fn core_mut(&mut self) -> &mut ProfileMasterCore<'rx, Q, NPDU, FRAME> {
+    pub fn core_mut(&mut self) -> &mut MasterCore<'rx, Q, NPDU> {
         self.core
     }
 
@@ -124,7 +112,7 @@ impl<'core, 'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
 
     /// Whether this adapter uses the extended DER/DNER storage profile.
     pub const fn is_extended(&self) -> bool {
-        NPDU == EXTENDED_MSTP_MAX_NPDU && FRAME == EXTENDED_MSTP_FRAME_STORAGE
+        NPDU == EXTENDED_MSTP_MAX_NPDU
     }
 
     /// Set the verified capability of stations on this MS/TP segment.
@@ -156,9 +144,7 @@ impl<'core, 'rx, Q: QueueStorage, const NPDU: usize, const FRAME: usize>
     }
 }
 
-impl<Q: QueueStorage, const NPDU: usize, const FRAME: usize> Egress
-    for MstpEgress<'_, '_, Q, NPDU, FRAME>
-{
+impl<Q: QueueStorage, const NPDU: usize> Egress for MstpEgress<'_, '_, Q, NPDU> {
     fn try_admit(&mut self, request: EgressRequest<'_>) -> AdmissionOutcome {
         if request.port != self.port {
             return AdmissionOutcome::Invalid;
@@ -180,18 +166,12 @@ impl<Q: QueueStorage, const NPDU: usize, const FRAME: usize> Egress
         // capacity, and a later call must not regress behind it.
         self.last_now = self.now;
 
-        let admitted = match request.class {
-            TrafficClass::Data => {
-                self.core
-                    .enqueue_npdu(destination, request.npdu, priority, self.now)
-            }
-            TrafficClass::NetworkControl => self.core.enqueue_network_control_npdu(
-                destination,
-                request.npdu,
-                priority,
-                self.now,
-            ),
-        };
+        // Upstream's unified queue owns both application and network-layer
+        // NPDUs. The router still classifies control traffic for diagnostics,
+        // but admission and backpressure use the core's single bounded API.
+        let admitted = self
+            .core
+            .enqueue_npdu(destination, request.npdu, priority, self.now);
         match admitted {
             Ok(()) => AdmissionOutcome::AcceptedOwned,
             Err(QueueRejectReason::Full) => AdmissionOutcome::Full,
@@ -208,11 +188,16 @@ impl<Q: QueueStorage, const NPDU: usize, const FRAME: usize> Egress
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bacnet_mstp_codec::{decode_extended_frame, decode_frame, Frame, FrameType};
-    use bacnet_mstp_core::{Action, HeaplessQueues, MasterCore, MstpCoreConfig};
+    use bacnet_mstp_codec::{decode_frame, decode_frame_in_place, Frame, FrameType};
+    use bacnet_mstp_core::{
+        Action, ActionBuffers, ExtendedActionBuffers, HeaplessQueues, MasterCore, MstpCoreConfig,
+    };
+    use bacnet_router_core::TrafficClass;
 
     type Queues = HeaplessQueues<1, 1>;
-    type ExtendedQueues = HeaplessQueues<1, 1, EXTENDED_MSTP_MAX_NPDU, 1>;
+    type Actions = ActionBuffers<1>;
+    type ExtendedQueues = HeaplessQueues<1, 1, EXTENDED_MSTP_MAX_NPDU>;
+    type ExtendedActions = ExtendedActionBuffers<1>;
 
     fn config() -> MstpCoreConfig {
         MstpCoreConfig {
@@ -222,24 +207,26 @@ mod tests {
         }
     }
 
-    fn core<'rx>(rx: &'rx mut [u8]) -> MasterCore<'rx, Queues> {
-        MasterCore::new(config(), Queues::new(), rx, Instant::ZERO).unwrap()
+    fn core<'rx>(rx: &'rx mut [u8], actions: &'rx mut Actions) -> MasterCore<'rx, Queues> {
+        MasterCore::new(config(), Queues::new(), rx, actions, Instant::ZERO).unwrap()
     }
 
     fn extended_core<'rx>(
         rx: &'rx mut [u8],
-    ) -> bacnet_mstp_core::ExtendedMasterCore<'rx, ExtendedQueues> {
-        extended_core_at_station(rx, 1)
+        actions: &'rx mut ExtendedActions,
+    ) -> MasterCore<'rx, ExtendedQueues, EXTENDED_MSTP_MAX_NPDU> {
+        extended_core_at_station(rx, actions, 1)
     }
 
     fn extended_core_at_station<'rx>(
         rx: &'rx mut [u8],
+        actions: &'rx mut ExtendedActions,
         station: u8,
-    ) -> bacnet_mstp_core::ExtendedMasterCore<'rx, ExtendedQueues> {
+    ) -> MasterCore<'rx, ExtendedQueues, EXTENDED_MSTP_MAX_NPDU> {
         let mut config = config();
         config.station = station;
-        bacnet_mstp_core::ExtendedMasterCore::new(config, ExtendedQueues::new(), rx, Instant::ZERO)
-            .unwrap()
+        let config = config.with_extended_frames();
+        MasterCore::new(config, ExtendedQueues::new(), rx, actions, Instant::ZERO).unwrap()
     }
 
     fn request<'a>(
@@ -264,7 +251,8 @@ mod tests {
     #[test]
     fn admission_copies_owned_payload_and_preserves_priority() {
         let mut rx = [0; 1024];
-        let mut core = core(&mut rx);
+        let mut actions = Actions::new();
+        let mut core = core(&mut rx, &mut actions);
         let mut egress = MstpEgress::new(&mut core, PortId(7), at(1));
         let mut payload = [0x01, 0x02, 0x03];
         assert_eq!(
@@ -302,7 +290,8 @@ mod tests {
     #[test]
     fn broadcast_maps_to_ff_and_one_byte_unicast_is_exact() {
         let mut rx = [0; 1024];
-        let mut core = core(&mut rx);
+        let mut actions = Actions::new();
+        let mut core = core(&mut rx, &mut actions);
         let mut egress = MstpEgress::new(&mut core, PortId(4), Instant::ZERO);
         assert_eq!(
             egress.try_admit(request(PortId(4), EgressDestination::Broadcast, 0, &[1])),
@@ -324,7 +313,8 @@ mod tests {
     #[test]
     fn full_oversize_expired_and_invalid_inputs_are_mapped() {
         let mut rx = [0; 1024];
-        let mut core = core(&mut rx);
+        let mut actions = Actions::new();
+        let mut core = core(&mut rx, &mut actions);
         let mut egress = MstpEgress::new(&mut core, PortId(2), at(10));
         let unicast = EgressDestination::Unicast(LinkAddress::try_from_slice(&[3]).unwrap());
         assert_eq!(
@@ -390,7 +380,8 @@ mod tests {
     #[test]
     fn direct_enqueue_does_not_add_a_second_queue() {
         let mut rx = [0; 1024];
-        let mut core = core(&mut rx);
+        let mut actions = Actions::new();
+        let mut core = core(&mut rx, &mut actions);
         let mut egress = MstpEgress::new(&mut core, PortId(5), at(1));
         assert_eq!(
             egress.try_admit(request(PortId(5), EgressDestination::Broadcast, 1, &[7])),
@@ -402,9 +393,10 @@ mod tests {
     }
 
     #[test]
-    fn saturated_data_queue_does_not_consume_reserved_control_capacity() {
+    fn saturated_queue_backpressures_network_control() {
         let mut rx = [0; 1024];
-        let mut core = core(&mut rx);
+        let mut actions = Actions::new();
+        let mut core = core(&mut rx, &mut actions);
         let mut egress = MstpEgress::new(&mut core, PortId(5), at(1));
         let destination = EgressDestination::Unicast(LinkAddress::try_from_slice(&[2]).unwrap());
 
@@ -419,16 +411,16 @@ mod tests {
 
         let mut control = request(PortId(5), destination, 1, &[0x20]);
         control.class = TrafficClass::NetworkControl;
-        assert_eq!(egress.try_admit(control), AdmissionOutcome::AcceptedOwned);
+        assert_eq!(egress.try_admit(control), AdmissionOutcome::Full);
         let counters = egress.core_mut().counters();
         assert_eq!(counters.unicast.depth, 1);
-        assert_eq!(counters.network_control.depth, 1);
     }
 
     #[test]
     fn extended_profile_admits_1497_bytes_and_emits_decodable_extended_frame() {
         let mut rx = [0; 4096];
-        let mut core = extended_core(&mut rx);
+        let mut actions = ExtendedActions::new();
+        let mut core = extended_core(&mut rx, &mut actions);
         let mut egress = ExtendedMstpEgress::new(&mut core, PortId(9), at(1));
         assert_eq!(egress.max_npdu_len(), EXTENDED_MSTP_MAX_NPDU);
         assert!(egress.is_extended());
@@ -460,18 +452,19 @@ mod tests {
                 other => panic!("unexpected action: {other:?}"),
             }
         };
-        let mut decode_scratch = [0; EXTENDED_MSTP_MAX_NPDU];
-        let (decoded, consumed) = decode_extended_frame(frame, &mut decode_scratch).unwrap();
-        assert_eq!(consumed, frame.len());
+        let frame_len = frame.len();
+        let mut encoded = [0; EXTENDED_MSTP_FRAME_STORAGE];
+        encoded[..frame_len].copy_from_slice(frame);
+        let (decoded, consumed) = decode_frame_in_place(&mut encoded[..frame_len]).unwrap();
+        assert_eq!(consumed, frame_len);
         assert_eq!(decoded.header.destination, 2);
         assert_eq!(decoded.data.len(), EXTENDED_MSTP_MAX_NPDU);
         assert_eq!(decoded.data, payload);
 
         let mut receiver_rx = [0; 4096];
-        let mut receiver = extended_core_at_station(&mut receiver_rx, 2);
-        receiver
-            .on_validated_extended_frame(decoded, at(3))
-            .unwrap();
+        let mut receiver_actions = ExtendedActions::new();
+        let mut receiver = extended_core_at_station(&mut receiver_rx, &mut receiver_actions, 2);
+        receiver.on_validated_frame(decoded, at(3)).unwrap();
         match receiver.poll_action() {
             Action::DeliverNpdu {
                 source,
@@ -490,7 +483,8 @@ mod tests {
     #[test]
     fn extended_profile_fails_closed_for_unverified_standard_peer() {
         let mut rx = [0; 4096];
-        let mut core = extended_core(&mut rx);
+        let mut actions = ExtendedActions::new();
+        let mut core = extended_core(&mut rx, &mut actions);
         let mut egress = ExtendedMstpEgress::new(&mut core, PortId(9), at(1));
         let payload = [0xa5; STANDARD_MSTP_MAX_NPDU + 1];
         assert_eq!(
@@ -509,7 +503,8 @@ mod tests {
     #[test]
     fn standard_profile_rejects_502_bytes_before_queue_mutation() {
         let mut rx = [0; 1024];
-        let mut core = core(&mut rx);
+        let mut actions = Actions::new();
+        let mut core = core(&mut rx, &mut actions);
         let mut egress = StandardMstpEgress::new(&mut core, PortId(9), at(1));
         let payload = [0xa5; STANDARD_MSTP_MAX_NPDU + 1];
         assert_eq!(
@@ -528,7 +523,8 @@ mod tests {
     #[test]
     fn extended_profile_admits_the_first_extended_boundary() {
         let mut rx = [0; 4096];
-        let mut core = extended_core(&mut rx);
+        let mut actions = ExtendedActions::new();
+        let mut core = extended_core(&mut rx, &mut actions);
         let mut egress = ExtendedMstpEgress::new(&mut core, PortId(9), at(1));
         egress.set_peer_capability(MstpPeerCapability::Extended);
         let payload = [0x5a; STANDARD_MSTP_MAX_NPDU + 1];
@@ -556,15 +552,16 @@ mod tests {
                 other => panic!("unexpected action: {other:?}"),
             }
         };
-        let mut decode_scratch = [0; EXTENDED_MSTP_MAX_NPDU];
-        let (decoded, _) = decode_extended_frame(frame, &mut decode_scratch).unwrap();
+        let frame_len = frame.len();
+        let mut encoded = [0; EXTENDED_MSTP_FRAME_STORAGE];
+        encoded[..frame_len].copy_from_slice(frame);
+        let (decoded, _) = decode_frame_in_place(&mut encoded[..frame_len]).unwrap();
         assert_eq!(decoded.data, payload);
 
         let mut receiver_rx = [0; 4096];
-        let mut receiver = extended_core_at_station(&mut receiver_rx, 2);
-        receiver
-            .on_validated_extended_frame(decoded, at(3))
-            .unwrap();
+        let mut receiver_actions = ExtendedActions::new();
+        let mut receiver = extended_core_at_station(&mut receiver_rx, &mut receiver_actions, 2);
+        receiver.on_validated_frame(decoded, at(3)).unwrap();
         match receiver.poll_action() {
             Action::DeliverNpdu { npdu, .. } => assert_eq!(npdu, payload),
             other => panic!("expected extended delivery, got {other:?}"),
