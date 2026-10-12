@@ -4,8 +4,8 @@ use super::*;
 use bacnet_encoding::apdu::{decode_apdu, encode_apdu, Apdu, ConfirmedRequest};
 use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
 use bacnet_services::read_property::ReadPropertyRequest;
+use bacnet_transport::mstp::codec::{self, FrameType};
 use bacnet_transport::mstp::{LoopbackSerial, SerialPort};
-use bacnet_transport::mstp_frame::{decode_frame, encode_frame, FrameType, MstpFrame};
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
@@ -182,9 +182,37 @@ fn group_read_frame(invoke_id: u8, instance: u32) -> MstpFrame {
     }
 }
 
+/// A frame the test peer sends or reads, owning its data.
+struct MstpFrame {
+    frame_type: FrameType,
+    destination: u8,
+    source: u8,
+    data: Bytes,
+}
+
+fn decode_frame(wire: &[u8]) -> Result<(MstpFrame, usize), codec::FrameError> {
+    let (frame, consumed) = codec::decode_frame(wire)?;
+    Ok((
+        MstpFrame {
+            frame_type: frame.header.frame_type,
+            destination: frame.header.destination,
+            source: frame.header.source,
+            data: Bytes::copy_from_slice(frame.data),
+        },
+        consumed,
+    ))
+}
+
 async fn peer_send(peer: &LoopbackSerial, frame: &MstpFrame) {
-    let mut wire = BytesMut::new();
-    encode_frame(&mut wire, frame).unwrap();
+    let mut wire = Vec::new();
+    codec::Frame::new(
+        frame.frame_type,
+        frame.destination,
+        frame.source,
+        &frame.data,
+    )
+    .encode_to_sink(&mut wire)
+    .unwrap();
     peer.write(&wire).await.unwrap();
 }
 

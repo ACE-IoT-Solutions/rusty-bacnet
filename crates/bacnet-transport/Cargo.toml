@@ -13,6 +13,8 @@ categories = ["network-programming"]
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-bip-codec = { workspace = true, features = ["bytes"] }
+bacnet-mstp-codec = { workspace = true, features = ["alloc"] }
+bacnet-mstp-core = { workspace = true, features = ["alloc"] }
 bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }

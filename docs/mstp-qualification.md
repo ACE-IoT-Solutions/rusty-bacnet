@@ -51,8 +51,10 @@ assert_eq!(before, after);
 ```
 
 Each transport starts at zero. Clones retain counters only, not the serial owner
-or runtime. Counters saturate at `u64::MAX`; there is no reset. Snapshot fields use
-individually atomic Relaxed loads, **not a globally coherent transaction**. Poll at
+or runtime. Transport-boundary counters saturate at `u64::MAX` and the core's
+(`mac`) at `u32::MAX`; there is no reset. Snapshot fields use individually atomic
+Relaxed loads plus the core's counters as last published by the MAC task,
+**not a globally coherent transaction**. Poll at
 coarse intervals outside the MAC loop; do not add per-frame logging. For controlled
 run deltas, sample before traffic and after quiescence/awaited stop. Drop/abort may
 leave in-flight updates until cancellation completes. Reject cross-restart deltas
@@ -60,21 +62,26 @@ and mark saturated fields indeterminate rather than claiming exact counts.
 
 | Fields | Host meaning and limits |
 |---|---|
-| `der_tx`, `der_rx` | Valid DataExpectingReply written / decoded. RX includes traffic addressed elsewhere, before MAC/application acceptance. |
-| `dner_tx_direct` | DNER written through the one-use application reply path. |
-| `dner_tx_queued` | DNER written from the token queue, including broadcasts. **Not necessarily a deferred reply.** |
-| `dner_rx` | All valid DNER decoded, not a count of matching application responses. |
-| `reply_postponed_tx`, `reply_postponed_rx` | Successfully written / decoded ReplyPostponed; RX need not match our outstanding request. |
-| `wait_for_reply_timeouts` | Existing timer expiration handled in WaitForReply; not an APDU timeout or a wire-time measurement. |
-| `invalid_frame_discards` | Host invalid-decode or resynchronization discard operations (including noise); not bad-wire-frame or byte counts. USB chunking can change event counts. |
-| `stale_partial_resets` | Existing stale-host-assembly policy cleared a partial buffer; **not Tframe_abort**. |
+| `der_tx` | DataExpectingReply frames the core saw complete. |
+| `dner_tx_direct` | DNER answers to a received request, handed back through the one-use application reply path in time. |
+| `dner_tx_queued` | DNER sent from the token queue, including broadcasts and answers that missed their reply window. **Not necessarily a deferred reply.** |
+| `reply_postponed_tx` | ReplyPostponed frames sent. |
+| `wait_for_reply_timeouts` | Waits for a reply ended by T_reply_timeout; not an APDU timeout or a wire-time measurement. |
 | `outbound_queue_full`, `outbound_oversize` | Rejected queue admissions / oversize queued NPDU or direct reply. Not-started and invalid-MAC errors are excluded. |
 | `ingress_full`, `ingress_closed` | Failed NPDU delivery because the bounded receive channel was full / closed. |
-| `serial_read_errors`, `serial_write_errors` | Completed serial calls returning errors. Backend direction/drain errors count if surfaced by `write`. |
+| `serial_read_errors`, `serial_write_errors` | Completed serial calls returning errors; write and drain errors abort the frame. |
+| `echo_mismatches`, `echo_missing`, `echo_fragments_dropped` | On a port declared with `Echo::Full`: frames during whose echo hunt other octets were passed on to the core (stray or pad octets, noise, a short or corrupted echo, an early peer answer); frames with nothing at all read within the grace; and echo fragments dropped incomplete, after waiting longer than T_frame_abort or at this station's next start. |
+| `late_answers_queued`, `late_answers_dropped`, `late_answers_expired` | Application answers that came after Reply Postponed (or after the core gave up) and were queued for the token; reply channels given up because more than eight were waiting, or at the queue's maximum age. |
+| `mac.frames_received`, `mac.npdus_delivered`, `mac.frames_delivered` | Valid frames the core's decoder assembled (any destination), and data it passed up. |
+| `mac.parser_errors`, `mac.frame_aborts` | Frames invalid for this station per the receive rules (bad header, or bad data for this station or broadcast), and partial frames abandoned by T_frame_abort (100 ms on a host) or at a transmit start. Chunk gaps under 100 ms are not aborts. |
+| `mac.deadline_misses` | Deadlines the MAC task serviced 1 ms or more late. |
+| `mac.token_rotations`, `mac.token_retries`, `mac.token_regenerations`, `mac.deferred_starts`, `mac.late_replies`, `mac.expired_requests`, `mac.cancelled_sends`, `mac.discarded_while_busy`, `mac.own_address_frames` | The core's protocol counters; see `bacnet_mstp_core::MstpCounters`. |
+| `mac.unicast`, `mac.broadcast` | The two transmit queues' depth, high water and drops. |
 
-TX means successful encode and `SerialPort::write` completion, not UART drain,
-actual wire transmission, peer receipt or ACK. Failed writes may emit partial
-bytes; cancelled calls have no completed outcome to count. The counters see only
+TX means the frame completed on the wire as far as the host can tell: the port's
+drain returned and its time at the baud rate had passed. That is not peer receipt
+or ACK. Failed writes may emit partial bytes; cancelled calls have no completed
+outcome to count. The counters see only
 traffic that goes through the transport API. There are no frame
 bytes, invoke IDs, MACs, identities, paths or timestamps in these snapshots.
 Host-read times must never be presented as wire timestamps. Counters alone cannot
@@ -185,11 +192,12 @@ RP success is a functional outcome separate from timing verdicts.
 |---|---|
 | Oracle works; DER absent on analyzer and router `der_tx` unchanged | Investigate upstream routing/admission/token opportunity; counters do not prove which. |
 | Router `der_tx` increases, but DER absent on independent wire capture | Compare driver/direction/capture completeness; write success is not wire proof. |
-| DER on wire but no mini `der_rx` delta | Check addressing-independent decode/serial/assembly evidence and observation interval. |
-| Mini `der_rx`, then `dner_tx_direct`, and matching immediate DNER on wire | Prompt path observed; follow router `dner_rx`, ingress drops and B/IP result. |
+| DER on wire but no mini `mac.npdus_delivered` delta | Check `mac.frames_received`, `mac.parser_errors`, `mac.frame_aborts`, serial evidence and observation interval. |
+| Mini `mac.npdus_delivered`, then `dner_tx_direct`, and matching immediate DNER on wire | Prompt path observed; follow router `mac.npdus_delivered`, ingress drops and B/IP result. |
 | ReplyPostponed on wire / mini `reply_postponed_tx`, then token and queued DNER | Deferred path only when the independent capture/application result correlates it. `dner_tx_queued` alone cannot. |
 | Router `wait_for_reply_timeouts` increases | MAC wait expired; distinguish missing reply, late reply, host decode loss and application APDU timeout with capture. |
-| `invalid_frame_discards` or `stale_partial_resets` increases | Host decode/resynchronization or stale assembly respectively, not automatically a wire CRC/timing violation. Compare homogeneous controls and independent capture. |
+| `mac.parser_errors` or `mac.frame_aborts` increases | Frames invalid for this station, or partial frames abandoned (by 100 ms of silence or at a transmit start); not automatically a wire CRC/timing violation. Compare homogeneous controls and independent capture. |
+| `mac.deadline_misses` increases | The MAC task woke a millisecond or more late for a protocol deadline; look at host load and execution mode. |
 | `outbound_queue_full`/`outbound_oversize`, `ingress_full`/`ingress_closed`, or serial errors | Local rejection/delivery/I/O evidence; record exact deltas and unchanged returned errors, rather than interpreting no response as only a timer problem. |
 
 If a specific path cannot meet measured limits, evaluate a different serial path

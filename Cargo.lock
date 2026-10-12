@@ -474,6 +474,8 @@ dependencies = [
  "aws-lc-rs",
  "bacnet-bip-codec",
  "bacnet-encoding",
+ "bacnet-mstp-codec",
+ "bacnet-mstp-core",
  "bacnet-types",
  "bytes",
  "futures-util",

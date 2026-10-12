@@ -1455,16 +1455,24 @@ configuration gap is closed, not the full Annex AB profile or issue #513.
 
 ### MS/TP (Serial RS-485)
 
-MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes.
+MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes. The master node state machine is the portable `bacnet-mstp-core`, driven by the transport's Tokio task, and frames come from `bacnet-mstp-codec`, re-exported as `bacnet_transport::mstp::codec` for code that builds or reads frames (see [the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)).
+
+`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate; every Clause 9 timer is derived from them. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, and a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay). Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU over 501 octets (`Error::Encoding`) is refused at once.
 
 #### Host Diagnostics and Qualification
 
 Call `MstpTransport::diagnostics()` before moving the transport into its owner.
 The cloneable `mstp::MstpDiagnostics` handle returns owned
 `MstpDiagnosticsSnapshot` counts during operation and after stop/drop, without
-retaining serial ownership. Counts start at zero, saturate at `u64::MAX`, and have
-no reset. Relaxed loads are individually atomic, not a globally coherent snapshot.
-These are redacted host events, not wire timestamps or proof of peer delivery.
+retaining serial ownership. Counts start at zero and have no reset. The
+transport-boundary counts (frames sent by kind, reply timeouts, queue and
+ingress drops, serial errors, echo mismatches, late answers) saturate at
+`u64::MAX`; `mac`
+carries the core's own `MstpCounters` (frames received and delivered, invalid
+frames, frame aborts, token rotations and retries, deferred starts, late and
+expired replies, deadline misses and the queue counters), which saturate at
+`u32::MAX`. Loads are not a globally coherent snapshot. These are redacted
+host events, not wire timestamps or proof of peer delivery.
 See the [qualification method](mstp-qualification.md) and
 [unrun result template](mstp-qualification-result.json) for before/after deltas,
 the #707 rerun matrix, independent capture requirements and explicit non-claims.
@@ -1498,8 +1506,8 @@ without changing frame order, drain boundaries, turnaround deadlines or the
 still require that original reactor to remain running.
 
 `start()` reports thread/runtime creation failures without falling back to the
-application pool. `stop()` waits for task and isolated-runtime teardown, clears
-the transmit queue and sets the node to Idle. `abort()` and drop request
+application pool. `stop()` waits for task and isolated-runtime teardown; queued
+NPDUs go with the task, and later sends are refused. `abort()` and drop request
 cancellation and release transport-owned state without waiting. Blocking calls
 must return before their resources can be released; cancellation is not a drain
 or rollback of driver-accepted bytes. As before, stopping does not make a
@@ -1609,7 +1617,53 @@ not possible, the caller must handle the failed port; dropping the wrapper is no
 an asynchronous drain. Unix `TokioSerialPort` uses the native serial backend's
 `tcdrain`-backed synchronous flush on a blocking worker, keeping the stream alive
 and exclusive until the syscall returns. This does not qualify adapter or driver
-on-wire timing. Auto-direction and kernel RS-485 writes remain unchanged.
+on-wire timing.
+
+#### Echo
+
+Whether a port hears its own frames depends on the transceiver wiring: with
+the receiver enable tied to the driver enable it hears nothing, while a
+transceiver whose receiver stays on (many USB RS-485 cables) returns every
+octet. The transport must know, or it would take its own Token, heard back,
+for its successor using the token. Declare an echoing port with
+`with_echo(Echo::full())` on `TokioSerialPort` (or `LoopbackSerial`);
+`GpioDirectionPort` reports its inner port's setting, and the default is
+`Echo::None`.
+
+With `Echo::Full { grace }` the transport hunts for the frame it sent in the
+octets it reads after it. Octets that could begin the echo are held back and
+dropped once the whole frame has matched. An octet that does not fit passes
+on to the core, with as few of the held octets as it takes: a stray octet
+before the echo (a peer's trailing pad octet) passes on and the echo behind
+it is still dropped, and a peer's frame that only starts like the echo
+passes on whole. Passed-on octets carry the time of the read that released
+them. The frame is reported complete at the first octet that passes on, when
+the echo has matched, or at the end of the grace, before the core is fed
+anything read after it.
+
+The grace is how long after the frame's end its echo may still be arriving:
+`Echo::full()` gives `DEFAULT_ECHO_GRACE`, 40 ms, room for a USB adapter's
+receive latency (FTDI parts hold received octets back for up to 16 ms by
+default); `start()` refuses a zero grace (`Echo::validate`). The hunt goes on
+past the grace: an echo already under way is still matched as it continues,
+and one not begun is looked for during one more grace, whose end releases
+what it held. The hunt stops at the station's next start (probe-held octets
+pass on before it, and what the other phases still hold is dropped once the
+start is confirmed) or, while an echo under way is still being matched,
+after T_frame_abort of silence (the probe ends at its own deadline). Held octets that waited longer than
+T_frame_abort are dropped as a stale fragment. `echo_mismatches`,
+`echo_missing` and `echo_fragments_dropped` in the diagnostics show a port
+declared wrongly.
+
+```rust
+use std::time::Duration;
+use bacnet_transport::mstp::Echo;
+
+let serial = TokioSerialPort::open(&config)?.with_echo(Echo::full());
+// Or with a grace of its own, for an adapter with a short latency timer:
+let serial = TokioSerialPort::open(&config)?
+    .with_echo(Echo::Full { grace: Duration::from_millis(10) });
+```
 
 #### SerialPort Trait
 
@@ -1620,15 +1674,21 @@ pub trait SerialPort: Send + Sync + 'static {
     fn write(&self, data: &[u8]) -> impl Future<Output = Result<(), Error>> + Send;
     fn drain(&self) -> impl Future<Output = Result<(), Error>> + Send;
     fn read(&self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Error>> + Send;
+    fn echo(&self) -> Echo { Echo::None }
 }
 ```
 
-`write()` may report driver acceptance before transmission finishes. `drain()`
-reports completion of all accepted output, including the UART shift register.
-Its default implementation returns an unsupported-operation error, preserving
-existing custom backends without falsely claiming completion. Custom backends
-used for software direction control must implement this operation. The loopback
-backend completes writes in memory and drains immediately.
+`write()` may report driver acceptance before transmission finishes; the
+transport writes one whole frame per call, and only once the core has confirmed
+the frame may start. `drain()` reports completion of all accepted output,
+including the UART shift register. Its default implementation returns an
+unsupported-operation error, preserving existing custom backends without
+falsely claiming completion; the transport then times each frame by its
+octets at the baud rate. Custom backends used for software direction control
+must implement this operation. `read()` must be cancel safe: the transport
+drops a pending read to service a deadline, and polls one once, without
+waiting, to collect octets already there before it starts a frame. The
+loopback backend completes writes in memory and drains immediately.
 
 ### Loopback Transport
 
