@@ -21,8 +21,6 @@ pub(super) struct Sent {
 struct State {
     sent: Vec<Sent>,
     fail: bool,
-    /// Where each send is also told, as it happens.
-    watch: Option<tokio::sync::mpsc::UnboundedSender<Sent>>,
 }
 
 /// What a recording socket sent. Clones share one record.
@@ -48,28 +46,17 @@ impl SendSink {
                 "send refused by the test sink",
             ));
         }
-        let sent = Sent {
+        state.sent.push(Sent {
             at: tokio::time::Instant::now(),
             to,
             bytes: buf.to_vec(),
-        };
-        if let Some(watch) = &state.watch {
-            let _ = watch.send(sent.clone());
-        }
-        state.sent.push(sent);
+        });
         Ok(buf.len())
     }
 
     /// Fail every send from now on, or stop failing them.
     pub(super) fn fail_sends(&self, fail: bool) {
         self.lock().fail = fail;
-    }
-
-    /// Each send from now on, as it happens.
-    pub(super) fn watch(&self) -> tokio::sync::mpsc::UnboundedReceiver<Sent> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        self.lock().watch = Some(tx);
-        rx
     }
 
     /// Everything sent so far, which leaves the record.

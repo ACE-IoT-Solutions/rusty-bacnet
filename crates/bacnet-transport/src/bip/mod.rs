@@ -39,18 +39,10 @@ mod access;
 mod bbmd_receive;
 mod bbmd_start;
 mod client_snapshot;
-#[cfg(test)]
-mod differential_support;
-#[cfg(test)]
-mod differential_tests;
 mod exchange;
 mod foreign_device;
 mod node;
 mod send;
-// A verbatim copy, so some of it goes unused.
-#[cfg(test)]
-#[allow(dead_code)]
-mod legacy;
 #[cfg(test)]
 mod send_sink;
 #[cfg(test)]
