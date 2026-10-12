@@ -21,6 +21,16 @@ fn raw_frame(raw_type: u8, destination: u8, source: u8, data: &[u8]) -> Vec<u8> 
     wire
 }
 
+/// A header alone, with a correct CRC, for field values encode refuses.
+fn raw_header(raw_type: u8, destination: u8, source: u8, length: u16) -> Vec<u8> {
+    let [high, low] = length.to_be_bytes();
+    let fields = [raw_type, destination, source, high, low];
+    let mut wire = PREAMBLE.to_vec();
+    wire.extend_from_slice(&fields);
+    wire.push(crc8(&fields));
+    wire
+}
+
 #[test]
 fn golden_crc_vectors() {
     let headers = [
@@ -296,35 +306,94 @@ fn truncation_oversize_and_corruption_are_typed() {
     );
 }
 
+/// The reserved COBS types, 34-127, are refused both ways once the rest of
+/// the header has passed; 32 and 33 are the two the codec handles.
 #[test]
-fn every_cobs_type_is_rejected() {
-    for raw in 32..=127 {
-        let wire = raw_frame(raw, 0, 1, &[]);
+fn reserved_cobs_types_are_rejected_after_the_header_checks() {
+    for raw in 34..=127 {
+        // A header with a Length inside the COBS bounds: good but unsupported,
+        // which shows before the missing body would.
         assert_eq!(
-            decode_frame(&wire),
+            decode_frame(&raw_header(raw, 0, 1, 5)),
             Err(FrameError::UnsupportedCobsFrame { raw_type: raw })
         );
-        let mut output = [0u8; 8];
+        let mut output = [0xA5u8; 64];
         assert_eq!(
-            Frame::new(FrameType::from_raw(raw), 0, 1, &[]).encode_into(&mut output),
+            Frame::new(FrameType::from_raw(raw), 0, 1, &[1]).encode_into(&mut output),
             Err(FrameError::UnsupportedCobsFrame { raw_type: raw })
         );
+        assert!(output.iter().all(|&octet| octet == 0xA5));
     }
+    assert!(FrameType::from_raw(0x22).is_cobs());
+    assert_eq!(FrameType::from_raw(0x22), FrameType::Unknown(0x22));
+    assert_eq!(
+        FrameType::from_raw(0x20),
+        FrameType::BACnetExtendedDataExpectingReply
+    );
+    assert_eq!(
+        FrameType::from_raw(0x21),
+        FrameType::BACnetExtendedDataNotExpectingReply
+    );
 }
 
+/// Header checks run in one order both ways (Clause 9.5.8, #1611): source
+/// 255, then the Length against its class's bounds, then the COBS type. So
+/// `UnsupportedCobsFrame` only ever comes with a good header.
 #[test]
-fn cobs_error_precedes_oversize_error() {
-    let oversized = [0u8; MAX_STANDARD_MPDU_DATA + 1];
-    let frame = Frame::new(FrameType::Unknown(0x20), 0, 7, &oversized);
-    let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
+fn header_checks_run_source_then_length_then_type() {
+    // Decode. A reserved COBS type with source 255 and a Length of 0 fails
+    // on the source; with a good source, on the Length; and with a good
+    // Length, on the type.
     assert_eq!(
-        frame.encode_into(&mut output),
-        Err(FrameError::UnsupportedCobsFrame { raw_type: 0x20 })
+        decode_frame(&raw_header(0x22, 3, 0xFF, 0)),
+        Err(FrameError::BroadcastSource)
     );
-    let mut sink = &mut output[..];
+    for length in [0, 4, 2044, u16::MAX] {
+        assert_eq!(
+            decode_frame(&raw_header(0x22, 3, 4, length)),
+            Err(FrameError::InvalidCobsLength {
+                length: usize::from(length)
+            }),
+            "Length {length}"
+        );
+    }
+    assert!(matches!(
+        decode_frame(&raw_header(0x22, 3, 4, 5)),
+        Err(FrameError::UnsupportedCobsFrame { raw_type: 0x22 })
+    ));
+    // A standard type is held to 501 instead, after the source.
     assert_eq!(
-        frame.encode_to_sink(&mut sink),
-        Err(FrameError::UnsupportedCobsFrame { raw_type: 0x20 })
+        decode_frame(&raw_header(0x06, 3, 0xFF, 502)),
+        Err(FrameError::BroadcastSource)
+    );
+    assert_eq!(
+        decode_frame(&raw_header(0x06, 3, 4, 502)),
+        Err(FrameError::Oversize {
+            length: 502,
+            maximum: MAX_STANDARD_MPDU_DATA
+        })
+    );
+
+    // Encode, the same order: a reserved COBS type with no data has a
+    // Length of 4, too short.
+    let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
+    let reserved = FrameType::Unknown(0x22);
+    assert_eq!(
+        Frame::new(reserved, 3, 0xFF, &[]).encode_into(&mut output),
+        Err(FrameError::BroadcastSource)
+    );
+    assert_eq!(
+        Frame::new(reserved, 3, 4, &[]).encode_into(&mut output),
+        Err(FrameError::InvalidCobsLength { length: 4 })
+    );
+    assert_eq!(
+        Frame::new(reserved, 3, 4, &[1]).encode_into(&mut output),
+        Err(FrameError::UnsupportedCobsFrame { raw_type: 0x22 })
+    );
+    let oversized = [0u8; MAX_STANDARD_MPDU_DATA + 1];
+    assert_eq!(
+        Frame::new(FrameType::TestRequest, 3, 0xFF, &oversized).encode_into(&mut output),
+        Err(FrameError::BroadcastSource)
     );
 }
 
