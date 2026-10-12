@@ -270,5 +270,6 @@ pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
         max_master,
         max_info_frames: 1,
         baud_rate: 9600,
+        extended_frames: false,
     }
 }

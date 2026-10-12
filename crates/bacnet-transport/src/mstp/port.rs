@@ -1,4 +1,4 @@
-use bacnet_mstp_codec::{BROADCAST_MAC, MAX_STANDARD_MPDU_DATA};
+use bacnet_mstp_codec::BROADCAST_MAC;
 use bacnet_mstp_core::{Duration as CoreDuration, QueueRejectReason};
 use bacnet_types::error::Error;
 use tokio::sync::{mpsc, Mutex};
@@ -18,8 +18,13 @@ use crate::port::{ReceivedNpdu, TransportPort};
 /// [`start`](TransportPort::start) validates the [`MstpConfig`] and spawns a
 /// task that owns the serial port and runs the portable master core (see the
 /// [module docs](super)). Sends queue NPDUs for the core, which sends them
-/// when this station holds the token; a full queue or an NPDU too long for a
-/// standard frame is refused at once.
+/// when this station holds the token; a full queue or an NPDU longer than
+/// the port sends ([`Self::max_npdu_length`]) is refused at once.
+///
+/// `bacnet_network`'s `BACnetRouter` turns on
+/// [`MstpConfig::extended_frames`] for every MS/TP port it routes,
+/// through [`TransportPort::prepare_for_routing`], since Clause 9.3 requires
+/// them of a routing node; any other use keeps the configured setting.
 pub struct MstpTransport<S: SerialPort> {
     serial: Option<S>,
     config: MstpConfig,
@@ -89,6 +94,20 @@ impl<S: SerialPort> MstpTransport<S> {
         self.diagnostics.clone()
     }
 
+    /// The configuration the next `start` uses: what [`Self::new`] was
+    /// given, with extended frames on if a router prepared the port
+    /// ([`TransportPort::prepare_for_routing`]).
+    pub fn config(&self) -> &MstpConfig {
+        &self.config
+    }
+
+    /// The longest NPDU the port sends or takes, as the network layer sees
+    /// it: 1497 octets with extended frames, 501 without
+    /// ([`MstpConfig::max_npdu_length`]).
+    pub fn max_npdu_length(&self) -> usize {
+        self.config.max_npdu_length()
+    }
+
     fn abort_task_and_release_state(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
@@ -119,10 +138,15 @@ impl<S: SerialPort> MstpTransport<S> {
             ))),
             Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
                 increment(&counts.outbound_oversize);
+                let class = if self.config.extended_frames {
+                    "extended"
+                } else {
+                    "standard"
+                };
                 Err(Error::Encoding(format!(
-                    "MS/TP NPDU length {} exceeds standard-frame maximum {}",
+                    "MS/TP NPDU length {} exceeds {class}-frame maximum {}",
                     npdu.len(),
-                    MAX_STANDARD_MPDU_DATA
+                    self.config.max_npdu_length()
                 )))
             }
             Err(EnqueueError::Rejected(QueueRejectReason::Full)) => {
@@ -163,7 +187,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
         };
 
         let (npdu_tx, npdu_rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
-        let queues = SharedQueues::new();
+        let queues = SharedQueues::new(self.config.extended_frames);
         let clock = CoreClock::new();
         let task = Task {
             serial,
@@ -218,16 +242,27 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
         self.enqueue(BROADCAST_MAC, npdu)
     }
 
+    /// Turns on extended frames, which Clause 9.3 requires of a routing
+    /// node, unless the transport has started already.
+    fn prepare_for_routing(&mut self) {
+        if self.serial.is_some() {
+            self.config.extended_frames = true;
+        }
+    }
+
+    /// [`MstpConfig::max_apdu_length`]: 1476 with extended frames, 480
+    /// without.
     fn local_receive_apdu_capacity(&self) -> u16 {
-        480
+        self.config.max_apdu_length()
     }
 
     fn local_mac(&self) -> &[u8] {
         &self.local_mac
     }
 
+    /// [`MstpConfig::max_apdu_length`], as for the receive capacity.
     fn egress_apdu_limit(&self) -> u16 {
-        480
+        self.config.max_apdu_length()
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
