@@ -453,17 +453,18 @@ schedule runs it, and no required check depends on it.
 - **Boards.** Each has its own memory layout in `firmware/link/boards/`,
   which `build.rs` takes instead of the generic `memory.x` when the board's
   feature is on; the sizes come from QEMU's own memory map (`info mtree`).
+  The script names a board by its QEMU machine.
 
-  | Board (`board-*` feature) | QEMU machine | CPU | Target | Flash, RAM | Why |
+  | Board (QEMU machine) | Feature | CPU | Target | Flash, RAM | Why |
   | --- | --- | --- | --- | --- | --- |
-  | `microbit` | `microbit` | nRF51822, Cortex-M0 | `thumbv6m-none-eabi` | 256 KiB at 0, 16 KiB at `0x20000000` | QEMU's ARMv6-M board, and the smallest RAM, the tightest fit for the stacks |
-  | `lm3s6965evb` | `lm3s6965evb` | LM3S6965, Cortex-M3 | `thumbv7m-none-eabi` | 256 KiB at 0, 64 KiB at `0x20000000` | The classic Cortex-M3 target for QEMU, the same sizes as the link test's layout (`mps2-an385` would do too) |
-  | `netduinoplus2` | `netduinoplus2` | STM32F405, Cortex-M4F | `thumbv7em-none-eabihf` | 1 MiB at `0x08000000`, 128 KiB at `0x20000000` | The link test's addresses, with an FPU, which cortex-m-rt turns on for an `eabihf` target |
-  | `sifive-e` | `sifive_e` | SiFive E31, RV32IMAC | `riscv32imc-unknown-none-elf` | 512 KiB of the XIP flash from `0x20400000`, 16 KiB at `0x80000000` | Like an MCU: code runs in place from flash and data lives in a small RAM, unlike `virt`, which loads everything into its RAM. RV32IMC code runs unchanged on an RV32IMAC core |
+  | `microbit` | `board-microbit` | nRF51822, Cortex-M0 | `thumbv6m-none-eabi` | 256 KiB at 0, 16 KiB at `0x20000000` | QEMU's ARMv6-M board, with the smallest RAM, the tightest fit for the stacks |
+  | `lm3s6965evb` | `board-lm3s6965evb` | LM3S6965, Cortex-M3 | `thumbv7m-none-eabi` | 256 KiB at 0, 64 KiB at `0x20000000` | The usual Cortex-M3 board for QEMU, with the link test's layout's sizes (QEMU's other is `mps2-an385`) |
+  | `netduinoplus2` | `board-netduinoplus2` | STM32F405, Cortex-M4F | `thumbv7em-none-eabihf` | 1 MiB at `0x08000000`, 128 KiB at `0x20000000` | The link test's addresses, and an FPU, which cortex-m-rt turns on for an `eabihf` target |
+  | `sifive_e` | `board-sifive-e` | SiFive E31, RV32IMAC | `riscv32imc-unknown-none-elf` | 512 KiB of the XIP flash from `0x20400000`, 16 KiB at `0x80000000` | Like an MCU: code runs in place from flash and data lives in a small RAM, where `virt` loads everything into its RAM. RV32IMC code runs unchanged on an RV32IMAC core |
 
   `thumbv7em-none-eabihf` isn't one of the link test's targets. Its images
   build there too, a little smaller than `thumbv7m-none-eabi`'s, within
-  that target's budgets (flash 18,364, 10,872 and 43,628 octets for mstp,
+  that target's budgets (flash 19,808, 10,872 and 43,628 octets for mstp,
   bip and apdu); adding it to `FIRMWARE_TARGETS` needs budget tables of
   its own.
 - **Exit statuses.** QEMU exits with the image's status. A run fails on
@@ -492,19 +493,19 @@ schedule runs it, and no required check depends on it.
   words the scenario's frames wrote, so a frame's untouched padding goes
   uncounted, and it covers the emulation build, which runs the same
   scenario code with the same profile as the link test's image. The peaks,
-  measured with Rust 1.99.0 and QEMU 10.0.13, in octets (the stack's room
-  in parentheses, all of RAM above the statics):
+  measured with Rust 1.99.0 and QEMU 10.0.13, in octets, and on the two
+  16 KiB boards the stack's room, all of RAM above the statics:
 
   | Target (board) | mstp | bip | apdu |
   | --- | --- | --- | --- |
-  | `thumbv6m-none-eabi` (`microbit`) | 4,552 (10,840) | 2,220 (16,252) | 2,768 (15,328) |
-  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 4,056 | 2,100 | 2,536 |
-  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 4,056 | 2,100 | 2,536 |
-  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 3,960 (10,840) | 2,020 (16,252) | 2,464 (15,328) |
+  | `thumbv6m-none-eabi` (`microbit`) | 4,664 (10,840) | 2,220 (16,252) | 2,768 (15,328) |
+  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 4,228 | 2,100 | 2,536 |
+  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 4,228 | 2,100 | 2,536 |
+  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 4,100 (10,840) | 2,020 (16,252) | 2,464 (15,328) |
 
-  So the MS/TP image needs about 9.6 KB of RAM on ARMv6-M: 5,544 octets of
-  statics and 4.5 KB of stack. Nothing budgets the stack yet; these numbers
-  are a record, to compare with after a change.
+  So the MS/TP image needs about 10.2 KB of RAM on ARMv6-M: 5,544 octets
+  of statics and 4.7 KB of stack. Nothing budgets the stack yet; these
+  numbers are a record, to compare with after a change.
 - **The runner.** `emulate-firmware.sh` builds the images on the host with
   the pinned toolchain (clippy first, as the link test does), then hands
   them to `scripts/emu/run-qemu.sh`, which runs each on its board with a
@@ -539,10 +540,10 @@ bash scripts/emu/emulate-firmware.sh --timeout 60        # seconds per image (de
   isn't part of `CI OK` or `Native OK`, and `scripts/release/ci_gate.py`
   reads only `ci.yml` and `native-tests.yml` runs, so it can never stand in
   for either.
-- **Cost.** On an Apple M5 with Docker Desktop, the twelve runs take about
-  a second each once the images are built; the builds, clippy included,
-  about a minute from a cold target directory; and the Docker image about
-  30 s the first time.
+- **Cost.** On an Apple M5 with Docker Desktop, a run of every board takes
+  about 30 s from a cold target directory, clippy and the builds included,
+  and about 15 s warm, the twelve QEMU runs about a second each. Building
+  the Docker image the first time adds about 30 s.
 
 ### Runner
 
