@@ -297,3 +297,44 @@ pub(super) async fn handle_bip_discover(
         output::print_error(&e.to_string());
     }
 }
+
+/// Report how a `--foreign-bbmd` registration went once the BBMD answers
+/// the first attempt (#938). The transport keeps trying either way.
+pub(super) async fn report_foreign_start(
+    client: &BACnetClient<BipTransport>,
+    bbmd: std::net::SocketAddrV4,
+) {
+    match crate::foreign::await_registration(client, bbmd).await {
+        Ok(()) => eprintln!(
+            "{}",
+            format!("Registered as a foreign device with BBMD {bbmd}, renewed automatically")
+                .green()
+        ),
+        Err(e) => output::print_error(&format!("{e}; retrying in the background")),
+    }
+}
+
+/// The `--foreign-bbmd` registration, for `status`.
+pub(super) fn print_foreign_status(
+    client: &BACnetClient<BipTransport>,
+    bbmd: std::net::SocketAddrV4,
+) {
+    let Ok(registration) = client.foreign_registration() else {
+        return;
+    };
+    let state = match registration.lease_remaining {
+        Some(left) if registration.registered => {
+            format!("(registered, {}s of the lease left)", left.as_secs())
+        }
+        _ => format!(
+            "(not registered; last attempt {:?})",
+            registration.last_outcome
+        ),
+    };
+    println!(
+        "{} {} {}",
+        "Foreign device of BBMD:".dimmed(),
+        bbmd.to_string().cyan(),
+        state.dimmed()
+    );
+}

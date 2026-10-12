@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
 use bacnet_client::client::BACnetClient;
-use bacnet_transport::bip::BipTransport;
+use bacnet_transport::bip::{BipMode, BipTransport, ForeignDeviceConfig};
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_types::error::Error;
 
@@ -25,6 +25,8 @@ pub struct TransportArgs {
     pub ipv6: bool,
     pub ipv6_interface: Option<Ipv6Addr>,
     pub device_instance: Option<u32>,
+    /// `--foreign-bbmd`, with `--ttl` and `--renewal` (#938).
+    pub foreign_device: Option<ForeignDeviceConfig>,
 }
 
 impl TransportArgs {
@@ -43,6 +45,11 @@ impl TransportArgs {
                     .map_err(|e| format!("invalid --ipv6-interface address '{s}': {e}"))
             })
             .transpose()?;
+        if cli.foreign_bbmd.is_some() && (cli.sc || cli.ipv6) {
+            return Err(
+                "--foreign-bbmd requires BACnet/IP transport (do not use --sc or --ipv6)".into(),
+            );
+        }
         Ok(Self {
             interface,
             port: cli.port,
@@ -59,6 +66,7 @@ impl TransportArgs {
             ipv6: cli.ipv6,
             ipv6_interface,
             device_instance: cli.device_instance,
+            foreign_device: crate::foreign::config(cli.foreign_bbmd, cli.ttl, cli.renewal),
         })
     }
 }
@@ -121,6 +129,11 @@ pub async fn build_bip_client(args: &TransportArgs) -> Result<BACnetClient<BipTr
         .broadcast_address(args.broadcast)
         .apdu_timeout_ms(args.timeout_ms)
         .min_request_interval_ms(args.min_interval_ms)
+        .mode(
+            args.foreign_device
+                .clone()
+                .map_or(BipMode::Normal, BipMode::Foreign),
+        )
         .build()
         .await
 }
@@ -248,6 +261,7 @@ mod tests {
             ipv6: false,
             ipv6_interface: None,
             device_instance: None,
+            foreign_device: None,
         }
     }
 

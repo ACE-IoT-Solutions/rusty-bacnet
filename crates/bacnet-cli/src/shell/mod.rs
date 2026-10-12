@@ -27,6 +27,7 @@ use self::admin::{
 };
 use self::bbmd::{
     handle_bdt, handle_bip_discover, handle_bip_register, handle_fdt, handle_unregister,
+    print_foreign_status, report_foreign_start,
 };
 use self::cov_control::{handle_control, handle_reinit, handle_subscribe};
 use self::discover::{handle_discover, handle_find};
@@ -608,6 +609,7 @@ pub async fn run_shell<T: TransportPort + 'static>(
 /// Run the interactive BACnet shell with BIP transport (supports BBMD commands).
 pub async fn run_bip_shell(
     client: BACnetClient<BipTransport>,
+    foreign_bbmd: Option<std::net::SocketAddrV4>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = setup_readline()?;
@@ -618,6 +620,9 @@ pub async fn run_bip_shell(
         "BACnet CLI v{}. Type 'help' for commands, 'exit' to quit.",
         env!("CARGO_PKG_VERSION")
     );
+    if let Some(bbmd) = foreign_bbmd {
+        report_foreign_start(&client, bbmd).await;
+    }
 
     loop {
         match rl.readline("bacnet> ") {
@@ -638,6 +643,9 @@ pub async fn run_bip_shell(
                     "target" => handle_target(args, &mut session),
                     "status" => {
                         handle_status(&*client, &session, "BACnet/IP").await;
+                        if let Some(bbmd) = foreign_bbmd {
+                            print_foreign_status(&client, bbmd);
+                        }
                     }
                     "discover" | "whois" => {
                         handle_bip_discover(&client, args, format).await;
