@@ -104,14 +104,13 @@ impl Bip6Socket {
         }
     }
 
-    pub async fn recv_from(&self, bytes: &mut [u8]) -> io::Result<ReceivedDatagram> {
+    /// Read the next datagram. In normal mode one the selected link doesn't
+    /// take is read and refused ([`Inbound::OffLink`]); the caller reads on.
+    pub async fn recv_from(&self, bytes: &mut [u8]) -> io::Result<Inbound> {
         let mut received = self.receiver.recv_from(&self.udp, bytes).await?;
         if let Some(link) = self.selection {
             if !admits(link, &received) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "datagram is outside selected IPv6 link/address",
-                ));
+                return Ok(Inbound::OffLink);
             }
             if let SocketAddr::V6(peer) = &mut received.peer {
                 if peer.ip().is_unicast_link_local() {
@@ -119,8 +118,22 @@ impl Bip6Socket {
                 }
             }
         }
-        Ok(received)
+        Ok(Inbound::Datagram(received))
     }
+}
+
+/// What one read of a [`Bip6Socket`] returned.
+#[derive(Debug)]
+pub(super) enum Inbound {
+    /// A datagram for this transport: in normal mode, one that arrived on
+    /// the selected link and was sent to its address or a BACnet group.
+    Datagram(ReceivedDatagram),
+    /// In normal mode, a datagram that arrived on another interface or was
+    /// sent to another address. The wildcard socket gets the datagrams for
+    /// every address and interface at its port, so this is routine on a
+    /// host with more than one, or with another B/IPv6 port at the same
+    /// UDP port.
+    OffLink,
 }
 
 fn foreign_bind_address(

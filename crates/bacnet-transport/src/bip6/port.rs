@@ -13,8 +13,9 @@ use crate::port::{ReceivedNpdu, TransportPort};
 use super::frame::{bvll6_error, encoded};
 use super::ingress::{is_local_unicast_delivery, LocalBinding};
 use super::receive::Receiver;
+use super::receive_counters::{Bip6ReceiveCounters, ReceiveDrops};
 use super::reply_limit::ReplyLimiter;
-use super::socket::Bip6Socket;
+use super::socket::{Bip6Socket, Inbound};
 use super::vmac_table::{derive_vmac_from_device_instance, generate_random_vmac, VmacTable};
 use super::{encode_bvll6, Bip6Address, Bip6Vmac, Bvll6, MAX_VMAC_RETRIES};
 
@@ -67,6 +68,8 @@ pub struct Bip6Transport {
     registration_task: Option<JoinHandle<()>>,
     /// See [`Self::forwarded_group_origin_drops`].
     forwarded_group_origin_drops: Arc<std::sync::atomic::AtomicU64>,
+    /// See [`Self::receive_counters`].
+    receive_drops: Arc<ReceiveDrops>,
 }
 
 /// Configuration for BIPv6 foreign device registration.
@@ -128,6 +131,7 @@ impl Bip6Transport {
             foreign_device: None,
             registration_task: None,
             forwarded_group_origin_drops: Arc::default(),
+            receive_drops: Arc::default(),
         }
     }
 
@@ -157,6 +161,14 @@ impl Bip6Transport {
     pub fn forwarded_group_origin_drops(&self) -> u64 {
         self.forwarded_group_origin_drops
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The datagrams the receive path dropped since this transport was
+    /// created, by reason, and the replies it held back over its quotas
+    /// (#1643). The totals survive a restart. A Forwarded-NPDU with a group
+    /// origin is counted in [`Self::forwarded_group_origin_drops`] instead.
+    pub fn receive_counters(&self) -> Bip6ReceiveCounters {
+        self.receive_drops.snapshot()
     }
 }
 
@@ -260,7 +272,8 @@ impl TransportPort for Bip6Transport {
                 loop {
                     match tokio::time::timeout_at(deadline, socket.recv_from(&mut check_buf)).await
                     {
-                        Ok(Ok(received)) => {
+                        Ok(Ok(Inbound::OffLink)) => continue,
+                        Ok(Ok(Inbound::Datagram(received))) => {
                             if let Ok(message) =
                                 bacnet_bip_codec::ipv6::decode(&check_buf[..received.len])
                             {
@@ -398,6 +411,7 @@ impl TransportPort for Bip6Transport {
                 .map(|fd| (fd.bbmd_ip, fd.bbmd_port)),
             vmac_table: self.vmac_table.clone(),
             forwarded_group_origin_drops: Arc::clone(&self.forwarded_group_origin_drops),
+            drops: Arc::clone(&self.receive_drops),
             nak_quota: ReplyLimiter::default(),
             far_ack_quota: ReplyLimiter::default(),
         };

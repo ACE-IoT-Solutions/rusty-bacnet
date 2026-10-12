@@ -24,6 +24,7 @@ use crate::port::TransportPort;
 use crate::udp_metadata::ReceivedDatagram;
 
 mod forwarded_resolution_tests;
+mod malformed_request_tests;
 
 const LOCAL_VMAC: Bip6Vmac = Bip6Vmac::new([0x00, 0x06, 0x32]);
 const ASKER_VMAC: Bip6Vmac = Bip6Vmac::new([0x00, 0x06, 0x40]);
@@ -89,6 +90,7 @@ async fn receiver(foreign: bool) -> Receiver {
         foreign_bbmd: foreign.then(|| (*bbmd().ip(), bbmd().port())),
         vmac_table: VmacTable::new(),
         forwarded_group_origin_drops: Arc::default(),
+        drops: Arc::default(),
         nak_quota: Default::default(),
         far_ack_quota: Default::default(),
     }

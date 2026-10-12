@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use bacnet_bip_codec::{
@@ -13,7 +13,8 @@ use bacnet_types::MacAddr;
 
 use crate::bbmd::{self, BbmdState};
 use crate::bvll::{encode_bip_mac, encode_bvll, BvllMessage};
-use crate::port::{ReceivedNpdu, TransportProvenance};
+use crate::npdu_channel::{self, Refused};
+use crate::port::ReceivedNpdu;
 
 use super::fanout::FanoutDispatcher;
 use super::ingress::Delivery;
@@ -64,20 +65,13 @@ fn hand_up(
     link_layer_group: bool,
     frame: &'static str,
 ) {
-    match ctx.npdu_tx.try_reserve() {
-        Ok(permit) => permit.send(ReceivedNpdu {
-            direct_response: None,
-            npdu: Bytes::copy_from_slice(npdu),
-            source_mac,
-            link_layer_group,
-            data_attributes: Vec::new(),
-            provenance: TransportProvenance::unverified(),
-            reply_tx: None,
-        }),
-        Err(TrySendError::Full(())) => {
+    let npdu = || Bytes::copy_from_slice(npdu);
+    match npdu_channel::hand_up(&ctx.npdu_tx, npdu, source_mac, link_layer_group) {
+        Ok(()) => {}
+        Err(Refused::Full) => {
             ctx.drops.npdu_channel_full(frame);
         }
-        Err(TrySendError::Closed(())) => {
+        Err(Refused::Closed) => {
             ctx.drops.count(DropReason::NpduChannelClosed);
             debug!(
                 frame,
@@ -165,7 +159,7 @@ pub(super) async fn handle_bvll_message(
                         .collect();
                     fanout.dispatch_forwarded_npdu(sender.0, sender.1, npdu, addrs, dedup_count);
                 } else {
-                    let _ = forward_npdu(&ctx.socket, npdu, sender.0, sender.1, &targets).await;
+                    let _ = forward_npdu(ctx, npdu, sender.0, sender.1, &targets).await;
                 }
             }
         }
@@ -221,8 +215,7 @@ pub(super) async fn handle_bvll_message(
                     debug!("Forwarded-NPDU arrived by broadcast; skipping local rebroadcast");
                 } else if needs_local_broadcast {
                     let local_dest = SocketAddrV4::new(ctx.broadcast_addr, ctx.broadcast_port);
-                    let _ = send_forwarded_npdu(&ctx.socket, local_dest, orig_ip, orig_port, npdu)
-                        .await;
+                    let _ = send_forwarded_npdu(ctx, local_dest, orig_ip, orig_port, npdu).await;
                 }
                 if let Some(fanout) = &ctx.fanout {
                     let addrs: Vec<SocketAddrV4> = fdt_targets
@@ -231,7 +224,7 @@ pub(super) async fn handle_bvll_message(
                         .collect();
                     fanout.dispatch_forwarded_npdu(orig_ip, orig_port, npdu, addrs, dedup_count);
                 } else {
-                    let _ = forward_npdu(&ctx.socket, npdu, orig_ip, orig_port, &fdt_targets).await;
+                    let _ = forward_npdu(ctx, npdu, orig_ip, orig_port, &fdt_targets).await;
                 }
             } else {
                 hand_up(ctx, npdu, source_mac, true, "forwarded");
@@ -408,7 +401,7 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
         warn!("Forced DBTN forwarding failure");
         false
     } else {
-        send_forwarded_npdu(&ctx.socket, local_dest, sender.0, sender.1, npdu).await
+        send_forwarded_npdu(ctx, local_dest, sender.0, sender.1, npdu).await
     };
 
     let remote_ok = if let Some(fanout) = &ctx.fanout {
@@ -418,7 +411,7 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
             .collect();
         fanout.dispatch_forwarded_npdu(sender.0, sender.1, npdu, addrs, dedup_count)
     } else {
-        forward_npdu(&ctx.socket, npdu, sender.0, sender.1, &targets).await
+        forward_npdu(ctx, npdu, sender.0, sender.1, &targets).await
     };
 
     if !(local_ok && remote_ok) {
@@ -504,8 +497,11 @@ fn forwarded_npdu(orig_ip: [u8; 4], orig_port: u16, npdu: &[u8]) -> Option<Bytes
     }
 }
 
+/// Send `npdu` from `orig_ip:orig_port` to `dest` as a Forwarded-NPDU. A
+/// failed send is logged through the throttle in
+/// [`ReceiveDrops::forward_failed`].
 async fn send_forwarded_npdu(
-    socket: &UdpSocket,
+    ctx: &RecvContext,
     dest: SocketAddrV4,
     orig_ip: [u8; 4],
     orig_port: u16,
@@ -514,21 +510,23 @@ async fn send_forwarded_npdu(
     let Some(buf) = forwarded_npdu(orig_ip, orig_port, npdu) else {
         return false;
     };
-    match socket.send_to(&buf, dest).await {
+    match ctx.socket.send_to(&buf, dest).await {
         Ok(_) => true,
         Err(e) => {
-            warn!(error = %e, dest = %dest, "Failed to send Forwarded-NPDU");
+            ctx.drops.forward_failed(&e, dest);
             false
         }
     }
 }
 
-/// Forward an NPDU as Forwarded-NPDU to a list of targets.
+/// Forward an NPDU as Forwarded-NPDU to a list of targets, logging a failed
+/// send as [`send_forwarded_npdu`] does. Only a receive context without a
+/// fan-out worker, as in some tests, forwards this way.
 ///
 /// Yields between sends for large target lists to avoid starving the recv loop
 /// when there are many FDT entries (up to 512).
 async fn forward_npdu(
-    socket: &UdpSocket,
+    ctx: &RecvContext,
     npdu: &[u8],
     orig_ip: [u8; 4],
     orig_port: u16,
@@ -545,9 +543,9 @@ async fn forward_npdu(
 
     for (i, &(ip, port)) in targets.iter().enumerate() {
         let dest = SocketAddrV4::new(Ipv4Addr::from(ip), port);
-        if let Err(e) = socket.send_to(&frame, dest).await {
+        if let Err(e) = ctx.socket.send_to(&frame, dest).await {
             all_sent = false;
-            warn!(error = %e, dest = %dest, "Failed to forward NPDU");
+            ctx.drops.forward_failed(&e, dest);
         }
         // Yield every 32 sends to let the recv loop process incoming packets
         if i % 32 == 31 {

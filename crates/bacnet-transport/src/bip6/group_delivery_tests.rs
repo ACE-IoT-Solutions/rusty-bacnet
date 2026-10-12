@@ -57,6 +57,7 @@ async fn receiver() -> (Receiver, mpsc::Receiver<ReceivedNpdu>) {
         foreign_bbmd: None,
         vmac_table: VmacTable::new(),
         forwarded_group_origin_drops: Arc::default(),
+        drops: Arc::default(),
         nak_quota: Default::default(),
         far_ack_quota: Default::default(),
     };
@@ -150,7 +151,7 @@ async fn original_unicast_takes_its_group_flag_from_the_destination() {
     ] {
         let frame = decode_bvll6(&unicast).unwrap();
         receiver
-            .dispatch(frame, &datagram(&unicast, destination, os))
+            .dispatch(frame, sender(), &datagram(&unicast, destination, os))
             .await;
         let npdu = rx.try_recv().expect("dispatch hands the NPDU up");
         assert_eq!(npdu.link_layer_group, group, "{destination} {os:?}");
@@ -264,10 +265,11 @@ async fn a_forwarded_npdu_from_a_multicast_origin_is_dropped_and_counted() {
 /// A Forwarded-NPDU whose NPDU is shorter than an NPDU's version and control
 /// octets is dropped before its origin is looked at, as the old payload
 /// decoder refused it (#1621): not handed up, not learned, and not counted
-/// as a group origin even when it has one. Without a whole address the
-/// codec refuses the frame itself.
+/// as a group origin even when it has one, but as a malformed NPDU (#1643).
+/// Without a whole address the codec refuses the frame itself, as a
+/// malformed payload.
 #[tokio::test]
-async fn a_forwarded_npdu_too_short_for_an_npdu_is_dropped_uncounted() {
+async fn a_forwarded_npdu_too_short_for_an_npdu_is_dropped_before_its_origin() {
     let (receiver, mut rx) = receiver().await;
     let group = Bip6Address::new(BACNET_IPV6_MULTICAST_SITE_LOCAL, 0xBAC0);
     let station = Bip6Address::new("2001:db8::20".parse().unwrap(), 0xBAC0);
@@ -305,6 +307,12 @@ async fn a_forwarded_npdu_too_short_for_an_npdu_is_dropped_uncounted() {
             .load(std::sync::atomic::Ordering::Relaxed),
         0
     );
+    let expected = Bip6ReceiveCounters {
+        malformed_forwarded_npdu: 4,
+        malformed_payload: 1,
+        ..Bip6ReceiveCounters::default()
+    };
+    assert_eq!(receiver.drops.snapshot(), expected);
 }
 
 /// The transport reports the receiver's count.

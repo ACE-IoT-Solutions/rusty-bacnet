@@ -55,6 +55,7 @@ mod ingress;
 mod link;
 mod port;
 mod receive;
+mod receive_counters;
 mod reply_limit;
 mod send;
 mod socket;
@@ -64,12 +65,15 @@ pub use port::{
     BACNET_IPV6_MULTICAST, BACNET_IPV6_MULTICAST_LINK_LOCAL, BACNET_IPV6_MULTICAST_ORG_LOCAL,
     BACNET_IPV6_MULTICAST_SITE_LOCAL, DEFAULT_BACNET6_PORT,
 };
+pub use receive_counters::Bip6ReceiveCounters;
 pub use vmac_table::generate_random_vmac;
 
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
 mod group_delivery_tests;
+#[cfg(test)]
+mod receive_counters_tests;
 #[cfg(test)]
 mod reply_tests;
 #[cfg(test)]
