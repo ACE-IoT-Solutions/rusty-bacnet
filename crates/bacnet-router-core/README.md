@@ -8,6 +8,8 @@ and is meant to join their ports in firmware, and to run under the hosted
 
 - `#![no_std]`, no allocator, no dependencies besides `bacnet-time`.
 - NPDUs are read in place from your frame and written into your buffer.
+- The routing table lives in arrays whose size you pick with const
+  generics.
 - Time is an `Instant` you pass to each call; the crate reads no clock. It
   is `bacnet-time`'s, in nanoseconds, re-exported here, the same type the
   MS/TP and B/IP cores take, so firmware feeds all three one clock.
@@ -25,16 +27,31 @@ a firmware router image come first (#1679).
 - `message`: the network-layer message types and reject reasons, and views
   and writers for the messages' data: network lists, rejects, routing-table
   entries and the rest.
+- `table`: the routing table, sorted by network number, with direct and
+  learned routes, standard and hardened convergence, busy and unreachable
+  marks, a hold-down on reject-driven changes, and aging that keys off
+  confirmation, never traffic.
 
 ## Example
 
 ```rust
 use bacnet_router_core::npdu::{Address, Npdu};
+use bacnet_router_core::table::{Reachability, Table};
+use bacnet_router_core::{Instant, Mac, PortId};
+
+// Network 1 is on port 0; network 9 lies behind router 0x07 on port 1.
+let now = Instant::from_secs(1);
+let mut table: Table<8, 8> = Table::new();
+table.add_direct(1, PortId(0));
+table.learn(9, PortId(1), Mac::from_array([0x07]), now);
 
 // Node 0x0A on network 1 sends an APDU to node 0x05 on network 9.
 let frame = [0x01, 0x20, 0x00, 0x09, 0x01, 0x05, 0xFF, 0x10, 0x08];
 let npdu = Npdu::parse(&frame).unwrap();
-assert_eq!(npdu.destination.unwrap().network, 9);
+let dnet = npdu.destination.unwrap().network;
+let route = table.lookup(dnet).unwrap();
+assert_eq!(route.port, PortId(1));
+assert_eq!(table.effective_reachability(dnet, now), Some(Reachability::Reachable));
 
 // Toward the next router the destination stays, the arrival network and
 // the sender's MAC become the source, and the hop count drops by one.

@@ -2,10 +2,11 @@
 //! hosted router of `bacnet-network`.
 //!
 //! The crate is `no_std` and needs no allocator. NPDUs are read in place
-//! from the caller's frame and written into the caller's buffer, and time is
-//! an [`Instant`] the caller passes to each call that needs one. It reads no
-//! clock and opens no socket, and nothing on a routing decision formats text
-//! or divides a 64-bit value.
+//! from the caller's frame and written into the caller's buffer; the routing
+//! table lives in arrays whose size the caller picks with const generics;
+//! and time is an [`Instant`] the caller passes to each call that needs one.
+//! It reads no clock and opens no socket, and nothing on a routing decision
+//! formats text or divides a 64-bit value.
 //!
 //! [`Instant`] and [`Duration`] are `bacnet-time`'s, in nanoseconds,
 //! re-exported here: the types `bacnet-mstp-core` and `bacnet-bip-core`
@@ -19,6 +20,9 @@
 //! - [`message`]: the network-layer messages a router reads and sends:
 //!   their type codes, the reject reasons, and allocation-free views and
 //!   writers for their payloads.
+//! - [`table`]: the routing table, sorted by network number, with
+//!   learning, the convergence modes, busy and unreachable marks, the
+//!   reject hold-down and aging.
 //!
 //! A port is identified by its index, a [`PortId`]; its MAC is a [`Mac`] of
 //! up to [`MAX_MAC_LEN`] octets.
@@ -34,9 +38,17 @@
 //! | The control octet says which NPCI fields follow, and they follow in one fixed order; a zero DNET, a zero or all-ones SNET and an empty SADR make the NPDU invalid | 6.2, 6.2.2, 6.2.2.1 | `tests/npdu_view.rs`: `view_agrees_with_decode_npdu` |
 //! | A DLEN or SLEN past any data link's address width is told apart from other faults, carrying the DNET and the source a reason-6 reject needs | 6.2.2.2, 6.4.4 | `tests/npdu_view.rs`: `over_long_addresses_carry_what_a_reject_needs` |
 //! | Each network-layer message's payload is read whole or not at all, and written in the layout the clause gives it | 6.4 | `tests/message.rs` |
+//! | The table records, for each network it can reach, the port, the next router (none for a directly attached network), and a state that separates a lasting failure from congestion | 6.6.1 | `tests/table.rs` |
+//! | A later claim of the route to a network supersedes the earlier one | 6.6.3.2 | `tests/table_claims.rs` |
+//! | A reject with reason 1 marks a learned route unreachable, and one with reason 2 marks it busy for a while | 6.6.3.5 | `tests/table_rejects.rs` |
+//! | Flow control holds traffic for the networks named, or for every network the sending router serves when none are named, and lets it go again | 6.6.3.6, 6.6.3.7 | `tests/table_busy.rs` |
+//! | A routing-table update replaces or adds a network's row, and Port ID 0 deletes it | 6.4.7, 6.6.3.8 | `tests/table.rs`: `management_updates_never_touch_direct_routes` |
 //!
-//! Beyond the clause, the view holds addresses to 18 octets, as the hosted
-//! codec does (#1141), tested in the same file.
+//! Rules of this stack beyond the clause, each tested in the same files:
+//! the 18-octet address bound (#1141); direct routes that no learning,
+//! reject or management write changes; a 30-second hold-down per network
+//! and arrival port on reject-driven changes; and hardened convergence,
+//! which waits for a second claim before moving a route to another port.
 //!
 //! # Features
 //!
@@ -48,6 +60,7 @@
 
 pub mod message;
 pub mod npdu;
+pub mod table;
 
 pub use bacnet_time::{Duration, Instant};
 pub use npdu::{Mac, MacTooLong};
