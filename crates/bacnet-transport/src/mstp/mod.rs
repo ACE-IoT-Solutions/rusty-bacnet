@@ -6,15 +6,15 @@
 //! what a host needs around them:
 //!
 //! - [`SerialPort`], the serial I/O the transport runs over: `tokio-serial`,
-//!   kernel RS-485 and GPIO direction control in
-//!   [`mstp_serial`](crate::mstp_serial), and [`LoopbackSerial`] and
-//!   [`NoSerial`] for tests and non-MS/TP builds.
+//!   kernel RS-485 and GPIO direction control in `mstp_serial` (the
+//!   `serial` feature), and [`LoopbackSerial`] and [`NoSerial`] for tests
+//!   and non-MS/TP builds.
 //! - [`MstpTransport`], whose Tokio task drives the core: it feeds every
 //!   received octet to the core, services the core's deadlines with Tokio
 //!   time, and carries out the core's actions (frames to send, NPDUs to
 //!   deliver). The `adapter` module documents the details.
-//! - [`MstpConfig`], mapped onto [`MstpCoreConfig`](bacnet_mstp_core::MstpCoreConfig)
-//!   and validated by the core's rules.
+//! - [`MstpConfig`], mapped onto [`MstpCoreConfig`] and validated by the
+//!   core's rules.
 //! - [`MstpDiagnostics`], the core's counters plus counts kept at the
 //!   transport boundary.
 

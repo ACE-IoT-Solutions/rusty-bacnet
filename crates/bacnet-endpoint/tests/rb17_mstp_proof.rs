@@ -539,7 +539,7 @@ async fn mstp_deferred_after_postponed_dedicated() {
 // addressing/APDU-bound validation is mode-independent and self-contained.
 #[tokio::test]
 async fn mstp_builder_bounds_reject() {
-    // Addressing validation fails fast at composition (mirror MasterNode).
+    // Addressing validation fails fast at composition (MstpConfig::validate).
     let (serial, _peer) = LoopbackSerial::pair();
     assert!(MstpEndpointBuilder::new(serial, 9)
         .max_master(7)
