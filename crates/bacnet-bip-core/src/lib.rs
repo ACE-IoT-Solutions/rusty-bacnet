@@ -8,8 +8,8 @@
 //! runs on firmware and under the Tokio B/IP transport of
 //! `bacnet-transport`, which drives it.
 //!
-//! - [`bbmd`]: a BBMD's two tables (the BDT and the FDT) and foreign-device
-//!   registration (Annex J.4, J.5).
+//! - [`bbmd`]: a BBMD's two tables (the BDT and the FDT), foreign-device
+//!   registration, and where each broadcast is forwarded (Annex J.4, J.5).
 //!
 //! A sans-IO engine for a B/IP node in normal and foreign-device mode will
 //! join it here.
@@ -26,3 +26,8 @@ pub mod bbmd;
 mod time;
 
 pub use time::{Duration, Instant};
+
+/// The README's example, compiled and run as a doctest.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
