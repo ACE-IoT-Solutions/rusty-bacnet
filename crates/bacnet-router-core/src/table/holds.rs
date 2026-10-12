@@ -19,18 +19,17 @@ pub enum RejectEffect {
     HeldDown,
 }
 
-// PR 2: `Hold`, `Table::held_since` and `Table::holds` are public for the
-// tests and for diagnostics; the router engine's API may narrow them.
-
 /// When a reject from one arrival port last changed one network's route.
+/// The crate's own: outside it, the hold-down shows only in what
+/// [`Table::apply_reject`] returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Hold {
+pub(crate) struct Hold {
     /// The network.
-    pub network: u16,
+    pub(crate) network: u16,
     /// The port the reject arrived on.
-    pub port: PortId,
+    pub(crate) port: PortId,
     /// When it was applied.
-    pub since: Instant,
+    pub(crate) since: Instant,
 }
 
 /// Unused pool storage: all zero bits.
@@ -193,13 +192,15 @@ impl<const R: usize, const H: usize> Table<R, H> {
 
     /// When a reject from `port` last changed the route to `network`, while
     /// that record is kept.
-    pub fn held_since(&self, network: u16, port: PortId) -> Option<Instant> {
+    #[cfg(test)]
+    pub(crate) fn held_since(&self, network: u16, port: PortId) -> Option<Instant> {
         self.holds.since(network, port)
     }
 
     /// Every hold-down record, in no particular order. Records for a network
     /// go when it is learned afresh, made direct, removed or aged out.
-    pub fn holds(&self) -> impl Iterator<Item = Hold> + '_ {
+    #[cfg(test)]
+    pub(crate) fn holds(&self) -> impl Iterator<Item = Hold> + '_ {
         self.holds.stored().iter().copied()
     }
 }

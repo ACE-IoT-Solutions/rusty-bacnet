@@ -1,16 +1,82 @@
-//! Counter saturation, which needs the counters set near their limit.
-//! Ported from `bacnet-network`'s `router_table_reject_tests.rs` and
-//! `router_table_corroboration_tests.rs`.
+//! Tests of what only the crate sees: counter saturation, which needs the
+//! counters set near their limit (ported from `bacnet-network`'s
+//! `router_table_reject_tests.rs` and `router_table_corroboration_tests.rs`),
+//! and, in [`rejects`], the hold-down records.
 
-use super::{ClaimCounters, Reachability, Table, Timing};
+mod rejects;
+
+use super::{ClaimCounters, Reachability, Table};
 use crate::{Duration, Instant, Mac, PortId};
 
-type Hosted = Table<256, 1024>;
+use support::{Hosted, BASE, TIMING};
 
-const TIMING: Timing = Timing::DEFAULT;
-
-const BASE: Instant = Instant::from_secs(1_000);
 const MAX: u64 = u64::MAX;
+
+/// What the unit suites share, as `tests/support` does for the others.
+mod support {
+    use std::vec::Vec;
+
+    use crate::table::{Table, Timing};
+    use crate::{Duration, Instant, Mac, PortId};
+
+    /// The hosted router's sizes: 256 routes, 1,024 hold-down records.
+    pub(super) type Hosted = Table<256, 1024>;
+
+    /// The hosted router's timers.
+    pub(super) const TIMING: Timing = Timing::DEFAULT;
+
+    /// An instant well after the epoch, so tests can step back from it.
+    pub(super) const BASE: Instant = Instant::from_secs(1_000);
+
+    /// The default hold-down.
+    pub(super) const HOLD_DOWN: Duration = Duration::from_secs(30);
+
+    /// One nanosecond.
+    pub(super) const NANO: Duration = Duration::from_nanos(1);
+
+    /// `n` seconds.
+    pub(super) const fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    /// A MAC of these octets.
+    pub(super) fn mac(octets: &[u8]) -> Mac {
+        Mac::from_slice(octets).unwrap()
+    }
+
+    /// Port `n`.
+    pub(super) const fn port(n: u8) -> PortId {
+        PortId(n)
+    }
+
+    /// Network 3000 learned through port 0 from MAC `[1]` at [`BASE`].
+    pub(super) fn learned_table() -> Hosted {
+        let mut table = Hosted::new();
+        table.add_learned(3000, port(0), mac(&[1]), BASE);
+        table
+    }
+
+    /// How many hold-down records the table keeps for `network`.
+    pub(super) fn holds_for(table: &Hosted, network: u16) -> usize {
+        table.holds().filter(|hold| hold.network == network).count()
+    }
+
+    /// How many networks have hold-down records.
+    pub(super) fn held_networks(table: &Hosted) -> usize {
+        let mut networks: Vec<u16> = table.holds().map(|hold| hold.network).collect();
+        networks.sort_unstable();
+        networks.dedup();
+        networks.len()
+    }
+
+    /// Every network [`Table::purge_stale`] removes, in its order.
+    pub(super) fn purge(table: &mut Hosted, now: Instant, max_age: Duration) -> Vec<u16> {
+        let mut purged = Vec::new();
+        let count = table.purge_stale(now, max_age, |network| purged.push(network));
+        assert_eq!(count, purged.len());
+        purged
+    }
+}
 
 fn learned(table: &mut Hosted) {
     table.add_learned(3000, PortId(0), Mac::from_array([1]), BASE);

@@ -70,6 +70,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+extern crate std;
+
 pub mod discovery;
 pub mod message;
 pub mod npdu;

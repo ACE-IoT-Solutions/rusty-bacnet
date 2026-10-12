@@ -51,7 +51,7 @@ use core::fmt;
 use crate::{Duration, Instant, Mac, PortId};
 
 pub use claims::{Learned, Refusal};
-pub use holds::{Hold, RejectEffect};
+pub use holds::RejectEffect;
 
 /// How far a route can be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
