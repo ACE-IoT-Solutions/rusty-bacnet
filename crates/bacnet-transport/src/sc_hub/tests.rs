@@ -25,6 +25,13 @@ fn bvlc_result_nak_uses_standard_error_values() {
 }
 
 #[test]
+fn connect_accept_uses_configured_router_receive_limits() {
+    let accept = connect_accept_message(7, [0x11; 6], [0x22; 16], 6208, 2000);
+    assert_eq!(accept.function, ScFunction::ConnectAccept);
+    assert_eq!(&accept.payload[22..], &[0x18, 0x40, 0x07, 0xd0]);
+}
+
+#[test]
 fn connect_request_rejects_hub_vmac_as_duplicate() {
     assert_eq!(
         connect_request_vmac_disposition([0x10; 6], [0x10; 6]),

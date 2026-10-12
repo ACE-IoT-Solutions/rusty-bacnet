@@ -1,9 +1,8 @@
 # SC-to-IP router work plan
 
-Status: R1-R6, R8, R9 and the first R7 slice carried onto the upstream 0.12
+Status: R1-R9 carried onto the upstream 0.12
 baseline on `feature/sc-ip-router-upstream-0.12` (PR #5). Review findings
-H1-H7 are being closed on the current upstream baseline; R7 limit
-configuration and R10 remain open.
+H1-H7 are being closed on the current upstream baseline; R10 remains open.
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
@@ -30,8 +29,9 @@ Let a downstream Python application build a long-lived BACnet/SC-to-BACnet/IP
 router from an installed `ace-rusty-bacnet` wheel, with typed per-port
 configuration, unbounded SC reconnection, per-port health and routing-table
 visibility, correct SC identity, and standards-conformant handling of
-oversize NPDUs, while keeping every change additive so it can be offered
-upstream.
+oversize NPDUs. Fork-only pre-1.0 Python compatibility is intentionally not
+an upstream constraint; portable protocol changes remain independently
+reviewable.
 
 ## Blocking implementation status
 
@@ -44,10 +44,9 @@ wheel, W5, and W14 gates are green. CI execution remains a delivery gate, not
 an implementation gap in the blocking scope.
 
 The implementation now includes dispatch-time oversize-NPDU rejection and
-counters (the first R7 slice), periodic and recovery-triggered
+counters, configurable router-capable SC receive limits (R7), periodic and recovery-triggered
 I-Am-Router-To-Network announcements (R8), and fork wheel publication (R9).
-Explicit SC receive-limit configuration (R7 completion) and multi-arch images
-(R10) remain open. At an SC-to-B/IP boundary, SC-only Data Options are
+Multi-arch images (R10) remain open. At an SC-to-B/IP boundary, SC-only Data Options are
 ignored by B/IP while the NPDU is forwarded; this boundary behavior is not an
 oversize or general Annex AB conformance claim.
 
@@ -274,16 +273,17 @@ data-option, priority, hop-count, and rejection tests.
 
 Crates: `bacnet-transport`, `bacnet-server` (hub).
 
-- [ ] Add `with_max_npdu_length` and `with_max_bvlc_length` builders on
+- [x] Add `with_max_npdu_length` and `with_max_bvlc_length` builders on
       `ScTransport`; validate against `sc_limits` and the u16 fields in
       Connect-Request.
-- [ ] Set the node default Max-NPDU to the Annex AB value already cited in
+- [x] Set the node default Max-NPDU to the Annex AB value already cited in
       `sc_limits.rs` (1497) rather than 1476, and confirm against the
       standard before merging; document the effective APDU budget.
-- [ ] Make the hub's advertised Max-BVLC and Max-NPDU configurable in the
+- [x] Make the hub's advertised Max-BVLC and Max-NPDU configurable in the
       Rust hub and expose them on Python `ScHub`.
-- [ ] Extend `max_apdu_tests.rs` and `test_sc_zero_limits.py` for the new
-      limits and for a B/IP-sized 1476-byte APDU crossing the SC leg intact.
+- [x] Extend the native max-APDU and installed-wheel configuration contracts
+      for the new limits and for a B/IP-sized 1476-byte APDU crossing the SC
+      leg intact.
 
 Acceptance: a 1476-byte APDU with a full routed NPCI forwards from B/IP to SC
 without hitting `send.rs:47`; anything larger is rejected with reason 4.
@@ -292,11 +292,11 @@ without hitting `send.rs:47`; anything larger is rejected with reason 4.
 
 Crates: `bacnet-transport`, `bacnet-runtime`, `bacnet-server`, `rusty-bacnet`.
 
-- [ ] Introduce a single `sc-tls` helper that takes an SC port config
-      (hub URLs, VMAC, UUID, PEM paths, heartbeat, reconnect) and returns a
-      constructed `ScTransport<TlsWebSocket>` using the existing
+- [x] Introduce a single `sc-tls` helper that takes an SC port config
+      (hub URLs, VMAC, UUID, validated TLS policy, heartbeat, reconnect) and
+      returns a constructed `ScTransport<TlsWebSocket>` using the existing
       `select_initial_sc_websocket` failover semantics.
-- [ ] Route `configuration.rs`, `bacnet-server/src/server/sc_builder.rs`, and
+- [x] Route `configuration.rs`, `bacnet-server/src/server/sc_builder.rs`, and
       the Python client and server lifecycles through it without changing
       their behavior.
 - [x] `RuntimeScAttachment`: add required keyword `device_uuid: bytes` with
@@ -319,14 +319,14 @@ Crates: `rusty-bacnet`.
       require at least two ports and at most one B/IP port per interface and
       UDP port. The removed upstream virtual transport and legacy constructor
       are not revived on 0.12.
-- [ ] Consolidate `start()` SC construction through the deferred Phase 5
+- [x] Consolidate `start()` SC construction through the Phase 5
       helper. Current SC dial failures already surface as `RuntimeError`
       naming the port index and hub URL.
 - [x] Add `port_health() -> list[RouterPortHealth]` and
       `routing_table() -> list[RouterRouteEntry]` as awaitables following the
       `port_counters()` stop-aware pattern. The R7 `oversize_drops()` counter
-      is exposed on the router; explicit SC receive-limit configuration
-      remains the Phase 4 work.
+      is exposed on the router; explicit SC receive-limit configuration is
+      completed in Phase 4.
 - [x] Update `rusty_bacnet.pyi` and `docs/python-api.md` for the new surface.
 - [x] Record installed-wheel API-contract/manifest verification; no static
       `test_api_contract_manifest.py` expectation change was required.
@@ -876,8 +876,7 @@ Delivered on `feature/sc-ip-router-upstream-0.12`:
 
 The removed virtual-network transport, legacy virtual-router constructor, and
 old per-port forwarding counters were not restored because the 0.12 native
-router no longer owns those interfaces. R7 size configuration, the shared SC
-dial helper, and R10 remain the next planned slices.
+router no longer owns those interfaces. R10 remains the next planned slice.
 
 The first R7 slice is now delivered: SC exposes its negotiated encoded-NPDU
 ceiling through the defaulted transport hint, and the router rejects an
@@ -886,10 +885,10 @@ and returns Reject-Message-To-Network reason 4 to an addressable originator.
 The exact-limit boundary forwards normally. R8 is also delivered through
 `RouterConfig`, Python `announce_interval_s`, and per-port health watchers:
 the periodic timer waits a full interval, while a non-`Up` to `Up` transition
-immediately re-announces only on the recovered port. Phase 4 remains open for
-explicit node and Hub receive-limit configuration; the upstream 0.12 defaults and its
-existing local 1478-byte NPDU evidence were not replaced by the older plan's
-unverified 1497-byte assumption.
+immediately re-announces only on the recovered port. The integrated Phase 4
+work sets the router-capable node/Hub default to 1497, exposes validated
+Max-NPDU/Max-BVLC overrides, consolidates TLS transport construction, and
+proves a maximum unsegmented 1476-byte B/IP APDU crosses the routed SC leg.
 
 Verification on macOS arm64: `cargo test -p bacnet-transport -p
 bacnet-network -p rusty-bacnet` passed (1,221 transport, 266 network, and 133
@@ -956,9 +955,9 @@ the bare-target router checks use the installed 1.97.1 toolchain.
       transport hint, `oversize_drops`, Reject-Message-To-Network reason 4).
       Phase 3 and Phase 4 items should be ticked to match, with node and hub
       receive-limit configuration left open.
-      Resolved: Phase 3 records both delivered slices, while Phase 4 keeps
-      only explicit node/Hub receive-limit configuration and its boundary
-      evidence open.
+      Resolved: Phase 3 records both delivered slices. The concurrently
+      integrated `4a3a0dc3` completes Phase 4's node/Hub receive-limit
+      configuration and the 1476-byte B/IP-to-SC boundary evidence.
 - [x] **H6 - Rebase before the gap grows again.** Upstream's new commits
       include a no_std B/IP and B/IPv6 BVLL codec (`bacnet-bip-codec`) and
       moved the Tokio transports onto it, a virtual-time MS/TP bus simulator,

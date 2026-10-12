@@ -63,14 +63,10 @@ fn hand_up(
     npdu: &[u8],
     source_mac: MacAddr,
     link_layer_group: bool,
-    function: BvlcFunction,
-    udp_source: ([u8; 4], u16),
-    forwarded_from: Option<([u8; 4], u16)>,
+    provenance: TransportProvenance,
     frame: &'static str,
 ) {
     let npdu = || Bytes::copy_from_slice(npdu);
-    let provenance =
-        TransportProvenance::unverified_bip(function.to_raw(), udp_source, forwarded_from);
     match npdu_channel::hand_up_with_provenance(
         &ctx.npdu_tx,
         npdu,
@@ -148,9 +144,11 @@ pub(super) async fn handle_bvll_message(
                 npdu,
                 source_mac,
                 group,
-                BvlcFunction::ORIGINAL_UNICAST_NPDU,
-                sender,
-                None,
+                TransportProvenance::unverified_bip(
+                    BvlcFunction::ORIGINAL_UNICAST_NPDU.to_raw(),
+                    sender,
+                    None,
+                ),
                 "unicast",
             );
         }
@@ -166,9 +164,11 @@ pub(super) async fn handle_bvll_message(
                 npdu,
                 source_mac,
                 true,
-                BvlcFunction::ORIGINAL_BROADCAST_NPDU,
-                sender,
-                None,
+                TransportProvenance::unverified_bip(
+                    BvlcFunction::ORIGINAL_BROADCAST_NPDU.to_raw(),
+                    sender,
+                    None,
+                ),
                 "broadcast",
             );
 
@@ -231,9 +231,11 @@ pub(super) async fn handle_bvll_message(
                     npdu,
                     source_mac,
                     true,
-                    BvlcFunction::FORWARDED_NPDU,
-                    sender,
-                    Some((orig_ip, orig_port)),
+                    TransportProvenance::unverified_bip(
+                        BvlcFunction::FORWARDED_NPDU.to_raw(),
+                        sender,
+                        Some((orig_ip, orig_port)),
+                    ),
                     "forwarded",
                 );
 
@@ -270,9 +272,11 @@ pub(super) async fn handle_bvll_message(
                     npdu,
                     source_mac,
                     true,
-                    BvlcFunction::FORWARDED_NPDU,
-                    sender,
-                    Some((orig_ip, orig_port)),
+                    TransportProvenance::unverified_bip(
+                        BvlcFunction::FORWARDED_NPDU.to_raw(),
+                        sender,
+                        Some((orig_ip, orig_port)),
+                    ),
                     "forwarded",
                 );
             }
@@ -438,9 +442,11 @@ async fn handle_distribute_broadcast(npdu: &[u8], sender: ([u8; 4], u16), ctx: &
         npdu,
         source_mac,
         true,
-        BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
-        sender,
-        None,
+        TransportProvenance::unverified_bip(
+            BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK.to_raw(),
+            sender,
+            None,
+        ),
         "distributed broadcast",
     );
 

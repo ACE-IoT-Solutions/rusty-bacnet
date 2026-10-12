@@ -155,8 +155,8 @@ async fn accept_sc(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
     let mut payload = Vec::with_capacity(26);
     payload.extend_from_slice(&hub_vmac);
     payload.extend_from_slice(&[0x33; 16]);
-    payload.extend_from_slice(&1476_u16.to_be_bytes());
-    payload.extend_from_slice(&1476_u16.to_be_bytes());
+    payload.extend_from_slice(&5705_u16.to_be_bytes());
+    payload.extend_from_slice(&1497_u16.to_be_bytes());
     let accept = ScMessage {
         function: ScFunction::ConnectAccept,
         message_id: request.message_id,
@@ -303,6 +303,26 @@ async fn bip_and_sc_route_unicast_both_ways_and_global_broadcast() {
     let source = forwarded_sc.source.unwrap();
     assert_eq!(source.network, 1000);
     assert_eq!(source.mac_address, bip_device_mac);
+
+    // A maximum unsegmented B/IP APDU still fits after the router replaces
+    // DNET/DADR with the six-octet B/IP SNET/SADR on the SC leg.
+    let full_bip_apdu = vec![0x55; 1476];
+    let full_bip_to_sc = Npdu {
+        destination: Some(NpduAddress {
+            network: 2000,
+            mac_address: MacAddr::from_slice(&sc_device_vmac),
+        }),
+        hop_count: 7,
+        payload: Bytes::copy_from_slice(&full_bip_apdu),
+        ..Npdu::default()
+    };
+    bip_device
+        .send_unicast(&encode(&full_bip_to_sc), &router_bip_mac)
+        .await
+        .unwrap();
+    let full_forwarded = next_sc_npdu(&sc_hub, &full_bip_apdu).await;
+    assert_eq!(full_forwarded.payload.len(), 1476);
+    assert_eq!(router.oversize_drops(), 0);
 
     let sc_to_bip_apdu = [0x10, 0x08, 0x02];
     let sc_to_bip = Npdu {

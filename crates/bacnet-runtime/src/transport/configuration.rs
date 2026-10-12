@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(feature = "sc")]
+#[cfg(all(test, feature = "sc"))]
 pub(super) fn select_initial_sc_websocket<W>(
     primary: Result<W, bacnet_types::error::Error>,
     has_failover: bool,
@@ -14,7 +14,7 @@ pub(super) fn select_initial_sc_websocket<W>(
     }
 }
 
-#[cfg(feature = "sc")]
+#[cfg(all(test, feature = "sc"))]
 pub(super) fn configure_sc_transport<W: WebSocketPort>(
     ws: InitialScWebSocket<W>,
     sc: &crate::ScConfig,
@@ -336,35 +336,23 @@ impl RuntimeTransport {
                     sc.client_key.as_deref(),
                 )
                 .map_err(|error| RuntimeError::tls_config(config.id, error))?;
-                let primary_url = sc.primary_hub.clone();
-                let ws = select_initial_sc_websocket(
-                    TlsWebSocket::connect(&primary_url, tls.clone()).await,
-                    !sc.failover_hubs.is_empty(),
+                let transport_config = bacnet_transport::sc_tls::ScTlsTransportConfig::new(
+                    &sc.primary_hub,
+                    sc.local_vmac,
+                    sc.device_uuid,
                 )
-                .map_err(|error| RuntimeError::sc_connect(config.id, error))?;
-                let reconnect_primary_url = primary_url.clone();
-                let reconnect_primary_tls = tls.clone();
-                let mut transport = configure_sc_transport(ws, sc).with_connector(move || {
-                    let url = reconnect_primary_url.clone();
-                    let tls = reconnect_primary_tls.clone();
-                    async move {
-                        TlsWebSocket::connect(&url, tls)
-                            .await
-                            .map(InitialScWebSocket::Connected)
-                    }
-                });
-                if let Some(failover_url) = sc.failover_hubs.first().cloned() {
-                    let failover_tls = tls.clone();
-                    transport = transport.with_failover_connector(move || {
-                        let url = failover_url.clone();
-                        let tls = failover_tls.clone();
-                        async move {
-                            TlsWebSocket::connect(&url, tls)
-                                .await
-                                .map(InitialScWebSocket::Connected)
-                        }
-                    });
-                }
+                .with_failover_hub(sc.failover_hubs.first().cloned())
+                .with_heartbeat(sc.heartbeat_interval_ms, sc.heartbeat_timeout_ms)
+                .with_reconnect(Some(ScReconnectConfig {
+                    initial_delay_ms: sc.reconnect_initial_delay_ms,
+                    max_delay_ms: sc.reconnect_max_delay_ms,
+                    max_retries: sc.reconnect_max_retries,
+                    retry_forever: sc.reconnect_forever,
+                }));
+                let transport =
+                    bacnet_transport::sc_tls::connect_sc_transport(transport_config, tls)
+                        .await
+                        .map_err(|error| RuntimeError::sc_connect(config.id, error))?;
                 let connection_state = transport.connection_state_changes();
                 let client = BACnetClient::generic_builder()
                     .transport(transport)

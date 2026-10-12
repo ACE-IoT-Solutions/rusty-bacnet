@@ -1904,6 +1904,8 @@ router = BACnetRouter.from_ports([
         client_key="router.key",
         failover_hub="wss://failover.example:47808",
         reconnect_forever=True,
+        max_npdu_length=1497,
+        max_bvlc_length=5705,
     ),
 ], announce_interval_s=300)
 
@@ -1928,7 +1930,10 @@ nonzero 16-byte device UUID, and nonempty CA/certificate/key paths. Its remainin
 keywords are `failover_hub=None`, `heartbeat_interval_ms=30000`,
 `heartbeat_timeout_ms=60000`, `reconnect_initial_delay_ms=10000`,
 `reconnect_max_delay_ms=600000`, `reconnect_max_retries=10`, and
-`reconnect_forever=False`. With `reconnect_forever=True`, the SC transport alternates
+`reconnect_forever=False`, `max_npdu_length=1497`, and
+`max_bvlc_length=5705`. The NPDU limit must be in `1497..=61327`; the BVLC
+limit must cover that NPDU plus the 16-byte header and 4192 bytes of routed
+Data Options. With `reconnect_forever=True`, the SC transport alternates
 eligible primary/failover attempts with exponential backoff capped by
 `reconnect_max_delay_ms`; a hub result that forbids retry still terminates
 recovery. A zero `reconnect_max_retries` retains its existing bounded meaning
@@ -4212,6 +4217,8 @@ hub = ScHub(
     probe_scan_interval_ms=30000, probe_idle_age_ms=60000,
     probe_ack_age_ms=5000, probe_send_budget_ms=5000,
     relay_send_budget_ms=5000,            # each transit relay acquisition + send
+    max_npdu_length=1497,                 # advertised/enforced receive NPDU
+    max_bvlc_length=5705,                 # header + NPDU + routed Data Options
     broadcast_sender_burst=1024, broadcast_sender_per_second=128,
     broadcast_global_burst=4096, broadcast_global_per_second=512,
 )
@@ -4250,6 +4257,12 @@ retract buffered bytes. Healthy broadcast recipients progress independently.
 Probe, control, cleanup and graceful-shutdown policies remain separate. The
 pre-1.0 unicast-only keyword is removed without an alias; use `relay_send_budget_ms`.
 Outcome counters retain their documented unicast-only scope.
+
+`max_npdu_length` and `max_bvlc_length` are advertised in Connect-Accept and
+also bound WebSocket/BVLC and NPDU ingress. The NPDU value must be in
+`1497..=61327`; the BVLC value must be at least `max_npdu_length + 4208` so an
+SC router can forward the standard's minimum 4192-byte Data Options field.
+The same defaults and validation apply to `RouterScPort`.
 
 Probe and relay values are positive integers in milliseconds, at most
 `2**63 - 1` with platform monotonic representability also checked. Zero/excessive

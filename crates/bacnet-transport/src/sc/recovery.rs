@@ -4,6 +4,23 @@ use super::connector::{dial_failover_ws_result, dial_reconnect_ws};
 use super::*;
 use crate::port::{TransportHealth, TransportHealthState};
 
+async fn publish_connected_ws<W: WebSocketPort>(
+    conn: &Arc<Mutex<ScConnection>>,
+    active_ws: &Arc<Mutex<Arc<W>>>,
+    ws: &Arc<W>,
+    probe_conn: &Arc<Mutex<ScConnection>>,
+    state_tx: &watch::Sender<ScConnectionState>,
+    effective_max_apdu_length: &AtomicU16,
+) {
+    let restored = probe_conn.lock().await.clone();
+    let mut current = active_ws.lock().await;
+    let mut connection = conn.lock().await;
+    *connection = restored;
+    *current = ws.clone();
+    publish_effective_max_apdu_length(effective_max_apdu_length, &connection);
+    state_tx.send_replace(connection.state);
+}
+
 async fn connect_probe_from(conn: &Arc<Mutex<ScConnection>>) -> Arc<Mutex<ScConnection>> {
     Arc::new(Mutex::new(conn.lock().await.connect_probe()))
 }

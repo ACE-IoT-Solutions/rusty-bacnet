@@ -90,6 +90,8 @@ pub(super) struct HubTiming {
     pub(super) origin: Instant,
     pub policy: ScHubProbePolicy,
     pub relay_send_budget: Duration,
+    pub max_bvlc_length: u16,
+    pub max_npdu_length: u16,
 }
 
 impl HubTiming {
@@ -98,6 +100,8 @@ impl HubTiming {
             origin: Instant::now(),
             policy,
             relay_send_budget: Duration::from_secs(5),
+            max_bvlc_length: crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH,
+            max_npdu_length: crate::sc_limits::LOCAL_RECEIVE_NPDU_CAPACITY,
         }
     }
     pub fn now_ms(self) -> u64 {

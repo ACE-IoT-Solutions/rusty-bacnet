@@ -22,12 +22,14 @@ pub(super) fn connect_accept_message(
     message_id: u16,
     hub_vmac: Vmac,
     hub_uuid: DeviceUuid,
+    max_bvlc_length: u16,
+    max_npdu_length: u16,
 ) -> ScMessage {
     let mut payload = Vec::with_capacity(26);
     payload.extend_from_slice(&hub_vmac);
     payload.extend_from_slice(&hub_uuid);
-    payload.extend_from_slice(&super::HUB_MAX_BVLC_LENGTH.to_be_bytes());
-    payload.extend_from_slice(&super::HUB_MAX_NPDU_LENGTH.to_be_bytes());
+    payload.extend_from_slice(&max_bvlc_length.to_be_bytes());
+    payload.extend_from_slice(&max_npdu_length.to_be_bytes());
     ScMessage {
         function: ScFunction::ConnectAccept,
         message_id,

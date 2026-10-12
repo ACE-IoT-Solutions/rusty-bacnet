@@ -1,5 +1,6 @@
 //! Python-composable mixed BACnet/IP and BACnet/SC router.
 
+#[cfg(test)]
 use std::future::Future;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -11,8 +12,7 @@ use bacnet_network::router::{
 };
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
-use bacnet_transport::sc::{ScReconnectConfig, ScTransport};
-use bacnet_transport::sc_tls::TlsWebSocket;
+use bacnet_transport::sc::ScReconnectConfig;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use tokio::sync::{Mutex, Notify};
@@ -403,53 +403,32 @@ async fn build_router_port(
                 ))
             })?;
             let primary_url = config.primary_hub.clone();
-            let initial_dial = sc_dial_with_timeout(
-                SC_CONNECT_TIMEOUT,
-                TlsWebSocket::connect(&primary_url, tls.clone()),
-            )
-            .await;
-            let ws = match initial_dial {
-                Ok(ws) => ws,
-                Err(error) if config.failover_hub.is_some() => {
-                    TlsWebSocket::from_initial_error(error)
-                }
-                Err(error) => {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "router port {config_index} SC hub {primary_url} connection failed: {error}"
-                    )))
-                }
-            };
             let mut vmac = [0; 6];
             vmac.copy_from_slice(&config.local_vmac);
             let mut device_uuid = [0; 16];
             device_uuid.copy_from_slice(&config.device_uuid);
-            let reconnect_url = primary_url.clone();
-            let reconnect_tls = tls.clone();
-            let topology_failover_url = config.failover_hub.clone();
-            let mut transport = ScTransport::new(ws, vmac)
-                .with_device_uuid(device_uuid)
-                .with_hub_urls(&primary_url, topology_failover_url.as_deref())
-                .with_heartbeat_interval_ms(config.heartbeat_interval_ms)
-                .with_heartbeat_timeout_ms(config.heartbeat_timeout_ms)
-                .with_reconnect(ScReconnectConfig {
-                    initial_delay_ms: config.reconnect_initial_delay_ms,
-                    max_delay_ms: config.reconnect_max_delay_ms,
-                    max_retries: config.reconnect_max_retries,
-                    retry_forever: config.reconnect_forever,
-                })
-                .with_connector(move || {
-                    let url = reconnect_url.clone();
-                    let tls = reconnect_tls.clone();
-                    async move { TlsWebSocket::connect(&url, tls).await }
-                });
-            if let Some(failover_url) = config.failover_hub {
-                let failover_tls = tls;
-                transport = transport.with_failover_connector(move || {
-                    let url = failover_url.clone();
-                    let tls = failover_tls.clone();
-                    async move { TlsWebSocket::connect(&url, tls).await }
-                });
-            }
+            let transport_config = bacnet_transport::sc_tls::ScTlsTransportConfig::new(
+                &primary_url,
+                vmac,
+                device_uuid,
+            )
+            .with_failover_hub(config.failover_hub.clone())
+            .with_receive_limits(config.max_npdu_length, config.max_bvlc_length)
+            .with_heartbeat(config.heartbeat_interval_ms, config.heartbeat_timeout_ms)
+            .with_reconnect(Some(ScReconnectConfig {
+                initial_delay_ms: config.reconnect_initial_delay_ms,
+                max_delay_ms: config.reconnect_max_delay_ms,
+                max_retries: config.reconnect_max_retries,
+                retry_forever: config.reconnect_forever,
+            }))
+            .with_initial_dial_timeout(Some(SC_CONNECT_TIMEOUT));
+            let transport = bacnet_transport::sc_tls::connect_sc_transport(transport_config, tls)
+                .await
+                .map_err(|error| {
+                    PyRuntimeError::new_err(format!(
+                        "router port {config_index} SC hub {primary_url} connection failed: {error}"
+                    ))
+                })?;
             MixedTransport::Sc(Box::new(transport))
         }
     };
@@ -459,6 +438,7 @@ async fn build_router_port(
     })
 }
 
+#[cfg(test)]
 async fn sc_dial_with_timeout<T, F>(
     timeout: Duration,
     dial: F,

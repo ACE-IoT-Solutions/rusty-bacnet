@@ -12,8 +12,10 @@ use bacnet_transport::bip::{BipTransport, ForeignDeviceConfig};
 use bacnet_transport::mstp::{MstpConfig as TransportMstpConfig, MstpTransport};
 #[cfg(feature = "mstp")]
 use bacnet_transport::mstp_serial::{SerialConfig, TokioSerialPort};
+#[cfg(all(test, feature = "sc"))]
+use bacnet_transport::sc::WebSocketPort;
 #[cfg(feature = "sc")]
-use bacnet_transport::sc::{ScReconnectConfig, ScTransport, WebSocketPort};
+use bacnet_transport::sc::{ScReconnectConfig, ScTransport};
 #[cfg(feature = "sc")]
 use bacnet_transport::sc_tls::{ScNodeTlsConfig, TlsWebSocket};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
@@ -59,13 +61,13 @@ pub enum RuntimeTransport {
 #[cfg(feature = "sc")]
 #[doc(hidden)]
 pub struct RuntimeScClient {
-    client: BACnetClient<ScTransport<InitialScWebSocket<TlsWebSocket>>>,
+    client: BACnetClient<ScTransport<TlsWebSocket>>,
     connection_state: watch::Receiver<bacnet_transport::sc::ScConnectionState>,
 }
 
 #[cfg(feature = "sc")]
 impl std::ops::Deref for RuntimeScClient {
-    type Target = BACnetClient<ScTransport<InitialScWebSocket<TlsWebSocket>>>;
+    type Target = BACnetClient<ScTransport<TlsWebSocket>>;
 
     fn deref(&self) -> &Self::Target {
         &self.client
@@ -81,7 +83,7 @@ impl std::ops::DerefMut for RuntimeScClient {
 
 /// Preserves the primary/failover roles when the primary TCP/TLS dial fails
 /// before [`ScTransport`] can run its normal initial failover handshake.
-#[cfg(feature = "sc")]
+#[cfg(all(test, feature = "sc"))]
 #[doc(hidden)]
 pub enum InitialScWebSocket<W> {
     /// A successfully established TLS WebSocket.
@@ -90,7 +92,7 @@ pub enum InitialScWebSocket<W> {
     Unavailable(std::sync::Mutex<Option<bacnet_types::error::Error>>),
 }
 
-#[cfg(feature = "sc")]
+#[cfg(all(test, feature = "sc"))]
 impl<W: WebSocketPort> WebSocketPort for InitialScWebSocket<W> {
     async fn send(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
         match self {

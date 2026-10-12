@@ -7,7 +7,7 @@ use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessag
 use super::{LoopbackWebSocket, ScReconnectConfig, ScTransport, WebSocketPort};
 
 #[tokio::test]
-async fn sc_local_receive_accepts_plain_npdu_1478_before_marker() {
+async fn sc_local_receive_accepts_routed_npdu_1497_before_marker() {
     let (node, hub) = LoopbackWebSocket::pair();
     let mut transport = ScTransport::new(node, [1; 6]).with_device_uuid([1; 16]);
     let handshake = tokio::spawn(async move {
@@ -16,7 +16,7 @@ async fn sc_local_receive_accepts_plain_npdu_1478_before_marker() {
     });
     let mut incoming = transport.start().await.unwrap();
     let hub = handshake.await.unwrap();
-    for payload in [vec![0x55; 1478], vec![0x77; 1479], vec![0x66; 3]] {
+    for payload in [vec![0x55; 1497], vec![0x77; 1498], vec![0x66; 3]] {
         let msg = ScMessage {
             function: ScFunction::EncapsulatedNpdu,
             message_id: 9,
@@ -36,8 +36,8 @@ async fn sc_local_receive_accepts_plain_npdu_1478_before_marker() {
         .unwrap();
     assert_eq!(
         received.npdu.len(),
-        1478,
-        "APDU1476 plus plain NPDU2 must fit local receive"
+        1497,
+        "Table 6-1 minimum routed NPDU must fit local receive"
     );
     let marker = tokio::time::timeout(Duration::from_secs(2), incoming.recv())
         .await
@@ -46,7 +46,7 @@ async fn sc_local_receive_accepts_plain_npdu_1478_before_marker() {
     assert_eq!(
         marker.npdu.as_ref(),
         &[0x66; 3],
-        "1479 must be rejected before same-path marker"
+        "1498 must be rejected before same-path marker"
     );
     assert_eq!(transport.local_receive_apdu_capacity(), 1476);
     transport.stop().await.unwrap();
@@ -63,7 +63,7 @@ async fn accept_with_limits(
     assert_eq!(req.function, ScFunction::ConnectRequest);
     assert_eq!(req.payload.len(), 26);
     assert_eq!(u16::from_be_bytes([req.payload[22], req.payload[23]]), 5705);
-    assert_eq!(u16::from_be_bytes([req.payload[24], req.payload[25]]), 1478);
+    assert_eq!(u16::from_be_bytes([req.payload[24], req.payload[25]]), 1497);
 
     let mut payload = Vec::with_capacity(26);
     payload.extend_from_slice(&hub_vmac);
@@ -106,6 +106,62 @@ async fn wait_for_transport_max_apdu_length(
 }
 
 #[tokio::test]
+async fn configured_receive_limits_are_advertised_in_connect_request() {
+    let (node, hub) = LoopbackWebSocket::pair();
+    let mut transport = ScTransport::new(node, [1; 6])
+        .with_device_uuid([1; 16])
+        .with_max_npdu_length(2000)
+        .with_max_bvlc_length(6208);
+    let handshake = tokio::spawn(async move {
+        let data = hub.recv().await.unwrap();
+        let request = decode_sc_message(&data).unwrap();
+        assert_eq!(
+            u16::from_be_bytes([request.payload[22], request.payload[23]]),
+            6208
+        );
+        assert_eq!(
+            u16::from_be_bytes([request.payload[24], request.payload[25]]),
+            2000
+        );
+
+        let mut payload = Vec::with_capacity(26);
+        payload.extend_from_slice(&[0x10; 6]);
+        payload.extend_from_slice(&[0x33; 16]);
+        payload.extend_from_slice(&5705u16.to_be_bytes());
+        payload.extend_from_slice(&1497u16.to_be_bytes());
+        let accept = ScMessage {
+            function: ScFunction::ConnectAccept,
+            message_id: request.message_id,
+            originating_vmac: None,
+            destination_vmac: None,
+            dest_options: Vec::new(),
+            data_options: Vec::new(),
+            payload: Bytes::from(payload),
+        };
+        let mut encoded = BytesMut::new();
+        encode_sc_message(&mut encoded, &accept);
+        hub.send(&encoded).await.unwrap();
+    });
+
+    let _incoming = transport.start().await.unwrap();
+    handshake.await.unwrap();
+    transport.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_router_receive_limits_fail_before_handshake() {
+    for (npdu, bvlc) in [(1496, 5705), (1497, 5704), (61_328, u16::MAX)] {
+        let (node, _hub) = LoopbackWebSocket::pair();
+        let mut transport = ScTransport::new(node, [1; 6])
+            .with_device_uuid([1; 16])
+            .with_max_npdu_length(npdu)
+            .with_max_bvlc_length(bvlc);
+        let error = transport.start().await.unwrap_err();
+        assert!(error.to_string().contains("SC router max"));
+    }
+}
+
+#[tokio::test]
 async fn sc_max_apdu_length_accounts_for_sc_and_npdu_headers() {
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let hub_vmac = [0x10; 6];
@@ -131,8 +187,8 @@ async fn sc_max_apdu_length_reflects_negotiated_hub_npdu_limit() {
     let (ws_client, ws_hub) = LoopbackWebSocket::pair();
     let hub_vmac = [0x10; 6];
     let mut transport = ScTransport::new(ws_client, [0x01; 6]).with_device_uuid([1; 16]);
-    assert_eq!(transport.egress_apdu_limit(), 1476);
-    assert_eq!(transport.max_npdu_length(), Some(1478));
+    assert_eq!(transport.egress_apdu_limit(), 1495);
+    assert_eq!(transport.max_npdu_length(), Some(1497));
 
     let hub_task = tokio::spawn(async move {
         accept_with_limits(&ws_hub, hub_vmac, 1200, 480).await;

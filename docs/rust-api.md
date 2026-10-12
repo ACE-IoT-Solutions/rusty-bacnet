@@ -675,10 +675,11 @@ byte budgets or I-Am values. It is separate from the exact-code encoder API.
 Built-in B/IP, B/IPv6, Ethernet and SC declare local APDU 1476; MS/TP declares 480,
 or 1476 with extended frames on (`MstpConfig::extended_frames`).
 Both registered B/IP port snapshots use local capacity independently of the
-Device/server ceiling. SC nodes advertise and enforce local NPDU 1478, including
-the two-byte plain NPDU header, on Hub, accepted-direct and outbound-direct
-intake. Complete BVLC bounds, remote/path limits, routed overhead and the Hub's
-forwarding capacity remain independent. These APIs are new in
+Device/server ceiling. SC nodes advertise and enforce a router-capable local
+NPDU of 1497 by default on Hub, accepted-direct and outbound-direct intake;
+the validated node and Hub receive-limit builders can raise it. Complete BVLC
+bounds, remote/path limits, routed overhead and the Hub's forwarding capacity
+remain independent. These APIs are new in
 0.12.0; this bounded evidence is not a full Annex AB or hardware qualification.
 
 ### Feature Flags
@@ -1306,6 +1307,7 @@ use bacnet_transport::sc_hub::{ScHub, ScHubHandshakeTimeouts, ScHubTlsConfig};
 // Owned, already loaded DER: Vec<CertificateDer<'static>> for both lists,
 // and PrivateKeyDer<'static> for hub_key. File loading belongs to the caller.
 let tls = ScHubTlsConfig::from_der(ca_certs, hub_cert_chain, hub_key)?;
+let tls = tls.with_receive_limits(1497, 5705)?;
 let mut hub = ScHub::start_with_tls_config(
     listen_addr, tls, hub_vmac, hub_uuid, ScHubHandshakeTimeouts::default(),
 ).await?;
@@ -1313,6 +1315,20 @@ let addr = hub.local_addr().expect("started hub has a bound address");
 // ... use the hub ...
 hub.stop().await;
 ```
+
+`ScTransport::with_max_npdu_length` and `with_max_bvlc_length` configure the
+corresponding Connect-Request fields. `ScHubTlsConfig::with_receive_limits`
+does the same for Connect-Accept and hub ingress. Router-capable configurations
+require Max-NPDU in `1497..=61327` and Max-BVLC of at least Max-NPDU + 16 bytes
+of header + 4192 bytes of Data Options. Defaults are 1497 and 5705. Local APDU
+receive capacity remains 1476; the default encoded-NPDU egress budget before
+peer negotiation is 1497 (1495 for an APDU behind the minimal two-byte NPCI).
+
+`sc_tls::connect_sc_transport(ScTlsTransportConfig, ScNodeTlsConfig)` is the
+shared TLS construction path for native client/server builders, runtime and
+Python lifecycles, and typed router ports. It preserves a failed initial primary
+dial for transport-level failover, and installs the primary/failover reconnect
+connectors from the same immutable configuration.
 
 The SC hub is a TLS WebSocket relay. Both clients and servers connect to it as spoke nodes. Messages are routed by VMAC address.
 

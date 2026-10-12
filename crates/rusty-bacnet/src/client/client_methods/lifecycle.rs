@@ -157,18 +157,17 @@ impl BACnetClient {
                     )
                     .map_err(|e| PyRuntimeError::new_err(format!("TLS config error: {e}")))?;
 
-                    let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&hub_url, tls_config)
+                    let interval = sc_heartbeat_interval_ms.unwrap_or(30_000);
+                    let timeout = sc_heartbeat_timeout_ms.unwrap_or(60_000);
+                    let config = bacnet_transport::sc_tls::ScTlsTransportConfig::new(
+                        hub_url,
+                        vmac,
+                        sc_device_uuid,
+                    )
+                    .with_heartbeat(interval, timeout);
+                    let sc = bacnet_transport::sc_tls::connect_sc_transport(config, tls_config)
                         .await
                         .map_err(to_py_err)?;
-
-                    let mut sc = bacnet_transport::sc::ScTransport::new(ws, vmac)
-                        .with_device_uuid(sc_device_uuid);
-                    if let Some(ms) = sc_heartbeat_interval_ms {
-                        sc = sc.with_heartbeat_interval_ms(ms);
-                    }
-                    if let Some(ms) = sc_heartbeat_timeout_ms {
-                        sc = sc.with_heartbeat_timeout_ms(ms);
-                    }
                     AnyTransport::Sc(Box::new(sc))
                 }
                 "mstp" => crate::mstp_py::build_mstp_transport(
