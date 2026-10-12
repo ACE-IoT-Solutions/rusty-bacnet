@@ -2,9 +2,9 @@
 
 `rusty_bacnet` provides Python bindings for the Rust BACnet protocol stack via PyO3. All I/O operations are async (`asyncio`-based).
 
-This reference follows the `dev` branch. At the `v0.12.0` tag it describes the
-[published 0.12.0 package](https://pypi.org/project/rusty-bacnet/0.12.0/), which
-the site's tutorials also target; see the [installation guidance](../README.md#install).
+This reference follows the fork's development branch. Fork releases use the
+`ace-rusty-bacnet` distribution in the private ACE index while retaining the
+`rusty_bacnet` import; see the [installation guidance](../README.md#install).
 Changes merged after the release wait in [`changelog.d/`](../changelog.d/); to
 use them, follow [Build from source](../README.md#build-from-source).
 
@@ -34,10 +34,10 @@ that yields a notification or raises `StopAsyncIteration` when the channel close
 
 ## Installation
 
-Install the published 0.12.0 package with:
+Install the latest private fork package with:
 
 ```bash
-pip install "rusty-bacnet==0.12.0"
+pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ ace-rusty-bacnet
 ```
 
 Wheels cover CPython 3.11 to 3.14 on Linux (glibc 2.17 or newer; x86_64,
@@ -1956,6 +1956,13 @@ advertisements; `None` retains startup-only periodic behavior. A port recovery
 to `Up` re-announces on that port even when no interval is configured.
 Oversize-NPDU rejection is active in the native router, while its
 `oversize_drops` counter is not yet part of the Python surface.
+
+This is an intentional pre-1.0 API removal. Code using
+`BACnetRouter(bip_network, virtual_ports, ...)`, `RouterVirtualPort`, or the
+old per-port forwarding counters must migrate to `from_ports()` with
+`RouterBipPort` and `RouterScPort`, then use `port_health()` and
+`routing_table()` for operational state. No compatibility constructor is
+provided on the 0.12 line.
 
 BACnet/SC Data Options are carried on SC-capable sends. At an SC-to-B/IP router
 boundary they are intentionally ignored by the B/IP egress transport because

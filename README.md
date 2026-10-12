@@ -6,7 +6,7 @@ explore protocol behavior in a local lab. It targets ASHRAE Standard 135-2020.
 It isn't BTL certified; [Conformance](#conformance) explains what is covered.
 
 [![crates.io](https://img.shields.io/crates/v/bacnet-client.svg)](https://crates.io/crates/bacnet-client)
-[![PyPI](https://img.shields.io/pypi/v/rusty-bacnet.svg)](https://pypi.org/project/rusty-bacnet/)
+[![Python package](https://img.shields.io/badge/python-ace--rusty--bacnet-blue.svg)](https://ace-pypi.tail8c70f.ts.net/simple/ace-rusty-bacnet/)
 [![docs.rs](https://img.shields.io/docsrs/bacnet-client)](https://docs.rs/bacnet-client)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -65,10 +65,11 @@ Windows (x86_64).
 ### Python
 
 ```bash
-python -m pip install rusty-bacnet
+python -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ ace-rusty-bacnet
 ```
 
-This needs Python 3.11 or newer. The import name is `rusty_bacnet`. Wheels are
+This fork package needs Python 3.11 or newer. Its distribution name is
+`ace-rusty-bacnet`; the import name remains `rusty_bacnet`. Wheels are
 published for CPython 3.11–3.14 on Linux (glibc 2.17 or newer; x86_64,
 aarch64), macOS (x86_64 on 10.12 or later, arm64 on 11.0 or later) and Windows
 (x64). Every wheel includes BACnet/IPv6, BACnet/SC and MS/TP. On any other

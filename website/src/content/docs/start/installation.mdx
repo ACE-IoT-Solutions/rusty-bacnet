@@ -129,7 +129,7 @@ cargo install --path crates/bacnet-cli --locked --features sc-tls
 
 The ACE package is named `ace-rusty-bacnet`; the import is `rusty_bacnet`. It does **not** install the documented `bacnet` CLI executable.
 
-The package minimum is Python 3.11. The release publishes a wheel for each of CPython **3.11, 3.12, 3.13, and 3.14** on each of these platforms, to PyPI and to the GitHub release:
+The package minimum is Python 3.11. The release publishes a wheel for each of CPython **3.11, 3.12, 3.13, and 3.14** on each of these platforms, to the private ACE index and to the GitHub release:
 
 | Platform | Wheel platform tag | Runs on |
 |---|---|---|
@@ -152,7 +152,7 @@ Check that `python3` is an appropriate interpreter, then create a local environm
 
 <Code lang="sh" code={`python3 --version
 python3 -m venv .venv
-.venv/bin/python -m pip install --only-binary=:all: rusty-bacnet==${release}`} />
+.venv/bin/python -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --only-binary=:all: ace-rusty-bacnet==${release}`} />
 
 Verify that the native module loads, not just that package metadata exists:
 
@@ -168,7 +168,7 @@ Verify that the native module loads, not just that package metadata exists:
 This example explicitly selects Python 3.13. Use an installed, supported interpreter:
 
 <Code lang="powershell" code={String.raw`py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --only-binary=:all: rusty-bacnet==${release}`} />
+.\.venv\Scripts\python.exe -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --only-binary=:all: ace-rusty-bacnet==${release}`} />
 
 ```powershell
 .\.venv\Scripts\python.exe -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('ace-rusty-bacnet'))"
@@ -189,7 +189,7 @@ The command prints <code>{release}</code> without an import or shared-library er
 
 `--only-binary=:all:` deliberately prevents an unexpected native source build. Check the interpreter version, operating system, architecture, and configured package index. A missing wheel is not a BACnet network failure.
 
-The release also publishes a source distribution, <code>rusty_bacnet-{release}.tar.gz</code>, but installing from it is a different installation path: it builds the native extension, so it needs Rust and the native prerequisites for the release's PyO3/Maturin build. Review the <a href={`${repository}/blob/v${release}/crates/rusty-bacnet/pyproject.toml`}>Python packaging source</a> before choosing it. Do not silently drop the binary-only option and call that an equivalent install.
+The release also publishes a source distribution, <code>ace_rusty_bacnet-{release}.tar.gz</code>, but installing from it is a different installation path: it builds the native extension, so it needs Rust and the native prerequisites for the release's PyO3/Maturin build. Review the <a href={`${repository}/blob/v${release}/crates/rusty-bacnet/pyproject.toml`}>Python packaging source</a> before choosing it. Do not silently drop the binary-only option and call that an equivalent install.
 
 <NextStep href="/rusty-bacnet/start/local-lab/" label="Try the local client/server lab" description="Read an example point without a physical controller or building network." />
 
@@ -221,11 +221,11 @@ The <a href={`${repository}/blob/v${release}/.github/workflows/release.yml`}>rel
 
 - **The GitHub release** (<a href={`${repository}/releases/tag/v${release}`}>v{release}</a>):
   - five CLI executables: `bacnet-linux-amd64`, `bacnet-linux-arm64`, `bacnet-macos-amd64`, `bacnet-macos-arm64` and `bacnet-windows-amd64.exe`;
-  - twenty Python wheels, <code>rusty_bacnet-{release}-cp3XY-cp3XY-PLATFORM.whl</code>: one per CPython 3.11, 3.12, 3.13 and 3.14 (`cp311` to `cp314`) per platform tag in the Python table;
-  - the Python source distribution, <code>rusty_bacnet-{release}.tar.gz</code>;
+  - twenty Python wheels, <code>ace_rusty_bacnet-{release}-cp3XY-cp3XY-PLATFORM.whl</code>: one per CPython 3.11, 3.12, 3.13 and 3.14 (`cp311` to `cp314`) per platform tag in the Python table;
+  - the Python source distribution, <code>ace_rusty_bacnet-{release}.tar.gz</code>;
   - `THIRD-PARTY-NOTICES`, the license texts of Rusty BACnet and of the third-party code built into the executables and wheels;
   - `SHA256SUMS`, the SHA-256 of each of those files.
-- **PyPI**: the same wheels and source distribution, as the [rusty-bacnet](https://pypi.org/project/rusty-bacnet/) package.
+- **ACE private index**: the CPython 3.13 wheels and repaired source distribution, as `ace-rusty-bacnet`.
 - **crates.io**: the fourteen crates listed under Rust, all at version {release}.
 
 To check a wheel or the source distribution downloaded from the GitHub release, use your system's command from the CLI tabs with that file's name.

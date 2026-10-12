@@ -21,7 +21,7 @@ Start here when your goal is to identify a device, read a point, or collect diag
 
 ## Automate with Python
 
-Choose Python for scripts, data collection, integration prototypes, or a small test device. The distribution is `rusty-bacnet`; the Python import is `rusty_bacnet`. The binding uses asynchronous I/O.
+Choose Python for scripts, data collection, integration prototypes, or a small test device. The fork distribution is `ace-rusty-bacnet`; the Python import is `rusty_bacnet`. The binding uses asynchronous I/O.
 
 [Read a property with Python](/rusty-bacnet/start/python/) shows a complete script and explains the network assumptions. Python 3.11 or later is the declared minimum; an installable wheel for your exact interpreter and platform is a separate question.
 

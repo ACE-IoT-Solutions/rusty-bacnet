@@ -18,7 +18,7 @@ Record your current package/binary version, enabled features, platform, transpor
 In a Python virtual environment:
 
 ```sh
-python -m pip install --upgrade rusty-bacnet==0.12.0
+python -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --upgrade ace-rusty-bacnet
 ```
 
 For Rust, move every `bacnet-*` dependency to `0.12.0` together; all eleven crates share the version, and `bacnet-endpoint` and `bacnet-cli` are new on crates.io. For the CLI, [download the v0.12.0 executable](/rusty-bacnet/start/installation/#install-a-cli-executable), check it against `SHA256SUMS`, and confirm its version and features.

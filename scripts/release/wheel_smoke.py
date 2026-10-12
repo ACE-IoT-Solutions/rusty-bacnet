@@ -110,12 +110,12 @@ def main(argv=None):
 
     import rusty_bacnet as rb
 
-    installed = importlib.metadata.version("rusty-bacnet")
+    installed = importlib.metadata.version("ace-rusty-bacnet")
     print(f"rusty_bacnet {installed} from {rb.__file__}")
     print(f"Python {platform.python_version()} ({sys.implementation.name}) on {platform.platform()},"
           f" {platform.machine()}")
     if installed != pep440(args.version):
-        raise SystemExit(f"the installed rusty-bacnet is {installed}, not {pep440(args.version)}")
+        raise SystemExit(f"the installed ace-rusty-bacnet is {installed}, not {pep440(args.version)}")
     check_serial_ports(rb)
     asyncio.run(round_trip(rb))
     print("wheel smoke test passed")
