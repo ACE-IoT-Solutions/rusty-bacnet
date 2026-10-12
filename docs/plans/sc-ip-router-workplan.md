@@ -2,7 +2,7 @@
 
 Status: R1-R9 carried onto the upstream 0.12
 baseline on `feature/sc-ip-router-upstream-0.12` (PR #5). Review findings
-H1-H7 are being closed on the current upstream baseline; R10 remains open.
+H1-H7 are closed on the current upstream baseline; R10 remains open.
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
@@ -923,11 +923,13 @@ the bare-target router checks use the installed 1.97.1 toolchain.
       correcting the runtime mapping so `reconnect_forever` populates
       `retry_forever` without replacing the configured retry budget. The
       review's full workspace command now passes, including doctests.
-- [ ] **H2 - PR #5 gets no CI.** It targets `fix/sc-router-review-closeout`,
+- [x] **H2 - PR #5 gets no CI.** It targets `fix/sc-router-review-closeout`,
       and the workflow runs pull requests only against `dev` and `main`. No
       run exists for the branch. Retarget PR #5 at `main` (or stack it on PR
       #4 and merge that first) so the matrix, the no_std checks and the
       Python wheel job actually execute.
+      Resolved by retargeting PR #5 directly to `main`; the branch now meets
+      the workflow's pull-request base filter and has a full CI run.
 - [x] **H3 - The fork release pipeline was lost in the merge.**
       `crates/rusty-bacnet/pyproject.toml` is back to `name = "rusty-bacnet"`
       at 0.12.0, the `ace-pypi` index block and the `publish-private-pypi`
@@ -971,11 +973,14 @@ the bare-target router checks use the installed 1.97.1 toolchain.
       extended-frame `MasterCore` and caller-owned action buffers. The merge
       also retained the fork's B/IP envelope provenance and contextual router
       startup errors across upstream's newer bounded ingress path.
-- [ ] **H7 - Upstream now owns the router adapters' B/IP side.** Issues
+- [x] **H7 - Upstream now owns the router adapters' B/IP side.** Issues
       #1622 (sans-IO B/IP node engine) and #1623 (BBMD tables and forwarding
       as a portable core) describe what `bacnet-router-adapters` does on
       the B/IP leg. Keep the adapters fork-provisional and point those issues
       at them rather than extending them further.
+      Resolved by marking both router crates `publish = false`, documenting
+      their provisional status, and linking PR #5 as reference evidence from
+      upstream issues #1622 and #1623.
 
 ## Out of scope
 
