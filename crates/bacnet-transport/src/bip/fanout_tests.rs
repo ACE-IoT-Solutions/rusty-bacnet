@@ -474,6 +474,7 @@ async fn dbtn_delivers_local_subnet_broadcast_under_tight_fanout_budget() {
         fanout: Some(fanout_dispatcher),
         force_dbtn_forward_failure: false,
         group_sources: super::groups::GroupSources::detached(),
+        drops: Arc::default(),
     };
 
     let sender = (Ipv4Addr::LOCALHOST.octets(), origin_fd_port);

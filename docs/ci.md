@@ -6,7 +6,7 @@ GitHub-hosted runners, the [release](#release) included.
 
 | Host | Runs |
 | --- | --- |
-| GitHub (hosted runners) | Linux CI, [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); [native macOS and Windows tests](#native-tests-macos-and-windows), [`native-tests.yml`](../.github/workflows/native-tests.yml); the nightly [flake hunt](#flake-hunt), [`flake-hunt.yml`](../.github/workflows/flake-hunt.yml); website validation and the GitHub Pages deploy, [`docs-pages.yml`](../.github/workflows/docs-pages.yml); [releases](#release), built and tested on each platform and published to crates.io, PyPI and GitHub Releases, [`release.yml`](../.github/workflows/release.yml) |
+| GitHub (hosted runners) | Linux CI, [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); [native macOS and Windows tests](#native-tests-macos-and-windows), [`native-tests.yml`](../.github/workflows/native-tests.yml); the nightly [flake hunt](#flake-hunt), [`flake-hunt.yml`](../.github/workflows/flake-hunt.yml); [fuzzing](#fuzzing) of the MS/TP and B/IP codecs, [`fuzz.yml`](../.github/workflows/fuzz.yml); website validation and the GitHub Pages deploy, [`docs-pages.yml`](../.github/workflows/docs-pages.yml); [releases](#release), built and tested on each platform and published to crates.io, PyPI and GitHub Releases, [`release.yml`](../.github/workflows/release.yml) |
 
 | Platform | Where it is checked |
 | --- | --- |
@@ -22,8 +22,8 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
-| Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins) | ✓ | ✓ | ✓ | ✓ |
-| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator and checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
+| Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
+| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator, and the APDU image with one, checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`); also the [`no_std` crates](#no_std-checks)' tests and doctests with `alloc` and without `std` | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`), the `no_std` builds included |  | ✓ |  | ✓ |
@@ -152,7 +152,7 @@ proves all of that; each check covers a part.
 | `cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets` | Clippy | The three crates' tests with `alloc` and without `std`, which the Test job runs, are lint-clean too |
 | The `alloc` tests and doctests | Test | The three crates' tests and doctests with `alloc` and without `std`: the code a bare-metal build compiles. The tests link `std`; `check-no-std.sh` shows the code needs none |
 | `scripts/ci/check-msrv.sh` | MSRV | The three crates with `alloc` and without `std` build at the MSRV, in a run of their own, since the hosted crates turn `std` back on in the main run |
-| [Firmware link test](#firmware-link-test) | Clippy, `FIRMWARE_TARGETS` | The MS/TP and B/IP stacks link into bare-metal images with no allocator, within their size budgets |
+| [Firmware link test](#firmware-link-test) | Clippy, `FIRMWARE_TARGETS` | The MS/TP and B/IP stacks link into bare-metal images with no allocator, and `bacnet-encoding` and `bacnet-services` into one with an allocator, each within its size budget |
 
 **ARMv6-M and `bytes`.** `bytes` needs atomic compare-and-swap, which
 `thumbv6m-none-eabi` lacks. With its `extra-platforms` feature it takes that
@@ -176,7 +176,9 @@ test and the harness's target table both generalised.
 - **No critical-section implementation.** Clippy doesn't link, so the
   harness provides none. A firmware that links these crates on ARMv6-M picks
   its own backend and, for `critical-section`, links an implementation such
-  as `cortex-m`'s `critical-section-single-core`.
+  as `cortex-m`'s `critical-section-single-core`. The
+  [firmware link test](#firmware-link-test)'s apdu image links one of its
+  own, and its link fails without it.
 - **Workspace.** Like the [firmware link test](#firmware-link-test), the
   harness is a workspace member outside `default-members`. On a host it is an
   empty `no_std` crate with no dependencies, so host builds, clippy, rustdoc
@@ -197,19 +199,26 @@ cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-defa
 ### Firmware link test
 
 `check-no-std.sh` runs clippy on the `no_std` crates, and clippy never links.
-The firmware link test (#1626) does. `firmware/link` (the `firmware-link`
-crate, `publish = false`) builds two `#![no_main]` bare-metal images with no
-global allocator, one per stack, because code can't be credited to a crate
+The firmware link test (#1626, #1635) does. `firmware/link` (the
+`firmware-link` crate, `publish = false`) builds three `#![no_main]`
+bare-metal images, one per stack, because code can't be credited to a crate
 reliably within one LTO image:
 
 - `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
-  features, plus the core's `heapless` queues);
+  features, plus the core's `heapless` queues), with no global allocator;
 - `bip` links `bacnet-bip-codec` (default features, plus its `heapless`
-  sink), both its B/IP and its B/IPv6 messages.
+  sink), both its B/IP and its B/IPv6 messages, with no global allocator;
+- `apdu` links `bacnet-encoding` and `bacnet-services` (and through them
+  `bacnet-types`) without default features and with `alloc`, the way a
+  firmware uses them, with a global allocator over a fixed arena.
 
-A use of `alloc` anywhere in an image fails its build with "no global memory
-allocator found", and a symbol that only a hosted target provides fails the
-link.
+A use of `alloc` anywhere in `mstp` or `bip` fails its build with "no global
+memory allocator found". In any image, a symbol that only a hosted target
+or the firmware provides fails the link: an atomic library call, or a
+critical section that nothing implements. A compare-and-swap on ARMv6-M or
+RV32IMC fails earlier, at compile time: `core` has no such method on those
+targets, so a crate that needs one builds only with a backend such as
+`portable-atomic`'s.
 
 - **The scenarios.** Each image's scenario is one `no_std` function in the
   crate's lib that returns a summary of what it saw:
@@ -234,14 +243,65 @@ link.
     Annex U.2 layouts, a Forwarded-NPDU's origin, and B/IPv6 rejections,
     among them a B/IP type octet, the deleted function 0x0B and an
     address of the wrong length.
+  - `apdu::run` follows a client that finds a device behind a router and
+    reads its analog input: a Who-Is, the device's I-Am as the router
+    passes it on, a ReadProperty request for Present_Value and the
+    ComplexACK that answers it. It encodes each message's service
+    parameters, APDU and NPDU into `BytesMut` buffers, compares the NPDU
+    with a datagram written by hand from the Clause 6 and 20.1 layouts, and
+    decodes it back through all three layers. It also decodes each
+    hand-written datagram from a heap copy and keeps what it carries, and
+    decodes the ACK's value. Then it takes rejection paths: an NPDU of
+    protocol version 2, and on encode an NPDU to DNET 0 and an APDU size
+    the header can't express, each with the error kind it should draw; and
+    five malformed APDUs and service parameters, for each of which it
+    records how the library classifies the fault, the Reject reason the
+    error maps to. Two of them, a Who-Is and an I-Am, are unconfirmed, so
+    no Reject would be sent for them.
 
-  The host tests `firmware/link/tests/mstp.rs` and `tests/bip.rs` run them
-  and compare each whole summary, so the behaviour is checked natively, in
-  every `--workspace` test run on Linux, macOS and Windows. Each image's
-  reset entry calls its scenario, passing the inputs and the summary
-  through `core::hint::black_box`. Nothing runs the images, under an
-  emulator or otherwise: building them proves that they link, and measures
-  them.
+  The host tests `firmware/link/tests/mstp.rs`, `tests/bip.rs` and
+  `tests/apdu.rs` run them and compare each whole summary, so the
+  behaviour is checked natively, in every `--workspace` test run on Linux,
+  macOS and Windows. Each image's reset entry calls its scenario, passing
+  the inputs and the summary through `core::hint::black_box`. Nothing runs
+  the images, under an emulator or otherwise: building them proves that
+  they link, and measures them.
+- **The apdu image's allocator and atomics.** A library never chooses
+  these; the image does, as a firmware would, and only on bare-metal
+  targets (a host build uses std's allocator):
+  - **Allocator:** `embedded-alloc`'s linked-list first fit (`LlffHeap`,
+    without its TLSF allocator) over a static arena of
+    `firmware_link::apdu::ARENA` octets, 1 KiB. `tests/apdu.rs` runs the
+    scenario a second time in that allocator (`linked_list_allocator`, which
+    `LlffHeap` wraps) over an arena of the same size, and checks that it
+    fits, succeeds, frees everything and peaks at no more than half the
+    arena; its peak, which nextest prints, is 312 octets on a 64-bit host,
+    whose blocks are no smaller than a 32-bit target's.
+  - **Critical section:** the allocator locks its heap with one, on every
+    target, and both kinds suit a part with one core: they mask interrupts
+    and put back the mask they found. On RISC-V the image takes `riscv`'s
+    `critical-section-single-hart`. On Cortex-M it implements its own with
+    PRIMASK, as `cortex-m`'s `critical-section-single-core` does, because
+    `cortex-m` depends on the unmaintained `bare-metal`
+    (RUSTSEC-2026-0110), which Cargo Deny refuses. PRIMASK leaves NMI and
+    HardFault unmasked, so their handlers must stay out of critical
+    sections; the image's default handlers only loop.
+  - **Atomics:** `bytes` needs compare-and-swap, which ARMv6-M and RV32IMC
+    lack. On targets without it (`cfg(not(target_has_atomic = "ptr"))`), the
+    image turns on `bytes`' `extra-platforms` feature and
+    `portable-atomic`'s `critical-section` backend, as
+    `firmware/nostd-harness` does for the lint, and the same critical
+    section serves both. Nothing links an atomic library call: on ARMv6-M,
+    `bytes`' reference counts compile to that critical section around a
+    plain load and store.
+
+  Without the global allocator the image fails to build with "no global
+  memory allocator found"; without the critical section it fails to link,
+  missing `_critical_section_1_0_acquire` and `_release`. Its `unsafe`
+  code beyond the runtimes' is the call that hands the allocator its arena
+  and the Cortex-M critical section. The allocator and the critical section
+  add three packages to `Cargo.lock`: `embedded-alloc`,
+  `linked_list_allocator` and, for the host test's lock, `spinning_top`.
 - **Targets.** `thumbv7m-none-eabi` (Cortex-M3), `thumbv6m-none-eabi`
   (Cortex-M0/M0+) and `riscv32imc-unknown-none-elf` (RV32IMC, the ESP32-C3
   class), in `FIRMWARE_TARGETS` in `ci.yml`. They share one generic memory
@@ -255,20 +315,31 @@ link.
   setting and these targets' default. Were that ever to change, the worst
   case is a panic that aborts, which is what happens today. cortex-m-rt
   already drops ARM's unwind tables. The images' only `unsafe` code is in the runtimes' entry
-  macros and, on RISC-V, one block per image that borrows its statics, which
-  cortex-m-rt's macro does safely.
+  macros; on RISC-V, one block in each of `mstp` and `bip` that borrows its
+  statics, which cortex-m-rt's macro does safely; and the apdu image's
+  hand-over of its arena and its Cortex-M critical section.
 - **Workspace.** The crate is a workspace member outside `default-members`,
   like the [samples](#samples). It shares `Cargo.lock`, so Cargo Deny and
-  Cargo Audit cover the runtime crates; it follows `[workspace.lints]`; and it
+  Cargo Audit cover the runtime crates and the apdu image's allocator; it
+  follows `[workspace.lints]`; and it
   builds with the root `Cargo.toml`'s `firmware` profile (release with
   `opt-level = "z"`, LTO, one codegen unit and `panic = "abort"`), since
   cargo reads profiles only from the workspace root. On a host the binaries
-  are empty stubs and the runtimes aren't built, so `--workspace` builds,
-  clippy, rustdoc and tests work as before.
+  are empty stubs and neither the runtimes nor the apdu image's allocator
+  and critical section are built, so `--workspace` builds, clippy, rustdoc
+  and tests work as before.
+- **The `alloc` feature.** The crate's `alloc` feature brings in the
+  `apdu` scenario, the apdu image and their dependencies, and is on by
+  default, so host builds, clippy, rustdoc and tests cover them. It links
+  `alloc` into the crate's lib, so `mstp` and `bip` build with
+  `--no-default-features`: a bare-metal build of them with the feature on
+  fails, as it should, with "no global memory allocator found".
 - **The check.** `scripts/ci/check-firmware-link.sh` runs, per target,
-  clippy on the images' code (a host build compiles it out), the
-  `firmware`-profile build, and `scripts/ci/firmware_size.py` for each image
-  against its `[<target>.<image>]` table in `firmware/link/size-budget.toml`.
+  clippy on the images' code (a host build compiles it out) and the
+  `firmware`-profile build, once without the `alloc` feature for `mstp` and
+  `bip` and once with it for `apdu`, then `scripts/ci/firmware_size.py`
+  for each image against its `[<target>.<image>]` table in
+  `firmware/link/size-budget.toml`.
   The helper reads the ELF itself, so it needs no binutils. It prints:
   - every loaded section and which total it counts toward;
   - `.text`, `.rodata`, `.data`, `.bss` and two totals against their
@@ -292,10 +363,19 @@ link.
   `__udivdi3`, `__umoddi3` and similar entry points to it. These targets
   have no 64-bit divide instruction, so a 64-bit division by a runtime
   value costs about 0.9 KB, which the budgets' headroom would otherwise
-  absorb; the MS/TP core divides only in 32 bits (#1618). It also fails
+  absorb; the MS/TP core divides only in 32 bits (#1618). The apdu image
+  is the exception to both zeros. Its libraries build their error messages
+  with `format!`, which links 15 `core::fmt` functions (about 2.7 KB of
+  `.text` on `thumbv7m-none-eabi`), and on `thumbv6m-none-eabi`, which has
+  no multiply with a 64-bit product, formatting a `u64` divides by a
+  constant through the 64-bit division routine (3 functions). Its budget
+  holds both counts at what it links today, with no headroom, so any new
+  formatting or division function still fails the check. It also fails
   when the image has no function symbols to look for that code in: the
   images must not be stripped. A size more than 20% under its budget gets a
-  notice to tighten it, not a failure. `scripts/ci/test-firmware-size.py`
+  notice to tighten it, not a failure, and so does a count under its limit,
+  so a ceiling such as the apdu image's 15 `core::fmt` functions comes
+  down once the code behind it goes. `scripts/ci/test-firmware-size.py`
   tests the helper on small ELF files it builds itself, in the Lint job. CI
   runs the check in the Clippy job, after the `no_std` check, which already
   sets up bare-metal targets, rather than in a job of its own that would
@@ -308,15 +388,22 @@ link.
   and fills, and the reset handler; the list shows the unmangled part
   separately) and 1.4 KB of `bacnet-mstp-codec`. Only `thumbv6m-none-eabi`,
   which has no divide instruction, also links compiler-builtins' 32-bit
-  multiply and divide routines.
-- **RAM.** The scenarios' buffers are statics, so `.bss` measures them. The
-  MS/TP image keeps everything large the core borrows in its static, the
+  multiply and divide routines. The apdu image's 37.5 KB on
+  `thumbv7m-none-eabi` is about 13 KB of `bacnet-encoding`, 8.6 KB of the
+  scenario with the library code it inlines, 3.7 KB of `core` (formatting
+  among it), 2.9 KB of `bacnet-services`, 2.4 KB of `bytes` and 2.1 KB of
+  compiler-builtins; about 4 KB of its 5.2 KB of `.rodata` is text, nearly
+  all of it error messages and their labels.
+- **RAM.** The `mstp` and `bip` scenarios' buffers are statics, so `.bss`
+  measures them. The MS/TP image keeps everything large the core borrows in its static, the
   firmware pattern the core's crate docs describe: receive storage, queues
   (3,360 octets for `HeaplessQueues<4, 2>`) and `ActionBuffers<1>` (1,028),
   5,544 octets in all with the codec part's buffers. The core itself, 504
   octets on these targets, is built on the stack. `.bss` doesn't count the
   stack. `cargo nextest run -p firmware-link` prints the host sizes from the
-  `ram_sizes` test.
+  `ram_sizes` test. The apdu image's `.bss` is its 1 KiB arena and the
+  allocator's 32-octet state: what its scenario builds lives in the arena
+  or on the stack, and `heap_fits_the_arena` measures the arena's use.
 - **Raising a budget.** Each budget is the measured size plus 12%, rounded
   up to 16 octets. When a change grows an image on purpose, the error
   suggests a new budget; update it and the measured sizes in the file's
@@ -396,10 +483,12 @@ image.
   `FIRMWARE_TARGETS` for the [firmware link test](#firmware-link-test), which
   links with the `rust-lld` that rustc ships. The
   MSRV job adds the MSRV toolchain and sets `RUSTUP_TOOLCHAIN` to it.
+  [`fuzz.yml`](#fuzzing) installs only the dated nightly in
+  `RUST_FUZZ_NIGHTLY` and sets `RUSTUP_TOOLCHAIN` to it the same way.
 - **Tools.** [`.github/ci-pins.env`](../.github/ci-pins.env) pins
-  cargo-nextest, cargo-deny, cargo-audit and maturin, each with the SHA-256 of
-  its Linux x86_64 release archive, and the MSRV and the native tests' Python
-  version. [`scripts/ci/install-tools.sh`](../scripts/ci/install-tools.sh)
+  cargo-nextest, cargo-deny, cargo-audit, maturin and cargo-fuzz, each with the
+  SHA-256 of its Linux x86_64 release archive, the MSRV, the fuzz nightly and
+  the native tests' Python version. [`scripts/ci/install-tools.sh`](../scripts/ci/install-tools.sh)
   downloads the tools a job names, checks each archive against its digest
   before unpacking it, and puts the binaries in `~/.cargo/bin`.
   `native-tests.yml` reads the cargo-nextest, maturin and Python versions from
@@ -414,9 +503,11 @@ image.
 The Lint job's "Check the pins" step fails when:
 
 - a line of `.github/ci-pins.env` isn't a comment, blank, or `NAME=value` with
-  a plain value, or a name is set twice;
+  a plain value (letters, digits, dots and hyphens, starting with a letter or
+  digit), or a name is set twice;
 - a `*_SHA256` value isn't 64 lowercase hex digits;
-- `rust-toolchain.toml`'s channel isn't an exact release;
+- `rust-toolchain.toml`'s channel isn't an exact release, or
+  `RUST_FUZZ_NIGHTLY` isn't a dated nightly (`nightly-YYYY-MM-DD`);
 - `RUST_MSRV` differs from `Cargo.toml`'s `rust-version` or from
   `scripts/ci/check-msrv.sh`'s default toolchain.
 
@@ -431,6 +522,10 @@ The Lint job's "Check the pins" step fails when:
   its comments.
 - **MSRV:** `Cargo.toml`'s `rust-version`, `RUST_MSRV` and
   `scripts/ci/check-msrv.sh` together.
+- **Fuzz nightly:** `RUST_FUZZ_NIGHTLY`, normally to a nightly of the
+  release `rust-toolchain.toml` pins (`rustc +nightly-<date> -V` names the
+  version). Run `bash scripts/ci/fuzz.sh check` and `build` with it first:
+  a new nightly can bring new clippy lints.
 - **A tool:** its `*_VERSION` and `*_SHA256` together. The digest is of the
   archive the comment above it names:
   `curl -sSfL <url> | sha256sum`.
@@ -451,7 +546,9 @@ any entry unused for seven days. On 4 October 2026 the caches had reached
 
 - **Saves.** Only runs on `dev` save Rust caches: merges, the weekly run and
   manual runs there. PR runs only restore them, and so does the
-  [flake hunt](#flake-hunt), which never saves.
+  [flake hunt](#flake-hunt), which never saves. The
+  [fuzz corpora](#fuzzing) follow the same rule: only scheduled and manual
+  `fuzz.yml` runs on `dev` save one, `fuzz-corpus-<target>-<run id>-<attempt>`.
 - **Pruning.** After a green run on `dev`, each workflow's **Prune caches**
   job runs [`scripts/ci/prune-caches.sh`](../scripts/ci/prune-caches.sh) with
   `actions: write`. It keeps the two newest rust-cache entries of each family
@@ -744,6 +841,146 @@ one.
 - On a PR the report always runs, as a dry run: it writes the report to the
   job summary, logs what it would create or comment on, and writes nothing.
 
+## Fuzzing
+
+[`.github/workflows/fuzz.yml`](../.github/workflows/fuzz.yml) fuzzes the
+MS/TP and B/IP codecs with [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz),
+which drives libFuzzer (#1610). No check here is required for merging: every
+job's name starts with `Fuzz:`, so none can pass for `CI OK` or `Native OK`,
+and the release's [CI gate](#ci-gate) reads only `ci.yml` and
+`native-tests.yml` runs.
+
+**Targets.** Each codec has a fuzz crate, `crates/<codec>/fuzz`, outside the
+workspace, with its own `Cargo.lock`. Its `src/lib.rs` holds what its targets
+share: for MS/TP, an encoder and a frame check written from the wire layout
+with bit-at-a-time CRCs, without calling the codec, so a fault the codec's
+encode and decode share can't cancel out; for both, a check that encodes
+through every sink. The oracle of each target is in the doc comment at the
+top of its file.
+
+| Target | Input | Oracle |
+| --- | --- | --- |
+| `mstp_decode` | any octets | `decode_frame` accepts exactly the inputs that start with a whole valid standard frame by the harness's own check, with its length and fields; an accepted frame re-encodes to the same octets unless the encoder's stricter checks refuse it |
+| `mstp_encode` | any frame: every type, source and data length up to 639 octets | the outcome worked out from the crate docs. Every sink (a slice through `encode_into` and through `FrameSink`, `Vec`, `BytesMut`, `heapless::Vec`) holds exactly the expected octets, or refuses with the expected error; a refused encode leaves each sink as it was, compared before and after; each result decodes back to the frame |
+| `mstp_stream` | valid frames, raw noise and noise without `0x55`, pushed into 1 to 575 octets of storage in pieces of any size, with empty pushes, drains and resets | each push checked against a shadow of the decoder's buffer: refusals, `NeedMore`, `Invalid`, `Malformed` (error, discard, destination) and `Frame`, the buffered length and the phase; never wedged; at the end, frames in order and each once, and every guaranteed generated frame delivered at its offset |
+| `bip_decode`, `bip6_decode` | any octets | no panic; an accepted datagram re-encodes to itself, unless its result code is one the annex doesn't define |
+| `bip_encode`, `bip6_encode` | any `Bvll` or `Bvll6`, some within 8 octets of the 65,535-octet limit on either side | the octets the Annex J.2 or U.2 layout gives, built field by field; an undefined result code and a message too long for the Length field refused; sinks as for `mstp_encode`; each result decodes back to an equal message |
+
+A generated frame in `mstp_stream` is guaranteed when it fits the storage, no
+reset falls inside it, and no `0x55` lies between it and the anchor: the end
+of the last frame delivered before it, the last reset, or the stream's start.
+From there the decoder starts fresh and nothing can start a candidate before
+the frame. Noise with a `0x55` may hold a header that passes its CRC and runs
+into the next frame, which the decoder then has to deliver or discard whole.
+A frame too long for the storage can hide the frames after it too, since the
+decoder rescans the dropped frame's body as fresh octets (#1609); they aren't
+guaranteed until #1609 skips such a body by count.
+
+**When.** On a PR to `dev` or `main` that changes
+`crates/bacnet-mstp-codec/**` or `crates/bacnet-bip-codec/**` (fuzz crates
+included), the workflow, `.github/ci-pins.env`, `scripts/ci/fuzz.sh` or
+`scripts/ci/install-tools.sh`, each target runs for 60 seconds. Twice a
+week (Sundays and Wednesdays at 03:41 UTC, on `dev`) and by hand, each runs
+for 10 minutes. A newer push to the PR cancels its older run; scheduled and
+manual runs are never cancelled.
+
+**Jobs.** Everything goes through
+[`scripts/ci/fuzz.sh`](../scripts/ci/fuzz.sh), on the nightly in
+`RUST_FUZZ_NIGHTLY` (cargo-fuzz needs nightly-only flags), with cargo-fuzz at
+`CARGO_FUZZ_VERSION` from its release archive, checked against its SHA-256
+(see [Tool pins](#tool-pins)). A prebuilt binary takes about a second to
+fetch, so there is nothing to cache. The script passes cargo-fuzz `--target`
+with the nightly's host triple: cargo-fuzz otherwise builds for the triple it
+was built for itself, which for that archive is musl, where AddressSanitizer
+can't work.
+
+- **Fuzz: check and build** lists the targets from the fuzz crates'
+  `[[bin]]` entries, checks each fuzz crate's lockfile
+  (`cargo fetch --locked`), rustfmt and clippy with warnings denied, and
+  builds every target.
+- **Fuzz: `<target>`**, one job per target from that list, so a new
+  `[[bin]]` runs without a workflow change, builds its target and runs it.
+  cargo-fuzz's defaults apply: optimized, with debug assertions, overflow
+  checks and AddressSanitizer. An input that runs for 10 seconds counts as a
+  hang. On a scheduled or manual run on `dev` it then minimizes the corpus
+  (`fuzz.sh cmin`) and saves it.
+- **Fuzz: advisories**, on scheduled and manual runs only, checks each fuzz
+  crate's lockfile against the RustSec advisories with Cargo Deny (at
+  `CARGO_DENY_VERSION`). It is a job of its own, so an advisory doesn't hold
+  up the fuzzing.
+
+**Corpora.** Each job restores the newest corpus its target has, saved as
+`fuzz-corpus-<target>-<run id>-<attempt>` by a scheduled or manual run on
+`dev` (failed runs included: the failing input isn't in the corpus), and
+minimized before it is saved, so it doesn't grow from run to run. A PR run
+replays it before fuzzing, so an input that once found new code paths runs
+again on every change. GitHub evicts an entry that goes unused for seven
+days; two scheduled runs a week keep the newest one in use even when one
+starts late. The [prune](#caches) keeps such entries on `dev`, but nothing
+restores an older one, so that eviction removes them. No corpus is checked
+in.
+
+**Lockfiles.** Each fuzz crate's `Cargo.lock` is committed, and every build
+checks it first, so the fuzz builds use the dependencies it names. It also
+records what the root `Cargo.toml` sets for the codec: its version and the
+workspace's requirements for its dependencies. A version bump or a moved
+requirement leaves the lockfile stale, so `ci.yml`'s required Lint job checks
+both lockfiles too (`bash scripts/ci/fuzz.sh lock --check`, any toolchain).
+`bash scripts/ci/fuzz.sh lock` brings them up to date: cargo re-resolves only
+the entries the manifests no longer allow and keeps every other dependency
+where it was. Run it with the release's version bump (step 1 of
+[the release](#trigger-and-dry-run)) and in any PR that changes a workspace
+dependency of a codec, and commit the lockfiles. When such a change moves a
+dependency the fuzz crate also names itself (`bytes`, `heapless`) to a new
+major version, update the fuzz crate's `Cargo.toml` to match, or the sinks
+won't build.
+
+Cargo Deny's gate doesn't cover the fuzz crates: they are unpublished CI
+tools whose binaries never ship. **Fuzz: advisories** checks their
+advisories; their bans and sources pass too
+(`cargo deny --manifest-path crates/<codec>/fuzz/Cargo.toml check`), and
+their licenses fail only because libFuzzer's `NCSA` (in `libfuzzer-sys`)
+isn't on the allow list and the fuzz crates name no license.
+
+**Running locally.** Install the pinned nightly and cargo-fuzz, then use the
+script as CI does. It works on macOS (Apple Silicon) as on Linux.
+
+```bash
+rustup toolchain install nightly-2026-08-15 --profile minimal --component rustfmt,clippy  # RUST_FUZZ_NIGHTLY
+cargo install cargo-fuzz --version 0.13.2 --locked    # CARGO_FUZZ_VERSION
+bash scripts/ci/fuzz.sh list                          # the targets
+bash scripts/ci/fuzz.sh check                         # lockfiles, rustfmt, clippy
+bash scripts/ci/fuzz.sh build                         # every target
+bash scripts/ci/fuzz.sh run mstp_stream 60            # one target for 60 seconds
+FUZZ_WORK=/tmp/fuzz bash scripts/ci/fuzz.sh run bip_encode 600 -max_len=16384
+```
+
+Arguments after the seconds go to libFuzzer. Without `FUZZ_WORK`, the corpus
+and anything a run finds stay in the fuzz crate's `corpus/<target>` and
+`artifacts/<target>`, which git ignores.
+
+**Triage.** When a target fails, its job uploads the artifact
+`fuzz-<target>` for 30 days (a re-run of the job replaces it): what libFuzzer saved (`crash-*` or `timeout-*`,
+which the job minimizes into `minimized-from-*`, or `oom-*` or `leak-*`,
+which it doesn't) and the run's log, whose panic message names the check that
+failed. To reproduce it:
+
+```bash
+gh run download <run id> -R jscott3201/rusty-bacnet -n fuzz-mstp_stream -D /tmp/fuzz-mstp_stream
+bash scripts/ci/fuzz.sh build mstp_stream
+cd crates/bacnet-mstp-codec
+host=$(rustc +nightly-2026-08-15 -vV | sed -n 's/^host: //p')    # as fuzz.sh does
+cargo +nightly-2026-08-15 fuzz fmt --target "$host" mstp_stream /tmp/fuzz-mstp_stream/minimized-from-<hash>  # the input as a Rust value
+cargo +nightly-2026-08-15 fuzz run --target "$host" mstp_stream /tmp/fuzz-mstp_stream/minimized-from-<hash>  # replay it
+```
+
+`fuzz fmt` prints a structure-aware target's input (frames, noise, pushes) as
+the target decoded it. Decide whether the codec or the oracle is wrong; the
+oracle's reasoning is in the target's doc comment. Turn a codec bug into a
+regression test in the codec's own `tests/`, fix it, and check that the replay
+passes. `bash scripts/ci/fuzz.sh tmin <target> <input>` minimizes an input
+further.
+
 ## Local checks
 
 Use the Rust release that `rust-toolchain.toml` pins, which rustup selects in
@@ -848,6 +1085,7 @@ python3 scripts/ci/test-firmware-size.py
 python3 -m unittest discover -s scripts/release
 python3 -m unittest discover -s scripts -p 'test_changelog.py'
 python3 scripts/changelog.py check
+bash scripts/ci/fuzz.sh lock --check        # the fuzz crates' lockfiles; see "Fuzzing"
 actionlint .github/workflows/*.yml          # after editing a workflow
 ```
 
@@ -931,11 +1169,13 @@ To release:
    environment `release`, then remove the one that names `ci.yml`. The
    [PyPI trusted publishing](#secrets-and-environment) job stops a release
    before crates.io if this isn't done.
-1. Set the workspace version, assemble the version's `CHANGELOG.md` section
-   from the fragments, add release highlights by hand under the new heading if
-   the release has any, and merge:
+1. Set the workspace version, update the fuzz crates' lockfiles for it (see
+   [Fuzzing](#fuzzing)), assemble the version's `CHANGELOG.md` section from
+   the fragments, add release highlights by hand under the new heading if the
+   release has any, and merge:
 
    ```bash
+   bash scripts/ci/fuzz.sh lock                # the fuzz crates' Cargo.lock files
    python3 scripts/changelog.py preview        # what the section will hold
    python3 scripts/changelog.py assemble --version 0.12.0 [--date 2026-10-02]
    ```

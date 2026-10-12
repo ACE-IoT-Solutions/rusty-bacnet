@@ -9,14 +9,14 @@ name: CI
 #
 #   Lean  — every PR to dev/main, push to dev/main, v* tags, weekly, manual:
 #           lint (fmt, file-size cap, no-secret scan, script regressions,
-#           changelog fragments, the pins),
+#           changelog fragments, the pins, the fuzz crates' lockfiles),
 #           clippy and rustdoc with warnings denied (every feature, the PyO3
 #           crate, and each published crate alone with default features, for
 #           Linux, Windows and macOS; the every-feature and PyO3 rustdoc runs
 #           include private items), the no_std crates on bare-metal targets
-#           and their alloc tests on the host, and the MS/TP and B/IP
-#           firmware images linked without an allocator and checked against
-#           their size budgets,
+#           and their alloc tests on the host, and the firmware images
+#           (MS/TP and B/IP without an allocator, the APDU stack with one)
+#           linked and checked against their size budgets,
 #           every-feature Linux tests plus bacnet-cli's feature-off tests
 #           and the no_std crates' tests and doctests without std,
 #           and the Python bindings built with maturin, their unittest suite
@@ -108,18 +108,22 @@ jobs:
           rustup toolchain list
           rustc -vV
       # Every line of the pins file is a comment, blank or NAME=value with a
-      # plain value, once per name, and every *_SHA256 is a SHA-256 in hex; the
-      # toolchain pin is an exact release; and the MSRV is the same in the
-      # pins, Cargo.toml and check-msrv.sh.
+      # plain value that starts with a letter or digit, once per name, and
+      # every *_SHA256 is a SHA-256 in hex; the toolchain pin is an exact
+      # release, and the fuzz nightly a dated one; and the MSRV is the same in
+      # the pins, Cargo.toml and check-msrv.sh.
       - name: Check the pins
         run: |
           pins=.github/ci-pins.env
           fail=0
-          if bad=$(grep -nvE '^(#.*|[A-Z0-9_]+=[0-9A-Za-z.]+)?$' "$pins"); then
+          if bad=$(grep -nvE '^(#.*|[A-Z0-9_]+=[0-9A-Za-z][0-9A-Za-z.-]*)?$' "$pins"); then
             echo "::error::malformed lines in $pins:"; echo "$bad"; fail=1
           fi
           if bad=$(grep -nE '^[A-Z0-9_]+_SHA256=' "$pins" | grep -vE '^[0-9]+:[A-Z0-9_]+_SHA256=[0-9a-f]{64}$'); then
             echo "::error::digests in $pins that aren't 64 lowercase hex digits:"; echo "$bad"; fail=1
+          fi
+          if ! grep -qE '^RUST_FUZZ_NIGHTLY=nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$pins"; then
+            echo "::error::$pins has no RUST_FUZZ_NIGHTLY=nightly-YYYY-MM-DD"; fail=1
           fi
           if dup=$(grep -oE '^[A-Z0-9_]+=' "$pins" | sort | uniq -d | grep .); then
             echo "::error::names set twice in $pins:"; echo "$dup"; fail=1
@@ -137,6 +141,12 @@ jobs:
             echo "::error::scripts/ci/check-msrv.sh's default toolchain is not $msrv"; fail=1
           fi
           exit $fail
+      # Each fuzz crate's own Cargo.lock still matches its manifests. It
+      # records the codec's workspace version and the workspace's dependency
+      # requirements, so a change to either that skipped `fuzz.sh lock` fails
+      # here, not in a scheduled fuzz run (docs/ci.md, "Fuzzing").
+      - name: Fuzz crate lockfiles
+        run: bash scripts/ci/fuzz.sh lock --check
       - name: Rustfmt
         run: cargo fmt --all --check
       - name: File-size cap (700 LOC)
@@ -238,12 +248,14 @@ jobs:
       - name: Clippy (no_std crates with alloc, all targets)
         if: ${{ !cancelled() }}
         run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
-      # Clippy doesn't link, so this builds the MS/TP and B/IP stacks into
-      # bare-metal images with no allocator (firmware/link), one per stack, for
-      # each target, and checks their sizes against the budget. It links with
+      # Clippy doesn't link, so this builds the stacks into bare-metal images
+      # (firmware/link), one per stack, for each target, and checks their
+      # sizes against the budget: MS/TP and B/IP with no allocator, and
+      # bacnet-encoding and bacnet-services with one, its critical section
+      # and, without compare-and-swap, portable-atomic (#1635). It links with
       # the rust-lld that rustc ships, so the targets' core libraries are all
       # it needs. Nothing runs the images; the scenarios they link run in Test.
-      - name: Firmware link test (bare-metal images, no allocator, size budget)
+      - name: Firmware link test (bare-metal images, size budgets)
         if: ${{ !cancelled() }}
         run: |
           # shellcheck disable=SC2086 # one argument per target

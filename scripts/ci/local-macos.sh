@@ -48,7 +48,7 @@ bash scripts/ci/check-default-features.sh
 step "clippy (no_std crates, bare-metal targets)"; bash scripts/ci/check-no-std.sh
 step "clippy (no_std types, encoding and services with alloc, all targets)"
 cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
-step "firmware link test (bare-metal images, no allocator, size budgets)"; bash scripts/ci/check-firmware-link.sh
+step "firmware link test (bare-metal images, size budgets)"; bash scripts/ci/check-firmware-link.sh
 step "rustdoc (every macOS feature, private items)"
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude rusty-bacnet --no-deps --locked --document-private-items --features "$features"
 step "rustdoc (PyO3 bindings, private items)"
