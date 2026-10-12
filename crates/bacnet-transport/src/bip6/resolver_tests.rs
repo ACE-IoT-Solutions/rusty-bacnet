@@ -258,7 +258,10 @@ async fn foreign_device(bbmd: &UdpSocket) -> Bip6Transport {
 async fn next_request(socket: &UdpSocket) -> (Vec<u8>, SocketAddr) {
     let mut buf = [0u8; 1500];
     loop {
-        let (len, from) = socket.recv_from(&mut buf).await.unwrap();
+        let (len, from) = tokio::time::timeout(Duration::from_secs(10), socket.recv_from(&mut buf))
+            .await
+            .expect("the BBMD gets a request")
+            .unwrap();
         if buf[1] != 0x09 {
             return (buf[..len].to_vec(), from);
         }
