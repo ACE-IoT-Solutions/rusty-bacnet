@@ -18,8 +18,7 @@ use bacnet_server::server::{BACnetServer, DiscoveryPolicy};
 use bacnet_services::who_is::WhoIsRequest;
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_transport::bip6::{
-    decode_bip6_mac, decode_bvll6, encode_bvll6, Bip6ForeignDeviceConfig, Bip6Transport, Bip6Vmac,
-    Bvll6,
+    decode_bvll6, encode_bvll6, Bip6ForeignDeviceConfig, Bip6Transport, Bip6Vmac, Bvll6,
 };
 use bacnet_types::enums::{
     ConfirmedServiceChoice, ObjectType, PropertyIdentifier, UnconfirmedServiceChoice,
@@ -160,7 +159,7 @@ async fn a_confirmed_request_forwarded_to_a_bip6_foreign_device_is_ignored() {
         .build()
         .await
         .unwrap();
-    let (_, port) = decode_bip6_mac(server.local_mac()).unwrap();
+    let port = server.transport().unwrap().local_address().unwrap().port();
     let server_address = SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0);
 
     // The WriteProperty goes first; the Who-Is behind it is the fence.

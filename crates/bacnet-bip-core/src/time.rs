@@ -174,6 +174,41 @@ impl Duration {
         Self(self.0.saturating_sub(other.0))
     }
 
+    /// Half of `self`, rounded down: a shift, so no division routine.
+    #[must_use]
+    pub const fn half(self) -> Self {
+        Self(self.0 >> 1)
+    }
+
+    /// Twice `self`, clamped at [`Duration::MAX`]: a shift, so no
+    /// multiplication routine.
+    #[must_use]
+    pub const fn saturating_double(self) -> Self {
+        if self.0 > u64::MAX >> 1 {
+            Self::MAX
+        } else {
+            Self(self.0 << 1)
+        }
+    }
+
+    /// The shorter of two durations, in a `const` context.
+    pub(crate) const fn min_const(self, other: Self) -> Self {
+        if self.0 <= other.0 {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// The longer of two durations, in a `const` context.
+    pub(crate) const fn max_const(self, other: Self) -> Self {
+        if self.0 >= other.0 {
+            self
+        } else {
+            other
+        }
+    }
+
     /// Whole seconds in `self`, for a duration under 2^17 seconds (about 36
     /// hours); `None` for a longer one.
     ///
@@ -334,6 +369,31 @@ mod tests {
         c += b;
         c -= Duration::from_nanos(1);
         assert_eq!(c, Duration::from_nanos(9));
+    }
+
+    #[test]
+    fn halving_and_doubling_are_shifts_that_saturate() {
+        assert_eq!(Duration::from_nanos(7).half(), Duration::from_nanos(3));
+        assert_eq!(Duration::ZERO.half(), Duration::ZERO);
+        assert_eq!(Duration::from_secs(30).half(), Duration::from_secs(15));
+        assert_eq!(
+            Duration::from_nanos(3).saturating_double(),
+            Duration::from_nanos(6)
+        );
+        assert_eq!(
+            Duration::from_nanos(u64::MAX >> 1).saturating_double(),
+            Duration::from_nanos(u64::MAX - 1)
+        );
+        assert_eq!(
+            Duration::from_nanos((u64::MAX >> 1) + 1).saturating_double(),
+            Duration::MAX
+        );
+        assert_eq!(Duration::MAX.saturating_double(), Duration::MAX);
+        let (a, b) = (Duration::from_nanos(2), Duration::from_nanos(5));
+        assert_eq!(a.min_const(b), a);
+        assert_eq!(b.min_const(a), a);
+        assert_eq!(a.max_const(b), b);
+        assert_eq!(b.max_const(a), b);
     }
 
     #[test]

@@ -16,7 +16,8 @@ Foundations
   bacnet-mstp-codec     MS/TP frame codec (no_std; by default no allocator, no deps)
   bacnet-mstp-core      MS/TP master state machine (no_std; by default no allocator)
   bacnet-bip-codec      B/IP and B/IPv6 BVLL codec (no_std; by default no allocator, no deps)
-  bacnet-bip-core       B/IP behaviour: BBMD tables and forwarding (no_std; no allocator)
+  bacnet-bip-core       B/IP behaviour: a sans-IO node engine, BBMD tables and forwarding
+                        (no_std; no allocator)
   bacnet-transport      Data-link transports and framing (B/IP, B/IPv6 BVLL via bacnet-bip-codec;
                         the B/IP BBMD via bacnet-bip-core)
   bacnet-network        Network layer, BACnetRouter, RouterTable
@@ -126,7 +127,8 @@ Local nonrouter Number controls take a separate bounded path: one serial state o
 
 MAC address format varies by transport:
 - **BIP**: 6 bytes (4-byte IPv4 + 2-byte port, big-endian)
-- **BIP6**: 18 bytes (16-byte IPv6 + 2-byte port)
+- **BIP6**: 3 bytes (the node's VMAC, Annex U.1.3); the transport maps VMACs to
+  IPv6 addresses and ports itself, resolving unknown ones (U.5)
 - **MS/TP**: 1 byte (station address 0-254)
 - **BACnet/SC**: 6 bytes (VMAC)
 - **Ethernet**: 6 bytes (IEEE 802 MAC)
@@ -227,6 +229,35 @@ destinations out, and releases it before anything is sent; no await happens
 under the lock. A purge task removes lapsed registrations every second, and
 each decision skips them either way. Firmware can drive the same
 `bacnet_bip_core::bbmd::Tables` directly, sized to fit.
+
+### The B/IP node engine
+
+`bacnet_bip_core::node` is a sans-IO B/IP node in normal, foreign-device and
+BBMD mode, in two layers:
+
+- **`Link`**, the fixed configuration (own address, subnet, mode, datagram
+  budget), makes pure decisions. `Link::receive` applies the receive rules in
+  a fixed order (truncation, group source, broadcast listener, header,
+  destination, the host's rate limit, payload), drops own echoes and group
+  origins, and answers each BBMD-only request with its own NAK
+  (`BvlcFunction::nak`). In BBMD mode it hands the BBMD's share of the
+  other five to the caller for `bbmd::Tables` instead; Write-BDT is refused
+  in every mode. `Link::unicast` and
+  `Link::broadcast` say what to send, refusing NPDUs over the budget (by
+  default Table 6-1's 1497 octets).
+- **`Node<X>`** holds what changes: up to `X` management exchanges, matched by
+  peer and operation with a local generation since a BVLC-Result has no
+  invoke ID; a foreign device's registration (backoff after a loss, capped at
+  the renewal interval; a lease anchored at the earliest send its success
+  could answer, ending at the time-to-live without the BBMD's grace period,
+  which holds while every result arrives within an answer window of at least
+  one response timeout; manual requests that could change that registration
+  are refused); broadcasts held until the first registration attempt
+  resolves; and the timers. Callers poll its actions after every call.
+
+The engine has no buffers: deliveries borrow the datagram, and every send is
+a `Bvll` the caller encodes. A node that is not a BBMD links no BBMD code.
+The Tokio B/IP transport doesn't use it yet; it moves onto it next (#1622).
 
 ### Testing MS/TP without hardware
 

@@ -10,6 +10,19 @@ Portable BACnet/IP behaviour from Annex J of ASHRAE 135, for
 
 ## What it has
 
+The `node` module is a sans-IO B/IP node in normal, foreign-device and BBMD
+mode:
+
+- `Link`, its fixed configuration, decides what to do with each received
+  datagram (the receive rules, own echoes, the NAKs a node that is not a
+  BBMD owes, a Forwarded-NPDU's origin) and what to send for an NPDU, within
+  a datagram budget. Its decisions are pure.
+- `Node` keeps the rest: its own management exchanges, matched by peer and
+  operation; a foreign device's registration, with backoff after a loss and
+  a lease that never counts on the BBMD's grace period; broadcasts held
+  until the first registration resolves; and the timers. You poll its
+  actions after every call.
+
 The `bbmd` module holds a BBMD's broadcast distribution table and foreign
 device table, and decides where each broadcast goes:
 
@@ -27,8 +40,8 @@ time-to-live limits, a per-address quota and reserved capacity, and asks
 your own admission check (an access list, a rate limit) in between.
 Registrations expire on your clock, with the 30-second grace period.
 
-The Tokio B/IP transport in `bacnet-transport` runs its BBMD on this crate;
-a sans-IO B/IP node engine will join it.
+The Tokio B/IP transport in `bacnet-transport` runs its BBMD on this crate,
+and is moving onto the node engine.
 
 ## Example
 

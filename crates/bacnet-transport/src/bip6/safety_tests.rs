@@ -90,7 +90,7 @@ fn forwarded_npdu_origin_must_be_a_usable_unicast_endpoint() {
 async fn device_zero_vmac_is_learned_and_used_for_reply() {
     let mut transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(43));
     let mut rx = transport.start().await.unwrap();
-    let (_, transport_port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let transport_port = transport.local_address().unwrap().port();
     let destination = SocketAddrV6::new(Ipv6Addr::LOCALHOST, transport_port, 0, 0);
     let peer = UdpSocket::bind("[::1]:0").await.unwrap();
     let npdu = [0x01, 0x00, 0x10, 0x08];
@@ -139,7 +139,7 @@ async fn untrusted_forwarded_npdu_cannot_replace_learned_peer() {
         ttl: 60,
     });
     let mut rx = transport.start().await.unwrap();
-    let (_, transport_port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let transport_port = transport.local_address().unwrap().port();
     let destination = SocketAddrV6::new(Ipv6Addr::LOCALHOST, transport_port, 0, 0);
 
     let origin = UdpSocket::bind("[::1]:0").await.unwrap();
@@ -170,7 +170,7 @@ async fn untrusted_forwarded_npdu_cannot_replace_learned_peer() {
     .unwrap();
     attacker.send_to(&forged, destination).await.unwrap();
     tokio::time::sleep(Duration::from_millis(25)).await;
-    assert_eq!(transport.vmac_table.lookup(&forged_vmac).await, None);
+    assert_eq!(transport.lookup_vmac(forged_vmac), None);
 
     transport
         .send_unicast(&[0x01, 0x00, 0x10, 0x0A], received.source_mac.as_slice())

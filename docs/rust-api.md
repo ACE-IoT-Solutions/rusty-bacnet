@@ -369,8 +369,8 @@ use bacnet_encoding::npdu::{Npdu, NpduAddress, NpduDecodeError, encode_npdu, dec
 ```
 
 DADR and SADR are capped at `NpduAddress::MAX_MAC_LEN` (18) octets, the same
-limit as `BACnetAddress::MAX_MAC_LEN` and the longest MAC any built-in data
-link uses (B/IPv6) (#1141). `encode_npdu` refuses a longer address with
+limit as `BACnetAddress::MAX_MAC_LEN` (#1141). No built-in data link uses more
+than 6; the bound is defensive. `encode_npdu` refuses a longer address with
 `Error::Encoding`. `decode_npdu` returns `NpduDecodeError`: a DLEN or SLEN past
 the cap is `AddressTooLong { field, length, dnet, source }`, checked before the
 address octets are read, and every other malformation is `Malformed(Error)`.
@@ -850,7 +850,7 @@ let transport = Bip6Transport::new(
     0xBAC0,                 // port
     None,                   // device_instance (auto VMAC)
 );
-// 3-byte VMAC, 3 multicast scopes, collision detection
+// The MAC is the 3-byte VMAC; 3 multicast scopes, collision detection
 ```
 
 The transport selects one concrete local address and OS interface for normal
@@ -862,7 +862,7 @@ ambiguity. A concrete address must have one usable local owner. This is local
 selection policy, not an Annex U requirement. It replaced, in 0.12.0, 0.11.0's
 selection, which asked the routing table for an address and fell back to `::1`.
 
-The selected address and actual UDP port form `local_mac()`. One wildcard socket
+The selected address and actual UDP port form `local_address()`. One wildcard socket
 receives selected unicast and BACnet multicast traffic; packet metadata fences
 other interfaces and destinations before collision handling, VMAC learning or
 NPDU admission. Every normal data/control send retains the selected source and
@@ -876,7 +876,7 @@ cross-link reachability.
 With `register_as_foreign_device`, `::` instead derives a concrete unicast source
 usable for the configured BBMD; an explicit source is retained. The production
 socket is bound to that source, so registration, DBTN and ordinary unicast agree
-with `local_mac()`. This branch requires the existing configured Device instance
+with `local_address()`. This branch requires the existing configured Device instance
 and preserves trusted-BBMD handling without normal multicast prerequisites.
 
 A Forwarded-NPDU whose original source address is an IPv6 multicast group, a
@@ -921,16 +921,93 @@ address it was sent to; a Forwarded-NPDU or Forwarded-Address-Resolution
 from an untrusted path; a Forwarded-NPDU whose NPDU is too short or
 malformed; an origin or asker address unusable without a scope ID; a request
 from an unanswerable source or this node's own address; this node's own
-echo, a Forwarded-NPDU that names it as the origin included; and an NPDU the
-network-layer channel couldn't take because it was full or closed. Each drop
-counts once, and the totals survive a restart. Two more
+echo, a Forwarded-NPDU that names it as the origin included; a frame from
+another address that names this node's VMAC as its sender's, and an NPDU
+from a source no answer could reach (#1637); and an NPDU the network-layer
+channel couldn't take because it was full or closed. Each drop counts once,
+and the totals survive a restart. `Bip6ReceiveCounters` is
+`#[non_exhaustive]`, so a later counter isn't a breaking change. Two more
 fields count the replies the quotas held back, NAKs and the answers to
 Forwarded-Address-Resolution, apart from the drops. A frame that fails to
 decode, which used to log a warning for each datagram, now logs at debug. A
 full channel warns at most once every 10 seconds, with the number dropped
-since the last warning, as on B/IP. A Virtual-Address-Resolution-ACK from this
-node's own VMAC (a collision) and a BVLC-Result NAK, which anyone can send,
-log above debug at most once every 10 seconds the same way.
+since the last warning, as on B/IP. A frame from another node using this
+node's VMAC (a collision) and a BVLC-Result NAK, which anyone can send, log
+above debug at most once every 10 seconds the same way.
+
+#### Peers are named by VMAC
+
+The network layer addresses a B/IPv6 node by its 3-octet VMAC (Annex U.1.3),
+so that is the transport's MAC (#1637). `local_mac()` and `local_vmac()` give
+this node's (zero and `None` before start), a received NPDU's `source_mac` is
+its sender's VMAC, or a Forwarded-NPDU's origin's, and `send_unicast` takes
+the destination's VMAC and refuses any other length with `InvalidInput`.
+Routed NPDUs carry a B/IPv6 node's VMAC as a 3-octet SADR or DADR, as other
+vendors' routers expect. `local_address()` gives this node's B/IPv6 address,
+`vmac_from_device_instance` the VMAC a device instance gives (H.7.2), and
+`BACnetServer::transport()` the server's transport.
+
+The transport keeps a neighbour table from the frames it receives (U.5): up to
+4096 peers, the one heard from least recently giving way to a new one. It
+never learns its own VMAC; a frame from another address that uses it is
+dropped and counted in `own_vmac_source`, with a throttled collision warning.
+An address carried in a Forwarded-NPDU or Forwarded-Address-Resolution doesn't
+replace one heard from the peer directly within the last minute, so a forged
+forwarded message can't redirect unicasts. `lookup_vmac(vmac)` reads the
+table. A send to a peer silent for five minutes still goes to the address on
+file, and starts a check: a Virtual-Address-Resolution sent by unicast to that
+address, three times a second apart, which reaches the peer however it was
+learned. A peer that doesn't answer is removed, and its VMAC is then held
+unreachable for ten seconds, as after a failed resolution.
+
+A send to a VMAC the table lacks resolves it first. The transport sends an
+Address-Resolution to the scope's multicast group, or as a foreign device by
+unicast to its BBMD, which passes it on (U.4.4); then twice more a second
+apart. Any frame from that VMAC completes the resolution, an
+Address-Resolution-ACK or anything else, an I-Am included. Three seconds after
+the first request the resolution fails, and for ten seconds after that a send
+to the VMAC fails at once with `HostUnreachable`. These timings are fixed.
+
+What `send_unicast` does meanwhile is `UnresolvedSend`:
+
+- `Wait`, the default: the call returns once the NPDU is sent, or fails with
+  `TimedOut` after three seconds, `ConnectionRefused` when the BBMD refused to
+  pass the request on (Address-Resolution NAK). So when nobody answers for
+  a VMAC, a client request to it fails with a transport error, before the
+  transaction manager's timer starts.
+- `Queue`: the NPDU is copied and the call returns at once; the queue goes out
+  in order once the VMAC resolves, or is dropped and counted. `BACnetRouter`
+  selects it for its B/IPv6 ports through `prepare_for_routing`, so one
+  unknown DADR can't stall a port. `set_unresolved_send` selects it directly.
+
+The bounds: 64 VMACs resolving at once; 64 sends waiting on one VMAC and 512
+in all; 8 NPDUs queued for one VMAC and 128 in all. A send past one fails with
+`QuotaExceeded`. `resolution_counters()` returns a `Bip6ResolutionCounters`
+snapshot of the send side: resolutions started, resolved, timed out and
+refused, requests sent, sends refused as unreachable or over a bound, queued
+NPDUs dropped (at a failed resolution or at stop), Virtual-Address-Resolutions,
+and the checks on quiet peers sent and failed. It is `#[non_exhaustive]` too.
+
+`resolve_virtual_address(addr)` finds the VMAC of the node at a B/IPv6
+address: from the table when it maps that address to one VMAC, and otherwise
+with a Virtual-Address-Resolution sent to the node by unicast, three times a
+second apart (U.5). It works in foreign mode and where multicast doesn't
+reach. `send_unicast` never does this itself.
+
+```rust
+let server_vmac = client.transport().resolve_virtual_address(server_address).await?;
+let ack = client
+    .read_property(&server_vmac.octets(), device, PropertyIdentifier::OBJECT_NAME, None)
+    .await?;
+```
+
+**Migrating from 0.12:** pass a peer's 3-octet VMAC wherever an 18-octet
+B/IPv6 MAC went: sends, client requests, recipient lists, bindings, and COV
+subscriptions you store. Find a VMAC from an address with
+`resolve_virtual_address`, and read this node's address with `local_address()`
+instead of decoding `local_mac()`. A router and the B/IPv6 nodes it serves
+should be upgraded together. `encode_bip6_mac` and `decode_bip6_mac` still
+convert a B/IPv6 address, which is no longer a MAC.
 
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is
@@ -1892,7 +1969,7 @@ Both also drop a frame whose link-layer source MAC, as the transport reports
 it, is longer than `NpduAddress::MAX_MAC_LEN`, before decoding it, and count it
 in the same `address_length_drops()` (#1198). Nothing answers such a frame, and
 a router learns no route from it. No built-in transport reports a MAC that long
-(B/IP, BACnet/SC and Ethernet use 6 octets, MS/TP 1, B/IPv6 18), so only a
+(B/IP, BACnet/SC and Ethernet use 6 octets, B/IPv6 3, MS/TP 1), so only a
 custom `TransportPort` can, and every address the stack learns off the network
 fits a `BACnetAddress`.
 
@@ -2280,7 +2357,7 @@ framing, through the shared `bacnet-encoding` codecs.
   AddListElement reports as NO_SPACE_TO_ADD_LIST_ELEMENT at the request element
   that brought it. `add_destination` returns `Result` and refuses past the cap
   too, and `recipient_list()` reads the list. An address recipient's MAC is at
-  most `BACnetAddress::MAX_MAC_LEN` (18) octets, the B/IPv6 form (#1124):
+  most `BACnetAddress::MAX_MAC_LEN` (18) octets (#1124):
   `decode_destination` reads the recipient with `decode_recipient`, which
   refuses a longer one, so a write fails with PROPERTY / INVALID_DATA_TYPE and
   `add_destination` refuses it with the same code. The

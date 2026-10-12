@@ -10,11 +10,11 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 /// Least time between two warnings from one [`WarnThrottle`].
-pub(crate) const WARNING_INTERVAL: Duration = Duration::from_secs(10);
+pub const WARNING_INTERVAL: Duration = Duration::from_secs(10);
 
 /// When one warning last went out, and the occurrences it hasn't reported.
 #[derive(Debug, Default)]
-pub(crate) struct WarnThrottle {
+pub struct WarnThrottle {
     state: Mutex<State>,
 }
 
@@ -29,7 +29,7 @@ impl WarnThrottle {
     /// with the occurrences since the last warning, this one included, at
     /// most once per [`WARNING_INTERVAL`]; `None` when the caller logs it at
     /// debug instead. The clock is Tokio's, so a test can pause it.
-    pub(crate) fn note(&self) -> Option<u64> {
+    pub fn note(&self) -> Option<u64> {
         let now = Instant::now();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.unreported = state.unreported.saturating_add(1);

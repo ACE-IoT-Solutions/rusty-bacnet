@@ -637,8 +637,8 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
 /// in the frame. A longer MAC is counted in `drops` and its frame goes no
 /// further, so neither an APDU consumer nor the routing table ever learns an
 /// address that a `BACnetAddress` cannot hold. No built-in transport makes
-/// one: B/IP, BACnet/SC and Ethernet MACs are 6 octets, MS/TP 1 and B/IPv6
-/// 18; only a custom [`TransportPort`] can.
+/// one: B/IP, BACnet/SC and Ethernet MACs are 6 octets, B/IPv6 VMACs 3 and
+/// MS/TP 1; only a custom [`TransportPort`] can.
 pub(crate) fn link_source_fits(source_mac: &[u8], drops: &AtomicU64) -> bool {
     if source_mac.len() <= NpduAddress::MAX_MAC_LEN {
         return true;
