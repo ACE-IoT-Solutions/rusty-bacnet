@@ -12,8 +12,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// DMA buffer and feed the core every octet and receive error in it; an
     /// adapter that cannot tell when they arrived may stamp them with the
     /// drain time, which is safe because a later stamp can only defer the
-    /// start. After any error for a transmit, or once it is aborted, send
-    /// nothing more for its id.
+    /// start. After an error for a transmit, or once it is aborted, send
+    /// nothing more for its id; the one exception is
+    /// [`CoreError::TransmitNotPolled`], below.
     ///
     /// A host assembler that was part way through a frame drops it now: the
     /// receiver is off while the driver is on, so it can never complete, and
@@ -21,7 +22,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     ///
     /// - A start for a transmit whose [`Action::Transmit`] has not been
     ///   polled is refused with [`CoreError::TransmitNotPolled`] and counted
-    ///   in [`MstpCounters::adapter_errors`]; the transmit stays as it was.
+    ///   in [`MstpCounters::adapter_errors`]. It is an adapter bug: an id
+    ///   learned elsewhere, such as from [`Self::snapshot`], is no frame to
+    ///   send. Nothing changes and nothing is queued; the id stays live, and
+    ///   the fix is to poll the frame, then start it.
     /// - If the line was active within T_turnaround of `now` (activity that
     ///   reached the core after the frame was handed over), the start is
     ///   refused with [`CoreError::TransmitDeferred`] and counted in
@@ -34,7 +38,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     ///   the asker may have stopped waiting is refused with
     ///   [`CoreError::RequestExpired`] and counted as an expired request.
     ///
-    /// Each refusal queues [`Direction::Receive`](crate::Direction::Receive).
+    /// A deferred or expired start queues
+    /// [`Direction::Receive`](crate::Direction::Receive); the other
+    /// refusals queue nothing.
     pub fn on_transmit_started(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         let tx = self
@@ -104,6 +110,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// after the transmission ended, so they are judged in the state the
     /// transmission leads to, and after polling every action queued before
     /// it.
+    ///
+    /// The station's own echo must reach the core, or be dropped, before
+    /// this call, on either input path: octets for [`Self::on_octet`], and
+    /// a frame a host assembler built from the echo. Fed afterwards, the
+    /// echo is taken for another station's: its own Token heard back in
+    /// PASS_TOKEN would read as the successor using the token (SawTokenUser).
     ///
     /// The start must have been confirmed first. Completion without it is
     /// refused with [`CoreError::TransmitNotStarted`] and counted in

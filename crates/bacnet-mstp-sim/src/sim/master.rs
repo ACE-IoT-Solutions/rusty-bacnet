@@ -336,8 +336,9 @@ impl Sim {
         }
     }
 
-    /// Counters that must not move: adapter errors and delivery drops ever,
-    /// and deadline misses while the adapter is punctual.
+    /// Counters that must not move: adapter errors, delivery drops and
+    /// frames from the station's own address ever, and deadline misses while
+    /// the adapter is punctual.
     fn check_counters(&mut self, node: usize, counters: &MstpCounters, punctual: bool) {
         let station = self.nodes[node].station;
         let master = self.master_mut(node).expect("a master");
@@ -349,6 +350,14 @@ impl Sim {
         }
         if counters.delivery_drops != 0 {
             wrong.push(format!("delivery_drops {}", counters.delivery_drops));
+        }
+        // Every simulated station has its own address, so a frame from this
+        // one's is its own echo leaking past the adapter.
+        if counters.own_address_frames != 0 {
+            wrong.push(format!(
+                "own_address_frames {}",
+                counters.own_address_frames
+            ));
         }
         if punctual && new_misses != 0 {
             wrong.push(format!("{new_misses} more deadline_misses"));

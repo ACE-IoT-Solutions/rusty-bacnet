@@ -195,34 +195,36 @@ fn a_frame_from_this_stations_address_is_counted_and_handled() {
         let mut rx = [0; 64];
         let mut actions = Actions::new();
         let mut core = new_core(&mut rx, &mut actions);
+        let broadcast = FrameType::BACnetDataNotExpectingReply;
+        // A broadcast from station 3 first, which is not counted; then a
+        // broadcast and a Token from this station's address.
         let frames = [
-            (
-                FrameType::BACnetDataNotExpectingReply,
-                BROADCAST_MAC,
-                &[1, 0, 7][..],
-            ),
-            (FrameType::Token, STATION, &[][..]),
+            (broadcast, BROADCAST_MAC, 3, &[1, 0, 6][..], 0),
+            (broadcast, BROADCAST_MAC, STATION, &[1, 0, 7][..], 1),
+            (FrameType::Token, STATION, STATION, &[][..], 2),
         ];
         let mut at = ms(10);
-        for (kind, destination, data) in frames {
+        for (kind, destination, source, data, counted) in frames {
             if host {
-                validated(&mut core, kind, destination, STATION, data, at);
+                validated(&mut core, kind, destination, source, data, at);
             } else {
-                at = feed(&mut core, &encode(kind, destination, STATION, data), at);
+                at = feed(&mut core, &encode(kind, destination, source, data), at);
             }
+            assert_eq!(
+                core.counters().own_address_frames,
+                counted,
+                "host {host}, from {source}"
+            );
             at += Duration::from_millis(5);
         }
-        let counters = core.counters();
-        assert_eq!(counters.own_address_frames, 2, "host {host}");
-        assert_eq!(counters.frames_received, 2);
-        assert!(matches!(
-            core.poll_action(),
-            Action::DeliverNpdu {
-                source: STATION,
-                destination: BROADCAST_MAC,
-                ..
-            }
-        ));
+        assert_eq!(core.counters().frames_received, 3);
+        for source in [3, STATION] {
+            assert!(matches!(
+                core.poll_action(),
+                Action::DeliverNpdu { source: from, destination: BROADCAST_MAC, .. }
+                    if from == source
+            ));
+        }
         // The Token: no successor known, so a poll for one waits.
         assert_eq!(core.state(), MasterState::PollForMaster, "host {host}");
     }

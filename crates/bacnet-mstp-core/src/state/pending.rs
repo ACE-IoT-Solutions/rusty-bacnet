@@ -12,12 +12,13 @@
 //! octets, or a frame a host assembler found valid or invalid) moves the
 //! frame's earliest start to T_turnaround after it, and a start reported
 //! sooner is refused with [`CoreError::TransmitDeferred`]: the frame waits
-//! again and comes back as a new transmit. The state the frame was made for takes none of its own
-//! transitions meanwhile, because the transition that made the frame has not
-//! finished. Two exceptions end the wait early: activity that is exactly the
-//! evidence the sending state watches for, so that state's own transition
-//! wins. And every frame has a limit taken from its state; a frame that still
-//! cannot start by then is dropped and counted.
+//! again and comes back as a new transmit. The state the frame was made for
+//! takes none of its own transitions meanwhile, because the transition that
+//! made the frame has not finished. Two exceptions end the wait early:
+//! activity that is exactly the evidence the sending state watches for, so
+//! that state's own transition wins. And every frame has a limit taken from
+//! its state; a frame that still cannot start by then is dropped and
+//! counted.
 //!
 //! Every place a frame can wait, with the core state named as Clause 9.5.6
 //! names it (events are octets and receive errors, EventCount):

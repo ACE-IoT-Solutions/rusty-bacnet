@@ -120,7 +120,9 @@ pub enum CoreError {
     /// A transmit-start event was reported more than once.
     TransmitAlreadyStarted,
     /// A start was reported for a transmit whose [`Action::Transmit`] has
-    /// not been polled yet, so the adapter cannot have its octets.
+    /// not been polled yet, so the adapter cannot have its octets. An
+    /// adapter bug; unlike the other errors it leaves the id live: poll the
+    /// frame, then start it.
     TransmitNotPolled,
     /// Completion was reported for a transmit whose start was never confirmed.
     TransmitNotStarted,

@@ -122,11 +122,15 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// drives the transitions an invalid frame drives: WAIT_FOR_REPLY ends
     /// the token use (InvalidFrame, Clause 9.5.6.4), and POLL_FOR_MASTER
     /// takes the poll as unanswered (SoleMaster, DoneWithPFM, SendNextPFM or
-    /// DeclareSoleMaster, Clause 9.5.6.8). In any other state it changes
-    /// nothing but the line's silence. While a frame of this station's waits
-    /// to go out, it is only activity for that frame, which waits for a
-    /// quiet line again, as for any octet. It is ignored as echo between a
-    /// confirmed transmit start and its completion.
+    /// DeclareSoleMaster, Clause 9.5.6.8). In any other state it is line
+    /// activity and nothing more: it restarts the line's silence and adds
+    /// one to EventCount, so in PASS_TOKEN it can complete the evidence that
+    /// the successor took the token (SawTokenUser, Clause 9.5.6.6), and in
+    /// NO_TOKEN it ends the wait for a slot, as any activity does. While a
+    /// frame of this station's waits to go out, it is only activity for that
+    /// frame, which waits for a quiet line again, as for any octet. It is
+    /// ignored as echo between a confirmed transmit start and its
+    /// completion.
     pub fn on_invalid_frame(&mut self, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         if self.transmitting() {

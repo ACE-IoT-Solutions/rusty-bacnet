@@ -114,8 +114,10 @@ pub enum Action<'a> {
     /// error in it: activity the core has not been given cannot refuse the
     /// start. The core may also take the frame back first, which it shows by
     /// queueing `SetDirection(Direction::Receive)` before the start; drop the
-    /// frame then. After any error for this id, or an abort, send nothing
-    /// more for it.
+    /// frame then. After an error for this id, or an abort, send nothing
+    /// more for it. The exception is
+    /// [`CoreError::TransmitNotPolled`](crate::CoreError::TransmitNotPolled),
+    /// an adapter bug that leaves the id live: poll this action, then start.
     Transmit {
         /// Generation-bound operation identifier.
         id: TransmitId,
@@ -142,6 +144,11 @@ pub enum Action<'a> {
     /// here too (Clause 9.5.6.4). The core knows no proprietary type that
     /// asks for a reply, so it never answers one; one without the 2-octet
     /// vendor identifier Clause 9.3.11 requires is not delivered.
+    ///
+    /// What the core cannot judge is left to the application, which should
+    /// drop a proprietary frame whose vendor type it does not know, and a
+    /// broadcast one of a type that expects a reply: Clause 9.5.6.2 counts
+    /// both as unwanted (ReceivedUnwantedFrame, cases (c) and (b)).
     DeliverFrame {
         /// [`FrameType::TestResponse`], or a proprietary
         /// [`FrameType::Unknown`] type.
