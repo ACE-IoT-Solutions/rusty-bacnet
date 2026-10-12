@@ -10,12 +10,13 @@
 //!
 //! - [`bbmd`]: a BBMD's two tables (the BDT and the FDT), foreign-device
 //!   registration, and where each broadcast is forwarded (Annex J.4, J.5).
+//! - [`node`]: a sans-IO B/IP node in normal, foreign-device and BBMD
+//!   mode: its receive rules and NAKs, what it sends, its own management
+//!   exchanges, and a foreign device's registration lifecycle (Annex J.2,
+//!   J.4, J.5).
 //! - [`Arrival`]: whether a datagram was addressed to the node or to its
 //!   subnet's broadcast address, which the rules above and a node's own
 //!   both depend on, and [`LocalSubnet`], the subnet it reaches that way.
-//!
-//! A sans-IO engine for a B/IP node in normal and foreign-device mode will
-//! join it here.
 //!
 //! # Features
 //!
@@ -27,6 +28,7 @@
 
 mod arrival;
 pub mod bbmd;
+pub mod node;
 mod subnet;
 mod time;
 
