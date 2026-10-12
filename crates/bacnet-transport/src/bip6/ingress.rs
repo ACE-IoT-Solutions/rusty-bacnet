@@ -2,10 +2,58 @@
 
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
+use super::receive_counters::DropReason;
 use super::{
     Bip6Vmac, Bvlc6Function, Bvll6, BACNET_IPV6_MULTICAST_LINK_LOCAL,
     BACNET_IPV6_MULTICAST_ORG_LOCAL, BACNET_IPV6_MULTICAST_SITE_LOCAL,
 };
+
+/// Whether a frame whose sender's VMAC is `source`, from `from`, is this
+/// node's own: [`DropReason::OwnEcho`] when it comes from this node's own
+/// address `local` (its own broadcast looped back, say), and
+/// [`DropReason::OwnVmacSource`] when another address uses this node's
+/// VMAC `vmac`. The network layer must never see either as a frame from a
+/// peer, and the neighbour table never learns this node's VMAC.
+pub(super) fn own_frame(
+    source: Bip6Vmac,
+    from: SocketAddrV6,
+    local: SocketAddrV6,
+    vmac: Bip6Vmac,
+) -> Option<DropReason> {
+    if from.ip() == local.ip() && from.port() == local.port() {
+        Some(DropReason::OwnEcho)
+    } else if source == vmac {
+        Some(DropReason::OwnVmacSource)
+    } else {
+        None
+    }
+}
+
+/// [`own_frame`] for a datagram from `peer`, before anything learns from it:
+/// an Original-Unicast-NPDU or Original-Broadcast-NPDU from this node's own
+/// address or VMAC, or an Address-Resolution-ACK or
+/// Virtual-Address-Resolution-ACK from its VMAC, which only another node
+/// with the same VMAC would send. A Forwarded-NPDU's origin is judged where
+/// it is decoded. Address-Resolution and Virtual-Address-Resolution pass:
+/// another node probing for this node's VMAC sends an Address-Resolution
+/// from it, and the answer is how that node finds the collision.
+pub(super) fn own_source(
+    message: &Bvll6<'_>,
+    peer: SocketAddrV6,
+    local: SocketAddrV6,
+    vmac: Bip6Vmac,
+) -> Option<DropReason> {
+    match *message {
+        Bvll6::OriginalUnicastNpdu { source, .. } | Bvll6::OriginalBroadcastNpdu { source, .. } => {
+            own_frame(source, peer, local, vmac)
+        }
+        Bvll6::AddressResolutionAck { source, .. }
+        | Bvll6::VirtualAddressResolutionAck { source, .. } => {
+            (source == vmac).then_some(DropReason::OwnVmacSource)
+        }
+        _ => None,
+    }
+}
 
 /// Whether a message that names a recipient's VMAC names this node's: an
 /// Original-Unicast-NPDU or either ACK for another VMAC is discarded (U.3).
@@ -161,7 +209,7 @@ pub(super) fn is_answerable_source(peer: SocketAddr) -> bool {
 /// Whether `peer` is the BBMD this node registers with as a foreign device:
 /// `false` when it isn't one. A link-local BBMD never matches, since its
 /// configured address has no scope ID to tell links apart.
-fn is_configured_bbmd(peer: SocketAddr, foreign_bbmd: Option<(Ipv6Addr, u16)>) -> bool {
+pub(super) fn is_configured_bbmd(peer: SocketAddr, foreign_bbmd: Option<(Ipv6Addr, u16)>) -> bool {
     foreign_bbmd.is_some_and(|(bbmd_ip, bbmd_port)| {
         !bbmd_ip.is_unicast_link_local()
             && matches!(peer, SocketAddr::V6(peer) if *peer.ip() == bbmd_ip && peer.port() == bbmd_port)

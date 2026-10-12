@@ -19,17 +19,15 @@ use crate::udp_metadata::ReceivedDatagram;
 use super::frame::encoded;
 use super::ingress::{
     destination_vmac_matches, forwarded_address_resolution_is_trusted, forwarded_npdu_is_trusted,
-    forwarded_source_is_usable, group_destination, is_answerable_source,
-    original_destination_matches, LocalBinding,
+    forwarded_source_is_usable, group_destination, is_answerable_source, is_configured_bbmd,
+    original_destination_matches, own_frame, own_source, LocalBinding,
 };
-use super::port::is_bip6_group;
 use super::receive_counters::{DropReason, ReceiveDrops};
 use super::reply_limit::ReplyLimiter;
+use super::resolver::Resolver;
 use super::socket::{Bip6Socket, Inbound};
-use super::vmac_table::VmacTable;
-use super::{
-    encode_bip6_mac, Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6, Bvll6Error, Bvll6Frame,
-};
+use super::vmac_table::Heard;
+use super::{Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6, Bvll6Error, Bvll6Frame};
 
 /// Octets an NPDU starts with whatever else it holds: version and control
 /// (Clause 6.2).
@@ -51,8 +49,9 @@ pub(super) struct Receiver {
     pub(super) socket: Arc<Bip6Socket>,
     /// Where NPDUs go up to the network layer.
     pub(super) tx: mpsc::Sender<ReceivedNpdu>,
-    /// This node's B/IPv6 address as a MAC, to ignore its own frames.
-    pub(super) local_mac: [u8; 18],
+    /// The socket's UDP port, which with `local_ip` makes this node's
+    /// B/IPv6 address, to recognise its own frames.
+    pub(super) local_port: u16,
     /// This node's virtual MAC.
     pub(super) vmac: Bip6Vmac,
     /// The address the socket answers unicast on.
@@ -63,8 +62,9 @@ pub(super) struct Receiver {
     pub(super) wildcard_bind: bool,
     /// The BBMD this node is registered with as a foreign device, if any.
     pub(super) foreign_bbmd: Option<(Ipv6Addr, u16)>,
-    /// Learned VMAC to address mappings.
-    pub(super) vmac_table: VmacTable,
+    /// The neighbour table, which learns from what arrives, and the
+    /// resolutions an arrival can complete.
+    pub(super) neighbours: Arc<Resolver>,
     /// Forwarded-NPDUs refused for a group origin (#1493), shared with the
     /// transport.
     pub(super) forwarded_group_origin_drops: Arc<AtomicU64>,
@@ -133,6 +133,11 @@ impl Receiver {
             }
             Err(error) => receive_failed(&error, &self.drops),
         }
+    }
+
+    /// This node's B/IPv6 address.
+    fn local(&self) -> SocketAddrV6 {
+        SocketAddrV6::new(self.local_ip, self.local_port, 0, 0)
     }
 
     fn binding(&self) -> LocalBinding<'_> {
@@ -236,6 +241,13 @@ impl Receiver {
             );
             return None;
         }
+        // This node's own frame come back, or another node sending from
+        // this node's VMAC, which would show the network layer a frame from
+        // itself and is never learned.
+        if let Some(reason) = own_source(&message, peer, self.local(), self.vmac) {
+            self.own(reason);
+            return None;
+        }
         // Forwarded-NPDU's source VMAC identifies the original node, not the
         // forwarding BBMD. Its original address is learned from the function
         // payload in `dispatch`. A source no node sends from is never
@@ -250,9 +262,19 @@ impl Receiver {
                 | Bvlc6Function::VIRTUAL_ADDRESS_RESOLUTION_ACK
         ) && is_answerable_source(received.peer)
         {
-            self.vmac_table.learn(message.source_vmac(), peer).await;
+            self.neighbours
+                .learn(message.source_vmac(), peer, Heard::Direct);
         }
         self.dispatch(message, peer, received).await
+    }
+
+    /// Count a frame [`own_source`] or [`own_frame`] judged this node's, and
+    /// warn, throttled, of another node using this node's VMAC.
+    fn own(&self, reason: DropReason) {
+        self.drops.count(reason);
+        if reason == DropReason::OwnVmacSource {
+            self.drops.vmac_collision(self.vmac);
+        }
     }
 
     /// A frame whose header decoded, but whose function Annex U doesn't
@@ -386,19 +408,24 @@ impl Receiver {
     ///
     /// | Message | Annex U asks | This transport | Clause |
     /// | --- | --- | --- | --- |
-    /// | BVLC-Result | No reply: it reports on a request this node sent | Logged, a NAK at error level at most once per interval | U.2.1 |
-    /// | Original-Unicast-NPDU | Take the NPDU when the destination VMAC is this node's, else discard | Handed up when sent to this node's address and VMAC | U.2.2, U.3 |
-    /// | Original-Broadcast-NPDU | Take the NPDU | Handed up when sent to a BACnet multicast group | U.2.3, U.4 |
+    /// | BVLC-Result | No reply: it reports on a request this node sent | Logged, a NAK at error level at most once per interval. The configured BBMD's Address-Resolution NAK marks this node's resolutions refused; a peer's Virtual-Address-Resolution NAK fails the lookup of it | U.2.1, U.4.4 |
+    /// | Original-Unicast-NPDU | Take the NPDU when the destination VMAC is this node's, else discard | Handed up, its source VMAC as the source MAC, when sent to this node's address and VMAC | U.1.3, U.2.2, U.3 |
+    /// | Original-Broadcast-NPDU | Take the NPDU | Handed up, its source VMAC as the source MAC, when sent to a BACnet multicast group | U.1.3, U.2.3, U.4 |
     /// | Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker | Answered at an answerable source other than this node's own address, when sent to a BACnet group and targeting this VMAC; no quota | U.2.4, U.5 |
     /// | Forwarded-Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker's address it carries | Taken by a foreign device only by unicast from its configured BBMD, and by any other node only from a BACnet group with an answerable source. Answered at the carried address when the target is this VMAC and that address is usable without a scope ID; the asker is then learned. FAR-answer quota | U.2.5, U.4.4, U.5 |
-    /// | Address-Resolution-ACK | Update the VMAC table; discard one for another VMAC | Learned when sent to this node's address and VMAC | U.2.6, U.3, U.5 |
+    /// | Address-Resolution-ACK | Update the VMAC table; discard one for another VMAC | Learned when sent to this node's address and VMAC, which completes a resolution of the sender's VMAC | U.2.6, U.3, U.5 |
     /// | Virtual-Address-Resolution | Unicast a Virtual-Address-Resolution-ACK to the asker | Answered at an answerable source other than this node's own address, when sent to this node's address; no quota | U.2.7, U.5 |
-    /// | Virtual-Address-Resolution-ACK | Update the VMAC table; discard one for another VMAC | Learned when sent to this node's address and VMAC; one naming this node's VMAC as its source is logged as a collision | U.2.8, U.3, U.5 |
-    /// | Forwarded-NPDU | Take the NPDU as from its original source | Handed up from a BACnet group, or in foreign mode from the configured BBMD, when the original address is usable without a scope ID; that address is learned | U.2.9, U.4.4 |
+    /// | Virtual-Address-Resolution-ACK | Update the VMAC table; discard one for another VMAC | Learned when sent to this node's address and VMAC, which completes a lookup of the sender's address | U.2.8, U.3, U.5 |
+    /// | Forwarded-NPDU | Take the NPDU as from its original source | Handed up, the origin's VMAC as the source MAC, from a BACnet group, or in foreign mode from the configured BBMD, when the original address is usable without a scope ID; that address is learned unless the origin was heard directly within the last minute | U.2.9, U.4.4 |
     /// | Register-Foreign-Device | Reply with its NAK | Its NAK at an answerable source other than this node's own address, when sent to this node's address. NAK quota | U.4.5.3 |
     /// | Delete-Foreign-Device-Table-Entry | Reply with its NAK | The same | U.4.5.4 |
     /// | Distribute-Broadcast-To-Network | Reply with its NAK | The same | U.4.4 |
     /// | Function 0x0B | Nothing: its clause was removed | Dropped as unknown before dispatch | U.2.12 |
+    ///
+    /// Before any of this, a frame from this node's own address, or one that
+    /// names this node's VMAC as its sender's from another address, is
+    /// dropped and counted ([`own_source`], [`own_frame`]), and this node's
+    /// VMAC is never learned.
     ///
     /// A malformed Register-Foreign-Device, Delete-Foreign-Device-Table-Entry
     /// or Distribute-Broadcast-To-Network never reaches this function, but
@@ -416,13 +443,10 @@ impl Receiver {
         received: &ReceivedDatagram,
     ) -> Option<Reply> {
         match message {
-            Bvll6::OriginalUnicastNpdu { npdu, .. } | Bvll6::OriginalBroadcastNpdu { npdu, .. } => {
-                let source_mac = encode_bip6_mac(*peer.ip(), peer.port());
-                if source_mac == self.local_mac {
-                    self.drops.count(DropReason::OwnEcho);
-                    return None;
-                }
-                // A group delivery if either the function or the address
+            Bvll6::OriginalUnicastNpdu { source, npdu, .. }
+            | Bvll6::OriginalBroadcastNpdu { source, npdu } => {
+                // `handle_datagram` dropped this node's own frames. A group
+                // delivery if either the function or the address
                 // says so: an Original-Unicast-NPDU sent to a multicast group
                 // reached every node in it, so a confirmed request in it is
                 // never answered as a directed one (Clause 5.4.5.1).
@@ -431,7 +455,7 @@ impl Receiver {
                     || group_destination(received.destination, received.os_group_delivery);
                 let frame = if broadcast { "broadcast" } else { "unicast" };
                 let npdu = || Bytes::copy_from_slice(npdu);
-                self.hand_up(npdu, &source_mac, link_layer_group, frame);
+                self.hand_up(npdu, &source.octets(), link_layer_group, frame);
                 None
             }
 
@@ -450,24 +474,23 @@ impl Receiver {
                     );
                     return None;
                 }
-                let source_mac = original_address.to_octets();
+                // The 18 octets carry no scope ID, so the origin gets none.
+                let source_addr = SocketAddrV6::from(original_address);
                 // This node's own broadcast, come back through a BBMD, as
-                // where two BBMDs' multicast scopes overlap. Handing it up
-                // would show the network layer a frame from itself, and
-                // learning it would bind this node's own address to another
-                // VMAC (#1643).
-                if source_mac == self.local_mac {
-                    self.drops.count(DropReason::OwnEcho);
+                // where two BBMDs' multicast scopes overlap, or another
+                // node's from this node's VMAC. Handing it up would show the
+                // network layer a frame from itself (#1643).
+                let own = own_frame(original_source, source_addr, self.local(), self.vmac);
+                if let Some(reason) = own {
+                    self.own(reason);
                     debug!("Dropping a Forwarded-NPDU whose origin is this node");
                     return None;
                 }
-                // The 18 octets carry no scope ID, so the origin gets none.
-                let source_addr = SocketAddrV6::from(original_address);
-                // The origin is taken as the NPDU's source, so a group there
-                // would bind a forged I-Am to every node in it, or send a
-                // request's answer to them all. No node sends from one: the
-                // frame is malformed, and counted (#1493).
-                if is_bip6_group(&source_mac) {
+                // The origin is learned as the NPDU source's address, so a
+                // group there would bind a forged I-Am to every node in it,
+                // or send a request's answer to them all. No node sends from
+                // one: the frame is malformed, and counted (#1493).
+                if original_address.ip.is_multicast() {
                     self.forwarded_group_origin_drops
                         .fetch_add(1, Ordering::Relaxed);
                     debug!(
@@ -492,8 +515,9 @@ impl Receiver {
                     debug!("Dropping Forwarded-NPDU with malformed NPDU");
                     return None;
                 }
-                self.vmac_table.learn(original_source, source_addr).await;
-                self.hand_up(|| npdu, &source_mac, true, "forwarded");
+                self.neighbours
+                    .learn(original_source, source_addr, Heard::Carried);
+                self.hand_up(|| npdu, &original_source.octets(), true, "forwarded");
                 None
             }
 
@@ -551,7 +575,8 @@ impl Receiver {
                 // is learned under the same guards as the answer (a trusted
                 // path, this node's VMAC as the target, a usable address),
                 // even when the quota then holds the answer back.
-                self.vmac_table.learn(original_source, asker).await;
+                self.neighbours
+                    .learn(original_source, asker, Heard::Carried);
                 debug!(
                     vmac = ?self.vmac,
                     asker = %asker,
@@ -575,19 +600,27 @@ impl Receiver {
             }
 
             Bvll6::VirtualAddressResolutionAck { source, .. } => {
-                // VAR-ACK: someone responded to our collision check
-                if source == self.vmac {
-                    self.drops.vmac_collision(self.vmac);
-                }
+                // `handle_datagram` learned the sender; this completes the
+                // lookup of its address, if one is running.
+                self.neighbours.virtual_answered(peer, source);
                 None
             }
 
             Bvll6::BvlcResult { code, .. } => {
-                // Log BVLC-Result for diagnostics
                 if code == Bvlc6ResultCode::SUCCESSFUL_COMPLETION {
                     debug!("BIP6: BVLC-Result successful");
-                } else {
-                    self.drops.result_nak(code);
+                    return None;
+                }
+                self.drops.result_nak(code);
+                // The configured BBMD won't pass this node's
+                // Address-Resolutions on (U.4.4), as when it holds no
+                // registration for it; a peer refused its VAR.
+                if code == Bvlc6ResultCode::ADDRESS_RESOLUTION_NAK
+                    && is_configured_bbmd(peer.into(), self.foreign_bbmd)
+                {
+                    self.neighbours.refuse_resolutions();
+                } else if code == Bvlc6ResultCode::VIRTUAL_ADDRESS_RESOLUTION_NAK {
+                    self.neighbours.virtual_refused(peer);
                 }
                 None
             }
@@ -619,7 +652,7 @@ impl Receiver {
             debug!(peer = %peer, "Not answering a request from an address no node sends from");
             return None;
         }
-        if encode_bip6_mac(*peer.ip(), peer.port()) == self.local_mac {
+        if *peer.ip() == self.local_ip && peer.port() == self.local_port {
             debug!("Not answering a request from this node's own address");
             return None;
         }

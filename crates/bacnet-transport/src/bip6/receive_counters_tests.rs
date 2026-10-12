@@ -19,8 +19,8 @@ use super::frame::{encoded, raw_frame};
 use super::receive::{receive_failed, Receiver, Reply};
 use super::receive_counters::ReceiveDrops;
 use super::reply_limit::REPLIES_PER_DESTINATION;
+use super::resolver::Resolver;
 use super::socket::{Bip6Socket, Inbound};
-use super::vmac_table::VmacTable;
 use super::*;
 use crate::log_capture::LogCapture;
 use crate::port::{ReceivedNpdu, TransportPort};
@@ -92,13 +92,13 @@ impl Node {
         let receiver = Receiver {
             socket: Arc::new(socket),
             tx,
-            local_mac: encode_bip6_mac(local_ip(), LOCAL_PORT),
+            local_port: LOCAL_PORT,
             vmac: LOCAL_VMAC,
             local_ip: local_ip(),
             unicast_ips: vec![local_ip()],
             wildcard_bind: false,
             foreign_bbmd: foreign.then(|| (*bbmd().ip(), bbmd().port())),
-            vmac_table: VmacTable::new(),
+            neighbours: Resolver::with_own(LOCAL_VMAC),
             forwarded_group_origin_drops: Arc::default(),
             drops: Arc::default(),
             nak_quota: Default::default(),
@@ -405,7 +405,7 @@ async fn a_forwarded_npdu_that_is_not_an_npdu_counts_as_malformed() {
     node.feed(&forwarded(station(), &[0x02, 0x00]), peer(), GROUP)
         .await;
     node.nothing_handed_up();
-    assert_eq!(node.receiver.vmac_table.lookup(&PEER_VMAC).await, None);
+    assert_eq!(node.receiver.neighbours.lookup(PEER_VMAC), None);
     assert_eq!(node.counters(), only(|c| c.malformed_forwarded_npdu = 3));
 }
 
@@ -473,7 +473,7 @@ async fn a_forwarded_npdu_from_this_node_counts_as_own_echo() {
         let mut node = Node::new(foreign, 8).await;
         node.feed(&forwarded(own(), NPDU), from, to).await;
         node.nothing_handed_up();
-        assert_eq!(node.receiver.vmac_table.lookup(&PEER_VMAC).await, None);
+        assert_eq!(node.receiver.neighbours.lookup(PEER_VMAC), None);
         assert_eq!(
             node.counters(),
             only(|c| c.own_echo = 1),
@@ -565,7 +565,8 @@ async fn the_channel_full_warning_goes_out_at_most_once_per_interval() {
 
 /// Anyone can send a Virtual-Address-Resolution-ACK from this node's VMAC,
 /// or a BVLC-Result NAK, so neither logs above debug more than once per
-/// interval. Neither is a drop.
+/// interval. The ACK is dropped and counted as from this node's VMAC; the
+/// NAK is handled, not a drop.
 #[tokio::test(start_paused = true)]
 async fn collision_and_nak_logs_go_out_at_most_once_per_interval() {
     let (logs, _guard) = LogCapture::start();
@@ -607,7 +608,7 @@ async fn collision_and_nak_logs_go_out_at_most_once_per_interval() {
         [Level::ERROR, Level::DEBUG, Level::DEBUG, Level::ERROR]
     );
     assert_eq!(naks[3].fields["naks"], "3");
-    assert_eq!(node.counters(), Bip6ReceiveCounters::default());
+    assert_eq!(node.counters(), only(|c| c.own_vmac_source = 4));
 }
 
 /// Through a running transport's socket: a datagram larger than the receive
@@ -617,7 +618,7 @@ async fn collision_and_nak_logs_go_out_at_most_once_per_interval() {
 async fn a_running_transport_reports_its_drops() {
     let mut transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(0x0650));
     let _rx = transport.start().await.unwrap();
-    let (_, port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let port = transport.local_address().unwrap().port();
     let to = SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0);
     let sender = UdpSocket::bind("[::1]:0").await.unwrap();
 

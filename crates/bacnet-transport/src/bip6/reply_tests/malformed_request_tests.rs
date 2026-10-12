@@ -185,7 +185,7 @@ async fn other_malformed_messages_get_no_reply() {
 async fn a_running_transport_naks_a_malformed_request() {
     let mut transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(0x0632));
     let _rx = transport.start().await.unwrap();
-    let (_, port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let port = transport.local_address().unwrap().port();
     let to = SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0);
     let requester = UdpSocket::bind("[::1]:0").await.unwrap();
     let mut buf = [0u8; 64];

@@ -17,8 +17,8 @@ use tokio::sync::mpsc;
 use super::frame::encoded;
 use super::receive::{Receiver, Reply};
 use super::reply_limit::{REPLIES_PER_DESTINATION, REPLIES_PER_WINDOW, REPLY_WINDOW};
+use super::resolver::Resolver;
 use super::socket::Bip6Socket;
-use super::vmac_table::VmacTable;
 use super::*;
 use crate::port::TransportPort;
 use crate::udp_metadata::ReceivedDatagram;
@@ -82,13 +82,13 @@ async fn receiver(foreign: bool) -> Receiver {
     Receiver {
         socket: Arc::new(socket),
         tx,
-        local_mac: encode_bip6_mac(local_ip(), LOCAL_PORT),
+        local_port: LOCAL_PORT,
         vmac: LOCAL_VMAC,
         local_ip: local_ip(),
         unicast_ips: vec![local_ip()],
         wildcard_bind: false,
         foreign_bbmd: foreign.then(|| (*bbmd().ip(), bbmd().port())),
-        vmac_table: VmacTable::new(),
+        neighbours: Resolver::with_own(LOCAL_VMAC),
         forwarded_group_origin_drops: Arc::default(),
         drops: Arc::default(),
         nak_quota: Default::default(),
@@ -301,7 +301,7 @@ async fn a_source_no_node_sends_from_is_not_learned() {
     }
     for (vmac, source, expected) in checks {
         assert_eq!(
-            receiver.vmac_table.lookup(&vmac).await,
+            receiver.neighbours.lookup(vmac),
             expected,
             "{vmac:?} from {source}"
         );
@@ -345,10 +345,7 @@ async fn address_resolution_is_answered_only_for_this_vmac() {
         reply(&receiver, address_resolution(OTHER_VMAC), sender(), group).await,
         None
     );
-    assert_eq!(
-        receiver.vmac_table.lookup(&ASKER_VMAC).await,
-        Some(sender())
-    );
+    assert_eq!(receiver.neighbours.lookup(ASKER_VMAC), Some(sender()));
     assert_eq!(
         reply(&receiver, address_resolution(LOCAL_VMAC), sender(), group).await,
         Some(ack_to(sender()))
@@ -545,7 +542,7 @@ async fn a_nak_flood_does_not_stop_a_far_answer() {
 async fn a_running_transport_naks_a_registration() {
     let mut transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(0x0632));
     let _rx = transport.start().await.unwrap();
-    let (_, port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let port = transport.local_address().unwrap().port();
     let to = SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0);
     let requester = UdpSocket::bind("[::1]:0").await.unwrap();
     let mut buf = [0u8; 64];
