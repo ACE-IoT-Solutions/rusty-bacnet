@@ -21,6 +21,10 @@ use crate::sc_frame::{decode_sc_bvlc_result, ScMessage};
 use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, Vmac, BROADCAST_VMAC};
 use bacnet_types::error::Error;
 
+pub use crate::sc_limits::{
+    BVLC_HEADER_LENGTH, MAX_NPDU_LENGTH, MIN_ROUTED_DATA_OPTIONS_LENGTH, MIN_ROUTED_NPDU_LENGTH,
+};
+
 mod address_resolution;
 mod advertisement;
 mod connect_result;
@@ -67,7 +71,8 @@ pub(crate) use random48::set_test_random48_vmac_generator;
 pub use reconnect::ScReconnectConfig;
 pub(super) use transport_config::publish_effective_max_apdu_length;
 
-const DEFAULT_MAX_APDU_LENGTH: u16 = 1476;
+const DEFAULT_MAX_APDU_LENGTH: u16 =
+    crate::sc_limits::LOCAL_RECEIVE_NPDU_CAPACITY - crate::sc_limits::LOCAL_NPDU_HEADER_LEN;
 use crate::sc_limits::LOCAL_NPDU_HEADER_LEN;
 const SC_ENCAPSULATED_NPDU_BASE_HEADER_LEN: u16 = 10;
 
@@ -104,6 +109,8 @@ pub struct ScTransport<W: WebSocketPort> {
     #[cfg(feature = "sc-tls")]
     direct_listener_shutdown: Option<watch::Sender<bool>>,
     connection: Option<Arc<Mutex<ScConnection>>>,
+    local_max_bvlc_length: u16,
+    local_max_npdu_length: u16,
     effective_max_apdu_length: Arc<AtomicU16>,
     state_tx: watch::Sender<ScConnectionState>,
     health_tx: watch::Sender<TransportHealth>,
@@ -196,7 +203,13 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         ));
         self.npdu_admission = Some(npdu_admission.clone());
 
-        let connection = ScConnection::new(self.local_vmac, self.device_uuid);
+        crate::sc_limits::validate_router_receive_limits(
+            self.local_max_npdu_length,
+            self.local_max_bvlc_length,
+        )?;
+        let mut connection = ScConnection::new(self.local_vmac, self.device_uuid);
+        connection.max_bvlc_length = self.local_max_bvlc_length;
+        connection.max_apdu_length = self.local_max_npdu_length;
         let conn = Arc::new(Mutex::new(connection));
         self.connection = Some(conn.clone());
 

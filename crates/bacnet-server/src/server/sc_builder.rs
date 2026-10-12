@@ -260,26 +260,15 @@ impl ScServerBuilder {
         self.config.cov_policy.validate()?;
         super::segmented_receive::validate_segment_timeout(&self.config, &self.db)?;
 
-        let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&self.hub_url, tls_config.clone())
-            .await?;
-
-        let mut transport = bacnet_transport::sc::ScTransport::new(ws, self.vmac)
-            .with_device_uuid(self.device_uuid)
-            .with_heartbeat_interval_ms(self.heartbeat_interval_ms)
-            .with_heartbeat_timeout_ms(self.heartbeat_timeout_ms);
-        if let Some(rc) = self.reconnect {
-            let hub_url = self.hub_url.clone();
-            let tls_config = tls_config.clone();
-            transport = transport
-                .with_connector(move || {
-                    let hub_url = hub_url.clone();
-                    let tls_config = tls_config.clone();
-                    async move {
-                        bacnet_transport::sc_tls::TlsWebSocket::connect(&hub_url, tls_config).await
-                    }
-                })
-                .with_reconnect(rc);
-        }
+        let sc_config = bacnet_transport::sc_tls::ScTlsTransportConfig::new(
+            self.hub_url,
+            self.vmac,
+            self.device_uuid,
+        )
+        .with_heartbeat(self.heartbeat_interval_ms, self.heartbeat_timeout_ms)
+        .with_reconnect(self.reconnect);
+        let transport =
+            bacnet_transport::sc_tls::connect_sc_transport(sc_config, tls_config).await?;
 
         BACnetServer::start_with_clock_mode_and_bindings(
             self.config,

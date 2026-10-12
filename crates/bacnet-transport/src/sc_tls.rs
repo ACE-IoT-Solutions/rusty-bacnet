@@ -6,6 +6,8 @@
 
 mod tls_config;
 pub use tls_config::ScNodeTlsConfig;
+mod transport;
+pub use transport::{connect_sc_transport, ScTlsTransportConfig};
 
 pub(crate) mod direct_accept;
 pub use direct_accept::{DirectAcceptConfig, DirectListener, DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS};

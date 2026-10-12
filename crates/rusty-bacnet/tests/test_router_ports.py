@@ -31,6 +31,8 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reconnect_forever", parameters)
         self.assertNotIn("retry_forever", parameters)
         self.assertFalse(configured.reconnect_forever)
+        self.assertEqual(configured.max_npdu_length, 1497)
+        self.assertEqual(configured.max_bvlc_length, 5705)
         self.assertIsInstance(configured.local_vmac, bytes)
         self.assertIsInstance(configured.device_uuid, bytes)
         with self.assertRaises(AttributeError):
@@ -47,6 +49,9 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
             {"reconnect_initial_delay_ms": 0},
             {"reconnect_initial_delay_ms": 20, "reconnect_max_delay_ms": 10},
             {"reconnect_max_retries": 0},
+            {"max_npdu_length": 1496},
+            {"max_bvlc_length": 5704},
+            {"max_npdu_length": 61328, "max_bvlc_length": 65535},
         ):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 RouterScPort(**(valid | change))

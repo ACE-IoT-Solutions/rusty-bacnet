@@ -98,7 +98,7 @@ async fn node_and_hub_advertise_distinct_full_message_and_npdu_capacities() {
         let Message::Binary(wire) = server.next().await.unwrap().unwrap() else {
             panic!("expected ConnectRequest")
         };
-        assert_eq!(&wire[26..30], &[0x16, 0x49, 0x05, 0xc6]); // 5705 full BVLC, 1478 NPDU
+        assert_eq!(&wire[26..30], &[0x16, 0x49, 0x05, 0xd9]); // 5705 full BVLC, 1497 NPDU
         let mut reply = wire.to_vec();
         reply[0] = 7;
         reply[4..10].fill(0x10);

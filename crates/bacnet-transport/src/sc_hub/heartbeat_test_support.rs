@@ -260,5 +260,7 @@ pub(super) fn probe_runtime() -> super::timing::HubTiming {
         origin: tokio::time::Instant::now() - Duration::from_secs(100),
         policy: ScHubProbePolicy::default(),
         relay_send_budget: Duration::from_secs(5),
+        max_bvlc_length: HUB_MAX_BVLC_LENGTH,
+        max_npdu_length: HUB_MAX_NPDU_LENGTH,
     }
 }

@@ -100,8 +100,13 @@ pub(super) async fn run(
             }
         };
 
-        if data.len() > HUB_MAX_BVLC_LENGTH as usize {
-            super::malformed_diag::oversize(&mut malformed_diag, peer_addr, data.len());
+        if data.len() > timing.max_bvlc_length as usize {
+            super::malformed_diag::oversize(
+                &mut malformed_diag,
+                peer_addr,
+                data.len(),
+                timing.max_bvlc_length,
+            );
             continue;
         }
 
@@ -166,7 +171,7 @@ pub(super) async fn run(
         }
 
         if sc_msg.function == ScFunction::EncapsulatedNpdu
-            && sc_msg.payload.len() > HUB_MAX_NPDU_LENGTH as usize
+            && sc_msg.payload.len() > timing.max_npdu_length as usize
         {
             super::malformed_diag::npdu_exceeds(&mut malformed_diag);
             continue;
@@ -524,7 +529,13 @@ pub(super) async fn run(
                     lease.vmac = Some(vmac);
                 }
 
-                let accept = connect_accept_message(sc_msg.message_id, hub_vmac, hub_uuid);
+                let accept = connect_accept_message(
+                    sc_msg.message_id,
+                    hub_vmac,
+                    hub_uuid,
+                    timing.max_bvlc_length,
+                    timing.max_npdu_length,
+                );
                 let mut buf = BytesMut::new();
                 encode_sc_message(&mut buf, &accept);
 

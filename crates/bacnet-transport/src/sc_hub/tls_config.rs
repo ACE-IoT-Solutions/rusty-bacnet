@@ -96,6 +96,8 @@ pub struct ScHubTlsConfig {
     graceful_timeouts: super::ScHubGracefulTimeouts,
     probe_policy: super::ScHubProbePolicy,
     relay_send_budget: std::time::Duration,
+    max_bvlc_length: u16,
+    max_npdu_length: u16,
 }
 
 impl ScHubTlsConfig {
@@ -150,6 +152,8 @@ impl ScHubTlsConfig {
             graceful_timeouts: super::ScHubGracefulTimeouts::default(),
             probe_policy: super::ScHubProbePolicy::default(),
             relay_send_budget: std::time::Duration::from_secs(5),
+            max_bvlc_length: crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH,
+            max_npdu_length: crate::sc_limits::LOCAL_RECEIVE_NPDU_CAPACITY,
         })
     }
 
@@ -299,6 +303,34 @@ impl fmt::Debug for ScHubTlsConfig {
 }
 
 impl ScHubTlsConfig {
+    /// Validate router-capable receive limits without binding a socket.
+    ///
+    /// BACnet/SC routers must accept at least 1497-octet NPDUs and 4192 octets
+    /// of Data Options in addition to the 16-octet BVLC header and NPDU.
+    pub fn validate_receive_limits(
+        max_npdu_length: u16,
+        max_bvlc_length: u16,
+    ) -> Result<(), Error> {
+        crate::sc_limits::validate_router_receive_limits(max_npdu_length, max_bvlc_length)
+    }
+
+    /// Configure the limits advertised by Connect-Accept and enforced on input.
+    pub fn with_receive_limits(
+        mut self,
+        max_npdu_length: u16,
+        max_bvlc_length: u16,
+    ) -> Result<Self, Error> {
+        Self::validate_receive_limits(max_npdu_length, max_bvlc_length)?;
+        self.max_npdu_length = max_npdu_length;
+        self.max_bvlc_length = max_bvlc_length;
+        Ok(self)
+    }
+
+    /// Configured `(Max-NPDU-Length, Max-BVLC-Length)` receive limits.
+    pub fn receive_limits(&self) -> (u16, u16) {
+        (self.max_npdu_length, self.max_bvlc_length)
+    }
+
     /// Validate the transit relay budget before TLS file I/O or bind.
     /// Positive whole milliseconds must be at most `i64::MAX` (elapsed-tick
     /// headroom) and fit the platform monotonic clock.

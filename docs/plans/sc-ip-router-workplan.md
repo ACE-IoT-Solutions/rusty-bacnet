@@ -272,15 +272,15 @@ data-option, priority, hop-count, and rejection tests.
 
 Crates: `bacnet-transport`, `bacnet-server` (hub).
 
-- [ ] Add `with_max_npdu_length` and `with_max_bvlc_length` builders on
+- [x] Add `with_max_npdu_length` and `with_max_bvlc_length` builders on
       `ScTransport`; validate against `sc_limits` and the u16 fields in
       Connect-Request.
-- [ ] Set the node default Max-NPDU to the Annex AB value already cited in
+- [x] Set the node default Max-NPDU to the Annex AB value already cited in
       `sc_limits.rs` (1497) rather than 1476, and confirm against the
       standard before merging; document the effective APDU budget.
-- [ ] Make the hub's advertised Max-BVLC and Max-NPDU configurable in the
+- [x] Make the hub's advertised Max-BVLC and Max-NPDU configurable in the
       Rust hub and expose them on Python `ScHub`.
-- [ ] Extend `max_apdu_tests.rs` and `test_sc_zero_limits.py` for the new
+- [x] Extend the native max-APDU and installed-wheel configuration contracts for the new
       limits and for a B/IP-sized 1476-byte APDU crossing the SC leg intact.
 
 Acceptance: a 1476-byte APDU with a full routed NPCI forwards from B/IP to SC
@@ -290,11 +290,11 @@ without hitting `send.rs:47`; anything larger is rejected with reason 4.
 
 Crates: `bacnet-transport`, `bacnet-runtime`, `bacnet-server`, `rusty-bacnet`.
 
-- [ ] Introduce a single `sc-tls` helper that takes an SC port config
-      (hub URLs, VMAC, UUID, PEM paths, heartbeat, reconnect) and returns a
+- [x] Introduce a single `sc-tls` helper that takes an SC port config
+      (hub URLs, VMAC, UUID, validated TLS policy, heartbeat, reconnect) and returns a
       constructed `ScTransport<TlsWebSocket>` using the existing
       `select_initial_sc_websocket` failover semantics.
-- [ ] Route `configuration.rs`, `bacnet-server/src/server/sc_builder.rs`, and
+- [x] Route `configuration.rs`, `bacnet-server/src/server/sc_builder.rs`, and
       the Python client and server lifecycles through it without changing
       their behavior.
 - [x] `RuntimeScAttachment`: add required keyword `device_uuid: bytes` with
@@ -317,7 +317,7 @@ Crates: `rusty-bacnet`.
       require at least two ports and at most one B/IP port per interface and
       UDP port. The removed upstream virtual transport and legacy constructor
       are not revived on 0.12.
-- [ ] Consolidate `start()` SC construction through the deferred Phase 5
+- [x] Consolidate `start()` SC construction through the Phase 5
       helper. Current SC dial failures already surface as `RuntimeError`
       naming the port index and hub URL.
 - [x] Add `port_health() -> list[RouterPortHealth]` and

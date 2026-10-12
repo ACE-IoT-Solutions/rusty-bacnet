@@ -12,8 +12,6 @@ use tracing::{debug, warn};
 use crate::sc::diagnostic_throttle::DiagnosticThrottle;
 use crate::sc_frame::{ScFunction, Vmac};
 
-use super::HUB_MAX_BVLC_LENGTH;
-
 /// Generic throttled emission: logs once per window, counts the rest.
 pub(super) fn emit(diag: &mut DiagnosticThrottle, log: impl FnOnce(u64)) {
     if diag.should_emit_now() {
@@ -22,12 +20,17 @@ pub(super) fn emit(diag: &mut DiagnosticThrottle, log: impl FnOnce(u64)) {
     }
 }
 
-pub(super) fn oversize(diag: &mut DiagnosticThrottle, peer_addr: SocketAddr, len: usize) {
+pub(super) fn oversize(
+    diag: &mut DiagnosticThrottle,
+    peer_addr: SocketAddr,
+    len: usize,
+    max_bvlc_length: u16,
+) {
     emit(diag, |suppressed| {
         if suppressed > 0 {
-            warn!("Hub: frame from {peer_addr} is {len} bytes, exceeds hub Max-BVLC-Length {HUB_MAX_BVLC_LENGTH}, dropping (suppressed {suppressed} similar diagnostics)");
+            warn!("Hub: frame from {peer_addr} is {len} bytes, exceeds hub Max-BVLC-Length {max_bvlc_length}, dropping (suppressed {suppressed} similar diagnostics)");
         } else {
-            warn!("Hub: frame from {peer_addr} is {len} bytes, exceeds hub Max-BVLC-Length {HUB_MAX_BVLC_LENGTH}, dropping");
+            warn!("Hub: frame from {peer_addr} is {len} bytes, exceeds hub Max-BVLC-Length {max_bvlc_length}, dropping");
         }
     });
 }

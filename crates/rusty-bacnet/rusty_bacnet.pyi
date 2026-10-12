@@ -1870,6 +1870,8 @@ class RouterScPort:
         reconnect_max_delay_ms: int = 600000,
         reconnect_max_retries: int = 10,
         reconnect_forever: bool = False,
+        max_npdu_length: int = 1497,
+        max_bvlc_length: int = 5705,
     ) -> None: ...
     network_number: int
     primary_hub: str
@@ -1885,6 +1887,8 @@ class RouterScPort:
     reconnect_max_delay_ms: int
     reconnect_max_retries: int
     reconnect_forever: bool
+    max_npdu_length: int
+    max_bvlc_length: int
 
 class RouterPortHealth:
     config_index: int
@@ -4344,6 +4348,8 @@ class ScHub:
         broadcast_global_burst: int = 4096,
         broadcast_global_per_second: int = 512,
         relay_send_budget_ms: int = 5000,
+        max_npdu_length: int = 1497,
+        max_bvlc_length: int = 5705,
         certificate_bindings: Sequence[ScHubCertificateBinding] | None = None,
     ) -> None: ...
 

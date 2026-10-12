@@ -35,6 +35,8 @@ impl<W: WebSocketPort> ScTransport<W> {
             #[cfg(feature = "sc-tls")]
             direct_listener_shutdown: None,
             connection: None,
+            local_max_bvlc_length: crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH,
+            local_max_npdu_length: crate::sc_limits::LOCAL_RECEIVE_NPDU_CAPACITY,
             effective_max_apdu_length: Arc::new(AtomicU16::new(DEFAULT_MAX_APDU_LENGTH)),
             state_tx,
             health_tx,
@@ -75,6 +77,23 @@ impl<W: WebSocketPort> ScTransport<W> {
     /// [`connection_state_changes`](Self::connection_state_changes).
     pub fn with_device_uuid(mut self, uuid: [u8; 16]) -> Self {
         self.device_uuid = uuid;
+        self
+    }
+
+    /// Set the maximum NPDU length advertised by this router-capable SC port.
+    ///
+    /// Startup validates the complete NPDU/BVLC pair against Table 6-1 and
+    /// the required 4,192-octet routed Data Options capacity.
+    pub fn with_max_npdu_length(mut self, length: u16) -> Self {
+        self.local_max_npdu_length = length;
+        self
+    }
+
+    /// Set the maximum BVLC message length advertised by this SC port.
+    ///
+    /// Startup validates the complete NPDU/BVLC pair before transport I/O.
+    pub fn with_max_bvlc_length(mut self, length: u16) -> Self {
+        self.local_max_bvlc_length = length;
         self
     }
 

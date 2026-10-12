@@ -198,6 +198,7 @@ pub(super) async fn serve_connection(
 ) {
     let clients = &ctx.clients;
     let tls_deadline = admission.tls_deadline;
+    let max_bvlc_length = ctx.timing.max_bvlc_length;
     // TLS handshake
     let tls_stream = match boxed(|| {
         super::deadlines::before(tls_deadline, acceptor.accept(tcp_stream).into_fallible())
@@ -246,9 +247,7 @@ pub(super) async fn serve_connection(
                     );
                     Ok(response)
                 },
-                Some(crate::sc_limits::websocket(
-                    crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH as usize,
-                )),
+                Some(crate::sc_limits::websocket(max_bvlc_length as usize)),
             ),
         )
     })

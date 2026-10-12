@@ -89,6 +89,10 @@ pub struct PyRouterScPort {
     pub(super) reconnect_max_retries: u32,
     #[pyo3(get)]
     pub(super) reconnect_forever: bool,
+    #[pyo3(get)]
+    pub(super) max_npdu_length: u16,
+    #[pyo3(get)]
+    pub(super) max_bvlc_length: u16,
 }
 
 #[pymethods]
@@ -108,7 +112,9 @@ impl PyRouterScPort {
         reconnect_initial_delay_ms=10000,
         reconnect_max_delay_ms=600000,
         reconnect_max_retries=10,
-        reconnect_forever=false
+        reconnect_forever=false,
+        max_npdu_length=1497,
+        max_bvlc_length=5705
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -126,6 +132,8 @@ impl PyRouterScPort {
         reconnect_max_delay_ms: u64,
         reconnect_max_retries: u32,
         reconnect_forever: bool,
+        max_npdu_length: u16,
+        max_bvlc_length: u16,
     ) -> PyResult<Self> {
         validate_network_number(network_number)?;
         validate_hub(&primary_hub, "primary_hub")?;
@@ -189,6 +197,11 @@ impl PyRouterScPort {
                 "reconnect_max_retries must be greater than zero unless reconnect_forever is true",
             ));
         }
+        bacnet_transport::sc_hub::ScHubTlsConfig::validate_receive_limits(
+            max_npdu_length,
+            max_bvlc_length,
+        )
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
         Ok(Self {
             network_number,
             primary_hub,
@@ -204,6 +217,8 @@ impl PyRouterScPort {
             reconnect_max_delay_ms,
             reconnect_max_retries,
             reconnect_forever,
+            max_npdu_length,
+            max_bvlc_length,
         })
     }
 }

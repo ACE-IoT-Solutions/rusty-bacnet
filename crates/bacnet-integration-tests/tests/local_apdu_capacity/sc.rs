@@ -9,7 +9,7 @@ use bytes::{Bytes, BytesMut};
 async fn accept(hub: &LoopbackWebSocket, npdu: u16, bvlc: u16) {
     let request = decode_sc_message(&hub.recv().await.unwrap()).unwrap();
     assert_eq!(request.function, ScFunction::ConnectRequest);
-    assert_eq!(&request.payload[22..], &[0x16, 0x49, 0x05, 0xc6]);
+    assert_eq!(&request.payload[22..], &[0x16, 0x49, 0x05, 0xd9]);
     let mut payload = vec![0x10; 6];
     payload.extend_from_slice(&[0x20; 16]);
     payload.extend_from_slice(&bvlc.to_be_bytes());
