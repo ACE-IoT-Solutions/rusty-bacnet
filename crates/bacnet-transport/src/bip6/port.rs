@@ -38,7 +38,7 @@ pub const BACNET_IPV6_MULTICAST: Ipv6Addr = BACNET_IPV6_MULTICAST_LINK_LOCAL;
 /// Default BACnet/IPv6 port (same as BIP: 0xBAC0 = 47808).
 pub const DEFAULT_BACNET6_PORT: u16 = 0xBAC0;
 
-/// Encode an IPv6 address + port into the 18-octet B/IPv6 address, IPv6
+/// Encode an IPv6 address + port into the 18 octets of a B/IPv6 address, IPv6
 /// address then port, both high octet first (Annex U.1.1.2). This is the
 /// address a BVLL message carries, not the transport's MAC, which is the
 /// 3-octet VMAC (U.1.3).
@@ -46,7 +46,7 @@ pub fn encode_bip6_mac(ip: Ipv6Addr, port: u16) -> [u8; 18] {
     Bip6Address::new(ip, port).to_octets()
 }
 
-/// Decode an 18-octet B/IPv6 address into an IPv6 address + port (Annex
+/// Decode the 18 octets of a B/IPv6 address into an IPv6 address + port (Annex
 /// U.1.1.2). See [`encode_bip6_mac`].
 pub fn decode_bip6_mac(mac: &[u8]) -> Result<(Ipv6Addr, u16), Error> {
     let address = Bip6Address::from_slice(mac).map_err(bvll6_error)?;

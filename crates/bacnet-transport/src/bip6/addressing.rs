@@ -1,5 +1,5 @@
 //! How a B/IPv6 transport names this node and its peers: by VMAC, the
-//! 3-octet address the network layer uses on a B/IPv6 network (U.1.3), with
+//! three octets the network layer knows a B/IPv6 node by (U.1.3), with
 //! the B/IPv6 address (IPv6 address and UDP port) underneath.
 
 use std::net::SocketAddrV6;
