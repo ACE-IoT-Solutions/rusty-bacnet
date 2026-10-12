@@ -180,7 +180,7 @@ jobs:
       NO_STD_TARGETS: thumbv6m-none-eabi thumbv7em-none-eabihf riscv32imac-unknown-none-elf
       # Targets the firmware link test builds its images for (#1626), each with
       # budgets in firmware/link/size-budget.toml; in the cache key too.
-      FIRMWARE_TARGETS: thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf
+      FIRMWARE_TARGETS: thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf thumbv7em-none-eabihf
       # pcap for bacnet-cli, whose build script loads libpcap.
       APT_PACKAGES: libpcap-dev
     steps:

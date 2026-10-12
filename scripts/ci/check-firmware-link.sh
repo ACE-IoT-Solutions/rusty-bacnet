@@ -32,7 +32,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
-default_targets=(thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf)
+default_targets=(thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf thumbv7em-none-eabihf)
 images=(mstp bip apdu)
 # One cargo run per feature set, as its arguments: mstp and bip without the
 # crate's default `alloc` feature, which would link alloc into them, then

@@ -1,0 +1,48 @@
+# Stack budget for the firmware link test's images under emulation (#1660),
+# in octets: one table per board, `[<board>]`, named by its QEMU machine,
+# with a key per image. scripts/emu/emulate-firmware.sh, the manual
+# emulation check, runs each image on each board; the image reports how
+# deep its stack went, and scripts/ci/firmware_size.py --stack fails the
+# run when a peak is over its budget, or when an image the table lists has
+# no peak or a peak has no budget; a run of every board also fails on a
+# table for a board it doesn't have. CI never runs the emulator, so CI never
+# reads this file; the size budget, firmware/link/size-budget.toml, is the
+# one it checks. See docs/ci.md, "Emulation (manual)".
+#
+# A peak is the depth of the deepest word the scenario wrote, measured from
+# the stack paint (firmware/link/src/bin/emulate/mod.rs). The board sets
+# the target the image is built for, so each board has its own table, though
+# lm3s6965evb's and netduinoplus2's are the same today.
+#
+# Each budget is the peak measured when it was set plus 25%, rounded up to
+# 16 octets, as the size budgets are rounded: what `emulate-firmware.sh
+# --suggest` prints. Raising a budget is a reviewed change: say why the stack
+# grew. Re-measure after a toolchain bump.
+#
+# Measured 2026-10-12 with Rust 1.99.0 and QEMU 10.0.13, as mstp / bip /
+# apdu peaks:
+#
+#   microbit        4664 / 2220 / 2768
+#   lm3s6965evb     4228 / 2100 / 2536
+#   netduinoplus2   4228 / 2100 / 2536
+#   sifive_e        4100 / 2020 / 2464
+
+[microbit]
+mstp = 5840
+bip = 2784
+apdu = 3472
+
+[lm3s6965evb]
+mstp = 5296
+bip = 2640
+apdu = 3184
+
+[netduinoplus2]
+mstp = 5296
+bip = 2640
+apdu = 3184
+
+[sifive_e]
+mstp = 5136
+bip = 2528
+apdu = 3088
