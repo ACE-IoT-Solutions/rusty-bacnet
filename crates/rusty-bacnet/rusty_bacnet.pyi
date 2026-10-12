@@ -1892,11 +1892,17 @@ class BACnetClient:
         mstp_mac: int = 1,
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
+        mstp_extended_frames: bool = False,
         sc_device_uuid: Optional[bytes | bytearray] = None,
         share_port_by_address: bool = False,
         min_request_interval_ms: int = 0,
     ) -> None:
-        """``share_port_by_address`` (B/IP only, default False): bind the
+        """``mstp_extended_frames`` (MS/TP only, default False): take and send
+        extended frames (Types 32 and 33), which carry NPDUs of up to 1497
+        octets, so APDUs of up to 1476; without it MS/TP carries 480-octet
+        APDUs and counts an extended frame it hears as invalid.
+
+        ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so clients and devices on other addresses
         of this host can share the port. Needs an explicit interface and a
         nonzero port; broadcasts and unicast then arrive in no fixed order.
@@ -2948,6 +2954,7 @@ class BACnetServer:
         mstp_mac: int = 1,
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
+        mstp_extended_frames: bool = False,
         max_confirmed_in_flight: int = 64,
         max_unconfirmed_in_flight: int = 32,
         max_confirmed_in_flight_per_peer: int = 16,
@@ -2982,7 +2989,11 @@ class BACnetServer:
         """``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so devices on other addresses of this host
         can share the port. Needs an explicit interface and a nonzero port;
-        broadcasts and unicast then arrive in no fixed order."""
+        broadcasts and unicast then arrive in no fixed order.
+
+        ``mstp_extended_frames`` (MS/TP only, default False): take and send
+        extended frames (Types 32 and 33), which carry NPDUs of up to 1497
+        octets, so the device accepts APDUs of up to 1476 instead of 480."""
         ...
 
     # --- Analog objects ---

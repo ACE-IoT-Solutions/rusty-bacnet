@@ -233,12 +233,11 @@ fn a_reserved_cobs_frame_counts_only_for_this_station() {
     assert!(counted_invalid(600, &header(BROADCAST_MAC)));
 }
 
-/// The core doesn't take extended frames yet: the codec decodes them, but
-/// the core drops one its storage holds as an unsupported type, and one its
-/// storage can't hold as too long. Either way it counts only when it is for
-/// this station or broadcast, as a COBS frame did before the codec decoded
-/// them. Both types, up to the largest NPDU: more data than a standard frame
-/// carries must never reach the core's frame copy.
+/// Without `extended_frames` the core takes no extended frame: the codec
+/// decodes them, but the core drops one its storage holds as an unsupported
+/// type, and one its storage can't hold as too long. Either way it counts
+/// only when it is for this station or broadcast, as a node without COBS
+/// support counts it. Both types, up to the largest NPDU.
 #[test]
 fn an_extended_frame_counts_only_for_this_station() {
     let npdus: [&[u8]; 2] = [&[0x11; 100], &[0x22; MAX_EXTENDED_MPDU_DATA]];

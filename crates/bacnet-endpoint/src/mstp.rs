@@ -209,6 +209,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             max_master: self.max_master,
             max_info_frames: self.max_info_frames,
             baud_rate: self.baud_rate,
+            // A device, not a router: standard frames, as MSTP_MAX_APDU
+            // assumes (Clause 9.3 requires extended frames of routers only).
+            extended_frames: false,
         }
     }
 

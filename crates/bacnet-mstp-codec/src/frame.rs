@@ -115,9 +115,11 @@ impl FrameType {
     }
 
     /// Whether this is one of the two extended data types, 32 and 33: the
-    /// COBS-encoded types the codec encodes and decodes. The rest of the
-    /// COBS range, 34-127, is reserved.
-    pub(crate) const fn is_extended_data(self) -> bool {
+    /// COBS-encoded types the codec encodes and decodes, which carry BACnet
+    /// NPDUs of 502 to [`MAX_EXTENDED_MPDU_DATA`](crate::MAX_EXTENDED_MPDU_DATA)
+    /// octets (Clauses 9.3.9, 9.3.10). The rest of the COBS range, 34-127,
+    /// is reserved.
+    pub const fn is_extended_data(self) -> bool {
         matches!(self.to_raw(), 0x20 | 0x21)
     }
 

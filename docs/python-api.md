@@ -596,9 +596,15 @@ OS.
 
 `transport="mstp"` takes the keyword-only `serial_port` (required),
 `mstp_baud` (9600, 19200, 38400, 57600, 76800 or 115200; default 38400),
-`mstp_mac` (default 1), `mstp_max_master` (default 127) and
-`mstp_max_info_frames` (default 1). `BACnetServer` takes the same options, and
-`MstpEndpoint` its own `serial_port`. The link runs the same Clause 9 master
+`mstp_mac` (default 1), `mstp_max_master` (default 127),
+`mstp_max_info_frames` (default 1) and `mstp_extended_frames` (default False).
+`BACnetServer` takes the same options, and `MstpEndpoint` its own
+`serial_port` and all of them but `mstp_extended_frames`.
+`mstp_extended_frames=True` turns on extended frames (Types 32 and 33), which
+carry NPDUs of up to 1497 octets, so the link carries APDUs of up to 1476
+instead of 480; without it, an extended frame the link hears counts as an
+invalid frame. Routers need them (Clause 9.3); for a device they are
+optional. The link runs the same Clause 9 master
 core as the Rust transport. The port is taken not to hear its own frames
 (transceiver receiver off while transmitting); an adapter that echoes them can
 be declared only from Rust for now (`TokioSerialPort::with_echo`, see

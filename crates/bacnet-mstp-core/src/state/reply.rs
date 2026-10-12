@@ -17,11 +17,11 @@ use super::*;
 /// reports can only be later than the requester's last octet.
 const REPLY_GUARD: Duration = Duration::from_millis(1);
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Hand a request to the application and open its reply window.
     pub(super) fn begin_request(
         &mut self,
-        frame: &OwnedFrame,
+        frame: Frame<'_>,
         now: Instant,
     ) -> Result<(), CoreError> {
         let id = RequestId::new(self.next_request_generation);
@@ -56,6 +56,12 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// decision is refused that way, [`ReplyDecision::Abandoned`] included,
     /// and the request is dropped unanswered and counted in
     /// [`MstpCounters::expired_requests`].
+    ///
+    /// A data answer longer than this station sends
+    /// ([`MstpCoreConfig::max_npdu_length`]) is refused with
+    /// [`CoreError::ReplyOversize`]. With extended frames on, one of 502
+    /// octets or more goes out as BACnet Extended Data Not Expecting Reply
+    /// (Type 33), whatever the type of the request.
     pub fn complete_request(
         &mut self,
         id: RequestId,
@@ -75,11 +81,14 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
             ReplyDecision::Data(_) if now >= request.decide_by => {
                 return Err(CoreError::RequestExpired);
             }
-            ReplyDecision::Data(data) if data.len() > MAX_STANDARD_MPDU_DATA => {
+            ReplyDecision::Data(data) if data.len() > self.config.max_npdu_length() => {
                 return Err(CoreError::ReplyOversize {
                     length: data.len(),
-                    maximum: MAX_STANDARD_MPDU_DATA,
+                    maximum: self.config.max_npdu_length(),
                 });
+            }
+            ReplyDecision::Data(data) if data.len() > MAX_STANDARD_MPDU_DATA => {
+                (FrameType::BACnetExtendedDataNotExpectingReply, data)
             }
             ReplyDecision::Data(data) => (FrameType::BACnetDataNotExpectingReply, data),
             ReplyDecision::Postponed | ReplyDecision::Cancelled => {

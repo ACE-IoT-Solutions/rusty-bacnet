@@ -1,7 +1,7 @@
 //! What a scenario configures: master nodes, their adapters and
 //! applications, scripted stations' replies, and faults.
 
-use bacnet_mstp_codec::{Frame, FrameType, MAX_STANDARD_FRAME_LENGTH};
+use bacnet_mstp_codec::{Frame, FrameType, MAX_COBS_FRAME_LENGTH};
 use bacnet_mstp_core::{Duration, Instant, MstpCoreConfig};
 
 /// How a simulated master's platform adapter behaves.
@@ -162,6 +162,17 @@ impl MasterSpec {
         self.powered = false;
         self
     }
+
+    /// Turn on extended frames (Types 32 and 33), as a routing node must
+    /// have them: the core's `with_extended_frames`, with receive storage
+    /// for the longest extended frame. Without it a node takes extended
+    /// frames as a node without COBS support does, with standard receive
+    /// storage.
+    #[must_use]
+    pub fn extended_frames(mut self) -> Self {
+        self.config = self.config.with_extended_frames();
+        self
+    }
 }
 
 /// How an injected corruption damages one octet.
@@ -267,13 +278,14 @@ impl ScriptSend {
         source: u8,
         data: &[u8],
     ) -> Self {
-        let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
+        let mut octets = vec![0u8; MAX_COBS_FRAME_LENGTH];
         let length = Frame::new(frame_type, destination, source, data)
-            .encode_into(&mut wire)
+            .encode_into(&mut octets)
             .expect("a frame the codec accepts");
+        octets.truncate(length);
         Self {
             after,
-            octets: wire[..length].to_vec(),
+            octets,
             malformed: false,
         }
     }

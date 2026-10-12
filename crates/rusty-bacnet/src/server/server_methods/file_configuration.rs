@@ -205,6 +205,7 @@ mod tests {
             mstp_mac: 1,
             mstp_max_master: 127,
             mstp_max_info_frames: 1,
+            mstp_extended_frames: false,
             dcc_password: None,
             mutation_policy: bacnet_server::mutation::MutationPolicy::default(),
             dcc_policy: server::DccPolicy::default(),

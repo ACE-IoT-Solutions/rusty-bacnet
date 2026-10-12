@@ -10,6 +10,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use bacnet_mstp_codec::{MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA};
+
 use bacnet_mstp_core::{
     AllocQueues, DequeuedNpdu, Duration as CoreDuration, Instant as CoreInstant, NetworkPriority,
     QueueCounters, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
@@ -24,7 +26,10 @@ pub(super) const QUEUE_CAPACITY: usize = 256;
 pub(super) struct SharedQueues(Arc<Mutex<Shared>>);
 
 struct Shared {
-    queues: AllocQueues,
+    /// Slots of a standard frame's 501 octets, or of an extended frame's
+    /// 1497 with extended frames on: the slot size is what refuses an NPDU
+    /// too long to send, at the send call.
+    queues: Box<dyn QueueStorage + Send>,
     /// Cleared when the transport's task ends, so a send after that fails
     /// instead of queueing a frame nothing will send.
     open: bool,
@@ -40,11 +45,21 @@ pub(super) enum EnqueueError {
 }
 
 impl SharedQueues {
-    pub(super) fn new() -> Self {
-        Self(Arc::new(Mutex::new(Shared {
-            queues: AllocQueues::new(QUEUE_CAPACITY, QUEUE_CAPACITY),
-            open: true,
-        })))
+    /// Queues whose slots hold the longest NPDU the port sends: 1497 octets
+    /// with `extended_frames`, 501 without.
+    pub(super) fn new(extended_frames: bool) -> Self {
+        let queues: Box<dyn QueueStorage + Send> = if extended_frames {
+            Box::new(AllocQueues::<MAX_EXTENDED_MPDU_DATA>::new(
+                QUEUE_CAPACITY,
+                QUEUE_CAPACITY,
+            ))
+        } else {
+            Box::new(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(
+                QUEUE_CAPACITY,
+                QUEUE_CAPACITY,
+            ))
+        };
+        Self(Arc::new(Mutex::new(Shared { queues, open: true })))
     }
 
     fn lock(&self) -> MutexGuard<'_, Shared> {
@@ -114,6 +129,10 @@ pub(super) fn npdu_priority(npdu: &[u8]) -> NetworkPriority {
 impl QueueStorage for SharedQueues {
     fn set_starvation_limit(&mut self, limit: u8) {
         self.lock().queues.set_starvation_limit(limit);
+    }
+
+    fn max_npdu_length(&self) -> usize {
+        self.lock().queues.max_npdu_length()
     }
 
     fn enqueue_npdu(
@@ -213,7 +232,7 @@ mod tests {
 
     #[test]
     fn a_closed_queue_refuses_sends() {
-        let queues = SharedQueues::new();
+        let queues = SharedQueues::new(false);
         let now = CoreInstant::ZERO;
         let age = CoreDuration::from_secs(1);
         assert_eq!(queues.enqueue(5, &[1, 0], now, age), Ok(()));

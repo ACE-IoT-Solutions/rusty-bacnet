@@ -1,13 +1,15 @@
 //! A master node: its core, the adapter that runs the core's actions, and
 //! the application behind it.
 
-use bacnet_mstp_codec::{FrameType, MAX_STANDARD_FRAME_LENGTH};
+use bacnet_mstp_codec::{FrameType, MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH};
 use bacnet_mstp_core::{
     Action, AllocQueues, CoreError, Direction, Instant, MasterCore, MasterState, MstpCounters,
     NetworkPriority, QueueRejectReason, ReceiveError, ReplyDecision, RequestId, TransmitId,
 };
 
-use super::{describe, leak_action_buffers, leak_storage, Event, NodeKind, Sim, SimCore};
+use super::{
+    decode_whole, describe, leak_action_buffers, leak_storage, Event, NodeKind, Sim, SimCore,
+};
 use crate::event::Class;
 use crate::line::Driver;
 use crate::report::{Delivery, ViolationKind};
@@ -80,13 +82,21 @@ impl MasterNode {
         }
     }
 
-    /// A fresh core, as after INITIALIZE.
+    /// A fresh core, as after INITIALIZE. Its receive storage holds the
+    /// longest frame it takes: a standard one, or an extended one with the
+    /// flag on, so a master without it treats extended frames as a node
+    /// without COBS support does.
     pub(super) fn boot(&mut self, now: Instant) {
         let queues = AllocQueues::new(self.spec.unicast_capacity, self.spec.broadcast_capacity);
-        let core = MasterCore::new(
+        let storage = if self.spec.config.extended_frames {
+            MAX_EXTENDED_FRAME_LENGTH
+        } else {
+            MAX_STANDARD_FRAME_LENGTH
+        };
+        let core: SimCore = MasterCore::new(
             self.spec.config,
             queues,
-            leak_storage(MAX_STANDARD_FRAME_LENGTH),
+            leak_storage(storage),
             leak_action_buffers(),
             now,
         )
@@ -140,13 +150,14 @@ enum Effect {
 }
 
 /// Whether a frame is an answer to a request: a data frame not expecting a
-/// reply, or Reply Postponed.
+/// reply, standard or extended, or Reply Postponed.
 fn is_answer(octets: &[u8]) -> bool {
-    bacnet_mstp_codec::decode_frame(octets).is_ok_and(|(frame, _)| {
+    decode_whole(octets).is_some_and(|(header, _)| {
         matches!(
-            frame.header.frame_type,
-            bacnet_mstp_codec::FrameType::BACnetDataNotExpectingReply
-                | bacnet_mstp_codec::FrameType::ReplyPostponed
+            header.frame_type,
+            FrameType::BACnetDataNotExpectingReply
+                | FrameType::BACnetExtendedDataNotExpectingReply
+                | FrameType::ReplyPostponed
         )
     })
 }

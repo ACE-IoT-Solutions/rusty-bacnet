@@ -1,6 +1,6 @@
 //! Line events: octets going out, characters arriving, transmissions ending.
 
-use bacnet_mstp_codec::{decode_frame, DecodeEvent, FrameHeader};
+use bacnet_mstp_codec::{DecodeEvent, FrameHeader};
 use bacnet_mstp_core::Instant;
 
 use super::master::Input;
@@ -179,10 +179,7 @@ impl Sim {
     pub(super) fn record_frame(&mut self, tx: TxId, transmission: Transmission) {
         let now = self.now;
         let meta = self.meta.remove(&tx).unwrap_or_default();
-        let decoded = decode_frame(&transmission.octets)
-            .ok()
-            .filter(|(_, used)| *used == transmission.octets.len())
-            .map(|(frame, _)| (frame.header, frame.data.to_vec()));
+        let decoded = super::decode_whole(&transmission.octets);
         let frame = WireFrame {
             driver: transmission.driver,
             start: transmission.start,

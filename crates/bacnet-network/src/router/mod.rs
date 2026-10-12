@@ -282,6 +282,11 @@ impl IngressContext {
 }
 
 /// A router port: a transport bound to a specific BACnet network number.
+///
+/// [`BACnetRouter::start`] calls
+/// [`TransportPort::prepare_for_routing`] on each port's transport before it
+/// starts it, so an MS/TP port takes and sends extended frames whatever its
+/// `MstpConfig` says: Clause 9.3 requires them of a routing node.
 pub struct RouterPort<T: TransportPort> {
     /// The transport for this port.
     pub transport: T,
@@ -469,6 +474,9 @@ impl BACnetRouter {
         let mut port_groups = Vec::new();
 
         for port in &mut ports {
+            // A routing node may owe its data link more than other nodes:
+            // MS/TP turns on extended frames here (Clause 9.3).
+            port.transport.prepare_for_routing();
             let rx = port.transport.start().await?;
             port_receivers.push(rx);
             port_networks.push(port.network_number);
@@ -692,6 +700,8 @@ mod envelope_harness;
 mod ingress_harness;
 #[cfg(test)]
 mod init_routing_table_tests;
+#[cfg(test)]
+mod mstp_extended_tests;
 #[cfg(test)]
 mod rb06_convergence_tests;
 #[cfg(test)]

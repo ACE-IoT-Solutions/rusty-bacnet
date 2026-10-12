@@ -25,6 +25,8 @@ pub(crate) fn holds_token(state: MasterState) -> bool {
 impl Sim {
     /// Every frame decodes unless a fault touched it, and, until the run is
     /// perturbed, every master that heard a clean frame whole counted it.
+    /// A master without extended frames counts no extended frame as
+    /// received: it can't take one, as a node without COBS support can't.
     pub(super) fn check_frame(&mut self, frame: &WireFrame, listeners: &[(usize, u32)]) {
         let by_master = matches!(frame.driver, Driver::Station(station)
             if matches!(self.nodes[self.index_of(station)].kind, NodeKind::Master(_)));
@@ -54,7 +56,9 @@ impl Sim {
                 continue;
             };
             let after = core.counters().frames_received;
-            if listened_throughout && after != before + 1 {
+            let takes = core.config().extended_frames
+                || !frame.frame_type().is_some_and(FrameType::is_cobs);
+            if listened_throughout && after != before + u32::from(takes) {
                 missed.push(format!("station {station} counted {}", after - before));
             }
         }
@@ -222,8 +226,8 @@ impl Sim {
             return;
         }
         let answering_poll = header.frame_type == FrameType::PollForMaster;
-        let sends_reply = bacnet_mstp_codec::decode_frame(&pending.octets)
-            .is_ok_and(|(frame, _)| frame.header.frame_type == FrameType::ReplyToPollForMaster);
+        let sends_reply = super::decode_whole(&pending.octets)
+            .is_some_and(|(header, _)| header.frame_type == FrameType::ReplyToPollForMaster);
         if answering_poll && !sends_reply {
             return;
         }

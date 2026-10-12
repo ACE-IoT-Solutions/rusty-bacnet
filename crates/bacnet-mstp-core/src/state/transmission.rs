@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
+impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Confirm that the platform is about to start the matching UART transfer.
     ///
     /// Call it after polling [`Action::Transmit`] and before enabling the

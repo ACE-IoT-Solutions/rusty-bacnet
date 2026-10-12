@@ -296,8 +296,17 @@ impl Header {
     /// Whether a frame with this header can be valid: it passes, and it is
     /// not a reserved COBS type (34-127).
     pub fn decodable(self) -> bool {
+        self.decodable_with(false)
+    }
+
+    /// [`Self::decodable`] for a decoder that checks the reserved COBS
+    /// types when `reserved_cobs` is set: then any header that passes can
+    /// start a valid frame, since a receiver with COBS support checks every
+    /// COBS type's encoded fields (Clause 9.5.4.9).
+    pub fn decodable_with(self, reserved_cobs: bool) -> bool {
         matches!(self, Self::Good { frame_type, .. }
-            if self.passes() && (!is_cobs(frame_type) || is_extended(frame_type)))
+            if self.passes()
+                && (!is_cobs(frame_type) || is_extended(frame_type) || reserved_cobs))
     }
 
     /// The frame's wire length, when the header passes.
@@ -315,6 +324,13 @@ impl Header {
 /// short for its vendor identifier, and the encodings Clause 9.10.3 takes
 /// that a strict encoder doesn't send.
 pub fn decode(octets: &[u8]) -> Option<(usize, Vec<u8>)> {
+    decode_with(octets, false)
+}
+
+/// [`decode`] for a decoder that checks the reserved COBS types when
+/// `reserved_cobs` is set: one of those is then valid when its encoded
+/// fields are, as for Types 32 and 33.
+pub fn decode_with(octets: &[u8], reserved_cobs: bool) -> Option<(usize, Vec<u8>)> {
     if !octets.starts_with(&PREAMBLE) {
         return None;
     }
@@ -325,7 +341,7 @@ pub fn decode(octets: &[u8]) -> Option<(usize, Vec<u8>)> {
     else {
         return None;
     };
-    if !header.decodable() {
+    if !header.decodable_with(reserved_cobs) {
         return None;
     }
     let total = wire_length(length);
@@ -414,7 +430,13 @@ pub fn self_test() {
     );
     assert_eq!(who_has[8..12], [0x50, 0x54, 0x75, 0xAA]);
     assert_eq!(who_has[517..], [0x50, 0xF9, 0xA1, 0xD6, 0xE8]);
-    assert_eq!(decode(&who_has), Some((522, npdu)));
+    assert_eq!(decode(&who_has), Some((522, npdu.clone())));
+    // The same encoded fields under a reserved COBS type are valid only to a
+    // decoder that checks reserved types.
+    let reserved = encode(0x22, 0xFF, 0x01, &npdu);
+    assert_eq!(reserved[8..], who_has[8..]);
+    assert_eq!(decode(&reserved), None);
+    assert_eq!(decode_with(&reserved, true), Some((522, npdu)));
 
     let run = [0x11u8; 254];
     assert_eq!(cobs_encode(&run), [&[0xFF][..], &run].concat());

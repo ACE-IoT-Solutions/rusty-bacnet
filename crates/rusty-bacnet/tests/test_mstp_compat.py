@@ -61,6 +61,7 @@ MSTP_KEYWORD_ONLY = [
     "mstp_mac",
     "mstp_max_master",
     "mstp_max_info_frames",
+    "mstp_extended_frames",
 ]
 CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + ["sc_device_uuid", "share_port_by_address", "min_request_interval_ms"]
 SERVER_KEYWORD_ONLY = ["mutation_policy", "dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
@@ -163,7 +164,7 @@ class SignatureCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(
             [p.default for p in parameters if p.name in MSTP_KEYWORD_ONLY],
-            [None, 38_400, 1, 127, 1],
+            [None, 38_400, 1, 127, 1, False],
         )
 
     def test_runtime_and_stub_signatures_match_compatibility_contract(self) -> None:
@@ -254,6 +255,27 @@ class MstpRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(str(caught.exception).startswith("Serial open failed"))
 
             server = make_server(path, mstp_baud=baud)
+            with self.subTest(kind="server", baud=baud), self.assertRaises(
+                RuntimeError
+            ) as caught:
+                await server.start()
+            self.assertTrue(str(caught.exception).startswith("Serial open failed"))
+
+    async def test_extended_frames_reach_serial_open_for_client_and_server(
+        self,
+    ) -> None:
+        # Extended frames (#1611) need nothing the standard ones don't
+        # before the port opens, at the slowest and fastest rates alike.
+        path = nonexistent_serial_path()
+        for baud in (9_600, 115_200):
+            client = make_client(path, mstp_baud=baud, mstp_extended_frames=True)
+            with self.subTest(kind="client", baud=baud), self.assertRaises(
+                RuntimeError
+            ) as caught:
+                await client.__aenter__()
+            self.assertTrue(str(caught.exception).startswith("Serial open failed"))
+
+            server = make_server(path, mstp_baud=baud, mstp_extended_frames=True)
             with self.subTest(kind="server", baud=baud), self.assertRaises(
                 RuntimeError
             ) as caught:

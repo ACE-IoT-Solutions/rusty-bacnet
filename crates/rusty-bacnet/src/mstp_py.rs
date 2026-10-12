@@ -49,13 +49,15 @@ pub(crate) fn validate_mstp_config(
     Ok(path)
 }
 
-/// Open an MS/TP transport from Python kwargs.
+/// Open an MS/TP transport from Python kwargs. `mstp_extended_frames` turns
+/// on extended frames (Types 32 and 33, NPDUs up to 1497 octets).
 pub fn build_mstp_transport(
     serial_port: Option<&str>,
     mstp_baud: u32,
     mstp_mac: u8,
     mstp_max_master: u8,
     mstp_max_info_frames: u8,
+    mstp_extended_frames: bool,
 ) -> PyResult<AnyTransport<PySerial>> {
     let path = validate_mstp_config(
         serial_port,
@@ -74,6 +76,7 @@ pub fn build_mstp_transport(
         max_master: mstp_max_master,
         max_info_frames: mstp_max_info_frames,
         baud_rate: mstp_baud,
+        extended_frames: mstp_extended_frames,
     };
     Ok(AnyTransport::Mstp(MstpTransport::new(serial, config)))
 }
@@ -191,8 +194,14 @@ mod tests {
         let path = std::env::temp_dir()
             .join(format!("rusty-bacnet-missing-{unique}"))
             .join("serial-device");
-        let result =
-            build_mstp_transport(Some(path.to_string_lossy().as_ref()), 115_200, 1, 127, 255);
+        let result = build_mstp_transport(
+            Some(path.to_string_lossy().as_ref()),
+            115_200,
+            1,
+            127,
+            255,
+            true,
+        );
         let err = match result {
             Ok(_) => panic!("nonexistent serial device unexpectedly opened"),
             Err(err) => err,

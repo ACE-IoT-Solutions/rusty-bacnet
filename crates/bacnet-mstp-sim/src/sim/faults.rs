@@ -1,6 +1,6 @@
 //! Fault injection and node power.
 
-use bacnet_mstp_codec::{decode_frame, FrameType};
+use bacnet_mstp_codec::FrameType;
 
 use super::{NodeKind, Sim};
 use crate::line::Driver;
@@ -124,9 +124,7 @@ impl Sim {
         station: u8,
         octets: &[u8],
     ) -> Option<(usize, Corruption)> {
-        let frame_type = decode_frame(octets)
-            .ok()
-            .map(|(frame, _)| frame.header.frame_type);
+        let frame_type = super::decode_whole(octets).map(|(header, _)| header.frame_type);
         let position = self.armed.iter().position(|armed| {
             matches!(armed, Armed::Corrupt { station: target, frame_type: wanted, offset, .. }
                 if *target == station
