@@ -13,6 +13,7 @@ use crate::port::{ReceivedNpdu, TransportPort};
 use super::frame::{bvll6_error, encoded};
 use super::ingress::{is_local_unicast_delivery, LocalBinding};
 use super::receive::Receiver;
+use super::reply_limit::ReplyLimiter;
 use super::socket::Bip6Socket;
 use super::vmac_table::{derive_vmac_from_device_instance, generate_random_vmac, VmacTable};
 use super::{encode_bvll6, Bip6Address, Bip6Vmac, Bvll6, MAX_VMAC_RETRIES};
@@ -397,6 +398,8 @@ impl TransportPort for Bip6Transport {
                 .map(|fd| (fd.bbmd_ip, fd.bbmd_port)),
             vmac_table: self.vmac_table.clone(),
             forwarded_group_origin_drops: Arc::clone(&self.forwarded_group_origin_drops),
+            nak_quota: ReplyLimiter::default(),
+            far_ack_quota: ReplyLimiter::default(),
         };
         let recv_task = tokio::spawn(receiver.run());
 
