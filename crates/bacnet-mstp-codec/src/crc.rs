@@ -119,8 +119,9 @@ const fn crc32k_shift(mut crc: u32, bits: u32) -> u32 {
     crc
 }
 
-/// One entry per octet value: 1 KiB, one lookup per octet.
-#[cfg(feature = "crc32k-table")]
+/// One entry per octet value: 1 KiB, one lookup per octet. Unit tests build
+/// both tables, whichever the features pick.
+#[cfg(any(feature = "crc32k-table", test))]
 const CRC32K_TABLE: [u32; 256] = {
     let mut table = [0u32; 256];
     let mut i = 0;
@@ -132,7 +133,7 @@ const CRC32K_TABLE: [u32; 256] = {
 };
 
 /// One entry per nibble value: 64 octets, two lookups per octet.
-#[cfg(not(feature = "crc32k-table"))]
+#[cfg(any(not(feature = "crc32k-table"), test))]
 const CRC32K_NIBBLES: [u32; 16] = {
     let mut table = [0u32; 16];
     let mut i = 0;
@@ -143,21 +144,27 @@ const CRC32K_NIBBLES: [u32; 16] = {
     table
 };
 
+/// Accumulate one octet into the register with the 256-entry table.
+#[cfg(any(feature = "crc32k-table", test))]
+fn crc32k_octet_by_table(crc: u32, byte: u8) -> u32 {
+    (crc >> 8) ^ CRC32K_TABLE[((crc ^ u32::from(byte)) & 0xFF) as usize]
+}
+
+/// Accumulate one octet into the register with the 16-entry table.
+#[cfg(any(not(feature = "crc32k-table"), test))]
+fn crc32k_octet_by_nibbles(crc: u32, byte: u8) -> u32 {
+    let crc = crc ^ u32::from(byte);
+    let crc = (crc >> 4) ^ CRC32K_NIBBLES[(crc & 0x0F) as usize];
+    (crc >> 4) ^ CRC32K_NIBBLES[(crc & 0x0F) as usize]
+}
+
 /// Accumulate `data` into the CRC-32K register `crc`.
-pub(crate) fn crc32k_update(mut crc: u32, data: &[u8]) -> u32 {
-    for &byte in data {
-        #[cfg(feature = "crc32k-table")]
-        {
-            crc = (crc >> 8) ^ CRC32K_TABLE[((crc ^ u32::from(byte)) & 0xFF) as usize];
-        }
-        #[cfg(not(feature = "crc32k-table"))]
-        {
-            crc ^= u32::from(byte);
-            crc = (crc >> 4) ^ CRC32K_NIBBLES[(crc & 0x0F) as usize];
-            crc = (crc >> 4) ^ CRC32K_NIBBLES[(crc & 0x0F) as usize];
-        }
-    }
-    crc
+pub(crate) fn crc32k_update(crc: u32, data: &[u8]) -> u32 {
+    #[cfg(feature = "crc32k-table")]
+    let octet = crc32k_octet_by_table;
+    #[cfg(not(feature = "crc32k-table"))]
+    let octet = crc32k_octet_by_nibbles;
+    data.iter().fold(crc, |crc, &byte| octet(crc, byte))
 }
 
 /// Compute the CRC-32K of an extended frame's Encoded Data field: the
@@ -177,4 +184,33 @@ pub fn crc32k(data: &[u8]) -> u32 {
 /// [`CRC32K_RESIDUAL`](crate::CRC32K_RESIDUAL).
 pub fn crc32k_accumulate_all(data: &[u8]) -> u32 {
     crc32k_update(u32::MAX, data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{crc32k_octet_by_nibbles, crc32k_octet_by_table, crc32k_shift};
+
+    /// Both tables against eight plain shifts, for every octet value from
+    /// several register states, so the default test run covers the table the
+    /// `crc32k-table` feature selects as well as the default one.
+    #[test]
+    fn both_crc32k_tables_match_the_bitwise_register() {
+        let registers = [
+            0,
+            u32::MAX,
+            1,
+            0x8000_0000,
+            0x0843_323B,
+            0x1234_5678,
+            0xEDCB_A987,
+            0x5555_AAAA,
+        ];
+        for register in registers {
+            for byte in 0..=u8::MAX {
+                let bitwise = crc32k_shift(register ^ u32::from(byte), 8);
+                assert_eq!(crc32k_octet_by_table(register, byte), bitwise);
+                assert_eq!(crc32k_octet_by_nibbles(register, byte), bitwise);
+            }
+        }
+    }
 }

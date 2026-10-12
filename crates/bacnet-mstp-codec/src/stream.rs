@@ -17,8 +17,10 @@ pub enum DecodeEvent<'a> {
         /// The frame's wire length.
         consumed: usize,
     },
-    /// Line noise was discarded while searching for a preamble: every octet
-    /// up to the next `0x55`, which might start one, in a single event.
+    /// Line noise was discarded while searching for a preamble: every
+    /// buffered octet up to the next `0x55` among them, which might start
+    /// one, in a single event. A run of noise that arrives over several
+    /// pushes gives one event per push.
     ///
     /// This is not a received invalid frame in terms of the Clause 9.5.4
     /// receive state machine.

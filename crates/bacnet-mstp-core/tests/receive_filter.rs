@@ -3,10 +3,13 @@
 
 #![cfg(feature = "heapless")]
 
-use bacnet_mstp_codec::{crc8, Frame, FrameError, FrameType, BROADCAST_MAC, PREAMBLE};
+use bacnet_mstp_codec::{
+    crc8, Frame, FrameError, FrameType, BROADCAST_MAC, MAX_COBS_FRAME_LENGTH,
+    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, PREAMBLE,
+};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,
-    MstpCoreConfig, NetworkPriority,
+    MstpCoreConfig, NetworkPriority, ReceiveError,
 };
 
 type Queues = HeaplessQueues<4, 4>;
@@ -27,9 +30,10 @@ fn config() -> MstpCoreConfig {
 }
 
 fn encode(frame: Frame<'_>) -> Vec<u8> {
-    let mut wire = [0u8; 600];
+    let mut wire = vec![0u8; MAX_COBS_FRAME_LENGTH];
     let length = frame.encode_into(&mut wire).unwrap();
-    wire[..length].to_vec()
+    wire.truncate(length);
+    wire
 }
 
 /// A header with a correct CRC, for field values encode refuses.
@@ -233,23 +237,105 @@ fn a_reserved_cobs_frame_counts_only_for_this_station() {
 /// the core drops one its storage holds as an unsupported type, and one its
 /// storage can't hold as too long. Either way it counts only when it is for
 /// this station or broadcast, as a COBS frame did before the codec decoded
-/// them.
+/// them. Both types, up to the largest NPDU: more data than a standard frame
+/// carries must never reach the core's frame copy.
 #[test]
 fn an_extended_frame_counts_only_for_this_station() {
-    // 100 data octets make a 114-octet frame.
-    let frame = |destination| {
-        encode(Frame::new(
-            FrameType::BACnetExtendedDataNotExpectingReply,
-            destination,
-            5,
-            &[0x11; 100],
-        ))
-    };
-    assert_eq!(frame(OTHER).len(), 114);
-    for storage in [64, 600] {
-        assert!(!counted_invalid(storage, &frame(OTHER)), "{storage}");
-        assert!(counted_invalid(storage, &frame(STATION)), "{storage}");
-        assert!(counted_invalid(storage, &frame(BROADCAST_MAC)), "{storage}");
+    let npdus: [&[u8]; 2] = [&[0x11; 100], &[0x22; MAX_EXTENDED_MPDU_DATA]];
+    for frame_type in [
+        FrameType::BACnetExtendedDataExpectingReply,
+        FrameType::BACnetExtendedDataNotExpectingReply,
+    ] {
+        for npdu in npdus {
+            let frame = |destination| encode(Frame::new(frame_type, destination, 5, npdu));
+            for storage in [64, MAX_EXTENDED_FRAME_LENGTH] {
+                let case = format!("{frame_type:?}, {} octets, storage {storage}", npdu.len());
+                assert!(!counted_invalid(storage, &frame(OTHER)), "{case}");
+                assert!(counted_invalid(storage, &frame(STATION)), "{case}");
+                assert!(counted_invalid(storage, &frame(BROADCAST_MAC)), "{case}");
+            }
+        }
+    }
+}
+
+/// When the storage holds an extended frame the core counts it at its last
+/// octet, once the codec has decoded it, as a receiver without COBS counts a
+/// frame it can't take after its data and data CRC. When the storage can't
+/// hold it, it counts at the header.
+#[test]
+fn an_extended_frame_for_this_station_counts_when_it_completes() {
+    let wire = encode(Frame::new(
+        FrameType::BACnetExtendedDataNotExpectingReply,
+        STATION,
+        5,
+        &[0x22; MAX_EXTENDED_MPDU_DATA],
+    ));
+    for (storage, counted_at) in [(MAX_EXTENDED_FRAME_LENGTH, wire.len()), (64, 8)] {
+        let mut rx = vec![0u8; storage];
+        let mut actions = Actions::new();
+        let mut core = MasterCore::new(
+            config(),
+            Queues::new(),
+            &mut rx,
+            &mut actions,
+            Instant::ZERO,
+        )
+        .unwrap();
+        let start = wait_for_reply(&mut core);
+        let before = feed(&mut core, &wire[..counted_at - 1], start);
+        assert_eq!(core.counters().parser_errors, 0, "storage {storage}");
+        assert_eq!(core.state(), MasterState::WaitForReply);
+        feed(&mut core, &wire[counted_at - 1..counted_at], before);
+        assert_eq!(core.counters().parser_errors, 1, "storage {storage}");
+        assert_ne!(core.state(), MasterState::WaitForReply);
+    }
+}
+
+/// While the codec skips another station's frame by count, its receive
+/// phase is the data phase, so a silence longer than T_frame_abort or a
+/// receive error in the middle of it counts one invalid frame, as the skip
+/// state's Timeout and Error transitions do (Clause 9.5.4.7). In
+/// WAIT_FOR_REPLY that ends the token use (Clause 9.5.6.4), which here
+/// polls for a master.
+#[test]
+fn an_abort_while_skipping_another_stations_frame_counts_once() {
+    // 40 data octets make a 50-octet frame; the storage holds 32, so the
+    // codec reports it at its header, for another station, and skips it.
+    let wire = encode(Frame::new(
+        FrameType::BACnetDataNotExpectingReply,
+        OTHER,
+        5,
+        &[0; 40],
+    ));
+    for silence in [true, false] {
+        let mut rx = vec![0u8; 32];
+        let mut actions = Actions::new();
+        let mut core = MasterCore::new(
+            config(),
+            Queues::new(),
+            &mut rx,
+            &mut actions,
+            Instant::ZERO,
+        )
+        .unwrap();
+        let start = wait_for_reply(&mut core);
+        let last = feed(&mut core, &wire[..20], start);
+        assert_eq!(core.counters().parser_errors, 0);
+        assert_eq!(core.state(), MasterState::WaitForReply);
+        if silence {
+            let abort = last + core.config().t_frame_abort + Duration::from_micros(1);
+            core.on_silence(abort).unwrap();
+            assert_eq!(core.counters().frame_aborts, 1);
+        } else {
+            core.on_receive_error(ReceiveError::Framing, last + Duration::from_micros(100))
+                .unwrap();
+        }
+        assert_eq!(core.counters().parser_errors, 1, "silence: {silence}");
+        assert_eq!(
+            core.state(),
+            MasterState::PollForMaster,
+            "silence: {silence}"
+        );
     }
 }
 

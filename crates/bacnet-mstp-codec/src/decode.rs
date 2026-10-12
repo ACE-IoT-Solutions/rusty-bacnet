@@ -93,12 +93,14 @@ pub(crate) fn decode_extended_in_place(input: &mut [u8], valid: &ValidFrame) {
 /// the Length (at most 501 octets on a standard type, within
 /// [`MIN_COBS_LENGTH`](crate::MIN_COBS_LENGTH)..=[`MAX_COBS_LENGTH`](crate::MAX_COBS_LENGTH)
 /// on a COBS type), a COBS type other than 32 or 33, completeness, then the
-/// data CRC or, for an extended frame, the CRC-32K and the COBS encoding.
-/// The [crate docs](crate) explain what is deliberately not checked.
+/// data CRC. The [crate docs](crate) explain what is deliberately not
+/// checked.
 ///
 /// An extended frame's data is COBS-encoded on the wire, so it can't be
-/// borrowed: once the whole frame checks out, it is refused with
-/// [`FrameError::ExtendedFrame`]. [`decode_frame_in_place`] decodes it.
+/// borrowed: a good extended header stops the checks there, with
+/// [`FrameError::ExtendedFrame`], before anything after the header is
+/// looked at. [`decode_frame_in_place`] decodes the frame and judges the
+/// rest of it.
 ///
 /// ```
 /// use bacnet_mstp_codec::{decode_frame, FrameError, FrameType};
@@ -116,12 +118,13 @@ pub(crate) fn decode_extended_in_place(input: &mut [u8], valid: &ValidFrame) {
 /// # Ok::<(), FrameError>(())
 /// ```
 pub fn decode_frame(input: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
-    let valid = check_frame(input)?;
-    if valid.header.frame_type.is_cobs() {
+    let frame_type = check_header(input)?.header.frame_type;
+    if frame_type.is_cobs() {
         return Err(FrameError::ExtendedFrame {
-            raw_type: valid.header.frame_type.to_raw(),
+            raw_type: frame_type.to_raw(),
         });
     }
+    let valid = check_frame(input)?;
     let frame = Frame {
         header: valid.header,
         data: &input[DATA_OFFSET..DATA_OFFSET + valid.data_length],
@@ -134,9 +137,10 @@ pub fn decode_frame(input: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
 ///
 /// The checks and their order are those of [`decode_frame`], and so are the
 /// results for a standard frame, whose data is borrowed and `input` left as
-/// it was. An extended frame's data is decoded over its Encoded Data field,
-/// so it starts just after the header; the rest of the frame's octets are
-/// left unspecified. On an error `input` is unchanged.
+/// it was. An extended frame then goes on to completeness, the CRC-32K and
+/// the COBS encoding of both fields; its data is decoded over its Encoded
+/// Data field, so it starts just after the header, and the rest of the
+/// frame's octets are left unspecified. On an error `input` is unchanged.
 ///
 /// ```
 /// use bacnet_mstp_codec::{decode_frame, decode_frame_in_place, Frame, FrameError, FrameType};

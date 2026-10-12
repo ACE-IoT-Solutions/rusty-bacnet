@@ -90,7 +90,9 @@ fn annex_g_crc32k_example() {
 ///
 /// The CRC-32K the annex prints for it covers only the first 13 of the 14
 /// encoded octets, which Clause 9.10.2 and the annex's own code and its T.3
-/// frame don't do; the codec covers all 14.
+/// frame don't do: an erratum in the informative annex. The codec covers
+/// all 14, so its Encoded CRC-32K differs from the annex's, and the frame
+/// with the annex's field is refused.
 #[test]
 fn annex_t_hello_world_encoding() {
     let data = b"Hello World\n\0";
@@ -106,11 +108,21 @@ fn annex_t_hello_world_encoding() {
     assert_eq!(length_field(&wire), 17);
     assert_eq!(wire.len(), 8 + 17 + 2);
     assert_eq!(wire[8..22], encoded[..]);
-    assert_eq!(wire[22..], crc_field(&encoded)[..]);
-    // The register the annex prints, B3 8F 28 CA.
-    assert_eq!(crc32k_accumulate_all(&encoded[..13]), 0xB38F_28CA);
-    assert_ne!(crc32k_accumulate_all(&encoded), 0xB38F_28CA);
+    // The field over all 14 octets, worked out apart from the codec (a
+    // bit-at-a-time CRC gives the register F2 11 25 A2).
+    assert_eq!(wire[22..], [0x50, 0x08, 0x8F, 0xBB, 0x58]);
     decodes_to(&wire, Frame::new(NOT_EXPECTING, 0xFF, 0x01, data));
+
+    // The register the annex prints, B3 8F 28 CA, is that of the first 13.
+    assert_eq!(crc32k_accumulate_all(&encoded[..13]), 0xB38F_28CA);
+    assert_eq!(crc32k_accumulate_all(&encoded), 0xF211_25A2);
+    // The frame with the annex's Encoded CRC-32K fails its check.
+    let mut printed = wire[..22].to_vec();
+    printed.extend_from_slice(&[0x50, 0x60, 0x82, 0x25, 0x19]);
+    assert_eq!(
+        decode_frame_in_place(&mut printed),
+        Err(FrameError::DataCrcMismatch { length: 17 })
+    );
 }
 
 /// The Who-Has request of Annex T.3, a broadcast Type 33 frame from station
@@ -247,9 +259,14 @@ fn smallest_and_largest_lengths() {
         wire.extend_from_slice(&header);
         wire.push(crc8(&header));
         wire.append(&mut fields);
-        let result = decode_frame(&wire);
+        let result = decode_frame_in_place(&mut wire.clone()).map(|(_, used)| used);
         if ok {
-            // A good header; the zeroed body then fails its check.
+            // A good header, which is all decode_frame looks at; the zeroed
+            // body then fails its check.
+            assert_eq!(
+                decode_frame(&wire),
+                Err(FrameError::ExtendedFrame { raw_type: 0x21 })
+            );
             assert_eq!(
                 result,
                 Err(FrameError::DataCrcMismatch {
@@ -257,12 +274,11 @@ fn smallest_and_largest_lengths() {
                 })
             );
         } else {
-            assert_eq!(
-                result,
-                Err(FrameError::InvalidCobsLength {
-                    length: usize::from(length)
-                })
-            );
+            let error = FrameError::InvalidCobsLength {
+                length: usize::from(length),
+            };
+            assert_eq!(decode_frame(&wire), Err(error));
+            assert_eq!(result, Err(error));
         }
     }
 }
@@ -294,14 +310,18 @@ fn slave_sources_round_trip() {
 }
 
 /// What decode refuses past a good header, and that a refusal leaves the
-/// input as it was.
+/// input as it was. `decode_frame` stops at the good header whatever
+/// follows it.
 #[test]
 fn damaged_extended_frames_are_refused() {
     let frame = Frame::new(EXPECTING, 9, 8, b"0123456789");
     let wire = encode(frame);
     let length = length_field(&wire);
     let refuse = |wire: &[u8], error: FrameError| {
-        assert_eq!(decode_frame(wire), Err(error));
+        assert_eq!(
+            decode_frame(wire),
+            Err(FrameError::ExtendedFrame { raw_type: 0x20 })
+        );
         let mut copy = wire.to_vec();
         assert_eq!(decode_frame_in_place(&mut copy), Err(error));
         assert_eq!(copy, wire);
@@ -329,6 +349,51 @@ fn damaged_extended_frames_are_refused() {
         let wire = raw_extended(0x20, 9, 8, &[encoded.clone(), crc_field(&encoded)].concat());
         refuse(&wire, FrameError::DataCrcMismatch { length: 5 });
     }
+}
+
+/// The Encoded CRC-32K field's code octets are checked as the data's are
+/// (Clause 9.10.3): a zero code, or one that counts past the field's five
+/// octets, refuses the frame even when the CRC octets themselves are right.
+#[test]
+fn the_crc_fields_code_octet_is_checked() {
+    let data = [0x11, 0x22];
+    let encoded = masked(&[0x03, 0x11, 0x22]);
+    let crc = crc32k(&encoded).to_le_bytes();
+    let frame = |field: &[u8]| raw_extended(0x21, 1, 2, &[&encoded[..], field].concat());
+    decodes_to(
+        &frame(&masked(&[0x05, crc[0], crc[1], crc[2], crc[3]])),
+        Frame::new(NOT_EXPECTING, 1, 2, &data),
+    );
+    // A code past the end over the right four octets, which would decode to
+    // exactly them if the code went unchecked.
+    for code in [0x06, 0x07, 0xFE, 0xFF] {
+        let mut wire = frame(&masked(&[code, crc[0], crc[1], crc[2], crc[3]]));
+        assert_eq!(
+            decode_frame_in_place(&mut wire),
+            Err(FrameError::DataCrcMismatch { length: 6 }),
+            "code {code:#04X}"
+        );
+    }
+
+    // A zero code: Encoded Data whose CRC opens with a zero octet, and a
+    // field of a zero code then a block of the other three, which would
+    // decode to the right four octets if the zero went unchecked.
+    let (encoded, crc) = (1..=u8::MAX)
+        .flat_map(|first| (1..=u8::MAX).map(move |second| masked(&[0x03, first, second])))
+        .map(|encoded| {
+            let crc = crc32k(&encoded).to_le_bytes();
+            (encoded, crc)
+        })
+        .find(|(_, crc)| crc[0] == 0)
+        .expect("some data has a CRC that opens with a zero");
+    let frame = |field: &[u8]| raw_extended(0x21, 1, 2, &[&encoded[..], field].concat());
+    let mut strict = frame(&masked(&[0x01, 0x04, crc[1], crc[2], crc[3]]));
+    assert!(decode_frame_in_place(&mut strict).is_ok());
+    let mut zero = frame(&masked(&[0x00, 0x04, crc[1], crc[2], crc[3]]));
+    assert_eq!(
+        decode_frame_in_place(&mut zero),
+        Err(FrameError::DataCrcMismatch { length: 6 })
+    );
 }
 
 /// The decoder follows Clause 9.10.3, which accepts two encodings a strict

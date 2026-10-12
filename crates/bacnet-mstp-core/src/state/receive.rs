@@ -4,7 +4,9 @@ use super::*;
 
 impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Abort an expired partial receive and report whether it had progressed
-    /// beyond preamble search into a candidate HEADER or DATA frame.
+    /// beyond preamble search into a candidate HEADER or DATA frame. The data
+    /// phase includes the codec skipping a dropped frame by count, whatever
+    /// its destination, as the skip state counts a timeout (Clause 9.5.4.7).
     pub(super) fn abort_partial_if_late(&mut self, now: Instant) -> bool {
         if self.parser_partial
             && self
@@ -40,7 +42,8 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
                 DecodeEvent::Invalid { .. } => {}
                 // The core doesn't take extended frames yet: one that the
                 // storage was large enough to decode is dropped as the
-                // codec used to drop every COBS type.
+                // codec used to drop every COBS type, but at its last
+                // octet rather than at its header.
                 DecodeEvent::Frame { frame: decoded, .. }
                     if decoded.header.frame_type.is_cobs() =>
                 {

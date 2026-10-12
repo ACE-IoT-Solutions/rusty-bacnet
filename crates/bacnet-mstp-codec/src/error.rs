@@ -43,9 +43,12 @@ pub enum FrameError {
         /// would need (encode).
         length: usize,
     },
-    /// Decode with [`decode_frame`](crate::decode_frame): a valid extended
-    /// frame, whose COBS-encoded data can't be borrowed from the input.
-    /// [`decode_frame_in_place`](crate::decode_frame_in_place) decodes it.
+    /// Decode with [`decode_frame`](crate::decode_frame): a good extended
+    /// frame header, whose COBS-encoded data can't be borrowed from the
+    /// input. It says only "decode this in place": nothing after the header
+    /// was checked, and
+    /// [`decode_frame_in_place`](crate::decode_frame_in_place) gives the
+    /// verdict on the rest of the frame.
     ExtendedFrame {
         /// The frame type octet, 32 or 33.
         raw_type: u8,

@@ -25,7 +25,8 @@
 //! frame writes its data over its encoded form, so it takes writable input:
 //! [`decode_frame_in_place`], or a [`StreamDecoder`], which does it in its
 //! own storage. [`decode_frame`] borrows read-only input and refuses an
-//! extended frame with [`FrameError::ExtendedFrame`].
+//! extended frame with [`FrameError::ExtendedFrame`] as soon as its header
+//! checks out.
 //!
 //! The other COBS-encoded types, 34-127, are reserved: both directions refuse
 //! them with [`FrameError::UnsupportedCobsFrame`], after the header's other

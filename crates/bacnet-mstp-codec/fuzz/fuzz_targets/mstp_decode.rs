@@ -6,13 +6,14 @@
 //! codec. It reports that frame's length, fields and decoded data, and
 //! changes the input only by decoding an extended frame's data over its
 //! Encoded Data field. `decode_frame` gives the same results without
-//! changing anything, except that it refuses a valid extended frame with
-//! `ExtendedFrame`.
+//! changing anything, except that a good extended header stops it with
+//! `ExtendedFrame`, whatever follows the header.
 //!
 //! A refusal past the preamble names the first check that failed: the
 //! header CRC, then source 255, then the Length against its type's bounds,
 //! then a reserved COBS type (Clause 9.5.8 and the codec's docs), then
-//! completeness, then the data's check.
+//! (for `decode_frame`, only on a standard type) completeness, then the
+//! data's check.
 //!
 //! A frame it accepts re-encodes to the same octets, unless the encoder's
 //! stricter checks refuse it (data on a type defined without any, or a
@@ -80,10 +81,25 @@ fuzz_target!(
         let in_place = decode_frame_in_place(&mut copy).map(|(frame, used)| {
             (frame.header, frame.data.to_vec(), used)
         });
+        // A good extended header is as far as decode_frame looks.
+        let header = Header::read(input);
+        let extended_header = input.starts_with(&wire::PREAMBLE)
+            && header.decodable()
+            && matches!(header, Header::Good { frame_type, .. } if wire::is_extended(frame_type));
+        if extended_header {
+            assert_eq!(
+                decoded,
+                Err(FrameError::ExtendedFrame {
+                    raw_type: input[2]
+                })
+            );
+        }
         let Some((total, data)) = wire::decode(input) else {
-            let error = decoded.expect_err("accepted an invalid frame");
-            assert_eq!(in_place, Err(error));
+            let error = in_place.expect_err("accepted an invalid frame");
             assert_eq!(copy, input, "a refused decode changed its input");
+            if !extended_header {
+                assert_eq!(decoded, Err(error));
+            }
             if input.len() >= 2 && input.starts_with(&wire::PREAMBLE) {
                 assert_eq!(error, expected_error(input));
             }
