@@ -170,8 +170,12 @@ async fn forwarded_npdu_from_non_bdt_sender_is_rejected_without_delivery() {
     assert_no_bvll(&fdt_socket, "foreign device").await;
 }
 
+/// The case the #1623 review gave: this BBMD's own row is /32 (appended)
+/// and the peer's /24. Peers send to this BBMD alone, so a unicast forward
+/// from the peer goes to the local subnet as well as the foreign device
+/// (Annex J.4.5). Before #1623 the peer's /24 row skipped the rebroadcast.
 #[tokio::test]
-async fn forwarded_npdu_from_directed_broadcast_peer_skips_local_rebroadcast() {
+async fn forwarded_npdu_from_one_hop_peer_is_rebroadcast_when_own_row_is_two_hop() {
     let bbmd_socket = Arc::new(super::BipSocket::new(
         UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
             .await
@@ -234,21 +238,15 @@ async fn forwarded_npdu_from_directed_broadcast_peer_skips_local_rebroadcast() {
 
     handle_bvll_message(&msg, peer, Delivery::Unicast, &ctx).await;
 
+    let local_frame = recv_bvll(&local_broadcast_sink).await;
+    assert_eq!(local_frame.function, BvlcFunction::FORWARDED_NPDU);
+    assert_eq!(origin_of(&local_frame), Some(origin));
+    assert_eq!(local_frame.payload.as_ref(), msg.payload.as_ref());
+
     let fdt_frame = recv_bvll(&fdt_socket).await;
     assert_eq!(fdt_frame.function, BvlcFunction::FORWARDED_NPDU);
     assert_eq!(origin_of(&fdt_frame), Some(origin));
     assert_eq!(fdt_frame.payload.as_ref(), msg.payload.as_ref());
-
-    let mut local_broadcast_buf = [0u8; 2048];
-    assert!(
-        timeout(
-            Duration::from_millis(100),
-            local_broadcast_sink.recv_from(&mut local_broadcast_buf)
-        )
-        .await
-        .is_err(),
-        "directed-broadcast Forwarded-NPDU from a peer must not be rebroadcast locally"
-    );
 
     let mut bdt_peer_buf = [0u8; 2048];
     assert!(

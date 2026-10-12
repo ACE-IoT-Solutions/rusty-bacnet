@@ -609,3 +609,20 @@ async fn explicit_interface_restart_keeps_the_bbmd_address_without_locking_the_s
         return;
     }
 }
+
+/// `start()` learns the mask of the subnet the BBMD's own address is on,
+/// as the host reports it, for the J.4.5 rule that a peer's forward sent
+/// from that subnet isn't broadcast on it again.
+#[tokio::test]
+async fn start_learns_the_subnet_of_the_own_address() {
+    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
+    transport.enable_bbmd(vec![]);
+    let _rx = transport.start().await.unwrap();
+    let reported = crate::local_addresses::interface_of(Ipv4Addr::LOCALHOST)
+        .unwrap()
+        .and_then(|local| local.netmask)
+        .filter(|mask| !mask.is_unspecified());
+    let learned = bbmd::lock(transport.bbmd_state().unwrap()).subnet_mask();
+    assert_eq!(learned, reported);
+    transport.stop().await.unwrap();
+}
