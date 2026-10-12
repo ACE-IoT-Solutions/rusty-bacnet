@@ -4,7 +4,7 @@ an emulation run reports against the stack budget (#1660).
 
   firmware_size.py <elf> <budget.toml> <table>
   firmware_size.py --suggest <elf> <table>
-  firmware_size.py --stack <run.log> <stack-budget.toml> <board>...
+  firmware_size.py --stack [--all-boards] <run.log> <stack-budget.toml> <board>...
   firmware_size.py --stack-suggest <run.log>
 
 <table> names the image's budget, `<target>.<image>`, such as
@@ -29,8 +29,10 @@ images each print `PASS <image> on <board> (<target>): ...; stack peak N of
 M octets`, and checks each peak against the stack budget's `[<board>]`
 table, which has a key per image. It exits 1 when a peak is over its
 budget, when an image the table lists printed no PASS line, or when a PASS
-line has no budget; a peak that needs a budget more than 20% under the one
-it has gets a notice. --stack-suggest prints a table for each board
+line has no budget. With --all-boards, which says the boards named are all
+the emulation has, it also fails on a table for any other board, left from
+a board since removed. A peak that needs a budget more than 20% under the
+one it has gets a notice. --stack-suggest prints a table for each board
 instead, each peak plus 25%, rounded as the sizes are. Used by
 emulate-firmware.sh; see docs/ci.md, "Emulation (manual)".
 
@@ -409,10 +411,12 @@ def read_peaks(log):
     return peaks
 
 
-def check_stack(log, budget_path, boards):
+def check_stack(log, budget_path, boards, all_boards=False):
     """Check each named board's stack peaks in `log` against its table in
     `budget_path`: every image the table lists must have passed, with a
-    peak within its budget, and every image that passed must have one."""
+    peak within its budget, and every image that passed must have one.
+    With `all_boards`, `boards` is every board there is, and a table for
+    any other is stale."""
     peaks = read_peaks(log)
     budgets = read_budget(budget_path)
     for board in boards:
@@ -428,7 +432,11 @@ def check_stack(log, budget_path, boards):
             name, peak, limit = f"{board}.{image}", found.get(image), budget.get(image)
             mark = ""
             if peak is None:
-                failed.append((name, "no PASS line for it, so its stack went unchecked"))
+                failed.append((
+                    name,
+                    "no PASS line for it: its run failed, or no such image ran;"
+                    " its stack went unchecked",
+                ))
                 mark = "  no PASS line"
             elif limit is None:
                 failed.append((name, f"no budget for its stack peak of {peak} in {budget_path}"))
@@ -446,6 +454,15 @@ def check_stack(log, budget_path, boards):
                 mark = "  well under budget"
             print(f"  {board:<16}{image:<8}{'-' if peak is None else peak:>8}"
                   f"{'-' if limit is None else limit:>8}{mark}")
+    stale = [board for board in budgets if board not in boards] if all_boards else []
+    for board in stale:
+        failed.append((
+            board,
+            f"{budget_path} has a table for it, but no board of that name ran;"
+            " remove the table, or add the board to emulate-firmware.sh",
+        ))
+        for image, limit in budgets[board].items():
+            print(f"  {board:<16}{image:<8}{'-':>8}{limit:>8}  no such board")
     # The table first, then the messages under it, when both go to one log.
     sys.stdout.flush()
     for name, peak, limit in loose:
@@ -480,7 +497,10 @@ def main(argv):
         if len(argv) == 4 and argv[1] == "--suggest":
             return suggest(argv[2], argv[3])
         if len(argv) >= 5 and argv[1] == "--stack":
-            return check_stack(argv[2], argv[3], argv[4:])
+            all_boards = argv[2] == "--all-boards"
+            rest = argv[3:] if all_boards else argv[2:]
+            if len(rest) >= 3 and not rest[0].startswith("-"):
+                return check_stack(rest[0], rest[1], rest[2:], all_boards)
         if len(argv) == 3 and argv[1] == "--stack-suggest":
             return suggest_stack(argv[2])
         if len(argv) == 4 and not argv[1].startswith("-"):
@@ -491,7 +511,8 @@ def main(argv):
     print(
         "usage: firmware_size.py <elf> <budget.toml> <table>\n"
         "       firmware_size.py --suggest <elf> <table>\n"
-        "       firmware_size.py --stack <run.log> <stack-budget.toml> <board>...\n"
+        "       firmware_size.py --stack [--all-boards] <run.log> <stack-budget.toml>"
+        " <board>...\n"
         "       firmware_size.py --stack-suggest <run.log>",
         file=sys.stderr,
     )

@@ -343,6 +343,24 @@ class FirmwareSizeTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("error: sifive_e.mstp: no PASS line", err)
 
+    def test_stack_stale_table_fails_only_when_every_board_ran(self):
+        # A table for a board that no longer runs: a run of some boards
+        # can't tell, but one of every board can.
+        budget = STACK_BUDGET + "[old_board]\nmstp = 5840\n"
+        status, _, err = self.run_stack(budget)
+        self.assertEqual((status, err), (0, ""))
+        status, out, err = self.run_main(
+            "--stack", "--all-boards", self.write("run.log", RUN_LOG),
+            self.write("stack.toml", budget), "microbit")
+        self.assertEqual(status, 1)
+        self.assertIn("no such board", out)
+        self.assertIn("error: old_board:", err)
+        self.assertIn("has a table for it, but no board of that name ran", err)
+        status, _, err = self.run_main(
+            "--stack", "--all-boards", self.write("run.log", RUN_LOG),
+            self.write("stack.toml", STACK_BUDGET), "microbit")
+        self.assertEqual((status, err), (0, ""))
+
     def test_stack_loose_budget_gets_a_notice_not_a_failure(self):
         # 2220 needs 2784; 3600 is more than 20% above that.
         status, out, err = self.run_stack(STACK_BUDGET.replace("bip = 2784", "bip = 3600"))

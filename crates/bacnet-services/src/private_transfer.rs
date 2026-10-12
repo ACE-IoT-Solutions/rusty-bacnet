@@ -22,7 +22,6 @@ struct MemberLabels {
     what: &'static str,
     vendor_id: &'static str,
     service_number: &'static str,
-    block: &'static str,
 }
 
 /// The request's.
@@ -30,7 +29,6 @@ const REQUEST: MemberLabels = MemberLabels {
     what: "PrivateTransfer",
     vendor_id: "PrivateTransfer vendorID",
     service_number: "PrivateTransfer serviceNumber",
-    block: "PrivateTransfer block",
 };
 
 /// The acknowledgment's.
@@ -38,7 +36,6 @@ const ACK: MemberLabels = MemberLabels {
     what: "PrivateTransferAck",
     vendor_id: "PrivateTransferAck vendorID",
     service_number: "PrivateTransferAck serviceNumber",
-    block: "PrivateTransferAck block",
 };
 
 /// The `[0]` vendor identifier, `[1]` service number and optional `[2]`
@@ -52,7 +49,10 @@ fn decode_members(
     let (service_number, offset) =
         decode_ctx_unsigned::<u32>(data, offset, 1, labels.service_number)?;
     let (block, end) = if next_is_opening(data, offset, 2)? {
-        let (body, end) = decode_ctx_constructed(data, offset, 2, labels.block)?;
+        // The opening tag is there, so the only refusals left are the
+        // frame's own (cut short, mismatched or nested too deep), which
+        // carry no label: `labels.what` only fills the argument.
+        let (body, end) = decode_ctx_constructed(data, offset, 2, labels.what)?;
         (Some(body.to_vec()), end)
     } else {
         (None, offset)

@@ -516,12 +516,15 @@ schedule runs it, and no required check depends on it.
   PASS line and prints a table of peaks against budgets. The run fails, and
   the script exits 1 as it does for a failed image, when a peak is over its
   budget, when an image the board's table lists printed no PASS line, or
-  when one that passed has no budget. A peak that needs a budget more than
-  20% under the one it has gets a notice to tighten it. As with a size
-  budget, raising one is a reviewed change: say why the stack grew.
-  `emulate-firmware.sh --suggest` prints the file's tables as the images run
-  now, in place of the check; the file's comments record the peaks. CI never
-  reads the file, since CI never runs the emulator.
+  when one that passed has no budget. A run of every board also fails on a
+  table for a board it doesn't have, left from one since removed; a run of
+  some boards can't tell. When a run itself failed, the script keeps that
+  run's status. A peak that needs a budget more than 20% under the one it
+  has gets a notice to tighten it. As with a size budget, raising one is a
+  reviewed change: say why the stack grew. `emulate-firmware.sh --suggest`
+  prints the file's tables as the images run now, in place of the check; the
+  file's comments record the peaks. CI never reads the file, since CI never
+  runs the emulator.
 - **The runner.** `emulate-firmware.sh` builds the images on the host with
   the pinned toolchain (clippy first, as the link test does), then hands
   them to `scripts/emu/run-qemu.sh`, which runs each on its board with a

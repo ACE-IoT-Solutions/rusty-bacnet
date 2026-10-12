@@ -11,8 +11,10 @@
 //! A counting global allocator, one per test binary, so this file is a binary
 //! of its own, counts each thread's allocations. Each case decodes a valid
 //! encoding and must allocate exactly what the decoded value holds: one
-//! buffer per String, Vec or record, nothing for a label. The other tests
-//! check each label in an error that names it, so its text is what it was.
+//! buffer per String, Vec or record, plus the copy a BIT STRING's decode
+//! makes, and nothing for a label. Each optional member is there in one
+//! case, so a label built in its branch would show. The other tests check
+//! each label in an error that names it, so its text is what it was.
 
 #![allow(unsafe_code)]
 
@@ -30,13 +32,18 @@ use bacnet_services::file::{
 use bacnet_services::list_manipulation::ChangeListError;
 use bacnet_services::object_mgmt::CreateObjectError;
 use bacnet_services::private_transfer::{PrivateTransferAck, PrivateTransferRequest};
+use bacnet_services::read_range::{RangeSpec, ReadRangeRequest};
+use bacnet_services::virtual_terminal::VTDataRequest;
 use bacnet_services::who_am_i::{WhoAmIRequest, YouAreRequest};
 use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::{DeviceInstanceRange, WhoIsRequest};
+use bacnet_types::bitstring::AuditOperationFlags;
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
-use bacnet_types::enums::{AuditOperation, BACnetSuccessFilter, ErrorClass, ErrorCode, ObjectType};
+use bacnet_types::enums::{
+    AuditOperation, BACnetSuccessFilter, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
+};
 use bacnet_types::error::Error;
-use bacnet_types::primitives::ObjectIdentifier;
+use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use bacnet_types::MacAddr;
 use bytes::BytesMut;
 
@@ -195,8 +202,18 @@ fn create_object_error() -> CreateObjectError {
 }
 
 /// An AuditLogQuery filtering by target and by source, each on network 7
-/// and a two-octet MAC, which fits the address's inline storage.
-fn audit_log_queries() -> [(&'static str, AuditLogQueryRequest); 2] {
+/// and a two-octet MAC, which fits the address's inline storage. With
+/// `every_member`, each optional member the choice has is there too.
+fn audit_log_queries(every_member: bool) -> [(&'static str, AuditLogQueryRequest); 2] {
+    fn when<T>(on: bool, value: T) -> Option<T> {
+        on.then_some(value)
+    }
+    let operations = || {
+        when(
+            every_member,
+            AuditOperationFlags::from_bits(0x0101).unwrap(),
+        )
+    };
     let address = || {
         Some(BACnetAddress {
             network_number: 7,
@@ -206,7 +223,7 @@ fn audit_log_queries() -> [(&'static str, AuditLogQueryRequest); 2] {
     let query = |query_parameters| AuditLogQueryRequest {
         audit_log: oid(ObjectType::AUDIT_LOG, 1),
         query_parameters,
-        start_at_sequence_number: None,
+        start_at_sequence_number: when(every_member, 9),
         requested_count: 5,
     };
     [
@@ -215,11 +232,11 @@ fn audit_log_queries() -> [(&'static str, AuditLogQueryRequest); 2] {
             query(BACnetAuditLogQueryParameters::ByTarget {
                 target_device_identifier: oid(ObjectType::DEVICE, 2),
                 target_device_address: address(),
-                target_object_identifier: None,
-                target_property_identifier: None,
-                target_array_index: None,
-                target_priority: None,
-                operations: None,
+                target_object_identifier: when(every_member, oid(ObjectType::ANALOG_VALUE, 4)),
+                target_property_identifier: when(every_member, PropertyIdentifier::PRESENT_VALUE),
+                target_array_index: when(every_member, 2),
+                target_priority: when(every_member, 8),
+                operations: operations(),
                 successful_actions_only: BACnetSuccessFilter::ALL,
             }),
         ),
@@ -228,8 +245,8 @@ fn audit_log_queries() -> [(&'static str, AuditLogQueryRequest); 2] {
             query(BACnetAuditLogQueryParameters::BySource {
                 source_device_identifier: oid(ObjectType::DEVICE, 2),
                 source_device_address: address(),
-                source_object_identifier: None,
-                operations: None,
+                source_object_identifier: when(every_member, oid(ObjectType::ANALOG_VALUE, 4)),
+                operations: operations(),
                 successful_actions_only: BACnetSuccessFilter::ALL,
             }),
         ),
@@ -266,7 +283,7 @@ fn audit_notification(
 /// compared, so a failure lists every case that changed.
 #[test]
 fn a_decode_that_succeeds_allocates_only_its_values() {
-    let [(_, by_target), (_, by_source)] = audit_log_queries();
+    let [(_, by_target), (_, by_source)] = audit_log_queries(false);
     let audit_notification_encode = {
         // The encoder checks both raw values, which built a label each. The
         // buffer has room for the encoding, so encoding allocates nothing.
@@ -390,6 +407,117 @@ fn a_decode_that_succeeds_allocates_only_its_values() {
         ("AuditLogQuery by-target", 0),
         ("AuditLogQuery by-source", 0),
         ("AuditNotification encode", 0),
+    ];
+    assert_eq!(measured, expected);
+}
+
+/// The members a decoder reads only when they are there, which the values
+/// above leave out, and two decoders that name their members in errors the
+/// same way, ReadRange's and VT-Data's: each decode allocates only what its
+/// value holds, as above.
+#[test]
+fn optional_members_and_other_decoders_allocate_only_their_values() {
+    let [(_, by_target), (_, by_source)] = audit_log_queries(true);
+    let you_are_without_mac = YouAreRequest {
+        device_mac_address: None,
+        ..you_are()
+    };
+    let read_range = |property_array_index, range| ReadRangeRequest {
+        object_identifier: oid(ObjectType::TREND_LOG, 1),
+        property_identifier: PropertyIdentifier::LOG_BUFFER,
+        property_array_index,
+        range: Some(range),
+    };
+    let by_position = read_range(
+        Some(1),
+        RangeSpec::ByPosition {
+            reference_index: 3,
+            count: 5,
+        },
+    );
+    let by_sequence = read_range(
+        None,
+        RangeSpec::BySequenceNumber {
+            reference_seq: 70_000,
+            count: -5,
+        },
+    );
+    let by_time = read_range(
+        None,
+        RangeSpec::ByTime {
+            reference_time: (
+                Date {
+                    year: 126,
+                    month: 3,
+                    day: 1,
+                    day_of_week: 7,
+                },
+                Time {
+                    hour: 14,
+                    minute: 30,
+                    second: 0,
+                    hundredths: 0,
+                },
+            ),
+            count: 10,
+        },
+    );
+    let vt_data = VTDataRequest {
+        vt_session_identifier: 5,
+        vt_new_data: b"hi".to_vec(),
+        vt_data_flag: true,
+    };
+    let audit_query = |request: &AuditLogQueryRequest| {
+        decode_allocations(
+            request,
+            |v, buf| v.encode(buf).unwrap(),
+            AuditLogQueryRequest::decode,
+        )
+    };
+    let read_range = |request: &ReadRangeRequest| {
+        decode_allocations(
+            request,
+            |v, buf| v.encode(buf).unwrap(),
+            ReadRangeRequest::decode,
+        )
+    };
+    let measured = [
+        (
+            "AuditLogQuery by-target, every member",
+            audit_query(&by_target),
+        ),
+        (
+            "AuditLogQuery by-source, every member",
+            audit_query(&by_source),
+        ),
+        (
+            "YouAre without a MAC",
+            decode_allocations(
+                &you_are_without_mac,
+                |v, buf| v.encode(buf).unwrap(),
+                YouAreRequest::decode,
+            ),
+        ),
+        ("ReadRange by position", read_range(&by_position)),
+        ("ReadRange by sequence number", read_range(&by_sequence)),
+        ("ReadRange by time", read_range(&by_time)),
+        (
+            "VTData",
+            decode_allocations(&vt_data, |v, buf| v.encode(buf), VTDataRequest::decode),
+        ),
+    ];
+    let expected = [
+        // The operations' bit string, which the decoder copies out before it
+        // reads the flags from it.
+        ("AuditLogQuery by-target, every member", 1),
+        ("AuditLogQuery by-source, every member", 1),
+        // The model name and the serial number.
+        ("YouAre without a MAC", 2),
+        ("ReadRange by position", 0),
+        ("ReadRange by sequence number", 0),
+        ("ReadRange by time", 0),
+        // The new data.
+        ("VTData", 1),
     ];
     assert_eq!(measured, expected);
 }
@@ -526,7 +654,7 @@ fn element_error_labels() {
 /// Unsigned.
 #[test]
 fn audit_address_labels() {
-    for (choice, request) in audit_log_queries() {
+    for (choice, request) in audit_log_queries(false) {
         let mut wire = BytesMut::new();
         request.encode(&mut wire).unwrap();
         let network = patched(&wire, &[0x21, 0x07, 0x62], &[0x91, 0x07, 0x62]);
