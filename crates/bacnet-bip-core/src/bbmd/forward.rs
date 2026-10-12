@@ -1,7 +1,7 @@
 //! Where a BBMD sends a broadcast it forwards (Annex J.4.5): pure decisions
 //! over the two tables, written into the caller's storage.
 
-use core::net::SocketAddrV4;
+use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BvlcResultCode, Bvll};
 
@@ -46,22 +46,34 @@ impl Target {
     /// A placeholder to fill caller storage with before a call writes it.
     /// It is all zero bits, so a static filled with it can go in `.bss`.
     pub const UNUSED: Self = Self {
-        destination: SocketAddrV4::new(core::net::Ipv4Addr::UNSPECIFIED, 0),
+        destination: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
         via: Via::LocalBroadcast,
     };
 }
 
-/// What a forwarding decision needs besides the tables and the message.
+/// What every forwarding decision needs besides the tables and the message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Context {
     /// The caller's current time; registrations lapsed by then are skipped.
     pub now: Instant,
-    /// The B/IP broadcast address of this BBMD's subnet: its directed
-    /// broadcast address (or 255.255.255.255) at the B/IP port.
-    pub local_broadcast: SocketAddrV4,
     /// Most foreign devices one message goes to; the rest are skipped and
     /// [`Fanout::fanout_capped`] is set. A local budget, not Annex J's.
     pub fdt_fanout: usize,
+}
+
+/// This BBMD's own IP subnet, for the decisions that can send to it:
+/// [`Tables::forwarded_npdu`] and [`Tables::distribute_broadcast`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalSubnet {
+    /// The subnet's B/IP broadcast address: its directed broadcast address
+    /// (or 255.255.255.255) at the B/IP port.
+    pub broadcast: SocketAddrV4,
+    /// The mask of the subnet this BBMD's own B/IP address is on, when the
+    /// caller knows it. With it, a peer's Forwarded-NPDU sent from an
+    /// address on the subnet isn't broadcast there again: the subnet heard
+    /// it first hand. Leave it `None` when it isn't known, or when the own
+    /// address isn't on the subnet, as behind NAT.
+    pub mask: Option<Ipv4Addr>,
 }
 
 /// Destinations written to the caller's storage, and how the list was cut.
@@ -210,40 +222,62 @@ impl<const B: usize, const F: usize> Tables<B, F> {
         self.original_broadcast(cx, self.bdt.own_address(), npdu, out)
     }
 
-    /// A Forwarded-NPDU that `sender` sent this BBMD, carrying `npdu` from
-    /// `origin` (Annex J.4.5).
+    /// A Forwarded-NPDU that `sender` sent this BBMD, whose originating
+    /// address is `origin` (Annex J.4.5).
     ///
     /// Only a BDT peer's is accepted; the caller delivers an accepted one
-    /// to its own network layer. It goes on unchanged, origin and all, to
-    /// the live foreign devices but `origin`, and the peers don't get it
-    /// again. Whether it goes to the local broadcast address too depends on
-    /// how the peer reached this subnet, read from the sender's own BDT row:
-    /// with [`TWO_HOP_MASK`] it came to this BBMD alone, so it is broadcast,
-    /// unless it `arrival`ed by broadcast, which means the subnet has it
-    /// already.
-    pub fn forwarded_npdu<'n, 'o>(
+    /// to its own network layer and sends it on unchanged, origin and all,
+    /// to the destinations returned: the live foreign devices but `origin`
+    /// and, when [`rebroadcasts_forwarded`](Self::rebroadcasts_forwarded)
+    /// says so, the subnet's broadcast address first. The peers don't get
+    /// it again.
+    pub fn forwarded_npdu<'o>(
         &self,
         cx: &Context,
+        subnet: &LocalSubnet,
         sender: SocketAddrV4,
         arrival: Arrival,
         origin: SocketAddrV4,
-        npdu: &'n [u8],
         out: &'o mut [Target],
-    ) -> Result<Distribution<'n, 'o>, ForwardedRefusal> {
+    ) -> Result<Fanout<'o>, ForwardedRefusal> {
         if sender == self.bdt.own_address() {
             return Err(ForwardedRefusal::OwnEcho);
         }
-        let row = self.bdt.row(sender).ok_or(ForwardedRefusal::NotFromPeer)?;
+        if !self.bdt.contains(sender) {
+            return Err(ForwardedRefusal::NotFromPeer);
+        }
         let mut writer = Writer::new(out);
-        if row.mask == TWO_HOP_MASK && arrival == Arrival::Unicast {
-            writer.push_local(cx.local_broadcast);
+        if self.rebroadcasts_forwarded(subnet.mask, sender, arrival) {
+            writer.push_local(subnet.broadcast);
         }
         self.foreign_device_targets_into(&mut writer, cx, origin);
-        Ok(Distribution {
-            origin,
-            npdu,
-            fanout: writer.finish(),
-        })
+        Ok(writer.finish())
+    }
+
+    /// Whether a peer's Forwarded-NPDU from `sender` still has to be
+    /// broadcast on this BBMD's subnet (Annex J.4.5): only when it came to
+    /// this BBMD alone.
+    ///
+    /// Peers address this subnet through their copy of this BBMD's own BDT
+    /// row, which every BDT gives the same mask (J.4.3.2). With
+    /// [`TWO_HOP_MASK`] they send to this BBMD by unicast; with the subnet's
+    /// mask, to the subnet's directed broadcast address, so every device
+    /// there has it already. A datagram that `arrival`ed by broadcast, or
+    /// whose sender is on this BBMD's subnet (by `subnet_mask`, when known),
+    /// reached the subnet too. This doesn't check that `sender` is a peer;
+    /// [`forwarded_npdu`](Self::forwarded_npdu) does.
+    #[must_use]
+    pub fn rebroadcasts_forwarded(
+        &self,
+        subnet_mask: Option<Ipv4Addr>,
+        sender: SocketAddrV4,
+        arrival: Arrival,
+    ) -> bool {
+        let own = self.bdt.own_address();
+        let peers_send_here = self.bdt.row(own).is_none_or(|row| row.mask == TWO_HOP_MASK);
+        let sender_on_subnet = subnet_mask
+            .is_some_and(|mask| (sender.ip().to_bits() ^ own.ip().to_bits()) & mask.to_bits() == 0);
+        peers_send_here && arrival == Arrival::Unicast && !sender_on_subnet
     }
 
     /// A Distribute-Broadcast-To-Network from `sender` (Annex J.4.5).
@@ -251,12 +285,13 @@ impl<const B: usize, const F: usize> Tables<B, F> {
     /// Only a foreign device registered and live at [`Context::now`] may ask;
     /// anyone else gets `Err` with the NAK to send it. The caller delivers
     /// an accepted one to its own network layer. It goes out as a
-    /// Forwarded-NPDU with `sender` as its origin: first to the local
+    /// Forwarded-NPDU with `sender` as its origin: first to the subnet's
     /// broadcast address, then to the
     /// [`broadcast_targets`](Self::broadcast_targets) excluding `sender`.
     pub fn distribute_broadcast<'n, 'o>(
         &self,
         cx: &Context,
+        subnet: &LocalSubnet,
         sender: SocketAddrV4,
         npdu: &'n [u8],
         out: &'o mut [Target],
@@ -265,7 +300,7 @@ impl<const B: usize, const F: usize> Tables<B, F> {
             return Err(BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK);
         }
         let mut writer = Writer::new(out);
-        writer.push_local(cx.local_broadcast);
+        writer.push_local(subnet.broadcast);
         self.peer_targets(&mut writer, sender);
         self.foreign_device_targets_into(&mut writer, cx, sender);
         Ok(Distribution {

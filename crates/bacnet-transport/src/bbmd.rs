@@ -15,7 +15,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcResultCode, FdtEntries};
-use bacnet_bip_core::bbmd::{self as core_bbmd, BdtError, RegistrationRefusal, TWO_HOP_MASK};
+use bacnet_bip_core::bbmd::{self as core_bbmd, Arrival, BdtError, RegistrationRefusal};
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 
@@ -241,6 +241,10 @@ pub struct BbmdState {
     clock: CoreClock,
     /// Both tables. The BDT holds this BBMD's own B/IP address.
     tables: Tables,
+    /// The mask of the subnet this BBMD's own address is on, when the host
+    /// reports it: a peer's Forwarded-NPDU sent from that subnet isn't
+    /// broadcast on it again (Annex J.4.5).
+    subnet_mask: Option<Ipv4Addr>,
     /// Allowed source IPs for Delete-Foreign-Device-Table-Entry.
     /// Empty means deny all (fail closed).
     management_acl: Vec<[u8; 4]>,
@@ -257,6 +261,7 @@ impl BbmdState {
         Self {
             clock: CoreClock::new(Instant::now()),
             tables: Tables::new(address(local_ip, local_port)),
+            subnet_mask: None,
             management_acl: Vec::new(),
             foreign_device_policy: None,
             rate_tracker: ForeignDeviceRateTracker::new(),
@@ -490,15 +495,31 @@ impl BbmdState {
         self.tables.bdt.contains(address(ip, port))
     }
 
-    /// Whether a Forwarded-NPDU from this BDT peer still needs a local
-    /// subnet broadcast: its row has the two-hop mask. The receive path's
-    /// decision, [`Tables::forwarded_npdu`](core_bbmd::Tables::forwarded_npdu),
-    /// also weighs how the datagram arrived.
+    /// Whether a Forwarded-NPDU that this BDT peer sent by unicast is also
+    /// broadcast on this BBMD's subnet (Annex J.4.5): this BBMD's own BDT
+    /// row has the two-hop mask, so peers send to it alone, and the peer
+    /// isn't on this BBMD's subnet. The sender's own row doesn't matter. One
+    /// that arrives by broadcast never is; see
+    /// [`Tables::rebroadcasts_forwarded`](core_bbmd::Tables::rebroadcasts_forwarded).
     pub fn forwarded_npdu_needs_local_broadcast(&self, ip: [u8; 4], port: u16) -> bool {
-        self.tables
-            .bdt
-            .row(address(ip, port))
-            .is_some_and(|row| row.mask == TWO_HOP_MASK)
+        let sender = address(ip, port);
+        sender != self.tables.bdt.own_address()
+            && self.tables.bdt.contains(sender)
+            && self
+                .tables
+                .rebroadcasts_forwarded(self.subnet_mask, sender, Arrival::Unicast)
+    }
+
+    /// The mask of the subnet this BBMD's own address is on, as the host
+    /// reported it at start; `None` when it didn't.
+    #[cfg(test)]
+    pub(crate) fn subnet_mask(&self) -> Option<Ipv4Addr> {
+        self.subnet_mask
+    }
+
+    /// Set the mask of the subnet this BBMD's own address is on.
+    pub(crate) fn set_subnet_mask(&mut self, mask: Option<Ipv4Addr>) {
+        self.subnet_mask = mask;
     }
 
     /// Check if a sender is a registered (non-expired) foreign device.

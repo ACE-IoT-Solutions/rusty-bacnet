@@ -203,8 +203,9 @@ The core decides; the transport does the I/O and keeps the host's policy:
   after the time-to-live plus the 30-second grace period, and where each
   broadcast goes (Annex J.4.5): an Original-Broadcast-NPDU to each peer's
   distribution address (its address ORed with its inverted mask) and the
-  foreign devices; a peer's Forwarded-NPDU to the foreign devices and, for a
-  two-hop peer when it didn't arrive by broadcast, the local subnet; a
+  foreign devices; a peer's Forwarded-NPDU to the foreign devices and, when
+  it came to this BBMD alone, the local subnet (its own BDT row is two-hop,
+  it arrived by unicast, and its sender isn't on this subnet); a
   registered foreign device's Distribute-Broadcast-To-Network to the local
   subnet, the peers and the other foreign devices, or its NAK; the BBMD's own
   broadcasts. Each decision writes its destinations into storage the caller
@@ -213,6 +214,10 @@ The core decides; the transport does the I/O and keeps the host's policy:
   limit (the core asks them through its admission check), the
   Delete-FDT-Entry list, the FDT and fan-out counters, BDT persistence, the
   management rate limiter, the fan-out queue and its budgets, and the sockets.
+
+At start the transport asks the host for the mask of the subnet the BBMD's
+own address is on, for the last of those conditions; where the host doesn't
+report one, a forward from the BBMD's own subnet is rebroadcast.
 
 `BbmdState` maps `std::time::Instant` onto the core's nanosecond clock, with
 the state's creation at the middle of its range, so every instant maps

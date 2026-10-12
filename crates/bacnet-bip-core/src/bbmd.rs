@@ -7,13 +7,15 @@
 //! - [`Tables::original_broadcast`]: a broadcast on this BBMD's subnet, to
 //!   every peer subnet and foreign device.
 //! - [`Tables::forwarded_npdu`]: a peer's Forwarded-NPDU, to the foreign
-//!   devices and, for a two-hop peer, the local subnet.
+//!   devices and, when it came to this BBMD alone (its own BDT row is
+//!   two-hop and it arrived by unicast), the local subnet.
 //! - [`Tables::distribute_broadcast`]: a foreign device's broadcast, to the
 //!   local subnet, the peer subnets and the other foreign devices.
 //! - [`Tables::own_broadcast`]: a broadcast this BBMD's own device sends.
 //!
 //! Each writes its destinations into storage the caller passes and returns
-//! the Forwarded-NPDU to send them ([`Distribution`]). The tables read and
+//! the Forwarded-NPDU to send them ([`Distribution`]), or, for a received
+//! Forwarded-NPDU, which goes on unchanged, only where ([`Fanout`]). The tables read and
 //! write through the codec's views: [`Bdt::set`] takes a
 //! [`BdtEntries`](bacnet_bip_codec::BdtEntries), [`Bdt::entries`] gives one
 //! for a Read-Broadcast-Distribution-Table-Ack, and [`Fdt::wire_entries`]
@@ -44,11 +46,7 @@
 //! let outcome = tables.fdt.register(device, 60, now, &RegistrationLimits::default(), false, || true);
 //! assert!(outcome.result.is_ok());
 //!
-//! let cx = Context {
-//!     now,
-//!     local_broadcast: SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 255), 47808),
-//!     fdt_fanout: 4,
-//! };
+//! let cx = Context { now, fdt_fanout: 4 };
 //! let source = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 20), 47808);
 //! let mut out = [Target::UNUSED; Tables::<4, 4>::MAX_TARGETS];
 //! let sent = tables.original_broadcast(&cx, source, &[0x01, 0x00], &mut out);
@@ -74,4 +72,6 @@ pub use fdt::{
     Fdt, RegisterOutcome, Registered, Registration, RegistrationLimits, RegistrationRefusal,
     StorageFull, GRACE_PERIOD_SECS,
 };
-pub use forward::{Arrival, Context, Distribution, Fanout, ForwardedRefusal, Tables, Target, Via};
+pub use forward::{
+    Arrival, Context, Distribution, Fanout, ForwardedRefusal, LocalSubnet, Tables, Target, Via,
+};

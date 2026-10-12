@@ -8,8 +8,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{
-    canonicalize, distribution_address, validate_entry, Arrival, Context, Tables, Target, Via,
-    TWO_HOP_MASK,
+    canonicalize, distribution_address, validate_entry, Arrival, Context, LocalSubnet, Tables,
+    Target, Via, TWO_HOP_MASK,
 };
 use bacnet_bip_core::Instant;
 use proptest::prelude::*;
@@ -153,7 +153,7 @@ proptest! {
     ) {
         let Some(site) = build(own, &rows, &regs) else { return Ok(()) };
         let now = Instant::from_secs(now);
-        let cx = Context { now, local_broadcast: SocketAddrV4::new(Ipv4Addr::new(10, 0, 9, 255), 0xBAC0), fdt_fanout: fanout };
+        let cx = Context { now, fdt_fanout: fanout };
         let mut out = [Target::UNUSED; Site::MAX_TARGETS];
         let got = site.broadcast_targets(&cx, exclude, &mut out);
         let (expected, dedup, capped) = model_targets(&site, now, exclude, fanout);
@@ -179,24 +179,27 @@ proptest! {
         let Some(site) = build(own, &rows, &regs) else { return Ok(()) };
         let now = Instant::from_secs(now);
         let local = SocketAddrV4::new(Ipv4Addr::new(10, 0, 9, 255), 0xBAC0);
-        let cx = Context { now, local_broadcast: local, fdt_fanout: 16 };
+        let cx = Context { now, fdt_fanout: 16 };
+        let subnet = LocalSubnet { broadcast: local, mask: None };
         let mut out = [Target::UNUSED; Site::MAX_TARGETS];
         let arrival = if broadcast { Arrival::Broadcast } else { Arrival::Unicast };
-        match site.forwarded_npdu(&cx, sender, arrival, origin, &[1], &mut out) {
+        match site.forwarded_npdu(&cx, &subnet, sender, arrival, origin, &mut out) {
             Ok(sent) => {
-                let row = site.bdt.row(sender).unwrap();
+                prop_assert!(site.bdt.contains(sender));
                 prop_assert!(sender != own);
-                prop_assert_eq!(sent.origin, origin);
-                let local_first = sent.fanout.targets.first().map(|t| t.via) == Some(Via::LocalBroadcast);
-                prop_assert_eq!(local_first, row.mask == TWO_HOP_MASK && !broadcast);
-                let rest = &sent.fanout.targets[usize::from(local_first)..];
+                // J.4.5: this BBMD's own row, not the sender's, says how peers
+                // reach this subnet.
+                let own_row = site.bdt.row(own).unwrap();
+                let local_first = sent.targets.first().map(|t| t.via) == Some(Via::LocalBroadcast);
+                prop_assert_eq!(local_first, own_row.mask == TWO_HOP_MASK && !broadcast);
+                let rest = &sent.targets[usize::from(local_first)..];
                 prop_assert!(rest.iter().all(|t| t.via == Via::ForeignDevice && t.destination != origin));
                 prop_assert!(rest.iter().all(|t| site.fdt.is_registered_at(t.destination, now)));
             }
             Err(_) => prop_assert!(sender == own || !site.bdt.contains(sender)),
         }
         let mut out = [Target::UNUSED; Site::MAX_TARGETS];
-        match site.distribute_broadcast(&cx, sender, &[1], &mut out) {
+        match site.distribute_broadcast(&cx, &subnet, sender, &[1], &mut out) {
             Ok(sent) => {
                 prop_assert!(site.fdt.is_registered_at(sender, now));
                 prop_assert_eq!(sent.fanout.targets[0], Target { destination: local, via: Via::LocalBroadcast });

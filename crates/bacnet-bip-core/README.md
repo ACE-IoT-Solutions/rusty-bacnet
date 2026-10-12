@@ -15,8 +15,9 @@ device table, and decides where each broadcast goes:
 
 - an Original-Broadcast-NPDU from the local subnet, to the peer subnets
   (one-hop or two-hop, from each BDT row's mask) and the foreign devices;
-- a peer BBMD's Forwarded-NPDU, to the foreign devices and, when the
-  peer reached this BBMD alone, the local subnet;
+- a peer BBMD's Forwarded-NPDU, to the foreign devices and, when it came
+  to this BBMD alone (its own BDT row is two-hop and it arrived by
+  unicast), the local subnet;
 - a registered foreign device's Distribute-Broadcast-To-Network;
 - the BBMD's own broadcasts.
 
@@ -47,7 +48,6 @@ tables
 
 let cx = Context {
     now: Instant::from_millis(1_000),
-    local_broadcast: SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 255), 47808),
     fdt_fanout: 16,
 };
 let source = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 20), 47808);

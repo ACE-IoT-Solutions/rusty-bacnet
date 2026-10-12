@@ -172,11 +172,12 @@ pub(super) async fn handle_bvll_message(
                 }
                 // Only a BDT peer's is delivered and forwarded: to the
                 // foreign devices (the peers had it from its first BBMD), and
-                // to the local subnet when the peer's two-hop row sent it to
-                // this BBMD alone. One that came by broadcast already reached
-                // the subnet, whatever the row says (Annex J.4.5); never
-                // rebroadcasting it also ends any loop through a BDT row that
-                // is this BBMD under another address.
+                // to the local subnet when it came to this BBMD alone, which
+                // this BBMD's own two-hop row and a unicast arrival tell
+                // (Annex J.4.5). One that came by broadcast, or from a sender
+                // on this subnet, already reached it; never rebroadcasting
+                // one that came by broadcast also ends any loop through a BDT
+                // row that is this BBMD under another address.
                 let arrival = match delivery {
                     Delivery::Broadcast => Arrival::Broadcast,
                     Delivery::Unicast => Arrival::Unicast,
@@ -185,7 +186,6 @@ pub(super) async fn handle_bvll_message(
                     socket_address(sender),
                     arrival,
                     origin,
-                    npdu,
                     local_broadcast(ctx),
                     Instant::now(),
                 );

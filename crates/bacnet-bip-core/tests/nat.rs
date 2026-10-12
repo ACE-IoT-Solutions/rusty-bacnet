@@ -16,7 +16,8 @@ use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{
-    Arrival, BdtError, Context, ForwardedRefusal, InvalidEntry, Tables, Target, Via, TWO_HOP_MASK,
+    Arrival, BdtError, Context, ForwardedRefusal, InvalidEntry, LocalSubnet, Tables, Target, Via,
+    TWO_HOP_MASK,
 };
 use bacnet_bip_core::Instant;
 use support::{addr, destinations};
@@ -54,10 +55,16 @@ fn site(own: SocketAddrV4) -> Site {
 fn cx() -> Context {
     Context {
         now: NOW,
-        local_broadcast: PRIVATE_BROADCAST,
         fdt_fanout: 4,
     }
 }
+
+/// The private side, its mask unknown: a NAT-supporting BBMD's own address
+/// is the public one, so the private mask says nothing about it.
+const PRIVATE_SIDE: LocalSubnet = LocalSubnet {
+    broadcast: PRIVATE_BROADCAST,
+    mask: None,
+};
 
 #[test]
 fn with_its_public_address_as_its_own_each_bbmd_sends_only_to_the_other_site() {
@@ -93,12 +100,20 @@ fn a_peer_sites_forward_arrives_from_its_nat_and_is_rebroadcast_behind_this_one(
     assert!(registered.result.is_ok());
     let mut out = [Target::UNUSED; Site::MAX_TARGETS];
     // Through port forwarding the sender is NAT B's public address, a peer.
+    // Its own row is two-hop, as J.7.5 requires, so the forward came to it
+    // alone and goes on to the private side's broadcast.
     let sent = bbmd1
-        .forwarded_npdu(&cx(), NAT_B, Arrival::Unicast, BEHIND_B, NPDU, &mut out)
+        .forwarded_npdu(
+            &cx(),
+            &PRIVATE_SIDE,
+            NAT_B,
+            Arrival::Unicast,
+            BEHIND_B,
+            &mut out,
+        )
         .unwrap();
-    assert_eq!(sent.origin, BEHIND_B, "a received forward keeps its origin");
     assert_eq!(
-        sent.fanout.targets,
+        sent.targets,
         [
             Target {
                 destination: PRIVATE_BROADCAST,
@@ -112,7 +127,14 @@ fn a_peer_sites_forward_arrives_from_its_nat_and_is_rebroadcast_behind_this_one(
     );
     // The private address the peer has behind its own NAT is no peer here.
     assert_eq!(
-        bbmd1.forwarded_npdu(&cx(), PRIVATE, Arrival::Unicast, BEHIND_B, NPDU, &mut out),
+        bbmd1.forwarded_npdu(
+            &cx(),
+            &PRIVATE_SIDE,
+            PRIVATE,
+            Arrival::Unicast,
+            BEHIND_B,
+            &mut out
+        ),
         Err(ForwardedRefusal::NotFromPeer)
     );
 }
@@ -126,7 +148,7 @@ fn a_foreign_device_on_the_public_side_reaches_both_sites() {
     assert!(registered.result.is_ok());
     let mut out = [Target::UNUSED; Site::MAX_TARGETS];
     let sent = bbmd1
-        .distribute_broadcast(&cx(), ROAMING, NPDU, &mut out)
+        .distribute_broadcast(&cx(), &PRIVATE_SIDE, ROAMING, NPDU, &mut out)
         .unwrap();
     assert_eq!(
         destinations(sent.fanout.targets),

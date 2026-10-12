@@ -1796,11 +1796,16 @@ address, so the echo of each broadcast comes back from the BBMD's own address.
 A `0.0.0.0` BBMD whose broadcast address is 255.255.255.255 and whose own
 address is not the default-route address logs a warning at start: the kernel
 may send its broadcasts from another interface, and their echo is then not
-recognised as its own. Whatever its own address, a BBMD never rebroadcasts on
-its subnet a Forwarded-NPDU that arrived by broadcast (to the configured
-broadcast address or 255.255.255.255), since the subnet already received it;
-it still sends it to its foreign devices. This also stops a BDT row that is
-the BBMD itself under another address from looping a broadcast.
+recognised as its own. A BBMD rebroadcasts a peer's Forwarded-NPDU on its
+subnet only when the peer sent it to the BBMD alone (Annex J.4.5): its own
+BDT row has the all-ones mask, so peers send to it by unicast, the datagram
+arrived by unicast, and the sender isn't on the BBMD's subnet (as the host
+reports its mask at start). With the subnet's mask in its own row, peers
+send to the subnet's directed broadcast address and every device there has
+the message already. Either way it goes to the foreign devices. Never
+rebroadcasting one that arrived by broadcast (to the configured broadcast
+address or 255.255.255.255) also stops a BDT row that is the BBMD itself
+under another address from looping a broadcast.
 
 The tables and the forwarding rules are those of the `no_std` crate
 `bacnet-bip-core`, which firmware can use on its own (see

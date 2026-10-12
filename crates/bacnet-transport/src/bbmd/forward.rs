@@ -6,12 +6,12 @@
 //! of the tables, so the caller can release the lock before it sends
 //! anything.
 
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::SocketAddrV4;
 use std::time::Instant;
 
 use bacnet_bip_codec::BvlcResultCode;
 use bacnet_bip_core::bbmd::{
-    Arrival, Context, Distribution, Fanout, ForwardedRefusal, Target, Via,
+    Arrival, Context, Distribution, Fanout, ForwardedRefusal, LocalSubnet, Target, Via,
 };
 
 use super::{address, BbmdState, Tables};
@@ -35,10 +35,9 @@ pub(crate) struct Forward {
 
 impl BbmdState {
     /// The core's context for a decision at `now`.
-    fn decision_context(&self, now: Instant, local_broadcast: SocketAddrV4) -> Context {
+    fn decision_context(&self, now: Instant) -> Context {
         Context {
             now: self.clock.to_core(now),
-            local_broadcast,
             fdt_fanout: self
                 .foreign_device_policy
                 .as_ref()
@@ -55,12 +54,26 @@ impl BbmdState {
         }
     }
 
+    /// This BBMD's subnet, with `broadcast` as its broadcast address.
+    fn local_subnet(&self, broadcast: SocketAddrV4) -> LocalSubnet {
+        LocalSubnet {
+            broadcast,
+            mask: self.subnet_mask,
+        }
+    }
+
     /// Count `sent` and copy it out.
     fn forward(&mut self, sent: &Distribution<'_, '_>) -> Forward {
-        self.count(&sent.fanout);
-        let targets = sent.fanout.targets;
+        self.forward_fanout(sent.origin, &sent.fanout)
+    }
+
+    /// Count `fanout`, a message from `origin` that goes on unchanged, and
+    /// copy it out.
+    fn forward_fanout(&mut self, origin: SocketAddrV4, fanout: &Fanout<'_>) -> Forward {
+        self.count(fanout);
+        let targets = fanout.targets;
         Forward {
-            origin: sent.origin,
+            origin,
             local_broadcast: targets
                 .iter()
                 .find(|target| target.via == Via::LocalBroadcast)
@@ -70,7 +83,7 @@ impl BbmdState {
                 .filter(|target| target.via != Via::LocalBroadcast)
                 .map(|target| target.destination)
                 .collect(),
-            deduplicated: sent.fanout.deduplicated as u64,
+            deduplicated: fanout.deduplicated as u64,
         }
     }
 
@@ -83,7 +96,7 @@ impl BbmdState {
         now: Instant,
     ) -> Forward {
         self.purge_expired_at(now);
-        let cx = self.decision_context(now, unused_local_broadcast());
+        let cx = self.decision_context(now);
         let mut out = [Target::UNUSED; Tables::MAX_TARGETS];
         let sent = self.tables.original_broadcast(&cx, source, npdu, &mut out);
         self.forward(&sent)
@@ -97,17 +110,17 @@ impl BbmdState {
         sender: SocketAddrV4,
         arrival: Arrival,
         origin: SocketAddrV4,
-        npdu: &[u8],
         local_broadcast: SocketAddrV4,
         now: Instant,
     ) -> Result<Forward, ForwardedRefusal> {
-        let cx = self.decision_context(now, local_broadcast);
+        let cx = self.decision_context(now);
+        let subnet = self.local_subnet(local_broadcast);
         let mut out = [Target::UNUSED; Tables::MAX_TARGETS];
-        let sent = self
+        let fanout = self
             .tables
-            .forwarded_npdu(&cx, sender, arrival, origin, npdu, &mut out)?;
+            .forwarded_npdu(&cx, &subnet, sender, arrival, origin, &mut out)?;
         self.purge_expired_at(now);
-        Ok(self.forward(&sent))
+        Ok(self.forward_fanout(origin, &fanout))
     }
 
     /// A Distribute-Broadcast-To-Network from `sender`, or the NAK to answer
@@ -121,11 +134,12 @@ impl BbmdState {
         now: Instant,
     ) -> Result<Forward, BvlcResultCode> {
         self.purge_expired_at(now);
-        let cx = self.decision_context(now, local_broadcast);
+        let cx = self.decision_context(now);
+        let subnet = self.local_subnet(local_broadcast);
         let mut out = [Target::UNUSED; Tables::MAX_TARGETS];
         let sent = self
             .tables
-            .distribute_broadcast(&cx, sender, npdu, &mut out)?;
+            .distribute_broadcast(&cx, &subnet, sender, npdu, &mut out)?;
         Ok(self.forward(&sent))
     }
 
@@ -133,7 +147,7 @@ impl BbmdState {
     /// [`Tables::own_broadcast`](bacnet_bip_core::bbmd::Tables::own_broadcast).
     pub(crate) fn forward_own_broadcast(&mut self, npdu: &[u8], now: Instant) -> Forward {
         self.purge_expired_at(now);
-        let cx = self.decision_context(now, unused_local_broadcast());
+        let cx = self.decision_context(now);
         let mut out = [Target::UNUSED; Tables::MAX_TARGETS];
         let sent = self.tables.own_broadcast(&cx, npdu, &mut out);
         self.forward(&sent)
@@ -166,7 +180,7 @@ impl BbmdState {
         now: Instant,
     ) -> Vec<([u8; 4], u16)> {
         self.purge_expired_at(now);
-        let cx = self.decision_context(now, unused_local_broadcast());
+        let cx = self.decision_context(now);
         let mut out = [Target::UNUSED; Tables::MAX_TARGETS];
         let fanout =
             self.tables
@@ -196,7 +210,7 @@ impl BbmdState {
         now: Instant,
     ) -> Vec<([u8; 4], u16)> {
         self.purge_expired_at(now);
-        let cx = self.decision_context(now, unused_local_broadcast());
+        let cx = self.decision_context(now);
         let mut out = [Target::UNUSED; Tables::MAX_TARGETS];
         let fanout =
             self.tables
@@ -204,11 +218,6 @@ impl BbmdState {
         self.count(&fanout);
         pairs(fanout.targets)
     }
-}
-
-/// The local broadcast address for a decision that never sends there.
-fn unused_local_broadcast() -> SocketAddrV4 {
-    SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)
 }
 
 /// `targets` as (ip, port) pairs.

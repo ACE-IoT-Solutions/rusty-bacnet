@@ -5,7 +5,7 @@
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
-use bacnet_bip_core::bbmd::{Context, RegistrationLimits, Tables, Target};
+use bacnet_bip_core::bbmd::{Context, LocalSubnet, RegistrationLimits, Tables, Target};
 use bacnet_bip_core::{Duration, Instant};
 
 /// The default B/IP port.
@@ -29,6 +29,11 @@ pub const fn row(address: SocketAddrV4, mask: Ipv4Addr) -> BdtEntry {
 pub const OWN: SocketAddrV4 = addr(192, 168, 1, 1, PORT);
 /// Its subnet's broadcast address.
 pub const LOCAL_BROADCAST: SocketAddrV4 = addr(192, 168, 1, 255, PORT);
+/// Its subnet, its mask unknown.
+pub const SUBNET: LocalSubnet = LocalSubnet {
+    broadcast: LOCAL_BROADCAST,
+    mask: None,
+};
 
 /// Small tables, as firmware would size them.
 pub type Small = Tables<8, 8>;
@@ -67,7 +72,6 @@ pub fn register_all(tables: &mut Small, devices: &[SocketAddrV4], ttl: u16, now:
 pub fn context(now: Instant) -> Context {
     Context {
         now,
-        local_broadcast: LOCAL_BROADCAST,
         fdt_fanout: 32,
     }
 }

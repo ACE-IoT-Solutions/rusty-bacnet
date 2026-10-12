@@ -184,11 +184,22 @@ fn legacy_forwarded(
     if !old.is_bdt_peer(sender.0, sender.1) {
         return Err(ForwardedRefusal::NotFromPeer);
     }
-    let local = old.forwarded_npdu_needs_local_broadcast(sender.0, sender.1) && !broadcast;
+    // The J.4.5 fix: this BBMD's own row, not the sender's, decides.
+    let local = own_row_is_two_hop(old) && !broadcast;
     Ok((
         local,
         old.fdt_forwarding_targets_at(origin.0, origin.1, now),
     ))
+}
+
+/// Whether the old state's own BDT row is two-hop, or missing: how the
+/// fixed rule (J.4.5) tells that peers send to this BBMD alone.
+fn own_row_is_two_hop(old: &legacy::BbmdState) -> bool {
+    let own = old.local_address();
+    old.bdt()
+        .iter()
+        .find(|row| (row.ip, row.port) == own)
+        .is_none_or(|row| row.broadcast_mask == [255; 4])
 }
 
 /// What the old receive path decided for a Distribute-Broadcast-To-Network.
@@ -248,10 +259,10 @@ fn assert_same_state(old: &mut legacy::BbmdState, new: &mut BbmdState, now: Inst
     assert_eq!(views, old.fdt_entries_at(now));
     for (ip, port) in [([10, 0, 0, 1], 0xBAC0), ([10, 0, 1, 2], 0xBAC1)] {
         assert_eq!(new.is_bdt_peer(ip, port), old.is_bdt_peer(ip, port));
-        assert_eq!(
-            new.forwarded_npdu_needs_local_broadcast(ip, port),
-            old.forwarded_npdu_needs_local_broadcast(ip, port)
-        );
+        let fixed = old.is_bdt_peer(ip, port)
+            && (ip, port) != old.local_address()
+            && own_row_is_two_hop(old);
+        assert_eq!(new.forwarded_npdu_needs_local_broadcast(ip, port), fixed);
     }
 }
 
@@ -350,7 +361,6 @@ fn compare(own: ([u8; 4], u16), ops: Vec<(Duration, Op)>) {
                     address(sender),
                     arrival,
                     address(origin),
-                    NPDU,
                     LOCAL_BROADCAST,
                     now,
                 );

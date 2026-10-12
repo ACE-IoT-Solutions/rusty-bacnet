@@ -45,8 +45,8 @@ mod fanout;
 mod groups;
 mod socket;
 use bbmd_start::{
-    initial_bbmd_state, refresh_own_address, warn_if_broadcast_may_leave_another_interface,
-    BbmdConfig, OwnAddressContext,
+    initial_bbmd_state, refresh_own_address, subnet_mask_of,
+    warn_if_broadcast_may_leave_another_interface, BbmdConfig, OwnAddressContext,
 };
 use bvlc_response::{decode_bvlc_result_code, unexpected_response, BvlcResponseKind};
 use socket::BipSocket;
@@ -683,6 +683,13 @@ impl TransportPort for BipTransport {
                 Ipv4Addr::from(ip),
                 self.broadcast_address,
             );
+        }
+        // The subnet the BBMD's own address is on, looked up at each start
+        // as the address is: a peer's forward sent from it isn't broadcast
+        // there again (Annex J.4.5). The lock is taken after the lookup.
+        if let (Some(bbmd), Some(ip)) = (self.bbmd.as_ref(), bbmd_ip) {
+            let mask = subnet_mask_of(Ipv4Addr::from(ip)).await;
+            bbmd::lock(bbmd).set_subnet_mask(mask);
         }
         let local_ip = match bbmd_ip {
             Some(ip) => Ipv4Addr::from(ip),

@@ -293,13 +293,6 @@ impl BbmdState {
         self.bdt.iter().any(|e| e.ip == ip && e.port == port)
     }
 
-    pub(super) fn forwarded_npdu_needs_local_broadcast(&self, ip: [u8; 4], port: u16) -> bool {
-        self.bdt
-            .iter()
-            .find(|e| e.ip == ip && e.port == port)
-            .is_some_and(|e| e.broadcast_mask == [0xff, 0xff, 0xff, 0xff])
-    }
-
     /// The old `is_registered_foreign_device`, at `now` rather than the
     /// wall clock.
     pub(super) fn is_registered_foreign_device_at(
