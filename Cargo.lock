@@ -276,6 +276,7 @@ name = "bacnet-bip-core"
 version = "0.12.0"
 dependencies = [
  "bacnet-bip-codec",
+ "bacnet-time",
  "proptest",
 ]
 

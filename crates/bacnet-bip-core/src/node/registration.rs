@@ -18,9 +18,9 @@
 //! assumption [`Lease`] states.
 
 use bacnet_bip_codec::BvlcResultCode;
+use bacnet_time::{Duration, Instant};
 
 use super::config::{Foreign, Retry};
-use crate::time::{Duration, Instant};
 
 /// A registration the BBMD has proven: from `since` until `until`.
 ///
@@ -261,10 +261,7 @@ impl Lifecycle {
     /// back is never counted, so a renewal doesn't pull its lease back to
     /// its predecessor's.
     pub(crate) fn answer_window(&self) -> Duration {
-        let three = self
-            .timeout
-            .saturating_double()
-            .saturating_add(self.timeout);
+        let three = self.timeout.saturating_mul(2).saturating_add(self.timeout);
         three.min(self.renewal)
     }
 
@@ -376,7 +373,7 @@ impl Lifecycle {
             if wait >= self.renewal {
                 break;
             }
-            wait = wait.saturating_double();
+            wait = wait.saturating_mul(2);
         }
         wait.min(self.renewal)
     }

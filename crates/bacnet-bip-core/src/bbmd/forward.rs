@@ -4,12 +4,12 @@
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BvlcResultCode, Bvll};
+use bacnet_time::Instant;
 
 use core::fmt;
 
 use super::bdt::{distribution_address, Bdt, TWO_HOP_MASK};
 use super::fdt::Fdt;
-use crate::time::Instant;
 use crate::{Arrival, LocalSubnet};
 
 /// What kind of destination a [`Target`] is.

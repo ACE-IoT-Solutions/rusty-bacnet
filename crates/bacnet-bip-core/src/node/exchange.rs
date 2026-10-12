@@ -13,8 +13,7 @@ use core::fmt;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode};
-
-use crate::time::{Duration, Instant};
+use bacnet_time::{Duration, Instant};
 
 /// A management request this node can make, and expect an answer to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

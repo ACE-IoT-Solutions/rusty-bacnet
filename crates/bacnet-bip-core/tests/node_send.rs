@@ -143,6 +143,10 @@ fn foreign_defaults_follow_the_time_to_live() {
     assert_eq!(foreign.retry, Retry::Backoff);
     assert_eq!(foreign.hold, 0);
     assert_eq!(foreign.trust, ForwardedTrust::ConfiguredBbmd);
+    // Half the time-to-live, to the millisecond, at the longest one.
+    let longest = Foreign::new(BBMD, u16::MAX);
+    assert_eq!(longest.renewal, ms(32_767_500));
+    assert_eq!(longest.response_timeout, Duration::from_secs(3));
     let short = Foreign::new(BBMD, 1);
     assert_eq!(short.renewal, ms(500));
     assert_eq!(short.response_timeout, ms(500));

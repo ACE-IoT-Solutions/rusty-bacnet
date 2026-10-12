@@ -4,8 +4,7 @@ use core::fmt;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BvlcResultCode, FdtEntries, FdtEntry};
-
-use crate::time::{Duration, Instant};
+use bacnet_time::{Duration, Instant};
 
 /// Seconds a BBMD keeps a registration past its time-to-live before it
 /// purges it (Annex J.5.2.3).
@@ -54,15 +53,9 @@ impl Registration {
     /// live, on.
     #[must_use]
     pub fn seconds_remaining_at(&self, now: Instant) -> u16 {
-        let lifetime_secs = u32::from(self.ttl) + u32::from(GRACE_PERIOD_SECS);
-        let elapsed = now.saturating_duration_since(self.registered_at);
-        // The longest lifetime is 65565 s, so a registration more than 2^17 s
-        // old, where the short division stops, has nothing left.
-        let left = match elapsed.whole_secs_short() {
-            Some(passed) => lifetime_secs.saturating_sub(passed),
-            None => 0,
-        };
-        u16::try_from(left).unwrap_or(u16::MAX)
+        let lifetime_secs = u64::from(self.ttl) + u64::from(GRACE_PERIOD_SECS);
+        let passed = now.saturating_duration_since(self.registered_at).as_secs();
+        u16::try_from(lifetime_secs.saturating_sub(passed)).unwrap_or(u16::MAX)
     }
 
     /// The registration as a Read-Foreign-Device-Table-Ack row at `now`.

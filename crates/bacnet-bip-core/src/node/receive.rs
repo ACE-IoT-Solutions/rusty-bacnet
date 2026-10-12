@@ -4,10 +4,10 @@
 use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll, BvllError, BvllFrame};
+use bacnet_time::Instant;
 
 use super::addressing::Addressed;
 use super::config::{ForwardedTrust, Link, Mode};
-use crate::time::Instant;
 use crate::Arrival;
 
 /// One received datagram, as the host's socket reported it.

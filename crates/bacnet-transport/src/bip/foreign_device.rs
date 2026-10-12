@@ -4,7 +4,6 @@ use std::time::Duration;
 use bacnet_bip_core::node::{ConfigError, Foreign, ForwardedTrust, Groups, Retry};
 use bacnet_types::error::Error;
 
-use super::node::core_duration;
 use super::BipTransport;
 
 /// Configuration for automatic foreign-device registration. Its positive TTL
@@ -70,8 +69,8 @@ impl ForeignDeviceConfig {
         Foreign {
             bbmd: SocketAddrV4::new(self.bbmd_ip, self.bbmd_port),
             ttl: self.ttl,
-            renewal: core_duration(interval),
-            response_timeout: core_duration(interval.min(BipTransport::BVLC_RESPONSE_TIMEOUT)),
+            renewal: interval.into(),
+            response_timeout: interval.min(BipTransport::BVLC_RESPONSE_TIMEOUT).into(),
             retry: Retry::AtRenewal,
             hold: 0,
             trust: ForwardedTrust::AnySender,

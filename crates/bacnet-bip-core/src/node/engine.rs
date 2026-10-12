@@ -5,6 +5,7 @@
 use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BvlcResultCode, Bvll, BvllError};
+use bacnet_time::{Duration, Instant};
 
 use super::actions::{Action, Actions};
 use super::config::{ConfigError, Link, Mode, Retry};
@@ -18,7 +19,6 @@ use super::registration::{
     RegistrationView,
 };
 use super::send::{Outgoing, SendRefusal};
-use crate::time::{Duration, Instant};
 
 /// A received datagram's fate, with responses matched to this node's own
 /// exchanges.

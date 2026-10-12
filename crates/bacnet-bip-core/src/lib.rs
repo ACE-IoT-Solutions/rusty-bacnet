@@ -8,6 +8,10 @@
 //! runs on firmware and under the Tokio B/IP transport of
 //! `bacnet-transport`, which drives it.
 //!
+//! [`Instant`] and [`Duration`] are `bacnet-time`'s, in nanoseconds,
+//! re-exported here: the types `bacnet-mstp-core` takes too, so firmware
+//! that runs both feeds them one clock.
+//!
 //! - [`bbmd`]: a BBMD's two tables (the BDT and the FDT), foreign-device
 //!   registration, and where each broadcast is forwarded (Annex J.4, J.5).
 //! - [`node`]: a sans-IO B/IP node in normal, foreign-device and BBMD
@@ -21,7 +25,8 @@
 //! # Features
 //!
 //! None. The crate depends only on `bacnet-bip-codec`, with its default
-//! features, and builds on bare-metal targets without an allocator.
+//! features, and `bacnet-time`, and builds on bare-metal targets without an
+//! allocator.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -30,11 +35,10 @@ mod arrival;
 pub mod bbmd;
 pub mod node;
 mod subnet;
-mod time;
 
 pub use arrival::Arrival;
+pub use bacnet_time::{Duration, Instant};
 pub use subnet::LocalSubnet;
-pub use time::{Duration, Instant};
 
 /// The README's example, compiled and run as a doctest.
 #[cfg(doctest)]
