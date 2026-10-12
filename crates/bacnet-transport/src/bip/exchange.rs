@@ -124,10 +124,12 @@ impl Drop for Exchange {
 
 fn refusal_error(refusal: ExchangeRefusal) -> Error {
     match refusal {
-        ExchangeRefusal::SameExchange | ExchangeRefusal::ResultClass | ExchangeRefusal::Full => {
-            Error::Encoding("BVLC management request already in flight".into())
-        }
-        ExchangeRefusal::ManagedRegistration | ExchangeRefusal::NotARequest => {
+        ExchangeRefusal::SameExchange | ExchangeRefusal::ResultClass => Error::Encoding(format!(
+            "BVLC management request already in flight: {refusal}"
+        )),
+        ExchangeRefusal::Full
+        | ExchangeRefusal::ManagedRegistration
+        | ExchangeRefusal::NotARequest => {
             Error::Encoding(format!("BVLC management request refused: {refusal}"))
         }
     }

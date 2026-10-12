@@ -4629,8 +4629,12 @@ Read-BDT, Write-BDT, Read-FDT, Delete-FDT and Register-FD exchanges, including
 automatic registration, which the `bacnet-bip-core` node engine runs (#1622).
 Each function reports successful local UDP sends, valid matched ACKs, matched
 result counts and the latest result code, response timeouts, local errors,
-malformed replies, and calls refused because the single management slot was
-busy. Sending a datagram is not a BBMD receipt. The snapshot uses fixed-size
+malformed replies, and calls refused as busy. Requests to different peers, or
+for different operations, run at the same time, in up to eight exchanges
+(#1622). A request is busy only while the same request is in flight to that
+peer, or another request a success answers (Write-BDT, Delete-FDT-Entry or
+Register-FD) is, since a success couldn't tell the two apart, or while all
+eight are in use. Sending a datagram is not a BBMD receipt. The snapshot uses fixed-size
 counters and a short synchronous lock; polling it does not send traffic.
 Totals belong to this transport instance and survive stop/start; last-result
 fields clear. BBMD-side counters keep their existing meanings.
@@ -4670,15 +4674,15 @@ the default of half the advertised TTL, including 500 ms for TTL 1. Automatic
 mode requires a positive TTL and a positive interval shorter than that TTL;
 invalid settings fail before transport I/O. Positive intervals below 100 ms
 use 100 ms instead, limiting automatic attempts to ten per second even when
-a manual request owns the slot or local sends fail immediately. This is a
+the exchanges are all busy or local sends fail immediately. This is a
 local pacing policy; the requested TTL stays unchanged on the wire. The
 effective interval also drives `next_attempt_in` and response waiting.
 The automatic worker waits at most the smaller of the effective interval
-and three seconds for each result, then schedules another attempt; busy manual
-requests cause a locally counted busy refusal and a retry on the next interval.
+and three seconds for each result, then schedules another attempt. Manual
+requests run beside it; only when all eight exchanges are in use is an attempt
+refused as busy, counted, and retried on the next interval.
 There is no catch-up burst after a delayed attempt. The first attempt is
-admitted at `start()` and sent when the transport's driver task first runs,
-so a manual request made at once finds the slot busy.
+admitted at `start()` and sent when the transport's driver task first runs.
 One-shot `register_foreign_device_bvlc` calls retain their three-second
 response wait and permit zero-TTL requests; they do not switch broadcast mode.
 A foreign device refuses the requests a success answers (Register,

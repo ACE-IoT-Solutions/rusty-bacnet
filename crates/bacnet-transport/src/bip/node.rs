@@ -39,9 +39,12 @@ use super::BipSocket;
 use crate::bbmd;
 use crate::bvll::{bvll_error, encode_bvll, BvllMessage};
 
-/// Exchange slots: one, which the management helpers and a foreign
-/// device's registration share, as before the engine.
-const SLOTS: usize = 1;
+/// Exchange slots, which the management helpers and a foreign device's
+/// registration share. Each holds one exchange per peer and operation, so
+/// requests to different peers, or for different operations, run at the
+/// same time (#1622); only the same request to the same peer, or a second
+/// one a success answers, waits its turn.
+const SLOTS: usize = 8;
 
 /// The engine as the hosted transport runs it.
 pub(super) type HostNode = Node<SLOTS>;

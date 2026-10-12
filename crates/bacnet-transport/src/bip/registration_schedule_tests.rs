@@ -1,7 +1,7 @@
 //! A foreign device's registration schedule on the node engine, as it was
 //! before the engine (#1622): an attempt every renewal interval, counted
 //! from the start of the one before, whatever came of it: an answer, a
-//! refusal, a timeout, a busy slot, or a Distribute-Broadcast-To-Network NAK
+//! refusal, a timeout, or a Distribute-Broadcast-To-Network NAK
 //! from the BBMD. Each attempt waits for its result for the interval or 3 s,
 //! whichever is shorter.
 
@@ -106,8 +106,8 @@ async fn attempts_go_one_interval_apart_whatever_came_of_them() {
     // forward.
     device.at(30_050).await;
     device.bbmd_says(0x60).await;
-    // A manual request holds the one slot over 40 s: that attempt is busy,
-    // and the next waits for 50 s.
+    // A manual request in flight over 40 s takes another slot, so that
+    // attempt goes as due (#1622), and is lost.
     device.at(35_000).await;
     let request = Bvll::ReadBroadcastDistributionTable;
     let peer = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 30), 0xBAC0);
@@ -116,7 +116,10 @@ async fn attempts_go_one_interval_apart_whatever_came_of_them() {
     drop(held);
     device.at(50_500).await;
 
-    assert_eq!(device.attempts(), [0, 10_000, 20_000, 30_000, 50_000]);
+    assert_eq!(
+        device.attempts(),
+        [0, 10_000, 20_000, 30_000, 40_000, 50_000]
+    );
     let snapshot = device.ctx.node.snapshot();
     let counters = snapshot.register_foreign_device;
     assert_eq!(
@@ -126,7 +129,7 @@ async fn attempts_go_one_interval_apart_whatever_came_of_them() {
             counters.timeouts,
             counters.busy
         ),
-        (5, 3, 1, 1)
+        (6, 3, 2, 0)
     );
     let registration = snapshot.foreign_registration;
     assert_eq!(
@@ -135,7 +138,7 @@ async fn attempts_go_one_interval_apart_whatever_came_of_them() {
             registration.accepted,
             registration.refused
         ),
-        (5, 2, 1)
+        (6, 2, 1)
     );
     assert_eq!(snapshot.unmatched_responses, 1);
     assert_eq!(

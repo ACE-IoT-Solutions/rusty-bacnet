@@ -21,7 +21,9 @@ pub struct BvlcRequestCounters {
     pub last_result: Option<BvlcResultCode>,
     /// Sent requests whose response deadline passed without a matched reply.
     pub timeouts: u64,
-    /// Calls refused locally because another management exchange owned the slot.
+    /// Calls refused locally, unsent: the same request was in flight to that
+    /// peer, or another request a success answers was (a success couldn't
+    /// tell the two apart), or all eight exchange slots were in use.
     pub busy: u64,
     /// Admitted requests that failed encoding or local UDP send.
     pub local_errors: u64,

@@ -894,6 +894,8 @@ mod bdt_persistence_tests;
 #[cfg(test)]
 mod dbtn_tests;
 #[cfg(test)]
+mod exchange_tests;
+#[cfg(test)]
 mod fanout_tests;
 #[cfg(test)]
 mod fdt_tests;
