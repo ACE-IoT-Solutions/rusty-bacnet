@@ -302,18 +302,20 @@ link.
   install the toolchain again for builds that take seconds.
 - **What `.text` holds.** Each image's `.text` includes its scenario, not
   just the stack it links. The check's by-crate list shows the split: on
-  `thumbv7m-none-eabi`, the MS/TP image's 16.5 KB is about 5.7 KB of
+  `thumbv7m-none-eabi`, the MS/TP image's 17.8 KB is about 5.7 KB of
   `bacnet-mstp-core`, 5.7 KB of the scenario (with the core code it
-  inlines), 3.4 KB of compiler-builtins and startup code (memory copies
+  inlines), 3.5 KB of compiler-builtins and startup code (memory copies
   and fills, and the reset handler; the list shows the unmangled part
-  separately) and 1.4 KB of `bacnet-mstp-codec`. Only `thumbv6m-none-eabi`,
+  separately) and 2.6 KB of `bacnet-mstp-codec`, about 1.2 KB of it the
+  COBS and CRC-32K of extended frames, which its stream decoder and
+  encoder can reach though the scenario sends none. Only `thumbv6m-none-eabi`,
   which has no divide instruction, also links compiler-builtins' 32-bit
   multiply and divide routines.
 - **RAM.** The scenarios' buffers are statics, so `.bss` measures them. The
   MS/TP image keeps everything large the core borrows in its static, the
   firmware pattern the core's crate docs describe: receive storage, queues
   (3,360 octets for `HeaplessQueues<4, 2>`) and `ActionBuffers<1>` (1,028),
-  5,544 octets in all with the codec part's buffers. The core itself, 504
+  5,544 octets in all with the codec part's buffers. The core itself, 512
   octets on these targets, is built on the stack. `.bss` doesn't count the
   stack. `cargo nextest run -p firmware-link` prints the host sizes from the
   `ram_sizes` test.
@@ -766,28 +768,29 @@ and the release's [CI gate](#ci-gate) reads only `ci.yml` and
 **Targets.** Each codec has a fuzz crate, `crates/<codec>/fuzz`, outside the
 workspace, with its own `Cargo.lock`. Its `src/lib.rs` holds what its targets
 share: for MS/TP, an encoder and a frame check written from the wire layout
-with bit-at-a-time CRCs, without calling the codec, so a fault the codec's
-encode and decode share can't cancel out; for both, a check that encodes
-through every sink. The oracle of each target is in the doc comment at the
-top of its file.
+with bit-at-a-time CRCs (the CRC-32K included) and a COBS of its own, without
+calling the codec, so a fault the codec's encode and decode share can't
+cancel out; for both, a check that encodes through every sink. The oracle of
+each target is in the doc comment at the top of its file.
 
 | Target | Input | Oracle |
 | --- | --- | --- |
-| `mstp_decode` | any octets | `decode_frame` accepts exactly the inputs that start with a whole valid standard frame by the harness's own check, with its length and fields; an accepted frame re-encodes to the same octets unless the encoder's stricter checks refuse it |
-| `mstp_encode` | any frame: every type, source and data length up to 639 octets | the outcome worked out from the crate docs. Every sink (a slice through `encode_into` and through `FrameSink`, `Vec`, `BytesMut`, `heapless::Vec`) holds exactly the expected octets, or refuses with the expected error; a refused encode leaves each sink as it was, compared before and after; each result decodes back to the frame |
-| `mstp_stream` | valid frames, raw noise and noise without `0x55`, pushed into 1 to 575 octets of storage in pieces of any size, with empty pushes, drains and resets | each push checked against a shadow of the decoder's buffer: refusals, `NeedMore`, `Invalid`, `Malformed` (error, discard, destination) and `Frame`, the buffered length and the phase; never wedged; at the end, frames in order and each once, and every guaranteed generated frame delivered at its offset |
+| `mstp_decode` | any octets | `decode_frame_in_place` accepts exactly the inputs that start with a whole valid frame, standard or extended, by the harness's own check, with its length, fields and decoded data, and changes only an extended frame's data field; `decode_frame` agrees without changing anything, except that it refuses a valid extended frame; a refusal names the first check that failed, in the codec's order; an accepted frame re-encodes to the same octets unless the encoder's stricter checks refuse it or the input was an extended frame in a lenient encoding, which re-encodes to the harness's strict one |
+| `mstp_encode` | any frame: every type, source and data length, up to 639 octets for a standard type and 2,099 for a COBS-encoded one | the outcome worked out from the crate docs, header checks in the codec's order. Every sink (a slice through `encode_into` and through `FrameSink`, `Vec`, `BytesMut`, `heapless::Vec`) holds exactly the expected octets, or refuses with the expected error; a refused encode leaves each sink as it was, compared before and after; each result decodes back to the frame |
+| `mstp_stream` | valid standard and extended frames, frames of the reserved COBS types, frames damaged past the header, raw noise and noise without `0x55`, pushed into 1 to 2,117 octets of storage in pieces of any size, with empty pushes, drains and resets | each push checked against a shadow of the decoder's buffer and of any skip in progress: refusals, `NeedMore`, `Invalid` (one noise run), `Malformed` (error, discard, destination, and whether it skips the frame by count) and `Frame` (with its decoded data), the buffered length and the phase; never wedged; at the end, frames in order and each once, and every guaranteed generated frame delivered at its offset |
 | `bip_decode`, `bip6_decode` | any octets | no panic; an accepted datagram re-encodes to itself, unless its result code is one the annex doesn't define |
 | `bip_encode`, `bip6_encode` | any `Bvll` or `Bvll6`, some within 8 octets of the 65,535-octet limit on either side | the octets the Annex J.2 or U.2 layout gives, built field by field; an undefined result code and a message too long for the Length field refused; sinks as for `mstp_encode`; each result decodes back to an equal message |
 
 A generated frame in `mstp_stream` is guaranteed when it fits the storage, no
 reset falls inside it, and no `0x55` lies between it and the anchor: the end
-of the last frame delivered before it, the last reset, or the stream's start.
-From there the decoder starts fresh and nothing can start a candidate before
-the frame. Noise with a `0x55` may hold a header that passes its CRC and runs
-into the next frame, which the decoder then has to deliver or discard whole.
-A frame too long for the storage can hide the frames after it too, since the
-decoder rescans the dropped frame's body as fresh octets (#1609); they aren't
-guaranteed until #1609 skips such a body by count.
+of the last frame delivered before it, or dropped and skipped by count before
+it, the last reset, or the stream's start. From there the decoder starts
+fresh and nothing can start a candidate before the frame. Noise with a `0x55`
+may hold a header that passes its checks and runs into the next frame, which
+the decoder then has to deliver, or drop and skip, whole. A frame dropped
+after a good header (too long for the storage, a reserved COBS type, or data
+that fails its check) hides nothing: the decoder skips exactly the octets its
+header declares (#1609).
 
 **When.** On a PR to `dev` or `main` that changes
 `crates/bacnet-mstp-codec/**` or `crates/bacnet-bip-codec/**` (fuzz crates

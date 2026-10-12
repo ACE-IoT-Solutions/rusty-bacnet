@@ -281,7 +281,7 @@ How to configure each one:
 | [`bacnet-types`](https://crates.io/crates/bacnet-types) | Enums, primitives, bit strings and errors (`no_std` with `alloc`) |
 | [`bacnet-encoding`](https://crates.io/crates/bacnet-encoding) | ASN.1 tags, APDU/NPDU codecs, segmentation (`no_std` with `alloc`) |
 | [`bacnet-services`](https://crates.io/crates/bacnet-services) | Service request and response types (`no_std` with `alloc`) |
-| [`bacnet-mstp-codec`](crates/bacnet-mstp-codec) | MS/TP frame codec: CRCs, encode, decode and a stream decoder (`no_std`; no allocator or dependencies by default) |
+| [`bacnet-mstp-codec`](crates/bacnet-mstp-codec) | MS/TP frame codec: CRCs, encode, decode and a stream decoder, for standard and extended (COBS-encoded) frames (`no_std`; no allocator or dependencies by default) |
 | [`bacnet-mstp-core`](crates/bacnet-mstp-core) | MS/TP master state machine driven by caller-supplied time and events (`no_std`; no allocator by default) |
 | [`bacnet-bip-codec`](crates/bacnet-bip-codec) | BACnet/IP and BACnet/IPv6 BVLL codec: every Annex J and Annex U message, B/IP and B/IPv6 addresses, VMACs and BDT/FDT tables (`no_std`; no allocator or dependencies by default) |
 | [`bacnet-transport`](https://crates.io/crates/bacnet-transport) | BACnet/IP, BACnet/IPv6, BACnet/SC, MS/TP and Ethernet data links |
