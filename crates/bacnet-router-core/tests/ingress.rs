@@ -6,7 +6,6 @@ mod fixture;
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::{AddressField, Malformed, Npdu};
 use bacnet_router_core::router::{Counters, DropReason, Kind, Options};
-use bacnet_router_core::PortId;
 use fixture::{
     addr, apdu_to, at, bytes, deliver, deliver_broadcast, port_on, router, router_with,
     sent_reject, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1, R7, UNCONFIRMED,
@@ -370,51 +369,6 @@ fn the_arrival_network_as_dnet_goes_back_out_the_arrival_port() {
     assert!(matches!(outcome, Outcome::Local { group: true, .. }));
     assert!(sent.is_empty());
     assert_eq!(router.counters().hop_count_drops, 1);
-}
-
-/// #1504: an APDU other than an Unconfirmed-Request for a DADR that is a
-/// group on its delivery port is dropped, without a reject. An
-/// Unconfirmed-Request, or a DADR that isn't a group, goes on.
-#[test]
-fn a_group_dadr_takes_only_unconfirmed_requests() {
-    const GROUP: &[u8] = &[239, 255, 0, 1, 0xBA, 0xC0];
-    let mut router = router();
-    let mut host = Recorder {
-        groups: vec![(PortId(0), GROUP.to_vec())],
-        ..Recorder::default()
-    };
-    let (outcome, sent) = deliver(
-        &mut router,
-        &mut host,
-        1,
-        R7,
-        &apdu_to(1, GROUP, CONFIRMED),
-        at(1),
-    );
-    assert_eq!(outcome, Outcome::Dropped(DropReason::GroupDadr));
-    assert!(sent.is_empty());
-    assert_eq!(router.counters().group_dadr_drops, 1);
-
-    let (outcome, sent) = deliver(
-        &mut router,
-        &mut host,
-        1,
-        R7,
-        &apdu_to(1, GROUP, UNCONFIRMED),
-        at(1),
-    );
-    assert_eq!(outcome, Outcome::Handled);
-    assert_eq!(sent[0].to.as_deref(), Some(GROUP));
-    // A group on another port doesn't count.
-    let (outcome, _) = deliver(
-        &mut router,
-        &mut host,
-        0,
-        NODE_A,
-        &apdu_to(2, GROUP, CONFIRMED),
-        at(1),
-    );
-    assert_eq!(outcome, Outcome::Handled);
 }
 
 /// Today the router compares a DADR with its own MAC on the arrival port

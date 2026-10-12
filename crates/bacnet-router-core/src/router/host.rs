@@ -10,13 +10,17 @@ use crate::PortId;
 /// Every method has a default, so `impl Host for MyHost {}` gives a router
 /// that knows no group addresses, admits every protected message and
 /// reports nothing: what [`Permissive`] is.
+///
+/// The router calls these with its state borrowed, and a hosted router
+/// calls them under the lock it keeps the router in: an implementation
+/// must not block, and must never call into the router or take that lock.
 pub trait Host {
-    /// Whether `mac` is a group destination on `port`, such as a B/IP
-    /// multicast address (#1504). The router drops an APDU other than an
-    /// Unconfirmed-Request that it would hand to one as a unicast.
-    fn is_group(&self, port: PortId, mac: &[u8]) -> bool {
+    /// Whether `mac` is a group address on `port`, and of which kind: asked
+    /// only for a DADR the router would hand to a node on that directly
+    /// attached port (#1504, #1677).
+    fn group(&self, port: PortId, mac: &[u8]) -> Group {
         let _ = (port, mac);
-        false
+        Group::No
     }
 
     /// Whether to act on a protected network message (RB-09). The router
@@ -32,6 +36,30 @@ pub trait Host {
     fn observe(&mut self, event: Event) {
         let _ = event;
     }
+}
+
+/// What a DADR is on its delivery port, as [`Host::group`] says.
+///
+/// The router sends nothing to a group address as a unicast. An
+/// Unconfirmed-Request for a [`Broadcast`](Self::Broadcast) one goes out as
+/// that port's local broadcast instead, and reaches the router's own
+/// application where a DLEN 0 broadcast would: when it came from that
+/// network. Any other APDU for one, anything for a [`Refuse`](Self::Refuse)
+/// one, and every network message for either, is dropped and counted in
+/// [`Counters::group_dadr_drops`](super::Counters::group_dadr_drops), with
+/// no reject (#1677, decisions L19, L23 and L24).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Group {
+    /// Not a group address there: sent to it as addressed.
+    #[default]
+    No,
+    /// A group address of the port's own: on B/IP, a broadcast or
+    /// multicast address at the link's own UDP port.
+    Broadcast,
+    /// A group address outside the port's own: on B/IP, a broadcast or
+    /// multicast address at another UDP port, which the link's broadcast
+    /// would not reach.
+    Refuse,
 }
 
 /// A [`Host`] with every default: no group addresses, every protected
@@ -223,6 +251,14 @@ pub enum Event {
         reported: u16,
         /// Whether the sender's number was configured rather than learned.
         configured: bool,
+    },
+    /// A relay went nowhere because its hop count had run out. It comes
+    /// for every such relay, including one whose frame was also delivered
+    /// locally (a global broadcast, or a DLEN 0 broadcast on the arrival
+    /// network), which [`Received`](super::Received) doesn't show.
+    HopCountSpent {
+        /// The network the relay was for: 0xFFFF for a global broadcast.
+        network: u16,
     },
     /// A refused NPDU named this router as its origin, so no reject went.
     OwnOrigin {

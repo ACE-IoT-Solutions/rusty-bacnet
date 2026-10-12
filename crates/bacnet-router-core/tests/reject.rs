@@ -72,6 +72,26 @@ fn reject_path_follows_the_origin() {
     assert!(reject_of(&sent).is_none());
     assert_eq!(host.events, [Event::OwnOrigin { network: 44 }]);
 
+    // A remote SNET whose SADR happens to equal one of the router's MACs:
+    // another node, so it is answered, through the link sender.
+    let (_, sent) = deliver(
+        &mut router,
+        &mut host,
+        0,
+        NODE_A,
+        &unknown_from(Some((7, OWN_1))),
+        at(25),
+    );
+    let reject = reject_of(&sent).unwrap();
+    assert_eq!(
+        sent_reject(&reject),
+        (
+            reason::NOT_DIRECTLY_CONNECTED,
+            44,
+            Some((7, OWN_1.to_vec()))
+        )
+    );
+
     // A remote SNET: back to the link sender, naming the origin.
     let (_, sent) = deliver(
         &mut router,
@@ -87,7 +107,7 @@ fn reject_path_follows_the_origin() {
         sent_reject(&reject),
         (reason::NOT_DIRECTLY_CONNECTED, 44, Some((7, vec![1, 2, 3])))
     );
-    assert_eq!(router.counters().rejects, 3);
+    assert_eq!(router.counters().rejects, 4);
 }
 
 /// Clause 6.6.3.5: a received reject updates the table, then goes on toward

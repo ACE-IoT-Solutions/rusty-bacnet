@@ -38,7 +38,8 @@
 //!    count of 0 goes nowhere.
 //!
 //! The [`Host`] answers what the router can't know itself: which MACs are
-//! groups on a port, and whether to act on a protected network message.
+//! group addresses on a port ([`Group`]), and whether to act on a
+//! protected network message.
 //!
 //! [`Fixes`] holds the changes Clause 6 calls for, each off by default so
 //! the engine behaves as the hosted router does today.
@@ -59,7 +60,7 @@ use core::fmt;
 
 pub use config::{ConfigError, Fixes, Limits, Options, PortConfig};
 pub use counters::Counters;
-pub use host::{Claim, ControlClass, Event, Host, Permissive, Targets};
+pub use host::{Claim, ControlClass, Event, Group, Host, Permissive, Targets};
 pub use ingress::{DropReason, Frame, Local, Received};
 pub use output::{Action, Cause, Dest, Kind, Send, SendRefusal};
 
@@ -72,7 +73,7 @@ use crate::table::Table;
 use crate::{Instant, PortId, MAX_NPDU};
 
 /// The NPDU limits a port may have: at least this.
-const MIN_LIMIT: u16 = 64;
+pub(crate) const MIN_LIMIT: u16 = 64;
 
 /// Everything large a [`Router`] keeps: up to `P` ports, a table of `R`
 /// routes and `H` hold-down records, `D` searches, and an output scratch of
@@ -81,7 +82,21 @@ const MIN_LIMIT: u16 = 64;
 /// [`new`](Self::new) is a `const fn` whose result is all zero bits, so
 /// firmware keeps it in a zero-initialized static (`.bss`) and lends it to
 /// the router; a host can box it. `P` is at most 255 and `N` at least
-/// [`MAX_NPDU`], both checked when the program compiles.
+/// [`MAX_NPDU`], both checked when the program compiles:
+///
+/// ```
+/// let _ = bacnet_router_core::Storage::<255, 8, 8, 4, 1497>::new();
+/// ```
+///
+/// ```compile_fail
+/// // 256 ports: a wire Port ID can't name the last.
+/// let _ = bacnet_router_core::Storage::<256, 8, 8>::new();
+/// ```
+///
+/// ```compile_fail
+/// // A scratch too small for the largest B/IP or MS/TP NPDU.
+/// let _ = bacnet_router_core::Storage::<2, 8, 8, 4, 1496>::new();
+/// ```
 pub struct Storage<
     const P: usize,
     const R: usize,

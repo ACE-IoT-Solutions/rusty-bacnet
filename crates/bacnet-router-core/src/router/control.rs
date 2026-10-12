@@ -7,7 +7,7 @@
 
 use super::config::Options;
 use super::counters::bump;
-use super::host::{Claim, ControlClass, Event, Host, Targets};
+use super::host::{Claim, ControlClass, Event, Group, Host, Targets};
 use super::ingress::{Arrival, DropReason, Received};
 use super::output::{Kind, Target};
 use super::tasks::Task;
@@ -24,7 +24,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 {
     /// A network message. What-Is, Number-Is and Reject are always handled
     /// here. Any other that names a DNET besides 0xFFFF and the arrival
-    /// network is routed like an APDU, opaquely, and never taken locally.
+    /// network is routed like an APDU, opaquely, and never taken locally;
+    /// but one for a group DADR on its delivery port is dropped, never
+    /// turned into a broadcast (decisions L23 and L24 on #1677).
     pub(super) fn network_message<'f>(
         &mut self,
         at: &Arrival<'f>,
@@ -43,10 +45,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             destination.network != GLOBAL_NETWORK && destination.network != at.network
         });
         if let Some(destination) = elsewhere.filter(|_| !always_here) {
-            return match self.find_route(at, npdu, destination.network, options, host) {
-                Some(route) => self.forward(at, npdu, &route, options, host, true),
-                None => Received::Handled,
+            let Some(route) = self.find_route(at, npdu, destination.network, options, host) else {
+                return Received::Handled;
             };
+            // Never as a broadcast its sender didn't ask for (L23).
+            if self.group_of(&route, npdu, host) != Group::No {
+                return self.group_drop();
+            }
+            return self.forward(at, npdu, &route, options, host);
         }
         match kind {
             code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu),
@@ -204,9 +210,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         if !self.authorize(at, npdu, ControlClass::IAm, Targets::Networks(list), host) {
             return Received::Dropped(DropReason::Denied);
         }
-        for (index, network) in list.iter().enumerate() {
-            let earlier = list.iter().take(index);
-            if !self.claim(at, network, earlier, ControlClass::IAm, options, host) {
+        let mut claimed = Claimed::new();
+        for network in list.iter() {
+            if !self.claim(at, network, &mut claimed, ControlClass::IAm, options, host) {
                 break;
             }
         }
@@ -218,14 +224,16 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// still refreshes networks the table holds; an Init-ACK learns nothing
     /// more, as today (control_messages.rs:247 against :762).
     ///
-    /// A network listed again in one message is no second claim: when the
-    /// first left it waiting on another port (hardened convergence), the
-    /// repeat is skipped, so one message never corroborates itself.
+    /// A network listed again in one message is no second claim: once a
+    /// claim in it was for a route on another port, a repeat that still
+    /// finds the route there (hardened convergence held the first) is
+    /// skipped, so one message never corroborates itself
+    /// (control_messages.rs:253-261).
     pub(super) fn claim(
         &mut self,
         at: &Arrival<'_>,
         network: u16,
-        mut earlier: impl Iterator<Item = u16>,
+        claimed: &mut Claimed<R>,
         class: ControlClass,
         options: &Options,
         host: &mut impl Host,
@@ -238,7 +246,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return false;
         }
         let moving = route.is_some_and(|route| !route.direct && route.port != at.port);
-        if moving && earlier.any(|listed| listed == network) {
+        if moving && !claimed.insert(network) {
             return true;
         }
         let learned =
@@ -414,6 +422,43 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             });
         }
         Received::Handled
+    }
+}
+
+/// The networks one message has claimed for a route on another port, which
+/// the hosted router keeps in a set: a repeat of one is skipped. Only a
+/// network the table holds gets in, so it never holds more than `R`, and
+/// it stays sorted, so a list of thousands costs a binary search per entry
+/// and at most `R` insertions. It lives on the stack for one message: 2 ×
+/// `R` octets.
+pub(super) struct Claimed<const R: usize> {
+    networks: [u16; R],
+    len: usize,
+}
+
+impl<const R: usize> Claimed<R> {
+    /// None yet.
+    pub(super) const fn new() -> Self {
+        Self {
+            networks: [0; R],
+            len: 0,
+        }
+    }
+
+    /// Record `network`, and say whether it is new to this message.
+    fn insert(&mut self, network: u16) -> bool {
+        match self.networks[..self.len].binary_search(&network) {
+            Ok(_) => false,
+            Err(at) => {
+                // Full can't happen: the table holds at most R networks.
+                if self.len < R {
+                    self.networks.copy_within(at..self.len, at + 1);
+                    self.networks[at] = network;
+                    self.len += 1;
+                }
+                true
+            }
+        }
     }
 }
 

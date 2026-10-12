@@ -2,6 +2,7 @@
 //! 6.6.3.9).
 
 use super::config::Options;
+use super::control::Claimed;
 use super::host::{ControlClass, Event, Host, Targets};
 use super::ingress::{Arrival, DropReason, Received};
 use super::tasks::Task;
@@ -109,13 +110,20 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         ) {
             return Received::Dropped(DropReason::Denied);
         }
-        for (index, entry) in entries.iter().enumerate() {
+        let mut claimed = Claimed::new();
+        for entry in entries.iter() {
             let network = entry.network;
             if network == 0 || network == GLOBAL_NETWORK {
                 continue;
             }
-            let earlier = entries.iter().take(index).map(|entry| entry.network);
-            if !self.claim(at, network, earlier, ControlClass::InitAck, options, host) {
+            if !self.claim(
+                at,
+                network,
+                &mut claimed,
+                ControlClass::InitAck,
+                options,
+                host,
+            ) {
                 break;
             }
         }

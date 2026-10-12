@@ -2,13 +2,15 @@
 
 use super::config::Options;
 use super::counters::bump;
-use super::host::Host;
+use super::host::{Event, Host};
 use super::ingress::{Arrival, DropReason, Received};
 use super::output::{Kind, Target};
 use super::Storage;
+use super::MIN_LIMIT;
 use crate::message::reason;
 use crate::npdu::{Address, Npdu};
 use crate::table::Route;
+use crate::MAX_MAC_LEN;
 
 /// The frame's SNET and SADR, or, when it has none, the arrival network and
 /// the link source: the originator is on the arrival link.
@@ -19,9 +21,28 @@ fn source_of<'f>(at: &Arrival<'f>, npdu: &Npdu<'f>) -> Option<Address<'f>> {
     }))
 }
 
+/// The longest reject that can arrive: both addresses at
+/// [`MAX_MAC_LEN`], the hop count, the type and three octets of data. A
+/// port carries at least [`MIN_LIMIT`], so a reject passing through is
+/// never too long for one, and R1 never answers a reject with a reject.
+pub(super) const LONGEST_REJECT: usize = 2 + 2 * (3 + MAX_MAC_LEN) + 1 + 1 + 3;
+const _: () = assert!(LONGEST_REJECT < MIN_LIMIT as usize);
+
 impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
     Storage<P, R, H, D, N>
 {
+    /// Drop a relay whose hop count has run out, counting it and telling
+    /// the host, which logs it as the hosted router does
+    /// (router/forwarding.rs:28-31, 117-120).
+    fn hop_count_spent<'f>(&mut self, npdu: &Npdu<'_>, host: &mut impl Host) -> Received<'f> {
+        bump(&mut self.counters.hop_count_drops);
+        let network = npdu
+            .destination
+            .map_or(0, |destination| destination.network);
+        host.observe(Event::HopCountSpent { network });
+        Received::Dropped(DropReason::HopCount)
+    }
+
     /// Send `npdu` on along `route`. Onto a directly attached network it
     /// loses its DNET, DADR and hop count and goes to the DADR, or as a
     /// broadcast for DLEN 0; toward another router it keeps them, with the
@@ -32,8 +53,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// whose route names a port the router doesn't have. One that
     /// arrives with 1 leaves with 0, as in the hosted router (fix R6 in
     /// #1679 changes that later). With R1 on, one too long for the egress
-    /// port draws reject reason 4 naming its DNET, or, when `answer` is
-    /// off (a reject passing through), is only dropped.
+    /// port draws reject reason 4 naming its DNET. A reject passing
+    /// through never draws one: it can't be that long
+    /// ([`LONGEST_REJECT`]).
     pub(super) fn forward<'f>(
         &mut self,
         at: &Arrival<'f>,
@@ -41,11 +63,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         route: &Route,
         options: &Options,
         host: &mut impl Host,
-        answer: bool,
     ) -> Received<'f> {
         if npdu.hop_count == 0 {
-            bump(&mut self.counters.hop_count_drops);
-            return Received::Dropped(DropReason::HopCount);
+            return self.hop_count_spent(npdu, host);
         }
         // A route written through `Router::table_mut` may name a port the
         // router doesn't have; the hosted router drops its traffic too.
@@ -76,14 +96,12 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             let limit = limits.get(to.is_empty());
             if rewritten.encoded_len() > limit {
                 bump(&mut self.counters.egress_too_long);
-                let dnet = npdu.destination.map(|destination| destination.network);
-                return match dnet.filter(|_| answer) {
-                    Some(dnet) => {
-                        self.reject(at, npdu.source, dnet, reason::MESSAGE_TOO_LONG, host);
-                        Received::Handled
-                    }
-                    None => Received::Dropped(DropReason::TooLong),
-                };
+                // A route is found by DNET, so there is one to name.
+                let dnet = npdu
+                    .destination
+                    .map_or(0, |destination| destination.network);
+                self.reject(at, npdu.source, dnet, reason::MESSAGE_TOO_LONG, host);
+                return Received::Handled;
             }
         }
         if self.write_now(&rewritten, Kind::Forward, Target::Toward(route.port, to)) {
@@ -98,9 +116,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// the hop count one lower; nothing when it has run out. With R1 on, a
     /// port that can't carry it is left out and counted when polled, with
     /// no reject (decision D21 on #1679).
-    pub(super) fn forward_global(&mut self, at: &Arrival<'_>, npdu: &Npdu<'_>) {
+    pub(super) fn forward_global(
+        &mut self,
+        at: &Arrival<'_>,
+        npdu: &Npdu<'_>,
+        host: &mut impl Host,
+    ) {
         if npdu.hop_count == 0 {
-            bump(&mut self.counters.hop_count_drops);
+            self.hop_count_spent(npdu, host);
             return;
         }
         let rewritten = Npdu {

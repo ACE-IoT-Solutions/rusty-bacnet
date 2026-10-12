@@ -2,7 +2,7 @@
 
 use super::config::Options;
 use super::counters::bump;
-use super::host::{Event, Host};
+use super::host::{Event, Group, Host};
 use super::ingress::{Arrival, DropReason, Received};
 use super::tasks::Task;
 use super::Storage;
@@ -68,7 +68,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// Any other is routed toward the node its DNET and DADR name, without
     /// a reachability check, and is dropped when the router can't: its
     /// DNET is 0xFFFF or the arrival network, or the table has no route.
-    /// Nothing answers a reject.
+    /// One for a group DADR on its delivery port is dropped and counted as
+    /// any network message is. Nothing answers a reject.
     pub(super) fn pass_on_reject<'f>(
         &mut self,
         at: &Arrival<'f>,
@@ -86,7 +87,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             network => self.table.lookup(network),
         };
         match route {
-            Some(route) => self.forward(at, npdu, &route, options, host, false),
+            // Never as a broadcast (decisions L23 and L24 on #1677).
+            Some(route) if self.group_of(&route, npdu, host) != Group::No => self.group_drop(),
+            Some(route) => self.forward(at, npdu, &route, options, host),
             None => {
                 bump(&mut self.counters.unroutable_rejects);
                 Received::Dropped(DropReason::Unroutable)

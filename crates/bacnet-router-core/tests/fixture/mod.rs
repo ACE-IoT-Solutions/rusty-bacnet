@@ -12,7 +12,7 @@
 use bacnet_router_core::message::code;
 use bacnet_router_core::npdu::{Address, Npdu};
 use bacnet_router_core::router::{
-    Action, Cause, Claim, ControlClass, Dest, DropReason, Event, Frame, Host, Kind, Limits,
+    Action, Cause, Claim, ControlClass, Dest, DropReason, Event, Frame, Group, Host, Kind, Limits,
     Options, PortConfig, Received, SendRefusal,
 };
 use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
@@ -95,15 +95,19 @@ pub struct Recorder {
     pub events: Vec<Event>,
     /// Classes to refuse.
     pub deny: Vec<ControlClass>,
-    /// Group MACs, by port.
-    pub groups: Vec<(PortId, Vec<u8>)>,
+    /// Group MACs, by port, with their kind.
+    pub groups: Vec<(PortId, Vec<u8>, Group)>,
+    /// Every (port, MAC) the router asked about.
+    pub group_asked: std::cell::RefCell<Vec<(PortId, Vec<u8>)>>,
 }
 
 impl Host for Recorder {
-    fn is_group(&self, port: PortId, mac: &[u8]) -> bool {
+    fn group(&self, port: PortId, mac: &[u8]) -> Group {
+        self.group_asked.borrow_mut().push((port, mac.to_vec()));
         self.groups
             .iter()
-            .any(|(group_port, group)| *group_port == port && group == mac)
+            .find(|(group_port, group, _)| *group_port == port && group == mac)
+            .map_or(Group::No, |(_, _, kind)| *kind)
     }
 
     fn authorize(&mut self, claim: &Claim<'_>) -> bool {

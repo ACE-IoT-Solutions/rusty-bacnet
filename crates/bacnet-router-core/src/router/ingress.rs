@@ -2,7 +2,7 @@
 
 use super::config::Options;
 use super::counters::bump;
-use super::host::Host;
+use super::host::{Group, Host};
 use super::tasks::Task;
 use super::Storage;
 use crate::message::reason;
@@ -89,8 +89,9 @@ pub enum DropReason {
     GlobalWithDadr,
     /// A broadcast whose APDU isn't an Unconfirmed-Request (#1491).
     BroadcastNotUnconfirmed,
-    /// An APDU other than an Unconfirmed-Request for a DADR that is a group
-    /// on its delivery port (#1504).
+    /// For a DADR that is a group address on its delivery port: an APDU
+    /// other than an Unconfirmed-Request, a network message, or anything
+    /// for a [`Group::Refuse`] address ([`Group`]; #1504, #1677).
     GroupDadr,
     /// Its hop count had run out.
     HopCount,
@@ -102,9 +103,6 @@ pub enum DropReason {
     /// A received reject that isn't for this router and has nowhere to go:
     /// its DNET is 0xFFFF or the arrival network, or has no route.
     Unroutable,
-    /// Too long for its egress port (R1), with nobody to tell: it was a
-    /// reject passing through.
-    TooLong,
     /// Its rewrite can't be written: longer than the scratch, or with a
     /// field no NPDU may carry, such as an SNET of 0.
     Unwritable,
@@ -227,7 +225,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return Received::Local(local(npdu, at.link_group, false));
         };
         if destination.network == GLOBAL_NETWORK {
-            self.forward_global(at, npdu);
+            self.forward_global(at, npdu, host);
             return Received::Local(local(npdu, true, true));
         }
         let Some(route) = self.find_route(at, npdu, destination.network, options, host) else {
@@ -246,11 +244,25 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 delivered = Some(local(npdu, true, false));
             }
         }
-        if self.refuses_group_dadr(&route, npdu, host) {
-            bump(&mut self.counters.group_dadr_drops);
-            return Received::Dropped(DropReason::GroupDadr);
+        let mut npdu = *npdu;
+        match self.group_of(&route, &npdu, host) {
+            Group::No => {}
+            // An Unconfirmed-Request for a group of the port's own goes out
+            // as the port's local broadcast: no DADR on a directly attached
+            // network. It reaches the router's application where a DLEN 0
+            // broadcast would: when it came from that network.
+            Group::Broadcast if is_unconfirmed(npdu.payload) => {
+                npdu.destination = Some(Address {
+                    network: destination.network,
+                    mac: &[],
+                });
+                if route.port == at.port {
+                    delivered = Some(local(&npdu, true, false));
+                }
+            }
+            Group::Broadcast | Group::Refuse => return self.group_drop(),
         }
-        let forwarded = self.forward(at, npdu, &route, options, host, true);
+        let forwarded = self.forward(at, &npdu, &route, options, host);
         delivered.map_or(forwarded, Received::Local)
     }
 
@@ -290,17 +302,21 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         None
     }
 
-    /// Whether to drop an APDU this router would hand, on the directly
-    /// attached port `route` names, to a DADR that is a group there (#1504).
-    /// As one unicast it would reach the whole group, so only an
-    /// Unconfirmed-Request may go. Network messages and DLEN 0 pass.
-    fn refuses_group_dadr(&self, route: &Route, npdu: &Npdu<'_>, host: &impl Host) -> bool {
-        let Some(dadr) = npdu.destination.map(|destination| destination.mac) else {
-            return false;
-        };
-        route.direct
-            && !dadr.is_empty()
-            && !is_unconfirmed(npdu.payload)
-            && host.is_group(route.port, dadr)
+    /// What `npdu`'s DADR is on its delivery port: asked of the host only
+    /// when `route` hands it to a node on a directly attached port. A DLEN
+    /// 0 broadcast, and a DADR beyond another router, are [`Group::No`].
+    pub(super) fn group_of(&self, route: &Route, npdu: &Npdu<'_>, host: &impl Host) -> Group {
+        match npdu.destination {
+            Some(destination) if route.direct && !destination.mac.is_empty() => {
+                host.group(route.port, destination.mac)
+            }
+            _ => Group::No,
+        }
+    }
+
+    /// Count a frame dropped for a group DADR (#1504, #1677).
+    pub(super) fn group_drop<'f>(&mut self) -> Received<'f> {
+        bump(&mut self.counters.group_dadr_drops);
+        Received::Dropped(DropReason::GroupDadr)
     }
 }

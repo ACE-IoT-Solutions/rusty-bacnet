@@ -83,7 +83,9 @@
 //!
 //! Rules of this stack beyond the clause, each tested in the same files:
 //! the 18-octet address bound (#1141, #1198); a DADR beside DNET 0xFFFF
-//! (#1379); group DADRs (#1504); the relay back out the arrival port of a
+//! (#1379); group DADRs, where only an Unconfirmed-Request for a group of
+//! the delivery port's own goes on, as that port's broadcast (#1504,
+//! #1677); the relay back out the arrival port of a
 //! message for the arrival network; the RB-09 gate for each protected
 //! message, silent when it refuses; direct routes that no learning, reject
 //! or management write changes; a 30-second hold-down per network and

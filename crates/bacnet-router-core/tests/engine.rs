@@ -191,6 +191,31 @@ fn the_sweep_keeps_its_schedule() {
     assert_eq!(router.next_deadline(), Some(at(1_060)));
 }
 
+/// A call exactly a period late runs the sweep once and schedules the next
+/// a period after the call.
+#[test]
+fn a_sweep_a_period_late_is_rescheduled_from_the_call() {
+    let mut router = router();
+    router.on_deadline(at(120), &mut Permissive);
+    assert_eq!(router.next_deadline(), Some(at(180)));
+}
+
+/// The discovery cooldown is 5 s exactly: a request 4.999 s after a search
+/// draws only the reject, and one at 5 s searches again.
+#[test]
+fn the_discovery_cooldown_is_five_seconds() {
+    let mut router = router();
+    let mut host = Recorder::default();
+    let frame = apdu_to(44, &[5], CONFIRMED);
+    let mut solicits = Vec::new();
+    for now in [Instant::from_secs(1), Instant::from_millis(5_999), at(6)] {
+        let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, now);
+        solicits.push(sent.len() == 2);
+    }
+    assert_eq!(solicits, [true, false, true]);
+    assert_eq!(router.counters().solicitations, 2);
+}
+
 /// The sweep clears a lapsed busy mark from storage; the forwarding
 /// decision never waited for it.
 #[test]

@@ -5,7 +5,7 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{Cause, DropReason, Fixes, Kind, Limits, Options};
+use bacnet_router_core::router::{Cause, DropReason, Event, Fixes, Kind, Limits, Options};
 use bacnet_router_core::PortId;
 use fixture::{
     addr, apdu_to, at, bytes, deliver, learn_9_via_r7, port_on, router, router_with, sent_reject,
@@ -109,8 +109,10 @@ fn hop_count_zero_is_not_relayed_and_one_leaves_with_zero() {
     assert_eq!(outcome, Outcome::Dropped(DropReason::HopCount));
     assert!(sent.is_empty(), "no reject either");
     assert_eq!(router.counters().hop_count_drops, 1);
+    assert_eq!(host.events, [Event::HopCountSpent { network: 9 }]);
 
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &hops(1), at(1));
+    assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].parsed().hop_count, 0);
 }
 
@@ -149,13 +151,23 @@ fn global_broadcast_fans_out_and_delivers() {
         assert_eq!(parsed.hop_count, 254);
     }
 
-    let mut spent = Npdu::apdu(UNCONFIRMED);
-    spent.destination = Some(addr(0xFFFF, &[]));
+    // With 1 left it still goes on, with 0, as today (fix R6 later).
+    let mut last = Npdu::apdu(UNCONFIRMED);
+    last.destination = Some(addr(0xFFFF, &[]));
+    last.hop_count = 1;
+    let (_, sent) = deliver(&mut router, &mut host, 1, &[0x20], &bytes(&last), at(1));
+    assert_eq!(sent.len(), 2);
+    assert!(sent.iter().all(|sent| sent.parsed().hop_count == 0));
+
+    // Spent: delivered, not relayed, and the host hears of it, as the
+    // hosted router logs it (router/forwarding.rs:117-120).
+    let mut spent = last;
     spent.hop_count = 0;
     let (outcome, sent) = deliver(&mut router, &mut host, 1, &[0x20], &bytes(&spent), at(1));
     assert!(matches!(outcome, Outcome::Local { global: true, .. }));
     assert!(sent.is_empty());
     assert_eq!(router.counters().hop_count_drops, 1);
+    assert_eq!(host.events, [Event::HopCountSpent { network: 0xFFFF }]);
 }
 
 /// Clauses 6.2.5 and 6.5.4: a network message for another network, a

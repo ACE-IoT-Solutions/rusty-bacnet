@@ -13,8 +13,11 @@ pub struct Counters {
     /// Broadcasts dropped for carrying an APDU other than an
     /// Unconfirmed-Request (#1491).
     pub broadcast_pdu_type_drops: u64,
-    /// APDUs dropped for a DADR that is a group on its delivery port
-    /// (#1504).
+    /// Frames dropped for a DADR that is a group address on its delivery
+    /// port: an APDU other than an Unconfirmed-Request, a network message,
+    /// or anything for a [`Group::Refuse`](super::Group::Refuse) address
+    /// (#1504, #1677). An Unconfirmed-Request sent as the port's broadcast
+    /// instead isn't counted.
     pub group_dadr_drops: u64,
     /// Frames that didn't parse as an NPDU for any other reason.
     pub malformed: u64,
