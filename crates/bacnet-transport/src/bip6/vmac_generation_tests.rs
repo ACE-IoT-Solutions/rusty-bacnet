@@ -5,7 +5,7 @@ use bacnet_types::error::Error;
 use tokio::net::UdpSocket;
 
 use super::frame::encoded;
-use super::vmac_table::derive_vmac_from_device_instance;
+use super::vmac_from_device_instance;
 use super::{
     generate_random_vmac, Bip6ForeignDeviceConfig, Bip6Transport, Bip6Vmac, Bvll6, MAX_VMAC_RETRIES,
 };
@@ -51,7 +51,7 @@ async fn random_vmac_foreign_device_fails_before_bip6_startup() {
 #[tokio::test]
 async fn peer_probe_collision_fails_startup_without_publishing_socket() {
     let device_instance = 0x12_3456;
-    let vmac = derive_vmac_from_device_instance(device_instance);
+    let vmac = vmac_from_device_instance(device_instance).unwrap();
     // The peer needs the port before the start binds it, so it comes from a
     // probe. Another socket can take the port in between (#1032): that start
     // fails at the bind instead of at the collision, and the test goes again

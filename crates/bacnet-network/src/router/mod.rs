@@ -84,6 +84,7 @@ mod forwarding;
 mod local_control;
 mod options;
 mod reject;
+mod send_warning;
 
 pub use control_policy::{ControlAuthContext, ControlAuthorizer, ControlClass};
 pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
@@ -492,6 +493,7 @@ impl BACnetRouter {
 
             let transport = port.transport;
             let task = tokio::spawn(async move {
+                let warnings = send_warning::SendWarnings::default();
                 while let Some(req) = send_rx.recv().await {
                     match req {
                         SendRequest::Unicast {
@@ -503,7 +505,7 @@ impl BACnetRouter {
                                 .send_unicast_with_data_attributes(&npdu, &mac, &data_attributes)
                                 .await
                             {
-                                warn!(error = %e, "Router send_unicast failed");
+                                warnings.unicast_failed(&e);
                             }
                         }
                         SendRequest::Broadcast {
@@ -514,7 +516,7 @@ impl BACnetRouter {
                                 .send_broadcast_with_data_attributes(&npdu, &data_attributes)
                                 .await
                             {
-                                warn!(error = %e, "Router send_broadcast failed");
+                                warnings.broadcast_failed(&e);
                             }
                         }
                     }

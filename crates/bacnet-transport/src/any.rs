@@ -501,10 +501,23 @@ mod tests {
     #[cfg(feature = "ipv6")]
     #[test]
     fn any_transport_bip6_local_mac() {
+        use crate::bip6::UnresolvedSend;
         let bip6 = crate::bip6::Bip6Transport::new(std::net::Ipv6Addr::LOCALHOST, 47808, None);
-        let any: AnyTransport<LoopbackSerial> = AnyTransport::Bip6(bip6);
-        assert_eq!(any.local_mac().len(), 18);
+        let mut any: AnyTransport<LoopbackSerial> = AnyTransport::Bip6(bip6);
+        // The MAC is the 3-octet VMAC (U.1.3), zero until the transport starts.
+        assert_eq!(any.local_mac(), [0; 3]);
         assert!(any.supports_local_nonrouter_number_controls());
+        // A router's B/IPv6 port queues an NPDU for an unresolved VMAC
+        // instead of waiting on it, through the wrapper too.
+        let AnyTransport::Bip6(bip6) = &any else {
+            unreachable!("built as B/IPv6");
+        };
+        assert_eq!(bip6.unresolved_send(), UnresolvedSend::Wait);
+        any.prepare_for_routing();
+        let AnyTransport::Bip6(bip6) = &any else {
+            unreachable!("built as B/IPv6");
+        };
+        assert_eq!(bip6.unresolved_send(), UnresolvedSend::Queue);
     }
 
     #[cfg(feature = "ipv6")]
