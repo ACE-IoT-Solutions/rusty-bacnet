@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Clippy and rustdoc for each publishable crate on its own, with default
-# features and only its lib/bin targets, denying warnings. Also covers the
+# features and only its lib/bin targets, denying warnings, and for the
+# crates listed below that will publish but don't yet. Also covers the
 # feature-off builds of bacnet-types, bacnet-encoding and bacnet-services
 # (no_std with alloc) and of bacnet-cli (no TUI), and the rustdoc of the
 # MS/TP and B/IP crates with each storage feature alone. Every rustdoc run documents
@@ -46,6 +47,16 @@ for p in json.load(sys.stdin)["packages"]:
 export RUSTDOCFLAGS="-D warnings"
 for crate in $crates; do
   echo "==> $crate (default features$label)"
+  cargo_for clippy -p "$crate" --locked -- -D warnings
+  cargo_for doc -p "$crate" --no-deps --locked --document-private-items
+done
+
+# Crates headed for crates.io that are still `publish = false`, so the
+# metadata list above leaves them out: bacnet-router-core until its
+# firmware router image lands (#1679). Drop a crate from here when its
+# manifest lets it publish.
+for crate in bacnet-router-core; do
+  echo "==> $crate (default features, unpublished$label)"
   cargo_for clippy -p "$crate" --locked -- -D warnings
   cargo_for doc -p "$crate" --no-deps --locked --document-private-items
 done

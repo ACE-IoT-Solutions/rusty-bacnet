@@ -449,6 +449,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-router-core"
+version = "0.12.0"
+dependencies = [
+ "bacnet-encoding",
+ "bacnet-time",
+ "bacnet-types",
+ "bytes",
+ "proptest",
+]
+
+[[package]]
 name = "bacnet-server"
 version = "0.12.0"
 dependencies = [

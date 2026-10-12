@@ -55,6 +55,7 @@ checks=(
   "bacnet-bip-codec heapless"
   "bacnet-bip-codec bytes,heapless"
   "bacnet-bip-core -"
+  "bacnet-router-core -"
   "bacnet-types alloc"
   "bacnet-types serde"
   "bacnet-encoding alloc"
