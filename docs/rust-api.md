@@ -947,7 +947,10 @@ the destination's VMAC and refuses any other length with `InvalidInput`.
 Routed NPDUs carry a B/IPv6 node's VMAC as a 3-octet SADR or DADR, as other
 vendors' routers expect. `local_address()` gives this node's B/IPv6 address,
 `vmac_from_device_instance` the VMAC a device instance gives (H.7.2), and
-`BACnetServer::transport()` the server's transport.
+`BACnetServer::transport()` the server's transport. `parse_vmac_text` and
+`format_vmac_text` read and write a VMAC as text the way the CLI and the
+Python bindings take it: `bip6:1234` for an instance's VMAC, `bip6:0x0004D2`
+for any VMAC.
 
 The transport keeps a neighbour table from the frames it receives (U.5): up to
 4096 peers, the one heard from least recently giving way to a new one. It
@@ -1008,8 +1011,9 @@ B/IPv6 MAC went: sends, client requests, recipient lists, bindings, and COV
 subscriptions you store. Find a VMAC from an address with
 `resolve_virtual_address`, and read this node's address with `local_address()`
 instead of decoding `local_mac()`. A router and the B/IPv6 nodes it serves
-should be upgraded together. `encode_bip6_mac` and `decode_bip6_mac` still
-convert a B/IPv6 address, which is no longer a MAC.
+should be upgraded together. `encode_bip6_mac` and `decode_bip6_mac` are
+gone, since a B/IPv6 address is no longer a MAC: build and read one with
+`Bip6Address` (`Bip6Address::new(ip, port)`, `to_octets()`, `from_slice()`).
 
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is

@@ -52,6 +52,65 @@ pub fn vmac_from_device_instance(instance: u32) -> Result<Bip6Vmac, Error> {
     Ok(Bip6Vmac::new([high, middle, low]))
 }
 
+/// What starts a B/IPv6 VMAC written as text: see [`parse_vmac_text`].
+pub const VMAC_TEXT_PREFIX: &str = "bip6:";
+
+/// Read a B/IPv6 VMAC written as text, the way the CLI and the Python
+/// bindings name a B/IPv6 node: `bip6:` and a device instance in decimal,
+/// 0 to 4194303, whose VMAC it is (H.7.2), or `bip6:0x` (or `0X`) and six hex
+/// digits for any VMAC, such as a random one. [`format_vmac_text`] writes
+/// the hex form, which this reads back.
+///
+/// Fails with [`Error::OutOfRange`] for an instance past 4194303 and with
+/// [`Error::Encoding`] for any other text; both messages say what to write.
+///
+/// ```
+/// use bacnet_transport::bip6::{format_vmac_text, parse_vmac_text, Bip6Vmac};
+///
+/// let vmac = parse_vmac_text("bip6:1234")?;
+/// assert_eq!(vmac, Bip6Vmac::new([0x00, 0x04, 0xD2]));
+/// assert_eq!(parse_vmac_text("bip6:0x0004d2")?, vmac);
+/// assert_eq!(format_vmac_text(vmac), "bip6:0x0004D2");
+/// assert!(parse_vmac_text("bip6:4194304").is_err());
+/// assert!(parse_vmac_text("00:04:d2").is_err());
+/// # Ok::<(), bacnet_types::error::Error>(())
+/// ```
+pub fn parse_vmac_text(text: &str) -> Result<Bip6Vmac, Error> {
+    let malformed = || {
+        Error::Encoding(format!(
+            "'{text}' is not a B/IPv6 VMAC: write bip6:<device instance 0..=4194303> \
+             or bip6:0x<6 hex digits>"
+        ))
+    };
+    let body = text.strip_prefix(VMAC_TEXT_PREFIX).ok_or_else(malformed)?;
+    if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(malformed());
+        }
+        let value = u32::from_str_radix(hex, 16).map_err(|_| malformed())?;
+        let [_, high, middle, low] = value.to_be_bytes();
+        return Ok(Bip6Vmac::new([high, middle, low]));
+    }
+    if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(malformed());
+    }
+    // More digits than a u32 holds are out of range like any instance past
+    // 4194303.
+    let instance = body.parse::<u32>().unwrap_or(u32::MAX);
+    vmac_from_device_instance(instance).map_err(|_| {
+        Error::OutOfRange(format!(
+            "B/IPv6 device instance must be in 0..=4194303, not {body}"
+        ))
+    })
+}
+
+/// A B/IPv6 VMAC as text, `bip6:0x0004D2`, which [`parse_vmac_text`] reads
+/// back.
+pub fn format_vmac_text(vmac: Bip6Vmac) -> String {
+    let [high, middle, low] = vmac.octets();
+    format!("{VMAC_TEXT_PREFIX}0x{high:02X}{middle:02X}{low:02X}")
+}
+
 /// Generate a Random Device Instance VMAC for collision resolution (Clause H.7.2).
 pub fn generate_random_vmac() -> Result<Bip6Vmac, Error> {
     let mut vmac = [0u8; 3];

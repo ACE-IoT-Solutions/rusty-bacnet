@@ -26,7 +26,8 @@ impl BACnetClient {
         mstp_extended_frames=false,
         sc_device_uuid=None,
         share_port_by_address=false,
-        min_request_interval_ms=0
+        min_request_interval_ms=0,
+        ipv6_device_instance=None
     ))]
     fn new(
         interface: &str,
@@ -51,8 +52,10 @@ impl BACnetClient {
         sc_device_uuid: Option<Vec<u8>>,
         share_port_by_address: bool,
         min_request_interval_ms: u64,
+        ipv6_device_instance: Option<u32>,
     ) -> PyResult<Self> {
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
+        let ipv6_device_instance = ipv6_device_instance_for(transport, ipv6_device_instance)?;
         if transport == "sc" {
             crate::tls::required_sc_credentials(
                 sc_ca_cert.as_deref(),
@@ -80,6 +83,7 @@ impl BACnetClient {
             sc_heartbeat_interval_ms,
             sc_heartbeat_timeout_ms,
             ipv6_interface,
+            ipv6_device_instance,
             serial_port,
             mstp_baud,
             mstp_mac,
@@ -109,6 +113,7 @@ impl BACnetClient {
         let sc_heartbeat_interval_ms = slf.borrow().sc_heartbeat_interval_ms;
         let sc_heartbeat_timeout_ms = slf.borrow().sc_heartbeat_timeout_ms;
         let ipv6_interface = slf.borrow().ipv6_interface.clone();
+        let ipv6_device_instance = slf.borrow().ipv6_device_instance;
         let serial_port = slf.borrow().serial_port.clone();
         let mstp_baud = slf.borrow().mstp_baud;
         let mstp_mac = slf.borrow().mstp_mac;
@@ -135,7 +140,7 @@ impl BACnetClient {
                     let interface: std::net::Ipv6Addr = iface_str.parse().map_err(|e| {
                         PyRuntimeError::new_err(format!("invalid IPv6 interface: {e}"))
                     })?;
-                    AnyTransport::Bip6(Bip6Transport::new(interface, port, None))
+                    AnyTransport::Bip6(Bip6Transport::new(interface, port, ipv6_device_instance))
                 }
                 "sc" => {
                     let hub_url = sc_hub.ok_or_else(|| {
@@ -259,4 +264,25 @@ impl BACnetClient {
         };
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
+}
+
+/// The `ipv6_device_instance` keyword: the device instance whose VMAC an ipv6
+/// client uses (H.7.2), 0 to 4194303, or `None` for a random VMAC. Any other
+/// transport refuses it, and so does an instance out of range, before any
+/// I/O.
+fn ipv6_device_instance_for(transport: &str, instance: Option<u32>) -> PyResult<Option<u32>> {
+    let Some(instance) = instance else {
+        return Ok(None);
+    };
+    if transport != "ipv6" {
+        return Err(PyValueError::new_err(
+            "ipv6_device_instance applies only to transport='ipv6'",
+        ));
+    }
+    bacnet_transport::bip6::vmac_from_device_instance(instance).map_err(|_| {
+        PyValueError::new_err(format!(
+            "ipv6_device_instance must be in 0..=4194303, not {instance}"
+        ))
+    })?;
+    Ok(Some(instance))
 }
