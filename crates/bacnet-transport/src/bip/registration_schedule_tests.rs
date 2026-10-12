@@ -19,13 +19,14 @@ use super::*;
 
 const OWN: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 0xBAC0);
 const BROADCAST: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 255), 0xBAC0);
-const BBMD: ([u8; 4], u16) = ([198, 51, 100, 1], 0xBAC0);
+pub(super) const BBMD: ([u8; 4], u16) = ([198, 51, 100, 1], 0xBAC0);
 
-/// A foreign device renewing every `interval`, what it sends, and its
-/// driver.
+/// A foreign device renewing every `interval`, what it sends, what it hands
+/// up, and its driver.
 pub(super) struct Device {
     pub(super) ctx: RecvContext,
     pub(super) sink: SendSink,
+    pub(super) npdus: mpsc::Receiver<ReceivedNpdu>,
     start: Instant,
     _driver: JoinHandle<()>,
 }
@@ -43,12 +44,13 @@ impl Device {
         };
         let mode = Mode::Foreign(config.engine(config.interval().unwrap()));
         let link = test_support::test_link(OWN, BROADCAST, mode);
-        let (npdu_tx, _) = mpsc::channel(4);
+        let (npdu_tx, npdus) = mpsc::channel(4);
         let ctx = RecvContext::on_link(socket, npdu_tx, link, None);
         let driver = tokio::spawn(Arc::clone(&ctx.node).drive());
         Self {
             ctx,
             sink,
+            npdus,
             start: Instant::now(),
             _driver: driver,
         }
@@ -66,6 +68,16 @@ impl Device {
             payload: bytes::Bytes::copy_from_slice(&code.to_be_bytes()),
         };
         handle_bvll_message(&result, peer, Delivery::Unicast, &self.ctx).await;
+    }
+
+    /// `msg` arrives from `sender`, sent as `delivery` says.
+    pub(super) async fn hears(
+        &self,
+        msg: &BvllMessage,
+        sender: ([u8; 4], u16),
+        delivery: Delivery,
+    ) {
+        handle_bvll_message(msg, sender, delivery, &self.ctx).await;
     }
 
     /// The BBMD answers with `code`.

@@ -97,19 +97,25 @@ async fn bip_number_foreign_full_server_wire_and_alternate_sender() {
     expect_number(&bbmd, local, 9, 77).await;
     send(&alternate, local, &frame(0x0a, QUERY)).await;
     expect_number(&bbmd, local, 9, 77).await;
+    // A foreign device takes a Forwarded-NPDU only from its BBMD by unicast
+    // (#1622): the alternate sender's announcement teaches nothing, and its
+    // query draws no reply, so the BBMD's query is answered with 77.
+    forward(&alternate, local, &number(78, 1)).await;
+    forward(&alternate, local, QUERY).await;
+    forward(&bbmd, local, QUERY).await;
+    expect_number(&bbmd, local, 9, 77).await;
     for (value, flag, expected) in [(78, 0, 78), (79, 1, 79), (80, 0, 79), (81, 1, 81)] {
-        // Existing compatibility: valid forwarded traffic is not restricted to
-        // the configured BBMD UDP sender. Its logical group bit is not trust.
-        forward(&alternate, local, &number(value, flag)).await;
-        forward(&alternate, local, QUERY).await;
+        // The BBMD's forwards teach. Their logical group bit is not trust.
+        forward(&bbmd, local, &number(value, flag)).await;
+        forward(&bbmd, local, QUERY).await;
         expect_number(&bbmd, local, 9, expected).await;
     }
     // Too-short forwarded BVLC and a length larger than the datagram are invalid.
-    send(&alternate, local, &[0x81, 4, 0, 9, 127, 0, 0, 1, 0]).await;
-    send(&alternate, local, &[0x81, 4, 0, 30, 127, 0, 0, 1, 0, 1]).await;
-    forward(&alternate, local, QUERY).await;
+    send(&bbmd, local, &[0x81, 4, 0, 9, 127, 0, 0, 1, 0]).await;
+    send(&bbmd, local, &[0x81, 4, 0, 30, 127, 0, 0, 1, 0, 1]).await;
+    forward(&bbmd, local, QUERY).await;
     expect_number(&bbmd, local, 9, 81).await;
-    invalid_controls(&alternate, &bbmd, local, 9, 4).await;
+    invalid_controls(&bbmd, &bbmd, local, 9, 4).await;
     stopped(server, local).await;
 }
 

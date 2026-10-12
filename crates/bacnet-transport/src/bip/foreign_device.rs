@@ -80,8 +80,10 @@ impl ForeignDeviceConfig {
     /// sooner, backing off from the response timeout up to the interval;
     /// and a Distribute-Broadcast-To-Network NAK from the BBMD pulls it
     /// forward ([`Retry::Backoff`], #1622). Until the first attempt
-    /// resolves, up to [`HELD_BROADCASTS`] broadcasts are held, and
-    /// Forwarded-NPDUs are taken from any sender.
+    /// resolves, up to [`HELD_BROADCASTS`] broadcasts are held. A
+    /// Forwarded-NPDU is taken only from the BBMD by unicast, as a BBMD sends
+    /// its foreign devices the network's broadcasts
+    /// ([`ForwardedTrust::ConfiguredBbmd`]).
     pub(super) fn engine(&self, interval: CoreDuration) -> Foreign {
         // Three seconds, exactly.
         let response_timeout =
@@ -93,7 +95,7 @@ impl ForeignDeviceConfig {
             response_timeout: interval.min(response_timeout),
             retry: Retry::Backoff,
             hold: HELD_BROADCASTS,
-            trust: ForwardedTrust::AnySender,
+            trust: ForwardedTrust::ConfiguredBbmd,
         }
     }
 }

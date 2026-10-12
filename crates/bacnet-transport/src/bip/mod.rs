@@ -902,6 +902,8 @@ mod fanout_tests;
 #[cfg(test)]
 mod fdt_tests;
 #[cfg(test)]
+mod foreign_trust_tests;
+#[cfg(test)]
 mod forwarded_tests;
 #[cfg(test)]
 mod forwarding_warn_tests;
