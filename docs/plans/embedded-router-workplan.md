@@ -1,8 +1,9 @@
 # Embedded BACnet/IP↔MS/TP router workplan
 
-Status: parked 2026-10-11. The fork adopted upstream's merged MS/TP crates and
-archived this router work for later re-integration (embedded MS/TP plan,
-Phase 7). G1-G7 remain the review record to address at re-integration
+Status: re-integrated on `feature/sc-ip-router-upstream-0.12` against
+upstream's merged MS/TP codec/core through #1666. The portable router crates
+remain fork-provisional and unpublished while upstream owns the overlapping
+B/IP engine work in #1622 and #1623. G1-G6 remain the review record.
 
 Last updated: 2026-10-11
 
@@ -402,7 +403,7 @@ in the adapters.
       review unit smaller than the branch: one PR per new crate, in
       dependency order, each against `main` after PR #4 merges.
 
-- [ ] **G7 - Rebase onto the merged upstream core.** Upstream merged
+- [x] **G7 - Rebase onto the merged upstream core.** Upstream merged
       `bacnet-mstp-codec` and `bacnet-mstp-core` on 2026-10-11 (#1612, #1619)
       with breaking review fixes: `Oversize` refusal at enqueue, new config
       fields and counters, a start-before-complete transmit contract, action
@@ -413,6 +414,9 @@ in the adapters.
       #1611 (extended frames), #1614 (allocation-free services subset), and
       #1615 (`bacnet-objects` no_std) now set the application-layer
       direction the router will compose with.
+      Resolved on 2026-10-12 by adopting upstream through `30da0ea3`, dropping
+      duplicate codec/core deltas, and adapting the router MS/TP composition
+      to `MasterCore` plus caller-owned standard/extended action buffers.
 
 ## Claim gates and downstream handoff
 

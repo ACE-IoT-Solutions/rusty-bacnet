@@ -1,9 +1,10 @@
 # Embedded MS/TP work plan
 
-Status: decided 2026-10-11 to adopt upstream's merged codec, core, and no_std
-crates (#1612, #1616, #1619) as the base and park the fork's own copies for
-later re-integration. Phase 7 (adopt upstream) is the implementation team's
-next work; Phase 6 hardware open
+Status: upstream's merged codec, core, no_std wiring, and extended frames
+(#1612, #1616, #1619, #1666) are adopted on
+`feature/sc-ip-router-upstream-0.12`. The fork's duplicate codec/core deltas
+are removed; its router adapter is rebased onto the upstream `MasterCore`
+contract. Phase 6 hardware remains downstream work.
 Created: 2026-10-10
 Target line: `fix/sc-router-review-closeout`; embedded MS/TP released at
 `55233111` (`v0.11.7`). The firmware still vendors the `9f5e019`/0.11.4
@@ -752,7 +753,7 @@ the pre-review core API.
 | [#1608](https://github.com/jscott3201/rusty-bacnet/issues/1608) | Host MS/TP MAC departs from Clause 9 in six places (U1-U6); fix by cutting the host transport over to codec + core and deleting the old MAC | Replaces our Phase 4 adapter design; the fork's legacy `MasterNode` mirror must not go upstream |
 | [#1609](https://github.com/jscott3201/rusty-bacnet/issues/1609) | Codec: skip a dropped frame's body by count; discard noise runs in one event | Not started |
 | [#1610](https://github.com/jscott3201/rusty-bacnet/issues/1610) | Codec: fuzz `StreamDecoder` and sinks; build the fuzz crate in CI | Fork has `fuzz/fuzz_targets/mstp_decode.rs`; offer it |
-| [#1611](https://github.com/jscott3201/rusty-bacnet/issues/1611) | Codec: extended frames types 32/33, COBS, CRC-32K, required for routing | Fork has X1-X3 implemented; the next PR |
+| [#1611](https://github.com/jscott3201/rusty-bacnet/issues/1611) | Codec: extended frames types 32/33, COBS, CRC-32K, required for routing | Merged upstream in #1666 and adopted by the fork |
 | [#1613](https://github.com/jscott3201/rusty-bacnet/issues/1613) | Run alloc-only tests and MSRV in CI; lift thumbv6m skips | Not started |
 | [#1614](https://github.com/jscott3201/rusty-bacnet/issues/1614) | Writer-trait encoders and an allocation-free services subset | Not started; shapes any future allocation-free router application layer |
 | [#1615](https://github.com/jscott3201/rusty-bacnet/issues/1615) | Port `bacnet-objects` to no_std + alloc | Not started; was our "still open" question, now upstream-owned |
@@ -765,7 +766,7 @@ the pre-review core API.
 |---|---|
 | F1 legacy `MasterNode` mirror | Superseded by #1608: upstream will delete the old MAC and cut over. Stop maintaining the mirror on the fork; do not include it in any PR. |
 | F2 codec depends on `bacnet-types` | Resolved upstream in #1612. Fork resyncs (Phase 7). |
-| F3 sequence extended frames | #1611 is the vehicle. Rebase the fork's X1-X3 onto the merged codec and core and open the PR. |
+| F3 sequence extended frames | Resolved upstream in #1666; the fork dropped its duplicate implementation and adapted its router layer to the merged API. |
 | F4 allocator-free link proof | Resolved upstream by #1626: CI links the MS/TP and B/IP stacks into no-allocator images with size budgets. |
 | F5 standard-backed versus differential tests | Upstream added the Annex G.1 vector for standard frames. Extended fixtures stay the fork's contribution under #1611. |
 | F6 maintainer's regression candidates | Answered: #1608 U1-U6. Add them as named tests in the fork's host adapter until the cutover removes it. |
@@ -776,17 +777,13 @@ the pre-review core API.
 
 ## Phase 7 - adopt the upstream crates and park the fork copies
 
-State on `feature/sc-ip-router-upstream-0.12` (reviewed 2026-10-11): the team
-merged upstream `dev` at `bdac34b5`, so the codec and core are upstream's
-merged versions with the fork's extended-frame commits rebased on top, and
-`bacnet-router-core` and `bacnet-router-adapters` are retained. That satisfies
-"take the upstream work and move forward" as upstream-base plus a fork
-series rather than as parking; items 1 and 2 below therefore apply to the
-pre-merge head `da18670` (archive it) and to any future divergence, not to
-the extended series. Items 3 and 4 are done by the merge. Upstream has since
-closed #1626 (no-allocator link images in CI, which resolves F4) and #1625
-(wait for a quiet line, part of #1618); #1617 and #1618 remain the gate for
-the active image.
+State on `feature/sc-ip-router-upstream-0.12` (updated 2026-10-12): the team
+merged upstream `dev` through `30da0ea3`, including #1666, and restored
+`bacnet-mstp-codec` and `bacnet-mstp-core` exactly from that upstream head.
+The fork-provisional `bacnet-router-core` and `bacnet-router-adapters` remain,
+with the adapter rebased onto upstream's `MasterCore` and caller-owned action
+buffers. Upstream has also closed #1626 (no-allocator link images in CI) and
+#1625 (wait for a quiet line); #1617 and #1618 remain firmware-image gates.
 
 Decision (2026-10-11): take the upstream work and move forward. Upstream can
 keep taking what is useful from the fork's branch; the fork re-integrates its

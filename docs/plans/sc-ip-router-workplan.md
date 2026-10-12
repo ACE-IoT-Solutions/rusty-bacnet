@@ -1,10 +1,9 @@
 # SC-to-IP router work plan
 
 Status: R1-R6, R8, R9 and the first R7 slice carried onto the upstream 0.12
-baseline on `feature/sc-ip-router-upstream-0.12` (PR #5). Independent review
-2026-10-11 (H1-H7 below): workspace build broken by one upstream test, no CI
-on PR #5, fork release pipeline lost in the merge. R7 limits config and R10
-open.
+baseline on `feature/sc-ip-router-upstream-0.12` (PR #5). Review findings
+H1-H7 are being closed on the current upstream baseline; R7 limit
+configuration and R10 remain open.
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
@@ -28,7 +27,7 @@ provisional pending external owner confirmation; implementation proceeds with
 ## Goal
 
 Let a downstream Python application build a long-lived BACnet/SC-to-BACnet/IP
-router from an installed `rusty-bacnet` wheel, with typed per-port
+router from an installed `ace-rusty-bacnet` wheel, with typed per-port
 configuration, unbounded SC reconnection, per-port health and routing-table
 visibility, correct SC identity, and standards-conformant handling of
 oversize NPDUs, while keeping every change additive so it can be offered
@@ -117,18 +116,20 @@ row for transport identity. R6 is therefore a restore-and-extend, not new work.
 - `ActiveHub::{Primary, Failover}` exists but is private to `sc::failover`.
 - `RejectMessageReason::MESSAGE_TOO_LONG` (reason 4) exists in
   `crates/bacnet-types/src/enums/network.rs:49`.
-- The Python test suite runs against an installed wheel; the router lifecycle
-  pattern to copy is `crates/rusty-bacnet/tests/test_virtual_router.py`.
+- The Python test suite runs against an installed wheel. On the 0.12 line the
+  router lifecycle contract is covered by `test_router_ports.py`; the removed
+  fork-only `test_virtual_router.py` is historical evidence only.
 - The conformance ledger row `BACNET-6-ROUTER-MESSAGES` is
   `implementation-present-needs-conformance-tests`
   (`docs/conformance/standard-135-2020-ledger.md:371`).
 
 ## Working rules
 
-- Every public change is additive. New trait methods get default bodies, new
-  structs get `Default`, new constructors sit beside existing ones. The
-  existing `BACnetRouter(bip_network, virtual_ports, ...)` signature and
-  `test_virtual_router.py` must keep passing unchanged.
+- The earlier additive-only rule is superseded for the pre-1.0 0.12
+  reconciliation. The fork-only
+  `BACnetRouter(bip_network, virtual_ports, ...)` constructor, virtual router
+  port, and old forwarding counters are intentionally removed; callers use
+  `BACnetRouter.from_ports()` and typed B/IP/SC ports.
 - One PR per layer, in dependency order, each with its tests. A PR that only
   touches `bacnet-transport` or `bacnet-network` must be proposable to
   upstream as-is; fork-specific packaging stays in its own PR.
@@ -323,15 +324,16 @@ Crates: `rusty-bacnet`.
       naming the port index and hub URL.
 - [x] Add `port_health() -> list[RouterPortHealth]` and
       `routing_table() -> list[RouterRouteEntry]` as awaitables following the
-      `port_counters()` stop-aware pattern. The R7 `oversize_drops` extension
-      remains open.
+      `port_counters()` stop-aware pattern. The R7 `oversize_drops()` counter
+      is exposed on the router; explicit SC receive-limit configuration
+      remains the Phase 4 work.
 - [x] Update `rusty_bacnet.pyi` and `docs/python-api.md` for the new surface.
 - [x] Record installed-wheel API-contract/manifest verification; no static
       `test_api_contract_manifest.py` expectation change was required.
 
-Tests: `test_virtual_router.py` retains the legacy constructor/lifecycle
-contract; new `test_router_ports.py` covers typed validation, construction,
-health and routing-table shapes, stopped snapshots, and restart.
+Tests: `test_router_ports.py` covers typed validation, construction, health
+and routing-table shapes, stopped snapshots, and restart. The removed
+`test_virtual_router.py` is not a 0.12 compatibility gate.
 
 Acceptance: installed wheel exposes the new classes with the agreed kwargs.
 
@@ -370,6 +372,8 @@ Acceptance: all three tests green in CI; ledger row cites them.
       fork) while keeping the `rusty_bacnet` import name; confirm `maturin`
       emits `ace_rusty_bacnet-*.whl` containing the `rusty_bacnet` module and
       that `test_api_contract_manifest.py` still resolves the stub.
+- [x] Reserve `0.12.1` as the first fork release on the upstream 0.12 line;
+      the existing upstream `v0.12.0` tag is not reused for a fork build.
 - [x] (2026-10-10: plain `vN` tags adopted, enforced by the fork release
       validation step; acceptable now that D1 is moot.) Define the fork tag scheme (recommendation: `v0.11.x-ace.N`) and make
       public release jobs trigger only on fork tags; production wheels must be
@@ -895,9 +899,11 @@ remains Linux-only because its GPIO dependency does not compile on macOS.
 ## Review 2026-10-11 - upstream 0.12 continuation branch
 
 Independent review of `feature/sc-ip-router-upstream-0.12` at `5ae0995`
-(191 commits over upstream `dev` `bdac34b5`; upstream has since moved 40
-commits further to `da229d0`). Verified in an isolated worktree with the
-pinned 1.97.1 toolchain.
+(191 commits over upstream `dev` `bdac34b5`; upstream later moved through
+`30da0ea3`). The closeout merged that upstream head at `3ad86663`, adopted
+the upstream codec/core exactly, and retained the fork-provisional router
+crates on top. Verified locally on macOS arm64 with the repository toolchain;
+the bare-target router checks use the installed 1.97.1 toolchain.
 
 | Check | Result |
 |---|---|
@@ -908,25 +914,33 @@ pinned 1.97.1 toolchain.
 
 ### Findings
 
-- [ ] **H1 - The workspace does not compile.**
+- [x] **H1 - The workspace does not compile.**
       `crates/bacnet-endpoint/tests/bip_sc.rs:89` builds an `ScReconnectConfig`
       literal without the fork's `retry_forever` field. One line fixes it; the
       point is that the reconciliation was verified on three crates and the
       upstream `bacnet-endpoint` test target was never built. Run the full
       workspace command before pushing.
+      Resolved by updating every complete `ScReconnectConfig` literal and by
+      correcting the runtime mapping so `reconnect_forever` populates
+      `retry_forever` without replacing the configured retry budget. The
+      review's full workspace command now passes, including doctests.
 - [ ] **H2 - PR #5 gets no CI.** It targets `fix/sc-router-review-closeout`,
       and the workflow runs pull requests only against `dev` and `main`. No
       run exists for the branch. Retarget PR #5 at `main` (or stack it on PR
       #4 and merge that first) so the matrix, the no_std checks and the
       Python wheel job actually execute.
-- [ ] **H3 - The fork release pipeline was lost in the merge.**
+- [x] **H3 - The fork release pipeline was lost in the merge.**
       `crates/rusty-bacnet/pyproject.toml` is back to `name = "rusty-bacnet"`
       at 0.12.0, the `ace-pypi` index block and the `publish-private-pypi`
       job are gone, and the wheel builds as `rusty_bacnet-0.12.0`. Restore
       the `ace-rusty-bacnet` distribution, the private publish job and the
       fork-tag gating from `3c51b34`, `ab8e558` and `be813fc7`, then decide
       the first 0.12-line fork version.
-- [ ] **H4 - The legacy constructor and `test_virtual_router.py` were
+      Resolved with the ACE distribution name and index, fork-repository job
+      gating, five-wheel private publish set, repaired locked sdist build,
+      clean-venv smoke install, and `0.12.1` reserved as the first fork
+      release on this line.
+- [x] **H4 - The legacy constructor and `test_virtual_router.py` were
       dropped silently.** The reconciliation note says the virtual-network
       transport, the `BACnetRouter(bip_network, virtual_ports, ...)`
       constructor and the old per-port forwarding counters were not restored
@@ -934,19 +948,30 @@ pinned 1.97.1 toolchain.
       but it contradicts this plan's working rule and K5 of the embedded
       plan. Record it as a decision here, add a changelog fragment naming
       the removed API, and update `docs/python-api.md`.
-- [ ] **H5 - R7 and R8 bookkeeping.** R8 is delivered (`RouterConfig`,
+      Resolved as an explicit pre-1.0 migration decision in this plan, the
+      Python API guide, upgrade/install documentation, and changelog.
+- [x] **H5 - R7 and R8 bookkeeping.** R8 is delivered (`RouterConfig`,
       `announce_interval_s`, recovery re-announce on the recovered port).
       The first R7 slice is delivered (negotiated SC NPDU ceiling as a
       transport hint, `oversize_drops`, Reject-Message-To-Network reason 4).
       Phase 3 and Phase 4 items should be ticked to match, with node and hub
       receive-limit configuration left open.
-- [ ] **H6 - Rebase before the gap grows again.** Upstream's 40 new commits
+      Resolved: Phase 3 records both delivered slices, while Phase 4 keeps
+      only explicit node/Hub receive-limit configuration and its boundary
+      evidence open.
+- [x] **H6 - Rebase before the gap grows again.** Upstream's new commits
       include a no_std B/IP and B/IPv6 BVLL codec (`bacnet-bip-codec`) and
       moved the Tokio transports onto it, a virtual-time MS/TP bus simulator,
       no-allocator firmware link images in CI, and a core fix that waits for
       a quiet line before every send. `bacnet-transport/src/bip` and
       `sc` are where this branch carries most of its delta, so each day of
       drift costs a merge.
+      Resolved by merging upstream `dev` through `30da0ea3` (zero commits
+      behind at closeout), restoring the codec/core byte-for-byte from that
+      head, and adapting the provisional router adapter to upstream's merged
+      extended-frame `MasterCore` and caller-owned action buffers. The merge
+      also retained the fork's B/IP envelope provenance and contextual router
+      startup errors across upstream's newer bounded ingress path.
 - [ ] **H7 - Upstream now owns the router adapters' B/IP side.** Issues
       #1622 (sans-IO B/IP node engine) and #1623 (BBMD tables and forwarding
       as a portable core) describe what `bacnet-router-adapters` does on
