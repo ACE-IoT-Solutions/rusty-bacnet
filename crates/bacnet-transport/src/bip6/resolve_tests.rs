@@ -450,9 +450,15 @@ fn a_quiet_peer_is_checked_and_removed_when_silent() {
             quiet(state.route(PEER, NPDU, WAIT, at, &counts)),
             "one check at a time"
         );
-        assert_eq!(state.poll(at, &counts).resolutions, [PEER]);
+        // The check asks the address on file, not the group.
+        let polled = state.poll(at, &counts);
+        assert_eq!(polled.revalidations, [addr(4)]);
+        assert!(polled.resolutions.is_empty());
         if answered {
             state.learn(PEER, addr(4), Heard::Direct, at + secs(1), &counts);
+        } else {
+            let retries = state.poll(at + secs(1), &counts).revalidations;
+            assert_eq!(retries, [addr(4)], "retried a second later");
         }
         state.poll(at + secs(3), &counts);
         assert_eq!(state.table.lookup(PEER).is_some(), answered);
@@ -556,10 +562,121 @@ fn clearing_fails_every_waiter() {
         panic!("a new lookup");
     };
     state.learn(OTHER, addr(4), Heard::Direct, t0, &counts);
-    state.clear();
+    // Two NPDUs queued, one of them already handed to the flush.
+    let third = nth(3);
+    state.route(third, NPDU, QUEUE, t0, &counts);
+    state.learn(third, addr(6), Heard::Direct, t0, &counts);
+    state.route(nth(4), NPDU, QUEUE, t0, &counts);
+    state.clear(&counts);
     assert_eq!(rx.try_recv(), Err(TryRecvError::Closed));
     assert_eq!(lookup.try_recv(), Err(TryRecvError::Closed));
     assert_eq!(state.table.lookup(OTHER), None);
     assert_eq!(state.resolving(), 0);
+    assert!(state.poll(t0, &counts).flush.is_empty());
+    assert_eq!(counts.snapshot().queued_dropped, 2, "stop counts the queue");
     let _ = wait(&mut state, PEER, t0, &counts);
+}
+
+/// Fill the whole queue: [`MAX_QUEUED`] NPDUs, [`MAX_QUEUED_PER_VMAC`] for
+/// each of the VMACs from `first` on.
+fn fill_queue(state: &mut Neighbours, first: usize, now: Instant, counts: &ResolutionCounts) {
+    for n in first..first + MAX_QUEUED / MAX_QUEUED_PER_VMAC {
+        for _ in 0..MAX_QUEUED_PER_VMAC {
+            let route = state.route(nth(n), NPDU, QUEUE, now, counts);
+            assert!(matches!(route, Route::Queued { .. }), "{n}: {route:?}");
+        }
+    }
+    assert!(matches!(
+        state.route(OTHER, NPDU, QUEUE, now, counts),
+        Route::Full(Limit::Total)
+    ));
+}
+
+/// The queue's places come back once its NPDUs leave it, whether they go
+/// out or are dropped: a full queue that resolves, or fails, takes a full
+/// queue again. Until the driver takes a resolved queue, it still counts.
+#[test]
+fn a_full_queue_takes_as_many_again_once_it_empties() {
+    let counts = ResolutionCounts::default();
+    let mut state = neighbours();
+    let t0 = Instant::now();
+    let per = MAX_QUEUED / MAX_QUEUED_PER_VMAC;
+
+    fill_queue(&mut state, 0, t0, &counts);
+    for n in 0..per {
+        state.learn(nth(n), addr(n as u16 + 1), Heard::Direct, t0, &counts);
+    }
+    assert!(
+        matches!(
+            state.route(OTHER, NPDU, QUEUE, t0, &counts),
+            Route::Full(Limit::Total)
+        ),
+        "the resolved queue counts until the driver takes it"
+    );
+    assert_eq!(state.poll(t0, &counts).flush.len(), MAX_QUEUED);
+    fill_queue(&mut state, per, t0, &counts);
+
+    let t1 = t0 + secs(1);
+    let mut state = neighbours();
+    fill_queue(&mut state, 0, t1, &counts);
+    state.poll(t1 + secs(3), &counts);
+    assert_eq!(counts.snapshot().queued_dropped, MAX_QUEUED as u64);
+    fill_queue(&mut state, per, t1 + secs(3), &counts);
+}
+
+/// A check the resolving bound leaves no room for isn't recorded: the next
+/// send, once there is room, starts it.
+#[test]
+fn a_check_with_no_room_is_tried_again_at_the_next_send() {
+    let counts = ResolutionCounts::default();
+    let mut state = neighbours();
+    let t0 = Instant::now();
+    state.learn(PEER, addr(4), Heard::Direct, t0, &counts);
+    let held: Vec<_> = (0..MAX_RESOLVING)
+        .map(|n| wait(&mut state, nth(n), t0, &counts))
+        .collect();
+    let at = t0 + REVALIDATE_AFTER;
+    assert!(matches!(
+        state.route(PEER, NPDU, WAIT, at, &counts),
+        Route::Send { wake: false, .. }
+    ));
+    state.learn(nth(0), addr(9), Heard::Direct, at, &counts);
+    assert!(matches!(
+        state.route(PEER, NPDU, WAIT, at + secs(1), &counts),
+        Route::Send { wake: true, .. }
+    ));
+    drop(held);
+}
+
+/// A send to a quiet peer whose entry went while it was being checked
+/// joins the check, which becomes that send's resolution: it asks the group
+/// from then on, and when nothing answers, the send's own outcome counts as
+/// timed out besides the failed check.
+#[test]
+fn a_send_that_joins_a_check_counts_its_own_outcome() {
+    let counts = ResolutionCounts::default();
+    let mut state = neighbours();
+    let t0 = Instant::now();
+    state.learn(PEER, addr(4), Heard::Direct, t0, &counts);
+    let at = t0 + REVALIDATE_AFTER;
+    state.route(PEER, NPDU, WAIT, at, &counts);
+    assert_eq!(state.poll(at, &counts).revalidations, [addr(4)]);
+    state.table.forget(PEER);
+    let (mut rx, wake) = wait(&mut state, PEER, at, &counts);
+    assert!(!wake, "it joins the check");
+    let polled = state.poll(at + secs(1), &counts);
+    assert_eq!(
+        (polled.resolutions, polled.revalidations),
+        (vec![PEER], vec![])
+    );
+    state.poll(at + secs(3), &counts);
+    assert_eq!(rx.try_recv(), Ok(Err(Failure::TimedOut)));
+    assert_eq!(
+        counts.snapshot(),
+        counters(|c| {
+            c.resolutions_started = 1;
+            c.resolutions_timed_out = 1;
+            c.revalidations_failed = 1;
+        })
+    );
 }

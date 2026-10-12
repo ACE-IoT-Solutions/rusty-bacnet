@@ -12,7 +12,9 @@
 //!
 //! [`Bip6Transport::resolve_virtual_address`](super::Bip6Transport::resolve_virtual_address)
 //! runs the reverse lookup the same way, with Virtual-Address-Resolutions
-//! sent to the peer itself.
+//! sent to the peer itself. So does the check on a peer that has been quiet
+//! for a while: a Virtual-Address-Resolution to the address on file, which
+//! reaches the peer however it was learned, multicast or not.
 //!
 //! Everything here is bounded, so a flood of sends to VMACs nobody answers,
 //! which any node on any network a router serves can cause, costs a fixed
@@ -80,8 +82,8 @@ pub(super) enum Limit {
 /// What a send to a VMAC does now.
 #[derive(Debug)]
 pub(super) enum Route {
-    /// Send to this address. `wake` asks the driver to start a check that
-    /// the peer is still there.
+    /// Send to this address. `wake` asks the driver to send the first
+    /// query of a check that the peer is still there.
     Send { addr: SocketAddrV6, wake: bool },
     /// The VMAC failed to resolve a moment ago.
     Unreachable,
@@ -110,17 +112,22 @@ pub(super) enum VirtualRoute {
     },
 }
 
-/// One VMAC being resolved.
+/// One VMAC being resolved, or a quiet peer being checked.
 #[derive(Debug)]
 struct Pending {
     started: Instant,
-    /// Address-Resolutions sent so far.
+    /// Queries sent so far.
     sent: u32,
-    /// Whether the configured BBMD refused one.
+    /// Whether the configured BBMD refused an Address-Resolution.
     refused: bool,
-    /// Whether a send to a known peer started it, to check the peer is
-    /// still there.
-    revalidation: bool,
+    /// For a check on a known peer that has been quiet: the address on
+    /// file, which each query goes to as a Virtual-Address-Resolution.
+    revalidating: Option<SocketAddrV6>,
+    /// Whether a send waits on it or queued an NPDU for it, which makes it
+    /// a resolution, counted as one, whose queries are Address-Resolutions.
+    /// A send joins a check this way only when the peer's entry has gone
+    /// meanwhile.
+    resolving: bool,
     waiters: Vec<Waiter>,
     queued: VecDeque<Bytes>,
 }
@@ -161,6 +168,9 @@ pub(super) struct Due {
     pub(super) resolutions: Vec<Bip6Vmac>,
     /// Addresses to send a Virtual-Address-Resolution to.
     pub(super) virtual_resolutions: Vec<SocketAddrV6>,
+    /// Quiet peers' addresses on file, each to be checked with a
+    /// Virtual-Address-Resolution.
+    pub(super) revalidations: Vec<SocketAddrV6>,
     /// Queued NPDUs whose VMAC resolved: the address, the VMAC, the NPDU.
     pub(super) flush: Vec<(SocketAddrV6, Bip6Vmac, Bytes)>,
     /// When to poll again, unless woken first.
@@ -193,11 +203,13 @@ impl Neighbours {
         counts: &ResolutionCounts,
     ) -> Route {
         if let Some(addr) = self.table.lookup(vmac) {
-            let wake = self.table.revalidation_due(vmac, now)
-                && !self.pending.contains_key(&vmac)
-                && self.pending.len() < MAX_RESOLVING;
+            // A check the bound leaves no room for isn't recorded, so the
+            // next send tries again.
+            let wake = !self.pending.contains_key(&vmac)
+                && self.pending.len() < MAX_RESOLVING
+                && self.table.revalidation_due(vmac, now);
             if wake {
-                self.pending.insert(vmac, Pending::new(now, true));
+                self.pending.insert(vmac, Pending::new(now, Some(addr)));
             }
             return Route::Send { addr, wake };
         }
@@ -206,6 +218,12 @@ impl Neighbours {
             return Route::Unreachable;
         }
         let new = !self.pending.contains_key(&vmac);
+        // A check on a peer whose entry has gone becomes this send's
+        // resolution.
+        let joins_check = self
+            .pending
+            .get(&vmac)
+            .is_some_and(|pending| !pending.resolving);
         if new && self.pending.len() >= MAX_RESOLVING {
             counts.over_limit();
             return Route::Full(Limit::Resolving);
@@ -230,13 +248,14 @@ impl Neighbours {
             counts.over_limit();
             return Route::Full(limit);
         }
-        if new {
+        if new || joins_check {
             counts.started();
         }
         let pending = self
             .pending
             .entry(vmac)
-            .or_insert_with(|| Pending::new(now, false));
+            .or_insert_with(|| Pending::new(now, None));
+        pending.resolving = true;
         match hold {
             UnresolvedSend::Wait => {
                 let (tx, rx) = oneshot::channel();
@@ -269,7 +288,7 @@ impl Neighbours {
         let Some(pending) = self.pending.remove(&vmac) else {
             return false;
         };
-        if !pending.revalidation {
+        if pending.resolving {
             counts.resolved();
         }
         self.waiters -= pending.waiters.len();
@@ -369,7 +388,10 @@ impl Neighbours {
                 Step::Failed => failed.push(*vmac),
                 Step::Send => {
                     pending.sent += 1;
-                    due.resolutions.push(*vmac);
+                    match pending.revalidating {
+                        Some(addr) if !pending.resolving => due.revalidations.push(addr),
+                        _ => due.resolutions.push(*vmac),
+                    }
                     due.next = earliest(due.next, schedule_next(pending.started, pending.sent));
                 }
                 Step::Until(at) => due.next = earliest(due.next, Some(at)),
@@ -403,7 +425,9 @@ impl Neighbours {
 
     /// Fail the resolution of `vmac`: its waiters get the reason, its queue
     /// is dropped, and the VMAC is held unreachable for a while. A check on
-    /// a known peer that nothing answered removes the peer.
+    /// a quiet peer that nothing answered removes the peer. A check counts
+    /// as a failed revalidation, and a resolution, a check a send joined
+    /// included, as timed out or refused.
     fn fail(&mut self, vmac: Bip6Vmac, now: Instant, counts: &ResolutionCounts) {
         let Some(pending) = self.pending.remove(&vmac) else {
             return;
@@ -416,12 +440,13 @@ impl Neighbours {
         } else {
             Failure::TimedOut
         };
-        if pending.revalidation {
+        if pending.revalidating.is_some() {
             counts.revalidation_failed();
             self.table.forget(vmac);
-        } else if reason == Failure::Refused {
+        }
+        if pending.resolving && reason == Failure::Refused {
             counts.refused();
-        } else {
+        } else if pending.resolving {
             counts.timed_out();
         }
         self.table.mark_unreachable(vmac, now);
@@ -431,8 +456,10 @@ impl Neighbours {
     }
 
     /// Forget everything and fail every waiter, as the transport stops.
-    /// Dropping a waiter's sender is how it learns.
-    pub(super) fn clear(&mut self) {
+    /// Dropping a waiter's sender is how it learns. The queued NPDUs, those
+    /// waiting for the driver included, are dropped and counted.
+    pub(super) fn clear(&mut self, counts: &ResolutionCounts) {
+        counts.queued_dropped(self.queued);
         self.table.clear();
         self.pending.clear();
         self.virtual_pending.clear();
@@ -473,12 +500,15 @@ fn same_peer(a: SocketAddrV6, b: SocketAddrV6) -> bool {
 }
 
 impl Pending {
-    fn new(now: Instant, revalidation: bool) -> Self {
+    /// A lookup started at `now`: a check on the quiet peer at
+    /// `revalidating`, or, with `None`, a resolution once a send joins it.
+    fn new(now: Instant, revalidating: Option<SocketAddrV6>) -> Self {
         Self {
             started: now,
             sent: 0,
             refused: false,
-            revalidation,
+            revalidating,
+            resolving: false,
             waiters: Vec::new(),
             queued: VecDeque::new(),
         }

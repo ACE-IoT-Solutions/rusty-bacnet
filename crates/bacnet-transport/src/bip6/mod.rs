@@ -94,6 +94,8 @@ mod resolve_tests;
 #[cfg(test)]
 mod resolver_tests;
 #[cfg(test)]
+mod revalidation_tests;
+#[cfg(test)]
 mod safety_tests;
 #[cfg(test)]
 mod tests;

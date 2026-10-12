@@ -130,9 +130,10 @@ impl Resolver {
         self.lock().table.set_own(own);
     }
 
-    /// Forget every peer and fail every waiting send and lookup.
+    /// Forget every peer and fail every waiting send and lookup, counting
+    /// the queued NPDUs dropped.
     pub(super) fn clear(&self) {
-        self.lock().clear();
+        self.lock().clear(&self.counts);
     }
 
     /// Learn that `vmac` is at `addr`, completing any resolution of it.
@@ -311,8 +312,8 @@ async fn wait(
 }
 
 /// The task that sends what the resolver schedules: Address-Resolutions to
-/// `resolution_to`, Virtual-Address-Resolutions to their peers, and the
-/// queued NPDUs whose VMAC resolved. It sleeps until the next deadline or
+/// `resolution_to`, Virtual-Address-Resolutions to their peers and to quiet
+/// peers being checked, and the queued NPDUs whose VMAC resolved. It sleeps until the next deadline or
 /// until woken, and the transport aborts it on stop and on drop.
 pub(super) struct Driver<S> {
     pub(super) socket: Arc<S>,
@@ -340,12 +341,18 @@ impl<S: DatagramSender> Driver<S> {
                 self.send(&request, self.resolution_to).await;
                 self.resolver.counts.address_resolution_sent();
             }
+            let request = Bvll6::VirtualAddressResolution {
+                source: self.source,
+            };
             for peer in due.virtual_resolutions {
-                let request = Bvll6::VirtualAddressResolution {
-                    source: self.source,
-                };
                 self.send(&request, peer).await;
                 self.resolver.counts.virtual_sent();
+            }
+            // A quiet peer is asked at the address on file, by unicast, so
+            // the check reaches it however it was learned.
+            for peer in due.revalidations {
+                self.send(&request, peer).await;
+                self.resolver.counts.revalidation_sent();
             }
             for (addr, destination, npdu) in due.flush {
                 let sent =

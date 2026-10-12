@@ -453,6 +453,30 @@ async fn a_request_from_an_unanswerable_source_counts_as_unanswerable() {
     assert_eq!(node.counters(), only(|c| c.unanswerable_request = 3));
 }
 
+/// An NPDU from a source no answer could reach is never learned, so its
+/// source MAC would name a VMAC this node can't reach at that address. It
+/// is dropped and counted, not handed up (#1637); from an answerable
+/// source the same frame goes up.
+#[tokio::test]
+async fn an_npdu_from_an_unanswerable_source_counts_as_unanswerable_source() {
+    let mut node = Node::new(false, 8).await;
+    let sources = [
+        group_source(),
+        SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0xBAC0, 0, 0),
+        SocketAddrV6::new("::ffff:192.0.2.30".parse().unwrap(), 0xBAC0, 0, 0),
+        SocketAddrV6::new(*peer().ip(), 0, 0, 0),
+    ];
+    for source in sources {
+        node.send(unicast_to(LOCAL_VMAC), source, local_ip()).await;
+        node.send(broadcast(), source, GROUP).await;
+    }
+    node.nothing_handed_up();
+    assert_eq!(node.counters(), only(|c| c.unanswerable_source = 8));
+    assert_eq!(node.receiver.neighbours.lookup(PEER_VMAC), None);
+    node.send(unicast_to(LOCAL_VMAC), peer(), local_ip()).await;
+    assert_eq!(node.rx.try_recv().unwrap().npdu.as_ref(), NPDU);
+}
+
 #[tokio::test]
 async fn frames_from_this_node_count_as_own_echo() {
     let mut node = Node::new(false, 8).await;

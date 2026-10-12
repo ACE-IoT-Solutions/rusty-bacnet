@@ -20,7 +20,7 @@ use super::frame::encoded;
 use super::ingress::{
     destination_vmac_matches, forwarded_address_resolution_is_trusted, forwarded_npdu_is_trusted,
     forwarded_source_is_usable, group_destination, is_answerable_source, is_configured_bbmd,
-    original_destination_matches, own_frame, own_source, LocalBinding,
+    original_destination_matches, own_frame, source_drop, LocalBinding,
 };
 use super::receive_counters::{DropReason, ReceiveDrops};
 use super::reply_limit::ReplyLimiter;
@@ -241,10 +241,10 @@ impl Receiver {
             );
             return None;
         }
-        // This node's own frame come back, or another node sending from
-        // this node's VMAC, which would show the network layer a frame from
-        // itself and is never learned.
-        if let Some(reason) = own_source(&message, peer, self.local(), self.vmac) {
+        // This node's own frame come back, another node sending from this
+        // node's VMAC, which would show the network layer a frame from
+        // itself, or an NPDU from a source no answer could reach.
+        if let Some(reason) = source_drop(&message, peer, self.local(), self.vmac) {
             self.own(reason);
             return None;
         }
@@ -268,8 +268,8 @@ impl Receiver {
         self.dispatch(message, peer, received).await
     }
 
-    /// Count a frame [`own_source`] or [`own_frame`] judged this node's, and
-    /// warn, throttled, of another node using this node's VMAC.
+    /// Count a frame [`source_drop`] or [`own_frame`] refused for its
+    /// source, and warn, throttled, of another node using this node's VMAC.
     fn own(&self, reason: DropReason) {
         self.drops.count(reason);
         if reason == DropReason::OwnVmacSource {
@@ -422,10 +422,11 @@ impl Receiver {
     /// | Distribute-Broadcast-To-Network | Reply with its NAK | The same | U.4.4 |
     /// | Function 0x0B | Nothing: its clause was removed | Dropped as unknown before dispatch | U.2.12 |
     ///
-    /// Before any of this, a frame from this node's own address, or one that
-    /// names this node's VMAC as its sender's from another address, is
-    /// dropped and counted ([`own_source`], [`own_frame`]), and this node's
-    /// VMAC is never learned.
+    /// Before any of this, a frame from this node's own address, one that
+    /// names this node's VMAC as its sender's from another address, and an
+    /// Original-Unicast-NPDU or Original-Broadcast-NPDU from a source that
+    /// isn't answerable are dropped and counted ([`source_drop`],
+    /// [`own_frame`]), and this node's VMAC is never learned.
     ///
     /// A malformed Register-Foreign-Device, Delete-Foreign-Device-Table-Entry
     /// or Distribute-Broadcast-To-Network never reaches this function, but

@@ -6,6 +6,7 @@
 #![cfg(feature = "ipv6")]
 
 use std::net::{Ipv6Addr, SocketAddrV6};
+use std::sync::{Arc, OnceLock};
 
 use bacnet_client::client::BACnetClient;
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
@@ -16,7 +17,7 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::LoopbackSerial;
-use bacnet_transport::port::{ReceivedNpdu, TransportPort};
+use bacnet_transport::port::{DataAttribute, GroupDestinations, ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
@@ -37,14 +38,69 @@ const REQUEST: [u8; 11] = [
 /// A SimpleAck for invoke ID 1.
 const REPLY: [u8; 3] = [0x20, 0x01, 0x0C];
 
-/// A UDP port no socket holds right now, for a transport that must be
-/// reached at a port known before it starts.
-fn free_port() -> u16 {
-    std::net::UdpSocket::bind("[::]:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// A router port that, once started, reports its B/IPv6 transport's bound
+/// address, so the transport can take an ephemeral port rather than one
+/// guessed free beforehand.
+struct Reporting {
+    inner: AnyTransport<LoopbackSerial>,
+    bound: Arc<OnceLock<SocketAddrV6>>,
+}
+
+impl TransportPort for Reporting {
+    fn prepare_for_routing(&mut self) {
+        self.inner.prepare_for_routing();
+    }
+
+    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
+        let received = self.inner.start().await?;
+        if let AnyTransport::Bip6(bip6) = &self.inner {
+            let _ = self.bound.set(bip6.local_address().expect("started"));
+        }
+        Ok(received)
+    }
+
+    async fn stop(&mut self) -> Result<(), Error> {
+        self.inner.stop().await
+    }
+
+    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
+        self.inner.send_unicast(npdu, mac).await
+    }
+
+    async fn send_unicast_with_data_attributes(
+        &self,
+        npdu: &[u8],
+        mac: &[u8],
+        attributes: &[DataAttribute],
+    ) -> Result<(), Error> {
+        self.inner
+            .send_unicast_with_data_attributes(npdu, mac, attributes)
+            .await
+    }
+
+    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
+        self.inner.send_broadcast(npdu).await
+    }
+
+    fn local_mac(&self) -> &[u8] {
+        self.inner.local_mac()
+    }
+
+    fn local_receive_apdu_capacity(&self) -> u16 {
+        self.inner.local_receive_apdu_capacity()
+    }
+
+    fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
+        self.inner.is_broadcast_mac(mac)
+    }
+
+    fn is_group_destination(&self, mac: &[u8]) -> bool {
+        self.inner.is_group_destination(mac)
+    }
+
+    fn group_destinations(&self) -> GroupDestinations {
+        self.inner.group_destinations()
+    }
 }
 
 /// A Original-Unicast-NPDU from VMAC `source` to VMAC `destination`.
@@ -87,27 +143,25 @@ async fn next_unicast(socket: &UdpSocket) -> Vec<u8> {
 /// A router between network 1 (in-process) and network 2 (B/IPv6 on ::1,
 /// VMAC 00 00 0A), and the node on network 1.
 async fn router() -> (BACnetRouter, LoopbackTransport, SocketAddrV6) {
-    let port = free_port();
-    let bip6 = Bip6Transport::new(Ipv6Addr::LOCALHOST, port, Some(10));
+    let bip6 = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(10));
     let (router_end, node) = LoopbackTransport::pair(ROUTER_ON_1.to_vec(), NODE_ON_1.to_vec());
+    let bound = Arc::new(OnceLock::new());
+    let port = |inner, network_number| RouterPort {
+        transport: Reporting {
+            inner,
+            bound: Arc::clone(&bound),
+        },
+        network_number,
+    };
     let ports = vec![
-        RouterPort {
-            transport: AnyTransport::<LoopbackSerial>::Loopback(router_end),
-            network_number: 1,
-        },
-        RouterPort {
-            transport: AnyTransport::Bip6(bip6),
-            network_number: 2,
-        },
+        port(AnyTransport::Loopback(router_end), 1),
+        port(AnyTransport::Bip6(bip6), 2),
     ];
     let StartedRouter { router, .. } = BACnetRouter::start(ports, RouterOptions::new())
         .await
         .unwrap();
-    (
-        router,
-        node,
-        SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0),
-    )
+    let address = *bound.get().expect("the B/IPv6 port started");
+    (router, node, address)
 }
 
 /// The peer's request to the node on network 1 goes out there with the

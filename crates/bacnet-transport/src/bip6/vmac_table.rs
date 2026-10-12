@@ -268,6 +268,23 @@ impl VmacTable {
         self.unreachable.insert(vmac, now);
     }
 
+    /// Move every time the table keeps `by` into the past, as if that long
+    /// had gone by, so a test on real sockets needn't wait it out.
+    #[cfg(test)]
+    pub(super) fn backdate(&mut self, by: Duration) {
+        let back = |at: &mut Instant| *at = at.checked_sub(by).unwrap_or(*at);
+        for entry in self.entries.values_mut() {
+            back(&mut entry.heard);
+            for at in [&mut entry.direct, &mut entry.revalidated]
+                .into_iter()
+                .flatten()
+            {
+                back(at);
+            }
+        }
+        self.unreachable.values_mut().for_each(back);
+    }
+
     /// How many peers the table maps.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {

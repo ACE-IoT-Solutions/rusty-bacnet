@@ -25,7 +25,11 @@ use crate::warn_throttle::WarnThrottle;
 /// field is read on its own, so a snapshot taken while datagrams arrive need
 /// not add up across fields. What the VMAC collision probe reads during
 /// `start`, before the receive loop runs, is not counted.
+///
+/// It is `#[non_exhaustive]`, so a later counter isn't a breaking change:
+/// read its fields, or start from `Default` in a test.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Bip6ReceiveCounters {
     /// Failed socket reads, and datagrams without usable address metadata.
     /// Most drop one datagram and reading goes on: one larger than the
@@ -98,6 +102,12 @@ pub struct Bip6ReceiveCounters {
     /// and Virtual-Address-Resolution-ACKs. Another node uses this node's
     /// VMAC, or forges it; each also feeds the throttled collision warning.
     pub own_vmac_source: u64,
+    /// Original-Unicast-NPDUs and Original-Broadcast-NPDUs from a source no
+    /// answer could reach as one node (a group, the unspecified address, an
+    /// IPv4-mapped address or port 0). The transport never learns such a
+    /// source, so a reply to its VMAC would reach whoever holds that VMAC,
+    /// or wait on a resolution.
+    pub unanswerable_source: u64,
     /// NPDUs dropped because the channel to the network layer was full: the
     /// network layer is falling behind.
     pub npdu_channel_full: u64,
@@ -149,6 +159,8 @@ pub(super) enum DropReason {
     OwnEcho,
     /// [`Bip6ReceiveCounters::own_vmac_source`].
     OwnVmacSource,
+    /// [`Bip6ReceiveCounters::unanswerable_source`].
+    UnanswerableSource,
     /// [`Bip6ReceiveCounters::npdu_channel_full`].
     NpduChannelFull,
     /// [`Bip6ReceiveCounters::npdu_channel_closed`].
@@ -203,6 +215,7 @@ pub(super) struct ReceiveDrops {
     unanswerable_request: AtomicU64,
     own_echo: AtomicU64,
     own_vmac_source: AtomicU64,
+    unanswerable_source: AtomicU64,
     npdu_channel_full: AtomicU64,
     npdu_channel_closed: AtomicU64,
     naks_suppressed: AtomicU64,
@@ -231,6 +244,7 @@ impl ReceiveDrops {
             DropReason::UnanswerableRequest => &self.unanswerable_request,
             DropReason::OwnEcho => &self.own_echo,
             DropReason::OwnVmacSource => &self.own_vmac_source,
+            DropReason::UnanswerableSource => &self.unanswerable_source,
             DropReason::NpduChannelFull => &self.npdu_channel_full,
             DropReason::NpduChannelClosed => &self.npdu_channel_closed,
             DropReason::NakSuppressed => &self.naks_suppressed,
@@ -322,6 +336,7 @@ impl ReceiveDrops {
             unanswerable_request: get(&self.unanswerable_request),
             own_echo: get(&self.own_echo),
             own_vmac_source: get(&self.own_vmac_source),
+            unanswerable_source: get(&self.unanswerable_source),
             npdu_channel_full: get(&self.npdu_channel_full),
             npdu_channel_closed: get(&self.npdu_channel_closed),
             naks_suppressed: get(&self.naks_suppressed),

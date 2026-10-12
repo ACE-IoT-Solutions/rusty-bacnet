@@ -12,9 +12,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// A resolution that ends counts once: resolved, timed out or refused. A
 /// check that a quiet peer is still there (a send starts one after five
-/// minutes of silence from the peer) is not a resolution; only its failure
-/// counts, in `revalidations_failed`.
+/// minutes of silence from the peer) is not a resolution: its queries count
+/// in `revalidations_sent` and its failure in `revalidations_failed`. A send
+/// that joins a check, because the peer's entry went meanwhile, makes it a
+/// resolution too, counted as one.
+///
+/// It is `#[non_exhaustive]`, so a later counter isn't a breaking change:
+/// read its fields, or start from `Default` in a test.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Bip6ResolutionCounters {
     /// Resolutions started: sends to a VMAC the table had no address for.
     pub resolutions_started: u64,
@@ -34,7 +40,8 @@ pub struct Bip6ResolutionCounters {
     /// Sends refused because a bound on resolutions, waiting sends or
     /// queued NPDUs was reached.
     pub sends_over_limit: u64,
-    /// Queued NPDUs dropped because their VMAC did not resolve.
+    /// Queued NPDUs dropped because their VMAC did not resolve, or because
+    /// the transport stopped first.
     pub queued_dropped: u64,
     /// Virtual-Address-Resolution messages sent.
     pub virtual_resolutions_sent: u64,
@@ -44,6 +51,9 @@ pub struct Bip6ResolutionCounters {
     pub virtual_timed_out: u64,
     /// Virtual-Address-Resolutions the peer refused.
     pub virtual_refused: u64,
+    /// Virtual-Address-Resolutions sent to a quiet peer's address on file,
+    /// to check it is still there.
+    pub revalidations_sent: u64,
     /// Peers removed because a check that they were still there went
     /// unanswered.
     pub revalidations_failed: u64,
@@ -64,6 +74,7 @@ pub(super) struct ResolutionCounts {
     virtual_resolved: AtomicU64,
     virtual_timed_out: AtomicU64,
     virtual_refused: AtomicU64,
+    revalidations_sent: AtomicU64,
     revalidations_failed: AtomicU64,
 }
 
@@ -108,6 +119,9 @@ impl ResolutionCounts {
     pub(super) fn virtual_refused(&self) {
         add(&self.virtual_refused, 1);
     }
+    pub(super) fn revalidation_sent(&self) {
+        add(&self.revalidations_sent, 1);
+    }
     pub(super) fn revalidation_failed(&self) {
         add(&self.revalidations_failed, 1);
     }
@@ -128,6 +142,7 @@ impl ResolutionCounts {
             virtual_resolved: get(&self.virtual_resolved),
             virtual_timed_out: get(&self.virtual_timed_out),
             virtual_refused: get(&self.virtual_refused),
+            revalidations_sent: get(&self.revalidations_sent),
             revalidations_failed: get(&self.revalidations_failed),
         }
     }

@@ -39,7 +39,7 @@ mod tcp_connect;
 #[cfg(feature = "sc-tls")]
 mod tls_reject;
 mod udp_metadata;
-mod warn_throttle;
+pub mod warn_throttle;
 #[cfg(windows)]
 mod windows_adapters;
 

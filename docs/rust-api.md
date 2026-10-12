@@ -922,9 +922,11 @@ from an untrusted path; a Forwarded-NPDU whose NPDU is too short or
 malformed; an origin or asker address unusable without a scope ID; a request
 from an unanswerable source or this node's own address; this node's own
 echo, a Forwarded-NPDU that names it as the origin included; a frame from
-another address that names this node's VMAC as its sender's (#1637); and an
-NPDU the network-layer channel couldn't take because it was full or closed. Each drop
-counts once, and the totals survive a restart. Two more
+another address that names this node's VMAC as its sender's, and an NPDU
+from a source no answer could reach (#1637); and an NPDU the network-layer
+channel couldn't take because it was full or closed. Each drop counts once,
+and the totals survive a restart. `Bip6ReceiveCounters` is
+`#[non_exhaustive]`, so a later counter isn't a breaking change. Two more
 fields count the replies the quotas held back, NAKs and the answers to
 Forwarded-Address-Resolution, apart from the drops. A frame that fails to
 decode, which used to log a warning for each datagram, now logs at debug. A
@@ -953,8 +955,10 @@ An address carried in a Forwarded-NPDU or Forwarded-Address-Resolution doesn't
 replace one heard from the peer directly within the last minute, so a forged
 forwarded message can't redirect unicasts. `lookup_vmac(vmac)` reads the
 table. A send to a peer silent for five minutes still goes to the address on
-file and starts one Address-Resolution to check it; a peer that doesn't answer
-is removed.
+file, and starts a check: a Virtual-Address-Resolution sent by unicast to that
+address, three times a second apart, which reaches the peer however it was
+learned. A peer that doesn't answer is removed, and its VMAC is then held
+unreachable for ten seconds, as after a failed resolution.
 
 A send to a VMAC the table lacks resolves it first. The transport sends an
 Address-Resolution to the scope's multicast group, or as a foreign device by
@@ -968,9 +972,9 @@ What `send_unicast` does meanwhile is `UnresolvedSend`:
 
 - `Wait`, the default: the call returns once the NPDU is sent, or fails with
   `TimedOut` after three seconds, `ConnectionRefused` when the BBMD refused to
-  pass the request on (Address-Resolution NAK). A client request to a VMAC
-  nobody answers so fails as a transport error, before the transaction
-  manager's timer starts.
+  pass the request on (Address-Resolution NAK). So when nobody answers for
+  a VMAC, a client request to it fails with a transport error, before the
+  transaction manager's timer starts.
 - `Queue`: the NPDU is copied and the call returns at once; the queue goes out
   in order once the VMAC resolves, or is dropped and counted. `BACnetRouter`
   selects it for its B/IPv6 ports through `prepare_for_routing`, so one
@@ -981,7 +985,8 @@ in all; 8 NPDUs queued for one VMAC and 128 in all. A send past one fails with
 `QuotaExceeded`. `resolution_counters()` returns a `Bip6ResolutionCounters`
 snapshot of the send side: resolutions started, resolved, timed out and
 refused, requests sent, sends refused as unreachable or over a bound, queued
-NPDUs dropped, Virtual-Address-Resolutions, and failed revalidations.
+NPDUs dropped (at a failed resolution or at stop), Virtual-Address-Resolutions,
+and the checks on quiet peers sent and failed. It is `#[non_exhaustive]` too.
 
 `resolve_virtual_address(addr)` finds the VMAC of the node at a B/IPv6
 address: from the table when it maps that address to one VMAC, and otherwise

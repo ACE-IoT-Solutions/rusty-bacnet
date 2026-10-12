@@ -29,15 +29,23 @@ pub(super) fn own_frame(
     }
 }
 
-/// [`own_frame`] for a datagram from `peer`, before anything learns from it:
-/// an Original-Unicast-NPDU or Original-Broadcast-NPDU from this node's own
-/// address or VMAC, or an Address-Resolution-ACK or
-/// Virtual-Address-Resolution-ACK from its VMAC, which only another node
-/// with the same VMAC would send. A Forwarded-NPDU's origin is judged where
-/// it is decoded. Address-Resolution and Virtual-Address-Resolution pass:
-/// another node probing for this node's VMAC sends an Address-Resolution
-/// from it, and the answer is how that node finds the collision.
-pub(super) fn own_source(
+/// Why a datagram from `peer` is dropped for its source, before anything
+/// learns from it, if it is:
+///
+/// - [`own_frame`] for an Original-Unicast-NPDU or Original-Broadcast-NPDU
+///   from this node's own address or VMAC, or an Address-Resolution-ACK or
+///   Virtual-Address-Resolution-ACK from its VMAC, which only another node
+///   with the same VMAC would send;
+/// - [`DropReason::UnanswerableSource`] for any other Original-Unicast-NPDU
+///   or Original-Broadcast-NPDU from a source [`is_answerable_source`]
+///   refuses. The table never learns that source, so the NPDU's source MAC
+///   would name a VMAC this node can't reach at the address it came from.
+///
+/// A Forwarded-NPDU's origin is judged where it is decoded.
+/// Address-Resolution and Virtual-Address-Resolution pass: another node
+/// probing for this node's VMAC sends an Address-Resolution from it, and the
+/// answer is how that node finds the collision.
+pub(super) fn source_drop(
     message: &Bvll6<'_>,
     peer: SocketAddrV6,
     local: SocketAddrV6,
@@ -45,7 +53,9 @@ pub(super) fn own_source(
 ) -> Option<DropReason> {
     match *message {
         Bvll6::OriginalUnicastNpdu { source, .. } | Bvll6::OriginalBroadcastNpdu { source, .. } => {
-            own_frame(source, peer, local, vmac)
+            own_frame(source, peer, local, vmac).or_else(|| {
+                (!is_answerable_source(peer.into())).then_some(DropReason::UnanswerableSource)
+            })
         }
         Bvll6::AddressResolutionAck { source, .. }
         | Bvll6::VirtualAddressResolutionAck { source, .. } => {
