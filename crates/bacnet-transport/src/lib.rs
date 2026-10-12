@@ -24,6 +24,7 @@ pub mod loopback;
 pub mod mstp;
 #[cfg(feature = "serial")]
 pub mod mstp_serial;
+mod npdu_channel;
 pub mod port;
 mod port_ownership;
 pub mod sc;
@@ -38,9 +39,12 @@ mod tcp_connect;
 #[cfg(feature = "sc-tls")]
 mod tls_reject;
 mod udp_metadata;
+mod warn_throttle;
 #[cfg(windows)]
 mod windows_adapters;
 
+#[cfg(test)]
+mod log_capture;
 #[cfg(test)]
 #[path = "rb07_provenance_tests.rs"]
 mod rb07_provenance_tests;

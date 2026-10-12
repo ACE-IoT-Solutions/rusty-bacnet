@@ -141,31 +141,39 @@ fn the_stream_decoder_takes_the_largest_frame_and_drops_a_longer_header() {
     }
     assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
 
+    // A standard-type header declaring more than 501 octets is a bad
+    // header: it drops its first octet, and the rest of it drains as one
+    // run of noise.
     let oversize = header(0x06, 0x01, 0x00, 502);
-    match decoder.push_slice(&oversize) {
-        DecodeEvent::Malformed { error, .. } => assert_eq!(
-            error,
-            FrameError::Oversize {
+    assert_eq!(
+        decoder.push_slice(&oversize),
+        DecodeEvent::Malformed {
+            discard: 1,
+            error: FrameError::Oversize {
                 length: 502,
                 maximum: MAX_STANDARD_MPDU_DATA
-            }
-        ),
-        other => panic!("expected a dropped candidate, got {other:?}"),
-    }
+            },
+            destination: Some(0x01),
+        }
+    );
+    assert_eq!(
+        decoder.push_slice(&[]),
+        DecodeEvent::Invalid {
+            discard: oversize.len() - 1
+        }
+    );
+    assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
 }
 
 #[test]
 fn a_bad_second_preamble_octet_is_noise() {
+    // Both octets go as one run of noise.
     let mut storage = [0u8; 16];
     let mut decoder = StreamDecoder::new(&mut storage);
-    assert!(matches!(
+    assert_eq!(
         decoder.push_slice(&[0x55, 0x00]),
-        DecodeEvent::Invalid { .. }
-    ));
-    let mut event = decoder.push_slice(&[]);
-    while event != DecodeEvent::NeedMore {
-        assert!(matches!(event, DecodeEvent::Invalid { .. }), "{event:?}");
-        event = decoder.push_slice(&[]);
-    }
+        DecodeEvent::Invalid { discard: 2 }
+    );
+    assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
     assert_eq!(decoder.buffered_len(), 0);
 }

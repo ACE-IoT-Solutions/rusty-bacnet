@@ -49,12 +49,14 @@ pub use bacnet_bip_codec::{BvllSink, PayloadShape, SinkFull, HEADER_LENGTH, MAX_
 /// Maximum number of random VMAC regenerations before startup fails (Annex U.5/H.7.2).
 pub const MAX_VMAC_RETRIES: u32 = 3;
 
+mod collision_probe;
 mod frame;
 pub use frame::{bvll6_error, decode_bvll6, encode_bvll6};
 mod ingress;
 mod link;
 mod port;
 mod receive;
+mod receive_counters;
 mod reply_limit;
 mod send;
 mod socket;
@@ -64,12 +66,15 @@ pub use port::{
     BACNET_IPV6_MULTICAST, BACNET_IPV6_MULTICAST_LINK_LOCAL, BACNET_IPV6_MULTICAST_ORG_LOCAL,
     BACNET_IPV6_MULTICAST_SITE_LOCAL, DEFAULT_BACNET6_PORT,
 };
+pub use receive_counters::Bip6ReceiveCounters;
 pub use vmac_table::generate_random_vmac;
 
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
 mod group_delivery_tests;
+#[cfg(test)]
+mod receive_counters_tests;
 #[cfg(test)]
 mod reply_tests;
 #[cfg(test)]

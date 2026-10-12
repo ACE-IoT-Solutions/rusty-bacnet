@@ -1,25 +1,31 @@
-//! What the line does: received octets and receive errors from a UART
-//! adapter, or octets, frames and invalid frames from a host-side assembler.
+//! What the line does: received octets and receive errors, or the frames,
+//! invalid frames and octet counts of a backend that assembles frames
+//! itself.
 //!
 //! # Two input paths
 //!
-//! A UART adapter feeds every octet to [`MasterCore::on_octet`] and every
-//! receive error to [`MasterCore::on_receive_error`]; the core's own stream
-//! decoder assembles frames and finds invalid ones. A host adapter, whose
-//! serial API hands over chunks without reliable per-octet times, assembles
-//! frames itself: it reports the raw octets with
-//! [`MasterCore::on_host_activity`] as they arrive, then each frame that
-//! completes with [`MasterCore::on_validated_frame`] and each that fails
-//! with [`MasterCore::on_invalid_frame`]. Both paths drive the same
-//! transitions.
+//! The octet path: an adapter feeds every octet to [`MasterCore::on_octet`]
+//! and every receive error to [`MasterCore::on_receive_error`]; the core's
+//! own stream decoder assembles frames and finds invalid ones. A UART
+//! adapter stamps each octet as it arrives. A host adapter, whose serial API
+//! hands over chunks without per-octet times, stamps each octet with the
+//! time of the read that returned it; a late stamp only defers the
+//! station's own sends. The host MS/TP transport in `bacnet-transport` takes
+//! this path, with a T_frame_abort long enough for chunk gaps.
+//!
+//! The frame path, for a backend that assembles frames in hardware and has
+//! no octets to feed: it reports the octets it saw with
+//! [`MasterCore::on_host_activity`], then each frame that completes with
+//! [`MasterCore::on_validated_frame`] and each that fails with
+//! [`MasterCore::on_invalid_frame`]. Both paths drive the same transitions.
 //!
 //! # EventCount
 //!
 //! Clause 9.5.4 adds one to EventCount for each octet received and each
 //! receive error. `on_octet` and `on_receive_error` count one each, and
-//! `on_host_activity` counts the octets it reports. A host frame,
+//! `on_host_activity` counts the octets it reports. A frame-path frame,
 //! `on_validated_frame` or `on_invalid_frame`, counts one more event on top
-//! of its octets, so a host adapter must report its octets for the count to
+//! of its octets, so such a backend must report its octets for the count to
 //! match: PASS_TOKEN and NO_TOKEN judge their successor or rival by more than
 //! Nmin_octets events (SawTokenUser, SawFrame). A whole valid frame is that
 //! evidence on its own, whichever path brings it.
@@ -160,6 +166,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
 
     /// Report a UART receive failure as bus activity and abort partial input.
     ///
+    /// A failure inside a frame counts as an invalid frame, a header or data
+    /// in progress as well as a dropped frame the decoder is skipping by
+    /// count, whatever its destination (Clause 9.5.4).
+    ///
     /// It is taken for the station's own echo exactly when
     /// [`Self::on_octet`] would be: once a transmit's start is confirmed.
     pub fn on_receive_error(
@@ -186,7 +196,9 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     }
 
     /// Apply exact wire silence; a partial frame aborts only when silence is
-    /// strictly greater than T_frame_abort.
+    /// strictly greater than T_frame_abort. An aborted header or data,
+    /// including a dropped frame being skipped by count, counts as an invalid
+    /// frame whatever its destination (Clause 9.5.4).
     pub fn on_silence(&mut self, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         if self.abort_partial_if_late(now) {

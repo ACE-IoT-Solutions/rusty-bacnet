@@ -312,8 +312,10 @@ impl<'rx, Q: QueueStorage> MasterCore<'rx, Q> {
     /// Size it for the largest frame this station accepts:
     /// [`MAX_STANDARD_FRAME_LENGTH`](bacnet_mstp_codec::MAX_STANDARD_FRAME_LENGTH)
     /// takes any standard frame. A longer frame addressed to this station or
-    /// broadcast counts as an invalid frame (Clause 9.5.4.4). Storage shorter
-    /// than [`MIN_RX_STORAGE`] is refused.
+    /// broadcast counts as an invalid frame (Clause 9.5.4.4), at its header;
+    /// one for another station is skipped. The core takes no extended frame
+    /// yet: one the storage holds counts the same way at its last octet.
+    /// Storage shorter than [`MIN_RX_STORAGE`] is refused.
     ///
     /// `action_buffers` holds the frame this station sends and the received
     /// data waiting to be polled; its `DELIVERIES` sets how much may wait.
