@@ -26,6 +26,12 @@ path = "src/bin/bip.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "node"
+path = "src/bin/node.rs"
+test = false
+bench = false
+
 # Named for its scenario, not its feature: a crate named `alloc` would share
 # the sysroot crate's name in the size check's per-crate list.
 [[bin]]
@@ -44,7 +50,7 @@ required-features = ["alloc"]
 # bacnet-services with `alloc`, and on bare-metal targets
 # the image's allocator and critical section, and the atomics backend where
 # the target has no compare-and-swap. On by default, so host builds, clippy,
-# rustdoc and tests cover it. The mstp and bip images build without it
+# rustdoc and tests cover it. The other images build without it
 # (`--no-default-features`): with it, the lib links `alloc`, and an image
 # without a global allocator fails to link.
 [features]
@@ -82,12 +88,14 @@ board-netduinoplus2 = ["emulate"]
 board-sifive-e = ["emulate"]
 
 # Default features, so no allocator, plus each crate's heapless storage: the
-# core's queues and the BVLL codec's sink. The alloc stack is `no_std` with
-# `alloc`, as the libraries document.
+# MS/TP core's queues and the BVLL codec's sink. bacnet-bip-core has no
+# features. The alloc stack is `no_std` with `alloc`, as the libraries
+# document.
 [dependencies]
 bacnet-mstp-codec = { workspace = true }
 bacnet-mstp-core = { workspace = true, features = ["heapless"] }
 bacnet-bip-codec = { workspace = true, features = ["heapless"] }
+bacnet-bip-core = { workspace = true }
 heapless = { workspace = true }
 bacnet-types = { workspace = true, features = ["alloc"], optional = true }
 bacnet-encoding = { workspace = true, features = ["alloc"], optional = true }

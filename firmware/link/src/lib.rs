@@ -42,6 +42,10 @@ extern crate alloc;
 pub mod apdu;
 pub mod bip;
 pub mod mstp;
+pub mod node;
+mod tally;
+
+pub use tally::Sent;
 
 /// Stop where the panic happened. The handler never reads the panic's
 /// message, so the formatting code behind it can be left out of an image.

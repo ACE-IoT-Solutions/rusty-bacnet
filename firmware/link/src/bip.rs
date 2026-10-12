@@ -39,6 +39,8 @@ use bacnet_bip_codec::{
     FdtEntries, FdtEntry, PayloadShape, TableEntry,
 };
 
+use crate::tally::{fnv1a, FNV_OFFSET};
+
 /// Octets the scenario encodes into at once; its longest message, the
 /// B/IPv6 Forwarded-NPDU, takes 33.
 const WIRE_LENGTH: usize = 64;
@@ -247,17 +249,6 @@ pub fn run(memory: &mut Memory) -> Summary {
     summary.rejections = rejections(wire, sink);
     summary.ipv6 = ipv6::run(wire, sink);
     summary
-}
-
-/// FNV-1a's 32-bit offset basis and prime.
-const FNV_OFFSET: u32 = 0x811C_9DC5;
-const FNV_PRIME: u32 = 0x0100_0193;
-
-/// Fold `octets` into a running 32-bit FNV-1a hash.
-fn fnv1a(hash: u32, octets: &[u8]) -> u32 {
-    octets.iter().fold(hash, |hash, &octet| {
-        (hash ^ u32::from(octet)).wrapping_mul(FNV_PRIME)
-    })
 }
 
 /// Encode `message` into `wire` and into `sink`, decode it from `wire`, and
