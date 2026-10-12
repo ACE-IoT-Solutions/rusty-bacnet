@@ -1,8 +1,8 @@
-# Stack budget for the firmware link test's images under emulation (#1660),
-# in octets: one table per board, `[<board>]`, named by its QEMU machine,
-# with a key per image. scripts/emu/emulate-firmware.sh, the manual
-# emulation check, runs each image on each board; the image reports how
-# deep its stack went, and scripts/ci/firmware_size.py --stack fails the
+# Stack budget for the firmware link test's images under emulation (#1660,
+# #1664, #1667), in octets: one table per board, `[<board>]`, named by its
+# QEMU machine, with a key per image. scripts/emu/emulate-firmware.sh, the
+# manual emulation check, runs each image on each board; the image reports
+# how deep its stack went, and scripts/ci/firmware_size.py --stack fails the
 # run when a peak is over its budget, or when an image the table lists has
 # no peak or a peak has no budget; a run of every board also fails on a
 # table for a board it doesn't have. CI never runs the emulator, so CI never
@@ -35,23 +35,53 @@
 #   lm3s6965evb     2780
 #   netduinoplus2   2780
 #   sifive_e        2644
+#
+# The mstp-extended, node and bbmd rows are from when those images joined,
+# on 2026-10-12, same toolchain and QEMU (#1664, #1667), as mstp-extended
+# / node / bbmd peaks:
+#
+#   microbit        6136 / 5364 / 2300
+#   lm3s6965evb     4836 / 4732 / 2228
+#   netduinoplus2   4836 / 4732 / 2228
+#   sifive_e        4676 / 4584 / 2132
+#
+# The mstp-extended image's statics take 7,712 octets of the 16 KiB boards'
+# RAM, so its stack has 8,672 octets of room there, more than its budget.
+# Its deepest call is the core's send of a queued NPDU, whose buffers on
+# the stack grow from 501 octets to 1497 with extended frames on: about
+# 2 KB deeper than the mstp image's on ARMv7-M. The same run measured the
+# mstp image's peaks at 3216, 2796, 2788 and 2676 octets, as on the dev
+# branch these images were added to: a little deeper than the rows above,
+# within their budgets. The bip and apdu peaks are as above.
 
 [microbit]
 mstp = 4016
+mstp-extended = 7680
 bip = 2784
+node = 6720
+bbmd = 2880
 apdu = 3472
 
 [lm3s6965evb]
 mstp = 3488
+mstp-extended = 6048
 bip = 2640
+node = 5920
+bbmd = 2800
 apdu = 3184
 
 [netduinoplus2]
 mstp = 3488
+mstp-extended = 6048
 bip = 2640
+node = 5920
+bbmd = 2800
 apdu = 3184
 
 [sifive_e]
 mstp = 3312
+mstp-extended = 5856
 bip = 2528
+node = 5744
+bbmd = 2672
 apdu = 3088

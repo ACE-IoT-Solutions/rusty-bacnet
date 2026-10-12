@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# The firmware link test (#1626, #1635): build firmware/link's images, one
-# per stack, as bare-metal binaries for each target, and check their sizes
-# against firmware/link/size-budget.toml. mstp (the MS/TP codec and core) and
-# bip (the BVLL codec) have no global allocator; apdu (bacnet-encoding and
+# The firmware link test (#1626, #1635, #1664, #1667): build firmware/link's
+# images, one per stack, as bare-metal binaries for each target, and check
+# their sizes against firmware/link/size-budget.toml. mstp (the MS/TP codec
+# and core), mstp-extended (the same with extended frames on), bip (the BVLL
+# codec), node (bacnet-bip-core's foreign-device node) and bbmd (its BBMD
+# tables) have no global allocator; apdu (bacnet-encoding and
 # bacnet-services, no_std with alloc) has one, over a fixed arena.
 #
 #   check-firmware-link.sh [<triple>...]             check the default targets
@@ -14,13 +16,14 @@
 # check-no-std.sh only runs clippy, which never links. Linking is what shows
 # that nothing in a stack needs std or a symbol only a hosted target or the
 # firmware provides, such as an atomic library call or a critical section,
-# and that mstp and bip need no allocator: their build fails with "no global
-# memory allocator found" if anything in them uses alloc. CI never runs the
-# images; the scenarios they link are checked natively by firmware/link/tests,
-# and scripts/emu/emulate-firmware.sh runs them under QEMU by hand.
+# and that every image but apdu needs no allocator: its build fails with "no
+# global memory allocator found" if anything in it uses alloc. CI never runs
+# the images; the scenarios they link are checked natively by
+# firmware/link/tests, and scripts/emu/emulate-firmware.sh runs them under
+# QEMU by hand.
 #
 # The crate's `alloc` feature, on by default, links alloc into its lib, so
-# mstp and bip build with --no-default-features and apdu with it on. Per
+# the other images build with --no-default-features and apdu with it on. Per
 # target: clippy on the images' code, which a host build compiles out, once
 # per feature set; the builds, with the root Cargo.toml's `firmware` profile
 # (size-optimized, LTO, panic=abort); then, per image,
@@ -33,10 +36,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 default_targets=(thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf thumbv7em-none-eabihf)
-images=(mstp bip apdu)
-# One cargo run per feature set, as its arguments: mstp and bip without the
-# crate's default `alloc` feature, which would link alloc into them, then
-# the apdu image with it.
+images=(mstp mstp-extended bip node bbmd apdu)
+# One cargo run per feature set, as its arguments: every image but apdu
+# without the crate's default `alloc` feature, which would link alloc into
+# them, then the apdu image with it.
 builds=("--no-default-features" "--lib --bin apdu")
 budget=firmware/link/size-budget.toml
 

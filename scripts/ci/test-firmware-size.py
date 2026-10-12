@@ -314,6 +314,18 @@ class FirmwareSizeTests(unittest.TestCase):
         self.assertEqual([row.split() for row in rows],
                          [["microbit", "mstp", "4664", "5840"], ["microbit", "bip", "2220", "2784"]])
 
+    def test_stack_image_names_may_hold_hyphens(self):
+        # A bare TOML key, as the mstp-extended image's name is.
+        log = RUN_LOG + (
+            "PASS mstp-extended on microbit (thumbv6m-none-eabi): summary as expected;"
+            " stack peak 5000 of 6000 octets\n")
+        status, out, err = self.run_stack(STACK_BUDGET + "mstp-extended = 6256\n", log=log)
+        self.assertEqual((status, err), (0, ""))
+        self.assertIn(["microbit", "mstp-extended", "5000", "6256"],
+                      [row.split() for row in out.splitlines()])
+        status, out, _ = self.run_main("--stack-suggest", self.write("run.log", log))
+        self.assertEqual((status, out.splitlines()[-1]), (0, "mstp-extended = 6256"))
+
     def test_stack_over_budget_fails_and_suggests(self):
         status, out, err = self.run_stack(STACK_BUDGET.replace("mstp = 5840", "mstp = 4663"))
         self.assertEqual(status, 1)

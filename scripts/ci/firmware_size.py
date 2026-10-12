@@ -48,7 +48,7 @@ on purpose (0 by default).
 The script reads the ELF's section headers and symbol table itself, so it
 needs only Python 3.9 or later, no binutils. The budget file is the subset
 of TOML that `read_budget` accepts: comments, `[name]` tables and
-`key = integer`.
+`key = integer`, with bare keys, such as `mstp-extended`.
 """
 
 import re
@@ -256,7 +256,7 @@ def read_budget(path):
         if not line:
             continue
         header = re.fullmatch(r"\[([A-Za-z0-9_.-]+)\]", line)
-        entry = re.fullmatch(r"([A-Za-z0-9_]+)\s*=\s*(\d+)", line)
+        entry = re.fullmatch(r"([A-Za-z0-9_-]+)\s*=\s*(\d+)", line)
         if header:
             table = tables.setdefault(header.group(1), {})
         elif entry and table is not None:
@@ -423,7 +423,7 @@ def check_stack(log, budget_path, boards, all_boards=False):
         if board not in budgets:
             raise InputError(f"{budget_path} has no [{board}] table")
     print(f"Stack peaks against {budget_path}, in octets:")
-    print(f"  {'board':<16}{'image':<8}{'peak':>8}{'budget':>8}")
+    print(f"  {'board':<16}{'image':<14}{'peak':>8}{'budget':>8}")
     failed, loose = [], []
     for board in boards:
         budget, found = budgets[board], peaks.get(board, {})
@@ -452,7 +452,7 @@ def check_stack(log, budget_path, boards, all_boards=False):
             elif suggested(peak, STACK_HEADROOM) < limit * (1 - TIGHTEN):
                 loose.append((name, peak, limit))
                 mark = "  well under budget"
-            print(f"  {board:<16}{image:<8}{'-' if peak is None else peak:>8}"
+            print(f"  {board:<16}{image:<14}{'-' if peak is None else peak:>8}"
                   f"{'-' if limit is None else limit:>8}{mark}")
     stale = [board for board in budgets if board not in boards] if all_boards else []
     for board in stale:
@@ -462,7 +462,7 @@ def check_stack(log, budget_path, boards, all_boards=False):
             " remove the table, or add the board to emulate-firmware.sh",
         ))
         for image, limit in budgets[board].items():
-            print(f"  {board:<16}{image:<8}{'-':>8}{limit:>8}  no such board")
+            print(f"  {board:<16}{image:<14}{'-':>8}{limit:>8}  no such board")
     # The table first, then the messages under it, when both go to one log.
     sys.stdout.flush()
     for name, peak, limit in loose:
