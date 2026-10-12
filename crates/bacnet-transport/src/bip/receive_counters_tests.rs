@@ -8,9 +8,10 @@
 use super::groups::{BipGroups, GroupSources};
 use super::ingress::{receive_failed, AfterReceiveError};
 use super::rate_limit::MANAGEMENT_RATE_PER_SOURCE_IP;
-use super::receive_counters::{ReceiveDrops, CHANNEL_FULL_WARNING_INTERVAL};
+use super::receive_counters::ReceiveDrops;
 use super::*;
 use crate::udp_metadata::ReceivedDatagram;
+use crate::warn_throttle::WARNING_INTERVAL;
 use std::io;
 use tokio::time::{timeout, Duration};
 
@@ -377,7 +378,7 @@ async fn the_channel_full_warning_goes_out_at_most_once_per_interval() {
     assert_eq!(drops.npdu_channel_full("unicast"), Some(1));
     assert_eq!(drops.npdu_channel_full("unicast"), None);
     assert_eq!(drops.npdu_channel_full("broadcast"), None);
-    tokio::time::advance(CHANNEL_FULL_WARNING_INTERVAL - Duration::from_millis(1)).await;
+    tokio::time::advance(WARNING_INTERVAL - Duration::from_millis(1)).await;
     assert_eq!(drops.npdu_channel_full("forwarded"), None);
     tokio::time::advance(Duration::from_millis(1)).await;
     assert_eq!(drops.npdu_channel_full("unicast"), Some(4));

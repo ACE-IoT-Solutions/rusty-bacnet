@@ -886,7 +886,10 @@ it is dropped before the network layer sees it and counted in
 The transport is never a B/IPv6 BBMD. A Register-Foreign-Device,
 Delete-Foreign-Device-Table-Entry or Distribute-Broadcast-To-Network sent to
 its own address gets that request's BVLC-Result NAK at the datagram's source
-(Annex U.4.4, U.4.5.3, U.4.5.4). Like the Address-Resolution and
+(Annex U.4.4, U.4.5.3, U.4.5.4). So does one whose payload doesn't fit its
+function, under the same rules and quota (#1638). Annex U doesn't ask for
+that; B/IP does the same, so the sender isn't left waiting. Like the
+Address-Resolution and
 Virtual-Address-Resolution answers, a NAK only goes to an *answerable
 source*: not a group, unspecified, IPv4-mapped or port 0, and not this node's
 own address. Only an answerable source is learned into the VMAC table.
@@ -906,6 +909,27 @@ destination address and overall, so forged requests can't turn the node into
 a reflector and a NAK flood can't silence address resolution.
 Address-Resolution and Virtual-Address-Resolution answers stay outside both
 (#1632).
+
+Every other datagram the receive path drops is counted in
+`receive_counters()`, a `Bip6ReceiveCounters` snapshot with one field per
+reason (#1643): failed socket reads; a datagram for another link or address
+than the selected one; a header that is too short, not B/IPv6 or of the wrong
+Length; an unknown function; a payload that doesn't fit its function; a
+destination VMAC that isn't this node's; a function that doesn't fit the
+address it was sent to; a Forwarded-NPDU or Forwarded-Address-Resolution
+from an untrusted path; a Forwarded-NPDU whose NPDU is too short or
+malformed; an origin or asker address unusable without a scope ID; a request
+from an unanswerable source or this node's own address; this node's own
+echo, a Forwarded-NPDU that names it as the origin included; and an NPDU the
+network-layer channel couldn't take because it was full or closed. Each drop
+counts once, and the totals survive a restart. Two more
+fields count the replies the quotas held back, NAKs and the answers to
+Forwarded-Address-Resolution, apart from the drops. A frame that fails to
+decode, which used to log a warning for each datagram, now logs at debug. A
+full channel warns at most once every 10 seconds, with the number dropped
+since the last warning, as on B/IP. A Virtual-Address-Resolution-ACK from this
+node's own VMAC (a collision) and a BVLC-Result NAK, which anyone can send,
+log above debug at most once every 10 seconds the same way.
 
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is
@@ -1739,7 +1763,11 @@ devices are cut first. The global packet and byte limits also apply.
 
 Throttled targets, a full queue and failed sends are counted in
 `fanout_counters()` and logged; a stopped fanout worker or an encoding failure
-is only logged. None of them fail the local broadcast. The forward is queued
+is only logged. A full queue and a failed send warn at most once every 10
+seconds, with the number since the last warning, and log the rest at debug,
+as does a Forwarded-NPDU the receive path fails to send to the local subnet; a
+stopped worker, which only happens as the transport stops, logs at debug
+(#1643). None of them fail the local broadcast. The forward is queued
 before the local send and does not depend on it, so in BBMD mode an `Err` from
 `send_broadcast` can follow a forward that was already queued.
 

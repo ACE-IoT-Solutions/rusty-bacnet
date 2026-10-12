@@ -1,13 +1,14 @@
 //! What the B/IP receive path drops, counted by reason (#1624), and the
-//! throttle on the one drop it still warns about.
+//! throttles on the warnings it could otherwise repeat for every datagram.
 
+use std::io;
+use std::net::SocketAddrV4;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
 
 use bacnet_bip_codec::BvllError;
-use tokio::time::Instant;
 use tracing::{debug, warn};
+
+use crate::warn_throttle::WarnThrottle;
 
 /// Datagrams a B/IP transport's receive path dropped since the transport was
 /// created, by reason. The totals survive stop and restart.
@@ -134,12 +135,10 @@ impl DropReason {
     }
 }
 
-/// Least time between two warnings about NPDUs dropped for a full channel.
-pub(super) const CHANNEL_FULL_WARNING_INTERVAL: Duration = Duration::from_secs(10);
-
 /// The receive path's drop counts, one per [`DropReason`], which the
 /// transport keeps across restarts and lends to each receive loop, and the
-/// channel-full warning's throttle.
+/// throttles on its two repeating warnings: a full channel, and a failed
+/// Forwarded-NPDU send.
 #[derive(Debug, Default)]
 pub(super) struct ReceiveDrops {
     receive_errors: AtomicU64,
@@ -155,14 +154,8 @@ pub(super) struct ReceiveDrops {
     forwarded_not_from_peer: AtomicU64,
     npdu_channel_full: AtomicU64,
     npdu_channel_closed: AtomicU64,
-    channel_full: Mutex<ChannelFullWarning>,
-}
-
-/// When the channel-full warning last went out, and what it hasn't told.
-#[derive(Debug, Default)]
-struct ChannelFullWarning {
-    last: Option<Instant>,
-    unreported: u64,
+    channel_full: WarnThrottle,
+    forward_failed: WarnThrottle,
 }
 
 impl ReceiveDrops {
@@ -190,29 +183,14 @@ impl ReceiveDrops {
     }
 
     /// Count an NPDU dropped because the network layer's channel is full,
-    /// and warn at most once per [`CHANNEL_FULL_WARNING_INTERVAL`] with the
+    /// and warn at most once per
+    /// [`WARNING_INTERVAL`](crate::warn_throttle::WARNING_INTERVAL) with the
     /// number dropped since the last warning, so that a sustained overload
     /// shows without flooding the log; the rest log at debug. `frame` names
     /// the kind of frame dropped. Returns the number reported, when it warns.
     pub(super) fn npdu_channel_full(&self, frame: &'static str) -> Option<u64> {
         self.count(DropReason::NpduChannelFull);
-        let now = Instant::now();
-        let dropped = {
-            let mut warning = self
-                .channel_full
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            warning.unreported += 1;
-            let quiet = warning
-                .last
-                .is_some_and(|last| now.duration_since(last) < CHANNEL_FULL_WARNING_INTERVAL);
-            if quiet {
-                None
-            } else {
-                warning.last = Some(now);
-                Some(std::mem::take(&mut warning.unreported))
-            }
-        };
+        let dropped = self.channel_full.note();
         match dropped {
             Some(dropped) => warn!(
                 dropped,
@@ -221,6 +199,28 @@ impl ReceiveDrops {
             None => debug!(frame, "B/IP: NPDU channel full, dropping an incoming frame"),
         }
         dropped
+    }
+
+    /// Log a Forwarded-NPDU the receive path failed to send while
+    /// forwarding a broadcast: to the local subnet, or, without a fan-out
+    /// worker, to a BDT peer or foreign device (#1643). It warns at most once
+    /// per [`WARNING_INTERVAL`](crate::warn_throttle::WARNING_INTERVAL), with
+    /// the failures since the last warning, and logs the rest at debug. A
+    /// send that fails tends to fail for every datagram, as when a route is
+    /// missing, and no counter keeps these failures, so the warning stays.
+    /// Returns the number reported, when it warns.
+    pub(super) fn forward_failed(&self, error: &io::Error, dest: SocketAddrV4) -> Option<u64> {
+        let failed = self.forward_failed.note();
+        match failed {
+            Some(failed) => warn!(
+                %error,
+                %dest,
+                failed,
+                "B/IP: failed to send a Forwarded-NPDU; failures since the last warning"
+            ),
+            None => debug!(%error, %dest, "B/IP: failed to send a Forwarded-NPDU"),
+        }
+        failed
     }
 
     /// The counts so far.

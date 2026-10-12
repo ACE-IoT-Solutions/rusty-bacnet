@@ -881,6 +881,8 @@ mod fdt_tests;
 #[cfg(test)]
 mod forwarded_tests;
 #[cfg(test)]
+mod forwarding_warn_tests;
+#[cfg(test)]
 mod group_delivery_tests;
 #[cfg(test)]
 mod group_source_tests;

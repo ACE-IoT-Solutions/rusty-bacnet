@@ -10,9 +10,10 @@ use tracing::{debug, warn};
 
 use crate::port::{ReceivedNpdu, TransportPort};
 
+use super::collision_probe::Probe;
 use super::frame::{bvll6_error, encoded};
-use super::ingress::{is_local_unicast_delivery, LocalBinding};
 use super::receive::Receiver;
+use super::receive_counters::{Bip6ReceiveCounters, ReceiveDrops};
 use super::reply_limit::ReplyLimiter;
 use super::socket::Bip6Socket;
 use super::vmac_table::{derive_vmac_from_device_instance, generate_random_vmac, VmacTable};
@@ -67,6 +68,8 @@ pub struct Bip6Transport {
     registration_task: Option<JoinHandle<()>>,
     /// See [`Self::forwarded_group_origin_drops`].
     forwarded_group_origin_drops: Arc<std::sync::atomic::AtomicU64>,
+    /// See [`Self::receive_counters`].
+    receive_drops: Arc<ReceiveDrops>,
 }
 
 /// Configuration for BIPv6 foreign device registration.
@@ -128,6 +131,7 @@ impl Bip6Transport {
             foreign_device: None,
             registration_task: None,
             forwarded_group_origin_drops: Arc::default(),
+            receive_drops: Arc::default(),
         }
     }
 
@@ -157,6 +161,14 @@ impl Bip6Transport {
     pub fn forwarded_group_origin_drops(&self) -> u64 {
         self.forwarded_group_origin_drops
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The datagrams the receive path dropped since this transport was
+    /// created, by reason, and the replies it held back over its quotas
+    /// (#1643). The totals survive a restart. A Forwarded-NPDU with a group
+    /// origin is counted in [`Self::forwarded_group_origin_drops`] instead.
+    pub fn receive_counters(&self) -> Bip6ReceiveCounters {
+        self.receive_drops.snapshot()
     }
 }
 
@@ -255,85 +267,17 @@ impl TransportPort for Bip6Transport {
                     debug!(error = %error, "Configured-VMAC collision probe send failed");
                 }
 
-                let mut collision = false;
+                let probe = Probe {
+                    vmac: source_vmac,
+                    local_ip,
+                    local_port,
+                    local_unicast_ips: &local_unicast_ips,
+                    wildcard_bind,
+                    group: collision_group,
+                    required: collision_probe_required,
+                };
                 let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
-                loop {
-                    match tokio::time::timeout_at(deadline, socket.recv_from(&mut check_buf)).await
-                    {
-                        Ok(Ok(received)) => {
-                            if let Ok(message) =
-                                bacnet_bip_codec::ipv6::decode(&check_buf[..received.len])
-                            {
-                                let is_self_loop = matches!(
-                                    received.peer,
-                                    std::net::SocketAddr::V6(peer)
-                                        if peer.port() == local_port
-                                            && (*peer.ip() == local_ip
-                                                || local_unicast_ips.contains(peer.ip()))
-                                );
-                                if let Bvll6::AddressResolution { source, target } = message {
-                                    if target == source_vmac
-                                        && matches!(received.destination, std::net::IpAddr::V6(ip) if ip == collision_group)
-                                        && received.os_group_delivery != Some(false)
-                                        && !is_self_loop
-                                    {
-                                        let ack = encoded(&Bvll6::AddressResolutionAck {
-                                            source: source_vmac,
-                                            destination: source,
-                                        })?;
-                                        if let Err(error) =
-                                            socket.send_to(&ack, received.peer).await
-                                        {
-                                            if collision_probe_required {
-                                                return Err(Error::Transport(error));
-                                            }
-                                            debug!(error = %error, "Configured-VMAC AR-Ack send failed");
-                                        }
-                                        if source == source_vmac {
-                                            collision = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                // AR-ACK from another node using our VMAC.
-                                if let Bvll6::AddressResolutionAck {
-                                    source,
-                                    destination,
-                                } = message
-                                {
-                                    if source == source_vmac
-                                        && is_local_unicast_delivery(
-                                            received.destination,
-                                            Some(destination),
-                                            &LocalBinding {
-                                                ip: local_ip,
-                                                vmac: source_vmac,
-                                                unicast_ips: &local_unicast_ips,
-                                                wildcard_bind,
-                                            },
-                                            received.os_group_delivery,
-                                        )
-                                    {
-                                        collision = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Ok(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {
-                            debug!(error = %e, "Error during VMAC collision check");
-                            continue;
-                        }
-                        Ok(Err(e)) => {
-                            if collision_probe_required {
-                                return Err(Error::Transport(e));
-                            }
-                            debug!(error = %e, "Configured-VMAC collision probe receive failed");
-                            break;
-                        }
-                        Err(_) => break, // timeout elapsed — no collision
-                    }
-                }
+                let collision = probe.window(&*socket, &mut check_buf, deadline).await?;
 
                 if !collision {
                     break;
@@ -398,6 +342,7 @@ impl TransportPort for Bip6Transport {
                 .map(|fd| (fd.bbmd_ip, fd.bbmd_port)),
             vmac_table: self.vmac_table.clone(),
             forwarded_group_origin_drops: Arc::clone(&self.forwarded_group_origin_drops),
+            drops: Arc::clone(&self.receive_drops),
             nak_quota: ReplyLimiter::default(),
             far_ack_quota: ReplyLimiter::default(),
         };

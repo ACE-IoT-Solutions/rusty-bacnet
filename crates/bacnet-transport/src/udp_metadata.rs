@@ -64,7 +64,7 @@ pub(crate) enum IpVersion {
     V6,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ReceivedDatagram {
     pub len: usize,
     pub peer: SocketAddr,
