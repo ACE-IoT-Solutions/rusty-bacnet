@@ -149,6 +149,9 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
         const NPDU_CHANNEL_CAPACITY: usize = 64;
 
         let config = self.config.core_config()?;
+        if let Some(serial) = &self.serial {
+            serial.echo().validate()?;
+        }
         let serial = self
             .serial
             .take()

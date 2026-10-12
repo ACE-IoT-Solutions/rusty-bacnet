@@ -82,6 +82,22 @@ impl Echo {
             grace: DEFAULT_ECHO_GRACE,
         }
     }
+
+    /// Check the setting as [`start`](crate::port::TransportPort::start)
+    /// does.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encoding`] for [`Echo::Full`] with a zero grace, in which no
+    /// echo could arrive.
+    pub fn validate(&self) -> Result<(), Error> {
+        match self {
+            Self::Full { grace } if grace.is_zero() => Err(Error::Encoding(
+                "MS/TP echo grace must not be zero".to_string(),
+            )),
+            Self::None | Self::Full { .. } => Ok(()),
+        }
+    }
 }
 
 /// Abstraction over an RS-485 serial port.

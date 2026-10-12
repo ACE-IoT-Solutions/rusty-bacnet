@@ -9,10 +9,11 @@
 //! that arrives then is queued as an ordinary NPDU to the requester.
 //!
 //! The deferred channels are bounded. At most [`DEFERRED_REPLIES`] are kept;
-//! a new one past that drops the oldest, counted. One older than the queue's
-//! maximum age is dropped too, counted, since an NPDU queued that late
-//! would be refused as expired anyway. A channel whose sender is dropped
-//! just goes away.
+//! a new one past that drops the oldest, counted. Each expires at its
+//! request's arrival plus the queue's maximum age: a channel is dropped
+//! then, counted, and an answer queued before then keeps that same absolute
+//! expiry in the queue, so no answer outlives its request by more than the
+//! maximum age. A channel whose sender is dropped just goes away.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -31,6 +32,8 @@ pub(super) const DEFERRED_REPLIES: usize = 8;
 pub(super) struct Current {
     pub(super) id: RequestId,
     pub(super) requester: u8,
+    /// The request's arrival plus the queue's maximum age.
+    pub(super) expires: Instant,
     rx: oneshot::Receiver<Bytes>,
 }
 
@@ -44,8 +47,12 @@ struct Deferred {
 /// What became of a request's channel when the core finished it.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Finished {
-    /// The answer was already there: queue it.
-    Answer { requester: u8, answer: Bytes },
+    /// The answer was already there: queue it, to expire at `expires`.
+    Answer {
+        requester: u8,
+        answer: Bytes,
+        expires: Instant,
+    },
     /// Kept for a late answer; `dropped_oldest` says the set was full.
     Deferred { dropped_oldest: bool },
     /// The sender is gone: nothing will come.
@@ -55,8 +62,12 @@ pub(super) enum Finished {
 /// A late answer, or the end of a deferred channel.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Late {
-    /// An answer in time: queue it to `requester`.
-    Answer { requester: u8, answer: Bytes },
+    /// An answer in time: queue it to `requester`, to expire at `expires`.
+    Answer {
+        requester: u8,
+        answer: Bytes,
+        expires: Instant,
+    },
     /// An answer, or nothing, after the channel's maximum age.
     Expired,
     /// The sender was dropped without an answer.
@@ -89,12 +100,22 @@ impl Replies {
         }
     }
 
-    /// Open the channel of a new request; the caller has finished any
-    /// older one first.
-    pub(super) fn open(&mut self, id: RequestId, requester: u8) -> oneshot::Sender<Bytes> {
+    /// Open the channel of a request that arrived at `now`; the caller has
+    /// finished any older one first.
+    pub(super) fn open(
+        &mut self,
+        id: RequestId,
+        requester: u8,
+        now: Instant,
+    ) -> oneshot::Sender<Bytes> {
         debug_assert!(self.current.is_none(), "an older request is still open");
         let (tx, rx) = oneshot::channel();
-        self.current = Some(Current { id, requester, rx });
+        self.current = Some(Current {
+            id,
+            requester,
+            expires: now + self.max_age,
+            rx,
+        });
         tx
     }
 
@@ -109,12 +130,19 @@ impl Replies {
     }
 
     /// The core finished the current request without its answer.
-    pub(super) fn finish_current(&mut self, now: Instant) -> Option<Finished> {
+    pub(super) fn finish_current(&mut self) -> Option<Finished> {
         let Current {
-            requester, mut rx, ..
+            requester,
+            expires,
+            mut rx,
+            ..
         } = self.current.take()?;
         Some(match rx.try_recv() {
-            Ok(answer) => Finished::Answer { requester, answer },
+            Ok(answer) => Finished::Answer {
+                requester,
+                answer,
+                expires,
+            },
             Err(oneshot::error::TryRecvError::Closed) => Finished::Closed,
             Err(oneshot::error::TryRecvError::Empty) => {
                 let dropped_oldest = self.deferred.len() == DEFERRED_REPLIES;
@@ -124,7 +152,7 @@ impl Replies {
                 self.deferred.push_back(Deferred {
                     requester,
                     rx,
-                    expires: now + self.max_age,
+                    expires,
                 });
                 Finished::Deferred { dropped_oldest }
             }
@@ -181,6 +209,7 @@ impl Replies {
                 Ok(answer) => Late::Answer {
                     requester: deferred.requester,
                     answer,
+                    expires: deferred.expires,
                 },
                 Err(_) => Late::Closed,
             }))
@@ -195,7 +224,7 @@ mod tests {
     const AGE: Duration = Duration::from_secs(5);
 
     fn request(replies: &mut Replies, id: u32) -> oneshot::Sender<Bytes> {
-        replies.open(RequestId::new(id), 7)
+        replies.open(RequestId::new(id), 7, Instant::now())
     }
 
     #[tokio::test(start_paused = true)]
@@ -204,18 +233,16 @@ mod tests {
         let tx = request(&mut replies, 1);
         tx.send(Bytes::from_static(&[1])).unwrap();
         assert_eq!(
-            replies.finish_current(Instant::now()),
+            replies.finish_current(),
             Some(Finished::Answer {
                 requester: 7,
-                answer: Bytes::from_static(&[1])
+                answer: Bytes::from_static(&[1]),
+                expires: Instant::now() + AGE,
             })
         );
         let tx = request(&mut replies, 2);
         drop(tx);
-        assert_eq!(
-            replies.finish_current(Instant::now()),
-            Some(Finished::Closed)
-        );
+        assert_eq!(replies.finish_current(), Some(Finished::Closed));
         assert_eq!(replies.deferred(), 0);
     }
 
@@ -224,18 +251,22 @@ mod tests {
         let mut replies = Replies::new(AGE);
         let tx = request(&mut replies, 1);
         assert_eq!(
-            replies.finish_current(Instant::now()),
+            replies.finish_current(),
             Some(Finished::Deferred {
                 dropped_oldest: false
             })
         );
+        let opened = Instant::now();
+        tokio::time::advance(Duration::from_secs(1)).await;
         tx.send(Bytes::from_static(&[2])).unwrap();
         assert_eq!(
             replies.resolved().await,
             Resolved::Late(Late::Answer {
                 requester: 7,
-                answer: Bytes::from_static(&[2])
-            })
+                answer: Bytes::from_static(&[2]),
+                expires: opened + AGE,
+            }),
+            "the expiry counts from the request's arrival"
         );
         assert_eq!(replies.deferred(), 0);
     }
@@ -248,7 +279,7 @@ mod tests {
             senders.push(request(&mut replies, id));
             let dropped_oldest = id == DEFERRED_REPLIES as u32;
             assert_eq!(
-                replies.finish_current(Instant::now()),
+                replies.finish_current(),
                 Some(Finished::Deferred { dropped_oldest })
             );
         }
@@ -267,7 +298,7 @@ mod tests {
     async fn a_dropped_sender_leaves_nothing_behind() {
         let mut replies = Replies::new(AGE);
         let tx = request(&mut replies, 1);
-        replies.finish_current(Instant::now());
+        replies.finish_current();
         drop(tx);
         assert_eq!(replies.resolved().await, Resolved::Late(Late::Closed));
         assert_eq!(replies.deferred(), 0);

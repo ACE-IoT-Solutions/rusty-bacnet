@@ -65,11 +65,21 @@ impl SharedQueues {
         now: CoreInstant,
         max_age: CoreDuration,
     ) -> Result<(), EnqueueError> {
+        self.enqueue_until(destination, npdu, now, now.saturating_add(max_age))
+    }
+
+    /// Queue an NPDU at `now`, expiring at `expires`.
+    pub(super) fn enqueue_until(
+        &self,
+        destination: u8,
+        npdu: &[u8],
+        now: CoreInstant,
+        expires: CoreInstant,
+    ) -> Result<(), EnqueueError> {
         let mut shared = self.lock();
         if !shared.open {
             return Err(EnqueueError::Closed);
         }
-        let expires = now.saturating_add(max_age).as_micros();
         shared
             .queues
             .enqueue_npdu(
@@ -77,7 +87,7 @@ impl SharedQueues {
                 npdu,
                 npdu_priority(npdu),
                 now.as_micros(),
-                Some(expires),
+                Some(expires.as_micros()),
             )
             .map_err(EnqueueError::Rejected)
     }

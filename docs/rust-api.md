@@ -1606,18 +1606,27 @@ for its successor using the token. Declare an echoing port with
 `GpioDirectionPort` reports its inner port's setting, and the default is
 `Echo::None`.
 
-With `Echo::Full { grace }` the transport compares the octets it reads after
-a frame with the frame. Matching octets are held back and dropped once the
-whole frame has matched; at the first octet that differs, the frame is
-reported complete and everything held and read goes to the core in order,
-so a peer's octets are never dropped, even where the echo should have been.
-The grace is how long after the frame's end its echo may still be arriving
-before the frame is reported complete regardless: `Echo::full()` gives
-`DEFAULT_ECHO_GRACE`, 40 ms, room for a USB adapter's receive latency (FTDI
-parts hold received octets back for up to 16 ms by default). An echo already
-under way when the grace runs out is still matched and dropped as it
-continues, up to the station's next frame, and one not begun is looked for
-during one more grace. `echo_mismatches` and `echo_missing` in the
+With `Echo::Full { grace }` the transport hunts for the frame it sent in the
+octets it reads after it. Octets that could begin the echo are held back and
+dropped once the whole frame has matched. An octet that does not fit passes
+on to the core, with as few of the held octets as it takes: a stray octet
+before the echo (a peer's trailing pad octet) passes on and the echo behind
+it is still dropped, and a peer's frame that only starts like the echo
+passes on whole. Passed-on octets carry the time of the read that released
+them. The frame is reported complete at the first octet that passes on, when
+the echo has matched, or at the end of the grace, before the core is fed
+anything read after it.
+
+The grace is how long after the frame's end its echo may still be arriving:
+`Echo::full()` gives `DEFAULT_ECHO_GRACE`, 40 ms, room for a USB adapter's
+receive latency (FTDI parts hold received octets back for up to 16 ms by
+default); `start()` refuses a zero grace (`Echo::validate`). The hunt goes on
+past the grace: an echo already under way is still matched as it continues,
+and one not begun is looked for during one more grace, whose end releases
+what it held. The hunt stops at the station's next start (probe-held octets
+pass on before it) or after T_frame_abort of silence, and held octets that
+waited longer than T_frame_abort are dropped as a stale fragment.
+`echo_mismatches`, `echo_missing` and `echo_stale_fragments` in the
 diagnostics show a port declared wrongly.
 
 ```rust

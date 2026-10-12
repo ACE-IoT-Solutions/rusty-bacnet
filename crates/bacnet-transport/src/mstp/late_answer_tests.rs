@@ -132,3 +132,42 @@ async fn a_dropped_sender_leaves_nothing_behind() {
     assert_eq!(counts.late_answers_expired, 0);
     bus.stop().await;
 }
+
+/// A late answer keeps its request's expiry in the queue: its request's
+/// arrival plus the queue's maximum age (5 s), not that age after the
+/// answer. One that comes just before then, with no token until after it,
+/// is dropped from the queue and never sent.
+#[tokio::test(start_paused = true)]
+async fn a_late_answer_expires_with_its_request() {
+    let mut bus = Bus::start(config(3, 4)).await;
+    let token = bus.join(4).await;
+    bus.until(token.end + bus.turnaround).await;
+    let arrived = bus.send(FrameType::BACnetDataExpectingReply, 3, 4, REQUEST);
+    let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
+    let sent = bus.next().await;
+    assert_eq!(sent.frame_type, FrameType::ReplyPostponed);
+    // Traffic between other stations keeps this one in IDLE, without the
+    // token, until the answer has expired.
+    let age = Duration::from_secs(5);
+    let answer_at = arrived + age - Duration::from_millis(10);
+    let mut at = sent.end + Duration::from_millis(300);
+    while at < answer_at {
+        bus.until(at).await;
+        bus.send(FrameType::BACnetDataNotExpectingReply, 9, 4, &[1, 0, 1]);
+        at += Duration::from_millis(300);
+    }
+    bus.until(answer_at).await;
+    reply.send(Bytes::from_static(ANSWER)).unwrap();
+    bus.until(arrived + age + Duration::from_millis(10)).await;
+    bus.send(FrameType::Token, 3, 4, &[]);
+    let next = bus.next().await;
+    assert_eq!(
+        (next.frame_type, next.destination),
+        (FrameType::Token, 4),
+        "the expired answer went out"
+    );
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.late_answers_queued, 1);
+    assert_eq!(counts.mac.unicast.drops_expired, 1);
+    bus.stop().await;
+}

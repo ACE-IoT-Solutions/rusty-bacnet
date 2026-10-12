@@ -212,3 +212,152 @@ async fn the_rest_of_an_echo_cut_by_the_grace_is_still_dropped() {
     assert_eq!(counts.mac.token_retries, 1);
     bus.stop().await;
 }
+
+/// A stray octet or two before the echo (a peer's trailing 0xFF pad, say,
+/// or a lone preamble octet) pass on to the core, and the echo behind them
+/// is still found and dropped: the station's own Token is not taken for the
+/// successor using the token (SawTokenUser, Clause 9.5.6.6), so it retries.
+#[tokio::test(start_paused = true)]
+async fn stray_octets_before_the_echo_do_not_hide_it() {
+    for stray in [&[0xFF][..], &[0x55], &[0x55, 0xFF]] {
+        let (mut bus, token) = ring(Port {
+            echo: Echo::full(),
+            ..SHORT_GRACE
+        })
+        .await;
+        bus.return_token(&token, 4).await;
+        let passed = bus.next().await;
+        assert_eq!(passed.frame_type, FrameType::Token);
+        bus.until(passed.end + TICK).await;
+        let mut chunk = stray.to_vec();
+        chunk.extend(octets(&passed));
+        bus.send_raw(&chunk);
+        let retry = bus.next().await;
+        assert_eq!(
+            (retry.frame_type, retry.destination),
+            (FrameType::Token, 4),
+            "stray {stray:02x?}"
+        );
+        assert!(
+            retry.start >= passed.end + T_USAGE_TIMEOUT,
+            "stray {stray:02x?}"
+        );
+        let counts = bus.transport.diagnostics().snapshot();
+        assert_eq!(counts.mac.own_address_frames, 0, "stray {stray:02x?}");
+        assert_eq!(counts.mac.token_retries, 1, "stray {stray:02x?}");
+        assert_eq!(counts.echo_mismatches, 1, "stray {stray:02x?}");
+        bus.stop().await;
+    }
+}
+
+/// A stray octet, then a peer's reply, with no echo at all: both reach the
+/// core, and WAIT_FOR_REPLY takes the reply (ReceivedReply, Clause 9.5.6.4).
+#[tokio::test(start_paused = true)]
+async fn a_stray_octet_and_a_reply_without_echo_reach_the_core() {
+    let (mut bus, token) = ring(Port {
+        echo: Echo::full(),
+        ..SHORT_GRACE
+    })
+    .await;
+    bus.transport
+        .send_unicast(&[1, 4, 0x10], &[4])
+        .await
+        .unwrap();
+    bus.return_token(&token, 4).await;
+    let request = bus.next().await;
+    assert_eq!(request.frame_type, FrameType::BACnetDataExpectingReply);
+    bus.until(request.end + bus.turnaround).await;
+    let mut chunk = vec![0xFF];
+    chunk.extend(encode(
+        FrameType::BACnetDataNotExpectingReply,
+        3,
+        4,
+        &[1, 0, 0x20],
+    ));
+    let heard = bus.send_raw(&chunk);
+    assert_eq!(bus.npdus.recv().await.unwrap().npdu.as_ref(), &[1, 0, 0x20]);
+    let token = bus.next().await;
+    assert_eq!((token.frame_type, token.destination), (FrameType::Token, 4));
+    assert!(token.start <= heard + bus.turnaround + TICK);
+    assert_eq!(
+        bus.transport
+            .diagnostics()
+            .snapshot()
+            .mac
+            .own_address_frames,
+        0
+    );
+    bus.stop().await;
+}
+
+/// The probe after a grace with no echo ends at its own deadline: a copy of
+/// the station's frame read after it is no longer taken for the echo and
+/// reaches the core, as a frame from another station with this address
+/// would (`own_address_frames`). Read inside the probe, it is the late echo.
+#[tokio::test(start_paused = true)]
+async fn the_probe_ends_at_its_deadline() {
+    for (after_probe, fed) in [(false, false), (true, true)] {
+        let (mut bus, token) = ring(SHORT_GRACE).await;
+        bus.return_token(&token, 4).await;
+        let passed = bus.next().await;
+        let at = if after_probe {
+            passed.end + GRACE * 2 + TICK * 2
+        } else {
+            passed.end + GRACE + TICK * 2
+        };
+        bus.until(at).await;
+        bus.send_raw(&octets(&passed));
+        tokio::time::sleep(TICK).await;
+        let counts = bus.transport.diagnostics().snapshot();
+        assert_eq!(
+            counts.mac.own_address_frames,
+            u32::from(fed),
+            "after the probe: {after_probe}"
+        );
+        bus.stop().await;
+    }
+}
+
+/// A port whose reads always return at once with nothing (as a closed
+/// pseudo-terminal's do) cannot hold a frame open: the echo wait checks its
+/// grace after every read, so the frame completes and the station polls on,
+/// and every empty read yields, so stopping the transport returns. Real
+/// time: an always-ready read keeps a paused clock from advancing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_always_empty_port_completes_frames_and_stops() {
+    use super::{MstpTransport, SerialPort};
+
+    struct Empty(tokio::sync::mpsc::UnboundedSender<Vec<u8>>);
+
+    impl SerialPort for Empty {
+        async fn write(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
+            let _ = self.0.send(data.to_vec());
+            Ok(())
+        }
+
+        async fn read(&self, _buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
+            Ok(0)
+        }
+
+        fn echo(&self) -> Echo {
+            Echo::Full { grace: GRACE }
+        }
+    }
+
+    let (writes, mut written) = tokio::sync::mpsc::unbounded_channel();
+    let mut transport = MstpTransport::new(Empty(writes), config(3, 7));
+    let _npdus = transport.start().await.unwrap();
+    for destination in [4, 5] {
+        let poll = tokio::time::timeout(Duration::from_secs(2), written.recv())
+            .await
+            .expect("the frame was never completed")
+            .unwrap();
+        assert_eq!(poll[2], FrameType::PollForMaster.to_raw());
+        assert_eq!(poll[3], destination);
+    }
+    assert!(transport.diagnostics().snapshot().echo_missing >= 1);
+    tokio::time::timeout(Duration::from_secs(2), transport.stop())
+        .await
+        .expect("stop hung")
+        .unwrap();
+}

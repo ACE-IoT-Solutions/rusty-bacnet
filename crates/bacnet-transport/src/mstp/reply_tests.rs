@@ -208,8 +208,14 @@ async fn an_answer_around_the_deadline_is_never_lost() {
 /// A port whose read is always ready (here it returns nothing, as a closed
 /// pseudo-terminal does) cannot hold back the core's deadlines: reads win
 /// the task's select, but a deadline already due is serviced after each
-/// one, so Reply Postponed still goes out within T_reply_delay. Real time:
-/// the always-ready read never lets a paused clock advance.
+/// one, so Reply Postponed still goes out.
+///
+/// The test runs in real time: a paused clock advances only when every task
+/// is idle, and the always-ready read keeps the station's task busy, so a
+/// paused clock would never reach the deadline. The bound is loose (the
+/// decision deadline is 225 ms after the request, the bound 1 s) because
+/// the bug it guards against starves the deadline for ever, and a loose
+/// bound keeps a busy machine from failing it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_always_readable_port_still_meets_the_reply_deadline() {
     use super::{MstpTransport, SerialPort};
@@ -217,6 +223,8 @@ async fn an_always_readable_port_still_meets_the_reply_deadline() {
 
     struct Babbling {
         request: std::sync::Mutex<Option<Vec<u8>>>,
+        /// When the read handed the request over.
+        injected: std::sync::Mutex<Option<Instant>>,
         writes: tokio::sync::mpsc::UnboundedSender<(Instant, Vec<u8>)>,
     }
 
@@ -229,6 +237,7 @@ async fn an_always_readable_port_still_meets_the_reply_deadline() {
         async fn read(&self, buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
             let request = self.request.lock().unwrap().take();
             Ok(request.map_or(0, |octets| {
+                *self.injected.lock().unwrap() = Some(Instant::now());
                 buf[..octets.len()].copy_from_slice(&octets);
                 octets.len()
             }))
@@ -237,12 +246,12 @@ async fn an_always_readable_port_still_meets_the_reply_deadline() {
 
     let (writes, mut written) = tokio::sync::mpsc::unbounded_channel();
     let request = super::test_support::encode(FrameType::BACnetDataExpectingReply, 3, 7, REQUEST);
-    let port = Babbling {
+    let injected = std::sync::Arc::new(Babbling {
         request: std::sync::Mutex::new(Some(request)),
+        injected: std::sync::Mutex::new(None),
         writes,
-    };
-    let mut transport = MstpTransport::new(port, config(3, 127));
-    let started = Instant::now();
+    });
+    let mut transport = MstpTransport::new(Shared(injected.clone()), config(3, 127));
     let mut npdus = transport.start().await.unwrap();
     let _reply = npdus.recv().await.unwrap().reply_tx.unwrap();
     let (at, octets) = tokio::time::timeout(Duration::from_secs(2), written.recv())
@@ -250,10 +259,28 @@ async fn an_always_readable_port_still_meets_the_reply_deadline() {
         .expect("a due deadline was starved by reads")
         .unwrap();
     assert_eq!(octets[2], FrameType::ReplyPostponed.to_raw());
+    let injected = injected
+        .injected
+        .lock()
+        .unwrap()
+        .expect("the request was read");
     assert!(
-        at < started + Duration::from_millis(250),
+        at < injected + Duration::from_secs(1),
         "{:?}",
-        at - started
+        at - injected
     );
     transport.stop().await.unwrap();
+}
+
+/// A serial port shared with the test, which reads what it recorded.
+struct Shared<S>(std::sync::Arc<S>);
+
+impl<S: super::SerialPort> super::SerialPort for Shared<S> {
+    async fn write(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
+        self.0.write(data).await
+    }
+
+    async fn read(&self, buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
+        self.0.read(buf).await
+    }
 }

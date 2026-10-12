@@ -315,3 +315,17 @@ async fn turnaround_counts_from_the_last_chunk_read() {
     let _ = Instant::now();
     bus.stop().await;
 }
+
+/// An echo with no grace could never be matched: start refuses it.
+#[tokio::test]
+async fn a_zero_echo_grace_is_refused() {
+    assert!(Echo::full().validate().is_ok());
+    assert!(Echo::None.validate().is_ok());
+    let zero = Echo::Full {
+        grace: Duration::ZERO,
+    };
+    assert!(matches!(zero.validate(), Err(Error::Encoding(text)) if text.contains("echo grace")));
+    let (serial, _peer) = LoopbackSerial::pair();
+    let mut transport = MstpTransport::new(serial.with_echo(zero), config(3, 127));
+    assert!(transport.start().await.is_err());
+}

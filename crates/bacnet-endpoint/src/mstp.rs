@@ -191,10 +191,16 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     ///
     /// Runs the transport's own checks ([`MstpConfig::validate`]):
     /// `max_master <= 127`, `this_station <= max_master`,
-    /// `max_info_frames >= 1` and a baud rate Clause 9 timing allows; returns
+    /// `max_info_frames >= 1` and a baud rate Clause 9 timing allows, plus a
+    /// nonzero echo grace on a port that declares an echo
+    /// ([`Echo::validate`](bacnet_transport::mstp::Echo::validate)); returns
     /// a typed [`Error::Encoding`] otherwise.
     pub fn validate_only(&self) -> Result<(), Error> {
-        self.config().validate()
+        self.config().validate()?;
+        match &self.serial {
+            Some(serial) => serial.echo().validate(),
+            None => Ok(()),
+        }
     }
 
     fn config(&self) -> MstpConfig {
@@ -211,8 +217,8 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// Validates the configuration first, then takes the serial port by
     /// value: a second call returns `"MS/TP endpoint serial owner is missing"`.
     pub fn build_transport(mut self) -> Result<MstpTransport<S>, Error> {
+        self.validate_only()?;
         let config = self.config();
-        config.validate()?;
         let serial = self
             .serial
             .take()
@@ -228,7 +234,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// identity must fit the 480 APDU bound; the standalone
     /// [`SessionConfig`] 480 default is kept untouched otherwise.
     pub fn build_session(mut self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
-        self.config().validate()?;
+        self.validate_only()?;
         if let Some(identity) = self.identity.as_ref() {
             // Respect the transport's advertised standard-frame/APDU bounds:
             // never compose an identity that invites oversized responses.

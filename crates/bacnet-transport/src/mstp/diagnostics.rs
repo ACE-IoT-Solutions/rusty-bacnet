@@ -59,16 +59,21 @@ pub struct MstpDiagnosticsSnapshot {
     /// Serial write or drain calls that completed with an error. The frame
     /// is reported to the core as aborted.
     pub serial_write_errors: u64,
-    /// Frames sent on a port with [`Echo::Full`](super::Echo::Full) whose
-    /// echo differed from what was sent, or was cut short: a collision,
-    /// line noise, octets that were already waiting when the frame started,
-    /// or an echo missing its first octets. What did not match went to the
-    /// core as line activity.
+    /// Frames sent on a port with [`Echo::Full`](super::Echo::Full) during
+    /// whose echo hunt octets other than the echo were read and passed on to
+    /// the core, outside the probe after a grace with no echo: a stray or
+    /// pad octet, line noise, a collision, an echo missing its first octets,
+    /// or a peer that answered before the echo was seen. Counted once per
+    /// frame.
     pub echo_mismatches: u64,
     /// Frames sent on a port with [`Echo::Full`](super::Echo::Full) none of
     /// whose echo had arrived within the echo grace after the frame ended. A
     /// port declared with an echo that does not echo shows here.
     pub echo_missing: u64,
+    /// Fragments of an echo dropped because they had waited longer than
+    /// T_frame_abort for the octet that would release them, or for the hunt
+    /// to end: a receiver would have abandoned them anyway.
+    pub echo_stale_fragments: u64,
     /// Application answers that came after the core had finished their
     /// request (it had sent Reply Postponed, or given up), queued as
     /// ordinary NPDUs to the requester, to go out with the token.
@@ -76,8 +81,9 @@ pub struct MstpDiagnosticsSnapshot {
     /// Reply channels of finished requests given up because more than the
     /// transport keeps (eight) were waiting: the oldest goes.
     pub late_answers_dropped: u64,
-    /// Reply channels of finished requests given up at the queue's maximum
-    /// age, answered after it or not at all.
+    /// Reply channels of finished requests given up at their request's
+    /// arrival plus the queue's maximum age, answered after it or not at
+    /// all.
     pub late_answers_expired: u64,
     /// The master core's counters ([`MstpCounters`]), with its queues'.
     pub mac: MstpCounters,
@@ -156,6 +162,7 @@ counters!(
     serial_write_errors,
     echo_mismatches,
     echo_missing,
+    echo_stale_fragments,
     late_answers_queued,
     late_answers_dropped,
     late_answers_expired,

@@ -3,8 +3,9 @@
 //! A frame goes out in four steps, following the core's transmit contract:
 //!
 //! 1. Octets already waiting in the port are read without blocking and fed
-//!    to the core, stamped with the time of the read. They are line
-//!    activity, and may make the core take the frame back. The read is
+//!    to the core, stamped with the time of the read, and so are octets the
+//!    echo filter still holds in probe mode (they may be a peer's). They are
+//!    line activity, and may make the core take the frame back. The read is
 //!    polled once, outside Tokio's cooperative budget; octets that reached
 //!    the port after the reactor last looked at it are not seen here, and
 //!    are fed after the frame like any later octets.
@@ -17,13 +18,13 @@
 //!    out) is held to it. A write or drain error aborts the frame.
 //! 4. [`MasterCore::on_transmit_complete`](bacnet_mstp_core::MasterCore::on_transmit_complete), stamped with the frame's end.
 //!    On a port with [`Echo::Full`] the echo filter (the `echo` module)
-//!    first matches what is read against the frame. Completion comes when
-//!    the echo has matched, at the first octet that does not match, or when
-//!    the grace runs out, whichever is first, and always before the core is
-//!    fed anything read after the frame: until completion the core takes
-//!    every octet for echo. The filter stays on past a grace that ran out
-//!    with part of the echo seen, so its remainder is still dropped; with
-//!    none seen, it probes for one more grace (counted in `echo_missing`).
+//!    hunts for the echo in what is read. Completion comes when the echo
+//!    has matched, at the first octet the filter passes on, or when the
+//!    grace runs out, whichever is first, and always before the core is fed
+//!    anything read after the frame: until completion the core takes every
+//!    octet for echo. The hunt goes on in the main loop after completion
+//!    (see the `echo` module), so the task is back to servicing deadlines
+//!    as soon as the frame is complete.
 //!
 //! Per port kind: `TokioSerialPort` writes to the driver and drains with
 //! `tcdrain` on Unix (on Windows it has no drain, so the wire time is used);
@@ -40,9 +41,7 @@ use bacnet_types::error::Error;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use super::{
-    increment, poll_once, Core, Echo, Filtered, Mac, Outgoing, ReadFailed, SentKind, SerialPort,
-};
+use super::{increment, poll_once, Core, Echo, Mac, Outgoing, ReadFailed, SentKind, SerialPort};
 
 /// Reads at most in the non-blocking drain before a start, so a line that
 /// never falls quiet cannot hold the task there.
@@ -52,6 +51,11 @@ impl<S: SerialPort> Mac<S> {
     /// Send the frame the core handed over.
     pub(super) async fn transmit(&mut self, core: &mut Core<'_>) -> Result<(), ReadFailed> {
         self.drain_input(core).await?;
+        // Octets held in probe mode may be a peer's: line activity, before
+        // the start.
+        let ended = self.filter.before_start(Instant::now());
+        let now = self.clock.now();
+        self.hunt_ended(core, ended, now);
         let Some(outgoing) = self.outgoing.take() else {
             return Ok(());
         };
@@ -60,8 +64,6 @@ impl<S: SerialPort> Mac<S> {
             debug!(?error, "MS/TP transmit start refused");
             return Ok(());
         }
-        // Whatever still matched the last frame's echo was that echo.
-        self.filter.clear();
         let octets = u32::try_from(self.tx_frame.len()).unwrap_or(u32::MAX);
         let wire_end = started + self.octet_time * octets;
         let sent = match self.serial.write(&self.tx_frame).await {
@@ -109,8 +111,10 @@ impl<S: SerialPort> Mac<S> {
         self.drain_actions(core);
     }
 
-    /// Match the echo of the frame just sent, complete the frame, and feed
-    /// the core what follows the echo (see the module docs).
+    /// Hunt for the echo of the frame just sent until the frame can be
+    /// completed: the echo matched, an octet passes on, or the grace ran out.
+    /// Feed the core what passes on, after completion; the hunt goes on in
+    /// the main loop.
     async fn strip_echo(
         &mut self,
         core: &mut Core<'_>,
@@ -118,47 +122,48 @@ impl<S: SerialPort> Mac<S> {
         ended: Instant,
         grace: std::time::Duration,
     ) -> Result<(), ReadFailed> {
-        self.filter.start(&self.tx_frame);
+        self.filter.start(&self.tx_frame, ended, grace);
         let grace_end = ended + grace;
         loop {
             let read = tokio::select! {
                 biased;
-                read = self.serial.read(&mut self.read_buf) => read,
-                () = tokio::time::sleep_until(grace_end) => {
-                    if !self.filter.seen() {
-                        increment(&self.counts.echo_missing);
-                        self.filter.probe(grace_end + grace);
-                    }
-                    self.complete(core, outgoing, ended);
-                    return Ok(());
-                }
+                read = self.serial.read(&mut self.read_buf) => Some(read),
+                () = tokio::time::sleep_until(grace_end) => None,
             };
-            let count = match read {
-                Ok(count) => count,
-                Err(error) => {
+            match read {
+                None => {}
+                Some(Err(error)) => {
                     self.read_failed(&error);
                     return Err(ReadFailed);
                 }
-            };
-            let now = self.clock.now();
-            for index in 0..count {
-                match self.filter.push(self.read_buf[index]) {
-                    Filtered::Held => {}
-                    Filtered::Echo => {
-                        self.complete(core, outgoing, ended);
-                        self.receive(core, index + 1..count, now);
-                        return Ok(());
-                    }
-                    Filtered::Release { held, mismatch } => {
-                        if mismatch {
-                            increment(&self.counts.echo_mismatches);
+                // Nothing read: let other work, an abort included, run.
+                Some(Ok(0)) => tokio::task::yield_now().await,
+                Some(Ok(count)) => {
+                    let read_at = Instant::now();
+                    let now = self.clock.now();
+                    for index in 0..count {
+                        let octet = self.read_buf[index];
+                        let pushed = self.filter.push(octet, read_at);
+                        if pushed.echo || pushed.passes() {
+                            self.complete(core, outgoing, ended);
+                            self.pass_on(core, pushed, octet, now);
+                            self.receive(core, index + 1..count, now);
+                            return Ok(());
                         }
-                        self.complete(core, outgoing, ended);
-                        self.release(core, held, now);
-                        self.receive(core, index..count, now);
-                        return Ok(());
+                        if pushed.stale > 0 {
+                            increment(&self.counts.echo_stale_fragments);
+                        }
                     }
                 }
+            }
+            // Checked after every read too, so a port that is always
+            // readable cannot hold the frame open past its grace.
+            if Instant::now() >= grace_end {
+                let timed_out = self.filter.timer(Instant::now());
+                self.complete(core, outgoing, ended);
+                let now = self.clock.now();
+                self.hunt_ended(core, timed_out, now);
+                return Ok(());
             }
         }
     }

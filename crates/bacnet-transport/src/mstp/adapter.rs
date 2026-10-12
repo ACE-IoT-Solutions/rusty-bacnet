@@ -48,7 +48,9 @@
 //! have stopped waiting), the channel is kept in a small deferred set, and
 //! an answer that comes later is queued as an ordinary NPDU to the
 //! requester, to go out when this station holds the token, as Clause
-//! 9.5.6.9 has a deferred reply do. The `replies` module bounds the set.
+//! 9.5.6.9 has a deferred reply do. It keeps its request's expiry (arrival
+//! plus the queue's maximum age) in the queue. The `replies` module bounds
+//! the set.
 
 use std::future::Future;
 use std::ops::Range;
@@ -58,9 +60,8 @@ use std::time::Duration;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC, MAX_STANDARD_FRAME_LENGTH};
 use bacnet_mstp_core::{
-    Action, ActionBuffers, CoreError, Direction, Duration as CoreDuration, MasterCore, MasterState,
-    MstpCoreConfig, QueueRejectReason, ReplyDecision, RequestId, TransmitId,
-    DEFAULT_DELIVERY_SLOTS,
+    Action, ActionBuffers, CoreError, Direction, MasterCore, MasterState, MstpCoreConfig,
+    QueueRejectReason, ReplyDecision, RequestId, TransmitId, DEFAULT_DELIVERY_SLOTS,
 };
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -69,7 +70,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use super::diagnostics::{increment, Counters};
-use super::echo::{EchoFilter, Filtered};
+use super::echo::{EchoFilter, Ended, Pushed};
 use super::queues::{CoreClock, EnqueueError, SharedQueues};
 use super::replies::{Finished, Late, Replies, Resolved};
 use super::{Echo, SerialPort};
@@ -123,13 +124,12 @@ impl<S: SerialPort> Task<S> {
             npdus,
             counts,
             queues: shared,
-            queue_max_age: config.queue_max_age,
             octet_time: Duration::from_micros(config.octet_time().as_micros()),
             read_buf: vec![0; READ_CHUNK],
             tx_frame: Vec::with_capacity(MAX_STANDARD_FRAME_LENGTH),
             outgoing: None,
             replies: Replies::new(max_age),
-            filter: EchoFilter::default(),
+            filter: EchoFilter::new(Duration::from_millis(super::HOST_FRAME_ABORT_MS)),
         };
         mac.run(&mut core).await;
     }
@@ -201,7 +201,6 @@ struct Mac<S> {
     /// The core's queues, for late answers (queued as a send call queues)
     /// and for publishing their counters.
     queues: SharedQueues,
-    queue_max_age: CoreDuration,
     octet_time: Duration,
     read_buf: Vec<u8>,
     /// The octets of the frame handed over last.
@@ -222,8 +221,12 @@ impl<S: SerialPort> Mac<S> {
                 continue;
             }
             let deadline = core.next_deadline().map(|at| self.clock.instant(at));
-            let wake = deadline
-                .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3_600));
+            let wake = match (deadline, self.filter.deadline()) {
+                (Some(core), Some(filter)) => Some(core.min(filter)),
+                (core, filter) => core.or(filter),
+            };
+            let sleep =
+                wake.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3_600));
             // Input before a deadline at the same moment: the core judges
             // the deadline against the activity it has been given.
             tokio::select! {
@@ -234,7 +237,9 @@ impl<S: SerialPort> Mac<S> {
                 },
                 read = self.serial.read(&mut self.read_buf) => {
                     match read {
-                        Ok(0) => {}
+                        // Nothing read: let other work, an abort included,
+                        // run before the next read.
+                        Ok(0) => tokio::task::yield_now().await,
                         Ok(count) => {
                             let now = self.clock.now();
                             self.receive(core, 0..count, now);
@@ -244,9 +249,9 @@ impl<S: SerialPort> Mac<S> {
                             return;
                         }
                     }
-                    self.overdue(core);
+                    self.timers(core);
                 }
-                () = tokio::time::sleep_until(wake), if deadline.is_some() => self.deadline(core),
+                () = tokio::time::sleep_until(sleep), if wake.is_some() => self.timers(core),
             }
         }
     }
@@ -335,7 +340,7 @@ impl<S: SerialPort> Mac<S> {
         let reply_tx = request.map(|id| {
             // The core holds one request at a time, so an older one is over.
             self.finish_request();
-            self.replies.open(id, source)
+            self.replies.open(id, source, tokio::time::Instant::now())
         });
         let result = self.npdus.try_send(ReceivedNpdu {
             direct_response: None,
@@ -354,10 +359,12 @@ impl<S: SerialPort> Mac<S> {
     /// The core finished the current request without its answer: keep the
     /// channel for a late answer, or queue one already there.
     fn finish_request(&mut self) {
-        match self.replies.finish_current(tokio::time::Instant::now()) {
-            Some(Finished::Answer { requester, answer }) => {
-                self.enqueue_late_answer(requester, &answer);
-            }
+        match self.replies.finish_current() {
+            Some(Finished::Answer {
+                requester,
+                answer,
+                expires,
+            }) => self.enqueue_late_answer(requester, &answer, expires),
             Some(Finished::Deferred { dropped_oldest }) => {
                 if dropped_oldest {
                     increment(&self.counts.late_answers_dropped);
@@ -370,7 +377,11 @@ impl<S: SerialPort> Mac<S> {
     /// A deferred channel resolved.
     fn late(&mut self, late: Late) {
         match late {
-            Late::Answer { requester, answer } => self.enqueue_late_answer(requester, &answer),
+            Late::Answer {
+                requester,
+                answer,
+                expires,
+            } => self.enqueue_late_answer(requester, &answer, expires),
             Late::Expired => increment(&self.counts.late_answers_expired),
             Late::Closed => {}
         }
@@ -399,16 +410,19 @@ impl<S: SerialPort> Mac<S> {
             // Past the decision deadline, or the request is gone: the core
             // sends or has sent Reply Postponed, and the answer follows with
             // the token.
-            Err(_) => self.enqueue_late_answer(current.requester, &answer),
+            Err(_) => self.enqueue_late_answer(current.requester, &answer, current.expires),
         }
     }
 
     /// Queue an answer the core no longer takes, as a send call would queue
-    /// it, so it goes out when this station holds the token.
-    fn enqueue_late_answer(&mut self, requester: u8, answer: &[u8]) {
+    /// it, so it goes out when this station holds the token. It expires at
+    /// its request's arrival plus the queue's maximum age, not that age
+    /// after now.
+    fn enqueue_late_answer(&mut self, requester: u8, answer: &[u8], expires: tokio::time::Instant) {
+        let expires = self.clock.at(expires);
         let result = self
             .queues
-            .enqueue(requester, answer, self.clock.now(), self.queue_max_age);
+            .enqueue_until(requester, answer, self.clock.now(), expires);
         match result {
             Ok(()) => increment(&self.counts.late_answers_queued),
             Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
@@ -429,21 +443,46 @@ impl<S: SerialPort> Mac<S> {
         range: Range<usize>,
         now: bacnet_mstp_core::Instant,
     ) {
-        let released = self.filter.expire(tokio::time::Instant::now());
-        self.release(core, released, now);
+        let read_at = tokio::time::Instant::now();
+        let ended = self.filter.timer(read_at);
+        self.hunt_ended(core, ended, now);
         for index in range {
             let octet = self.read_buf[index];
-            match self.filter.push(octet) {
-                Filtered::Held | Filtered::Echo => {}
-                Filtered::Release { held, mismatch } => {
-                    if mismatch {
-                        increment(&self.counts.echo_mismatches);
-                    }
-                    self.release(core, held, now);
-                    self.feed(core, octet, now);
-                }
-            }
+            let pushed = self.filter.push(octet, read_at);
+            self.pass_on(core, pushed, octet, now);
         }
+    }
+
+    /// Carry out what the echo filter made of one octet: count, and feed
+    /// the core what passes on.
+    fn pass_on(
+        &mut self,
+        core: &mut Core<'_>,
+        pushed: Pushed,
+        octet: u8,
+        now: bacnet_mstp_core::Instant,
+    ) {
+        if pushed.stale > 0 {
+            increment(&self.counts.echo_stale_fragments);
+        }
+        if pushed.first_mismatch {
+            increment(&self.counts.echo_mismatches);
+        }
+        self.release(core, pushed.release, now);
+        if pushed.pass {
+            self.feed(core, octet, now);
+        }
+    }
+
+    /// Carry out the end of a grace, a probe or a hunt.
+    fn hunt_ended(&mut self, core: &mut Core<'_>, ended: Ended, now: bacnet_mstp_core::Instant) {
+        if ended.missing {
+            increment(&self.counts.echo_missing);
+        }
+        if ended.stale > 0 {
+            increment(&self.counts.echo_stale_fragments);
+        }
+        self.release(core, ended.release, now);
     }
 
     /// Feed the first `held` octets the echo filter held back.
@@ -460,6 +499,15 @@ impl<S: SerialPort> Mac<S> {
             debug!(?error, "MS/TP core refused an octet");
         }
         self.drain_actions(core);
+    }
+
+    /// Service whatever timer is due: the echo filter's (the end of a grace
+    /// or a probe) and the core's deadline.
+    fn timers(&mut self, core: &mut Core<'_>) {
+        let ended = self.filter.timer(tokio::time::Instant::now());
+        let now = self.clock.now();
+        self.hunt_ended(core, ended, now);
+        self.overdue(core);
     }
 
     /// Service the core's deadline if it is already due.

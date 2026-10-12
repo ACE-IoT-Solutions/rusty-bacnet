@@ -550,6 +550,16 @@ async fn mstp_builder_bounds_reject() {
         .max_master(200)
         .validate_only()
         .is_err());
+    // A port declaring an echo with no grace is rejected.
+    let (serial, _peer) = LoopbackSerial::pair();
+    let zero = bacnet_transport::mstp::Echo::Full {
+        grace: Duration::ZERO,
+    };
+    assert!(
+        MstpEndpointBuilder::new(serial.with_echo(zero), SESSION_MAC)
+            .validate_only()
+            .is_err()
+    );
     // An identity advertising beyond the 480 transport bound is rejected.
     let (serial, _peer) = LoopbackSerial::pair();
     let big = DeviceIdentity::new(2002, 42).unwrap();
