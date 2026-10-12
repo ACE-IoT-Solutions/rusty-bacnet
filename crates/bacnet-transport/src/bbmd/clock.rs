@@ -23,10 +23,16 @@ impl CoreClock {
     }
 
     /// `at` on the core's timeline.
+    ///
+    /// The difference is always taken from the later instant. On Windows
+    /// `std` reports an earlier instant less than one counter tick (100 ns)
+    /// away as no time at all, which would map an instant just before the
+    /// epoch onto the epoch itself.
     pub(crate) fn to_core(self, at: Instant) -> bip_core::Instant {
-        let nanos = match at.checked_duration_since(self.epoch) {
-            Some(after) => MIDPOINT.saturating_add(duration_nanos(after)),
-            None => MIDPOINT.saturating_sub(duration_nanos(self.epoch.duration_since(at))),
+        let nanos = if at >= self.epoch {
+            MIDPOINT.saturating_add(duration_nanos(at.duration_since(self.epoch)))
+        } else {
+            MIDPOINT.saturating_sub(duration_nanos(self.epoch.duration_since(at)))
         };
         bip_core::Instant::from_nanos(nanos)
     }
@@ -60,6 +66,8 @@ fn duration_nanos(duration: Duration) -> u64 {
 mod tests {
     use super::*;
 
+    /// The expected values come from the instants the host clock produced,
+    /// so the test holds at any clock resolution: Windows' is 100 ns.
     #[test]
     fn instants_either_side_of_the_epoch_map_exactly_both_ways() {
         let epoch = Instant::now();
@@ -67,21 +75,23 @@ mod tests {
         assert_eq!(clock.to_core(epoch).as_nanos(), MIDPOINT);
         for offset in [
             Duration::from_nanos(1),
+            Duration::from_nanos(100),
             Duration::from_nanos(123_456_789),
             Duration::from_secs(91),
         ] {
             let later = epoch + offset;
             assert_eq!(
                 clock.to_core(later).as_nanos(),
-                MIDPOINT + duration_nanos(offset)
+                MIDPOINT + duration_nanos(later.duration_since(epoch))
             );
             assert_eq!(clock.to_std(clock.to_core(later)), later);
             if let Some(earlier) = epoch.checked_sub(offset) {
                 assert_eq!(
                     clock.to_core(earlier).as_nanos(),
-                    MIDPOINT - duration_nanos(offset)
+                    MIDPOINT - duration_nanos(epoch.duration_since(earlier))
                 );
                 assert_eq!(clock.to_std(clock.to_core(earlier)), earlier);
+                assert!(clock.to_core(earlier) <= clock.to_core(epoch));
             }
         }
         assert_eq!(
