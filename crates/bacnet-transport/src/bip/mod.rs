@@ -232,6 +232,10 @@ impl BipTransport {
     /// the default-route address, `start()` warns that the kernel may send
     /// broadcasts from another interface; bind an explicit interface and its
     /// subnet's broadcast address instead.
+    ///
+    /// A BBMD can't also register as a foreign device: `start()` fails when
+    /// [`register_as_foreign_device`](Self::register_as_foreign_device) was
+    /// called too, even after an earlier start as a BBMD.
     pub fn enable_bbmd(&mut self, bdt: Vec<BdtEntry>) {
         self.bbmd_config = Some(BbmdConfig {
             initial_bdt: bdt,
@@ -281,6 +285,8 @@ impl BipTransport {
     /// Call before `start()`, which validates the TTL/renewal settings before
     /// I/O and starts an automatic worker. Startup is local readiness, not a
     /// BBMD receipt; use [`Self::bvlc_client_snapshot`] to observe outcomes.
+    /// `start()` fails on a transport that is also a BBMD
+    /// ([`enable_bbmd`](Self::enable_bbmd)).
     pub fn register_as_foreign_device(&mut self, config: ForeignDeviceConfig) {
         self.foreign_device = Some(config);
     }
@@ -629,6 +635,15 @@ impl TransportPort for BipTransport {
         }
 
         // Validate before probing interfaces, binding sockets or sending bytes.
+        // A node is in one B/IP mode: a BBMD distributes its own broadcasts,
+        // and a foreign device hands them to its BBMD (#938).
+        if self.foreign_device.is_some() && (self.bbmd_config.is_some() || self.bbmd.is_some()) {
+            return Err(Error::Encoding(
+                "a B/IP transport can't start as a BBMD that also registers as a foreign \
+                 device; run the two on separate transports"
+                    .into(),
+            ));
+        }
         let renewal_interval = self
             .foreign_device
             .as_ref()

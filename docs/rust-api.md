@@ -4657,6 +4657,9 @@ requests cause a locally counted busy refusal and a retry on the next interval.
 There is no catch-up burst after a delayed attempt. One-shot
 `register_foreign_device_bvlc` calls retain their three-second response wait
 and permit zero-TTL requests; they do not switch broadcast mode.
+A transport is in one B/IP mode: `start()` fails, before any I/O, on one set
+up both as a BBMD (`enable_bbmd`) and as a foreign device, since the two
+broadcast differently; run them on separate transports (#938, #1622).
 
 `build()` means the client is running locally. Poll `last_outcome` for a
 matched acceptance or refusal; a send failure or timeout leaves the remote
