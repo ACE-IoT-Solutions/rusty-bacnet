@@ -4716,9 +4716,16 @@ lease lapses (warn); renewals and lost attempts log at debug. Poll
 leaves the remote outcome unknown. A registration NAK rejects that attempt
 and leaves a live lease in place. The `next_attempt_in` countdown is the
 worker's scheduled attempt, not a lease expiry. Last-attempt status,
-countdown and lease clear on stop/restart while totals remain. Foreign-mode
-broadcasts use DBTN toward the configured BBMD even before acceptance or
-after a rejected attempt; one sent with no live lease is counted in
+countdown and lease clear on stop/restart while totals remain.
+
+Foreign-mode broadcasts use DBTN toward the configured BBMD. Until the first
+attempt after each start is answered or times out, the transport holds up to
+16 of them (`broadcasts_held`), so what a device or router announces at start
+doesn't race its registration, and refuses more with an error
+(`broadcasts_hold_full`) (#1622). It sends them, in order, once that attempt
+succeeds or goes unanswered (`broadcasts_released`), and drops them if the
+BBMD refuses it (`broadcasts_discarded`). After that, broadcasts go at once,
+registered or not; one sent with no live lease is counted in
 `broadcasts_unregistered`.
 
 The BBMD helpers (`read_bdt`, `write_bdt`, `read_fdt`, `delete_fdt_entry`,

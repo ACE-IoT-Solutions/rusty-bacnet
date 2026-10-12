@@ -910,6 +910,8 @@ mod group_delivery_tests;
 #[cfg(test)]
 mod group_source_tests;
 #[cfg(test)]
+mod held_broadcast_tests;
+#[cfg(test)]
 mod malformed_bvll_tests;
 #[cfg(test)]
 mod management_ack_tests;

@@ -366,6 +366,12 @@ async fn plain_and_foreign_device_modes_do_not_forward_own_broadcasts() {
         recv_bvll(&bbmd).await.function,
         BvlcFunction::REGISTER_FOREIGN_DEVICE
     );
+    // Accept the registration, which a foreign device's broadcasts wait for
+    // (#1622).
+    let device = SocketAddrV4::new(Ipv4Addr::LOCALHOST, foreign.port);
+    bbmd.send_to(&[0x81, 0x00, 0x00, 0x06, 0x00, 0x00], device)
+        .await
+        .unwrap();
     // A foreign device still hands its broadcast to its BBMD only.
     foreign.send_broadcast(NPDU).await.unwrap();
     let frame = recv_bvll(&bbmd).await;

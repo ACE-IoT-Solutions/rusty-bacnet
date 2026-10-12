@@ -73,14 +73,24 @@ impl Device {
         self.says(BBMD, code).await;
     }
 
-    /// When each registration attempt went, in milliseconds from the start.
-    pub(super) fn attempts(&self) -> Vec<u128> {
+    /// What went to the BBMD since the last look, with when it went, in
+    /// milliseconds from the start.
+    pub(super) fn sent(&self) -> Vec<(u128, Vec<u8>)> {
         let bbmd = SocketAddrV4::new(Ipv4Addr::from(BBMD.0), BBMD.1);
         self.sink
             .take()
             .into_iter()
-            .filter(|sent| sent.to == bbmd && sent.bytes == [0x81, 0x05, 0x00, 0x06, 0x00, 60])
-            .map(|sent| (sent.at - self.start).as_millis())
+            .filter(|sent| sent.to == bbmd)
+            .map(|sent| ((sent.at - self.start).as_millis(), sent.bytes))
+            .collect()
+    }
+
+    /// When each registration attempt went, in milliseconds from the start.
+    pub(super) fn attempts(&self) -> Vec<u128> {
+        self.sent()
+            .into_iter()
+            .filter(|(_, bytes)| *bytes == [0x81, 0x05, 0x00, 0x06, 0x00, 60])
+            .map(|(at, _)| at)
             .collect()
     }
 }

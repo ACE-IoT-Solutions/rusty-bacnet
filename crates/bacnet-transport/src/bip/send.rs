@@ -43,8 +43,9 @@ impl NodeHandle {
         let mut buf = BytesMut::with_capacity(4 + npdu.len());
         encode_bvll(&mut buf, &outgoing.message)?;
 
-        // A foreign device asks its node first, which may hold the broadcast
-        // until the first registration resolves (not while it holds none).
+        // A foreign device asks its node first, which holds the broadcast
+        // while the first registration attempt after a start is outstanding,
+        // and refuses it when that hold is full (#1622).
         if matches!(self.link().mode, Mode::Foreign(_))
             && self.admit_broadcast(npdu)? == Admission::Hold
         {
