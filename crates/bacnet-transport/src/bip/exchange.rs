@@ -65,7 +65,8 @@ impl NodeHandle {
             }
             let (id, _) = state
                 .node
-                .begin_exchange(peer, request, CoreDuration::from(timeout), now)
+                // A timeout past some 584 years is one that never ends.
+                .begin_exchange(peer, request, CoreDuration::saturating_from_core(timeout), now)
                 .map_err(refusal_error)?;
             let waiter = Waiter {
                 tx,

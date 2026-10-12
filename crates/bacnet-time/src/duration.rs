@@ -9,7 +9,11 @@ use crate::{NANOS_PER_MICRO, NANOS_PER_MILLI, NANOS_PER_SEC};
 ///
 /// `+` and `-` saturate at [`Duration::MAX`] and at zero. The default is
 /// [`Duration::ZERO`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// The `try_from_*` constructors return `None` where the others saturate:
+/// the `try_` prefix on an `Option`, as chrono's `TimeDelta::try_seconds`
+/// has it.
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Duration(u64);
 
 impl Duration {
@@ -137,6 +141,28 @@ impl Duration {
     #[must_use]
     pub const fn saturating_mul(self, factor: u32) -> Self {
         Self(self.0.saturating_mul(factor as u64))
+    }
+
+    /// The shorter of `self` and `other`: [`Ord::min`] for a `const`
+    /// context.
+    #[must_use]
+    pub const fn min(self, other: Self) -> Self {
+        if self.0 <= other.0 {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// The longer of `self` and `other`: [`Ord::max`] for a `const`
+    /// context.
+    #[must_use]
+    pub const fn max(self, other: Self) -> Self {
+        if self.0 >= other.0 {
+            self
+        } else {
+            other
+        }
     }
 
     /// What is left of `self` after taking out as many whole `divisor`s as

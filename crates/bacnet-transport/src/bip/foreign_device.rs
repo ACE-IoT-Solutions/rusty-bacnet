@@ -2,6 +2,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 use bacnet_bip_core::node::{ConfigError, Foreign, ForwardedTrust, Groups, Retry};
+use bacnet_bip_core::Duration as CoreDuration;
 use bacnet_types::error::Error;
 
 use super::BipTransport;
@@ -25,7 +26,9 @@ pub struct ForeignDeviceConfig {
 }
 
 impl ForeignDeviceConfig {
-    pub(super) fn interval(&self) -> Result<Duration, Error> {
+    /// The renewal interval on the node engine's timeline: the configured
+    /// one, or half the TTL, at least 100 ms.
+    pub(super) fn interval(&self) -> Result<CoreDuration, Error> {
         let ttl = Duration::from_secs(u64::from(self.ttl));
         let interval = self.renewal_interval.unwrap_or(ttl / 2);
         if self.ttl == 0 || interval.is_zero() || interval >= ttl {
@@ -35,7 +38,10 @@ impl ForeignDeviceConfig {
         }
         // Limit fast replies, busy slots and local failures to ten attempts per
         // second. This remains below half of the smallest positive wire TTL.
-        Ok(interval.max(Duration::from_millis(100)))
+        let interval = interval.max(Duration::from_millis(100));
+        CoreDuration::try_from(interval).map_err(|too_long| {
+            Error::Encoding(format!("foreign-device renewal interval: {too_long}"))
+        })
     }
 
     /// Refuse, before any I/O, a BBMD no device could register with: one
@@ -65,12 +71,15 @@ impl ForeignDeviceConfig {
     /// shorter; the next goes one interval after the last one started,
     /// whatever came of it; broadcasts go at once, and Forwarded-NPDUs are
     /// taken from any sender.
-    pub(super) fn engine(&self, interval: Duration) -> Foreign {
+    pub(super) fn engine(&self, interval: CoreDuration) -> Foreign {
+        // Three seconds, exactly.
+        let response_timeout =
+            CoreDuration::saturating_from_core(BipTransport::BVLC_RESPONSE_TIMEOUT);
         Foreign {
             bbmd: SocketAddrV4::new(self.bbmd_ip, self.bbmd_port),
             ttl: self.ttl,
-            renewal: interval.into(),
-            response_timeout: interval.min(BipTransport::BVLC_RESPONSE_TIMEOUT).into(),
+            renewal: interval,
+            response_timeout: interval.min(response_timeout),
             retry: Retry::AtRenewal,
             hold: 0,
             trust: ForwardedTrust::AnySender,

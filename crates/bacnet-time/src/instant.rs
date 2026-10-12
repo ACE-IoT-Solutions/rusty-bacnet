@@ -10,7 +10,7 @@ use crate::{Duration, NANOS_PER_MICRO, NANOS_PER_MILLI, NANOS_PER_SEC};
 /// `+` and `-` with a [`Duration`] saturate at [`Instant::MAX`] and at the
 /// epoch, and the time from a later instant to an earlier one, `earlier -
 /// later`, is [`Duration::ZERO`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Instant(u64);
 
 impl Instant {
@@ -113,6 +113,27 @@ impl Instant {
     #[must_use]
     pub const fn saturating_duration_since(self, earlier: Self) -> Duration {
         Duration::from_nanos(self.0.saturating_sub(earlier.0))
+    }
+
+    /// The earlier of `self` and `other`: [`Ord::min`] for a `const`
+    /// context.
+    #[must_use]
+    pub const fn min(self, other: Self) -> Self {
+        if self.0 <= other.0 {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// The later of `self` and `other`: [`Ord::max`] for a `const` context.
+    #[must_use]
+    pub const fn max(self, other: Self) -> Self {
+        if self.0 >= other.0 {
+            self
+        } else {
+            other
+        }
     }
 
     /// The time from the epoch to `self`.

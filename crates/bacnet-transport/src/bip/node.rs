@@ -64,7 +64,8 @@ impl HostClock {
     /// The engine's time now.
     pub(super) fn now(&self) -> CoreInstant {
         let elapsed = tokio::time::Instant::now().saturating_duration_since(self.origin);
-        CoreInstant::ZERO + CoreDuration::from(elapsed)
+        // Saturates some 584 years after the node started.
+        CoreInstant::ZERO + CoreDuration::saturating_from_core(elapsed)
     }
 
     /// The Tokio instant of an engine time. Both ways are exact, so a timer

@@ -14,8 +14,8 @@ use super::{
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
 ///
-/// `N` is the longest NPDU a slot holds, as for
-/// [`HeaplessQueues`](super::HeaplessQueues): 501 octets by default, and
+/// `N` is the longest NPDU a slot holds, as for `HeaplessQueues` (the
+/// `heapless` feature): 501 octets by default, and
 /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
 /// a core with extended frames on.
 #[derive(Debug)]

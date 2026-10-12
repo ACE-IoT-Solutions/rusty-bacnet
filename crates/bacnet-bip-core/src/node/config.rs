@@ -107,12 +107,12 @@ impl Foreign {
     #[must_use]
     pub const fn new(bbmd: SocketAddrV4, ttl: u16) -> Self {
         // Half the time-to-live, exactly: a whole number of milliseconds.
-        let renewal = longer(Duration::from_millis(ttl as u64 * 500), MIN_RENEWAL);
+        let renewal = Duration::from_millis(ttl as u64 * 500).max(MIN_RENEWAL);
         Self {
             bbmd,
             ttl,
             renewal,
-            response_timeout: shorter(renewal, DEFAULT_RESPONSE_TIMEOUT),
+            response_timeout: renewal.min(DEFAULT_RESPONSE_TIMEOUT),
             retry: Retry::Backoff,
             hold: 0,
             trust: ForwardedTrust::ConfiguredBbmd,
@@ -129,14 +129,14 @@ impl Foreign {
     /// [`MIN_RENEWAL`].
     #[must_use]
     pub const fn effective_renewal(&self) -> Duration {
-        longer(self.renewal, MIN_RENEWAL)
+        self.renewal.max(MIN_RENEWAL)
     }
 
     /// The response timeout in use: [`response_timeout`](Self::response_timeout),
     /// at most the [effective renewal](Self::effective_renewal).
     #[must_use]
     pub const fn effective_response_timeout(&self) -> Duration {
-        shorter(self.response_timeout, self.effective_renewal())
+        self.response_timeout.min(self.effective_renewal())
     }
 }
 
@@ -251,21 +251,3 @@ impl fmt::Display for ConfigError {
 }
 
 impl core::error::Error for ConfigError {}
-
-/// The longer of two durations: `Ord::max` for a `const` context.
-const fn longer(a: Duration, b: Duration) -> Duration {
-    if a.as_nanos() >= b.as_nanos() {
-        a
-    } else {
-        b
-    }
-}
-
-/// The shorter of two durations: `Ord::min` for a `const` context.
-const fn shorter(a: Duration, b: Duration) -> Duration {
-    if a.as_nanos() <= b.as_nanos() {
-        a
-    } else {
-        b
-    }
-}

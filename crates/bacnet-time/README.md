@@ -14,11 +14,15 @@ feeds them one clock.
 - Unit constructors (`from_micros`, `from_millis`, `from_secs`) are `const`
   and saturate; unit accessors (`as_micros`, `as_millis`, `as_secs`) round
   toward zero.
-- `From` conversions to and from `core::time::Duration`, so a host maps its
-  monotonic clock onto the timeline exactly.
+- Conversions with `core::time::Duration`, so a host maps its monotonic
+  clock onto the timeline exactly: `From` into it, and `TryFrom` back,
+  which refuses a length past about 584 years, or the `const`
+  `Duration::saturating_from_core`, which clamps it.
+- `const` `min` and `max`, and a `Debug` with the unit:
+  `Duration(1500ns)`.
 - No 64-bit division: on a 32-bit target, where dividing a `u64` links a
-  routine of about 1 KB, the accessors, `checked_rem` and the conversion to
-  `core::time::Duration` use binary long division.
+  routine of about 1 KB, the accessors, `checked_rem`, the conversion to
+  `core::time::Duration` and `Debug` use binary long division.
 
 ## Example
 
@@ -37,8 +41,13 @@ assert_eq!(now - deadline, Duration::ZERO);
 
 // A host's monotonic clock, through core::time::Duration.
 let elapsed = core::time::Duration::from_micros(2_500);
-assert_eq!(Duration::from(elapsed), Duration::from_micros(2_500));
-assert_eq!(core::time::Duration::from(Duration::from_nanos(1_500)), core::time::Duration::from_nanos(1_500));
+assert_eq!(Duration::try_from(elapsed), Ok(Duration::from_micros(2_500)));
+assert_eq!(Duration::saturating_from_core(core::time::Duration::MAX), Duration::MAX);
+assert_eq!(
+    core::time::Duration::from(Duration::from_nanos(1_500)),
+    core::time::Duration::from_nanos(1_500)
+);
+assert_eq!(format!("{:?}", Duration::from_nanos(1_500)), "Duration(1500ns)");
 ```
 
 ## License

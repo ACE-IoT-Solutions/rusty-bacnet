@@ -572,7 +572,7 @@ impl BbmdState {
         registration.registered_at = self
             .clock
             .to_core(Instant::now())
-            .saturating_sub(elapsed.into());
+            .saturating_sub(bacnet_bip_core::Duration::saturating_from_core(elapsed));
         self.tables
             .fdt
             .restore(registration)

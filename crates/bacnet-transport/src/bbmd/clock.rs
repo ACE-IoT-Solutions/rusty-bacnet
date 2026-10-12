@@ -29,11 +29,12 @@ impl CoreClock {
     /// away as no time at all, which would map an instant just before the
     /// epoch onto the epoch itself.
     pub(crate) fn to_core(self, at: Instant) -> bip_core::Instant {
+        // Either side saturates some 292 years from the epoch.
         let midpoint = bip_core::Instant::from_nanos(MIDPOINT);
         if at >= self.epoch {
-            midpoint + bip_core::Duration::from(at.duration_since(self.epoch))
+            midpoint + bip_core::Duration::saturating_from_core(at.duration_since(self.epoch))
         } else {
-            midpoint - bip_core::Duration::from(self.epoch.duration_since(at))
+            midpoint - bip_core::Duration::saturating_from_core(self.epoch.duration_since(at))
         }
     }
 

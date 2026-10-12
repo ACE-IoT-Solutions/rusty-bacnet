@@ -538,6 +538,11 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         let mut deadline = self.protocol_deadline;
         if self.parser_partial {
             if let Some(last_octet) = self.last_octet {
+                // A partial frame is dropped once the silence is longer than
+                // T_frame_abort, so the deadline falls just past it: a whole
+                // microsecond, the value it had when the core counted
+                // microseconds, which keeps it on the whole-microsecond
+                // timeline the simulator and the fuzz model check.
                 let parser = last_octet + self.config.t_frame_abort + Duration::from_micros(1);
                 deadline = minimum(deadline, Some(parser));
             }

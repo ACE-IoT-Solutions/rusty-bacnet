@@ -196,7 +196,7 @@ impl CoreClock {
     /// after the origin).
     pub(super) fn at(&self, instant: tokio::time::Instant) -> CoreInstant {
         let elapsed = instant.saturating_duration_since(self.origin);
-        CoreInstant::ZERO + CoreDuration::from(elapsed)
+        CoreInstant::ZERO + CoreDuration::saturating_from_core(elapsed)
     }
 
     /// The Tokio instant of a core time. Both ways are exact, so a timer set

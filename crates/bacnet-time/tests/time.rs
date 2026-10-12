@@ -1,7 +1,7 @@
 //! The public API: each constructor, accessor and operation, at zero, at
 //! `u64::MAX` and at the rounding edges of each unit.
 
-use bacnet_time::{Duration, Instant};
+use bacnet_time::{Duration, DurationTooLong, Instant};
 
 const MAX: u64 = u64::MAX;
 
@@ -219,27 +219,84 @@ fn ordering_follows_the_timeline() {
     assert!(Instant::from_micros(1) < Instant::from_nanos(1_001));
     assert!(Duration::from_millis(1) > Duration::from_micros(999));
     assert_eq!(Duration::default(), Duration::ZERO);
-    assert_eq!(
-        Instant::from_millis(5).max(Instant::from_micros(5_001)),
-        Instant::from_micros(5_001)
-    );
 }
 
 #[test]
-fn core_durations_convert_exactly_or_saturate() {
+fn min_and_max_are_const_and_match_ord() {
+    const SHORT: Duration = Duration::from_millis(100).max(Duration::from_millis(30));
+    const EARLY: Instant = Instant::from_secs(2).min(Instant::from_millis(1_500));
+    assert_eq!(SHORT, Duration::from_millis(100));
+    assert_eq!(EARLY, Instant::from_millis(1_500));
+    let values = [0, 1, 1_000, MAX - 1, MAX];
+    for a in values {
+        for b in values {
+            let (x, y) = (Duration::from_nanos(a), Duration::from_nanos(b));
+            assert_eq!(x.min(y), Ord::min(x, y), "{a} {b}");
+            assert_eq!(x.max(y), Ord::max(x, y), "{a} {b}");
+            let (s, t) = (Instant::from_nanos(a), Instant::from_nanos(b));
+            assert_eq!(s.min(t), Ord::min(s, t), "{a} {b}");
+            assert_eq!(s.max(t), Ord::max(s, t), "{a} {b}");
+        }
+    }
+}
+
+#[test]
+fn core_durations_convert_exactly_or_are_refused() {
     for nanos in [0, 1, 999_999_999, 1_000_000_000, 1_000_000_001, MAX] {
         let ours = Duration::from_nanos(nanos);
         let core = core::time::Duration::from_nanos(nanos);
         assert_eq!(core::time::Duration::from(ours), core, "{nanos}");
-        assert_eq!(Duration::from(core), ours, "{nanos}");
+        assert_eq!(Duration::try_from(core), Ok(ours), "{nanos}");
+        assert_eq!(Duration::saturating_from_core(core), ours, "{nanos}");
     }
-    // One nanosecond past ours, and core's own maximum, saturate.
+    // One nanosecond past ours, the next whole second, and core's own
+    // maximum are refused, or clamped by the saturating form.
     let past = core::time::Duration::from_nanos(MAX) + core::time::Duration::from_nanos(1);
-    assert_eq!(Duration::from(past), Duration::MAX);
-    assert_eq!(Duration::from(core::time::Duration::MAX), Duration::MAX);
+    for long in [
+        past,
+        core::time::Duration::new(MAX / 1_000_000_000 + 1, 0),
+        core::time::Duration::MAX,
+    ] {
+        assert_eq!(Duration::try_from(long), Err(DurationTooLong), "{long:?}");
+        assert_eq!(
+            Duration::saturating_from_core(long),
+            Duration::MAX,
+            "{long:?}"
+        );
+    }
+    const FROM_CORE: Duration = Duration::saturating_from_core(core::time::Duration::from_secs(3));
+    assert_eq!(FROM_CORE, Duration::from_secs(3));
     assert_eq!(
-        Duration::from(core::time::Duration::new(MAX / 1_000_000_000 + 1, 0)),
-        Duration::MAX
+        DurationTooLong.to_string(),
+        "duration longer than u64::MAX nanoseconds (about 584 years)"
+    );
+}
+
+#[test]
+fn debug_prints_nanoseconds_with_the_unit() {
+    for (nanos, text) in [
+        (0, "0"),
+        (1_500, "1500"),
+        (999_999_999, "999999999"),
+        (1_000_000_000, "1000000000"),
+        (1_000_000_007, "1000000007"),
+        (1_000_000_000_000_000_000, "1000000000000000000"),
+        (1_000_000_000_000_000_005, "1000000000000000005"),
+        (1_000_000_005_000_000_000, "1000000005000000000"),
+        (MAX, "18446744073709551615"),
+    ] {
+        assert_eq!(
+            format!("{:?}", Duration::from_nanos(nanos)),
+            format!("Duration({text}ns)")
+        );
+        assert_eq!(
+            format!("{:?}", Instant::from_nanos(nanos)),
+            format!("Instant({text}ns)")
+        );
+    }
+    assert_eq!(
+        format!("{:?}", Some(Duration::from_micros(3))),
+        "Some(Duration(3000ns))"
     );
 }
 
@@ -272,6 +329,32 @@ proptest::proptest! {
         let ours = Duration::from_nanos(nanos);
         let core = core::time::Duration::from(ours);
         proptest::prop_assert_eq!(core, core::time::Duration::from_nanos(nanos));
-        proptest::prop_assert_eq!(Duration::from(core), ours);
+        proptest::prop_assert_eq!(Duration::try_from(core), Ok(ours));
+        proptest::prop_assert_eq!(Duration::saturating_from_core(core), ours);
+    }
+
+    #[test]
+    fn core_durations_past_ours_are_refused(
+        secs in (MAX / 1_000_000_000)..=MAX,
+        subsec in 0u32..1_000_000_000,
+    ) {
+        let core = core::time::Duration::new(secs, subsec);
+        let fits = core.as_nanos() <= u128::from(MAX);
+        proptest::prop_assert_eq!(Duration::try_from(core).is_ok(), fits);
+        if !fits {
+            proptest::prop_assert_eq!(Duration::saturating_from_core(core), Duration::MAX);
+        }
+    }
+
+    #[test]
+    fn debug_matches_the_decimal_count(nanos in proptest::prelude::any::<u64>()) {
+        proptest::prop_assert_eq!(
+            format!("{:?}", Duration::from_nanos(nanos)),
+            format!("Duration({nanos}ns)")
+        );
+        proptest::prop_assert_eq!(
+            format!("{:?}", Instant::from_nanos(nanos)),
+            format!("Instant({nanos}ns)")
+        );
     }
 }

@@ -8,8 +8,10 @@
 //! of them, an MS/TP port and a B/IP port say, feed them all one clock.
 //!
 //! - A host maps its monotonic clock onto the timeline exactly: nanoseconds
-//!   are the finest unit `core::time::Duration` has, and the
-//!   [`From`] conversions go both ways.
+//!   are the finest unit `core::time::Duration` has. A [`Duration`] converts
+//!   into one with [`From`], and one converts back with [`TryFrom`], which
+//!   refuses a length past [`Duration::MAX`] ([`DurationTooLong`]), or with
+//!   [`Duration::saturating_from_core`], which clamps it.
 //! - Firmware with a millisecond or microsecond tick builds its `now` with
 //!   [`Instant::from_millis`] or [`Instant::from_micros`].
 //!
@@ -22,15 +24,18 @@
 //!
 //! The unit constructors (`from_micros`, `from_millis`, `from_secs`)
 //! multiply, so they are exact or saturate. The unit accessors (`as_micros`,
-//! `as_millis`, `as_secs`) round toward zero.
+//! `as_millis`, `as_secs`) round toward zero. `min` and `max` are `const`.
+//!
+//! `Debug` prints nanoseconds with the unit: `Duration(1500ns)`,
+//! `Instant(1500ns)`.
 //!
 //! # No 64-bit division
 //!
 //! A 32-bit target has no instruction that divides a 64-bit value, so a
 //! division there links a routine from compiler-builtins, close to 1 KB,
 //! which the firmware images of rusty-bacnet don't allow. The unit accessors,
-//! [`Duration::checked_rem`] and the conversion into `core::time::Duration`
-//! divide by binary long division instead: shifts, compares and
+//! [`Duration::checked_rem`], the conversion into `core::time::Duration` and
+//! `Debug` divide by binary long division instead: shifts, compares and
 //! subtractions, one step per bit of the quotient. Nothing else divides.
 //!
 //! # Features
@@ -43,8 +48,10 @@
 mod convert;
 mod divide;
 mod duration;
+mod format;
 mod instant;
 
+pub use convert::DurationTooLong;
 pub use duration::Duration;
 pub use instant::Instant;
 
