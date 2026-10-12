@@ -6,8 +6,9 @@ use super::{After, Ask, Checker, Custody, Hold, Owed, Role};
 use crate::model::{Seen, T_NO_TOKEN, T_SLOT};
 
 impl Checker<'_> {
-    pub(super) fn permit(&self, frame: &Seen, now: u64) -> Result<Role, String> {
-        match self.permit_held(frame, now) {
+    /// Why the station may send `frame`, with `ps` the PS before it.
+    pub(super) fn permit(&self, frame: &Seen, now: u64, ps: Option<u8>) -> Result<Role, String> {
+        match self.permit_held(frame, now, ps) {
             Err(why)
                 if frame.frame_type == FrameType::PollForMaster
                     && !matches!(self.custody, Custody::Free)
@@ -20,7 +21,12 @@ impl Checker<'_> {
         }
     }
 
-    pub(super) fn permit_held(&self, frame: &Seen, now: u64) -> Result<Role, String> {
+    pub(super) fn permit_held(
+        &self,
+        frame: &Seen,
+        now: u64,
+        ps: Option<u8>,
+    ) -> Result<Role, String> {
         match frame.frame_type {
             FrameType::ReplyToPollForMaster => self.answer(Ask::Poll, frame, now),
             FrameType::TestResponse => self.answer(Ask::Test, frame, now),
@@ -36,7 +42,7 @@ impl Checker<'_> {
                 self.holder_data(frame)
             }
             FrameType::Token => self.token(frame, now),
-            FrameType::PollForMaster => self.poll(frame, now, self.ps),
+            FrameType::PollForMaster => self.poll(frame, now, ps),
             other => Err(format!(
                 "sent a frame of type {other:?}, which this station never originates"
             )),

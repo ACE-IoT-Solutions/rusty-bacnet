@@ -136,6 +136,18 @@ impl Checker<'_> {
         }
     }
 
+    /// The core took back the answer to `id` to wait again.
+    pub(super) fn answer_unhanded(&mut self, id: u64) {
+        let Some(answered) = self.owed.iter().find(|owed| owed.id == id).cloned() else {
+            return;
+        };
+        for owed in &mut self.owed {
+            if owed.ask == answered.ask && owed.from == answered.from {
+                owed.handed = false;
+            }
+        }
+    }
+
     /// The core gave up the answer to `id` unsent.
     pub(super) fn answer_released(&mut self, id: u64) {
         if let Some(owed) = self.owed.iter_mut().find(|owed| owed.id == id) {
@@ -154,7 +166,15 @@ impl Checker<'_> {
                 owed.made = true;
             }
             Decided::Postponed => owed.made = true,
-            Decided::Abandoned => owed.released = true,
+            Decided::Abandoned => {
+                // The repeats the core discarded while busy go with it.
+                let (from, data) = (owed.from, owed.data.clone());
+                for owed in &mut self.owed {
+                    if owed.ask == Ask::Reply && owed.from == from && owed.data == data {
+                        owed.released = true;
+                    }
+                }
+            }
         }
     }
 }

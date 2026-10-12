@@ -6,7 +6,9 @@
 #
 #   fuzz.sh list                     one "<crate> <target>" line per target
 #   fuzz.sh matrix                   the same as a JSON array, for fuzz.yml
-#   fuzz.sh check                    each fuzz crate's lockfile, rustfmt, clippy
+#   fuzz.sh check                    each fuzz crate's lockfile, rustfmt, clippy,
+#                                    and its tests, which replay saved
+#                                    regression inputs
 #   fuzz.sh build [<target>]         build every target, or one
 #   fuzz.sh run <target> <seconds> [<libFuzzer flag>...]
 #                                    fuzz one target for that many seconds
@@ -147,6 +149,7 @@ case $command in
       locked "$crate"
       nightly_cargo fmt --manifest-path "$manifest" --check
       nightly_cargo clippy --locked --manifest-path "$manifest" --all-targets -- -D warnings
+      nightly_cargo test --locked --manifest-path "$manifest" --quiet
     done ;;
   build)
     [ "$#" -le 1 ] || usage

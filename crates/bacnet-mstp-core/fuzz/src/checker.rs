@@ -474,15 +474,20 @@ impl<'s> Checker<'s> {
             .deferred
             .take()
             .filter(|deferred| deferred.octets == octets);
-        let role = match (self.permit(&frame, now), deferred) {
+        // The frame's first hand-over moved PS already: judge it, and record
+        // it, against the PS before that.
+        let ps = deferred.as_ref().map_or(self.ps, |deferred| deferred.ps);
+        let role = match (self.permit(&frame, now, ps), deferred) {
             (Ok(role), _) => role,
             (Err(_), Some(deferred)) => {
+                if let Role::Answer(id) = deferred.role {
+                    self.answer_handed(id, now);
+                }
                 self.handover = Some(deferred);
                 return;
             }
             (Err(why), None) => self.fail(&format!("{why} [{frame:?}]")),
         };
-        let ps = self.ps;
         if frame.frame_type == FrameType::PollForMaster {
             self.ps = Some(frame.destination);
         }
@@ -521,6 +526,8 @@ impl<'s> Checker<'s> {
 mod answers;
 mod permit;
 mod sends;
+#[cfg(test)]
+mod tests;
 
 pub use answers::Decided;
 pub use sends::Delivered;

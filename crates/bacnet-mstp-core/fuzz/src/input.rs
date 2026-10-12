@@ -53,22 +53,33 @@ pub struct Setup {
 /// The timers a configuration may set, within their bounds.
 #[derive(Debug, Arbitrary)]
 pub struct Timing {
-    reply_timeout: u8,
-    usage_timeout: u8,
-    frame_abort: u16,
-    turnaround: u8,
-    usage_delay: u8,
-    reply_delay: u8,
-    margin: u8,
+    /// T_reply_timeout: 255 ms plus up to 45.
+    pub reply_timeout: u8,
+    /// T_usage_timeout: 20 ms plus up to 15.
+    pub usage_timeout: u8,
+    /// T_frame_abort: 60 bit times plus 2 µs each, up to 100 ms.
+    pub frame_abort: u16,
+    /// T_turnaround: 40 bit times plus up to 63 times 50 µs.
+    pub turnaround: u8,
+    /// T_usage_delay: 15 ms less up to 14, at least T_turnaround.
+    pub usage_delay: u8,
+    /// T_reply_delay: 250 ms less up to 199.
+    pub reply_delay: u8,
+    /// The reply transmit margin: 1 to 50 ms.
+    pub margin: u8,
 }
 
 /// The core's local scheduling settings.
 #[derive(Debug, Arbitrary)]
 pub struct Policy {
-    multiple_frame_ratio: u8,
-    broadcast_unicast_ratio: u8,
-    starvation_limit: u8,
-    queue_max_age: u16,
+    /// 1 to 100, or 100 from 128 up.
+    pub multiple_frame_ratio: u8,
+    /// 1 to 4.
+    pub broadcast_unicast_ratio: u8,
+    /// 1 to 16.
+    pub starvation_limit: u8,
+    /// 1 ms to 20 s.
+    pub queue_max_age: u16,
 }
 
 /// The core's storage: its queues, action buffers and receive storage.

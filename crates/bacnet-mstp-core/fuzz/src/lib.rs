@@ -25,5 +25,8 @@ pub mod line;
 pub mod model;
 pub mod queues;
 
+#[cfg(test)]
+mod regressions;
+
 pub use driver::run;
 pub use input::Input;

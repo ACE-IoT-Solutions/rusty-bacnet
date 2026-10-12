@@ -4,7 +4,7 @@
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::RequestId;
 
-use super::{After, Ask, Checker, Custody, Handover, Hold, Pass, Role};
+use super::{After, Ask, Checker, Custody, Handover, Hold, Owed, Pass, Role};
 use crate::model::Seen;
 use crate::model::{MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT, N_MIN_OCTETS, N_POLL};
 
@@ -231,6 +231,15 @@ impl Checker<'_> {
             ));
         }
         self.deferred = self.handover.take();
+        if let Some(Handover {
+            role: Role::Answer(id),
+            ..
+        }) = self.deferred
+        {
+            // Back to waiting: the core may now drop it at its limit
+            // without a word on the line.
+            self.answer_unhanded(id);
+        }
     }
 
     /// The core refused a start as too late for the asker.
@@ -288,17 +297,24 @@ impl Checker<'_> {
         };
         self.deliverable.drain(..=index);
         if let Some(id) = request {
-            // The newest such request the core may still answer: one answer
-            // serves the same request asked again meanwhile.
+            // The request the core began: the oldest one it was free to
+            // take, since it discards repeats while busy with it; failing
+            // that, the newest it may still answer.
             let now = self.now;
-            if let Some(owed) = self.owed.iter_mut().rev().find(|owed| {
+            let candidate = |owed: &Owed| {
                 owed.ask == Ask::Reply
                     && owed.from == source
                     && owed.request.is_none()
                     && owed.data == data
                     && owed.answerable(now)
-            }) {
-                owed.request = Some(id);
+            };
+            let index = self
+                .owed
+                .iter()
+                .position(|owed| candidate(owed) && owed.required)
+                .or_else(|| self.owed.iter().rposition(candidate));
+            if let Some(index) = index {
+                self.owed[index].request = Some(id);
             }
         }
     }

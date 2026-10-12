@@ -1069,7 +1069,9 @@ can't work.
 
 - **Fuzz: check and build** lists the targets from the fuzz crates'
   `[[bin]]` entries, checks each fuzz crate's lockfile
-  (`cargo fetch --locked`), rustfmt and clippy with warnings denied, and
+  (`cargo fetch --locked`), rustfmt and clippy with warnings denied, runs
+  its tests (for `mstp_core`, the checker's own and a replay of the inputs
+  saved in `crates/bacnet-mstp-core/fuzz/regressions/mstp_core/`), and
   builds every target.
 - **Fuzz: `<target>`**, one job per target from that list, so a new
   `[[bin]]` runs without a workflow change, builds its target and runs it.
@@ -1122,7 +1124,7 @@ script as CI does. It works on macOS (Apple Silicon) as on Linux.
 rustup toolchain install nightly-2026-08-15 --profile minimal --component rustfmt,clippy  # RUST_FUZZ_NIGHTLY
 cargo install cargo-fuzz --version 0.13.2 --locked    # CARGO_FUZZ_VERSION
 bash scripts/ci/fuzz.sh list                          # the targets
-bash scripts/ci/fuzz.sh check                         # lockfiles, rustfmt, clippy
+bash scripts/ci/fuzz.sh check                         # lockfiles, rustfmt, clippy, tests
 bash scripts/ci/fuzz.sh build                         # every target
 bash scripts/ci/fuzz.sh run mstp_stream 60            # one target for 60 seconds
 bash scripts/ci/fuzz.sh run mstp_core 600             # the master core for 10 minutes
@@ -1153,7 +1155,9 @@ the target decoded it. Decide whether the crate or the oracle is wrong; the
 oracle's reasoning is in the target's doc comment (for `mstp_core`, in its
 `src/checker.rs`, and the panic names the step, the time and what the checker
 believed about the token). Turn a bug into a regression test in the fuzzed
-crate's own `tests/`, fix it, and check that the replay passes. `bash
+crate's own `tests/`, fix it, and check that the replay passes. A fault in
+`mstp_core`'s checker instead gets its minimized input saved in the fuzz
+crate's `regressions/mstp_core/`, which the crate's tests replay. `bash
 scripts/ci/fuzz.sh tmin <target> <input>` minimizes an input further.
 
 ## Local checks
