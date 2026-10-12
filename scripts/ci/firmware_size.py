@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Check a firmware image's sizes against its budget (#1626).
+"""Check a firmware image's sizes against its budget (#1626), and the stack
+an emulation run reports against the stack budget (#1660).
 
   firmware_size.py <elf> <budget.toml> <table>
   firmware_size.py --suggest <elf> <table>
+  firmware_size.py --stack <run.log> <stack-budget.toml> <board>...
+  firmware_size.py --stack-suggest <run.log>
 
 <table> names the image's budget, `<target>.<image>`, such as
 `thumbv7m-none-eabi.mstp`. The check prints:
@@ -20,6 +23,16 @@ functions in. A size more than 20% under its budget, or a count under its
 limit, gets a notice, not a failure. --suggest prints a budget table for the image instead, each size
 plus 12%. Used by check-firmware-link.sh; see docs/ci.md, "Firmware link
 test".
+
+--stack reads the output of scripts/emu/emulate-firmware.sh's run, whose
+images each print `PASS <image> on <board> (<target>): ...; stack peak N of
+M octets`, and checks each peak against the stack budget's `[<board>]`
+table, which has a key per image. It exits 1 when a peak is over its
+budget, when an image the table lists printed no PASS line, or when a PASS
+line has no budget; a peak that needs a budget more than 20% under the one
+it has gets a notice. --stack-suggest prints a table for each board
+instead, each peak plus 25%, rounded as the sizes are. Used by
+emulate-firmware.sh; see docs/ci.md, "Emulation (manual)".
 
 Totals go by section flags, not by memory region: flash is every loaded
 section that has contents (SHF_ALLOC, not NOBITS), .data's initial image
@@ -60,6 +73,15 @@ COUNTS = (
 )
 # What --suggest and the over-budget error add to a measured size.
 HEADROOM = 0.12
+# What --stack-suggest and the stack check's error add to a stack peak, more
+# than a size gets: one more buffer on the stack, or a change in what the
+# compiler inlines, can move the peak by a whole frame.
+STACK_HEADROOM = 0.25
+# An emulation image's line when its run passed.
+PASS_LINE = re.compile(
+    r"PASS (?P<image>\S+) on (?P<board>\S+) \((?P<target>[^)]+)\): .*"
+    r"; stack peak (?P<peak>\d+) of (?P<room>\d+) octets"
+)
 # A size this far under its budget gets a notice. Budgets of TOKEN octets or
 # less are allowances for an empty section and get none.
 TIGHTEN = 0.20
@@ -242,9 +264,9 @@ def read_budget(path):
     return tables
 
 
-def suggested(measured):
-    """The measured size plus HEADROOM, rounded up to 16 octets."""
-    return -(-int(measured * (1 + HEADROOM)) // 16) * 16
+def suggested(measured, headroom=HEADROOM):
+    """The measured size plus `headroom`, rounded up to 16 octets."""
+    return -(-int(measured * (1 + headroom)) // 16) * 16
 
 
 def measure(elf):
@@ -376,10 +398,91 @@ def suggest(elf, table):
     return 0
 
 
+def read_peaks(log):
+    """{board: {image: peak}} from the PASS lines in an emulation run's
+    output, in the order they come."""
+    peaks = {}
+    for line in Path(log).read_text(errors="replace").splitlines():
+        match = PASS_LINE.fullmatch(line.strip())
+        if match:
+            peaks.setdefault(match["board"], {})[match["image"]] = int(match["peak"])
+    return peaks
+
+
+def check_stack(log, budget_path, boards):
+    """Check each named board's stack peaks in `log` against its table in
+    `budget_path`: every image the table lists must have passed, with a
+    peak within its budget, and every image that passed must have one."""
+    peaks = read_peaks(log)
+    budgets = read_budget(budget_path)
+    for board in boards:
+        if board not in budgets:
+            raise InputError(f"{budget_path} has no [{board}] table")
+    print(f"Stack peaks against {budget_path}, in octets:")
+    print(f"  {'board':<16}{'image':<8}{'peak':>8}{'budget':>8}")
+    failed, loose = [], []
+    for board in boards:
+        budget, found = budgets[board], peaks.get(board, {})
+        # The table's images, then any image that passed without a budget.
+        for image in dict.fromkeys([*budget, *found]):
+            name, peak, limit = f"{board}.{image}", found.get(image), budget.get(image)
+            mark = ""
+            if peak is None:
+                failed.append((name, "no PASS line for it, so its stack went unchecked"))
+                mark = "  no PASS line"
+            elif limit is None:
+                failed.append((name, f"no budget for its stack peak of {peak} in {budget_path}"))
+                mark = "  no budget"
+            elif peak > limit:
+                failed.append((
+                    name,
+                    f"stack peak {peak} is over its budget of {limit} in {budget_path};"
+                    " if the growth is intended, raise the budget"
+                    f" ({suggested(peak, STACK_HEADROOM)} leaves {STACK_HEADROOM:.0%} headroom)",
+                ))
+                mark = "  over budget"
+            elif suggested(peak, STACK_HEADROOM) < limit * (1 - TIGHTEN):
+                loose.append((name, peak, limit))
+                mark = "  well under budget"
+            print(f"  {board:<16}{image:<8}{'-' if peak is None else peak:>8}"
+                  f"{'-' if limit is None else limit:>8}{mark}")
+    # The table first, then the messages under it, when both go to one log.
+    sys.stdout.flush()
+    for name, peak, limit in loose:
+        print(
+            f"notice: {name}: stack peak {peak} needs a budget of only"
+            f" {suggested(peak, STACK_HEADROOM)}, more than {TIGHTEN:.0%} under its"
+            f" budget of {limit}; consider tightening it.",
+            file=sys.stderr,
+        )
+    for name, problem in failed:
+        print(f"error: {name}: {problem}. See docs/ci.md.", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def suggest_stack(log):
+    """A stack budget table for each board in `log`: each peak plus
+    STACK_HEADROOM, rounded as sizes are."""
+    peaks = read_peaks(log)
+    if not peaks:
+        raise InputError(f"{log} has no PASS line with a stack peak")
+    for number, (board, images) in enumerate(peaks.items()):
+        if number:
+            print()
+        print(f"[{board}]")
+        for image, peak in images.items():
+            print(f"{image} = {suggested(peak, STACK_HEADROOM)}")
+    return 0
+
+
 def main(argv):
     try:
         if len(argv) == 4 and argv[1] == "--suggest":
             return suggest(argv[2], argv[3])
+        if len(argv) >= 5 and argv[1] == "--stack":
+            return check_stack(argv[2], argv[3], argv[4:])
+        if len(argv) == 3 and argv[1] == "--stack-suggest":
+            return suggest_stack(argv[2])
         if len(argv) == 4 and not argv[1].startswith("-"):
             return check(*argv[1:])
     except (OSError, InputError, struct.error, IndexError) as error:
@@ -387,7 +490,9 @@ def main(argv):
         return 1
     print(
         "usage: firmware_size.py <elf> <budget.toml> <table>\n"
-        "       firmware_size.py --suggest <elf> <table>",
+        "       firmware_size.py --suggest <elf> <table>\n"
+        "       firmware_size.py --stack <run.log> <stack-budget.toml> <board>...\n"
+        "       firmware_size.py --stack-suggest <run.log>",
         file=sys.stderr,
     )
     return 2

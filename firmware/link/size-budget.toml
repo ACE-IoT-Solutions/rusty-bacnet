@@ -12,8 +12,8 @@
 #   whatever RAM is left, doesn't count, but its .heap (`_heap_size`, 0
 #   here) does. The apdu image's heap is a 1 KiB static arena in .bss
 #   (`firmware_link::apdu::ARENA`). The stack the code uses at run time
-#   isn't budgeted; the manual emulation check measures it (docs/ci.md,
-#   "Emulation (manual)").
+#   isn't counted here: the manual emulation check measures it and holds it
+#   to firmware/link/stack-budget.toml (docs/ci.md, "Emulation (manual)").
 # - fmt_functions, div64_functions: counts of functions, not octets, 0 for
 #   mstp and bip. A 64-bit division by a runtime value links
 #   compiler-builtins' routine, about 0.9 KB, which the 12% headroom would
@@ -65,6 +65,14 @@
 # image was added (#1635), measured again on 2026-10-12, same toolchain,
 # when the service decoders stopped building their context labels on
 # success (#1645): 100-124 octets less text, the counts unchanged.
+#
+# The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
+# joined the check, on 2026-10-12, same toolchain (#1660). Its images are
+# a little smaller than thumbv7m's:
+#
+#   thumbv7em mstp    17724 / 1060 / 0 /  5544   19808 /  5544
+#   thumbv7em bip      8872 /  976 / 0 /   132   10872 /   132
+#   thumbv7em apdu    37316 / 5188 / 0 /  1056   43528 /  1056
 
 [thumbv7m-none-eabi.mstp]
 text = 20000
@@ -152,6 +160,36 @@ rodata = 6544
 data = 64
 bss = 1184
 flash = 57232
+ram = 1184
+fmt_functions = 15
+div64_functions = 0
+
+[thumbv7em-none-eabihf.mstp]
+text = 19856
+rodata = 1200
+data = 64
+bss = 6224
+flash = 22192
+ram = 6224
+fmt_functions = 0
+div64_functions = 0
+
+[thumbv7em-none-eabihf.bip]
+text = 9936
+rodata = 1104
+data = 64
+bss = 160
+flash = 12176
+ram = 160
+fmt_functions = 0
+div64_functions = 0
+
+[thumbv7em-none-eabihf.apdu]
+text = 41808
+rodata = 5824
+data = 64
+bss = 1184
+flash = 48752
 ram = 1184
 fmt_functions = 15
 div64_functions = 0

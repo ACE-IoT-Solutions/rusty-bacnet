@@ -304,8 +304,11 @@ targets, so a crate that needs one builds only with a backend such as
   add three packages to `Cargo.lock`: `embedded-alloc`,
   `linked_list_allocator` and, for the host test's lock, `spinning_top`.
 - **Targets.** `thumbv7m-none-eabi` (Cortex-M3), `thumbv6m-none-eabi`
-  (Cortex-M0/M0+) and `riscv32imc-unknown-none-elf` (RV32IMC, the ESP32-C3
-  class), in `FIRMWARE_TARGETS` in `ci.yml`. They share one generic memory
+  (Cortex-M0/M0+), `riscv32imc-unknown-none-elf` (RV32IMC, the ESP32-C3
+  class) and `thumbv7em-none-eabihf` (Cortex-M4F and M7F, with the
+  hard-float ABI, since #1660), in `FIRMWARE_TARGETS` in `ci.yml`, each
+  with budget tables of its own. `thumbv7em-none-eabihf`'s images are a
+  little smaller than `thumbv7m-none-eabi`'s. They share one generic memory
   layout, `firmware/link/memory.x`: 256 KiB of flash at `0x08000000` and 64
   KiB of RAM at `0x20000000`. The startup code comes from `cortex-m-rt` and
   `riscv-rt`, bare-metal dependencies only; `firmware/link/build.rs` hands
@@ -416,7 +419,7 @@ targets, so a crate that needs one builds only with a backend such as
   table for each image as it builds now.
 
 ```bash
-rustup target add thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf
+rustup target add thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf thumbv7em-none-eabihf
 bash scripts/ci/check-firmware-link.sh                       # every target
 bash scripts/ci/check-firmware-link.sh thumbv6m-none-eabi    # one
 bash scripts/ci/check-firmware-link.sh --suggest             # budgets as the images build now
@@ -462,11 +465,9 @@ schedule runs it, and no required check depends on it.
   | `netduinoplus2` | `board-netduinoplus2` | STM32F405, Cortex-M4F | `thumbv7em-none-eabihf` | 1 MiB at `0x08000000`, 128 KiB at `0x20000000` | The link test's addresses, and an FPU, which cortex-m-rt turns on for an `eabihf` target |
   | `sifive_e` | `board-sifive-e` | SiFive E31, RV32IMAC | `riscv32imc-unknown-none-elf` | 512 KiB of the XIP flash from `0x20400000`, 16 KiB at `0x80000000` | Like an MCU: code runs in place from flash and data lives in a small RAM, where `virt` loads everything into its RAM. RV32IMC code runs unchanged on an RV32IMAC core |
 
-  `thumbv7em-none-eabihf` isn't one of the link test's targets. Its images
-  build there too, a little smaller than `thumbv7m-none-eabi`'s, within
-  that target's budgets (flash 19,808, 10,872 and 43,628 octets for mstp,
-  bip and apdu); adding it to `FIRMWARE_TARGETS` needs budget tables of
-  its own.
+  Each board's target is one of the link test's too, so its images have
+  size budgets as well; `thumbv7em-none-eabihf` joined them for
+  `netduinoplus2` (#1660).
 - **Exit statuses.** QEMU exits with the image's status. A run fails on
   any status but 0:
 
@@ -504,13 +505,30 @@ schedule runs it, and no required check depends on it.
   | `riscv32imc-unknown-none-elf` (`sifive_e`) | 4,100 (10,840) | 2,020 (16,252) | 2,464 (15,328) |
 
   So the MS/TP image needs about 10.2 KB of RAM on ARMv6-M: 5,544 octets
-  of statics and 4.7 KB of stack. Nothing budgets the stack yet; these
-  numbers are a record, to compare with after a change.
+  of statics and 4.7 KB of stack.
+- **Stack budgets.** `firmware/link/stack-budget.toml` (#1660) holds a
+  budget for each board and image, in a `[<board>]` table with a key per
+  image: the peak in the table above plus 25%, rounded up to 16 octets as
+  the size budgets are. That is more headroom than their 12%, since one more
+  buffer on the stack, or a change in what the compiler inlines, can move a
+  peak by a whole frame. After the runs, the script hands what they printed
+  to `scripts/ci/firmware_size.py --stack`, which reads the peak from each
+  PASS line and prints a table of peaks against budgets. The run fails, and
+  the script exits 1 as it does for a failed image, when a peak is over its
+  budget, when an image the board's table lists printed no PASS line, or
+  when one that passed has no budget. A peak that needs a budget more than
+  20% under the one it has gets a notice to tighten it. As with a size
+  budget, raising one is a reviewed change: say why the stack grew.
+  `emulate-firmware.sh --suggest` prints the file's tables as the images run
+  now, in place of the check; the file's comments record the peaks. CI never
+  reads the file, since CI never runs the emulator.
 - **The runner.** `emulate-firmware.sh` builds the images on the host with
   the pinned toolchain (clippy first, as the link test does), then hands
   them to `scripts/emu/run-qemu.sh`, which runs each on its board with a
   timeout, prints what it reports and a table of results, and exits
-  non-zero if any failed. By default that happens in a Docker image built
+  non-zero if any failed; then the script checks the peaks the images
+  printed against their stack budgets, above. By default the runs happen
+  in a Docker image built
   from `scripts/emu/Dockerfile` on first use and tagged
   `rusty-bacnet-emu:<the first 12 hex digits of the Dockerfile's SHA-256>`,
   so editing the file builds a new image. It is reproducible: Debian 13.7
@@ -529,6 +547,7 @@ bash scripts/emu/emulate-firmware.sh                     # every board, QEMU in 
 bash scripts/emu/emulate-firmware.sh microbit sifive_e   # some boards
 bash scripts/emu/emulate-firmware.sh --native            # the QEMU on PATH (brew install qemu)
 bash scripts/emu/emulate-firmware.sh --timeout 60        # seconds per image (default 30)
+bash scripts/emu/emulate-firmware.sh --suggest           # stack budgets as the images run now
 ```
 
 - **The workflow.** `.github/workflows/emulation.yml` runs the script, with
@@ -644,8 +663,11 @@ The Lint job's "Check the pins" step fails when:
   scripts/ci/check-firmware-link.sh --suggest` prints a budget table for each
   image, each size plus 12% (see [Firmware link test](#firmware-link-test)).
   Copy the tables into the file, and the sizes the check then prints into
-  its comments. Then run the [emulation check](#emulation-manual) and
-  update the stack peaks it records.
+  its comments. Then re-measure `firmware/link/stack-budget.toml` the same
+  way: `bash scripts/emu/emulate-firmware.sh --suggest` runs the
+  [emulation check](#emulation-manual) and prints its tables, each peak
+  plus 25%. Copy them into the file, and the peaks into its comments and
+  that section's table.
 - **MSRV:** `Cargo.toml`'s `rust-version`, `RUST_MSRV` and
   `scripts/ci/check-msrv.sh` together.
 - **Fuzz nightly:** `RUST_FUZZ_NIGHTLY`, normally to a nightly of the

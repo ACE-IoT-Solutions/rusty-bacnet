@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Regression tests for firmware_size.py (#1626), on small ELF files built
 here: no binary fixtures, no dependencies. They check the parsing, totals
-and budget logic, not real images; check-firmware-link.sh covers those."""
+and budget logic, not real images; check-firmware-link.sh covers those.
+The stack check (#1660) is tested on a few lines of an emulation run's
+output."""
 
 import contextlib
 import importlib.util
@@ -110,6 +112,27 @@ flash = 4240   # vector table, text, rodata and data
 ram = 416
 fmt_functions = 0
 div64_functions = 0
+"""
+
+
+# What an emulation run prints, in part: two images that passed and one that
+# didn't, whose line reports a peak too.
+RUN_LOG = """\
+==> mstp on microbit (thumbv6m-none-eabi)
+summary: Summary { frames: 7 }
+PASS mstp on microbit (thumbv6m-none-eabi): summary as expected; stack peak 4664 of 10840 octets
+--> pass
+PASS bip on microbit (thumbv6m-none-eabi): summary as expected; stack peak 2220 of 16252 octets
+FAIL apdu on microbit (thumbv6m-none-eabi): summary differs (expected and actual above); \
+stack peak 2768 of 15328 octets
+--> FAIL: exit status 1
+"""
+
+STACK_BUDGET = """\
+# a comment
+[microbit]
+mstp = 5840
+bip = 2784
 """
 
 
@@ -279,6 +302,69 @@ class FirmwareSizeTests(unittest.TestCase):
             ["[target.image]", "text = 3360", "rodata = 224", "data = 32", "bss = 448",
              "flash = 4752", "ram = 480", "fmt_functions = 0", "div64_functions = 0"],
         )
+
+    def run_stack(self, budget, log=RUN_LOG, boards=("microbit",)):
+        return self.run_main(
+            "--stack", self.write("run.log", log), self.write("stack.toml", budget), *boards)
+
+    def test_stack_within_budget_passes(self):
+        status, out, err = self.run_stack(STACK_BUDGET)
+        self.assertEqual((status, err), (0, ""))
+        rows = out.splitlines()[2:]
+        self.assertEqual([row.split() for row in rows],
+                         [["microbit", "mstp", "4664", "5840"], ["microbit", "bip", "2220", "2784"]])
+
+    def test_stack_over_budget_fails_and_suggests(self):
+        status, out, err = self.run_stack(STACK_BUDGET.replace("mstp = 5840", "mstp = 4663"))
+        self.assertEqual(status, 1)
+        self.assertIn("over budget", out)
+        # 4664 plus 25%, rounded up to 16 octets.
+        self.assertIn(
+            "error: microbit.mstp: stack peak 4664 is over its budget of 4663 in", err)
+        self.assertIn("raise the budget (5840 leaves 25% headroom)", err)
+        # At its budget, a peak passes.
+        status, _, err = self.run_stack(STACK_BUDGET.replace("mstp = 5840", "mstp = 4664"))
+        self.assertEqual((status, err), (0, ""))
+
+    def test_stack_needs_a_pass_line_and_a_budget(self):
+        # apdu failed, so its line, peak and all, isn't a PASS line.
+        status, out, err = self.run_stack(STACK_BUDGET + "apdu = 3472\n")
+        self.assertEqual(status, 1)
+        self.assertIn("no PASS line", out)
+        self.assertIn("error: microbit.apdu: no PASS line for it", err)
+        status, out, err = self.run_stack(STACK_BUDGET.replace("bip = 2784\n", ""))
+        self.assertEqual(status, 1)
+        self.assertIn("error: microbit.bip: no budget for its stack peak of 2220", err)
+        status, _, err = self.run_stack(STACK_BUDGET, boards=("microbit", "sifive_e"))
+        self.assertEqual((status, "has no [sifive_e] table" in err), (1, True))
+        # A board with a table but no run fails too, image by image.
+        status, _, err = self.run_stack(
+            STACK_BUDGET + "[sifive_e]\nmstp = 5136\n", boards=("microbit", "sifive_e"))
+        self.assertEqual(status, 1)
+        self.assertIn("error: sifive_e.mstp: no PASS line", err)
+
+    def test_stack_loose_budget_gets_a_notice_not_a_failure(self):
+        # 2220 needs 2784; 3600 is more than 20% above that.
+        status, out, err = self.run_stack(STACK_BUDGET.replace("bip = 2784", "bip = 3600"))
+        self.assertEqual(status, 0)
+        self.assertIn("well under budget", out)
+        self.assertIn(
+            "notice: microbit.bip: stack peak 2220 needs a budget of only 2784, more than"
+            " 20% under its budget of 3600", err)
+        status, _, err = self.run_stack(STACK_BUDGET.replace("bip = 2784", "bip = 3456"))
+        self.assertEqual((status, err), (0, ""))
+
+    def test_stack_suggest(self):
+        log = RUN_LOG + (
+            "PASS mstp on sifive_e (riscv32imc-unknown-none-elf): summary as expected;"
+            " stack peak 4100 of 10840 octets\n")
+        status, out, _ = self.run_main("--stack-suggest", self.write("run.log", log))
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            out.splitlines(),
+            ["[microbit]", "mstp = 5840", "bip = 2784", "", "[sifive_e]", "mstp = 5136"])
+        status, _, err = self.run_main("--stack-suggest", self.write("empty.log", "FAIL\n"))
+        self.assertEqual((status, "has no PASS line" in err), (1, True))
 
     def test_demangle_and_crate(self):
         self.assertEqual(fs.demangle(CORE), "firmware_link::image::CORE")
