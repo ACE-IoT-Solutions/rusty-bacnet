@@ -6,7 +6,7 @@ GitHub-hosted runners, the [release](#release) included.
 
 | Host | Runs |
 | --- | --- |
-| GitHub (hosted runners) | Linux CI, [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); [native macOS and Windows tests](#native-tests-macos-and-windows), [`native-tests.yml`](../.github/workflows/native-tests.yml); the nightly [flake hunt](#flake-hunt), [`flake-hunt.yml`](../.github/workflows/flake-hunt.yml); website validation and the GitHub Pages deploy, [`docs-pages.yml`](../.github/workflows/docs-pages.yml); [releases](#release), built and tested on each platform and published to crates.io, PyPI and GitHub Releases, [`release.yml`](../.github/workflows/release.yml) |
+| GitHub (hosted runners) | Linux CI, [`.github/workflows/ci.yml`](../.github/workflows/ci.yml); [native macOS and Windows tests](#native-tests-macos-and-windows), [`native-tests.yml`](../.github/workflows/native-tests.yml); the nightly [flake hunt](#flake-hunt), [`flake-hunt.yml`](../.github/workflows/flake-hunt.yml); [fuzzing](#fuzzing) of the MS/TP and B/IP codecs, [`fuzz.yml`](../.github/workflows/fuzz.yml); website validation and the GitHub Pages deploy, [`docs-pages.yml`](../.github/workflows/docs-pages.yml); [releases](#release), built and tested on each platform and published to crates.io, PyPI and GitHub Releases, [`release.yml`](../.github/workflows/release.yml) |
 
 | Platform | Where it is checked |
 | --- | --- |
@@ -22,7 +22,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
-| Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins) | ✓ | ✓ | ✓ | ✓ |
+| Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
 | Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator, and the APDU image with one, checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`); also the [`no_std` crates](#no_std-checks)' tests and doctests with `alloc` and without `std` | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
@@ -474,10 +474,12 @@ image.
   `FIRMWARE_TARGETS` for the [firmware link test](#firmware-link-test), which
   links with the `rust-lld` that rustc ships. The
   MSRV job adds the MSRV toolchain and sets `RUSTUP_TOOLCHAIN` to it.
+  [`fuzz.yml`](#fuzzing) installs only the dated nightly in
+  `RUST_FUZZ_NIGHTLY` and sets `RUSTUP_TOOLCHAIN` to it the same way.
 - **Tools.** [`.github/ci-pins.env`](../.github/ci-pins.env) pins
-  cargo-nextest, cargo-deny, cargo-audit and maturin, each with the SHA-256 of
-  its Linux x86_64 release archive, and the MSRV and the native tests' Python
-  version. [`scripts/ci/install-tools.sh`](../scripts/ci/install-tools.sh)
+  cargo-nextest, cargo-deny, cargo-audit, maturin and cargo-fuzz, each with the
+  SHA-256 of its Linux x86_64 release archive, the MSRV, the fuzz nightly and
+  the native tests' Python version. [`scripts/ci/install-tools.sh`](../scripts/ci/install-tools.sh)
   downloads the tools a job names, checks each archive against its digest
   before unpacking it, and puts the binaries in `~/.cargo/bin`.
   `native-tests.yml` reads the cargo-nextest, maturin and Python versions from
@@ -492,9 +494,11 @@ image.
 The Lint job's "Check the pins" step fails when:
 
 - a line of `.github/ci-pins.env` isn't a comment, blank, or `NAME=value` with
-  a plain value, or a name is set twice;
+  a plain value (letters, digits, dots and hyphens, starting with a letter or
+  digit), or a name is set twice;
 - a `*_SHA256` value isn't 64 lowercase hex digits;
-- `rust-toolchain.toml`'s channel isn't an exact release;
+- `rust-toolchain.toml`'s channel isn't an exact release, or
+  `RUST_FUZZ_NIGHTLY` isn't a dated nightly (`nightly-YYYY-MM-DD`);
 - `RUST_MSRV` differs from `Cargo.toml`'s `rust-version` or from
   `scripts/ci/check-msrv.sh`'s default toolchain.
 
@@ -509,6 +513,10 @@ The Lint job's "Check the pins" step fails when:
   its comments.
 - **MSRV:** `Cargo.toml`'s `rust-version`, `RUST_MSRV` and
   `scripts/ci/check-msrv.sh` together.
+- **Fuzz nightly:** `RUST_FUZZ_NIGHTLY`, normally to a nightly of the
+  release `rust-toolchain.toml` pins (`rustc +nightly-<date> -V` names the
+  version). Run `bash scripts/ci/fuzz.sh check` and `build` with it first:
+  a new nightly can bring new clippy lints.
 - **A tool:** its `*_VERSION` and `*_SHA256` together. The digest is of the
   archive the comment above it names:
   `curl -sSfL <url> | sha256sum`.
@@ -529,7 +537,9 @@ any entry unused for seven days. On 4 October 2026 the caches had reached
 
 - **Saves.** Only runs on `dev` save Rust caches: merges, the weekly run and
   manual runs there. PR runs only restore them, and so does the
-  [flake hunt](#flake-hunt), which never saves.
+  [flake hunt](#flake-hunt), which never saves. The
+  [fuzz corpora](#fuzzing) follow the same rule: only scheduled and manual
+  `fuzz.yml` runs on `dev` save one, `fuzz-corpus-<target>-<run id>-<attempt>`.
 - **Pruning.** After a green run on `dev`, each workflow's **Prune caches**
   job runs [`scripts/ci/prune-caches.sh`](../scripts/ci/prune-caches.sh) with
   `actions: write`. It keeps the two newest rust-cache entries of each family
@@ -822,6 +832,146 @@ one.
 - On a PR the report always runs, as a dry run: it writes the report to the
   job summary, logs what it would create or comment on, and writes nothing.
 
+## Fuzzing
+
+[`.github/workflows/fuzz.yml`](../.github/workflows/fuzz.yml) fuzzes the
+MS/TP and B/IP codecs with [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz),
+which drives libFuzzer (#1610). No check here is required for merging: every
+job's name starts with `Fuzz:`, so none can pass for `CI OK` or `Native OK`,
+and the release's [CI gate](#ci-gate) reads only `ci.yml` and
+`native-tests.yml` runs.
+
+**Targets.** Each codec has a fuzz crate, `crates/<codec>/fuzz`, outside the
+workspace, with its own `Cargo.lock`. Its `src/lib.rs` holds what its targets
+share: for MS/TP, an encoder and a frame check written from the wire layout
+with bit-at-a-time CRCs, without calling the codec, so a fault the codec's
+encode and decode share can't cancel out; for both, a check that encodes
+through every sink. The oracle of each target is in the doc comment at the
+top of its file.
+
+| Target | Input | Oracle |
+| --- | --- | --- |
+| `mstp_decode` | any octets | `decode_frame` accepts exactly the inputs that start with a whole valid standard frame by the harness's own check, with its length and fields; an accepted frame re-encodes to the same octets unless the encoder's stricter checks refuse it |
+| `mstp_encode` | any frame: every type, source and data length up to 639 octets | the outcome worked out from the crate docs. Every sink (a slice through `encode_into` and through `FrameSink`, `Vec`, `BytesMut`, `heapless::Vec`) holds exactly the expected octets, or refuses with the expected error; a refused encode leaves each sink as it was, compared before and after; each result decodes back to the frame |
+| `mstp_stream` | valid frames, raw noise and noise without `0x55`, pushed into 1 to 575 octets of storage in pieces of any size, with empty pushes, drains and resets | each push checked against a shadow of the decoder's buffer: refusals, `NeedMore`, `Invalid`, `Malformed` (error, discard, destination) and `Frame`, the buffered length and the phase; never wedged; at the end, frames in order and each once, and every guaranteed generated frame delivered at its offset |
+| `bip_decode`, `bip6_decode` | any octets | no panic; an accepted datagram re-encodes to itself, unless its result code is one the annex doesn't define |
+| `bip_encode`, `bip6_encode` | any `Bvll` or `Bvll6`, some within 8 octets of the 65,535-octet limit on either side | the octets the Annex J.2 or U.2 layout gives, built field by field; an undefined result code and a message too long for the Length field refused; sinks as for `mstp_encode`; each result decodes back to an equal message |
+
+A generated frame in `mstp_stream` is guaranteed when it fits the storage, no
+reset falls inside it, and no `0x55` lies between it and the anchor: the end
+of the last frame delivered before it, the last reset, or the stream's start.
+From there the decoder starts fresh and nothing can start a candidate before
+the frame. Noise with a `0x55` may hold a header that passes its CRC and runs
+into the next frame, which the decoder then has to deliver or discard whole.
+A frame too long for the storage can hide the frames after it too, since the
+decoder rescans the dropped frame's body as fresh octets (#1609); they aren't
+guaranteed until #1609 skips such a body by count.
+
+**When.** On a PR to `dev` or `main` that changes
+`crates/bacnet-mstp-codec/**` or `crates/bacnet-bip-codec/**` (fuzz crates
+included), the workflow, `.github/ci-pins.env`, `scripts/ci/fuzz.sh` or
+`scripts/ci/install-tools.sh`, each target runs for 60 seconds. Twice a
+week (Sundays and Wednesdays at 03:41 UTC, on `dev`) and by hand, each runs
+for 10 minutes. A newer push to the PR cancels its older run; scheduled and
+manual runs are never cancelled.
+
+**Jobs.** Everything goes through
+[`scripts/ci/fuzz.sh`](../scripts/ci/fuzz.sh), on the nightly in
+`RUST_FUZZ_NIGHTLY` (cargo-fuzz needs nightly-only flags), with cargo-fuzz at
+`CARGO_FUZZ_VERSION` from its release archive, checked against its SHA-256
+(see [Tool pins](#tool-pins)). A prebuilt binary takes about a second to
+fetch, so there is nothing to cache. The script passes cargo-fuzz `--target`
+with the nightly's host triple: cargo-fuzz otherwise builds for the triple it
+was built for itself, which for that archive is musl, where AddressSanitizer
+can't work.
+
+- **Fuzz: check and build** lists the targets from the fuzz crates'
+  `[[bin]]` entries, checks each fuzz crate's lockfile
+  (`cargo fetch --locked`), rustfmt and clippy with warnings denied, and
+  builds every target.
+- **Fuzz: `<target>`**, one job per target from that list, so a new
+  `[[bin]]` runs without a workflow change, builds its target and runs it.
+  cargo-fuzz's defaults apply: optimized, with debug assertions, overflow
+  checks and AddressSanitizer. An input that runs for 10 seconds counts as a
+  hang. On a scheduled or manual run on `dev` it then minimizes the corpus
+  (`fuzz.sh cmin`) and saves it.
+- **Fuzz: advisories**, on scheduled and manual runs only, checks each fuzz
+  crate's lockfile against the RustSec advisories with Cargo Deny (at
+  `CARGO_DENY_VERSION`). It is a job of its own, so an advisory doesn't hold
+  up the fuzzing.
+
+**Corpora.** Each job restores the newest corpus its target has, saved as
+`fuzz-corpus-<target>-<run id>-<attempt>` by a scheduled or manual run on
+`dev` (failed runs included: the failing input isn't in the corpus), and
+minimized before it is saved, so it doesn't grow from run to run. A PR run
+replays it before fuzzing, so an input that once found new code paths runs
+again on every change. GitHub evicts an entry that goes unused for seven
+days; two scheduled runs a week keep the newest one in use even when one
+starts late. The [prune](#caches) keeps such entries on `dev`, but nothing
+restores an older one, so that eviction removes them. No corpus is checked
+in.
+
+**Lockfiles.** Each fuzz crate's `Cargo.lock` is committed, and every build
+checks it first, so the fuzz builds use the dependencies it names. It also
+records what the root `Cargo.toml` sets for the codec: its version and the
+workspace's requirements for its dependencies. A version bump or a moved
+requirement leaves the lockfile stale, so `ci.yml`'s required Lint job checks
+both lockfiles too (`bash scripts/ci/fuzz.sh lock --check`, any toolchain).
+`bash scripts/ci/fuzz.sh lock` brings them up to date: cargo re-resolves only
+the entries the manifests no longer allow and keeps every other dependency
+where it was. Run it with the release's version bump (step 1 of
+[the release](#trigger-and-dry-run)) and in any PR that changes a workspace
+dependency of a codec, and commit the lockfiles. When such a change moves a
+dependency the fuzz crate also names itself (`bytes`, `heapless`) to a new
+major version, update the fuzz crate's `Cargo.toml` to match, or the sinks
+won't build.
+
+Cargo Deny's gate doesn't cover the fuzz crates: they are unpublished CI
+tools whose binaries never ship. **Fuzz: advisories** checks their
+advisories; their bans and sources pass too
+(`cargo deny --manifest-path crates/<codec>/fuzz/Cargo.toml check`), and
+their licenses fail only because libFuzzer's `NCSA` (in `libfuzzer-sys`)
+isn't on the allow list and the fuzz crates name no license.
+
+**Running locally.** Install the pinned nightly and cargo-fuzz, then use the
+script as CI does. It works on macOS (Apple Silicon) as on Linux.
+
+```bash
+rustup toolchain install nightly-2026-08-15 --profile minimal --component rustfmt,clippy  # RUST_FUZZ_NIGHTLY
+cargo install cargo-fuzz --version 0.13.2 --locked    # CARGO_FUZZ_VERSION
+bash scripts/ci/fuzz.sh list                          # the targets
+bash scripts/ci/fuzz.sh check                         # lockfiles, rustfmt, clippy
+bash scripts/ci/fuzz.sh build                         # every target
+bash scripts/ci/fuzz.sh run mstp_stream 60            # one target for 60 seconds
+FUZZ_WORK=/tmp/fuzz bash scripts/ci/fuzz.sh run bip_encode 600 -max_len=16384
+```
+
+Arguments after the seconds go to libFuzzer. Without `FUZZ_WORK`, the corpus
+and anything a run finds stay in the fuzz crate's `corpus/<target>` and
+`artifacts/<target>`, which git ignores.
+
+**Triage.** When a target fails, its job uploads the artifact
+`fuzz-<target>` for 30 days (a re-run of the job replaces it): what libFuzzer saved (`crash-*` or `timeout-*`,
+which the job minimizes into `minimized-from-*`, or `oom-*` or `leak-*`,
+which it doesn't) and the run's log, whose panic message names the check that
+failed. To reproduce it:
+
+```bash
+gh run download <run id> -R jscott3201/rusty-bacnet -n fuzz-mstp_stream -D /tmp/fuzz-mstp_stream
+bash scripts/ci/fuzz.sh build mstp_stream
+cd crates/bacnet-mstp-codec
+host=$(rustc +nightly-2026-08-15 -vV | sed -n 's/^host: //p')    # as fuzz.sh does
+cargo +nightly-2026-08-15 fuzz fmt --target "$host" mstp_stream /tmp/fuzz-mstp_stream/minimized-from-<hash>  # the input as a Rust value
+cargo +nightly-2026-08-15 fuzz run --target "$host" mstp_stream /tmp/fuzz-mstp_stream/minimized-from-<hash>  # replay it
+```
+
+`fuzz fmt` prints a structure-aware target's input (frames, noise, pushes) as
+the target decoded it. Decide whether the codec or the oracle is wrong; the
+oracle's reasoning is in the target's doc comment. Turn a codec bug into a
+regression test in the codec's own `tests/`, fix it, and check that the replay
+passes. `bash scripts/ci/fuzz.sh tmin <target> <input>` minimizes an input
+further.
+
 ## Local checks
 
 Use the Rust release that `rust-toolchain.toml` pins, which rustup selects in
@@ -926,6 +1076,7 @@ python3 scripts/ci/test-firmware-size.py
 python3 -m unittest discover -s scripts/release
 python3 -m unittest discover -s scripts -p 'test_changelog.py'
 python3 scripts/changelog.py check
+bash scripts/ci/fuzz.sh lock --check        # the fuzz crates' lockfiles; see "Fuzzing"
 actionlint .github/workflows/*.yml          # after editing a workflow
 ```
 
@@ -1009,11 +1160,13 @@ To release:
    environment `release`, then remove the one that names `ci.yml`. The
    [PyPI trusted publishing](#secrets-and-environment) job stops a release
    before crates.io if this isn't done.
-1. Set the workspace version, assemble the version's `CHANGELOG.md` section
-   from the fragments, add release highlights by hand under the new heading if
-   the release has any, and merge:
+1. Set the workspace version, update the fuzz crates' lockfiles for it (see
+   [Fuzzing](#fuzzing)), assemble the version's `CHANGELOG.md` section from
+   the fragments, add release highlights by hand under the new heading if the
+   release has any, and merge:
 
    ```bash
+   bash scripts/ci/fuzz.sh lock                # the fuzz crates' Cargo.lock files
    python3 scripts/changelog.py preview        # what the section will hold
    python3 scripts/changelog.py assemble --version 0.12.0 [--date 2026-10-02]
    ```
