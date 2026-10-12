@@ -152,8 +152,14 @@ impl BACnetServer {
                         let interface: std::net::Ipv6Addr = iface_str.parse().map_err(|e| {
                             PyRuntimeError::new_err(format!("invalid IPv6 interface: {e}"))
                         })?;
+                        // A B/IPv6 device's VMAC is its device instance
+                        // (Clauses U.1.3, H.7.2), so peers can name it by
+                        // instance; startup fails if another node on the
+                        // link already uses it.
                         Some(AnyTransport::Bip6(Bip6Transport::new(
-                            interface, port, None,
+                            interface,
+                            port,
+                            Some(device_instance),
                         )))
                     }
                     // SC can only be constructed after its dial; defer that I/O.
@@ -316,7 +322,9 @@ impl BACnetServer {
     /// Get the retained server instance's last bound address as a string.
     /// This remains a snapshot during interrupted shutdown; successful stop clears it.
     ///
-    /// For BIP: `ip:port`, for IPv6: `[ip]:port`, for SC: hex-encoded VMAC.
+    /// For BIP: `ip:port`; for IPv6: the VMAC peers address it by, as
+    /// `bip6:0x0004D2` (its device instance, Clause H.7.2); for MS/TP: the
+    /// station; for SC: the hex-encoded VMAC.
     fn local_address<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let transport_type = self.transport_type.clone();
@@ -339,17 +347,13 @@ impl BACnetServer {
                     Ok(format!("{ip}:{port}"))
                 }
                 "ipv6" => {
-                    if mac.len() < 18 {
-                        return Err(PyRuntimeError::new_err(format!(
-                            "unexpected IPv6 MAC length: {}",
+                    let vmac = <[u8; 3]>::try_from(mac).map_err(|_| {
+                        PyRuntimeError::new_err(format!(
+                            "unexpected B/IPv6 MAC length: {}",
                             mac.len()
-                        )));
-                    }
-                    let mut ip_bytes = [0u8; 16];
-                    ip_bytes.copy_from_slice(&mac[..16]);
-                    let ip = std::net::Ipv6Addr::from(ip_bytes);
-                    let port = u16::from_be_bytes([mac[16], mac[17]]);
-                    Ok(format!("[{ip}]:{port}"))
+                        ))
+                    })?;
+                    Ok(crate::types::format_bip6_vmac(vmac))
                 }
                 "mstp" => {
                     if mac.len() != 1 {

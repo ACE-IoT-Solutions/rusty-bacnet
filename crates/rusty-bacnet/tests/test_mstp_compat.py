@@ -312,7 +312,8 @@ class MstpRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     )
         for address in (
             "192.168.1.100:47808",
-            "[::1]:47808",
+            "bip6:1234",
+            "bip6:0x40ABCD",
             "01:02:03:04:05:06",
         ):
             with self.subTest(address=address), self.assertRaisesRegex(

@@ -44,12 +44,12 @@ use bacnet_types::primitives::BACnetTimeStamp;
 use crate::errors::to_py_err;
 use crate::types::{
     audit_log_query_ack_to_py, audit_log_query_request_from_py, audit_notification_request_from_py,
-    decode_read_ack, parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
-    PyAcknowledgmentFilter, PyBACnetTimeStamp, PyCovNotificationIterator, PyDeviceWrite,
-    PyDiscoveredDevice, PyEnableDisable, PyEnrollmentSummaryEventStateFilter, PyEventState,
-    PyEventType, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier, PyObjectType,
-    PyPropertyIdentifier, PyPropertyValue, PyPropertyWrite, PyReadAccessSpec, PyReinitializedState,
-    PyWriteAccessSpec,
+    decode_read_ack, format_bip6_vmac, parse_address, parse_bip6_address, py_to_rpm_specs,
+    py_to_wpm_specs, rpm_ack_to_py, PyAcknowledgmentFilter, PyBACnetTimeStamp,
+    PyCovNotificationIterator, PyDeviceWrite, PyDiscoveredDevice, PyEnableDisable,
+    PyEnrollmentSummaryEventStateFilter, PyEventState, PyEventType, PyLifeSafetyOperation,
+    PyMessagePriority, PyObjectIdentifier, PyObjectType, PyPropertyIdentifier, PyPropertyValue,
+    PyPropertyWrite, PyReadAccessSpec, PyReinitializedState, PyWriteAccessSpec,
 };
 
 fn validate_write_priority(priority: Option<u8>) -> PyResult<()> {
@@ -96,7 +96,8 @@ fn device_range(
 ///
 /// Supports multiple transports via the `transport` parameter:
 /// - `"bip"` (default): BACnet/IP over UDP
-/// - `"ipv6"`: BACnet/IPv6 over UDP multicast
+/// - `"ipv6"`: BACnet/IPv6 over UDP multicast. Peers are named by VMAC
+///   (`"bip6:1234"`); `resolve_vmac` finds the VMAC at an `"[ip]:port"`.
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
