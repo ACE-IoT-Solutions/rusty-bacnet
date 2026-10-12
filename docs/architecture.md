@@ -285,9 +285,11 @@ The Tokio `BipTransport` runs on it (#1622):
   helpers and registration; `Retry::Backoff`; up to 16 broadcasts held until
   the first registration attempt after a start resolves; in foreign mode,
   Forwarded-NPDUs taken only from the configured BBMD by unicast; and the
-  default datagram budget, NPDUs up to 1497 octets (#1622). A router sends
-  an Unconfirmed-Request for a group DADR on a B/IP port as that port's local
-  broadcast, since the link refuses a unicast to it (#1677).
+  default datagram budget, NPDUs up to 1497 octets (#1622). The link refuses
+  a unicast to a group address, so `NetworkLayer::send_apdu` and a router
+  send an Unconfirmed-Request for one as the link's local broadcast, and a
+  router drops anything else routed to one, network messages included
+  (#1677).
 
 ### Testing MS/TP without hardware
 

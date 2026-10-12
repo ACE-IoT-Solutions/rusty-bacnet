@@ -195,7 +195,8 @@ impl BipTransport {
         }
     }
 
-    /// Send Delete-Foreign-Device-Table-Entry and return the result code.
+    /// Send Delete-Foreign-Device-Table-Entry for `ip`:`port` to `target`, and
+    /// return the BVLC-Result code it answers with.
     pub async fn delete_fdt_entry(
         &self,
         target: &[u8],

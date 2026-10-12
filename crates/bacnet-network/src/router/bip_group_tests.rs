@@ -167,11 +167,14 @@ fn routed(dadr: [u8; 6], apdu: &[u8]) -> Vec<u8> {
     npdu
 }
 
+/// Nothing but an Unconfirmed-Request for a group reaches the B/IP port,
+/// and that only as a broadcast, never as a unicast to the group.
+///
 /// Ported from ACE IoT's bacnet-router-adapters
 /// (ACE-IoT-Solutions/rusty-bacnet#5), thanks @acedrew, where it is
 /// `mstp_six_byte_bip_group_destinations_never_reach_the_sink`.
 #[tokio::test(start_paused = true)]
-async fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
+async fn mstp_six_byte_bip_group_destinations_reach_the_bip_port_only_as_broadcasts() {
     let (router_serial, peer_serial) = LoopbackSerial::pair();
     let sent = Arc::new(Mutex::new(Vec::new()));
     let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::new(192, 0, 2, 255));

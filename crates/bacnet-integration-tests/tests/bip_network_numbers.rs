@@ -192,17 +192,19 @@ async fn bip_number_foreign_registration_loss_and_retry_wire() {
     expect_number(&bbmd, local, 9, 77).await;
     send(&bbmd, local, &frame(0, &[0, 0x30])).await; // registration now refused
     send(&bbmd, local, &frame(0, &[0, 0x60])).await; // distribution refused after loss
-    forward(&bbmd, local, QUERY).await;
-    // DBTN is still attempted after both registration and distribution NAKs.
-    expect_number(&bbmd, local, 9, 77).await;
-    // The completed exchanges gave the spawned registration timer a turn.
-    // Advance only the local test runtime; resume before awaiting real UDP.
+                                                     // The distribution NAK brings the next registration forward (#1622). Let
+                                                     // it fall due and read it here, so it can't arrive among the replies
+                                                     // below, however slow the runner. Advance only the local test runtime;
+                                                     // resume before awaiting real UDP.
     tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(31)).await;
     tokio::time::resume();
     let (retry, source) = receive(&bbmd).await;
     assert_eq!(source, local);
     assert_eq!(retry, frame(5, &60u16.to_be_bytes()));
+    forward(&bbmd, local, QUERY).await;
+    // DBTN is still attempted after both NAKs, with the retry unanswered.
+    expect_number(&bbmd, local, 9, 77).await;
     send(&bbmd, local, &frame(0, &[0, 0])).await;
     forward(&bbmd, local, &number(78, 1)).await;
     forward(&bbmd, local, QUERY).await;

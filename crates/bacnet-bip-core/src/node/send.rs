@@ -29,7 +29,11 @@ pub enum Cast {
 }
 
 /// Why a send was refused. Nothing went out.
+///
+/// It is `#[non_exhaustive]`, so a later reason isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SendRefusal {
     /// The NPDU is longer than [`Link::max_npdu`] allows.
     TooLong {

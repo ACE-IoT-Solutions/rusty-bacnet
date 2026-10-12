@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use bacnet_bip_codec::{BvlcFunction, Bvll, BvllError};
 use bacnet_bip_core::node::{
-    Action, Admission, ConfigError, ExchangeId, Inbound, Link, LocalFailure, Mode, Node, Policy,
-    RegistrationEvent, Response, SendRefusal,
+    Action, Admission, ConfigError, ExchangeId, Inbound, Link, LocalFailure, Mode, Node,
+    NodeCounters, Policy, RegistrationEvent, Response, SendRefusal,
 };
 use bacnet_bip_core::{Duration as CoreDuration, Instant as CoreInstant};
 use bacnet_types::error::Error;
@@ -164,8 +164,15 @@ pub(super) struct NodeState {
     attempt_started: Option<CoreInstant>,
     /// Broadcasts held for the first registration.
     held: VecDeque<Bytes>,
-    /// Held broadcasts released, for the driver to send.
+    /// Broadcasts for the driver to send, in order: those held, once
+    /// released, and any made while those still wait.
     release: Vec<Bytes>,
+    /// The driver is sending broadcasts from `release`. A broadcast made
+    /// meanwhile queues behind them, so none overtakes another.
+    releasing: bool,
+    /// A refusal was logged at warn, and the next ones go at debug until a
+    /// success or the lease's end.
+    refusal_warned: bool,
     /// Set by stop: no request starts, and nothing more is counted.
     pub(super) stopped: bool,
 }
@@ -187,7 +194,7 @@ impl NodeState {
                 }
                 Action::ReleaseHeld => self.release.extend(self.held.drain(..)),
                 Action::DiscardHeld => self.held.clear(),
-                Action::Registration(event) => log_registration(event, self.node.link()),
+                Action::Registration(event) => self.log_registration(event),
             }
         }
         let counters = self.node.take_counters();
@@ -202,30 +209,42 @@ impl NodeState {
             let _ = waiter.tx.send(outcome);
         }
     }
-}
 
-/// Log a change in a foreign device's registration: one line each when it
-/// becomes registered, is refused, or lapses, and the routine renewals and
-/// losses at debug.
-fn log_registration(event: RegistrationEvent, link: &Link) {
-    let Mode::Foreign(foreign) = link.mode else {
-        return;
-    };
-    let bbmd = foreign.bbmd;
-    match event {
-        RegistrationEvent::Registered { since, until } => {
-            let lease = Duration::from_nanos(until.saturating_duration_since(since).as_nanos());
-            info!(%bbmd, ?lease, "B/IP foreign device registered with its BBMD");
-        }
-        RegistrationEvent::Refused { code } => {
-            warn!(%bbmd, %code, "B/IP BBMD refused the foreign-device registration");
-        }
-        RegistrationEvent::Lapsed => {
-            warn!(%bbmd, "B/IP foreign-device registration lapsed, with no renewal answered");
-        }
-        RegistrationEvent::Renewed { .. } => debug!(%bbmd, "Foreign registration renewed"),
-        RegistrationEvent::Unanswered => {
-            debug!("Foreign registration attempt did not return a matched result");
+    /// Log a change in a foreign device's registration: a line when it
+    /// becomes registered, when the BBMD starts refusing it, and when the
+    /// lease lapses; renewals, losses and further refusals in a row at
+    /// debug. A success or a lapse ends a run of refusals, so the next
+    /// refusal warns again: a BBMD that keeps refusing warns once, not at
+    /// every attempt.
+    fn log_registration(&mut self, event: RegistrationEvent) {
+        let Mode::Foreign(foreign) = self.node.link().mode else {
+            return;
+        };
+        let bbmd = foreign.bbmd;
+        match event {
+            RegistrationEvent::Registered { since, until } => {
+                self.refusal_warned = false;
+                let lease = Duration::from_nanos(until.saturating_duration_since(since).as_nanos());
+                info!(%bbmd, ?lease, "B/IP foreign device registered with its BBMD");
+            }
+            RegistrationEvent::Refused { code } if self.refusal_warned => {
+                debug!(%bbmd, %code, "B/IP BBMD refused the foreign-device registration");
+            }
+            RegistrationEvent::Refused { code } => {
+                self.refusal_warned = true;
+                warn!(%bbmd, %code, "B/IP BBMD refused the foreign-device registration");
+            }
+            RegistrationEvent::Lapsed => {
+                self.refusal_warned = false;
+                warn!(%bbmd, "B/IP foreign-device registration lapsed, with no renewal answered");
+            }
+            RegistrationEvent::Renewed { .. } => {
+                self.refusal_warned = false;
+                debug!(%bbmd, "Foreign registration renewed");
+            }
+            RegistrationEvent::Unanswered => {
+                debug!("Foreign registration attempt did not return a matched result");
+            }
         }
     }
 }
@@ -279,6 +298,8 @@ impl NodeHandle {
                 attempt_started: None,
                 held: VecDeque::new(),
                 release: Vec::new(),
+                releasing: false,
+                refusal_warned: false,
                 stopped: false,
             }),
             wake: Notify::new(),
@@ -356,18 +377,25 @@ impl NodeHandle {
         });
     }
 
-    /// Whether a foreign device's broadcast of `npdu` goes now. One held
-    /// is kept until the node releases or drops it.
-    pub(super) fn admit_broadcast(&self, npdu: &[u8]) -> Result<Admission, Error> {
+    /// Whether a foreign device's broadcast of `npdu` goes now, from the
+    /// caller. Otherwise the node keeps it: held until it releases or drops
+    /// it, or queued behind released broadcasts the driver hasn't sent yet,
+    /// so that broadcasts go in the order they were made.
+    pub(super) fn admit_broadcast(&self, npdu: &[u8]) -> Result<bool, Error> {
         self.with(|state, now| {
             let admission = state
                 .node
                 .admit_broadcast(now)
                 .map_err(|refusal| self.refuse_send(refusal))?;
-            if admission == Admission::Hold {
-                state.held.push_back(Bytes::copy_from_slice(npdu));
+            let copy = || Bytes::copy_from_slice(npdu);
+            match admission {
+                Admission::Hold => state.held.push_back(copy()),
+                Admission::Send if state.releasing || !state.release.is_empty() => {
+                    state.release.push(copy());
+                }
+                Admission::Send => return Ok(true),
             }
-            Ok(admission)
+            Ok(false)
         })
     }
 
@@ -402,14 +430,29 @@ impl NodeHandle {
     }
 
     /// Stop: requests in flight fail as their channel closes, none starts,
-    /// and nothing more is sent or counted.
+    /// and nothing more is sent or counted. Broadcasts still held count as
+    /// discarded, so every held broadcast counts as released or discarded.
     pub(super) fn stop(&self) {
         let mut state = self.lock();
+        let discarded = u32::try_from(state.held.len()).unwrap_or(u32::MAX);
+        if discarded > 0 && !state.stopped {
+            self.record.absorb(&NodeCounters {
+                broadcasts_discarded: discarded,
+                ..NodeCounters::default()
+            });
+        }
         state.stopped = true;
         state.waiters.clear();
         state.register = None;
         state.held.clear();
         state.release.clear();
+        state.releasing = false;
+    }
+
+    /// The sends this node's link refused, as counted.
+    #[cfg(test)]
+    pub(super) fn send_counters(&self) -> super::SendCounters {
+        self.refusals.snapshot()
     }
 
     /// Send what the node asks for, and wake it at its deadlines, until the
@@ -418,16 +461,14 @@ impl NodeHandle {
         // What the node asked for at its start.
         self.with(|_, _| ());
         loop {
-            let (attempt, release) = {
-                let mut state = self.lock();
-                (state.register.take(), std::mem::take(&mut state.release))
-            };
+            // A registration attempt goes before the broadcasts released
+            // with it, so the BBMD sees the device register before it is
+            // asked to distribute for it.
+            let attempt = self.lock().register.take();
             if let Some(attempt) = attempt {
                 self.send_attempt(attempt).await;
             }
-            for npdu in release {
-                self.send_released(&npdu).await;
-            }
+            self.send_releases().await;
             let deadline = self.lock().node.next_deadline();
             let timer = async {
                 match deadline {
@@ -470,7 +511,27 @@ impl NodeHandle {
         }
     }
 
-    /// Send a broadcast the node held for the first registration.
+    /// Send the broadcasts in `release`, in order, with those made while
+    /// they go. Under the lock, `releasing` is cleared only once nothing is
+    /// left, so a broadcast made after that goes from its caller, after
+    /// these.
+    async fn send_releases(&self) {
+        loop {
+            let batch = {
+                let mut state = self.lock();
+                state.releasing = !state.release.is_empty();
+                std::mem::take(&mut state.release)
+            };
+            if batch.is_empty() {
+                return;
+            }
+            for npdu in batch {
+                self.send_released(&npdu).await;
+            }
+        }
+    }
+
+    /// Send a broadcast the node kept.
     async fn send_released(&self, npdu: &[u8]) {
         let Ok((outgoing, _)) = self.link.broadcast(npdu) else {
             return;

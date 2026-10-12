@@ -3,7 +3,7 @@
 //! broadcast asks the node itself.
 
 use bacnet_bip_codec as codec;
-use bacnet_bip_core::node::{Admission, Mode};
+use bacnet_bip_core::node::Mode;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 
@@ -52,10 +52,9 @@ impl NodeHandle {
 
         // A foreign device asks its node first, which holds the broadcast
         // while the first registration attempt after a start is outstanding,
-        // and refuses it when that hold is full (#1622).
-        if matches!(self.link().mode, Mode::Foreign(_))
-            && self.admit_broadcast(npdu)? == Admission::Hold
-        {
+        // refuses it when that hold is full (#1622), and queues it behind
+        // released broadcasts its driver hasn't sent yet.
+        if matches!(self.link().mode, Mode::Foreign(_)) && !self.admit_broadcast(npdu)? {
             return Ok(());
         }
 

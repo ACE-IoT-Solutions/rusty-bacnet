@@ -330,6 +330,9 @@ impl BipSocket {
     pub(super) async fn send_to(&self, buf: &[u8], target: SocketAddrV4) -> io::Result<usize> {
         #[cfg(test)]
         if let Some(sink) = &self.sink {
+            if sink.yields() {
+                tokio::task::yield_now().await;
+            }
             return sink.send(buf, target);
         }
         self.socket.send_to(buf, target).await

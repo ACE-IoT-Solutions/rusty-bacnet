@@ -15,7 +15,8 @@ use bacnet_bip_core::node::SendRefusal;
 pub struct SendCounters {
     /// NPDUs longer than a B/IP data link carries, 1497 octets (Table 6-1):
     /// a unicast or a broadcast, the application's own or one a router
-    /// forwards onto this port.
+    /// forwards onto this port. A BBMD passing on traffic it received
+    /// forwards it as it came, unchecked and uncounted here.
     pub npdu_too_long: u64,
 }
 

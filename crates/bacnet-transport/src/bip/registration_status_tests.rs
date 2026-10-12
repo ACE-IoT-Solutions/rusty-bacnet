@@ -1,6 +1,6 @@
 //! What a foreign device reports about its registration (#1622): the lease
-//! in its snapshot, and one log line each when it becomes registered, is
-//! refused, or lapses.
+//! in its snapshot, and one log line each when it becomes registered, starts
+//! being refused, or lapses.
 
 use std::time::Duration;
 
@@ -12,6 +12,7 @@ use crate::log_capture::LogCapture;
 const REGISTERED: &str = "B/IP foreign device registered";
 const REFUSED: &str = "B/IP BBMD refused";
 const LAPSED: &str = "B/IP foreign-device registration lapsed";
+const RENEWED: &str = "Foreign registration renewed";
 
 /// Registered at once, refused at 10 s, then every attempt lost until the
 /// lease, proven from 0 s for the 60 s time-to-live, lapses; a success at
@@ -59,4 +60,31 @@ async fn each_transition_is_logged_once_and_the_lease_follows_it() {
     assert_eq!(logs.levels(LAPSED), [Level::WARN]);
     // Nothing else warns: the losses and renewals are routine.
     assert_eq!(logs.warnings().len(), 2, "{:?}", logs.warnings());
+}
+
+/// A BBMD that keeps refusing draws one warning: the refusals after it in a
+/// row log at debug. A success ends the run, so a refusal after it warns
+/// again. A renewal logs at debug.
+#[tokio::test(start_paused = true)]
+async fn a_run_of_refusals_warns_once() {
+    let (logs, _guard) = LogCapture::start();
+    let device = Device::new(Duration::from_secs(10)).await;
+    device.at(13).await;
+    device.bbmd_says(0).await;
+    for at in [10_013, 20_013, 30_013] {
+        device.at(at).await;
+        device.bbmd_says(0x30).await;
+    }
+    // Renewed while the first lease is live.
+    device.at(40_013).await;
+    device.bbmd_says(0).await;
+    device.at(50_013).await;
+    device.bbmd_says(0x30).await;
+
+    let (warn, debug) = (Level::WARN, Level::DEBUG);
+    assert_eq!(logs.levels(REFUSED), [warn, debug, debug, warn]);
+    assert_eq!(logs.levels(RENEWED), [debug]);
+    assert_eq!(logs.levels(REGISTERED), [Level::INFO]);
+    let registration = device.ctx.node.snapshot().foreign_registration;
+    assert_eq!((registration.accepted, registration.refused), (2, 4));
 }

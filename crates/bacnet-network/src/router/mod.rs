@@ -430,9 +430,12 @@ impl BACnetRouter {
     /// asked nothing. The port's rule is
     /// [`TransportPort::group_destinations`],
     /// so a custom transport that keeps the default recognizes none. The
-    /// router delivers it nowhere and answers it with no reject; network
-    /// messages are not affected. An Unconfirmed-Request for such a DADR
-    /// isn't counted: it goes out on that port as a local broadcast (#1677).
+    /// router delivers it nowhere and answers it with no reject. A network
+    /// message routed to such a DADR is dropped and counted too: it must not
+    /// reach every router on that network as a broadcast. An
+    /// Unconfirmed-Request for such a DADR isn't counted: it goes out on that
+    /// port as a local broadcast, and reaches this router's application
+    /// where a DLEN 0 broadcast would (#1677).
     pub fn group_dadr_drops(&self) -> u64 {
         self.group_dadr_drops.load(Ordering::Relaxed)
     }

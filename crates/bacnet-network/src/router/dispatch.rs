@@ -8,7 +8,8 @@
 //! queue, or to both. An APDU whose DADR is a group on the port it would be
 //! delivered on goes out there as a local broadcast if it is an
 //! Unconfirmed-Request (#1677), and is dropped and counted otherwise
-//! (#1504). Traffic the router cannot route draws a
+//! (#1504); so is a network message routed to one. Traffic the router
+//! cannot route draws a
 //! Reject-Message-To-Network (see [`super::reject`]), and a DNET with no route
 //! also triggers one bounded Who-Is-Router-To-Network solicitation.
 
@@ -36,10 +37,10 @@ use crate::layer::{
 use crate::layer::{AdmissionSender, ReceivedApdu};
 use crate::router_table::{ReachabilityStatus, RouteEntry, RouterTable};
 
-/// What becomes of an APDU for a DADR that is a group on its delivery port
-/// ([`PortDispatch::group_dadr`]).
+/// What becomes of an NPDU for a DADR that is a group on its delivery port
+/// ([`group_dadr`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GroupDadr {
+pub(super) enum GroupDadr {
     /// The DADR isn't a group there: deliver it as addressed.
     No,
     /// An Unconfirmed-Request: send it as that port's local broadcast.
@@ -142,6 +143,7 @@ impl PortDispatch {
                 &ctx,
                 &self.control,
                 &self.local_control,
+                (&self.port_groups, &self.group_dadr_drops),
             )
             .await;
             return;
@@ -206,14 +208,18 @@ impl PortDispatch {
             }
         }
         let mut npdu = npdu;
-        match self.group_dadr(&route, &npdu) {
+        match group_dadr(&self.port_groups, &self.group_dadr_drops, &route, &npdu) {
             GroupDadr::No => {}
             GroupDadr::Refused => return,
             // With no DADR, a directly connected port's delivery is its
-            // local broadcast.
+            // local broadcast, which reaches this router's application where
+            // a DLEN 0 broadcast would: on the network it arrived from.
             GroupDadr::Broadcast => {
                 if let Some(destination) = npdu.destination.as_mut() {
                     destination.mac_address = MacAddr::new();
+                }
+                if route.port_index == self.port_idx {
+                    self.deliver(received.clone(), npdu.clone(), true);
                 }
             }
         }
@@ -228,51 +234,58 @@ impl PortDispatch {
         );
     }
 
-    /// What becomes of an APDU that this router would deliver, on the
-    /// directly connected port `route` names, to a DADR that is a group
-    /// there (`TransportPort::group_destinations`), such as a B/IP subnet
-    /// broadcast or multicast address.
-    ///
-    /// Only an Unconfirmed-Request may reach a group, and it goes out as
-    /// that port's local broadcast, which is what its sender meant (#1677):
-    /// B/IP refuses a unicast to a group address, as its receivers would
-    /// drop one. Anything else is dropped (#1504): as one unicast it would
-    /// reach every node in the group without the broadcast forms #1491
-    /// filters. The type is the APDU's first octet's high nibble, as there.
-    /// A dropped one is counted and draws no reject; a network message, or a
-    /// DLEN 0 broadcast, is not affected.
-    fn group_dadr(&self, route: &RouteEntry, npdu: &Npdu) -> GroupDadr {
-        let Some(dadr) = npdu.destination.as_ref().map(|dest| &dest.mac_address[..]) else {
-            return GroupDadr::No;
-        };
-        let group = |groups: &GroupDestinations| groups.contains(dadr);
-        if npdu.is_network_message
-            || !route.directly_connected
-            || dadr.is_empty()
-            || !self.port_groups.get(route.port_index).is_some_and(group)
-        {
-            return GroupDadr::No;
-        }
-        let unconfirmed = npdu
-            .payload
-            .first()
-            .is_some_and(|&first| PduType::from_raw(first >> 4) == PduType::UNCONFIRMED_REQUEST);
-        if unconfirmed {
-            return GroupDadr::Broadcast;
-        }
-        count_drop(&self.group_dadr_drops);
-        warn!(
-            port = route.port_index,
-            "Dropping a routed NPDU for a group DADR whose APDU isn't an Unconfirmed-Request"
-        );
-        GroupDadr::Refused
-    }
-
     /// Queue `npdu`'s APDU for the local application.
     fn deliver(&self, received: ReceivedNpdu, npdu: Npdu, is_group: bool) {
         let apdu = local_delivery::application(received, npdu, self.port_network, is_group);
         let _ = self.local_tx.try_send_apdu(apdu);
     }
+}
+
+/// What becomes of an NPDU that this router would deliver, on the directly
+/// connected port `route` names, to a DADR that is a group there
+/// (`TransportPort::group_destinations`, from `port_groups`), such as a B/IP
+/// subnet broadcast or multicast address.
+///
+/// Only an Unconfirmed-Request may reach a group, and it goes out as that
+/// port's local broadcast, which is what its sender meant (#1677): B/IP
+/// refuses a unicast to a group address, as its receivers would drop one.
+/// Any other APDU is dropped (#1504): as one unicast it would reach every
+/// node in the group without the broadcast forms #1491 filters. So is a
+/// network message, which must not reach every router on the network as a
+/// broadcast its sender never asked for. The type is the APDU's first
+/// octet's high nibble, as there. A dropped one is counted in `drops` and
+/// draws no reject; a DLEN 0 broadcast is not affected.
+pub(super) fn group_dadr(
+    port_groups: &[GroupDestinations],
+    drops: &AtomicU64,
+    route: &RouteEntry,
+    npdu: &Npdu,
+) -> GroupDadr {
+    let Some(dadr) = npdu.destination.as_ref().map(|dest| &dest.mac_address[..]) else {
+        return GroupDadr::No;
+    };
+    let group = |groups: &GroupDestinations| groups.contains(dadr);
+    if !route.directly_connected
+        || dadr.is_empty()
+        || !port_groups.get(route.port_index).is_some_and(group)
+    {
+        return GroupDadr::No;
+    }
+    let unconfirmed = !npdu.is_network_message
+        && npdu
+            .payload
+            .first()
+            .is_some_and(|&first| PduType::from_raw(first >> 4) == PduType::UNCONFIRMED_REQUEST);
+    if unconfirmed {
+        return GroupDadr::Broadcast;
+    }
+    count_drop(drops);
+    warn!(
+        port = route.port_index,
+        network_message = npdu.is_network_message,
+        "Dropping a routed NPDU for a group DADR that isn't an Unconfirmed-Request"
+    );
+    GroupDadr::Refused
 }
 
 /// RB-03 admission point for ingress network-layer messages.
@@ -294,6 +307,8 @@ impl PortDispatch {
 ///
 /// Network messages never enter the local APDU queue here. Directed-forward
 /// paths mutate nothing and take no policy decision; APDUs never arrive here.
+/// One whose DADR is a group on a directly connected port is dropped and
+/// counted in `groups`' drops, never sent ([`group_dadr`]).
 pub(super) async fn dispatch_network_message(
     table: &Arc<Mutex<RouterTable>>,
     discovery: &Arc<Mutex<DiscoveryTracker>>,
@@ -301,6 +316,7 @@ pub(super) async fn dispatch_network_message(
     ctx: &IngressContext,
     control: &ControlGate,
     local: &LocalControl,
+    groups: (&[GroupDestinations], &AtomicU64),
 ) {
     let msg_type = match ctx.npdu.message_type {
         Some(t) => t,
@@ -342,6 +358,10 @@ pub(super) async fn dispatch_network_message(
     };
     if let Some(reason) = route_refusal(reachability) {
         send_reject(&refused(), dest_net, reason);
+        return;
+    }
+    let (port_groups, group_dadr_drops) = groups;
+    if group_dadr(port_groups, group_dadr_drops, &route, &ctx.npdu) != GroupDadr::No {
         return;
     }
     forward_unicast(

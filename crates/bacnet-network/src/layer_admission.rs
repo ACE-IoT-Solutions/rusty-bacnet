@@ -530,6 +530,8 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         track_depth: bool,
     ) -> Result<(mpsc::Receiver<ReceivedApdu>, QueueAdmissionCounters), Error> {
         let mut npdu_rx = self.transport.start().await?;
+        // Taken once the transport knows its own addresses.
+        self.group_destinations = self.transport.group_destinations();
         let mut network_control_tx = self.network_control_tx.take();
         let network_control_ingress_sequence = Arc::clone(&self.network_control_ingress_sequence);
         let address_length_drops = Arc::clone(&self.address_length_drops);

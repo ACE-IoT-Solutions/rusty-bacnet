@@ -86,7 +86,9 @@
 
 use crate::network_number::LocalNetworkNumber;
 use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
-use bacnet_transport::port::{DataAttribute, TransportPort, TransportProvenance};
+use bacnet_transport::port::{
+    DataAttribute, GroupDestinations, TransportPort, TransportProvenance,
+};
 use bacnet_types::enums::{NetworkPriority, PduType};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -340,12 +342,17 @@ pub struct NetworkLayer<T: TransportPort> {
     global_broadcast_dadr_drops: Arc<AtomicU64>,
     broadcast_pdu_type_drops: Arc<AtomicU64>,
     local_network_number: LocalNetworkNumber,
+    /// The transport's group destinations, taken when the layer is made
+    /// and again when the transport starts and knows its own addresses, so a
+    /// send never calls back into the transport to judge its destination.
+    group_destinations: GroupDestinations,
 }
 
 impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// Create a new network layer wrapping the given transport.
     pub fn new(transport: T) -> Self {
         Self {
+            group_destinations: transport.group_destinations(),
             transport,
             response_scope: Default::default(),
             dispatch_task: None,
@@ -363,15 +370,19 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// With no DNET, the link's broadcast MAC or any other group address
     /// ([`TransportPort::is_group_destination`]) makes this a local
     /// broadcast, which may carry only an Unconfirmed-Request APDU (Clause
-    /// 6.3). This layer doesn't ask the transport on every unicast, so that
-    /// is the caller's to keep: `BACnetClient`, the endpoint's egress and its
-    /// requester, which take caller-chosen MACs, refuse anything else to it
-    /// (#1479). B/IP refuses any unicast to one of its group addresses, with
-    /// an error, so send a local broadcast there with
-    /// [`broadcast_apdu`](Self::broadcast_apdu) (#1677). The server refuses
-    /// one for the confirmed requests it starts itself, to event recipients,
-    /// Channel and Command targets, audit recipients and bound devices
-    /// (#1493). Its replies and COV
+    /// 6.3). An Unconfirmed-Request to one goes out as the link's local
+    /// broadcast, through `send_broadcast`, since B/IP refuses a unicast to
+    /// a group address (#1677). The layer judges by the rule the transport
+    /// gives ([`TransportPort::group_destinations`]), taken when the layer
+    /// is made and when it starts; a transport that gives none keeps every
+    /// send as addressed. Anything
+    /// else goes to the transport as
+    /// given, and B/IP refuses it there; this layer doesn't refuse it
+    /// itself, so that is the caller's to keep: `BACnetClient`, the
+    /// endpoint's egress and its requester, which take caller-chosen MACs,
+    /// refuse anything else to it (#1479). The server refuses one for the
+    /// confirmed requests it starts itself, to event recipients, Channel and
+    /// Command targets, audit recipients and bound devices (#1493). Its replies and COV
     /// notifications go to the source a request came from, and the server,
     /// the client and the endpoint ignore a confirmed request from a group
     /// source MAC (#1504), so none of those goes to a group on this link. A
@@ -411,6 +422,19 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         let mut buf = BytesMut::with_capacity(2 + apdu.len());
         encode_npdu(&mut buf, &npdu)?;
 
+        // An Unconfirmed-Request for a group address of this link is this
+        // link's local broadcast, so it goes out as one: B/IP refuses a
+        // unicast to a group address (#1677). The rule is the one the
+        // transport gave at start, so no send calls back into it.
+        let unconfirmed = apdu
+            .first()
+            .is_some_and(|&first| PduType::from_raw(first >> 4) == PduType::UNCONFIRMED_REQUEST);
+        if unconfirmed && self.group_destinations.contains(destination_mac) {
+            return self
+                .transport
+                .send_broadcast_with_data_attributes(&buf, data_attributes)
+                .await;
+        }
         self.transport
             .send_unicast_with_data_attributes(&buf, destination_mac, data_attributes)
             .await
@@ -1067,3 +1091,7 @@ mod sc_data_options_tests;
 #[cfg(test)]
 #[path = "broadcast_pdu_tests.rs"]
 mod broadcast_pdu_tests;
+
+#[cfg(test)]
+#[path = "layer_group_send_tests.rs"]
+mod group_send_tests;

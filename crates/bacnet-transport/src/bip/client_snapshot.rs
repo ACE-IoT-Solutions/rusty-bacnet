@@ -57,7 +57,11 @@ pub enum ForeignRegistrationOutcome {
 /// and the automatic registration's lease and held broadcasts. The totals
 /// survive stop/start; the last-attempt fields, the countdown and the lease
 /// reset.
+///
+/// It is `#[non_exhaustive]`, so a later field isn't a breaking change:
+/// read its fields, or start from `Default` in a test.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ForeignRegistrationSnapshot {
     /// Admitted attempts, including local failures; excludes busy refusals.
     pub attempts: u64,

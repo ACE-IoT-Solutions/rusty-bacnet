@@ -1,6 +1,6 @@
 //! A test stand-in for the network: it keeps every datagram a
 //! [`BipSocket`](super::BipSocket) sends, with the Tokio time it went, or
-//! fails each send on request.
+//! fails each send, or yields before each, on request.
 
 use std::io;
 use std::net::SocketAddrV4;
@@ -21,6 +21,7 @@ pub(super) struct Sent {
 struct State {
     sent: Vec<Sent>,
     fail: bool,
+    yields: bool,
 }
 
 /// What a recording socket sent. Clones share one record.
@@ -57,6 +58,17 @@ impl SendSink {
     /// Fail every send from now on, or stop failing them.
     pub(super) fn fail_sends(&self, fail: bool) {
         self.lock().fail = fail;
+    }
+
+    /// Make each send yield to the runtime once before it is recorded, as a
+    /// real send may, or stop.
+    pub(super) fn yield_on_send(&self, yields: bool) {
+        self.lock().yields = yields;
+    }
+
+    /// Whether each send yields first.
+    pub(super) fn yields(&self) -> bool {
+        self.lock().yields
     }
 
     /// Everything sent so far, which leaves the record.

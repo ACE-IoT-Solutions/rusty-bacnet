@@ -43,6 +43,8 @@ async fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
         assert!(error.to_string().contains("group address"), "{error}");
     }
     assert!(sink.take().is_empty(), "nothing went out");
+    // Not counted as a send over the budget.
+    assert_eq!(ctx.node.send_counters().npdu_too_long, 0);
 
     let peer = [192, 0, 2, 20, 0xBA, 0xC0];
     ctx.node.send_unicast(&npdu, &peer).await.unwrap();

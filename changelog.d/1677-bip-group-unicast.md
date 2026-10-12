@@ -2,6 +2,6 @@
 section: Changed
 ---
 - **Breaking (wire):** B/IP `send_unicast` to one of the link's group
-  addresses (its broadcast, the limited broadcast, a multicast address) fails
-  instead of sending a datagram its receivers drop; `BACnetRouter` sends an
-  Unconfirmed-Request for such a DADR as that port's local broadcast (#1677).
+  addresses fails instead of sending a datagram its receivers drop;
+  `NetworkLayer::send_apdu` and `BACnetRouter` send an Unconfirmed-Request for
+  a group address as the link's local broadcast instead (#1677).
