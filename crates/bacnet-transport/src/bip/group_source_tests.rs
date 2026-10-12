@@ -9,6 +9,7 @@
 //! through.
 
 use super::groups::{BipGroups, GroupSources};
+use super::receive_counters::ReceiveDrops;
 use super::*;
 use crate::udp_metadata::ReceivedDatagram;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,6 +55,15 @@ struct Drops {
     sender: Arc<AtomicU64>,
     /// Forwarded-NPDU origins (#1493).
     origin: Arc<AtomicU64>,
+    /// Every other drop (#1624), which neither refusal may count in too.
+    receive: Arc<ReceiveDrops>,
+}
+
+impl Drops {
+    /// Whether the receive counters are untouched.
+    fn none_elsewhere(&self) -> bool {
+        self.receive.snapshot() == ReceiveCounters::default()
+    }
 }
 
 /// A receive context for a node at 192.0.2.10 on a subnet whose broadcast
@@ -81,6 +91,7 @@ async fn context(
             Arc::clone(&drops.sender),
             Arc::clone(&drops.origin),
         ),
+        drops: Arc::clone(&drops.receive),
         force_dbtn_forward_failure: false,
     };
     (ctx, npdu_rx)
@@ -102,6 +113,7 @@ async fn a_forwarded_npdu_from_a_group_origin_is_dropped_and_counted() {
             "{origin:?}"
         );
     }
+    assert!(drops.none_elsewhere());
 
     // A station's address is still taken as the source.
     handle_bvll_message(&forwarded(STATION), SENDER, Delivery::Broadcast, &ctx).await;
@@ -156,6 +168,7 @@ async fn a_bbmd_forwards_a_group_origin_nowhere() {
         drops.origin.load(Ordering::Relaxed),
         GROUP_ORIGINS.len() as u64
     );
+    assert!(drops.none_elsewhere());
 
     // A station's frame goes to the subnet and the foreign device, and is
     // the first either of them sees.
@@ -205,6 +218,7 @@ async fn a_running_transport_counts_group_origins() {
     );
     assert_eq!(transport.forwarded_group_origin_drops(), 2);
     assert_eq!(transport.group_source_drops(), 0);
+    assert_eq!(transport.receive_counters(), ReceiveCounters::default());
     transport.stop().await.unwrap();
 }
 
@@ -272,6 +286,7 @@ async fn a_datagram_from_a_group_source_is_dropped_before_its_bvlc_function() {
         assert_eq!(drops.sender.load(Ordering::Relaxed), expected, "{sender:?}");
     }
     assert_eq!(drops.origin.load(Ordering::Relaxed), 0);
+    assert!(drops.none_elsewhere());
 
     // A station's datagrams still go through.
     for (frame, destination) in datagrams {
@@ -320,6 +335,7 @@ async fn a_bbmd_registers_and_forwards_nothing_from_a_group_source() {
     assert!(rx.try_recv().is_err(), "nothing is handed up");
     let refused = 3 * GROUP_SENDERS.len() as u64;
     assert_eq!(drops.sender.load(Ordering::Relaxed), refused);
+    assert!(drops.none_elsewhere());
     let bbmd = ctx.bbmd.as_ref().unwrap();
     assert_eq!(bbmd.lock().unwrap().fdt().len(), 1, "no group registered");
 

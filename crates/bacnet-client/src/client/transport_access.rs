@@ -22,8 +22,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// - BACnet/SC: the `connection_state_changes()` watch and
     ///   `npdu_drop_counts()`.
     /// - B/IP: `management_counters()`, `fdt_counters()`,
-    ///   `fanout_counters()`, and `bbmd_state()` for a brief read of the BBMD
-    ///   tables.
+    ///   `fanout_counters()`, `receive_counters()`, and `bbmd_state()` for a
+    ///   brief read of the BBMD tables.
     /// - MS/TP: the
     ///   [`diagnostics()`](bacnet_transport::mstp::MstpTransport::diagnostics)
     ///   handle.
