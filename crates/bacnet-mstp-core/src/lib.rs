@@ -4,6 +4,12 @@
 //! Callers supply timestamped events and execute the actions returned by
 //! [`MasterCore::poll_action`].
 //!
+//! Time is an [`Instant`] in nanoseconds from an epoch the caller chooses,
+//! with a [`Duration`] for lengths: `bacnet-time`'s types, re-exported here.
+//! `bacnet-bip-core` takes the same ones, so firmware that runs both feeds
+//! them one clock. A microsecond tick becomes an instant with
+//! [`Instant::from_micros`].
+//!
 //! # The adapter's side
 //!
 //! [`MasterCore`] describes the calls in full. Three rules matter most:
@@ -141,7 +147,6 @@
 extern crate alloc;
 
 mod actions;
-mod clock;
 mod config;
 mod counters;
 mod queue;
@@ -151,7 +156,7 @@ pub use actions::{
     Action, ActionBuffers, Direction, ExtendedActionBuffers, RequestId, TransmitFailure,
     TransmitId, DEFAULT_DELIVERY_SLOTS,
 };
-pub use clock::{Duration, Instant, Monotonic, SimClock};
+pub use bacnet_time::{Duration, Instant};
 pub use config::{ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, MstpCoreConfig};
 pub use counters::{MstpCounters, QueueCounters};
 #[cfg(feature = "alloc")]

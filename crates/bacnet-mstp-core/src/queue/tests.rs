@@ -2,11 +2,11 @@ use super::*;
 
 fn exercise<Q: QueueStorage>(mut queue: Q) {
     assert_eq!(
-        queue.enqueue_npdu(1, &[1], NetworkPriority::Normal, 0, None),
+        queue.enqueue_npdu(1, &[1], NetworkPriority::Normal, Instant::ZERO, None),
         Ok(())
     );
     assert_eq!(
-        queue.enqueue_npdu(2, &[2], NetworkPriority::LifeSafety, 0, None),
+        queue.enqueue_npdu(2, &[2], NetworkPriority::LifeSafety, Instant::ZERO, None),
         Ok(())
     );
     assert_eq!(
@@ -14,17 +14,26 @@ fn exercise<Q: QueueStorage>(mut queue: Q) {
             QueueKind::BROADCAST_DESTINATION,
             &[3],
             NetworkPriority::Normal,
-            0,
+            Instant::ZERO,
             None
         ),
         Ok(())
     );
     let mut scratch = [0; 4];
-    let first = queue.dequeue_into(0, &mut scratch).unwrap().unwrap();
+    let first = queue
+        .dequeue_into(Instant::ZERO, &mut scratch)
+        .unwrap()
+        .unwrap();
     assert_eq!(first.destination, 2);
-    let second = queue.dequeue_into(0, &mut scratch).unwrap().unwrap();
+    let second = queue
+        .dequeue_into(Instant::ZERO, &mut scratch)
+        .unwrap()
+        .unwrap();
     assert_eq!(second.destination, 1);
-    let third = queue.dequeue_into(0, &mut scratch).unwrap().unwrap();
+    let third = queue
+        .dequeue_into(Instant::ZERO, &mut scratch)
+        .unwrap()
+        .unwrap();
     assert_eq!(third.kind, QueueKind::Broadcast);
 }
 
@@ -40,19 +49,22 @@ fn priority_and_destination_selection() {
 /// can't stay at the head of its queue.
 fn drop_item_too_long_for_scratch<Q: QueueStorage>(mut queue: Q) {
     queue
-        .enqueue_npdu(1, &[1, 2, 3], NetworkPriority::Urgent, 0, None)
+        .enqueue_npdu(1, &[1, 2, 3], NetworkPriority::Urgent, Instant::ZERO, None)
         .unwrap();
     queue
-        .enqueue_npdu(1, &[4], NetworkPriority::Normal, 0, None)
+        .enqueue_npdu(1, &[4], NetworkPriority::Normal, Instant::ZERO, None)
         .unwrap();
     let mut scratch = [0; 2];
     assert_eq!(
-        queue.dequeue_into(0, &mut scratch),
+        queue.dequeue_into(Instant::ZERO, &mut scratch),
         Err(QueueRejectReason::Oversize)
     );
     let stats = queue.stats(QueueKind::Unicast);
     assert_eq!((stats.depth, stats.drops_oversize), (1, 1));
-    let next = queue.dequeue_into(0, &mut scratch).unwrap().unwrap();
+    let next = queue
+        .dequeue_into(Instant::ZERO, &mut scratch)
+        .unwrap()
+        .unwrap();
     assert_eq!((next.len, scratch[0]), (1, 4));
 }
 
@@ -70,16 +82,22 @@ fn exact_expiry_boundary_and_atomic_oversize() {
     {
         let mut queue = HeaplessQueues::<1, 1>::new();
         assert_eq!(
-            queue.enqueue_npdu(1, &[9], NetworkPriority::Normal, 4, Some(4)),
+            queue.enqueue_npdu(
+                1,
+                &[9],
+                NetworkPriority::Normal,
+                Instant::from_nanos(4),
+                Some(Instant::from_nanos(4))
+            ),
             Err(QueueRejectReason::Expired)
         );
         assert_eq!(queue.depth(QueueKind::Unicast), 0);
         assert_eq!(
-            queue.enqueue_npdu(1, &[1, 2], NetworkPriority::Normal, 0, None),
+            queue.enqueue_npdu(1, &[1, 2], NetworkPriority::Normal, Instant::ZERO, None),
             Ok(())
         );
         assert_eq!(
-            queue.enqueue_npdu(1, &[3], NetworkPriority::Normal, 0, None),
+            queue.enqueue_npdu(1, &[3], NetworkPriority::Normal, Instant::ZERO, None),
             Err(QueueRejectReason::Full)
         );
         assert_eq!(queue.depth(QueueKind::Unicast), 1);
@@ -88,16 +106,22 @@ fn exact_expiry_boundary_and_atomic_oversize() {
     {
         let mut queue = AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(1, 1);
         assert_eq!(
-            queue.enqueue_npdu(1, &[9], NetworkPriority::Normal, 4, Some(4)),
+            queue.enqueue_npdu(
+                1,
+                &[9],
+                NetworkPriority::Normal,
+                Instant::from_nanos(4),
+                Some(Instant::from_nanos(4))
+            ),
             Err(QueueRejectReason::Expired)
         );
         assert_eq!(queue.depth(QueueKind::Unicast), 0);
         assert_eq!(
-            queue.enqueue_npdu(1, &[1, 2], NetworkPriority::Normal, 0, None),
+            queue.enqueue_npdu(1, &[1, 2], NetworkPriority::Normal, Instant::ZERO, None),
             Ok(())
         );
         assert_eq!(
-            queue.enqueue_npdu(1, &[3], NetworkPriority::Normal, 0, None),
+            queue.enqueue_npdu(1, &[3], NetworkPriority::Normal, Instant::ZERO, None),
             Err(QueueRejectReason::Full)
         );
         assert_eq!(queue.depth(QueueKind::Unicast), 1);
@@ -110,30 +134,58 @@ fn starvation_forces_old_item_after_service_opportunities() {
     {
         let mut queue = HeaplessQueues::<4, 0>::with_starvation_limit(1);
         queue
-            .enqueue_npdu(1, &[1], NetworkPriority::Normal, 0, None)
+            .enqueue_npdu(1, &[1], NetworkPriority::Normal, Instant::ZERO, None)
             .unwrap();
         queue
-            .enqueue_npdu(1, &[2], NetworkPriority::LifeSafety, 0, None)
+            .enqueue_npdu(1, &[2], NetworkPriority::LifeSafety, Instant::ZERO, None)
             .unwrap();
         let mut scratch = [0; 2];
-        assert_eq!(queue.dequeue_into(0, &mut scratch).unwrap().unwrap().len, 1);
+        assert_eq!(
+            queue
+                .dequeue_into(Instant::ZERO, &mut scratch)
+                .unwrap()
+                .unwrap()
+                .len,
+            1
+        );
         assert_eq!(scratch[0], 2);
-        assert_eq!(queue.dequeue_into(0, &mut scratch).unwrap().unwrap().len, 1);
+        assert_eq!(
+            queue
+                .dequeue_into(Instant::ZERO, &mut scratch)
+                .unwrap()
+                .unwrap()
+                .len,
+            1
+        );
         assert_eq!(scratch[0], 1);
     }
     #[cfg(feature = "alloc")]
     {
         let mut queue = AllocQueues::<MAX_STANDARD_MPDU_DATA>::with_starvation_limit(4, 0, 1);
         queue
-            .enqueue_npdu(1, &[1], NetworkPriority::Normal, 0, None)
+            .enqueue_npdu(1, &[1], NetworkPriority::Normal, Instant::ZERO, None)
             .unwrap();
         queue
-            .enqueue_npdu(1, &[2], NetworkPriority::LifeSafety, 0, None)
+            .enqueue_npdu(1, &[2], NetworkPriority::LifeSafety, Instant::ZERO, None)
             .unwrap();
         let mut scratch = [0; 2];
-        assert_eq!(queue.dequeue_into(0, &mut scratch).unwrap().unwrap().len, 1);
+        assert_eq!(
+            queue
+                .dequeue_into(Instant::ZERO, &mut scratch)
+                .unwrap()
+                .unwrap()
+                .len,
+            1
+        );
         assert_eq!(scratch[0], 2);
-        assert_eq!(queue.dequeue_into(0, &mut scratch).unwrap().unwrap().len, 1);
+        assert_eq!(
+            queue
+                .dequeue_into(Instant::ZERO, &mut scratch)
+                .unwrap()
+                .unwrap()
+                .len,
+            1
+        );
         assert_eq!(scratch[0], 1);
     }
 }
@@ -144,17 +196,23 @@ fn kind_specific_selection_preserves_independent_capacity() {
     {
         let mut queue = HeaplessQueues::<2, 1>::new();
         queue
-            .enqueue_npdu(1, &[1], NetworkPriority::Normal, 0, None)
+            .enqueue_npdu(1, &[1], NetworkPriority::Normal, Instant::ZERO, None)
             .unwrap();
         queue
-            .enqueue_npdu(0xff, &[2], NetworkPriority::Normal, 0, None)
+            .enqueue_npdu(0xff, &[2], NetworkPriority::Normal, Instant::ZERO, None)
             .unwrap();
         assert_eq!(
-            queue.peek_kind(QueueKind::Broadcast, 0).unwrap().kind,
+            queue
+                .peek_kind(QueueKind::Broadcast, Instant::ZERO)
+                .unwrap()
+                .kind,
             QueueKind::Broadcast
         );
         assert_eq!(
-            queue.peek_kind(QueueKind::Unicast, 0).unwrap().kind,
+            queue
+                .peek_kind(QueueKind::Unicast, Instant::ZERO)
+                .unwrap()
+                .kind,
             QueueKind::Unicast
         );
     }
@@ -162,17 +220,23 @@ fn kind_specific_selection_preserves_independent_capacity() {
     {
         let mut queue = AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(2, 1);
         queue
-            .enqueue_npdu(1, &[1], NetworkPriority::Normal, 0, None)
+            .enqueue_npdu(1, &[1], NetworkPriority::Normal, Instant::ZERO, None)
             .unwrap();
         queue
-            .enqueue_npdu(0xff, &[2], NetworkPriority::Normal, 0, None)
+            .enqueue_npdu(0xff, &[2], NetworkPriority::Normal, Instant::ZERO, None)
             .unwrap();
         assert_eq!(
-            queue.peek_kind(QueueKind::Broadcast, 0).unwrap().kind,
+            queue
+                .peek_kind(QueueKind::Broadcast, Instant::ZERO)
+                .unwrap()
+                .kind,
             QueueKind::Broadcast
         );
         assert_eq!(
-            queue.peek_kind(QueueKind::Unicast, 0).unwrap().kind,
+            queue
+                .peek_kind(QueueKind::Unicast, Instant::ZERO)
+                .unwrap()
+                .kind,
             QueueKind::Unicast
         );
     }

@@ -12,8 +12,8 @@ use std::rc::Rc;
 
 use bacnet_mstp_codec::BROADCAST_MAC;
 use bacnet_mstp_core::{
-    DequeuedNpdu, NetworkPriority, QueueCounters, QueueItemInfo, QueueKind, QueueRejectReason,
-    QueueStorage,
+    DequeuedNpdu, Instant, NetworkPriority, QueueCounters, QueueItemInfo, QueueKind,
+    QueueRejectReason, QueueStorage,
 };
 
 /// What the wrapper saw, shared with the checker.
@@ -93,8 +93,8 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
+        now: Instant,
+        expires_at: Option<Instant>,
     ) -> Result<(), QueueRejectReason> {
         if payload.len() > self.max_npdu {
             self.broken(format!(
@@ -124,24 +124,24 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         result
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: Instant) -> usize {
         let removed = self.inner.expire(now);
         self.check_depths("an expiry");
         removed
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         self.inner.peek(now)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
         self.inner.peek_kind(kind, now)
     }
 
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
-        now: u64,
+        now: Instant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         let result = self.inner.dequeue_kind_into(kind, now, scratch);

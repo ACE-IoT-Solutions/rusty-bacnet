@@ -5,11 +5,11 @@ use bacnet_mstp_codec::{
     HEADER_LENGTH, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA,
     PREAMBLE,
 };
+use bacnet_time::{Duration, Instant};
 
 use crate::actions::{
     carries_npdu, Action, ActionBuffers, ActionQueue, RequestId, TransmitFailure, TransmitId,
 };
-use crate::clock::{Duration, Instant};
 use crate::config::{
     ConfigError, CoreBuffer, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT,
 };
@@ -478,9 +478,9 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             self.record_oversize_npdu(QueueKind::from_destination(destination));
             return Err(QueueRejectReason::Oversize);
         }
-        let expires = now.saturating_add(self.config.queue_max_age).as_micros();
+        let expires = now.saturating_add(self.config.queue_max_age);
         self.queues
-            .enqueue_npdu(destination, npdu, priority, now.as_micros(), Some(expires))
+            .enqueue_npdu(destination, npdu, priority, now, Some(expires))
     }
 
     /// Service the current absolute deadline. Early/stale callbacks are no-ops.
@@ -655,8 +655,4 @@ fn minimum(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     }
-}
-
-fn scale(duration: Duration, count: u64) -> Duration {
-    Duration::from_micros(duration.as_micros().saturating_mul(count))
 }

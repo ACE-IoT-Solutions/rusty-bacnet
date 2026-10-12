@@ -17,6 +17,7 @@ heapless = ["dep:heapless"]
 
 [dependencies]
 bacnet-mstp-codec = { workspace = true, default-features = false }
+bacnet-time = { workspace = true }
 heapless = { workspace = true, optional = true }
 
 [dev-dependencies]

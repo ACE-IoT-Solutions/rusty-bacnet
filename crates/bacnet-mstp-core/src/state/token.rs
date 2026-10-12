@@ -16,17 +16,23 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// closed: the local recovery policy described on [`MasterCore`], counted
     /// in [`MstpCounters::missed_generation_slots`].
     pub(super) fn generate_token_if_in_slot(&mut self, now: Instant) -> Result<(), CoreError> {
-        let cycle = scale(self.config.t_slot, u64::from(self.config.max_master) + 1);
+        let cycle = self
+            .config
+            .t_slot
+            .saturating_mul(u32::from(self.config.max_master) + 1);
         let first = self.last_activity
             + self.config.t_no_token
-            + scale(self.config.t_slot, u64::from(self.config.station));
+            + self
+                .config
+                .t_slot
+                .saturating_mul(u32::from(self.config.station));
         let mut start = first;
         // The window that `now` falls in, or the next one: whole cycles after
         // the first. Validation fixes T_slot at 10 ms and caps Max_Master at
-        // 127, so a cycle is at most 1.28 s, within `rem_short`'s bound, and
-        // no 64-bit division is needed.
+        // 127, so a cycle is at most 1.28 s; `checked_rem` takes one step per
+        // bit of the cycles passed, with no 64-bit division.
         if now >= first + self.config.t_slot {
-            if let Some(offset) = (now - first).rem_short(cycle) {
+            if let Some(offset) = (now - first).checked_rem(cycle) {
                 start = now - offset;
                 if offset >= self.config.t_slot {
                     start += cycle;
@@ -114,16 +120,13 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// the next one is tried, so it never holds the token. The attempts are
     /// bounded in case a [`QueueStorage`] fails to drop it.
     fn dequeue_and_send(&mut self, now: Instant) -> Result<bool, CoreError> {
-        self.queues.expire(now.as_micros());
+        self.queues.expire(now);
         let mut npdu = [0; NPDU];
         for _ in 0..=self.queues.total_depth() {
             let Some(kind) = self.next_queue_kind(now) else {
                 return Ok(false);
             };
-            let item = match self
-                .queues
-                .dequeue_kind_into(kind, now.as_micros(), &mut npdu)
-            {
+            let item = match self.queues.dequeue_kind_into(kind, now, &mut npdu) {
                 Ok(Some(item)) => item,
                 Ok(None) => return Ok(false),
                 // Too long for the scratch: the queue dropped and counted it.
@@ -180,14 +183,8 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
 
     /// The queue to serve next under the broadcast/unicast ratio.
     fn next_queue_kind(&self, now: Instant) -> Option<QueueKind> {
-        let has_u = self
-            .queues
-            .peek_kind(QueueKind::Unicast, now.as_micros())
-            .is_some();
-        let has_b = self
-            .queues
-            .peek_kind(QueueKind::Broadcast, now.as_micros())
-            .is_some();
+        let has_u = self.queues.peek_kind(QueueKind::Unicast, now).is_some();
+        let has_b = self.queues.peek_kind(QueueKind::Broadcast, now).is_some();
         match (has_u, has_b) {
             (false, false) => None,
             (true, false) => Some(QueueKind::Unicast),

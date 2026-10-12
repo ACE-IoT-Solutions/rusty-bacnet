@@ -97,13 +97,7 @@ impl SharedQueues {
         }
         shared
             .queues
-            .enqueue_npdu(
-                destination,
-                npdu,
-                npdu_priority(npdu),
-                now.as_micros(),
-                Some(expires.as_micros()),
-            )
+            .enqueue_npdu(destination, npdu, npdu_priority(npdu), now, Some(expires))
             .map_err(EnqueueError::Rejected)
     }
 
@@ -140,30 +134,30 @@ impl QueueStorage for SharedQueues {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
+        now: CoreInstant,
+        expires_at: Option<CoreInstant>,
     ) -> Result<(), QueueRejectReason> {
         self.lock()
             .queues
             .enqueue_npdu(destination, payload, priority, now, expires_at)
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: CoreInstant) -> usize {
         self.lock().queues.expire(now)
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: CoreInstant) -> Option<QueueItemInfo> {
         self.lock().queues.peek(now)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: CoreInstant) -> Option<QueueItemInfo> {
         self.lock().queues.peek_kind(kind, now)
     }
 
     fn dequeue_kind_into(
         &mut self,
         kind: QueueKind,
-        now: u64,
+        now: CoreInstant,
         scratch: &mut [u8],
     ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
         self.lock().queues.dequeue_kind_into(kind, now, scratch)
@@ -178,9 +172,9 @@ impl QueueStorage for SharedQueues {
     }
 }
 
-/// Tokio time mapped onto the core's microsecond clock from a fixed origin,
-/// the moment the transport started. Both the task and the send calls use
-/// it, so queue times and core events share one clock.
+/// Tokio time mapped onto the core's nanosecond timeline from a fixed
+/// origin, the moment the transport started. Both the task and the send
+/// calls use it, so queue times and core events share one clock.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CoreClock {
     origin: tokio::time::Instant,
@@ -198,16 +192,17 @@ impl CoreClock {
         self.at(tokio::time::Instant::now())
     }
 
-    /// The core's time at `instant`, rounded down to the microsecond.
+    /// The core's time at `instant`, exactly (saturating some 584 years
+    /// after the origin).
     pub(super) fn at(&self, instant: tokio::time::Instant) -> CoreInstant {
-        let elapsed = instant.saturating_duration_since(self.origin).as_micros();
-        CoreInstant::from_micros(u64::try_from(elapsed).unwrap_or(u64::MAX))
+        let elapsed = instant.saturating_duration_since(self.origin);
+        CoreInstant::ZERO + CoreDuration::from(elapsed)
     }
 
-    /// The Tokio instant of a core time. Rounding [`Self::at`] down means a
-    /// timer set here never wakes before the core's deadline is due.
+    /// The Tokio instant of a core time. Both ways are exact, so a timer set
+    /// here never wakes before the core's deadline is due.
     pub(super) fn instant(&self, at: CoreInstant) -> tokio::time::Instant {
-        let offset = std::time::Duration::from_micros(at.as_micros());
+        let offset = std::time::Duration::from_nanos(at.as_nanos());
         self.origin
             .checked_add(offset)
             .unwrap_or_else(|| self.origin + std::time::Duration::from_secs(86_400 * 365))
@@ -249,9 +244,9 @@ mod tests {
         let clock = CoreClock::new();
         tokio::time::advance(std::time::Duration::from_nanos(2_500)).await;
         let now = clock.now();
-        assert_eq!(now, CoreInstant::from_micros(2));
-        assert!(clock.instant(now) <= tokio::time::Instant::now());
-        let deadline = CoreInstant::from_micros(10);
+        assert_eq!(now, CoreInstant::from_nanos(2_500));
+        assert_eq!(clock.instant(now), tokio::time::Instant::now());
+        let deadline = CoreInstant::from_nanos(10_001);
         assert_eq!(clock.at(clock.instant(deadline)), deadline);
     }
 }

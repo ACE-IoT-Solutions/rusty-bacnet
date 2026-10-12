@@ -412,6 +412,7 @@ name = "bacnet-mstp-core"
 version = "0.12.0"
 dependencies = [
  "bacnet-mstp-codec",
+ "bacnet-time",
  "heapless",
  "proptest",
 ]

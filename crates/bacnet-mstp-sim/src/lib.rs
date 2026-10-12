@@ -29,8 +29,9 @@
 //! # The model
 //!
 //! **Time and events.** Virtual time is the core's own
-//! [`Instant`](bacnet_mstp_core::Instant)
-//! (microseconds). One queue orders every event by time, then by a fixed
+//! [`Instant`](bacnet_mstp_core::Instant), which counts nanoseconds; the
+//! simulator's own times (octet boundaries, adapter jitter) are whole
+//! microseconds of it. One queue orders every event by time, then by a fixed
 //! class (characters arriving, transmissions ending, scheduled events, core
 //! deadlines, adapters starting frames, later octets of a frame), then by
 //! station address, then by scheduling order. Nothing reads a wall clock or

@@ -4,7 +4,7 @@
 //! without taking a lock, and all mutation helpers saturate rather than
 //! wrapping when a long-running device exhausts a counter.
 
-use crate::clock::Duration;
+use bacnet_time::Duration;
 
 /// Counters for one bounded transmit queue.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -147,8 +147,8 @@ pub struct MstpCounters {
     /// [`ActionBuffers`](crate::ActionBuffers) was full. Control actions
     /// are never dropped.
     pub delivery_drops: u32,
-    /// Cumulative time spent with driver-enable asserted, in microseconds.
-    pub de_assertion_us: u64,
+    /// Cumulative time spent with driver-enable asserted.
+    pub de_assertion: Duration,
     /// Unicast queue counters.
     pub unicast: QueueCounters,
     /// Broadcast queue counters.
@@ -258,7 +258,7 @@ impl MstpCounters {
 
     /// Add a completed DE assertion interval.
     pub(crate) fn record_de_assertion(&mut self, duration: Duration) {
-        self.de_assertion_us = self.de_assertion_us.saturating_add(duration.as_micros());
+        self.de_assertion = self.de_assertion.saturating_add(duration);
     }
 
     /// Return the queue selected by the broadcast flag.
@@ -279,7 +279,7 @@ fn increment(value: &mut u32) {
 #[cfg(test)]
 mod tests {
     use super::MstpCounters;
-    use crate::clock::Duration;
+    use bacnet_time::Duration;
 
     #[test]
     fn counters_saturate_and_track_queue_depth() {
@@ -289,7 +289,7 @@ mod tests {
         counters.record_de_assertion(Duration::from_millis(3));
         assert_eq!(counters.state_transitions, 1);
         assert_eq!(counters.frame_aborts, 1);
-        assert_eq!(counters.de_assertion_us, 3_000);
+        assert_eq!(counters.de_assertion, Duration::from_millis(3));
 
         counters.unicast.record_enqueue(2);
         counters.unicast.record_enqueue(4);
