@@ -8,8 +8,8 @@ and is meant to join their ports in firmware, and to run under the hosted
 
 - `#![no_std]`, no allocator, no dependencies besides `bacnet-time`.
 - NPDUs are read in place from your frame and written into your buffer.
-- The routing table lives in arrays whose size you pick with const
-  generics.
+- The routing table and the discovery state live in arrays whose size you
+  pick with const generics.
 - Time is an `Instant` you pass to each call; the crate reads no clock. It
   is `bacnet-time`'s, in nanoseconds, re-exported here, the same type the
   MS/TP and B/IP cores take, so firmware feeds all three one clock.
@@ -31,6 +31,8 @@ a firmware router image come first (#1679).
   learned routes, standard and hardened convergence, busy and unreachable
   marks, a hold-down on reject-driven changes, and aging that keys off
   confirmation, never traffic.
+- `discovery`: when to look for a route to an unknown network, at most once
+  per cooldown each, in bounded storage.
 
 ## Example
 
