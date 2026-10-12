@@ -105,9 +105,7 @@ impl RuntimeError {
         error: bacnet_types::error::Error,
     ) -> Self {
         let (code, retryable) = match &error {
-            bacnet_types::error::Error::Transport(io)
-                if io.kind() == std::io::ErrorKind::AddrInUse =>
-            {
+            bacnet_types::error::Error::Transport(io) if is_bind_conflict(io) => {
                 (ErrorCode::BindConflict, true)
             }
             bacnet_types::error::Error::Transport(_) => (ErrorCode::DeviceUnavailable, true),
@@ -285,5 +283,28 @@ impl RuntimeError {
             attachment_id: None,
             message: message.into(),
         }
+    }
+}
+
+fn is_bind_conflict(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::AddrInUse
+        || (cfg!(windows) && matches!(error.raw_os_error(), Some(10_013 | 10_048)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bind_conflict;
+
+    #[test]
+    fn address_in_use_is_a_bind_conflict() {
+        let error = std::io::Error::new(std::io::ErrorKind::AddrInUse, "occupied");
+        assert!(is_bind_conflict(&error));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn winsock_exclusive_bind_errors_are_bind_conflicts() {
+        assert!(is_bind_conflict(&std::io::Error::from_raw_os_error(10_013)));
+        assert!(is_bind_conflict(&std::io::Error::from_raw_os_error(10_048)));
     }
 }
