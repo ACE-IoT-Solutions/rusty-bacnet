@@ -18,10 +18,10 @@ use std::net::Ipv6Addr;
 
 use arbitrary::Arbitrary;
 use bacnet_bip_codec::ipv6::{
-    decode, Bip6Address, Bip6Vmac, Bvlc6ResultCode, Bvll6, Bvll6Error, Bvll6Frame, BVLC_TYPE_BIP6,
+    decode, Bip6Address, Bip6Vmac, Bvlc6ResultCode, Bvll6, Bvll6Error, Bvll6Frame,
 };
-use bacnet_bip_codec::{BvllSink, MAX_BVLL_LENGTH};
-use bip_codec_fuzz::{bvll_octets, check_sinks, Npdu, SinkKnobs};
+use bacnet_bip_codec::BvllSink;
+use bip_codec_fuzz::{bvll_octets, check_sinks, Npdu, SinkKnobs, HEADER, MAX_LENGTH, TYPE_BIP6};
 use libfuzzer_sys::fuzz_target;
 
 /// The result codes Annex U.2.1.1 defines.
@@ -164,12 +164,12 @@ fuzz_target!(|input: Input| {
     let (function, payload) = layout(&input.spec, &mut npdu);
     let message = build(&input.spec, &npdu);
     assert_eq!(message.function().to_raw(), function);
-    let wire = bvll_octets(BVLC_TYPE_BIP6, function, &payload);
+    let wire = bvll_octets(TYPE_BIP6, function, &payload);
     let expected = match input.spec {
         Spec::Result(_, code) if !RESULT_CODES.contains(&code) => {
             Err(Bvll6Error::UndefinedResultCode { code })
         }
-        _ if wire.len() > MAX_BVLL_LENGTH => Err(Bvll6Error::TooLong { length: wire.len() }),
+        _ if wire.len() > MAX_LENGTH => Err(Bvll6Error::TooLong { length: wire.len() }),
         _ => Ok(wire.clone()),
     };
     assert_eq!(
@@ -189,6 +189,6 @@ fuzz_target!(|input: Input| {
         assert_eq!(decode(&output), Ok(message));
         let frame = Bvll6Frame::decode(&output).expect("an encoded message decodes");
         assert_eq!(frame.function.to_raw(), function);
-        assert_eq!(frame.payload, &output[4..]);
+        assert_eq!(frame.payload, &output[HEADER..]);
     }
 });

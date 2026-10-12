@@ -4,12 +4,21 @@
 //! what each one holds afterwards.
 //!
 //! The encode targets build the octets they expect field by field from the
-//! Annex J.2 and U.2 layouts, without the codec's own writers.
+//! Annex J.2 and U.2 layouts, without the codec's own writers or constants.
 
 use std::fmt::Debug;
 
 use arbitrary::Arbitrary;
-use bacnet_bip_codec::{BvllSink, HEADER_LENGTH, MAX_BVLL_LENGTH};
+use bacnet_bip_codec::BvllSink;
+
+/// The BVLC type octet of a B/IP message (Annex J.2).
+pub const TYPE_BIP: u8 = 0x81;
+/// The BVLC type octet of a B/IPv6 message (Annex U.2).
+pub const TYPE_BIP6: u8 = 0x82;
+/// The BVLL header: type, function and the two Length octets.
+pub const HEADER: usize = 4;
+/// The longest message the 16-bit Length field can state, header included.
+pub const MAX_LENGTH: usize = 65_535;
 
 /// The octet every fixed sink is filled with before an encode, so that a
 /// write outside the message shows.
@@ -34,7 +43,7 @@ impl Npdu {
     pub fn octets(&self, before: usize) -> Vec<u8> {
         match self.long {
             Some(offset) if offset < 16 => {
-                let length = MAX_BVLL_LENGTH - HEADER_LENGTH - before - 8 + usize::from(offset);
+                let length = MAX_LENGTH - HEADER - before - 8 + usize::from(offset);
                 fill(length, &self.octets)
             }
             _ => self.octets.clone(),
@@ -57,7 +66,7 @@ fn fill(length: usize, pattern: &[u8]) -> Vec<u8> {
 /// counting the whole message, then the payload. The Length field is
 /// truncated for a message too long for it, which the codec must refuse.
 pub fn bvll_octets(bvlc_type: u8, function: u8, payload: &[u8]) -> Vec<u8> {
-    let [high, low] = ((HEADER_LENGTH + payload.len()) as u16).to_be_bytes();
+    let [high, low] = ((HEADER + payload.len()) as u16).to_be_bytes();
     let mut wire = vec![bvlc_type, function, high, low];
     wire.extend_from_slice(payload);
     wire

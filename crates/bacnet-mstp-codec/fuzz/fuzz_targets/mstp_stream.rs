@@ -22,8 +22,9 @@
 //!   room, counting the frame the push commits, with those two sizes, and
 //!   nothing is buffered.
 //! - Never wedged: before every push there is room for one more octet,
-//!   `NeedMore` leaves the storage short of full, and a drain ends within
-//!   2 × capacity + 4 empty pushes.
+//!   `NeedMore` leaves the storage short of full, and a drain that starts
+//!   with `n` octets buffered ends within `n + 1` empty pushes (see
+//!   `Run::drain`).
 //! - `NeedMore` only while the buffer is empty or the front of a candidate
 //!   that still lacks octets and will fit: its header, once complete, passes
 //!   its CRC and the standard-frame checks.
@@ -45,6 +46,11 @@
 //! a delivered frame that runs past the frame's first octet hid it. From the
 //! anchor the decoder starts fresh, and octets other than 0x55 can't start
 //! a candidate, so nothing can hide the frame.
+//!
+//! That end-of-run check is a backstop. A decoder can only lose a guaranteed
+//! frame by discarding its preamble as noise, dropping it as malformed, or
+//! holding it whole behind `NeedMore`, and the per-push checks fail at the
+//! push where it does any of those.
 //!
 //! Noise with a 0x55 can hide what follows it: it may hold a header that
 //! passes its CRC and declares a length running into the next frame, and
@@ -312,13 +318,19 @@ impl Run<'_> {
         }
     }
 
+    /// Empty pushes until `NeedMore`. A drain adds no octets, and each event
+    /// before `NeedMore` uses up octets of its own: `Invalid` and `Malformed`
+    /// discard at least one, and a frame's are committed by the next push. So
+    /// a drain that starts with `n` octets buffered reports at most `n` such
+    /// events, and ends within `n + 1` pushes.
     fn drain(&mut self) {
-        for _ in 0..2 * self.capacity + 4 {
+        let limit = self.pushed - self.start + 1;
+        for _ in 0..limit {
             if self.push(0) == Seen::NeedMore {
                 return;
             }
         }
-        panic!("a drain did not end");
+        panic!("a drain did not end within {limit} empty pushes");
     }
 
     fn reset(&mut self) {

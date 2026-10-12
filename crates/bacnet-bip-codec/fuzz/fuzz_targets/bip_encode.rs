@@ -18,9 +18,9 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use arbitrary::Arbitrary;
 use bacnet_bip_codec::{
     decode, BdtEntries, BdtEntry, BvlcResultCode, Bvll, BvllError, BvllFrame, BvllSink, FdtEntries,
-    FdtEntry, BVLC_TYPE_BIP, MAX_BVLL_LENGTH,
+    FdtEntry,
 };
-use bip_codec_fuzz::{bvll_octets, check_sinks, Npdu, SinkKnobs};
+use bip_codec_fuzz::{bvll_octets, check_sinks, Npdu, SinkKnobs, HEADER, MAX_LENGTH, TYPE_BIP};
 use libfuzzer_sys::fuzz_target;
 
 /// The result codes Annex J.2.1.1 defines.
@@ -202,12 +202,12 @@ fuzz_target!(|input: Input| {
     let (function, owned) = layout(&input.spec);
     let message = build(&input.spec, &owned);
     assert_eq!(message.function().to_raw(), function);
-    let wire = bvll_octets(BVLC_TYPE_BIP, function, &owned.payload);
+    let wire = bvll_octets(TYPE_BIP, function, &owned.payload);
     let expected = match input.spec {
         Spec::Result(code) if !RESULT_CODES.contains(&code) => {
             Err(BvllError::UndefinedResultCode { code })
         }
-        _ if wire.len() > MAX_BVLL_LENGTH => Err(BvllError::TooLong { length: wire.len() }),
+        _ if wire.len() > MAX_LENGTH => Err(BvllError::TooLong { length: wire.len() }),
         _ => Ok(wire.clone()),
     };
     assert_eq!(
@@ -242,6 +242,6 @@ fuzz_target!(|input: Input| {
         assert_eq!(decode(&output), Ok(message));
         let frame = BvllFrame::decode(&output).expect("an encoded message decodes");
         assert_eq!(frame.function.to_raw(), function);
-        assert_eq!(frame.payload, &output[4..]);
+        assert_eq!(frame.payload, &output[HEADER..]);
     }
 });

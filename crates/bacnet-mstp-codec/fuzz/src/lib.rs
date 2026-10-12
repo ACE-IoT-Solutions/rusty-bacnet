@@ -196,7 +196,9 @@ pub fn fill(length: usize, pattern: &[u8]) -> Vec<u8> {
 }
 
 /// Check [`encode`] and [`valid_frame`] against two frames from the codec's
-/// documentation: a Token, and a Data Not Expecting Reply from slave 200.
+/// documentation, a Token and a Data Not Expecting Reply from slave 200, and
+/// [`data_crc`] against the worked example of Annex G.2: data 01 22 30 goes
+/// out with the CRC octets 10 BD.
 pub fn self_test() {
     let token = [0x55, 0xFF, 0x00, 0x10, 0x05, 0x00, 0x00, 0x8C];
     let data = [
@@ -207,6 +209,7 @@ pub fn self_test() {
     assert_eq!(valid_frame(&token), Some(token.len()));
     assert_eq!(valid_frame(&data), Some(data.len()));
     assert_eq!(valid_frame(&data[..data.len() - 1]), None);
+    assert_eq!(data_crc(&[0x01, 0x22, 0x30]).to_le_bytes(), [0x10, 0xBD]);
 }
 
 /// How one encode exercises the sinks: the slice's room relative to the

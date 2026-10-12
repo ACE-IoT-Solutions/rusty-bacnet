@@ -13,14 +13,21 @@
 #   fuzz.sh tmin <target> [<input>...]
 #                                    minimize failing inputs, by default each
 #                                    crash or timeout the target has saved
-#   fuzz.sh lock                     update each lockfile's own codec entry,
-#                                    after a workspace version bump
+#   fuzz.sh cmin <target>            minimize the target's corpus
+#   fuzz.sh lock [--check]           bring each fuzz Cargo.lock up to date
+#                                    with its manifests, changing as little as
+#                                    possible; --check fails instead
 #
 # The fuzz crates are crates/*/fuzz, each a workspace of its own with its own
-# Cargo.lock; every build first checks that lockfile with `cargo fetch
-# --locked`. With FUZZ_WORK set, corpora go in $FUZZ_WORK/corpus/<target> and
-# failing inputs in $FUZZ_WORK/artifacts/<target>; without it, in the fuzz
-# crate's corpus/ and artifacts/, cargo-fuzz's defaults, which git ignores.
+# Cargo.lock, which records the workspace version of the codec it fuzzes and
+# the workspace's requirements for its dependencies: a version bump or a moved
+# requirement leaves it stale until `fuzz.sh lock`. Every build checks it
+# first, and so does ci.yml's Lint job, with `lock --check`. `lock` needs no
+# nightly: any cargo will do.
+#
+# With FUZZ_WORK set, corpora go in $FUZZ_WORK/corpus/<target> and failing
+# inputs in $FUZZ_WORK/artifacts/<target>; without it, in the fuzz crate's
+# corpus/ and artifacts/, cargo-fuzz's defaults, which git ignores.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -70,10 +77,11 @@ nightly_cargo() {
   cargo "+$nightly" "$@"
 }
 
-# locked CRATE: fail unless CRATE's fuzz lockfile is current.
+# locked CRATE: fail unless CRATE's fuzz lockfile is current. Any cargo can
+# tell, so this runs whichever the caller has.
 locked() {
-  nightly_cargo fetch --locked --quiet --manifest-path "$root/crates/$1/fuzz/Cargo.toml" \
-    || fail "crates/$1/fuzz/Cargo.lock is out of date; after a version bump, run: bash scripts/ci/fuzz.sh lock"
+  cargo fetch --locked --quiet --manifest-path "$root/crates/$1/fuzz/Cargo.toml" \
+    || fail "crates/$1/fuzz/Cargo.lock doesn't match its manifests (a workspace version bump or a moved dependency requirement): run bash scripts/ci/fuzz.sh lock and commit the lockfiles"
 }
 
 # work KIND TARGET: the corpus or artifact directory for TARGET under
@@ -82,6 +90,21 @@ work() {
   [ -n "${FUZZ_WORK:-}" ] || return 0
   mkdir -p "$FUZZ_WORK/$1/$2"
   (cd "$FUZZ_WORK/$1/$2" && pwd)
+}
+
+# in_crate CRATE TARGET COMMAND...: run COMMAND in CRATE's directory, where
+# cargo-fuzz finds the fuzz crate. cargo-fuzz creates its own artifacts
+# directory even when FUZZ_WORK takes its place; that one is removed after,
+# if it is still empty.
+in_crate() {
+  local crate=$1 target=$2 status=0
+  shift 2
+  (cd "$root/crates/$crate" && "$@") || status=$?
+  if [ -n "${FUZZ_WORK:-}" ]; then
+    rmdir "$root/crates/$crate/fuzz/artifacts/$target" "$root/crates/$crate/fuzz/artifacts" \
+      2>/dev/null || true
+  fi
+  return "$status"
 }
 
 case $command in
@@ -130,9 +153,9 @@ case $command in
     # A positional corpus directory replaces cargo-fuzz's default one; a
     # later -artifact_prefix overrides the one cargo-fuzz passes. A single
     # input that runs 10 seconds is a hang.
-    (cd "$root/crates/$crate" && nightly_cargo fuzz run "$target" ${corpus:+"$corpus"} -- \
+    in_crate "$crate" "$target" nightly_cargo fuzz run "$target" ${corpus:+"$corpus"} -- \
       -max_total_time="$seconds" -timeout=10 -print_final_stats=1 \
-      ${artifacts:+"-artifact_prefix=$artifacts/"} "$@") ;;
+      ${artifacts:+"-artifact_prefix=$artifacts/"} "$@" ;;
   tmin)
     [ "$#" -ge 1 ] || usage
     target=$1; shift
@@ -151,15 +174,44 @@ case $command in
     for input in "${inputs[@]}"; do
       input=$(cd "$(dirname "$input")" && pwd)/$(basename "$input")
       echo "==> minimizing $input"
-      (cd "$root/crates/$crate" && nightly_cargo fuzz tmin "$target" "$input" -- -timeout=10 \
-        ${artifacts:+"-artifact_prefix=$artifacts/"}) || status=1
+      in_crate "$crate" "$target" nightly_cargo fuzz tmin "$target" "$input" -- -timeout=10 \
+        ${artifacts:+"-artifact_prefix=$artifacts/"} || status=1
     done
     exit "$status" ;;
+  cmin)
+    # Keeps the smallest set of inputs that covers what the whole corpus
+    # does, so a corpus saved run after run doesn't grow without bound.
+    [ "$#" -eq 1 ] || usage
+    target=$1
+    crate=$(crate_of "$target")
+    locked "$crate"
+    corpus=$(work corpus "$target")
+    before=$(find "${corpus:-$root/crates/$crate/fuzz/corpus/$target}" -type f | wc -l)
+    in_crate "$crate" "$target" nightly_cargo fuzz cmin "$target" ${corpus:+"$corpus"} -- -timeout=10
+    after=$(find "${corpus:-$root/crates/$crate/fuzz/corpus/$target}" -type f | wc -l)
+    echo "corpus of $target: $((before)) inputs before, $((after)) after" ;;
   lock)
-    # Any cargo will do, so this needs no nightly.
-    [ "$#" -eq 0 ] || usage
-    for crate in "${crates[@]}"; do
-      cargo update --manifest-path "$root/crates/$crate/fuzz/Cargo.toml" -p "$crate"
-    done ;;
+    [ "$#" -le 1 ] || usage
+    case ${1:-} in
+      --check) for crate in "${crates[@]}"; do locked "$crate"; done ;;
+      '')
+        # Without --locked, cargo re-resolves only the entries the manifests
+        # no longer allow, the codec's own version included, and keeps every
+        # other dependency where the lockfile has it. That fails when a moved
+        # requirement lands on a dependency the fuzz crate names itself too
+        # (bytes, heapless): its locked version satisfies the fuzz crate, so
+        # cargo keeps it. Then unlock the codec's dependencies and resolve
+        # them again.
+        for crate in "${crates[@]}"; do
+          manifest=$root/crates/$crate/fuzz/Cargo.toml
+          if ! cargo fetch --quiet --manifest-path "$manifest" 2>/dev/null; then
+            echo "crates/$crate/fuzz/Cargo.lock: resolving $crate's dependencies again"
+            cargo update --manifest-path "$manifest" -p "$crate" --recursive
+          fi
+          locked "$crate"
+          echo "crates/$crate/fuzz/Cargo.lock is up to date"
+        done ;;
+      *) usage ;;
+    esac ;;
   *) usage ;;
 esac

@@ -22,7 +22,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
-| Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins) | ✓ | ✓ | ✓ | ✓ |
+| Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
 | Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator and checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`) | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
@@ -341,7 +341,8 @@ image.
 The Lint job's "Check the pins" step fails when:
 
 - a line of `.github/ci-pins.env` isn't a comment, blank, or `NAME=value` with
-  a plain value (letters, digits, dots and hyphens), or a name is set twice;
+  a plain value (letters, digits, dots and hyphens, starting with a letter or
+  digit), or a name is set twice;
 - a `*_SHA256` value isn't 64 lowercase hex digits;
 - `rust-toolchain.toml`'s channel isn't an exact release, or
   `RUST_FUZZ_NIGHTLY` isn't a dated nightly (`nightly-YYYY-MM-DD`);
@@ -384,8 +385,8 @@ any entry unused for seven days. On 4 October 2026 the caches had reached
 - **Saves.** Only runs on `dev` save Rust caches: merges, the weekly run and
   manual runs there. PR runs only restore them, and so does the
   [flake hunt](#flake-hunt), which never saves. The
-  [fuzz corpora](#fuzzing) follow the same rule: only weekly and manual
-  `fuzz.yml` runs on `dev` save one, `fuzz-corpus-<target>-<run id>`.
+  [fuzz corpora](#fuzzing) follow the same rule: only scheduled and manual
+  `fuzz.yml` runs on `dev` save one, `fuzz-corpus-<target>-<run id>-<attempt>`.
 - **Pruning.** After a green run on `dev`, each workflow's **Prune caches**
   job runs [`scripts/ci/prune-caches.sh`](../scripts/ci/prune-caches.sh) with
   `actions: write`. It keeps the two newest rust-cache entries of each family
@@ -716,10 +717,10 @@ guaranteed until #1609 skips such a body by count.
 **When.** On a PR to `dev` or `main` that changes
 `crates/bacnet-mstp-codec/**` or `crates/bacnet-bip-codec/**` (fuzz crates
 included), the workflow, `.github/ci-pins.env`, `scripts/ci/fuzz.sh` or
-`scripts/ci/install-tools.sh`, each target runs for 60 seconds. Weekly
-(Sundays at 03:41 UTC, on `dev`) and by hand, each runs for 10 minutes. A
-newer push to the PR cancels its older run; weekly and manual runs are never
-cancelled.
+`scripts/ci/install-tools.sh`, each target runs for 60 seconds. Twice a
+week (Sundays and Wednesdays at 03:41 UTC, on `dev`) and by hand, each runs
+for 10 minutes. A newer push to the PR cancels its older run; scheduled and
+manual runs are never cancelled.
 
 **Jobs.** Everything goes through
 [`scripts/ci/fuzz.sh`](../scripts/ci/fuzz.sh), on the nightly in
@@ -736,27 +737,45 @@ fetch, so there is nothing to cache.
   `[[bin]]` runs without a workflow change, builds its target and runs it.
   cargo-fuzz's defaults apply: optimized, with debug assertions, overflow
   checks and AddressSanitizer. An input that runs for 10 seconds counts as a
-  hang.
+  hang. On a scheduled or manual run on `dev` it then minimizes the corpus
+  (`fuzz.sh cmin`) and saves it.
+- **Fuzz: advisories**, on scheduled and manual runs only, checks each fuzz
+  crate's lockfile against the RustSec advisories with Cargo Deny (at
+  `CARGO_DENY_VERSION`). It is a job of its own, so an advisory doesn't hold
+  up the fuzzing.
 
 **Corpora.** Each job restores the newest corpus its target has, saved as
-`fuzz-corpus-<target>-<run id>` by a weekly or manual run on `dev` (failed
-runs included: the failing input isn't in the corpus). A PR run replays it
-before fuzzing, so an input that once found new code paths runs again on
-every change. The [prune](#caches) keeps such entries on `dev`, but nothing
-restores an older one, so GitHub's seven-day eviction removes them. No corpus
-is checked in.
+`fuzz-corpus-<target>-<run id>-<attempt>` by a scheduled or manual run on
+`dev` (failed runs included: the failing input isn't in the corpus), and
+minimized before it is saved, so it doesn't grow from run to run. A PR run
+replays it before fuzzing, so an input that once found new code paths runs
+again on every change. GitHub evicts an entry that goes unused for seven
+days; two scheduled runs a week keep the newest one in use even when one
+starts late. The [prune](#caches) keeps such entries on `dev`, but nothing
+restores an older one, so that eviction removes them. No corpus is checked
+in.
 
 **Lockfiles.** Each fuzz crate's `Cargo.lock` is committed, and every build
 checks it first, so the fuzz builds use the dependencies it names. It also
-records the codec's own version, which the workspace sets: a version bump
-leaves it stale, and the check fails until `bash scripts/ci/fuzz.sh lock`
-updates that entry (step 1 of [the release](#trigger-and-dry-run)). The PR
-trigger doesn't watch the root `Cargo.toml`, so a stale lock otherwise shows
-in the next weekly run's check job. Cargo Deny doesn't cover the fuzz crates:
-they are unpublished CI tools whose binaries never ship. Their advisories,
-bans and sources pass `cargo deny --manifest-path crates/<codec>/fuzz/Cargo.toml
-check`; licenses don't, only because libFuzzer's `NCSA` (in
-`libfuzzer-sys`) isn't on the allow list and the fuzz crates name no license.
+records what the root `Cargo.toml` sets for the codec: its version and the
+workspace's requirements for its dependencies. A version bump or a moved
+requirement leaves the lockfile stale, so `ci.yml`'s required Lint job checks
+both lockfiles too (`bash scripts/ci/fuzz.sh lock --check`, any toolchain).
+`bash scripts/ci/fuzz.sh lock` brings them up to date: cargo re-resolves only
+the entries the manifests no longer allow and keeps every other dependency
+where it was. Run it with the release's version bump (step 1 of
+[the release](#trigger-and-dry-run)) and in any PR that changes a workspace
+dependency of a codec, and commit the lockfiles. When such a change moves a
+dependency the fuzz crate also names itself (`bytes`, `heapless`) to a new
+major version, update the fuzz crate's `Cargo.toml` to match, or the sinks
+won't build.
+
+Cargo Deny's gate doesn't cover the fuzz crates: they are unpublished CI
+tools whose binaries never ship. **Fuzz: advisories** checks their
+advisories; their bans and sources pass too
+(`cargo deny --manifest-path crates/<codec>/fuzz/Cargo.toml check`), and
+their licenses fail only because libFuzzer's `NCSA` (in `libfuzzer-sys`)
+isn't on the allow list and the fuzz crates name no license.
 
 **Running locally.** Install the pinned nightly and cargo-fuzz, then use the
 script as CI does. It works on macOS (Apple Silicon) as on Linux.
@@ -776,7 +795,7 @@ and anything a run finds stay in the fuzz crate's `corpus/<target>` and
 `artifacts/<target>`, which git ignores.
 
 **Triage.** When a target fails, its job uploads the artifact
-`fuzz-<target>` for 30 days: what libFuzzer saved (`crash-*` or `timeout-*`,
+`fuzz-<target>` for 30 days (a re-run of the job replaces it): what libFuzzer saved (`crash-*` or `timeout-*`,
 which the job minimizes into `minimized-from-*`, or `oom-*` or `leak-*`,
 which it doesn't) and the run's log, whose panic message names the check that
 failed. To reproduce it:
@@ -892,6 +911,7 @@ python3 scripts/ci/test-firmware-size.py
 python3 -m unittest discover -s scripts/release
 python3 -m unittest discover -s scripts -p 'test_changelog.py'
 python3 scripts/changelog.py check
+bash scripts/ci/fuzz.sh lock --check        # the fuzz crates' lockfiles; see "Fuzzing"
 actionlint .github/workflows/*.yml          # after editing a workflow
 ```
 
@@ -981,7 +1001,7 @@ To release:
    release has any, and merge:
 
    ```bash
-   bash scripts/ci/fuzz.sh lock                # each fuzz Cargo.lock's codec version
+   bash scripts/ci/fuzz.sh lock                # the fuzz crates' Cargo.lock files
    python3 scripts/changelog.py preview        # what the section will hold
    python3 scripts/changelog.py assemble --version 0.12.0 [--date 2026-10-02]
    ```

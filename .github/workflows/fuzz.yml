@@ -9,9 +9,10 @@ name: Fuzz
 #                 fuzz crate included, or this workflow, its scripts or the
 #                 pins: the fuzz crates' lockfiles, rustfmt and clippy, every
 #                 target built, then each target fuzzed for 60 seconds
-#   weekly        on dev (the default branch): each target for 10 minutes,
-#                 and its corpus saved for the next run
-#   manual        the same as weekly, on the branch picked
+#   scheduled     twice a week on dev (the default branch): each target for
+#                 10 minutes, then its corpus minimized and saved for the next
+#                 run, and the fuzz crates' lockfiles checked for advisories
+#   manual        the same as scheduled, on the branch picked
 #
 # No check here is required for merging. Every job's name starts with
 # "Fuzz:", so none can pass for CI OK or Native OK, and the release's CI gate
@@ -31,15 +32,17 @@ on:
       - scripts/ci/fuzz.sh
       - scripts/ci/install-tools.sh
   schedule:
-    # Weekly, early Sunday, off the hour.
-    - cron: "41 3 * * 0"
+    # Early Sunday and Wednesday, off the hour. GitHub evicts a cache entry
+    # after 7 days without use, and only these runs save the corpora, so two
+    # runs a week keep a late one from finding them gone.
+    - cron: "41 3 * * 0,3"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # A newer push to a PR cancels its superseded run. Weekly and manual runs
+  # A newer push to a PR cancels its superseded run. Scheduled and manual runs
   # are never cancelled; a manual run waits for the one before it.
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -87,7 +90,8 @@ jobs:
         name: List the targets
         run: |
           bash scripts/ci/fuzz.sh list
-          echo "matrix=$(bash scripts/ci/fuzz.sh matrix)" >> "$GITHUB_OUTPUT"
+          matrix=$(bash scripts/ci/fuzz.sh matrix)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
       - name: Lockfiles, rustfmt and clippy
         run: bash scripts/ci/fuzz.sh check
       - name: Build every target
@@ -112,12 +116,12 @@ jobs:
       - *tools
       - name: Work directory
         run: echo "FUZZ_WORK=$RUNNER_TEMP/fuzz" >> "$GITHUB_ENV"
-      # The newest corpus a weekly or manual run on dev saved. PR runs start
-      # from it too, so they replay what earlier runs found first.
+      # The newest corpus a scheduled or manual run on dev saved. PR runs
+      # start from it too, so they replay what earlier runs found first.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fuzz/corpus/${{ matrix.target }}
-          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: Build
         run: bash scripts/ci/fuzz.sh build "$TARGET"
@@ -131,6 +135,7 @@ jobs:
       - name: Minimize the failing input
         if: ${{ failure() && steps.fuzz.outcome == 'failure' }}
         run: bash scripts/ci/fuzz.sh tmin "$TARGET"
+      # A re-run of the job replaces the artifact its first attempt uploaded.
       - name: Upload the failing input
         if: ${{ always() && steps.fuzz.outcome == 'failure' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -139,11 +144,37 @@ jobs:
           path: ${{ runner.temp }}/fuzz/artifacts/${{ matrix.target }}
           retention-days: 30
           if-no-files-found: warn
+          overwrite: true
       # Only runs on dev save, as with the Rust caches, and a failed run's
-      # corpus is still good: the failing input isn't in it.
-      - name: Save the corpus
+      # corpus is still good: the failing input isn't in it. The corpus is
+      # minimized first, so it doesn't grow from run to run.
+      - name: Minimize the corpus
+        id: cmin
         if: ${{ always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/dev' && (steps.fuzz.outcome == 'success' || steps.fuzz.outcome == 'failure') }}
+        run: bash scripts/ci/fuzz.sh cmin "$TARGET"
+      - name: Save the corpus
+        if: ${{ always() && steps.cmin.outcome == 'success' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fuzz/corpus/${{ matrix.target }}
-          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # The fuzz crates' lockfiles against the RustSec advisories, on scheduled
+  # and manual runs: ci.yml's Cargo Deny reads only the workspace's lockfile.
+  # A job of its own, so an advisory doesn't hold up the fuzzing.
+  advisories:
+    name: "Fuzz: advisories"
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - *checkout
+      - *tools
+      - name: Cargo Deny (advisories) for each fuzz crate
+        run: |
+          bash scripts/ci/install-tools.sh cargo-deny
+          status=0
+          for manifest in crates/*/fuzz/Cargo.toml; do
+            cargo deny --manifest-path "$manifest" --config deny.toml check advisories || status=1
+          done
+          exit "$status"
