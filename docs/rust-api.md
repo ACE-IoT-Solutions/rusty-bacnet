@@ -1802,6 +1802,12 @@ broadcast address or 255.255.255.255), since the subnet already received it;
 it still sends it to its foreign devices. This also stops a BDT row that is
 the BBMD itself under another address from looping a broadcast.
 
+The tables and the forwarding rules are those of the `no_std` crate
+`bacnet-bip-core`, which firmware can use on its own (see
+[the architecture notes](architecture.md#the-bip-bbmd-and-the-portable-core)).
+`BipTransport::bbmd_state()` lends the transport's `BbmdState`, whose `bdt()`
+and `fdt()` return copies of the rows.
+
 A BBMD forwards its own broadcasts as well as those of other devices on its
 subnet (Annex J.4.5). Each `send_broadcast` in BBMD mode queues a
 Forwarded-NPDU, with the BBMD's own B/IP address as the originating address,

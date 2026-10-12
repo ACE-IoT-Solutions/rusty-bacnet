@@ -532,7 +532,7 @@ async fn send_forwarded_npdu(
 /// fan-out worker, as in some tests, forwards this way.
 ///
 /// Yields between sends for large target lists to avoid starving the recv loop
-/// when there are many FDT entries (up to 512).
+/// when there are many targets (up to 128 BDT rows and 128 foreign devices).
 async fn forward_npdu(
     ctx: &RecvContext,
     npdu: &[u8],
