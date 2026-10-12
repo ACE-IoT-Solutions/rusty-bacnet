@@ -45,6 +45,7 @@ mod bbmd_start;
 mod client_snapshot;
 mod exchange;
 mod foreign_device;
+mod mode;
 mod node;
 mod send;
 mod send_counters;
@@ -57,6 +58,7 @@ pub use client_snapshot::{
     ForeignRegistrationSnapshot,
 };
 pub use foreign_device::ForeignDeviceConfig;
+pub use mode::{BbmdOptions, BipMode};
 mod fanout;
 mod groups;
 mod socket;
@@ -853,6 +855,8 @@ mod held_broadcast_tests;
 mod malformed_bvll_tests;
 #[cfg(test)]
 mod management_ack_tests;
+#[cfg(test)]
+mod mode_tests;
 #[cfg(test)]
 mod npdu_addressing_tests;
 #[cfg(test)]

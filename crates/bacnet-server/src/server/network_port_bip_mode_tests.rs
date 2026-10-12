@@ -7,7 +7,7 @@ use super::network_port_mode_tests::{host, port_oid, property_list, rp};
 use super::*;
 use bacnet_encoding::constructed::{decode_bdt_entry_list, decode_fdt_entry_list};
 use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
-use bacnet_transport::bip::ForeignDeviceConfig;
+use bacnet_transport::bip::{BbmdOptions, ForeignDeviceConfig};
 use bacnet_transport::bvll::BvlcResultCode;
 use bacnet_types::constructed::BACnetBDTEntry;
 use bacnet_types::enums::PropertyIdentifier as P;
@@ -184,4 +184,29 @@ async fn a_bbmd_that_also_registers_as_a_foreign_device_fails_to_start() {
         error.contains("a BBMD that also registers as a foreign device"),
         "{error}"
     );
+}
+
+/// The B/IP builder's BBMD mode (#938) starts a BBMD with the options it
+/// carries, and the registered port reports it.
+#[tokio::test]
+async fn the_builders_bbmd_mode_runs_a_bbmd_the_registered_port_reports() {
+    let mut server = BACnetServer::bip_builder()
+        .interface(Ipv4Addr::LOCALHOST)
+        .port(0)
+        .broadcast_address(Ipv4Addr::new(127, 255, 255, 255))
+        .database(database())
+        .registered_network_port(port_oid())
+        .mode(BipMode::Bbmd(BbmdOptions {
+            foreign_device_policy: Some(ForeignDevicePolicy::default()),
+            ..BbmdOptions::default()
+        }))
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(rp(&server, P::BACNET_IP_MODE).await.unwrap(), [0x91, 2]);
+    assert_eq!(
+        rp(&server, P::BBMD_ACCEPT_FD_REGISTRATIONS).await.unwrap(),
+        [0x11]
+    );
+    server.stop().await.unwrap();
 }

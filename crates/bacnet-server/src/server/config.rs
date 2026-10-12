@@ -343,6 +343,25 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
 }
 
 impl BipServerBuilder {
+    /// Set the B/IP mode: a normal node (the default), a foreign device or
+    /// a BBMD (#938). A foreign device's `build()` doesn't wait for its BBMD
+    /// to accept the registration. A registered Network Port reports the
+    /// mode in `BACnet_IP_Mode`.
+    ///
+    /// ```
+    /// use bacnet_server::server::BACnetServer;
+    /// use bacnet_transport::bbmd::ForeignDevicePolicy;
+    /// use bacnet_transport::bip::{BbmdOptions, BipMode};
+    /// let builder = BACnetServer::bip_builder().mode(BipMode::Bbmd(BbmdOptions {
+    ///     foreign_device_policy: Some(ForeignDevicePolicy::default()),
+    ///     ..BbmdOptions::default()
+    /// }));
+    /// ```
+    pub fn mode(mut self, mode: bacnet_transport::bip::BipMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     /// Bind the interface address itself, so devices on other addresses of
     /// this host can share the port, each getting only its own unicast
     /// (#1538). Off by default, which binds `0.0.0.0`. Needs an explicit

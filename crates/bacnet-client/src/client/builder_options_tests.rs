@@ -1,4 +1,6 @@
 use super::*;
+use bacnet_transport::bbmd::ForeignDevicePolicy;
+use bacnet_transport::bip::{BbmdOptions, ForeignDeviceConfig};
 use bacnet_transport::loopback::LoopbackTransport;
 use std::net::Ipv4Addr;
 
@@ -12,12 +14,12 @@ async fn bip_builder_foreign_device_starts_without_waiting_for_bbmd_acceptance()
         BACnetClient::bip_builder()
             .interface(Ipv4Addr::LOCALHOST)
             .port(0)
-            .foreign_device(ForeignDeviceConfig {
+            .mode(BipMode::Foreign(ForeignDeviceConfig {
                 bbmd_ip: Ipv4Addr::LOCALHOST,
                 bbmd_port: peer.local_addr().unwrap().port(),
                 ttl: 60,
                 renewal_interval: Some(Duration::from_secs(20)),
-            })
+            }))
             .build(),
     )
     .await
@@ -44,12 +46,12 @@ async fn bip_builder_foreign_device_validates_settings_before_io() {
         let result = BACnetClient::bip_builder()
             .interface(Ipv4Addr::new(192, 0, 2, 1))
             .port(0)
-            .foreign_device(ForeignDeviceConfig {
+            .mode(BipMode::Foreign(ForeignDeviceConfig {
                 bbmd_ip: Ipv4Addr::LOCALHOST,
                 bbmd_port: 47808,
                 ttl,
                 renewal_interval: interval,
-            })
+            }))
             .build()
             .await;
         match result {
@@ -61,6 +63,34 @@ async fn bip_builder_foreign_device_validates_settings_before_io() {
             }
         }
     }
+}
+
+/// BBMD mode starts a BBMD with every option the mode carries (#938).
+#[tokio::test]
+async fn bip_builder_bbmd_mode_starts_a_bbmd_with_its_options() {
+    let policy = ForeignDevicePolicy {
+        max_ttl: 120,
+        ..ForeignDevicePolicy::default()
+    };
+    let mut client = BACnetClient::bip_builder()
+        .interface(Ipv4Addr::LOCALHOST)
+        .port(0)
+        .broadcast_address(Ipv4Addr::LOCALHOST)
+        .mode(BipMode::Bbmd(BbmdOptions {
+            foreign_device_policy: Some(policy.clone()),
+            management_acl: vec![[127, 0, 0, 9]],
+            ..BbmdOptions::default()
+        }))
+        .build()
+        .await
+        .unwrap();
+    {
+        let state = client.transport().bbmd_state().unwrap().lock().unwrap();
+        assert_eq!(state.foreign_device_policy(), Some(&policy));
+        assert!(state.is_management_allowed(&[127, 0, 0, 9]));
+        assert!(!state.is_management_allowed(&[127, 0, 0, 1]));
+    }
+    client.stop().await.unwrap();
 }
 
 fn assert_apdu_tuning(config: &ClientConfig) {
