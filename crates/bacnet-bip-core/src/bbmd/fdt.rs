@@ -366,7 +366,19 @@ impl<const N: usize> Fdt<N> {
     ) -> Result<FdtEntries<'o>, StorageFull> {
         let mut written = 0;
         for entry in self.live_at(now) {
-            *out.get_mut(written).ok_or(StorageFull)? = entry.wire_entry_at(now);
+            let FdtEntry {
+                address,
+                ttl,
+                remaining,
+            } = entry.wire_entry_at(now);
+            let row = out.get_mut(written).ok_or(StorageFull)?;
+            // The address's IP and port one at a time: copied whole, its six
+            // octets compile to a memmove call on ARMv6-M, about 1.3 KB of
+            // code.
+            row.address.set_ip(*address.ip());
+            row.address.set_port(address.port());
+            row.ttl = ttl;
+            row.remaining = remaining;
             written += 1;
         }
         Ok(FdtEntries::from_entries(&out[..written]))

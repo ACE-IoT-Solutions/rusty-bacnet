@@ -394,7 +394,14 @@ impl<const N: usize> Bdt<N> {
     /// that it fits.
     fn ensure_own_row(&mut self) {
         if !self.contains(self.own) {
-            self.rows[self.len] = BdtEntry::new(self.own, TWO_HOP_MASK);
+            let own = self.own;
+            let row = &mut self.rows[self.len];
+            // The address's IP and port one at a time: copied whole, its six
+            // octets compile to a memmove call on ARMv6-M, about 1.3 KB of
+            // code.
+            row.address.set_ip(*own.ip());
+            row.address.set_port(own.port());
+            row.mask = TWO_HOP_MASK;
             self.len += 1;
             self.own_row_appended = true;
         }

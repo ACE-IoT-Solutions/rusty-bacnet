@@ -40,6 +40,7 @@ extern crate alloc;
 
 #[cfg(feature = "alloc")]
 pub mod apdu;
+pub mod bbmd;
 pub mod bip;
 pub mod mstp;
 pub mod node;
