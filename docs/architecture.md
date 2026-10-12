@@ -151,22 +151,32 @@ UART + GPIO → DE/RE ─────────>│  GpioDirectionPort<S>    �
                               └──────────────────────────┘
 ```
 
-`GpioDirectionPort` wraps a `SerialPort` with transmit-complete `drain()` support and controls a GPIO pin through the Linux character device API (`/dev/gpiochipN`). It asserts DE before writing, waits for drain, then applies any configured transceiver guard interval before returning to RX. Unix `TokioSerialPort` drains through the native serial backend on a blocking worker while retaining exclusive ownership of the stream. Ordinary hardware auto-direction and kernel RS-485 writes do not add userspace direction changes or drain waits.
+`GpioDirectionPort` wraps a `SerialPort` with transmit-complete `drain()` support and controls a GPIO pin through the Linux character device API (`/dev/gpiochipN`). It asserts DE before writing, waits for drain, then applies any configured transceiver guard interval before returning to RX. Unix `TokioSerialPort` drains through the native serial backend on a blocking worker while retaining exclusive ownership of the stream. Hardware auto-direction and kernel RS-485 add no userspace direction changes; the transport still drains every frame, to learn when it ended.
 
-MS/TP turnaround uses an absolute earliest-transmit deadline derived from the latest nonempty host read. Processing time counts toward that silence interval; a later chunk moves the deadline forward. Transmit encoding reuses a buffer and frame boundaries without copying each encoded frame into its own byte vector. These host-side guarantees are not physical UART timing qualification.
+### The MS/TP transport and the portable core
+
+`MstpTransport` keeps the serial I/O layer above and runs the master node state machine of `bacnet-mstp-core`, with frames from `bacnet-mstp-codec` (re-exported as `bacnet_transport::mstp::codec`). There is no second state machine or codec in the transport. Its task owns the core, the core's receive buffer and a boxed `ActionBuffers`, and acts as the core's adapter:
+
+- **Input.** Every octet a serial read returns goes to `on_octet`, stamped with the time of that read, so the core's own stream decoder (the one the simulator and fuzzers exercise) assembles every frame. A host stamp can only be late, which can only defer this station's sends. T_frame_abort is 100 ms, the most Clause 9.5.3 allows, so a frame whose tail a USB adapter holds back still completes.
+- **Deadlines.** Tokio time is mapped onto the core's microsecond clock from the moment the transport started. The task sleeps until `next_deadline` and stamps `on_deadline` with the time it woke, so late service shows in the core's `deadline_misses`.
+- **Sending.** Octets already waiting are fed to the core right before `on_transmit_started`; the frame is written only if that returns Ok. It is complete when the port's `drain` returns, and never before its time on the wire at the baud rate (a port without a drain is timed by that alone). Each frame, including this station's own consecutive frames, waits T_turnaround after the last activity.
+- **Echo.** `SerialPort::echo` says whether the port hears its own frames. With `Echo::Full` the transport drops as many received octets as it sent, within a 20 ms grace, before it reports the frame complete; mismatches and missing echoes are counted.
+- **Queues.** The core's unicast and broadcast queues (256 NPDUs each) are shared with the send calls behind a short-held mutex, so a full queue or an oversized NPDU is refused at once. NPDUs go out by network priority.
+- **Replies.** A Data Expecting Reply for this station goes up with a one-use reply channel; an answer through it goes to `complete_request`. When the core stops waiting it sends Reply Postponed and closes the channel; an answer that came too late is queued for the next token.
+
+These host-side guarantees are not physical UART timing qualification.
 
 `MstpTransport::with_execution_mode(MstpExecutionMode::DedicatedThread)` opts into
 an OS thread with a current-thread Tokio runtime for the MAC loop. The default
 `Tokio` mode retains the application-runtime spawn path. Both modes run the same
-master state machine, frame encoding and ordering, turnaround/deadline logic, and
-64-entry NPDU receive channel. Serial wrappers retain their existing drain
+core, adapter and 64-entry NPDU receive channel. Serial wrappers retain their existing drain
 boundary; native blocking drain jobs use the isolated runtime's blocking pool
 when called from the dedicated loop. No per-frame bridge or second MAC machine
 is introduced. Already-open async serial resources still depend on their original
 reactor, which must remain running.
 
 `stop()` cancels the MAC task, waits for isolated runtime teardown and outstanding
-blocking work, then clears the transmit queue and returns the node to Idle.
+blocking work; the core and its queues go with the task, and later sends are refused.
 `abort()` and drop request teardown without waiting. Cancellation cannot interrupt
 a blocking syscall or undo bytes already accepted by a driver; a stuck backend
 can delay shutdown. Fast or efficient execution is not guaranteed or measured
@@ -187,9 +197,10 @@ noise, power loss and slow adapters, with Clause 9 invariants checked after
 every event. Its scenarios cover ring formation, rotation, replies, joins and
 leaves, token loss and noise, plus randomized fault runs. The crate
 documentation describes the model and what it leaves out, such as electrical
-effects and propagation delay. The host `MstpTransport` does not use the
-core yet (#1608), so these scenarios test the core rather than the host
-transport.
+effects and propagation delay. The simulator feeds each core octet by octet
+from virtual time; the host `MstpTransport` drives the same core from chunked
+reads, and its own tests (Clause 9 regressions for #1608 among them) run it
+against a scripted peer in paused Tokio time.
 
 ## Object Model
 
@@ -221,8 +232,8 @@ The stack runs on a Tokio multi-threaded runtime.
 - Router table entries: 256
 - Segment receivers: 128 (prevents DoS from abandoned segmented transfers)
 - COV in-flight: 255 (matches u8 invoke ID range)
-- MS/TP frame buffer: 1,507 bytes
-- MS/TP queue: 256 pending NPDUs
+- MS/TP frame buffer: 511 bytes (one standard frame)
+- MS/TP queues: 256 pending unicast and 256 pending broadcast NPDUs
 
 **Client APDU retry**: 3 retries by default, invoke ID reused across retries, cleaned up on final timeout.
 

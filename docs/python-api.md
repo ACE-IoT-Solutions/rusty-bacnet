@@ -598,7 +598,11 @@ OS.
 `mstp_baud` (9600, 19200, 38400, 57600, 76800 or 115200; default 38400),
 `mstp_mac` (default 1), `mstp_max_master` (default 127) and
 `mstp_max_info_frames` (default 1). `BACnetServer` takes the same options, and
-`MstpEndpoint` its own `serial_port`.
+`MstpEndpoint` its own `serial_port`. The link runs the same Clause 9 master
+core as the Rust transport. The port is taken not to hear its own frames
+(transceiver receiver off while transmitting); an adapter that echoes them can
+be declared only from Rust for now (`TokioSerialPort::with_echo`, see
+[Echo](rust-api.md#echo)).
 
 `rusty_bacnet.list_serial_ports()` returns the names of the serial ports the
 operating system reports, to pass as `serial_port`: macOS lists them through
