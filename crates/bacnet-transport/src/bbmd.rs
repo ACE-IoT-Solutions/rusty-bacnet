@@ -596,13 +596,10 @@ fn rows_of(rows: &[codec::BdtEntry]) -> Vec<BdtEntry> {
 }
 
 #[cfg(test)]
-mod differential_tests;
-
-#[cfg(test)]
 mod foreign_device_tests;
 
 #[cfg(test)]
-mod legacy;
+mod run_tests;
 
 #[cfg(test)]
 mod tests;

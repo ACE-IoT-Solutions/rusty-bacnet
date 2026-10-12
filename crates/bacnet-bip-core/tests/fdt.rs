@@ -130,6 +130,36 @@ fn the_admission_check_runs_after_the_time_to_live_and_can_refuse() {
     assert_eq!(fdt.registrations()[0].ttl, 60);
 }
 
+/// The purge comes first, so a refused registration still frees the
+/// lapsed slots and reports them.
+#[test]
+fn a_refused_registration_still_purges() {
+    for refusal in [
+        RegistrationRefusal::TimeToLive,
+        RegistrationRefusal::NotAdmitted,
+    ] {
+        let mut fdt: Fdt<4> = Fdt::new();
+        register(&mut fdt, addr(10, 0, 0, 1, PORT), 1, T0).unwrap();
+        register(&mut fdt, addr(10, 0, 0, 2, PORT), 1, T0).unwrap();
+        register(&mut fdt, addr(10, 0, 0, 3, PORT), 60, T0).unwrap();
+        let (ttl, admit) = match refusal {
+            RegistrationRefusal::TimeToLive => (0, true),
+            _ => (60, false),
+        };
+        let outcome = fdt.register(
+            addr(10, 0, 0, 9, PORT),
+            ttl,
+            T0 + secs(32),
+            &OPEN,
+            Reservation::Ordinary,
+            || admit,
+        );
+        assert_eq!(outcome.result, Err(refusal));
+        assert_eq!(outcome.purged, 2, "{refusal:?}");
+        assert_eq!(fdt.len(), 1);
+    }
+}
+
 #[test]
 fn one_address_may_hold_its_quota_across_ports() {
     let mut fdt: Fdt<8> = Fdt::new();

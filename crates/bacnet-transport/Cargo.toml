@@ -54,7 +54,6 @@ serial-gpio = ["serial", "dep:gpiocdev"]
 ethernet = []
 
 [dev-dependencies]
-proptest.workspace = true
 rcgen.workspace = true
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 

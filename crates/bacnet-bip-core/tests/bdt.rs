@@ -155,6 +155,36 @@ fn a_bad_row_past_the_capacity_is_reported_before_the_capacity() {
     );
 }
 
+/// Every distinct row past the storage counts toward `needed`, not just the
+/// first, and a duplicate of one of them doesn't.
+#[test]
+fn every_distinct_row_past_the_storage_is_counted() {
+    let rows = [
+        row(addr(10, 0, 0, 1, PORT), MASK_32),
+        row(addr(10, 0, 0, 2, PORT), MASK_32),
+        row(addr(10, 0, 0, 3, PORT), MASK_32),
+        row(addr(10, 0, 0, 4, PORT), MASK_32),
+        row(addr(10, 0, 0, 5, PORT), MASK_32),
+        row(addr(10, 0, 0, 4, PORT), MASK_32),
+    ];
+    let mut bdt: Bdt<2> = Bdt::new(OWN);
+    assert_eq!(
+        set(&mut bdt, &rows),
+        Err(BdtError::Capacity {
+            needed: 6,
+            capacity: 2
+        })
+    );
+    let mut out = [row(addr(0, 0, 0, 0, 0), MASK_32); 2];
+    assert_eq!(
+        canonicalize(BdtEntries::from_entries(&rows), &mut out),
+        Err(BdtError::Capacity {
+            needed: 5,
+            capacity: 2
+        })
+    );
+}
+
 #[test]
 fn canonicalize_writes_distinct_rows_without_an_own_row() {
     let a = row(addr(10, 0, 0, 1, PORT), MASK_32);
