@@ -26,14 +26,15 @@
 //! - **Probe.** After a grace with nothing held: one more grace in which a
 //!   late echo is still dropped; at its end what is held passes on.
 //!
-//! Silence ends the hunt after the grace: more than T_frame_abort since the
-//! last octet read. Held octets that have waited longer than T_frame_abort
-//! for the octet that would release them are dropped instead, as a stale
-//! fragment of the echo: a receiver would have abandoned that fragment
-//! anyway, and having matched the frame, it cannot be a whole frame of a
-//! peer's. A new confirmed start ends the hunt too: octets held in probe
-//! mode are passed on before it (they may be a peer's), and in the other
-//! phases they are dropped as the echo's continuation.
+//! Silence ends the residual hunt: more than T_frame_abort since the last
+//! octet read (the probe has its own deadline instead). Held octets that
+//! have waited longer than T_frame_abort for the octet that would release
+//! them are dropped, as a stale fragment of the echo: a receiver would have
+//! abandoned that fragment anyway, and having matched the frame, it cannot
+//! be a whole frame of a peer's. Before this station tries to start a
+//! frame, octets held in probe mode pass on (they may be a peer's); a
+//! confirmed start then ends the hunt, dropping what the grace or residual
+//! phases still hold as the echo's continuation.
 
 use tokio::time::{Duration, Instant};
 
@@ -95,10 +96,9 @@ pub(super) struct EchoFilter {
     phase: Phase,
     grace: Duration,
     frame_abort: Duration,
-    /// When the last octet was read, or the hunt began.
+    /// When the last octet was read, or the hunt began. While octets are
+    /// held, the newest of them was read then.
     last_read: Instant,
-    /// When the newest held octet was read.
-    held_at: Instant,
     /// Octets passed on in this hunt while the echo was expected.
     mismatched: bool,
 }
@@ -113,7 +113,6 @@ impl EchoFilter {
             grace: Duration::ZERO,
             frame_abort,
             last_read: now,
-            held_at: now,
             mismatched: false,
         }
     }
@@ -126,7 +125,6 @@ impl EchoFilter {
         self.phase = Phase::Grace(ended + grace);
         self.grace = grace;
         self.last_read = ended;
-        self.held_at = ended;
         self.mismatched = false;
     }
 
@@ -144,11 +142,6 @@ impl EchoFilter {
         }
     }
 
-    /// Whether the grace is still running.
-    pub(super) fn in_grace(&self) -> bool {
-        matches!(self.phase, Phase::Grace(_))
-    }
-
     /// Filter one octet read at `now`.
     pub(super) fn push(&mut self, octet: u8, now: Instant) -> Pushed {
         let mut pushed = Pushed::default();
@@ -156,12 +149,14 @@ impl EchoFilter {
             pushed.pass = true;
             return pushed;
         }
-        if self.matched > 0 && now.saturating_duration_since(self.held_at) > self.frame_abort {
+        let silent = now.saturating_duration_since(self.last_read) > self.frame_abort;
+        if self.matched > 0 && silent {
             pushed.stale = std::mem::take(&mut self.matched);
         }
-        let silent = now.saturating_duration_since(self.last_read) > self.frame_abort;
         self.last_read = now;
-        if silent && !self.in_grace() {
+        // The probe has its own deadline; only the residual hunt ends with
+        // silence.
+        if silent && self.phase == Phase::Residual {
             self.phase = Phase::Off;
             self.matched = 0;
             pushed.pass = true;
@@ -169,7 +164,6 @@ impl EchoFilter {
         }
         if self.expected.get(self.matched) == Some(&octet) {
             self.matched += 1;
-            self.held_at = now;
             if self.matched == self.expected.len() {
                 self.phase = Phase::Off;
                 self.matched = 0;
@@ -181,7 +175,6 @@ impl EchoFilter {
         if shift <= self.matched {
             pushed.release = shift;
             self.matched = self.matched + 1 - shift;
-            self.held_at = now;
         } else {
             pushed.release = self.matched;
             pushed.pass = true;
@@ -214,30 +207,46 @@ impl EchoFilter {
         match self.phase {
             Phase::Grace(end) if now >= end => {
                 if self.matched == 0 {
-                    ended.missing = true;
+                    // Missing only if nothing at all came where the echo
+                    // should have: octets passed on are a mismatch instead.
+                    ended.missing = !self.mismatched;
                     self.phase = Phase::Probe(end + self.grace);
                 } else {
                     self.phase = Phase::Residual;
                 }
             }
-            Phase::Probe(end) if now >= end => ended = self.finish(now, true),
+            Phase::Probe(end) if now >= end => ended = self.end_probe(now),
             _ => {}
         }
         ended
     }
 
-    /// End the hunt before this station's next confirmed start: probe-mode
-    /// octets pass on, the echo's continuation is dropped.
+    /// Before this station tries to start a frame: octets held in probe
+    /// mode may be a peer's, so they pass on now, as line activity. The
+    /// other phases are left alone until a start is confirmed: a start can
+    /// still be refused, and what they hold may yet prove to be a peer's.
     pub(super) fn before_start(&mut self, now: Instant) -> Ended {
-        let release = matches!(self.phase, Phase::Probe(_));
-        self.finish(now, release)
+        match self.phase {
+            Phase::Probe(_) => self.end_probe(now),
+            Phase::Off | Phase::Grace(_) | Phase::Residual => Ended::default(),
+        }
     }
 
-    fn finish(&mut self, now: Instant, release: bool) -> Ended {
+    /// This station's start was confirmed: octets still held in the grace or
+    /// residual phases were the last echo's continuation. End the hunt and
+    /// return how many octets were dropped.
+    pub(super) fn confirmed_start(&mut self) -> usize {
+        self.phase = Phase::Off;
+        std::mem::take(&mut self.matched)
+    }
+
+    /// End the probe: release what it holds, or drop it if it has waited
+    /// longer than T_frame_abort.
+    fn end_probe(&mut self, now: Instant) -> Ended {
         let mut ended = Ended::default();
         let held = std::mem::take(&mut self.matched);
-        if held > 0 && release {
-            if now.saturating_duration_since(self.held_at) > self.frame_abort {
+        if held > 0 {
+            if now.saturating_duration_since(self.last_read) > self.frame_abort {
                 ended.stale = held;
             } else {
                 ended.release = held;

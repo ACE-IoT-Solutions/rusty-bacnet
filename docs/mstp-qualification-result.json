@@ -22,7 +22,7 @@
     "der_tx", "dner_tx_direct", "dner_tx_queued", "reply_postponed_tx",
     "wait_for_reply_timeouts", "outbound_queue_full", "outbound_oversize",
     "ingress_full", "ingress_closed", "serial_read_errors", "serial_write_errors",
-    "echo_mismatches", "echo_missing", "echo_stale_fragments", "late_answers_queued",
+    "echo_mismatches", "echo_missing", "echo_fragments_dropped", "late_answers_queued",
     "late_answers_dropped",
     "late_answers_expired", "mac.frames_received", "mac.npdus_delivered",
     "mac.parser_errors", "mac.frame_aborts", "mac.deadline_misses",

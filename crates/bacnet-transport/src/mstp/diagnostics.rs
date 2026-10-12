@@ -66,14 +66,17 @@ pub struct MstpDiagnosticsSnapshot {
     /// or a peer that answered before the echo was seen. Counted once per
     /// frame.
     pub echo_mismatches: u64,
-    /// Frames sent on a port with [`Echo::Full`](super::Echo::Full) none of
-    /// whose echo had arrived within the echo grace after the frame ended. A
-    /// port declared with an echo that does not echo shows here.
+    /// Frames sent on a port with [`Echo::Full`](super::Echo::Full) after
+    /// which nothing at all was read within the echo grace (a grace in which
+    /// other octets passed on counts in `echo_mismatches` instead). A port
+    /// declared with an echo that does not echo shows here.
     pub echo_missing: u64,
-    /// Fragments of an echo dropped because they had waited longer than
-    /// T_frame_abort for the octet that would release them, or for the hunt
-    /// to end: a receiver would have abandoned them anyway.
-    pub echo_stale_fragments: u64,
+    /// Fragments of an echo dropped without the whole frame having
+    /// matched: they had waited longer than T_frame_abort for the octet that
+    /// would release them (a receiver would have abandoned them anyway), or
+    /// this station confirmed its next start while they were held, as the
+    /// previous echo's continuation.
+    pub echo_fragments_dropped: u64,
     /// Application answers that came after the core had finished their
     /// request (it had sent Reply Postponed, or given up), queued as
     /// ordinary NPDUs to the requester, to go out with the token.
@@ -162,7 +165,7 @@ counters!(
     serial_write_errors,
     echo_mismatches,
     echo_missing,
-    echo_stale_fragments,
+    echo_fragments_dropped,
     late_answers_queued,
     late_answers_dropped,
     late_answers_expired,

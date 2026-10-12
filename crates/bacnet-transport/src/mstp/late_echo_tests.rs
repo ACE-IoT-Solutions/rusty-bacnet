@@ -6,7 +6,8 @@
 use std::sync::atomic::Ordering;
 
 use bacnet_mstp_codec::FrameType;
-use tokio::time::Duration;
+use bytes::Bytes;
+use tokio::time::{Duration, Instant};
 
 use super::test_support::{config, encode, Bus, DrainMode, Port, Sent};
 use super::Echo;
@@ -287,6 +288,96 @@ async fn a_stray_octet_and_a_reply_without_echo_reach_the_core() {
             .own_address_frames,
         0
     );
+    bus.stop().await;
+}
+
+/// The rest of an echo cut by the grace never comes: what was held of it
+/// is dropped when the station's next start is confirmed (here the token
+/// retry, the core having heard nothing), and counted.
+#[tokio::test(start_paused = true)]
+async fn an_unfinished_echo_is_dropped_and_counted_at_the_next_start() {
+    let (mut bus, token) = ring(SHORT_GRACE).await;
+    bus.return_token(&token, 4).await;
+    let passed = bus.next().await;
+    bus.until(passed.end + TICK).await;
+    bus.send_raw(&octets(&passed)[..4]);
+    let retry = bus.next().await;
+    assert_eq!((retry.frame_type, retry.destination), (FrameType::Token, 4));
+    assert!(retry.start >= passed.end + T_USAGE_TIMEOUT);
+    bus.until(retry.end).await;
+    bus.send_raw(&octets(&retry));
+    bus.until(retry.end + TICK).await;
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.echo_fragments_dropped, 1);
+    assert_eq!((counts.echo_missing, counts.echo_mismatches), (0, 0));
+    assert_eq!(counts.mac.own_address_frames, 0);
+    bus.stop().await;
+}
+
+/// One stray octet where the echo should be, then nothing until the grace
+/// runs out: the frame counts as a mismatch, and not also as missing.
+#[tokio::test(start_paused = true)]
+async fn a_mismatch_is_not_also_counted_missing() {
+    let (mut bus, token) = ring(SHORT_GRACE).await;
+    bus.return_token(&token, 4).await;
+    let passed = bus.next().await;
+    bus.until(passed.end + TICK).await;
+    bus.send_raw(&[0xFF]);
+    bus.until(passed.end + GRACE + TICK).await;
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!((counts.echo_mismatches, counts.echo_missing), (1, 0));
+    bus.stop().await;
+}
+
+/// A start the core refuses leaves the echo hunt going. The echo of the
+/// station's answer breaks off after the grace (the core hears a bad
+/// header); when the next answer is handed over, the drain reads a pad
+/// octet, which defers the start, and a peer's preamble, which the hunt
+/// holds as a possible echo. The preamble still reaches the core with the
+/// rest of its frame.
+#[tokio::test(start_paused = true)]
+async fn a_refused_start_keeps_a_peer_preamble_held_after_the_grace() {
+    let mut bus = Bus::start_with(
+        config(3, 127),
+        Port {
+            echoes: false,
+            ..SHORT_GRACE
+        },
+    )
+    .await;
+    bus.send(FrameType::BACnetDataExpectingReply, 3, 7, &[1, 4, 0x10]);
+    let first = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
+    first.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
+    let answer = bus.next().await;
+    let mut echo = octets(&answer);
+    bus.until(answer.end + TICK).await;
+    bus.send_raw(&echo[..3]);
+    bus.until(answer.end + GRACE + TICK).await;
+    echo[3] ^= 0x40;
+    bus.send_raw(&echo[3..8]);
+    bus.until(answer.end + GRACE + TICK * 2).await;
+    bus.send(FrameType::BACnetDataExpectingReply, 3, 7, &[1, 4, 0x11]);
+    let second = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
+    bus.until(Instant::now() + Duration::from_millis(10)).await;
+    let peer = encode(FrameType::Token, 10, 9, &[]);
+    bus.send_raw(&[0xFF, peer[0], peer[1]]);
+    second.send(Bytes::from_static(&[1, 0, 0x31])).unwrap();
+    bus.until(Instant::now() + TICK).await;
+    let heard = bus.send_raw(&peer[2..]);
+    let sent = bus.next().await;
+    assert_eq!(
+        (sent.frame_type, sent.data),
+        (FrameType::BACnetDataNotExpectingReply, vec![1, 0, 0x31])
+    );
+    assert!(sent.start >= heard + bus.turnaround);
+    bus.until(sent.end + GRACE + TICK).await;
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.mac.deferred_starts, 1, "the start was not refused");
+    assert_eq!(
+        counts.mac.frames_received, 3,
+        "two requests and the peer's Token"
+    );
+    assert_eq!(counts.echo_fragments_dropped, 0);
     bus.stop().await;
 }
 

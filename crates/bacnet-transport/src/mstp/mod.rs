@@ -63,8 +63,9 @@ pub enum Echo {
         /// How long after the frame's last octet its echo may still be
         /// arriving before the transport reports the frame complete
         /// regardless. An echo already under way then is still recognized
-        /// and dropped as it continues, up to this station's next frame; an
-        /// echo not begun by then is looked for during one more grace.
+        /// and dropped as it continues, up to this station's next frame or
+        /// T_frame_abort of silence; an echo not begun by then is looked for
+        /// during one more grace, however long.
         /// [`Echo::full`] uses [`DEFAULT_ECHO_GRACE`].
         grace: std::time::Duration,
     },

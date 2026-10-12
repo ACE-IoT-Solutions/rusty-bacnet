@@ -193,6 +193,11 @@ enum Polled {
 
 /// The adapter's state besides the core.
 struct Mac<S> {
+    /// First, so that it drops first: fields drop in declaration order, and
+    /// when the task ends or is aborted, an application holding a reply
+    /// sender must find its channel closed by the time it can see the NPDU
+    /// channel close or the serial port go.
+    replies: Replies,
     serial: S,
     echo: Echo,
     clock: CoreClock,
@@ -206,7 +211,6 @@ struct Mac<S> {
     /// The octets of the frame handed over last.
     tx_frame: Vec<u8>,
     outgoing: Option<Outgoing>,
-    replies: Replies,
     filter: EchoFilter,
 }
 
@@ -463,7 +467,7 @@ impl<S: SerialPort> Mac<S> {
         now: bacnet_mstp_core::Instant,
     ) {
         if pushed.stale > 0 {
-            increment(&self.counts.echo_stale_fragments);
+            increment(&self.counts.echo_fragments_dropped);
         }
         if pushed.first_mismatch {
             increment(&self.counts.echo_mismatches);
@@ -480,7 +484,7 @@ impl<S: SerialPort> Mac<S> {
             increment(&self.counts.echo_missing);
         }
         if ended.stale > 0 {
-            increment(&self.counts.echo_stale_fragments);
+            increment(&self.counts.echo_fragments_dropped);
         }
         self.release(core, ended.release, now);
     }

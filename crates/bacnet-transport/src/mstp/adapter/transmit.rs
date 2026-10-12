@@ -10,7 +10,10 @@
 //!    the port after the reactor last looked at it are not seen here, and
 //!    are fed after the frame like any later octets.
 //! 2. [`MasterCore::on_transmit_started`](bacnet_mstp_core::MasterCore::on_transmit_started); on any refusal the frame is
-//!    dropped (a deferred one comes back as a new transmit).
+//!    dropped (a deferred one comes back as a new transmit), and the echo
+//!    hunt goes on. Once the start is confirmed, what the filter still
+//!    holds of the last frame's echo is dropped as its continuation, and
+//!    counted.
 //! 3. [`SerialPort::write`], then [`SerialPort::drain`]. The frame ended
 //!    when the drain returned, but never before its time on the wire at the
 //!    configured baud rate: a port without a drain is timed that way alone,
@@ -52,7 +55,8 @@ impl<S: SerialPort> Mac<S> {
     pub(super) async fn transmit(&mut self, core: &mut Core<'_>) -> Result<(), ReadFailed> {
         self.drain_input(core).await?;
         // Octets held in probe mode may be a peer's: line activity, before
-        // the start.
+        // the start. What the other phases hold waits for a confirmed start,
+        // since the core may still take the frame back or refuse it.
         let ended = self.filter.before_start(Instant::now());
         let now = self.clock.now();
         self.hunt_ended(core, ended, now);
@@ -63,6 +67,10 @@ impl<S: SerialPort> Mac<S> {
         if let Err(error) = core.on_transmit_started(outgoing.id, self.clock.at(started)) {
             debug!(?error, "MS/TP transmit start refused");
             return Ok(());
+        }
+        // What the last echo's hunt still holds was its continuation.
+        if self.filter.confirmed_start() > 0 {
+            increment(&self.counts.echo_fragments_dropped);
         }
         let octets = u32::try_from(self.tx_frame.len()).unwrap_or(u32::MAX);
         let wire_end = started + self.octet_time * octets;
@@ -151,7 +159,7 @@ impl<S: SerialPort> Mac<S> {
                             return Ok(());
                         }
                         if pushed.stale > 0 {
-                            increment(&self.counts.echo_stale_fragments);
+                            increment(&self.counts.echo_fragments_dropped);
                         }
                     }
                 }

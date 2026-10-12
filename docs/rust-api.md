@@ -1648,10 +1648,12 @@ default); `start()` refuses a zero grace (`Echo::validate`). The hunt goes on
 past the grace: an echo already under way is still matched as it continues,
 and one not begun is looked for during one more grace, whose end releases
 what it held. The hunt stops at the station's next start (probe-held octets
-pass on before it) or after T_frame_abort of silence, and held octets that
-waited longer than T_frame_abort are dropped as a stale fragment.
-`echo_mismatches`, `echo_missing` and `echo_stale_fragments` in the
-diagnostics show a port declared wrongly.
+pass on before it, and what the other phases still hold is dropped once the
+start is confirmed) or, while an echo under way is still being matched,
+after T_frame_abort of silence (the probe ends at its own deadline). Held octets that waited longer than
+T_frame_abort are dropped as a stale fragment. `echo_mismatches`,
+`echo_missing` and `echo_fragments_dropped` in the diagnostics show a port
+declared wrongly.
 
 ```rust
 use std::time::Duration;

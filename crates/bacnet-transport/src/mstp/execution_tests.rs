@@ -231,14 +231,17 @@ async fn execution_modes_answer_requests_in_time() {
     }
 }
 
-#[tokio::test]
-async fn dedicated_abort_and_drop_release_serial_and_pending_reply() {
+/// Aborting or dropping the transport releases the serial port, the NPDU
+/// channel and a pending request's reply channel. The task drops the reply
+/// channels first, so by the time the application sees the NPDU channel
+/// close or the port go, an answer is refused.
+async fn abort_and_drop_release_serial_and_pending_reply(mode: MstpExecutionMode) {
     for abort in [true, false] {
         for pending_reply in [true, false] {
             tokio::time::timeout(Duration::from_secs(2), async {
                 let (serial, peer) = LoopbackSerial::pair();
-                let mut transport = MstpTransport::new(serial, config(3, 127))
-                    .with_execution_mode(MstpExecutionMode::DedicatedThread);
+                let mut transport =
+                    MstpTransport::new(serial, config(3, 127)).with_execution_mode(mode);
                 let mut npdus = transport.start().await.unwrap();
                 let reply_tx = if pending_reply {
                     let request = encode(FrameType::BACnetDataExpectingReply, 3, 7, &[1, 4, 0x10]);
@@ -259,7 +262,19 @@ async fn dedicated_abort_and_drop_release_serial_and_pending_reply() {
                 }
             })
             .await
-            .expect("dedicated task retained resources");
+            .expect("the task retained resources");
         }
     }
+}
+
+#[tokio::test]
+async fn dedicated_abort_and_drop_release_serial_and_pending_reply() {
+    abort_and_drop_release_serial_and_pending_reply(MstpExecutionMode::DedicatedThread).await;
+}
+
+/// On a multi-thread runtime the aborted task is dropped on a worker
+/// thread, racing the test as the dedicated thread does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tokio_abort_and_drop_release_serial_and_pending_reply() {
+    abort_and_drop_release_serial_and_pending_reply(MstpExecutionMode::Tokio).await;
 }
