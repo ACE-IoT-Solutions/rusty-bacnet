@@ -183,6 +183,15 @@ pub enum Step {
         /// The bit, modulo 8.
         bit: u8,
     },
+    /// The first octets of a frame (1 up to its length less one, from
+    /// `at`), so the next step finds it part way received: an error inside
+    /// it, a start over it, the silence that ends it.
+    Cut {
+        /// The frame.
+        frame: FrameSpec,
+        /// Where it stops.
+        at: u16,
+    },
     /// A UART receive error, an octet time from now.
     ReceiveError(Fault),
     /// A host assembler reports an invalid frame `after` µs from now.

@@ -6,6 +6,7 @@ use bacnet_mstp_core::{
 };
 
 use super::Driver;
+use crate::checker::Decided;
 use crate::input::{fill, priority, Decision, Echo, Path, Step, TransmitEvent, MAX_OCTETS};
 use crate::model::{encode, Seen};
 
@@ -25,6 +26,7 @@ impl Driver<'_> {
             Step::Octets { .. }
                 | Step::Frame { .. }
                 | Step::Damaged { .. }
+                | Step::Cut { .. }
                 | Step::ReceiveError(_)
                 | Step::InvalidFrame { .. }
                 | Step::HostActivity { .. }
@@ -78,6 +80,11 @@ impl Driver<'_> {
                     wire[at] ^= 1 << (bit % 8);
                 }
                 self.wire(core, &wire, None);
+            }
+            Step::Cut { frame, at } => {
+                let wire = encode(&self.builder().frame(frame, false, false));
+                let cut = 1 + usize::from(*at) % (wire.len() - 1);
+                self.wire(core, &wire[..cut], None);
             }
             Step::ReceiveError(fault) => {
                 self.now += octet_time;
@@ -251,6 +258,7 @@ impl Driver<'_> {
             }
         }
         self.drain(core);
+        self.checker.answers_due(self.now, None);
         for _ in 0..SERVICES {
             match core.next_deadline() {
                 Some(due) if due.as_micros() <= self.now => {
@@ -258,6 +266,7 @@ impl Driver<'_> {
                     self.expect_ok(core.on_deadline(self.at()), "on_deadline");
                     self.stamp = self.now;
                     self.drain(core);
+                    self.checker.answers_due(self.now, None);
                 }
                 _ => return,
             }
@@ -431,7 +440,14 @@ impl Driver<'_> {
             Ok(()) if data_reply && data.len() > max_npdu => {
                 self.fail(&format!("a reply of {} octets was taken", data.len()));
             }
-            Ok(()) if data_reply => self.checker.decided(request, &data),
+            Ok(()) => self.checker.decided(
+                request,
+                match decision {
+                    Decision::Data { .. } => Decided::Data(&data),
+                    Decision::Postponed | Decision::Cancelled => Decided::Postponed,
+                    Decision::Abandoned => Decided::Abandoned,
+                },
+            ),
             Err(CoreError::ReplyOversize { .. }) if data.len() <= max_npdu => {
                 self.fail(&format!("a reply of {} octets was refused", data.len()));
             }
@@ -444,6 +460,11 @@ impl Driver<'_> {
             _ => {}
         }
         self.drain(core);
+        if result.is_ok() {
+            // A decision the core took makes its answer, and sends it at
+            // once if the line is quiet.
+            self.checker.answers_due(self.now, Some(request));
+        }
     }
 
     /// A call stamped before the last one: every call refuses it as a clock

@@ -101,10 +101,27 @@ fn drive<Q: QueueStorage, const NPDU: usize, const SLOTS: usize, const FRAME: us
     };
     for (index, step) in input.steps.iter().take(MAX_STEPS).enumerate() {
         driver.checker.step = index;
+        if tracing() {
+            eprintln!("step {index} at {} us: {step:?}", driver.now);
+        }
         driver.step(&mut core, step);
+        if tracing() {
+            eprintln!(
+                "  core {:?}; checker {}",
+                core.snapshot(),
+                driver.checker.describe()
+            );
+        }
         driver.check_queue();
     }
     driver.drain(&mut core);
+}
+
+/// Whether `MSTP_CORE_FUZZ_TRACE` is set: each step and each frame handed
+/// over then goes to stderr, for replaying a failing input.
+fn tracing() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("MSTP_CORE_FUZZ_TRACE").is_some())
 }
 
 /// The frame the adapter holds.
@@ -288,6 +305,9 @@ impl<'s> Driver<'s> {
                     direction = false;
                     self.check_span(frame, self.frame, "a transmit");
                     let octets = frame.to_vec();
+                    if tracing() {
+                        eprintln!("  {} us: transmit {:?}", self.now, Seen::decode(&octets));
+                    }
                     self.checker.handover(&octets, self.now);
                     if let Ok(frame) = Seen::decode(&octets) {
                         if frame.destination != BROADCAST_MAC {

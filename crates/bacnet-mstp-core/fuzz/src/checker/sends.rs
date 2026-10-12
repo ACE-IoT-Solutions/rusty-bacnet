@@ -4,7 +4,7 @@
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::RequestId;
 
-use super::{After, Ask, Checker, Custody, Hold, Pass, Role};
+use super::{After, Ask, Checker, Custody, Handover, Hold, Pass, Role};
 use crate::model::Seen;
 use crate::model::{MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT, N_MIN_OCTETS, N_POLL};
 
@@ -39,6 +39,10 @@ impl Checker<'_> {
                     self.fail(&format!("answered with {frame:?} twice"));
                 };
                 let owed = self.owed.remove(index);
+                // It answers every handed-over question of its kind.
+                self.owed.retain(|other| {
+                    !(other.handed && other.ask == owed.ask && other.from == owed.from)
+                });
                 let window = match owed.ask {
                     Ask::Poll => MIN_USAGE_TIMEOUT,
                     Ask::Test | Ask::Reply => MIN_REPLY_TIMEOUT,
@@ -90,11 +94,11 @@ impl Checker<'_> {
         let frame = &handover.frame;
         let checked = match frame.frame_type {
             FrameType::Token => self.token(frame, self.now).map(|_| 0),
-            FrameType::PollForMaster => self.poll(frame, self.now).and_then(|_| {
+            FrameType::PollForMaster => self.poll(frame, self.now, handover.ps).and_then(|_| {
                 let Custody::Holding(hold) = &self.custody else {
                     unreachable!("a holder's poll was permitted");
                 };
-                self.sweep(hold, frame.destination)
+                self.sweep(hold, frame.destination, handover.ps)
             }),
             _ => self.may_send_data().map(|()| 0),
         };
@@ -108,6 +112,7 @@ impl Checker<'_> {
             FrameType::Token => {
                 hold.last_poll = None;
                 self.sole = false;
+                self.ns = Some(frame.destination);
             }
             FrameType::PollForMaster => {
                 hold.last_poll = Some(frame.destination);
@@ -206,12 +211,11 @@ impl Checker<'_> {
 
     /// The core took back the frame it handed over before its start.
     pub fn withdrawn(&mut self) {
-        if self
-            .handover
-            .take()
-            .is_some_and(|handover| !matches!(handover.role, Role::Answer(_)))
-        {
-            self.lapsed = true;
+        match self.handover.take().map(|handover| handover.role) {
+            // Taken back at its limit, or by the watchdog.
+            Some(Role::Answer(id)) => self.answer_released(id),
+            Some(_) => self.lapsed = true,
+            None => {}
         }
         self.deferred = None;
     }
@@ -233,7 +237,10 @@ impl Checker<'_> {
     pub fn expired(&mut self, now: u64) {
         self.now = now;
         match self.handover.take() {
-            Some(handover) if matches!(handover.role, Role::Answer(_)) => {}
+            Some(Handover {
+                role: Role::Answer(id),
+                ..
+            }) => self.answer_released(id),
             other => self.fail(&format!("a start refused as expired for {other:?}")),
         }
     }
@@ -281,22 +288,18 @@ impl Checker<'_> {
         };
         self.deliverable.drain(..=index);
         if let Some(id) = request {
+            // The newest such request the core may still answer: one answer
+            // serves the same request asked again meanwhile.
+            let now = self.now;
             if let Some(owed) = self.owed.iter_mut().rev().find(|owed| {
                 owed.ask == Ask::Reply
                     && owed.from == source
                     && owed.request.is_none()
                     && owed.data == data
+                    && owed.answerable(now)
             }) {
                 owed.request = Some(id);
             }
-        }
-    }
-
-    /// The application answered request `id` with `data`, and the core took
-    /// it.
-    pub fn decided(&mut self, id: RequestId, data: &[u8]) {
-        if let Some(owed) = self.owed.iter_mut().find(|owed| owed.request == Some(id)) {
-            owed.decided = Some(data.to_vec());
         }
     }
 }

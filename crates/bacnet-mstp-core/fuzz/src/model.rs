@@ -50,6 +50,13 @@ pub struct Params {
     pub reply_timeout: u64,
     /// T_usage_timeout.
     pub usage_timeout: u64,
+    /// T_reply_delay.
+    pub reply_delay: u64,
+    /// T_usage_delay.
+    pub usage_delay: u64,
+    /// The core's `reply_transmit_margin`: it sends Reply Postponed itself
+    /// this long before T_reply_delay ends.
+    pub reply_margin: u64,
     /// Extended frames on.
     pub extended: bool,
     /// The longest NPDU the station sends or takes.
@@ -73,6 +80,9 @@ impl Params {
             frame_abort: config.t_frame_abort.as_micros(),
             reply_timeout: config.t_reply_timeout.as_micros(),
             usage_timeout: config.t_usage_timeout.as_micros(),
+            reply_delay: config.t_reply_delay.as_micros(),
+            usage_delay: config.t_usage_delay.as_micros(),
+            reply_margin: config.reply_transmit_margin.as_micros(),
             extended: config.extended_frames,
             max_npdu: if config.extended_frames {
                 MAX_EXTENDED_MPDU_DATA

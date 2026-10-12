@@ -12,7 +12,8 @@
 //!
 //! Then up to 2,048 steps:
 //!
-//! - octets and receive errors on the line, with silences between them;
+//! - octets and receive errors on the line, with silences between them, and
+//!   frames cut off part way, so the next step finds one half received;
 //! - whole valid frames of every type from other stations, for this
 //!   station, another or broadcast, standard and extended, octet by octet
 //!   (sometimes with a gap inside) or from a host assembler
@@ -27,13 +28,21 @@
 //!   on requests, late or for ids it never got;
 //! - calls stamped before the core's last event.
 //!
-//! The adapter polls every action after each call, or leaves some deliveries
-//! waiting in their slots, as the setup says.
+//! The adapter polls every action after each call, or, as the setup says,
+//! polls what a line input queued only before its next other call, so
+//! deliveries wait in their slots. A punctual-adapter step carries a token
+//! use through quickly. With `MSTP_CORE_FUZZ_TRACE` set, a replay prints
+//! each step, each frame handed over, the core's snapshot and the checker's
+//! beliefs to stderr.
 //!
 //! # Oracle
 //!
 //! After every step, and on every action, independently of the core's state
-//! (see `src/checker.rs` for the reasoning, with the clauses):
+//! (see `src/checker.rs` for the reasoning, with the clauses). The driver
+//! reads the core's `snapshot()`, `counters()` and `next_deadline()` only to
+//! confirm that a refused call or the station's echo changed nothing, to
+//! schedule deadlines, and for traces; the checker shares only the codec
+//! with the core, to build and decode frames.
 //!
 //! - **No panic**, and no debug assertion in the core.
 //! - **Token custody.** A data frame, Token or Poll For Master goes out only
@@ -42,11 +51,16 @@
 //!   at the moments Clause 9.5.6 allows them. Without the token only answers
 //!   go out: a Reply To Poll For Master, a Test_Response with the request's
 //!   data, Reply Postponed or the application's own reply data, each to a
-//!   station that asked, once, and in time for the asker.
+//!   station that asked, once, and in time for the asker. A Token goes to
+//!   NS, and only when there is one.
+//! - **Owed answers go out.** One the station was free to give, once it
+//!   exists, goes out on a quiet line before the asker may stop waiting,
+//!   unless the application abandoned it.
 //! - **Frames per token use** stay within Max_Info_Frames (and the core's
 //!   local share of it), and a reply timeout ends the use.
 //! - **Poll sweeps** stay within Max_Master: polls go to addresses up to it
-//!   other than TS, one address after the next.
+//!   other than TS, one address after the next; a token use's first poll
+//!   goes to PS + 1 or TS + 1, never to NS.
 //! - **Turnaround.** Every frame starts T_turnaround after the last line
 //!   activity, and a start refused as too soon was too soon.
 //! - **Bounded storage.** Neither queue holds more than its slots; an NPDU

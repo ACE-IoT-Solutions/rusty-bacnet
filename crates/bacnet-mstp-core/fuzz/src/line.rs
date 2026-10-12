@@ -119,10 +119,16 @@ impl<'s> Line<'s> {
         }
     }
 
-    /// A receive error.
+    /// A receive error: an invalid frame when it breaks into one past its
+    /// preamble.
     pub fn receive_error(&mut self, now: u64, heard: &mut Vec<Heard>) {
         self.activity(now, 1);
-        heard.push(Heard::Invalid);
+        if matches!(
+            self.decoder.phase(),
+            StreamPhase::Header | StreamPhase::Data
+        ) {
+            heard.push(Heard::Invalid);
+        }
         self.decoder.reset();
     }
 

@@ -1018,7 +1018,7 @@ file.
 | `mstp_stream` | valid standard and extended frames, frames of the reserved COBS types, frames damaged past the header, raw noise and noise without `0x55`, pushed into 1 to 2,117 octets of storage in pieces of any size, with empty pushes, drains and resets | each push checked against a shadow of the decoder's buffer and of any skip in progress: refusals, `NeedMore`, `Invalid` (one noise run), `Malformed` (error, discard, destination, and whether it skips the frame by count) and `Frame` (with its decoded data), the buffered length and the phase; never wedged; at the end, frames in order and each once, and every guaranteed generated frame delivered at its offset |
 | `bip_decode`, `bip6_decode` | any octets | no panic; an accepted datagram re-encodes to itself, unless its result code is one the annex doesn't define |
 | `bip_encode`, `bip6_encode` | any `Bvll` or `Bvll6`, some within 8 octets of the 65,535-octet limit on either side | the octets the Annex J.2 or U.2 layout gives, built field by field; an undefined result code and a message too long for the Length field refused; sinks as for `mstp_encode`; each result decodes back to an equal message |
-| `mstp_core` | one `MasterCore`, its address, Max_Master, Max_Info_Frames, timers, extended frames and storage from the input, then up to 2,048 steps with injected time: octets, receive errors and silences; whole frames of every type for it, another station or broadcast, on the line or from a host assembler, some damaged; deadlines on time or late; the adapter's starts (some refused or deferred), completions with or without echo, and aborts; queued NPDUs, oversize ones included; request decisions; calls stamped in the past | after every step, by a checker that reads only the line and the adapter's side, never the core's state: no panic; data, Tokens and polls only while the station holds the token, as the frames on the line show it, or as a token retry, a successor search or token generation when Clause 9.5.6 allows them, and otherwise only answers to what was asked, once and in time; at most Max_Info_Frames data frames per token use; poll sweeps one address at a time within Max_Master; T_turnaround before every frame; queues and delivery slots within their sizes; the adapter contract on every action (one frame at a time, starts only for polled frames, completion only after a start, echo ignored, payloads in the action buffers); deliveries matching frames heard; earlier stamps refused as clock regressions |
+| `mstp_core` | one `MasterCore`, its address, Max_Master, Max_Info_Frames, timers, extended frames and storage from the input, then up to 2,048 steps with injected time: octets, receive errors and silences; whole frames of every type for it, another station or broadcast, on the line or from a host assembler, some damaged or cut off part way; deadlines on time or late; the adapter's starts (some refused or deferred), completions with or without echo, and aborts; queued NPDUs, oversize ones included; request decisions; calls stamped in the past | after every step, by a checker that reads only the line and the adapter's side, never the core's state: no panic; data, Tokens and polls only while the station holds the token, as the frames on the line show it, or as a token retry, a successor search or token generation when Clause 9.5.6 allows them, and otherwise only answers to what was asked, once and in time; at most Max_Info_Frames data frames per token use; poll sweeps one address at a time within Max_Master; T_turnaround before every frame; owed answers sent on a quiet line in time; Tokens to NS and a use's first poll to PS + 1 or TS + 1; queues and delivery slots within their sizes; the adapter contract on every action (one frame at a time, starts only for polled frames, completion only after a start, echo ignored, payloads in the action buffers); deliveries matching frames heard; earlier stamps refused as clock regressions |
 
 A generated frame in `mstp_stream` is guaranteed when it fits the storage, no
 reset falls inside it, and no `0x55` lies between it and the anchor: the end
@@ -1033,14 +1033,20 @@ header declares (#1609).
 
 `mstp_core`'s checker rebuilds the line with a stream decoder of its own and
 follows the token through the master state machine at the level the line
-shows: free, held, or passed and watched for its successor's use. Where the
+shows: free, held, or passed and watched for its successor's use, with NS
+and PS as far as the line shows them. It shares only the codec with the
+core, to build and decode frames; the driver reads the core's `snapshot()`,
+`counters()` and `next_deadline()` only to confirm that a refused call or
+echo changed nothing, to schedule deadlines, and for traces
+(`MSTP_CORE_FUZZ_TRACE`). Where the
 line can't tell what the core did (a late deadline it didn't service, a
 frame its decoder may or may not count as invalid, a waiting frame it
 dropped silently on the way back to IDLE), the checker allows each choice the
 core could have made, so it can miss a fault there but never fails a correct
 core. A fault planted in the core, taking up a Token addressed to another
 station, failed the target within two seconds from an empty corpus; one more
-data frame per token use than allowed failed it within ten.
+data frame per token use than allowed failed it within ten, and Reply
+Postponed handled as an abandoned request within five.
 
 **When.** On a PR to `dev` or `main` that changes
 `crates/bacnet-mstp-codec/**`, `crates/bacnet-bip-codec/**` or

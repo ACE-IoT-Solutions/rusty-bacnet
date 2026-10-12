@@ -20,6 +20,9 @@
 //!   or T_reply_timeout of silence (Clause 9.5.6.4); after a poll, an answer,
 //!   an invalid frame or T_usage_timeout of silence (Clause 9.5.6.8). Any
 //!   other frame heard while waiting drops the token (ReceivedUnexpectedFrame).
+//!   A Token goes to NS, the station its last Token went to or the one that
+//!   answered its poll, and never while NS is unknown (NS = TS), when the
+//!   holder polls instead (Clause 9.5.6.5).
 //! - **Passed**: its Token went out. It may retry it once, to the same
 //!   station, and then poll for a new successor at NS + 1, each after
 //!   T_usage_timeout of silence, and only while the successor shows no use of
@@ -41,8 +44,10 @@
 //! - Polls go to addresses up to Max_Master other than TS; consecutive polls
 //!   go up one address at a time, starting again past TS when they reach it,
 //!   so a sweep visits at most Max_Master addresses (Clauses 9.5.6.5,
-//!   9.5.6.8). A new successor is sought at NS + 1, or TS + 1 when that is TS
-//!   (Clause 9.5.6.6).
+//!   9.5.6.8). A token use's first poll goes to PS + 1 or TS + 1, and never
+//!   to NS; with a successor, an unanswered poll is followed by the Token. A
+//!   new successor is sought at NS + 1, or TS + 1 when that is TS (Clause
+//!   9.5.6.6). NS and PS are followed as far as the line shows them.
 //! - Every frame starts T_turnaround after the last line activity (Clause
 //!   9.5.5.1).
 //!
@@ -54,7 +59,8 @@
 //! (Type 6, or 33 when it is longer than 501 octets) to a station whose data
 //! request it received (Clauses 9.5.6.2, 9.5.6.9). Each answer goes once, and
 //! its first octet ends before the asker's shortest timeout: T_reply_timeout
-//! of 255 ms, or T_usage_timeout of 20 ms for a poll (Clause 9.5.3).
+//! of 255 ms, or T_usage_timeout of 20 ms for a poll (Clause 9.5.3). An
+//! answer the station owes has to go out too (see `answers`).
 //!
 //! # Deliveries
 //!
@@ -67,12 +73,11 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use bacnet_mstp_codec::{FrameType, BROADCAST_MAC, MAX_STANDARD_MPDU_DATA};
+use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::RequestId;
 
 use crate::line::{Heard, Line};
-use crate::model::{Params, Seen, MIN_REPLY_TIMEOUT, N_MIN_OCTETS};
-use crate::model::{T_NO_TOKEN, T_SLOT};
+use crate::model::{Params, Seen, N_MIN_OCTETS, T_NO_TOKEN};
 use crate::queues::QueueLog;
 
 /// Who holds the token, as far as the line shows.
@@ -161,6 +166,16 @@ struct Owed {
     request: Option<RequestId>,
     /// Data the application answered with.
     decided: Option<Vec<u8>>,
+    /// The station was free to answer when asked.
+    required: bool,
+    /// The answer exists in the core: a poll's or a test's at once, a data
+    /// request's once the application decided.
+    made: bool,
+    /// The core handed the answer over.
+    handed: bool,
+    /// The application abandoned the request, or the core gave up the
+    /// answer at its limit.
+    released: bool,
 }
 
 /// Why the station may send a frame.
@@ -181,6 +196,8 @@ struct Handover {
     role: Role,
     events: u64,
     frames: u64,
+    /// PS before this frame was made.
+    ps: Option<u8>,
 }
 
 /// The checker.
@@ -198,6 +215,10 @@ pub struct Checker<'s> {
     lapsed: bool,
     /// The station may be the sole master (DeclareSoleMaster).
     sole: bool,
+    /// NS as far as the line shows it; `None` once it can't tell.
+    ns: Option<u8>,
+    /// PS as far as the line shows it; `None` once it can't tell.
+    ps: Option<u8>,
     owed: Vec<Owed>,
     next_owed: u64,
     handover: Option<Handover>,
@@ -221,6 +242,8 @@ impl<'s> Checker<'s> {
             since: 0,
             lapsed: false,
             sole: false,
+            ns: Some(params.station),
+            ps: Some(params.station),
             owed: Vec::new(),
             next_owed: 0,
             handover: None,
@@ -230,6 +253,21 @@ impl<'s> Checker<'s> {
             step: 0,
             now: 0,
         }
+    }
+
+    /// What the checker believes, for a trace.
+    pub fn describe(&self) -> String {
+        format!(
+            "{:?}, sole {}, NS {:?}, PS {:?}, owed {:?}",
+            self.custody,
+            self.sole,
+            self.ns,
+            self.ps,
+            self.owed
+                .iter()
+                .map(|owed| (owed.ask, owed.from, owed.at, owed.required, owed.handed))
+                .collect::<Vec<_>>()
+        )
     }
 
     /// Report a broken invariant.
@@ -260,6 +298,10 @@ impl<'s> Checker<'s> {
                 }
                 _ => {}
             }
+        }
+        if matches!(self.custody, Custody::Holding(_)) && self.lapsible(now) {
+            // A poll the core made may have been dropped unseen, PS with it.
+            self.ps = None;
         }
         self.track(before, now);
     }
@@ -348,19 +390,7 @@ impl<'s> Checker<'s> {
                 _ => None,
             };
             if let Some(ask) = ask {
-                // No answer may start once the asker's shortest timeout has
-                // passed, so older questions are forgotten.
-                self.owed.retain(|owed| owed.at + MIN_REPLY_TIMEOUT > now);
-                self.owed.push(Owed {
-                    id: self.next_owed,
-                    ask,
-                    from: frame.source,
-                    at: now,
-                    data: frame.data.clone(),
-                    request: None,
-                    decided: None,
-                });
-                self.next_owed += 1;
+                self.asked(ask, &frame, now);
             }
         }
         if (frame.destination == station || frame.destination == BROADCAST_MAC)
@@ -379,6 +409,11 @@ impl<'s> Checker<'s> {
                     | FrameType::TestResponse
                     | FrameType::ReplyPostponed
             );
+        if token && !matches!(self.custody, Custody::Holding(_)) && !self.answering() {
+            // ReceivedToken (Clause 9.5.6.2), which a station not holding the
+            // token and not answering a question always takes.
+            self.sole = false;
+        }
         if matches!(self.custody, Custody::Passed(_)) {
             // SawTokenUser: a whole frame is more than Nmin_octets octets.
             self.custody = Custody::Free;
@@ -401,6 +436,8 @@ impl<'s> Checker<'s> {
                 {
                     hold.after = After::Successor(frame.source);
                     self.sole = false;
+                    self.ns = Some(frame.source);
+                    self.ps = Some(station);
                 }
                 After::Reply { moved: false, .. } | After::Poll { moved: false, .. } => {
                     self.custody = Custody::Free;
@@ -411,10 +448,11 @@ impl<'s> Checker<'s> {
                         data_ok: true,
                     };
                 }
-                After::Poll { moved: true, .. }
-                    if frame.is(FrameType::ReplyToPollForMaster, station) =>
-                {
+                _ if frame.is(FrameType::ReplyToPollForMaster, station) => {
+                    // A late answer, which the core takes up while its next
+                    // poll waits to go out, and otherwise discards.
                     hold.own_reply |= frame.source == station;
+                    self.ns = None;
                 }
                 _ if token => *hold = Hold::fresh(),
                 _ => {}
@@ -444,6 +482,24 @@ impl<'s> Checker<'s> {
             }
             (Err(why), None) => self.fail(&format!("{why} [{frame:?}]")),
         };
+        let ps = self.ps;
+        if frame.frame_type == FrameType::PollForMaster {
+            self.ps = Some(frame.destination);
+        }
+        match role {
+            Role::Generate | Role::FindSuccessor => self.ns = Some(self.params.station),
+            Role::Answer(id) => self.answer_handed(id, now),
+            // A poll to TS + 1 from a core that may have gone back to IDLE
+            // unseen may be a generated token's, which forgets NS.
+            Role::Holder
+                if frame.frame_type == FrameType::PollForMaster
+                    && frame.destination == self.params.next(self.params.station)
+                    && self.lapsible(now) =>
+            {
+                self.ns = None;
+            }
+            Role::Holder | Role::Retry => {}
+        }
         if role == Role::Retry {
             let before = self.custody;
             if let Custody::Passed(pass) = &mut self.custody {
@@ -457,258 +513,14 @@ impl<'s> Checker<'s> {
             role,
             events: self.line.events,
             frames: self.line.frames,
+            ps,
         });
-    }
-
-    fn permit(&self, frame: &Seen, now: u64) -> Result<Role, String> {
-        match self.permit_held(frame, now) {
-            Err(why)
-                if frame.frame_type == FrameType::PollForMaster
-                    && !matches!(self.custody, Custody::Free)
-                    && self.lapsible(now) =>
-            {
-                self.generation(frame, now)
-                    .map_err(|idle| format!("{why}; from IDLE, {idle}"))
-            }
-            other => other,
-        }
-    }
-
-    fn permit_held(&self, frame: &Seen, now: u64) -> Result<Role, String> {
-        match frame.frame_type {
-            FrameType::ReplyToPollForMaster => self.answer(Ask::Poll, frame),
-            FrameType::TestResponse => self.answer(Ask::Test, frame),
-            FrameType::ReplyPostponed => self.answer(Ask::Reply, frame),
-            FrameType::BACnetDataNotExpectingReply
-            | FrameType::BACnetExtendedDataNotExpectingReply => {
-                self.holder_data(frame).or_else(|holder| {
-                    self.answer(Ask::Reply, frame)
-                        .map_err(|answer| format!("{holder}; as an answer, {answer}"))
-                })
-            }
-            FrameType::BACnetDataExpectingReply | FrameType::BACnetExtendedDataExpectingReply => {
-                self.holder_data(frame)
-            }
-            FrameType::Token => self.token(frame, now),
-            FrameType::PollForMaster => self.poll(frame, now),
-            other => Err(format!(
-                "sent a frame of type {other:?}, which this station never originates"
-            )),
-        }
-    }
-
-    fn answer(&self, ask: Ask, frame: &Seen) -> Result<Role, String> {
-        if ask == Ask::Reply && frame.frame_type != FrameType::ReplyPostponed {
-            let extended = frame.data.len() > MAX_STANDARD_MPDU_DATA;
-            if frame.frame_type.is_cobs() != extended {
-                return Err(format!(
-                    "a reply of {} octets went as {:?}",
-                    frame.data.len(),
-                    frame.frame_type
-                ));
-            }
-        }
-        self.owed
-            .iter()
-            .rev()
-            .find(|owed| {
-                owed.ask == ask
-                    && owed.from == frame.destination
-                    && match ask {
-                        Ask::Poll => true,
-                        Ask::Test => owed.data == frame.data,
-                        Ask::Reply => {
-                            frame.frame_type == FrameType::ReplyPostponed
-                                || owed.decided.as_deref() == Some(&frame.data[..])
-                        }
-                    }
-            })
-            .map(|owed| Role::Answer(owed.id))
-            .ok_or_else(|| {
-                format!(
-                    "sent {:?} to {}, which asked for no such answer",
-                    frame.frame_type, frame.destination
-                )
-            })
-    }
-
-    fn holder_data(&self, frame: &Seen) -> Result<Role, String> {
-        let queued = self.queue.borrow().last_dequeued.clone();
-        if queued.as_ref() != Some(&(frame.destination, frame.data.clone())) {
-            return Err(format!(
-                "a data frame that isn't the NPDU the queue handed out last ({queued:?})"
-            ));
-        }
-        let extended = frame.data.len() > MAX_STANDARD_MPDU_DATA;
-        if frame.frame_type.is_cobs() != extended {
-            return Err(format!(
-                "an NPDU of {} octets went as {:?}",
-                frame.data.len(),
-                frame.frame_type
-            ));
-        }
-        if frame.destination != BROADCAST_MAC {
-            // Clause 9.7.2: data_expecting_reply follows the NPDU's own bit.
-            let expecting = frame.data.len() >= 2 && frame.data[1] & 0x04 != 0;
-            if frame.expects_reply() != expecting {
-                return Err("a data frame's type doesn't match its NPDU".into());
-            }
-        }
-        self.may_send_data().map(|()| Role::Holder)
-    }
-
-    fn may_send_data(&self) -> Result<(), String> {
-        let Custody::Holding(hold) = &self.custody else {
-            return Err("sent a data frame without the token".into());
-        };
-        match hold.after {
-            After::Fresh
-            | After::Reply {
-                moved: true,
-                data_ok: true,
-            } => Ok(()),
-            After::Reply { moved: true, .. } | After::Poll { moved: true, .. } if self.sole => {
-                Ok(())
-            }
-            After::Reply { moved: true, .. } => {
-                Err("sent data after a reply timeout ended its token use".into())
-            }
-            After::Poll { moved: true, .. } => {
-                Err("sent data after an unanswered poll, though not the sole master".into())
-            }
-            other => Err(format!("sent data while {other:?}")),
-        }
-    }
-
-    fn token(&self, frame: &Seen, now: u64) -> Result<Role, String> {
-        let to = frame.destination;
-        if to == self.params.station || to == BROADCAST_MAC {
-            return Err(format!("passed the token to {to}"));
-        }
-        match &self.custody {
-            Custody::Holding(hold) => match hold.after {
-                After::Fresh
-                | After::Reply { moved: true, .. }
-                | After::Poll { moved: true, .. } => Ok(Role::Holder),
-                After::Successor(successor) if successor == to => Ok(Role::Holder),
-                other => Err(format!("passed the token while {other:?}")),
-            },
-            Custody::Passed(pass) if pass.retried => Err("retried the token a second time".into()),
-            Custody::Passed(pass) if pass.to != to => Err(format!(
-                "retried the token to {to}, not to {}, its holder",
-                pass.to
-            )),
-            Custody::Passed(_) => {
-                let silence = now - self.line.last_activity;
-                if silence < self.params.usage_timeout {
-                    Err(format!(
-                        "retried the token after {silence} us of silence, inside T_usage_timeout"
-                    ))
-                } else {
-                    Ok(Role::Retry)
-                }
-            }
-            Custody::Free => Err("passed a token it doesn't hold".into()),
-        }
-    }
-
-    fn poll(&self, frame: &Seen, now: u64) -> Result<Role, String> {
-        let station = self.params.station;
-        let to = frame.destination;
-        if to > self.params.max_master || to == station {
-            return Err(format!(
-                "polled {to} (Max_Master {})",
-                self.params.max_master
-            ));
-        }
-        let silence = now - self.line.last_activity;
-        match &self.custody {
-            Custody::Holding(hold) => match hold.after {
-                After::Fresh
-                | After::Reply { moved: true, .. }
-                | After::Poll { moved: true, .. } => self.sweep(hold, to).map(|_| Role::Holder),
-                After::Successor(successor) if successor == station => {
-                    self.sweep(hold, to).map(|_| Role::Holder)
-                }
-                other => Err(format!("polled while {other:?}")),
-            },
-            Custody::Passed(pass) if !pass.retried => {
-                Err("polled for a new successor before retrying the token".into())
-            }
-            Custody::Passed(pass) => {
-                let next = self.params.next(pass.to);
-                let expected = if next == station {
-                    self.params.next(station)
-                } else {
-                    next
-                };
-                if silence < self.params.usage_timeout {
-                    Err(format!(
-                        "sought a new successor after {silence} us of silence, inside T_usage_timeout"
-                    ))
-                } else if to != expected {
-                    Err(format!(
-                        "sought a new successor for {} at {to}, not {expected}",
-                        pass.to
-                    ))
-                } else {
-                    Ok(Role::FindSuccessor)
-                }
-            }
-            Custody::Free => self.generation(frame, now),
-        }
-    }
-
-    /// GenerateToken (Clause 9.5.6.7).
-    fn generation(&self, frame: &Seen, now: u64) -> Result<Role, String> {
-        let station = self.params.station;
-        let silence = now - self.line.last_activity;
-        let needed = T_NO_TOKEN + T_SLOT * u64::from(station);
-        if silence < needed {
-            Err(format!(
-                "generated a token after {silence} us of silence, short of T_no_token and {station} slots ({needed} us)"
-            ))
-        } else if frame.destination != self.params.next(station) {
-            Err(format!(
-                "generated a token with a poll to {}",
-                frame.destination
-            ))
-        } else {
-            Ok(Role::Generate)
-        }
-    }
-
-    /// The sweep count after polling `to`.
-    fn sweep(&self, hold: &Hold, to: u8) -> Result<u64, String> {
-        let station = self.params.station;
-        // A poll answered from this station's own address makes it its own
-        // successor, which the core takes as a reason to poll from TS + 1.
-        let restart = hold.after == After::Successor(station) || hold.own_reply;
-        let count = match hold.last_poll {
-            Some(previous) => {
-                let next = self.params.next(previous);
-                if next != station && to == next {
-                    hold.sweep + 1
-                } else if (next == station || restart) && to == self.params.next(station) {
-                    1
-                } else {
-                    return Err(format!(
-                        "polled {to} right after {previous}: a sweep goes up one address at a time"
-                    ));
-                }
-            }
-            None => 1,
-        };
-        if count > u64::from(self.params.max_master) {
-            return Err(format!(
-                "polled {count} addresses in one sweep, more than Max_Master ({})",
-                self.params.max_master
-            ));
-        }
-        Ok(count)
     }
 }
 
+mod answers;
+mod permit;
 mod sends;
 
+pub use answers::Decided;
 pub use sends::Delivered;
