@@ -1910,7 +1910,11 @@ The Clause 9 values a station can't change are constants: `N_POLL`,
 and `u8::from`. The queues' starvation limit is
 `MstpCoreConfig::starvation_limit`, which `MasterCore::new` hands to them;
 queues used without a core start at its default, 8. A broadcast's
-destination is the codec's `BROADCAST_MAC`.
+destination is the codec's `BROADCAST_MAC`. The longest NPDU a
+configuration or a queue takes is `max_npdu()`, on `MstpCoreConfig` and
+`QueueStorage`. A reply the application can't give in time is
+`ReplyDecision::Postponed`, which sends Reply Postponed, and
+`ReplyDecision::Abandoned` sends nothing.
 
 `ConfigError`, `CoreError`, `QueueRefusal` and `PriorityError` implement
 `core::error::Error`.
@@ -2496,6 +2500,51 @@ router judges, is not affected. A routed request's SADR names a node on
 another network, which the ingress rule above can't judge, so a reply to a
 group SADR is dropped only where the final router is a `BACnetRouter`.
 
+### Moving a router table from 0.12
+
+`bacnet_network::router_table::RouterTable` is now the core's `Table`, sized
+for the hosted router (#1679, #1684). Code written against 0.12's
+`RouterTable` changes like this:
+
+- **Types.** `RouteEntry`, `ReachabilityStatus`, `ConvergenceMode` and
+  `RoutingClaimSnapshot` are `Route`, `Reachability`, `Convergence` and
+  `ClaimCounters`, and `claim_snapshot()` is `claim_counters()`. A port is a
+  `PortId` instead of a `usize` index, and a next hop a `Mac`
+  (`Mac::from_slice`) instead of a `MacAddr`. `wire_port_id(index)` and
+  `port_index_for_wire_id(id, count)` are `PortId::wire_id()` and
+  `PortId::from_wire_id(id, count)`.
+- **Reading a route.** `lookup` and `remove` return an owned `Route`, a copy
+  read through getters (`port()`, `is_direct()`, `next_hop()` and the rest),
+  instead of a `&RouteEntry` with public fields. `lookup_mut` is gone; the
+  calls below change a route.
+- **Time.** Each call that read the clock takes a `now`, the router's
+  `router.now()`: `add_learned(network, port, next_hop, now)` replaces both
+  `add_learned` and `add_learned_at`, and `touch(network, now)` both `touch`
+  and `touch_used_at`. `effective_reachability` and `clear_expired_busy`
+  take `now` too.
+- **Learning with flap detection.** `add_learned_with_flap_detection` and
+  its `_at` form are `learn(network, port, next_hop, now)`, which returns a
+  `Learned` (applied, moved with the flap count, or refused), or
+  `apply_claim(.., now, &timing)`, which also holds a move for
+  corroboration under `Convergence::Hardened`.
+- **Adding.** `add_direct` and `add_learned` return `bool`: `false` for a
+  new network once the table holds `ROUTE_CAP` (256) routes, and
+  `add_learned` refuses a network whose route is direct.
+- **Sweeps.** `purge_stale(now, max_age, |network| ..)` replaces
+  `purge_stale` and `purge_stale_at`, and `expire_pending(now, &timing,
+  |network| ..)` replaces `expire_pending_at`: each calls back with every
+  network it drops, in ascending order, and returns the count instead of a
+  `Vec`. `Timing::DEFAULT` holds the hosted router's windows.
+- **Listings.** `networks()`, `networks_on_port(port)`,
+  `networks_not_on_port(port)` and `routes_served_via_peer(port, peer)`
+  return iterators in ascending network order instead of `Vec`s, so
+  `sorted_networks()` is `networks()`; add `.collect::<Vec<_>>()` where a
+  `Vec` is needed. `is_served_via_peer` takes a `PortId` and the peer's MAC
+  octets.
+- **Building one.** `RouterTable::new()` still builds an empty table;
+  `new_hardened()` is `new()` and then
+  `set_convergence(Convergence::Hardened)`.
+
 ### bacnet-router-core (firmware)
 
 `BACnetRouter` runs on `bacnet-router-core`, which firmware can use on its
@@ -2547,7 +2596,7 @@ cover the ranges.
 A `Route` is a copy of the table's row, read through its getters:
 `port()`, `is_direct()`, `next_hop()`, `last_seen()`, `last_used()`,
 `reachability()`, `busy_until()`, `flap_count()` and `last_port_change()`.
-There is no `lookup_mut`, as 0.12's `RouterTable` had: only the table's own
+Unlike 0.12's `RouterTable`, the table has no `lookup_mut`: only its own
 calls change a row:
 
 - a route's port, next hop or `last_seen`: `add_learned` (or `learn` and

@@ -2,10 +2,9 @@
 section: Migration notes
 ---
 - **Router routes (Rust API, #1684):** read a `Route` through `port()`,
-  `is_direct()`, `next_hop()`, `reachability()`, `busy_until()` and its
-  other getters; ports are `PortId`s. `lookup_mut` is gone: change a route
-  with `add_learned` (port, next hop, `last_seen`), `add_direct`,
-  `mark_busy`, `mark_available` or `mark_unreachable` (state) and `touch`
-  (`last_used`). A direct route turns learned by `remove`, then
-  `add_learned`. `new_hardened()` is `new()` and
-  `set_convergence(Convergence::Hardened)`.
+  `is_direct()`, `next_hop()` and its other getters; `lookup` returns a
+  copy, ports are `PortId`s and MACs `Mac`s. `lookup_mut` is gone: change a
+  route with `add_learned`, `add_direct`, `mark_busy`, `mark_available`,
+  `mark_unreachable` and `touch`. The `_at` and flap-detection helpers,
+  `purge_stale`, `expire_pending_at` and the listings changed too: see
+  [moving a router table](docs/rust-api.md#moving-a-router-table-from-012).
