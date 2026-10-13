@@ -42,25 +42,29 @@ fn reachability(h: &Harness, network: u16) -> Option<Reachability> {
     h.table().effective_reachability(network, h.now())
 }
 
+/// Reasons 1 and 2 apply once and then count as changing nothing; any
+/// other reason never changes the route (R2, Clause 6.6.3.5), where the
+/// router before #1679's fix removed it.
 #[tokio::test]
-async fn first_rejects_keep_legacy_effects_and_repeated_claims_count_once() {
-    for reason in [0, 1, 2] {
+async fn first_rejects_apply_once_and_other_reasons_never() {
+    for reason in [0, 1, 2, 4] {
         let mut h = Harness::two_port();
         h.learned(3000, 0, &[1]);
         for _ in 0..12 {
             reject(&mut h, 0, &[1], reason).await;
         }
-        match reason {
-            1 => assert_eq!(reachability(&h, 3000), Some(Reachability::Unreachable)),
-            2 => assert_eq!(reachability(&h, 3000), Some(Reachability::Busy)),
-            _ => assert!(h.table().lookup(3000).is_none()),
-        }
+        let (state, applied) = match reason {
+            1 => (Reachability::Unreachable, 1),
+            2 => (Reachability::Busy, 1),
+            _ => (Reachability::Reachable, 0),
+        };
+        assert_eq!(reachability(&h, 3000), Some(state));
         assert_eq!(
             h.table().claim_counters(),
             claim_counts(|c| {
-                c.reject_applied = 1;
-                c.reject_dampened = 11;
-                c.reject_dampened_same_state = 11;
+                c.reject_applied = applied;
+                c.reject_dampened = 12 - applied;
+                c.reject_dampened_same_state = 12 - applied;
             })
         );
     }

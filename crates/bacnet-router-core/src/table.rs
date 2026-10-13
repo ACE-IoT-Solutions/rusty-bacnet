@@ -22,10 +22,9 @@
 //!   only, and aging keys off it; forwarding sets `last_used`, which never
 //!   extends a route's life. Busy and Available marks touch neither.
 //! - **Rejects** ([`Table::apply_reject`]): reason 1 marks a learned route
-//!   unreachable and reason 2 busy for 30 s; any other reason removes it.
-//!   That last rule departs from Clause 6.6.3.5, which changes the table for
-//!   reasons 1 and 2 only; it is kept for parity with the hosted router until
-//!   the fix called R2 in #1679 lands.
+//!   unreachable and reason 2 busy for 30 s; any other reason changes
+//!   nothing (Clause 6.6.3.5). The router with fix R2 off removes the route
+//!   for one, as the hosted router once did.
 //!   Each change starts a 30 s hold-down for its network and arrival port,
 //!   during which further reject-driven changes from that port are ignored.
 //!   Hold-down records live in their own pool of `H`; a full pool evicts the
@@ -165,12 +164,14 @@ pub struct Pending {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ClaimCounters {
-    /// Rejects that changed a learned route's state or removed it.
+    /// Rejects that changed a learned route's state, or, with fix R2 off,
+    /// removed it.
     pub reject_applied: u64,
     /// Rejects ignored, for either reason below; each counts once here.
     pub reject_dampened: u64,
-    /// Rejects that would change nothing: no route, a direct one, or the
-    /// state already in effect. A repeat Busy never extends its deadline.
+    /// Rejects that would change nothing: no route, a direct one, the state
+    /// already in effect, or a reason other than 1 and 2. A repeat Busy
+    /// never extends its deadline.
     pub reject_dampened_same_state: u64,
     /// State-changing rejects ignored within the hold-down.
     pub reject_dampened_hold_down: u64,

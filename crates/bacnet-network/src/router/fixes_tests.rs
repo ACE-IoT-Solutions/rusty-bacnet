@@ -139,3 +139,38 @@ async fn r1_a_global_broadcast_skips_a_port_too_short_for_it() {
     let counters = h.counters();
     assert_eq!((counters.egress_too_long, counters.rejects), (1, 0));
 }
+
+// --- R2: reject reasons other than 1 and 2 change no route ---
+
+/// R2 (Clause 6.6.3.5): a reason-4 reject from the router that serves
+/// 3000, for a node on network 1000, is passed on to that node and leaves
+/// the route to 3000 as it was; before the fix it removed the route, which
+/// R1's rejects would make routine.
+#[tokio::test]
+async fn r2_a_reason_4_reject_is_passed_on_and_keeps_the_route() {
+    let mut h = Harness::two_port();
+    h.learned(3000, 1, &[9]);
+    let before = h.table().lookup(3000);
+    let reject = Npdu {
+        is_network_message: true,
+        message_type: Some(0x03),
+        destination: Some(address(1000, &SENDER)),
+        hop_count: 255,
+        payload: Bytes::from_static(&[4, 0x0B, 0xB8]),
+        ..Npdu::default()
+    };
+    h.dispatch(h.ctx(1, &[9], reject)).await;
+    let sent = h.drain(0);
+    let [SendRequest::Unicast { npdu, mac, .. }] = &sent[..] else {
+        panic!("expected the reject passed on to port 0, got {sent:?}");
+    };
+    assert_eq!(mac.as_slice(), SENDER);
+    assert!(npdu.ends_with(&[0x03, 4, 0x0B, 0xB8]));
+    h.assert_quiet();
+    assert_eq!(h.table().lookup(3000), before);
+    let counters = h.table().claim_counters();
+    assert_eq!(
+        (counters.reject_applied, counters.reject_dampened_same_state),
+        (0, 1)
+    );
+}

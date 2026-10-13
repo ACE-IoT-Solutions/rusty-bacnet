@@ -314,15 +314,37 @@ fn b_flow_control() {
 
 /// Trace C: rejects from R7 about network 9, each addressed to the router.
 ///
-/// The design's sketch removes the route at 31 s, under the reason-4
-/// reject. The hosted table holds that change off: the reason-1 change at
-/// 30 s started a 30 s hold-down for (9, port 1), and a removal is a change
-/// like any other (router_table.rs:303-363). The removal comes at 60 s,
-/// under today's rule that any reason but 1 and 2 removes the route
-/// (router_table.rs:349-355, fix R2 in #1679).
+/// With fix R2 a reason-4 reject changes no route (Clause 6.6.3.5): at 31
+/// s and again at 60 s the route stays, as each changes nothing.
+/// `c_without_r2` runs the trace as the hosted router did before the fix.
 #[test]
 fn c_received_rejects() {
-    let mut router = router();
+    let effects = c_trace(router());
+    assert_eq!(
+        effects,
+        [RejectEffect::SameState, RejectEffect::SameState],
+        "R2: the route stays"
+    );
+}
+
+/// Trace C with fix R2 off, as the hosted router did before it. The
+/// design's sketch removes the route at 31 s, under the reason-4 reject.
+/// The hosted table held that change off: the reason-1 change at 30 s
+/// started a 30 s hold-down for (9, port 1), and a removal is a change like
+/// any other (router_table.rs:303-363). The removal came at 60 s, under the
+/// rule that any reason but 1 and 2 removes the route
+/// (router_table.rs:349-355).
+#[test]
+fn c_without_r2() {
+    let options = options(|o| o.fixes.rejects_keep_routes = false);
+    let effects = c_trace(router_with(&two_ports(), options));
+    assert_eq!(effects, [RejectEffect::HeldDown, RejectEffect::Applied]);
+}
+
+/// Trace C up to its reason-4 rejects at 31 s and 60 s, whose effects it
+/// returns after checking the route and the claim counts each leaves.
+fn c_trace(mut router: TestRouter) -> [RejectEffect; 2] {
+    let keeps = router.options().fixes.rejects_keep_routes;
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
     let reject = |why: u8| message(code::REJECT_MESSAGE_TO_NETWORK, &reject_data(why, 9));
@@ -380,20 +402,28 @@ fn c_received_rejects() {
     assert_eq!(step(&mut router, 1, 30), RejectEffect::Applied);
     assert_eq!(state(&router), Some(Reachability::Unreachable));
     assert_eq!(router.table().claim_counters(), rejects(2, 1, 1));
-    // t = 31 s: reason 4, within the hold-down from 30 s: the route stays.
-    assert_eq!(
-        step(&mut router, reason::MESSAGE_TOO_LONG, 31),
-        RejectEffect::HeldDown
-    );
+    // t = 31 s: reason 4. With R2 it changes nothing; without, it would
+    // remove the route, but comes within the hold-down from 30 s. The route
+    // stays either way.
+    let at_31 = step(&mut router, reason::MESSAGE_TOO_LONG, 31);
     assert_eq!(state(&router), Some(Reachability::Unreachable));
-    assert_eq!(router.table().claim_counters(), rejects(2, 1, 2));
-    // t = 60 s: reason 4 removes the route (parity; R2 keeps it later).
-    assert_eq!(
-        step(&mut router, reason::MESSAGE_TOO_LONG, 60),
-        RejectEffect::Applied
-    );
-    assert_eq!(state(&router), None);
-    assert_eq!(router.table().claim_counters(), rejects(3, 1, 2));
+    let after_31 = if keeps {
+        rejects(2, 2, 1)
+    } else {
+        rejects(2, 1, 2)
+    };
+    assert_eq!(router.table().claim_counters(), after_31);
+    // t = 60 s: reason 4 again. With R2 the route still stays; without, the
+    // hold-down is over and the route goes.
+    let at_60 = step(&mut router, reason::MESSAGE_TOO_LONG, 60);
+    if keeps {
+        assert_eq!(state(&router), Some(Reachability::Unreachable));
+        assert_eq!(router.table().claim_counters(), rejects(2, 3, 1));
+    } else {
+        assert_eq!(state(&router), None);
+        assert_eq!(router.table().claim_counters(), rejects(3, 1, 2));
+    }
+    [at_31, at_60]
 }
 
 /// Trace D: hardened convergence. B is another router, on port 0.

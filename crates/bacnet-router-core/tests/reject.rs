@@ -6,10 +6,10 @@ mod fixture;
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
 use bacnet_router_core::router::{ControlClass, DropReason, Event, Kind};
-use bacnet_router_core::table::Reachability;
+use bacnet_router_core::table::{Reachability, RejectEffect};
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, reject_data, router, sent_reject, Outcome,
-    Recorder, CONFIRMED, NODE_A, OWN_1, R7,
+    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, options, reject_data, router, router_with,
+    sent_reject, two_ports, Outcome, Recorder, CONFIRMED, NODE_A, OWN_1, R7,
 };
 
 /// A request for unknown network 44, with `source` as its SNET and SADR.
@@ -181,6 +181,48 @@ fn received_rejects_relay_by_their_destination() {
     }
     assert_eq!(router.counters().unroutable_rejects, 3);
     assert_eq!(router.counters().rejects, 0);
+}
+
+/// R2 (Clause 6.6.3.5): a reject with a reason other than 1 or 2, such as
+/// the reason 4 that R1 makes routine, leaves the route to the network it
+/// names alone, and is still passed on toward its DNET, or kept for the
+/// router itself. With the switch off, as before #1679, it removes the
+/// route and is passed on all the same.
+#[test]
+fn other_reasons_relay_and_keep_the_route() {
+    for keep in [true, false] {
+        let options = options(|o| o.fixes.rejects_keep_routes = keep);
+        let mut router = router_with(&two_ports(), options);
+        let mut host = Recorder::default();
+        learn_9_via_r7(&mut router, at(0));
+        let data = reject_data(reason::MESSAGE_TOO_LONG, 9);
+        let mut reject = Npdu::message(code::REJECT_MESSAGE_TO_NETWORK, &data);
+        reject.destination = Some(addr(1, NODE_A));
+        let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &bytes(&reject), at(1));
+        assert_eq!(outcome, Outcome::Handled);
+        assert_eq!(sent.len(), 1, "passed on either way");
+        assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
+        assert_eq!(sent[0].parsed().payload, [4, 0, 9]);
+        let route = router.table().lookup(9);
+        let effect = if keep {
+            assert_eq!(
+                route.map(|route| route.reachability),
+                Some(Reachability::Reachable)
+            );
+            RejectEffect::SameState
+        } else {
+            assert!(route.is_none(), "removed before R2");
+            RejectEffect::Applied
+        };
+        assert_eq!(
+            host.events,
+            [Event::RejectReceived {
+                network: 9,
+                reason: reason::MESSAGE_TOO_LONG,
+                effect,
+            }]
+        );
+    }
 }
 
 /// RB-09: a refused reject changes nothing and goes nowhere; a malformed

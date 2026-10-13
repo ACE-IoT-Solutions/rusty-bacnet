@@ -50,7 +50,7 @@
 //! | Each network-layer message's payload is read whole or not at all, and written in the layout the clause gives it | 6.4 | `tests/message.rs` |
 //! | The table records, for each network it can reach, the port, the next router (none for a directly attached network), and a state that separates a lasting failure from congestion | 6.6.1 | `tests/table.rs` |
 //! | A later claim of the route to a network supersedes the earlier one | 6.6.3.2 | `tests/table_claims.rs` |
-//! | A reject with reason 1 marks a learned route unreachable, and one with reason 2 marks it busy for a while | 6.6.3.5 | `src/table/tests/rejects.rs` (unit tests, as the hold-down records they read are the crate's own) |
+//! | A reject with reason 1 marks a learned route unreachable, and one with reason 2 marks it busy for a while; no other reason changes the table (R2) | 6.6.3.5 | `src/table/tests/rejects.rs` (unit tests, as the hold-down records they read are the crate's own) |
 //! | Flow control holds traffic for the networks named, or for every network the sending router serves when none are named, and lets it go again | 6.6.3.6, 6.6.3.7 | `tests/table_busy.rs` |
 //! | A routing-table update replaces or adds a network's row, and Port ID 0 deletes it | 6.4.7, 6.6.3.8 | `tests/table.rs`: `management_updates_never_touch_direct_routes` |
 //! | A router with no route to a network looks for one before it refuses the message | 6.6.3.1 | `tests/discovery.rs` |
@@ -68,7 +68,7 @@
 //! | A network message for another network is routed like an APDU, a proprietary one included, vendor ID and all | 6.2.5, 6.5.4 | `tests/forward.rs`: `proprietary_messages_route_opaquely` |
 //! | Lacking a route, the router searches for one and refuses the message with reason 1 | 6.6.3.1 | `tests/traces.rs`: `a_discovery_learning_and_aging` |
 //! | A refusal goes to whoever first sent the refused message, as its source fields say | 6.4.4, 6.5.4 | `tests/reject.rs`: `reject_path_follows_the_origin` |
-//! | A reject that arrives updates the table, then travels on toward the node it names | 6.6.3.5 | `tests/reject.rs`: `received_rejects_relay_by_their_destination`; `tests/traces.rs`: `c_received_rejects` |
+//! | A reject that arrives updates the table, for reasons 1 and 2 only (R2), then travels on toward the node it names, whatever its reason | 6.6.3.5 | `tests/reject.rs`: `received_rejects_relay_by_their_destination`, `other_reasons_relay_and_keep_the_route`; `tests/traces.rs`: `c_received_rejects` |
 //! | Traffic for a network on hold draws reason 2 until the hold lapses or is lifted | 6.6.3.6 | `tests/traces.rs`: `b_flow_control` |
 //! | A message type the router doesn't know, sent to it, draws reason 3 | 6.6.3.5 | `tests/control.rs`: `unknown_types_draw_reason_3` |
 //! | Route announcements teach the table and go on to the other ports | 6.6.3.2, 6.6.3.3 | `tests/control.rs`: `i_am_router_learns_then_rebroadcasts`; `tests/traces.rs`: `d_hardened_convergence` |
@@ -97,9 +97,7 @@
 //! Where the hosted router departed from the clause, `bacnet-network`'s
 //! router first moved onto the engine unchanged, then took the fixes #1679
 //! lists. Each is a switch in [`router::Fixes`], on by default, and the
-//! tests pin the old way with it off. One is still to come: a received
-//! reject with a reason other than 1 or 2 removes the learned route, where
-//! Clause 6.6.3.5 changes the table for those two reasons only (R2).
+//! tests pin the old way with it off.
 //!
 //! # Features
 //!

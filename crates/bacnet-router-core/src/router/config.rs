@@ -79,6 +79,10 @@ pub struct Fixes {
     /// reject (decision D21). Off, the scratch is the only bound, and the
     /// port's own send refuses what it can't carry.
     pub egress_limits: bool,
+    /// R2: a received reject with a reason other than 1 or 2 leaves the
+    /// route alone (Clause 6.6.3.5); it is still passed on. Off, it removes
+    /// a learned route.
+    pub rejects_keep_routes: bool,
     /// R3: at start, announce each port's network number with a
     /// Network-Number-Is before its I-Am-Router.
     pub announce_numbers: bool,
@@ -88,12 +92,14 @@ impl Fixes {
     /// Every switch off: the router before these fixes.
     pub const NONE: Self = Self {
         egress_limits: false,
+        rejects_keep_routes: false,
         announce_numbers: false,
     };
 
     /// Every switch on: the recommended setting.
     pub const ALL: Self = Self {
         egress_limits: true,
+        rejects_keep_routes: true,
         announce_numbers: true,
     };
 }
@@ -137,7 +143,8 @@ pub struct Options {
 impl Options {
     /// The hosted router's values: standard convergence, 256 routes, 300 s
     /// learned age, a 60 s sweep, [`Timing::DEFAULT`], a 5 s discovery
-    /// cooldown and 30 s age, and the fixes it has turned on so far: R1.
+    /// cooldown and 30 s age, and the fixes it has turned on so far: R1
+    /// and R2.
     pub const HOSTED: Self = Self {
         convergence: Convergence::Standard,
         route_cap: 256,
@@ -148,6 +155,7 @@ impl Options {
         discovery_age: Duration::from_secs(30),
         fixes: Fixes {
             egress_limits: true,
+            rejects_keep_routes: true,
             ..Fixes::NONE
         },
     };

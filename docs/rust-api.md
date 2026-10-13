@@ -2148,6 +2148,11 @@ them):
   broadcast (a DNET with DLEN 0) does too. A global broadcast, or any other
   message the router sends to every other port, leaves out a port too short
   for it, with no reject. Both count in `counters().egress_too_long`.
+- **Rejects keep routes (R2).** A received reject changes the table for
+  reasons 1 (unreachable) and 2 (busy) only (Clause 6.6.3.5). One with any
+  other reason, such as R1's reason 4, leaves the route as it is and counts
+  in the claim counters' `reject_dampened_same_state`, where it used to remove
+  a learned route. Every reject is still passed on toward its destination.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

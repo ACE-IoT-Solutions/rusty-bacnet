@@ -265,21 +265,28 @@ fn reject_payload(reason: RejectMessageReason, network: u16) -> Vec<u8> {
     payload.to_vec()
 }
 
+/// R2: a reject with reason 0 (other) or 4 (too long) leaves the learned
+/// route alone (Clause 6.6.3.5); before #1679's fix it removed the route.
 #[tokio::test]
-async fn received_reject_removes_learned_route() {
-    let mut table = TableSeed::new();
-    table.add_direct(1000, 0);
-    table.add_learned(3000, 0, MacAddr::from_slice(&[10, 0, 1, 1]));
-    let mut h = Harness::with_table(table);
-    assert!(h.table().lookup(3000).is_some());
+async fn received_reject_of_another_reason_keeps_learned_route() {
+    for reason in [
+        RejectMessageReason::OTHER,
+        RejectMessageReason::MESSAGE_TOO_LONG,
+    ] {
+        let mut table = TableSeed::new();
+        table.add_direct(1000, 0);
+        table.add_learned(3000, 0, MacAddr::from_slice(&[10, 0, 1, 1]));
+        let mut h = Harness::with_table(table);
+        let before = h.table().lookup(3000);
 
-    let payload = reject_payload(RejectMessageReason::OTHER, 3000);
-    let npdu = control_npdu(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK, &payload);
-    h.handle(h.ctx(0, &[0x0A], npdu)).await;
+        let payload = reject_payload(reason, 3000);
+        let npdu = control_npdu(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK, &payload);
+        h.handle(h.ctx(0, &[0x0A], npdu)).await;
 
-    let tbl = h.table();
-    assert!(tbl.lookup(3000).is_none());
-    assert!(tbl.lookup(1000).is_some());
+        let tbl = h.table();
+        assert_eq!(tbl.lookup(3000), before);
+        assert!(tbl.lookup(1000).is_some());
+    }
 }
 
 #[tokio::test]

@@ -315,7 +315,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// A received reject (Clause 6.6.3.5): applied to the table, then for
-    /// the router itself or passed on.
+    /// the router itself or passed on, whatever its reason. With R2 on, a
+    /// reason other than 1 or 2 changes no route.
     fn received_reject<'f>(
         &mut self,
         at: &Arrival<'f>,
@@ -336,13 +337,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         ) {
             return Received::Dropped(DropReason::Denied);
         }
-        let effect = self.table.apply_reject(
-            reject.network,
-            at.port,
-            reject.reason,
-            at.now,
-            &options.timing,
-        );
+        let (network, reason, timing) = (reject.network, reject.reason, &options.timing);
+        let effect = if options.fixes.rejects_keep_routes {
+            self.table
+                .apply_reject(network, at.port, reason, at.now, timing)
+        } else {
+            self.table
+                .apply_reject_removing(network, at.port, reason, at.now, timing)
+        };
         host.observe(Event::RejectReceived {
             network: reject.network,
             reason: reject.reason,
