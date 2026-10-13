@@ -6,4 +6,5 @@ section: Migration notes
   other getters. `Table::lookup_mut` is gone: change a route with
   `add_learned` (port, next hop, `last_seen`), `add_direct`, `mark_busy`,
   `mark_available` or `mark_unreachable` (state) and `touch` (`last_used`);
-  the flap count is the table's.
+  the flap count is the table's. A direct route turns learned by `remove`,
+  then `add_learned`, which refuses a direct one.

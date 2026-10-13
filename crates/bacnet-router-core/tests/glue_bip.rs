@@ -558,6 +558,52 @@ fn bbmd_port<'t>(
     BbmdPort::new(BIP_PORT, node(Mode::Bbmd, now), tables, targets).unwrap()
 }
 
+/// The clock rule holds for a BBMD's tables, which keep no clock of their
+/// own. Once the port has been given 200 s, the device registered at 1 s
+/// for 60 s has lapsed (its TTL and the 30 s grace), and a receive or a
+/// send stamped 10 s doesn't bring it back: neither forwards to it, where
+/// at its stamp each would.
+#[test]
+fn a_bbmd_port_hands_its_tables_the_latest_time() {
+    let mut tables: Tables<2, 2> = Tables::new(OWN);
+    let mut targets = [Target::UNUSED; Tables::<2, 2>::MAX_TARGETS];
+    let mut bbmd = bbmd_port(&mut tables, &mut targets, Instant::from_secs(1));
+    let mut router = router_on(bbmd.config(1));
+    let (mut out, mut host) = (Wire::default(), Recorder::default());
+    bbmd.on_deadline(Instant::from_secs(200));
+    let early = Instant::from_secs(10);
+
+    // A broadcast on the subnet, stamped early: on to the peer only.
+    let who_is = [0x01, 0x00, 0x10, 0x08];
+    let payload = encode(&Bvll::OriginalBroadcastNpdu(&who_is));
+    let ingress = bbmd.receive(
+        &datagram(&payload, PEER, TO_BROADCAST),
+        early,
+        &mut Permissive,
+        &mut out,
+    );
+    assert_eq!(npdu_from(&ingress), Some(mac(PEER)));
+    assert_eq!(out.take(), [Out::forwarded(BBMD, PEER, &who_is)]);
+
+    // The router's own broadcast, sent early: the subnet and the peer.
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), early, &mut host);
+    let results = pump(&mut router, |send| bbmd.send(send, early, &mut out));
+    assert_eq!(results, [(0, Ok(()))]);
+    let sent = out.take();
+    let npdu = sent[0].npdu.clone();
+    assert_eq!(
+        sent,
+        [
+            Out::new(
+                SUBNET.broadcast,
+                BvlcFunction::ORIGINAL_BROADCAST_NPDU,
+                &npdu
+            ),
+            Out::forwarded(BBMD, OWN, &npdu),
+        ]
+    );
+}
+
 /// Each datagram of a BBMD port's own that the socket refuses is counted
 /// once: a NAK, and each forwarded copy.
 #[test]

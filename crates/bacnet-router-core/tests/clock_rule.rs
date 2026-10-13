@@ -70,6 +70,20 @@ fn a_frame_stamped_early_reads_marks_at_the_latest_time() {
     );
 }
 
+/// `on_deadline` moves the clock too: a frame stamped earlier than the
+/// sweep's time, after it, learns at the sweep's time. The route to 9,
+/// learned at 0 s, is purged at 400 s and learned again then.
+#[test]
+fn a_frame_after_a_deadline_call_is_taken_at_the_deadline_calls_time() {
+    let mut router = router();
+    let mut host = Recorder::default();
+    deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9]), at(0));
+    router.on_deadline(at(400), &mut host);
+    assert!(router.table().lookup(9).is_none(), "purged at 400 s");
+    deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9]), at(10));
+    assert_eq!(router.table().lookup(9).unwrap().last_seen(), Some(at(400)));
+}
+
 /// `on_deadline` stamped before the sweep is due runs the sweep when the
 /// latest time has reached it: a frame at 400 s moved the clock, so a call
 /// stamped 10 s purges the route last confirmed at 0 s and sets the next

@@ -225,12 +225,18 @@ pub struct PortCounters {
 /// broadcasts, and its port can hold them in shorter slots;
 /// [`BipPort::new`] checks that the link's broadcast limit fits `N`.
 ///
+/// A default doesn't drive inference, so `HeldBroadcast::EMPTY` alone, in
+/// an expression, leaves `N` open. Name the type instead: `<HeldBroadcast>`
+/// is a type, so it takes the default.
+///
 /// ```
 /// use bacnet_router_core::bip::HeldBroadcast;
 ///
+/// // Two slots of MAX_NPDU octets, the default.
+/// let full = [<HeldBroadcast>::EMPTY; 2];
 /// // Two slots of 501 octets, for a link whose broadcasts are no longer.
-/// let held = [HeldBroadcast::<501>::EMPTY; 2];
-/// # let _ = held;
+/// let short = [HeldBroadcast::<501>::EMPTY; 2];
+/// # let _ = (full, short);
 /// ```
 #[derive(Clone)]
 pub struct HeldBroadcast<const N: usize = MAX_NPDU> {
@@ -504,6 +510,11 @@ impl<'h, const X: usize, const N: usize> BipPort<'h, X, N> {
 /// A router port on a BBMD, which owns its node and borrows its tables, of
 /// `B` BDT rows and `F` foreign devices, and storage for the targets of
 /// one forwarding decision.
+///
+/// The tables keep no clock of their own, so the port keeps the latest
+/// time it has been given and hands them that: a `now` earlier than it is
+/// taken as it, as the node takes its own, and a registration that has
+/// lapsed stays lapsed.
 #[derive(Debug)]
 pub struct BbmdPort<'t, const B: usize, const F: usize, const X: usize = 4> {
     port: PortId,
@@ -511,6 +522,8 @@ pub struct BbmdPort<'t, const B: usize, const F: usize, const X: usize = 4> {
     tables: &'t mut Tables<B, F>,
     targets: &'t mut [Target],
     counters: PortCounters,
+    /// The latest time any call has passed in.
+    latest: Instant,
 }
 
 impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
@@ -538,7 +551,15 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
             tables,
             targets,
             counters: PortCounters::default(),
+            latest: Instant::ZERO,
         })
+    }
+
+    /// `now`, or the latest time passed in when that is later, which it
+    /// then stays (the clock rule in the crate docs).
+    fn clock(&mut self, now: Instant) -> Instant {
+        self.latest = self.latest.max(now);
+        self.latest
     }
 
     /// The port's index.
@@ -600,7 +621,8 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
 
     /// Take a datagram the port's socket received. The BBMD's share of it
     /// goes through the tables: a broadcast is forwarded where they say,
-    /// and handed to the router too.
+    /// and handed to the router too. A `now` before the latest one passed
+    /// in is taken as that one.
     pub fn receive<'d>(
         &mut self,
         datagram: &Datagram<'d>,
@@ -608,6 +630,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         policy: &mut impl Policy,
         out: &mut impl Datagrams,
     ) -> Ingress<'d> {
+        let now = self.clock(now);
         let link = *self.node.link();
         let ingress = match self.node.receive(datagram, now, policy) {
             Inbound::Deliver(delivery) => Ingress::Npdu(arrived(self.port, &delivery)),
@@ -698,7 +721,8 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
 
     /// Carry out one of the router's sends on this port; one for another
     /// port is refused. A broadcast goes out on the subnet and, as the
-    /// BBMD's own, to its peers and foreign devices.
+    /// BBMD's own, to its peers and foreign devices. A `now` before the
+    /// latest one passed in is taken as that one.
     pub fn send(
         &mut self,
         send: &Send<'_>,
@@ -708,6 +732,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         if send.port != self.port {
             return Err(SendRefusal::Other);
         }
+        let now = self.clock(now);
         let link = self.node.link();
         match send.to {
             Dest::Unicast(mac) => unicast(link, mac, send.npdu, out),
@@ -729,8 +754,10 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         self.node.next_deadline()
     }
 
-    /// Do what the node has due at `now`.
+    /// Do what the node has due at `now`, or at the latest time passed in
+    /// when that is later.
     pub fn on_deadline(&mut self, now: Instant) {
+        let now = self.clock(now);
         self.node.on_deadline(now);
         self.drain();
     }

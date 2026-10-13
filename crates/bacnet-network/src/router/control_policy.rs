@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bacnet_transport::port::TransportProvenance;
+use tracing::debug;
 
 /// Wire-control authorization mode. Permissive preserves today's behavior.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,7 +73,7 @@ pub struct ControlAuthContext {
     /// Channel-level trust derived from `provenance`; says nothing about the leaf sender's
     /// identity.
     pub trust: ControlTrust,
-    /// Network-layer message type code of the control (`0xFF` when the NPDU carries none).
+    /// Network-layer message type code of the control, as received.
     pub message_type: u8,
     /// Vendor ID from a proprietary network message, if present.
     pub vendor_id: Option<u16>,
@@ -207,6 +208,10 @@ impl ControlDecisions {
 
     fn record(&self, class: ControlClass, decision: Decision) {
         let Some(row) = index(class) else {
+            debug!(
+                ?class,
+                "No decision counters for this control class; not counted"
+            );
             return;
         };
         let inc = |col: usize| {

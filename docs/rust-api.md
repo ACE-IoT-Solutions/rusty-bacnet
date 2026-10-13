@@ -2251,7 +2251,8 @@ live `RouterTable`: the core's `Table`, re-exported in
 `HOLD_RECORDS` (1,024) reject hold-down records. A lookup returns a `Route`
 by value, a copy of the table's row read through its getters (`port()`,
 `is_direct()`, `next_hop()`, `reachability()` and the timestamps); a route
-changes only through the table's own calls. Times in the
+changes only through the table's own calls. `router_table` also re-exports
+`RejectReason`, which `apply_reject` takes. Times in the
 table are the router's own, Tokio time since `start`, which `now()` reads, so
 paused-time tests drive the sweep too. Calls on the table are local
 management, which no wire-control policy sees; drop the guard soon, since
@@ -2532,11 +2533,14 @@ outside the crate builds them like this:
   compare with what a lookup returns.
 - `router::Counters`, `table::ClaimCounters` and `bip::PortCounters` from
   `Default`, then set the counts.
-- `HeldBroadcast::<N>::EMPTY`, or `[HeldBroadcast; n]` for the default
-  `N`: a default doesn't drive inference.
+- `HeldBroadcast::<N>::EMPTY`, or `<HeldBroadcast>::EMPTY` for the default
+  `N`: a default doesn't drive inference, so a bare `HeldBroadcast::EMPTY`
+  in an expression leaves `N` open, but `<HeldBroadcast>` names the type,
+  default and all.
 
 The crate builds the rest, which a caller reads but can't build, or match
-without `..`: `Claim`, `Send`, `Pending`, `MacTooLong` and `Route`. A
+without `..`: `Claim`, `Send`, `Pending` and `MacTooLong`; and a `Route`
+only through its two constructors above. A
 `match` on these enums needs a wildcard arm: `npdu::ParseError`,
 `Malformed`, `WriteError`, `message::DataError`, `router::ConfigError`,
 `Discard`, `Event`, `Kind`, `SendRefusal`, `ControlClass`,
@@ -2562,7 +2566,9 @@ A `Route` is a copy of the table's row, read through its getters:
 
 - a route's port, next hop or `last_seen`: `add_learned` (or `learn` and
   `apply_claim`, which also detect flaps and keep the convergence mode);
-- `direct`: `add_direct`, which replaces the route;
+- `direct`: `add_direct`, which replaces the route; the other way, from
+  direct to learned, `remove` and then `add_learned`, which refuses a
+  network whose route is direct;
 - `reachability` and `busy_until`: `mark_busy`, `mark_available` and
   `mark_unreachable`;
 - `last_used`: `touch`;
