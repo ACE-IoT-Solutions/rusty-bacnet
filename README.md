@@ -291,7 +291,7 @@ How to configure each one:
 | [`bacnet-mstp-core`](crates/bacnet-mstp-core) | MS/TP master state machine driven by caller-supplied time and events (`no_std`; no allocator by default) |
 | [`bacnet-bip-codec`](crates/bacnet-bip-codec) | BACnet/IP and BACnet/IPv6 BVLL codec: every Annex J and Annex U message, B/IP and B/IPv6 addresses, VMACs and BDT/FDT tables (`no_std`; no allocator or dependencies by default) |
 | [`bacnet-bip-core`](crates/bacnet-bip-core) | Portable BACnet/IP behaviour: a BBMD's BDT and FDT in caller-sized arrays, foreign-device registration and broadcast forwarding, on caller-supplied time (`no_std`; no allocator) |
-| [`bacnet-router-core`](crates/bacnet-router-core) | Portable router behaviour (Clause 6): a sans-IO routing engine with its routing table and route discovery, on caller-supplied time, which `bacnet-network`'s router runs on (`no_std`; no allocator) |
+| [`bacnet-router-core`](crates/bacnet-router-core) | Portable router behaviour (Clause 6): a sans-IO routing engine with its routing table and route discovery, on caller-supplied time, which `bacnet-network`'s router runs on, and B/IP and MS/TP port glue behind features (`no_std`; no allocator) |
 | [`bacnet-transport`](https://crates.io/crates/bacnet-transport) | BACnet/IP, BACnet/IPv6, BACnet/SC, MS/TP and Ethernet data links |
 | [`bacnet-network`](https://crates.io/crates/bacnet-network) | Network layer and routing |
 | [`bacnet-client`](https://crates.io/crates/bacnet-client) | Async client |

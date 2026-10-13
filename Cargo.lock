@@ -452,7 +452,11 @@ dependencies = [
 name = "bacnet-router-core"
 version = "0.12.0"
 dependencies = [
+ "bacnet-bip-codec",
+ "bacnet-bip-core",
  "bacnet-encoding",
+ "bacnet-mstp-codec",
+ "bacnet-mstp-core",
  "bacnet-time",
  "bacnet-types",
  "bytes",

@@ -58,13 +58,14 @@ for crate in bacnet-types bacnet-encoding bacnet-services; do
   cargo_for doc -p "$crate" --no-default-features --features alloc --no-deps --locked --document-private-items
 done
 
-# The rustdoc of the MS/TP and B/IP crates with each storage feature alone.
-# Their defaults have none, and the workspace runs turn on all of them, so
-# an intra-doc link to an item behind the other feature breaks only here
-# (#1681).
+# The rustdoc of the MS/TP and B/IP crates with each storage feature alone,
+# and of the router core with each glue feature alone. Their defaults have
+# none, and the workspace runs turn on all of them, so an intra-doc link to
+# an item behind the other feature breaks only here (#1681, #1679).
 for spec in "bacnet-mstp-core alloc" \
   "bacnet-mstp-codec alloc" "bacnet-mstp-codec heapless" \
-  "bacnet-bip-codec alloc" "bacnet-bip-codec heapless"; do
+  "bacnet-bip-codec alloc" "bacnet-bip-codec heapless" \
+  "bacnet-router-core bip" "bacnet-router-core mstp"; do
   read -r crate features <<<"$spec"
   echo "==> $crate (rustdoc, features: $features$label)"
   cargo_for doc -p "$crate" --no-default-features --features "$features" --no-deps --locked --document-private-items

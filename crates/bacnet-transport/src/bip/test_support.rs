@@ -46,7 +46,7 @@ pub(super) async fn handle_bvll_message(
     let datagram = Datagram {
         payload: &wire,
         source: SocketAddrV4::new(Ipv4Addr::from(sender.0), sender.1),
-        to,
+        to: Some(to),
         path: Path::Primary,
         truncated: false,
     };
@@ -83,7 +83,7 @@ pub(super) fn admitted_delivery(
     let datagram = Datagram {
         payload: &frame,
         source: SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 7), 0xBAC0),
-        to: Addressed::classify(destination, os_group_delivery, &local),
+        to: Some(Addressed::classify(destination, os_group_delivery, &local)),
         path: Path::Primary,
         truncated: false,
     };

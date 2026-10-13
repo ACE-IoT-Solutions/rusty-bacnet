@@ -17,6 +17,16 @@
 //!
 //! There are no buffers and no allocator: a delivery borrows the datagram,
 //! and every send is a [`Bvll`](bacnet_bip_codec::Bvll) the caller encodes.
+//!
+//! **The host's side.** Each [`Datagram`] carries what the host's socket
+//! says about it: the UDP source, whether the read was cut short, which
+//! socket read it, and where it was sent ([`Datagram::to`], built with
+//! [`Addressed::classify`]). The last decides whether a message came to
+//! this node alone or to every node on the subnet, which the receive
+//! rules depend on. A host whose IP stack can't report the destination of
+//! each datagram (lwIP without per-packet destination information, say)
+//! passes `None`, and the node delivers nothing from it and drops it as
+//! [`Discard::UnknownDestination`], never guessing (#1678).
 //! In [`Mode::Bbmd`], once every node rule has passed, [`Link::receive`]
 //! hands the BBMD's share of a message over as [`ForBbmd`], for the caller
 //! to run through [`bbmd::Tables`](crate::bbmd::Tables); a node that is not
@@ -52,7 +62,7 @@
 //! let datagram = Datagram {
 //!     payload: &wire,
 //!     source: bbmd,
-//!     to: Addressed { node: true, broadcast: false },
+//!     to: Some(Addressed { node: true, broadcast: false }),
 //!     path: Path::Primary,
 //!     truncated: false,
 //! };
@@ -106,6 +116,7 @@
 //! | No NAK goes to an address a reply can't reach | `node_naks.rs` `no_nak_to_an_unanswerable_source` |
 //! | A malformed BBMD-only request still draws its NAK | `node_naks.rs` `a_malformed_request_still_draws_its_nak` |
 //! | A truncated datagram is dropped first | `node_receive.rs` `truncation_is_checked_first` |
+//! | A datagram whose destination the host can't report is dropped, never guessed at (#1678) | `node_receive.rs` `ingress_fails_closed_for_destination_mismatch_missing_metadata_and_truncation` |
 //! | A foreign device takes Forwarded-NPDUs only from its BBMD by unicast | `node_receive.rs` `foreign_trust_takes_forwards_only_from_the_bbmd_by_unicast` |
 //! | Broadcasts are held, bounded, until the first registration attempt resolves | `node_registration.rs` `broadcasts_are_held_until_the_first_attempt_resolves` |
 //! | A foreign device refuses manual requests a success answers to its own BBMD, whose registration it owns | `node_registration.rs` `a_foreign_device_refuses_manual_requests_to_its_bbmd` |

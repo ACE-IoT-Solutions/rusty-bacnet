@@ -36,7 +36,19 @@
 //!   clause's way, the default, or the old one.
 //!
 //! A port is identified by its index, a [`PortId`]; its MAC is a [`Mac`] of
-//! up to [`MAX_MAC_LEN`] octets.
+//! up to [`MAX_MAC_LEN`] octets. To the engine a port is data, so any link
+//! plugs in; two features add the glue for the portable link cores, so
+//! firmware can route between them with no allocator:
+//!
+//! - `bip`: B/IP ports over `bacnet-bip-core`'s node engine, in normal or
+//!   foreign-device mode, or as a BBMD over its tables (module `bip`).
+//! - `mstp`: MS/TP ports over `bacnet-mstp-core`'s master core, with
+//!   extended frames (module `mstp`).
+//!
+//! Both hand the router each NPDU their link delivers as an `Arrived`,
+//! whose frame borrows its link source, and carry out the router's sends on
+//! their link. Each module documents its wiring, and the clauses its tests
+//! cover.
 //!
 //! # Clause 6 coverage
 //!
@@ -105,8 +117,13 @@
 //!
 //! # Features
 //!
-//! None. The crate depends only on `bacnet-time` and builds on bare-metal
-//! targets without an allocator.
+//! None by default: the crate then depends only on `bacnet-time`. Neither
+//! feature needs std or an allocator, and every combination builds on
+//! bare-metal targets.
+//!
+//! - `bip`: the B/IP glue, which adds `bacnet-bip-core` and
+//!   `bacnet-bip-codec`.
+//! - `mstp`: the MS/TP glue, which adds `bacnet-mstp-core`.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -114,12 +131,20 @@
 #[cfg(test)]
 extern crate std;
 
+#[cfg(any(feature = "bip", feature = "mstp"))]
+mod arrived;
+#[cfg(feature = "bip")]
+pub mod bip;
 pub mod discovery;
 pub mod message;
+#[cfg(feature = "mstp")]
+pub mod mstp;
 pub mod npdu;
 pub mod router;
 pub mod table;
 
+#[cfg(any(feature = "bip", feature = "mstp"))]
+pub use arrived::Arrived;
 pub use bacnet_time::{Duration, Instant};
 pub use npdu::{Mac, MacTooLong};
 pub use router::{Router, Storage};
