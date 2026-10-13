@@ -12,8 +12,8 @@ Select the application owner, binding and data link separately. This is a naviga
 | Data link | Entry points | Setup and important boundary |
 |---|---|---|
 | B/IP, NORMAL | Rust/Python standalone client and server; shared endpoint | Explicit local IPv4 interface and UDP port; selected Network Port registration is a separate opt-in |
-| B/IP, BBMD or foreign | Rust transport configuration; bounded endpoint composition | BDT/FDT or configured BBMD; shared-endpoint Number evidence does not qualify every administrative operation |
-| B/IPv6 | Standalone Rust/Python client and server; Rust configured foreign-device mode | Select one usable interface/address; no shared endpoint builder or Python foreign-device entry point |
+| B/IP, BBMD or foreign | Rust client, server and endpoint builders (`.mode(BipMode::…)`); Python `bbmd=` and `foreign_device=`; CLI `--foreign-bbmd` | BDT/FDT or configured BBMD; one transport is never both; shared-endpoint Number evidence does not qualify every administrative operation |
+| B/IPv6 | Standalone Rust/Python client and server; Rust configured foreign-device mode | Select one usable interface/address; peers are named by 3-octet VMAC (`bip6:<instance>`); no shared endpoint builder or Python foreign-device entry point |
 | BACnet/SC | Rust/Python standalone owners and shared endpoint | Operational credentials, explicit CA and durable UUID/VMAC configuration; Rust TLS paths require `sc-tls` |
 | MS/TP | Rust transport/server/endpoint; Python standalone and endpoint paths | Serial adapter, station, baud and token participation; do not infer physical timing from simulation |
 | Ethernet | Linux Rust standalone client and server | AF_PACKET raw socket permissions; no shared endpoint builder or Python Ethernet API |
@@ -26,11 +26,11 @@ The CLI has its own [configuration surface](https://github.com/jscott3201/rusty-
 |---|---|---|
 | B/IP loopback | Server/endpoint NORMAL controls; independent standalone-client NORMAL/BBMD/foreign replies; full-server and shared-endpoint BBMD Original-Broadcast and foreign DBTN captures | Linux supplies BBMD broadcast observation; no physical-LAN qualification |
 | Constrained local SC TLS | Full server/shared endpoint and standalone client Number bytes and Hub broadcast VMAC; direct query replies use Hub broadcast | Generic controlled tests separately prove queued/pending cancellation; TLS trust does not authenticate a relayed NPDU origin |
-| MS/TP LoopbackSerial | Full server/shared endpoint standard frames, token opportunity, mode parity and producer cancellation | Simulator evidence, not RS-485 timing, transceiver control or hardware interoperability |
+| MS/TP LoopbackSerial | Full server, shared endpoint and standalone client standard frames, token opportunity, mode parity and producer cancellation | Simulator evidence, not RS-485 timing, transceiver control or hardware interoperability |
 | Isolated Linux Ethernet | Full server/standalone client MAC, LLC, length, payload and padding; raw-FD stop/drop and canceled-stop ownership | Opt-in virtual-link fixture needs raw-socket capability; excluded from ordinary CI |
 | Isolated Linux B/IPv6 | Full server/standalone Rust client selected-link OriginalBroadcast and configured-foreign DBTN; independent bytes/address/interface; normal installed-Python evidence | Explicit external ignored tests; no physical LAN, IPv6 endpoint builder or full Annex U claim |
 
-Standalone-client BBMD/foreign cases retain BDT/FDT admission, alternate-sender compatibility and registration NAK/retry behavior, and prove requester progress plus awaited-stop socket release. Independent standalone-client MS/TP frame qualification remains under #879. Other implemented opt-ins are not automatically independently qualified by this table.
+Standalone-client BBMD/foreign cases retain BDT/FDT admission, alternate-sender compatibility and registration NAK/retry behavior, and prove requester progress plus awaited-stop socket release. Other implemented opt-ins are not automatically independently qualified by this table.
 
 ## Select IPv6 explicitly when discovery is ambiguous
 

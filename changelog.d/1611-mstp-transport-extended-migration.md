@@ -1,7 +1,7 @@
 ---
 section: Migration notes
 ---
-- **MS/TP transport (Rust API, #1611):** add `extended_frames: false`, or
-  `..MstpConfig::default()`, to an `MstpConfig` literal that lists every
-  field, and have a `TransportPort` wrapper forward `prepare_for_routing`.
-  A router's MS/TP ports now declare an APDU limit of 1476.
+- **MS/TP routing (Rust API, #1611):** a `TransportPort` wrapper forwards
+  the new `prepare_for_routing`, which `BACnetRouter` calls to turn on
+  extended frames on each MS/TP port it routes, so a router's MS/TP ports
+  now declare an APDU limit of 1476.

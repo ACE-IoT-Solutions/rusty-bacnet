@@ -1,7 +1,8 @@
 ---
 section: Changed
 ---
-- The server's discovery rate limits and coalescing windows read tokio's
-  clock, so a paused test runtime steps them like the server's other timers;
-  production timing is unchanged, and the discovery tests no longer sleep
-  (#1548).
+- The server's discovery and time-synchronization rate limits, discovery
+  coalescing windows, binding freshness, COV subscription lifetimes, Life
+  Safety operation replay and the confirmed-event repeat window use
+  tokio's clock, so paused tests step them; production is unchanged
+  (#1548, #1550, #1556).

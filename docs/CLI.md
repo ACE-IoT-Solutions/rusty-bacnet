@@ -206,7 +206,7 @@ client's discovery table afterwards.
 | `q` | Quit |
 
 The `tui` cargo feature is off by default until the terminal UI ships in
-0.13.0 (#975), so the release binaries and a plain `cargo install bacnet-cli`
+0.14.0 (#975), so the release binaries and a plain `cargo install bacnet-cli`
 leave it out. Build it with `cargo install bacnet-cli --features tui`, or with
 `--features bacnet-cli/tui` in a workspace checkout. Without it, ratatui and
 crossterm aren't built and `bacnet tui` prints that rebuild advice. The

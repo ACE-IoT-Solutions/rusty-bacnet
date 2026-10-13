@@ -47,7 +47,7 @@ Check whether the binary includes SC support, then distinguish URL/connectivity,
 
 ## The serial port opens but MS/TP is unstable
 
-Check duplicate MACs, baud, `Max_Master`, adapter/driver behavior, transmit-direction timing, and the physical trunk. Test representative host load and observe the wire. Opening a serial file and completing one read do not establish deterministic token timing or full Clause 9 behavior.
+Check duplicate MACs, baud, `Max_Master`, adapter/driver behavior, transmit-direction timing, and the physical trunk. For a USB adapter, check the transmit-latency pad and the usage and reply timeouts (`mstp_*_ms`); for one that hears its own frames, `mstp_echo`. Test representative host load and observe the wire. Opening a serial file and completing one read do not establish deterministic token timing or full Clause 9 behavior.
 
 Use the [MS/TP guide](/rusty-bacnet/guides/mstp/) for the qualification boundary. A real-time kernel recommendation must be tied to evidence from the actual host and adapter, not merely the language used by the stack.
 

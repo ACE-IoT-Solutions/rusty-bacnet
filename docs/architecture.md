@@ -128,6 +128,8 @@ pub trait TransportPort: Send + Sync {
     fn egress_apdu_limit(&self) -> u16; // current outgoing path limit
     fn supports_local_nonrouter_number_controls(&self) -> bool; // opt-in, default false
     fn bip_port(&self) -> Option<BipPort>; // registration metadata: endpoint and B/IP mode
+    fn max_npdu(&self) -> NpduLimits; // longest NPDU sent, unicast and broadcast; default 1497
+    fn prepare_for_routing(&mut self); // BACnetRouter calls it before start; MS/TP turns on extended frames
 }
 ```
 
@@ -344,7 +346,7 @@ The stack runs on a Tokio multi-threaded runtime.
 - Router table entries: 256
 - Segment receivers: 128 (prevents DoS from abandoned segmented transfers)
 - COV in-flight: 255 (matches u8 invoke ID range)
-- MS/TP frame buffer: 511 bytes (one standard frame)
+- MS/TP frame buffer: 511 bytes (one standard frame), or 1,516 with extended frames on
 - MS/TP queues: 256 pending unicast and 256 pending broadcast NPDUs
 
 **Client APDU retry**: 3 retries by default, invoke ID reused across retries, cleaned up on final timeout.

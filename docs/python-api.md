@@ -471,7 +471,7 @@ Read-only device information from WhoIs/IAm discovery (frozen).
 | Property | Type | Description |
 |----------|------|-------------|
 | `.object_identifier` | `ObjectIdentifier` | Device object ID |
-| `.mac_address` | `list[int]` | Raw MAC bytes |
+| `.mac_address` | `bytes` | The MAC the I-Am came from: IPv4 and port on B/IP, the 3-octet VMAC on B/IPv6, the station on MS/TP |
 | `.max_apdu_length` | `int` | Max APDU the device accepts |
 | `.segmentation_supported` | `Segmentation` | Segmentation capability |
 | `.vendor_id` | `int` | Vendor identifier |
@@ -535,7 +535,7 @@ client = BACnetClient(
     port=47808,                  # UDP port
     broadcast_address="255.255.255.255",
     apdu_timeout_ms=6000,
-    transport="bip",             # "bip", "ipv6", or "sc"
+    transport="bip",             # "bip", "ipv6", "sc" or "mstp"
     share_port_by_address=False, # Keyword-only; B/IP, see "Sharing a port by address"
     bbmd=None,                   # Keyword-only; B/IP, a Bbmd: see "BBMD and foreign-device modes"
     foreign_device=None,         # Keyword-only; B/IP, a ForeignDevice; not with bbmd
@@ -1991,7 +1991,7 @@ await client.who_am_i(260, "Controller-X", "SN-0001")
 
 The full server constructs its owned
 Device with the selected transport's stable local receive capacity: 1476 for
-B/IP, B/IPv6 and SC, or 480 for MS/TP. Device
+B/IP, B/IPv6 and SC, or 480 for MS/TP (1476 with `mstp_extended_frames=True`). Device
 `Max_APDU_Length_Accepted` and I-Am therefore match the effective server
 acceptance; negotiated SC egress does not change that declaration. This adds no
 Python capacity argument and does not rewrite application-owned Rust Devices.
@@ -2016,7 +2016,7 @@ server = BACnetServer(
     interface="0.0.0.0",
     port=47808,
     broadcast_address="255.255.255.255",
-    transport="bip",             # "bip", "ipv6", or "sc"
+    transport="bip",             # "bip", "ipv6", "sc" or "mstp"
     share_port_by_address=False, # keyword-only; B/IP, see "Sharing a port by address"
     bbmd=None,                   # keyword-only; B/IP, see "BBMD and foreign-device modes"
     foreign_device=None,         # keyword-only; B/IP; not with bbmd
@@ -3454,7 +3454,7 @@ Once `BACnetClient` has learned its network's number, a device its table holds a
 
 SC starts UNKNOWN with no configured SC Network Port API; unrelated configured objects provide no authority. SC logical broadcast is the BVLC broadcast destination VMAC. A direct unicast What-Is is valid, but its Number reply uses the Hub broadcast path, never the saved original-direct APDU response capability. Hub-relayed controls do not identify an originating TLS leaf; SC control-origin authorization remains separate (#518). A message from a direct-connection peer is never a logical broadcast, so it can ask but cannot teach.
 
-B/IP BBMD and configured foreign modes start UNKNOWN with no registered Network Port authority. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop.
+B/IP BBMD and configured foreign-mode owners without a registered Network Port start UNKNOWN; a registered port in either mode reports its configured number as above. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop.
 
 B/IPv6 starts UNKNOWN with no configured IPv6 Network Port authority. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python B/IPv6 foreign-device API.
 
@@ -3468,7 +3468,8 @@ Tests cover actual inbound BVLL controls through both B/IP owners and outgoing N
 
 
 `BipEndpoint(..., network_port_instance=2, registered_network_port=2)` explicitly
-associates its declared port 2 with one owned NORMAL B/IP transport. Omitting
+associates its declared port 2 with one owned B/IP transport, in normal mode or with
+`foreign_device=` or `bbmd=`. Omitting
 `registered_network_port` leaves the declaration unbound. Selection requires a
 concrete unicast `interface`, matching declared instances 1–255 and a matching
 configured IP/UDP snapshot; `port=0` is supported. The full server accepts the same

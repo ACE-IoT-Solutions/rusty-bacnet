@@ -84,7 +84,7 @@ Linux, including per-crate ones such as `bacnet-endpoint/sc-tls` and
 `bacnet-cli/pcap` and `bacnet-cli/tui`. Then come the `bacnet-cli`
 tests with default features, because a few exist only when `sc-tls`, `pcap` or
 `tui` is off, and with no default features. `tui` is opt-in until the terminal
-UI ships in 0.13.0 (#975), so the two runs match until then; the second keeps
+UI ships in 0.14.0 (#975), so the two runs match until then; the second keeps
 the feature-off case covered once `tui` is on by default again. The last steps
 run the tests and doctests of `bacnet-types`, `bacnet-encoding` and
 `bacnet-services` with `alloc` and without `std`, the code their bare-metal

@@ -155,7 +155,7 @@ impl PyBipEndpoint {
     ///     network_number: BACnet network number for the Network-Port entry.
     ///     network_port_instance: Declared Network Port instance (default 1).
     ///     registered_network_port: Explicit instance to associate with the live
-    ///         NORMAL B/IP transport; None leaves the declaration unbound.
+    ///         B/IP transport, in any one mode; None leaves the declaration unbound.
     ///     max_apdu: Wire-legal APDU (50/128/206/480/1024/1476).
     ///     segmentation: `Segmentation` override (default NONE, the proven value).
     ///     services: Optional service-bit list (default `[READ_PROPERTY]`, the
