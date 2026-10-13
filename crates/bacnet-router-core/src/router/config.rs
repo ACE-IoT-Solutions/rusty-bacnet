@@ -93,6 +93,12 @@ pub struct Fixes {
     /// 6.6.3.2). Off, it lists them too. The list is in ascending order
     /// either way, as the table keeps it.
     pub answer_reachable: bool,
+    /// R5: a Who-Is-Router that names a network the table reaches through
+    /// the arrival port is neither answered nor searched for further: the
+    /// router that serves it sits on the arrival network (Clause 6.6.3.2
+    /// searches only for a network the table lacks). Off, it is passed on
+    /// to the other ports as for an unknown network.
+    pub search_unknown_only: bool,
 }
 
 impl Fixes {
@@ -102,6 +108,7 @@ impl Fixes {
         rejects_keep_routes: false,
         announce_numbers: false,
         answer_reachable: false,
+        search_unknown_only: false,
     };
 
     /// Every switch on: the recommended setting.
@@ -110,6 +117,7 @@ impl Fixes {
         rejects_keep_routes: true,
         announce_numbers: true,
         answer_reachable: true,
+        search_unknown_only: true,
     };
 }
 
@@ -153,7 +161,7 @@ impl Options {
     /// The hosted router's values: standard convergence, 256 routes, 300 s
     /// learned age, a 60 s sweep, [`Timing::DEFAULT`], a 5 s discovery
     /// cooldown and 30 s age, and the fixes it has turned on so far: R1 to
-    /// R4.
+    /// R5.
     pub const HOSTED: Self = Self {
         convergence: Convergence::Standard,
         route_cap: 256,
@@ -167,6 +175,7 @@ impl Options {
             rejects_keep_routes: true,
             announce_numbers: true,
             answer_reachable: true,
+            search_unknown_only: true,
             ..Fixes::NONE
         },
     };

@@ -2162,6 +2162,11 @@ them):
   answered with the networks reached through the other ports, in ascending
   order, leaving out any marked unreachable; busy ones stay (Clause 6.6.3.2).
   Before, unreachable networks were listed too, in no set order.
+- **No search behind the arrival port (R5).** A Who-Is-Router naming a network
+  the router reaches through the port it arrived on, that port's own network
+  included, gets no answer and isn't passed on: the router that serves it is
+  on the asker's network (Clause 6.6.3.2 searches only for a network the
+  table lacks). Before, it was passed on to the other ports.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

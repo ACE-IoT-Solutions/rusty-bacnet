@@ -212,3 +212,34 @@ async fn r4_the_unscoped_answer_leaves_out_unreachable_networks() {
     );
     h.assert_quiet();
 }
+
+// --- R5: no search for a network behind the arrival port ---
+
+/// A Who-Is-Router naming `network`, from the link with no source fields.
+fn who_is(network: u16) -> Npdu {
+    Npdu {
+        is_network_message: true,
+        message_type: Some(0x00),
+        payload: Bytes::copy_from_slice(&network.to_be_bytes()),
+        ..Npdu::default()
+    }
+}
+
+/// R5 (Clause 6.6.3.2): a Who-Is-Router from network 1000 for 3000, which
+/// the table reaches through port 0 itself, or for 1000, port 0's own
+/// network, draws no answer and goes to no other port: the router that
+/// serves it is on network 1000 already. Before the fix it was searched for
+/// on network 2000. One for an unknown network still is.
+#[tokio::test]
+async fn r5_a_network_behind_the_arrival_port_is_neither_answered_nor_searched() {
+    let mut h = Harness::two_port();
+    h.learned(3000, 0, &[9]);
+    for network in [3000, 1000] {
+        h.dispatch(h.ctx(0, &SENDER, who_is(network))).await;
+        h.assert_quiet();
+    }
+    h.dispatch(h.ctx(0, &SENDER, who_is(4000))).await;
+    let relayed = lengths_on(&mut h, 1);
+    assert_eq!(relayed.len(), 1, "an unknown network is searched for");
+    h.assert_quiet();
+}

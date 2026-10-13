@@ -147,7 +147,8 @@ fn the_route_cap_ends_learning() {
 
 /// Clause 6.6.3.2, scoped: answered with the network when it lies beyond
 /// another port, whatever its state; searched for further, with SNET and
-/// SADR and no DNET, when the table lacks it or reaches it through the
+/// SADR and no DNET, when the table lacks it; and, with R5, left to the
+/// router on the arrival network when the table reaches it through the
 /// arrival port. Network 0, and data of the wrong length, are refused.
 #[test]
 fn scoped_who_is_router_cases() {
@@ -176,13 +177,31 @@ fn scoped_who_is_router_cases() {
         ..asked
     };
     assert_eq!(sent[0].npdu, bytes(&expected));
-    // Reached through the arrival port: searched for too, today (fix R5 in
-    // #1679 stops that later). A routed request keeps its origin.
-    let mut routed = Npdu::message(code::WHO_IS_ROUTER_TO_NETWORK, &[0, 9]);
+    // A request a router passed on keeps its origin.
+    let mut routed = Npdu::message(code::WHO_IS_ROUTER_TO_NETWORK, &[0, 44]);
     routed.source = Some(addr(7, &[1]));
     let (_, sent) = deliver(&mut router, &mut host, 1, R8, &bytes(&routed), at(1));
     assert_eq!(sent[0].port, 0);
     assert_eq!(sent[0].parsed().source, Some(addr(7, &[1])));
+
+    // R5: reached through the arrival port, as 9 is behind R7 and 2 is port
+    // 1's own network, so the router there answers: nothing from this one.
+    for network in [9, 2] {
+        let (outcome, sent) = deliver(&mut router, &mut host, 1, R8, &who_is(network), at(1));
+        assert_eq!(outcome, Outcome::Handled);
+        assert!(sent.is_empty(), "{network}");
+    }
+    // Before R5 both were searched for on the other ports.
+    let options = options(|o| o.fixes.search_unknown_only = false);
+    let mut before = router_with(&fixture::two_ports(), options);
+    learn_9_via_r7(&mut before, at(0));
+    for network in [9, 2] {
+        let (_, sent) = deliver(&mut before, &mut host, 1, R8, &who_is(network), at(1));
+        assert_eq!(sent.len(), 1);
+        assert_eq!((sent[0].port, sent[0].is_broadcast()), (0, true));
+        assert_eq!(sent[0].kind, Kind::Relay(code::WHO_IS_ROUTER_TO_NETWORK));
+        assert_eq!(sent[0].parsed().source, Some(addr(2, R8)));
+    }
 
     for bad in [
         who_is(0),

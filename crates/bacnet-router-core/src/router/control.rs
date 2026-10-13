@@ -55,7 +55,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return self.forward(at, npdu, &route, options, host);
         }
         match kind {
-            code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu),
+            code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, options),
             code::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
             code::I_COULD_BE_ROUTER_TO_NETWORK => self.i_could_be_router(at, npdu, options, host),
             code::REJECT_MESSAGE_TO_NETWORK => self.received_reject(at, npdu, options, host),
@@ -145,12 +145,18 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// Who-Is-Router (Clause 6.6.3.2). Unscoped, it is answered with every
     /// network the table reaches through another port, ascending; with R4
     /// on, but those marked unreachable. Scoped to a network reached
-    /// through another port, it
-    /// is answered with that network, whatever its state. Scoped to one the
-    /// table lacks, or reaches through the arrival port, it is passed on to
-    /// every other port with SNET and SADR, and no DNET. Network 0 is
+    /// through another port, it is answered with that network, whatever
+    /// its state. Scoped to one the table lacks, it is passed on to every
+    /// other port with SNET and SADR, and no DNET. Scoped to one reached
+    /// through the arrival port, it is left to the router there with R5
+    /// on, and passed on as for an unknown one with it off. Network 0 is
     /// refused.
-    fn who_is_router<'f>(&mut self, at: &Arrival<'f>, npdu: &Npdu<'f>) -> Received<'f> {
+    fn who_is_router<'f>(
+        &mut self,
+        at: &Arrival<'f>,
+        npdu: &Npdu<'f>,
+        options: &Options,
+    ) -> Received<'f> {
         let network = match WhoIsRouter::parse(npdu.payload) {
             None | Some(WhoIsRouter::Network(0)) => return self.bad_message(),
             Some(WhoIsRouter::All) => {
@@ -159,13 +165,13 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
             Some(WhoIsRouter::Network(network)) => network,
         };
-        if self
-            .table
-            .lookup(network)
-            .is_some_and(|route| route.port != at.port)
-        {
-            self.out.push(Task::i_am_answer(at.port, Some(network)));
-            return Received::Handled;
+        match self.table.lookup(network) {
+            Some(route) if route.port != at.port => {
+                self.out.push(Task::i_am_answer(at.port, Some(network)));
+                return Received::Handled;
+            }
+            Some(_) if options.fixes.search_unknown_only => return Received::Handled,
+            _ => {}
         }
         let relay = Npdu {
             destination: None,
