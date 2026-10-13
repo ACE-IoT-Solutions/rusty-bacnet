@@ -123,7 +123,7 @@ mod bip {
         Datagram {
             payload,
             source,
-            to,
+            to: Some(to),
             path: Path::Primary,
             truncated: false,
         }

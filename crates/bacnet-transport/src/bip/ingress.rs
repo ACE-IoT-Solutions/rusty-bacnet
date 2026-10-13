@@ -269,7 +269,14 @@ pub(super) async fn handle_datagram(
     let datagram = Datagram {
         payload: data,
         source,
-        to: addressed(received.destination, received.os_group_delivery, local, ctx),
+        // Every read reports its destination, so the node never sees an
+        // unknown one.
+        to: Some(addressed(
+            received.destination,
+            received.os_group_delivery,
+            local,
+            ctx,
+        )),
         path,
         // A datagram the buffer cut short fails the read (`receive_failed`).
         truncated: false,

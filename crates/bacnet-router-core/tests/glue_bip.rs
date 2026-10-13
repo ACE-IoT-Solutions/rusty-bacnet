@@ -8,7 +8,7 @@ mod glue;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::bbmd::{ForwardRefusal, RegistrationLimits, Reservation, Tables, Target};
-use bacnet_bip_core::node::{Discard, ForBbmd, Link, Mode, Permissive};
+use bacnet_bip_core::node::{Datagram, Discard, ForBbmd, Link, Mode, Permissive};
 use bacnet_router_core::bip::{
     group, port_config, BbmdPort, BipPort, HeldBroadcast, Ingress, PortError,
 };
@@ -458,4 +458,47 @@ fn npdu_from(ingress: &Ingress<'_>) -> Option<Vec<u8>> {
         }
         _ => None,
     }
+}
+
+/// A datagram the node can't take on trust reaches neither the router nor
+/// the socket: one whose destination the host couldn't report (#1678), one
+/// cut short, one whose destination doesn't fit its function, and one
+/// whose Length field is wrong.
+///
+/// The port's half of ACE IoT's
+/// `ingress_fails_closed_for_destination_mismatch_missing_metadata_and_truncation`
+/// (ACE-IoT-Solutions/rusty-bacnet#5, thanks @acedrew), which
+/// `bacnet-bip-core`'s `tests/node_receive.rs` ports whole.
+#[test]
+fn ingress_fails_closed_before_the_router() {
+    let now = Instant::ZERO;
+    let mut bip = bip_port(Mode::Normal, &mut []);
+    let mut out = Wire::default();
+    let npdu = apdu_to(2, &[5], CONFIRMED);
+    let payload = encode(&Bvll::OriginalUnicastNpdu(&npdu));
+    let mut long = payload.clone();
+    long[3] += 1;
+    let unknown = Datagram {
+        to: None,
+        ..datagram(&payload, PEER, UNICAST)
+    };
+    let truncated = Datagram {
+        truncated: true,
+        ..datagram(&payload, PEER, UNICAST)
+    };
+    for (datagram, reason) in [
+        (unknown, Discard::UnknownDestination),
+        (truncated, Discard::Truncated),
+        (
+            datagram(&payload, PEER, TO_BROADCAST),
+            Discard::DestinationMismatch,
+        ),
+        (datagram(&long, PEER, UNICAST), Discard::LengthMismatch),
+    ] {
+        assert_eq!(
+            bip.receive(&datagram, now, &mut Permissive, &mut out),
+            Ingress::Discarded(reason)
+        );
+    }
+    assert_eq!(out.calls, 0);
 }

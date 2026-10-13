@@ -7,8 +7,8 @@ use core::net::Ipv4Addr;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode, Bvll, FdtEntries};
 use bacnet_bip_core::node::{
-    Addressed, Datagram, Delivery, Discard, ForBbmd, ForwardedTrust, Link, LocalAddresses, Mode,
-    Path, Received, Response,
+    Addressed, Datagram, Delivery, Discard, ForBbmd, Foreign, ForwardedTrust, Inbound, Link,
+    LocalAddresses, Mode, Node, Path, Permissive, Received, Response,
 };
 use bacnet_bip_core::{Arrival, Instant, LocalSubnet};
 use node_support::*;
@@ -462,6 +462,102 @@ fn truncation_is_checked_first() {
     assert_eq!(
         receive_datagram(&link, &grouped),
         Received::Discarded(Discard::GroupSource)
+    );
+}
+
+/// A datagram is dropped, never delivered on a guess, when its destination
+/// doesn't fit its function, when the host couldn't say what its
+/// destination was (#1678), when it was cut short, and when its Length
+/// field is wrong.
+///
+/// Ported from ACE IoT's bacnet-router-adapters
+/// (ACE-IoT-Solutions/rusty-bacnet#5), thanks @acedrew, where it is
+/// `ingress_fails_closed_for_destination_mismatch_missing_metadata_and_truncation`.
+#[test]
+fn ingress_fails_closed_for_destination_mismatch_missing_metadata_and_truncation() {
+    let unicast = wire(Bvll::OriginalUnicastNpdu(NPDU));
+    let dropped = |reason| Received::Discarded(reason);
+    assert_eq!(
+        receive(&normal(), &unicast, PEER, TO_BROADCAST),
+        dropped(Discard::DestinationMismatch)
+    );
+
+    // No destination: dropped in every mode, whatever the function, the
+    // socket or the sender, and before the frame is read.
+    let broadcast = wire(Bvll::OriginalBroadcastNpdu(NPDU));
+    let forwarded = wire(Bvll::ForwardedNpdu {
+        origin: REMOTE,
+        npdu: NPDU,
+    });
+    let register = wire(Bvll::RegisterForeignDevice { ttl: 60 });
+    let modes = [
+        Mode::Normal,
+        Mode::Bbmd,
+        Mode::Foreign(Foreign {
+            trust: ForwardedTrust::AnySender,
+            ..foreign()
+        }),
+    ];
+    let paths = [
+        Path::Primary,
+        Path::Listener {
+            other_interface: false,
+        },
+    ];
+    for mode in modes {
+        let link = link(mode);
+        for payload in [&unicast, &broadcast, &forwarded, &register, &vec![0x81]] {
+            for (path, source) in paths.into_iter().zip([PEER, BBMD]) {
+                let unknown = Datagram {
+                    to: None,
+                    path,
+                    ..datagram(payload, source, UNICAST)
+                };
+                assert_eq!(
+                    receive_datagram(&link, &unknown),
+                    dropped(Discard::UnknownDestination),
+                    "{mode:?} {path:?} {payload:02x?}"
+                );
+            }
+        }
+    }
+    // The node engine delivers nothing from one, and has nothing to do.
+    let mut node: Node = Node::new(normal(), Instant::ZERO).unwrap();
+    let unknown = Datagram {
+        to: None,
+        ..datagram(&unicast, PEER, UNICAST)
+    };
+    assert_eq!(
+        node.receive(&unknown, Instant::ZERO, &mut Permissive),
+        Inbound::Discarded(Discard::UnknownDestination)
+    );
+    assert!(drain(&mut node).is_empty());
+
+    // A cut-short datagram is dropped as that, even with no destination;
+    // a group source comes next.
+    let truncated = Datagram {
+        truncated: true,
+        ..unknown
+    };
+    assert_eq!(
+        receive_datagram(&normal(), &truncated),
+        dropped(Discard::Truncated)
+    );
+    let grouped = Datagram {
+        source: BROADCAST,
+        ..unknown
+    };
+    assert_eq!(
+        receive_datagram(&normal(), &grouped),
+        dropped(Discard::GroupSource)
+    );
+
+    // A Length field one past the datagram's length.
+    let mut long = unicast.clone();
+    long[3] += 1;
+    assert_eq!(
+        receive(&normal(), &long, PEER, UNICAST),
+        dropped(Discard::LengthMismatch)
     );
 }
 

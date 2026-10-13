@@ -284,10 +284,10 @@ pub fn run(memory: &mut Memory) -> Summary {
         let datagram = Datagram {
             payload,
             source: step.source,
-            to: Addressed {
+            to: Some(Addressed {
                 node: !step.broadcast,
                 broadcast: step.broadcast,
-            },
+            }),
             path: Path::Primary,
             truncated: false,
         };

@@ -165,7 +165,9 @@ impl DropReason {
             Discard::TooShort => Self::TooShort,
             Discard::NotBip => Self::NotBip,
             Discard::LengthMismatch => Self::LengthMismatch,
-            Discard::DestinationMismatch => Self::DestinationMismatch,
+            // The transport always passes the destination its socket
+            // reported, so the node never finds it unknown.
+            Discard::DestinationMismatch | Discard::UnknownDestination => Self::DestinationMismatch,
             Discard::RateLimited => Self::RateLimited,
             Discard::UnknownFunction => Self::UnknownFunction,
             Discard::MalformedPayload => Self::MalformedPayload,

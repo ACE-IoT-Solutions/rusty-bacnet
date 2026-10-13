@@ -78,12 +78,12 @@ pub fn raw(function: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A datagram on the primary socket.
+/// A datagram on the primary socket, sent as `to` says.
 pub fn datagram(payload: &[u8], source: SocketAddrV4, to: Addressed) -> Datagram<'_> {
     Datagram {
         payload,
         source,
-        to,
+        to: Some(to),
         path: Path::Primary,
         truncated: false,
     }

@@ -32,6 +32,17 @@
 //! `tests/node.rs` runs it natively and compares the whole summary with
 //! [`expected()`]; the `node` image (`src/bin/node.rs`) links it, and its
 //! emulation build checks the emulated CPU's summary against the same.
+//!
+//! # Adapter notes
+//!
+//! The scenario plays the IP stack, so it knows where each datagram was
+//! sent. A real image's adapter must report that for every datagram it
+//! reads: [`Datagram::to`] from the packet's destination address, through
+//! [`Addressed::classify`], since whether a message came to this node
+//! alone or to the whole subnet decides what the node may do with it. An
+//! IP stack that can't report the destination per packet passes `None`,
+//! and the node delivers nothing from that datagram and drops it as
+//! [`Discard::UnknownDestination`], never guessing (#1678).
 
 mod expected;
 
@@ -395,10 +406,10 @@ impl Device<'_> {
         let datagram = Datagram {
             payload,
             source,
-            to: Addressed {
+            to: Some(Addressed {
                 node: true,
                 broadcast: false,
-            },
+            }),
             path: Path::Primary,
             truncated: false,
         };

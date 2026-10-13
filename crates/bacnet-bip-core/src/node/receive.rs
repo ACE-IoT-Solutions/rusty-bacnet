@@ -17,8 +17,13 @@ pub struct Datagram<'d> {
     pub payload: &'d [u8],
     /// The UDP source: the sender's B/IP address, at any port (Annex J.1.2).
     pub source: SocketAddrV4,
-    /// What the destination address was, for this node.
-    pub to: Addressed,
+    /// What the destination address was, for this node, or `None` when the
+    /// host can't tell: its IP stack reports no destination per datagram
+    /// (#1678). Such a datagram is discarded
+    /// ([`Discard::UnknownDestination`]): whether it came by unicast or
+    /// broadcast decides what a node may do with it, so the node never
+    /// guesses.
+    pub to: Option<Addressed>,
     /// Which of the host's sockets read it.
     pub path: Path,
     /// Whether the OS or the receive buffer cut the datagram short.
@@ -130,6 +135,9 @@ pub enum Discard {
     Truncated,
     /// Its UDP source is a group address ([`Groups::contains_ip`](super::Groups::contains_ip)).
     GroupSource,
+    /// The host couldn't say where it was sent ([`Datagram::to`] is
+    /// `None`), so nothing tells a unicast from a broadcast (#1678).
+    UnknownDestination,
     /// A broadcast listener read it but doesn't keep it: not sent to this
     /// link's broadcast address, or it arrived on another interface.
     ListenerMismatch {
@@ -265,13 +273,15 @@ impl Link {
     ///
     /// 1. truncated by the OS or the buffer;
     /// 2. a UDP source that is a group address;
-    /// 3. on a broadcast listener: not sent to the broadcast address, or
+    /// 3. a destination the host couldn't report ([`Datagram::to`] is
+    ///    `None`);
+    /// 4. on a broadcast listener: not sent to the broadcast address, or
     ///    arrived on another interface;
-    /// 4. the BVLL header: length, type, Length field (Annex J.2);
-    /// 5. the function against the destination ([`Addressed`]);
-    /// 6. on a broadcast listener, a function that arrived as unicast;
-    /// 7. [`Policy::admit_management`], for the four requests it covers;
-    /// 8. the payload against the function's layout.
+    /// 5. the BVLL header: length, type, Length field (Annex J.2);
+    /// 6. the function against the destination ([`Addressed`]);
+    /// 7. on a broadcast listener, a function that arrived as unicast;
+    /// 8. [`Policy::admit_management`], for the four requests it covers;
+    /// 9. the payload against the function's layout.
     ///
     /// Then each function is dispatched by mode. Every one of the six
     /// BBMD-only requests that arrived by unicast gets its own NAK
@@ -291,9 +301,12 @@ impl Link {
         if self.groups().contains_ip(*source.ip()) {
             return Received::Discarded(Discard::GroupSource);
         }
+        let Some(to) = datagram.to else {
+            return Received::Discarded(Discard::UnknownDestination);
+        };
         let listener = matches!(datagram.path, Path::Listener { .. });
         if let Path::Listener { other_interface } = datagram.path {
-            if !datagram.to.broadcast {
+            if !to.broadcast {
                 return listener_mismatch(false);
             }
             if other_interface {
@@ -304,7 +317,7 @@ impl Link {
             Ok(frame) => frame,
             Err(error) => return Received::Discarded(Discard::of_decode_error(&error)),
         };
-        let Some(arrival) = datagram.to.arrival(frame.function) else {
+        let Some(arrival) = to.arrival(frame.function) else {
             return Received::Discarded(Discard::DestinationMismatch);
         };
         // Where the broadcast address is also the node's own, as in a
