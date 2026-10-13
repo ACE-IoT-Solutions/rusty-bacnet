@@ -439,7 +439,7 @@ mod tests {
             max_master: 127,
             max_info_frames: 1,
             baud_rate: 9600,
-            extended_frames: false,
+            ..MstpConfig::default()
         };
         let mstp = MstpTransport::new(serial, config);
         let any: AnyTransport<LoopbackSerial> = AnyTransport::Mstp(mstp);

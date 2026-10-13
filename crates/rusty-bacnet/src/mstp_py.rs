@@ -101,6 +101,7 @@ impl MstpOptions {
             max_info_frames: self.max_info_frames,
             baud_rate: self.baud,
             extended_frames: self.extended_frames,
+            ..MstpConfig::default()
         }
     }
 }

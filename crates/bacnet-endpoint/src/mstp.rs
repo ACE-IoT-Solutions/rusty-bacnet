@@ -212,6 +212,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             // A device, not a router: standard frames, as MSTP_MAX_APDU
             // assumes (Clause 9.3 requires extended frames of routers only).
             extended_frames: false,
+            ..MstpConfig::default()
         }
     }
 

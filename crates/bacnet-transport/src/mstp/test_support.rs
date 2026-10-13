@@ -273,7 +273,9 @@ impl Bus {
     }
 }
 
-/// A station at 9600 baud with addresses `station` and `max_master`.
+/// A station at 9600 baud with addresses `station` and `max_master`, and
+/// no transmit-latency pad on any platform, so a port without a drain is
+/// timed by the wire alone unless a test sets one.
 pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
     MstpConfig {
         this_station: station,
@@ -281,5 +283,6 @@ pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
         max_info_frames: 1,
         baud_rate: 9600,
         extended_frames: false,
+        transmit_latency_pad: Duration::ZERO,
     }
 }

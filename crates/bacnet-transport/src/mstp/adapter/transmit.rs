@@ -16,9 +16,12 @@
 //!    counted.
 //! 3. [`SerialPort::write`], then [`SerialPort::drain`]. The frame ended
 //!    when the drain returned, but never before its time on the wire at the
-//!    configured baud rate: a port without a drain is timed that way alone,
-//!    and one whose drain returns early (a USB adapter still shifting bits
-//!    out) is held to it. A write or drain error aborts the frame.
+//!    configured baud rate, counted from just before the write: one whose
+//!    drain returns early (a USB adapter still shifting bits out) is held to
+//!    it. A port without a drain is timed by that alone, plus
+//!    [`MstpConfig::transmit_latency_pad`](crate::mstp::MstpConfig::transmit_latency_pad)
+//!    for the time its first octet took to leave. A write or drain error
+//!    aborts the frame.
 //! 4. [`MasterCore::on_transmit_complete`](bacnet_mstp_core::MasterCore::on_transmit_complete), stamped with the frame's end.
 //!    On a port with [`Echo::Full`] the echo filter (the `echo` module)
 //!    hunts for the echo in what is read. Completion comes when the echo
@@ -30,8 +33,10 @@
 //!    as soon as the frame is complete.
 //!
 //! Per port kind: `TokioSerialPort` writes to the driver and drains with
-//! `tcdrain` on Unix (on Windows it has no drain, so the wire time is used);
-//! its echo is whatever the hardware does, `Echo::None` unless configured.
+//! `tcdrain` on Unix. On Windows it has no drain: its write returns once the
+//! system has the data, so the wire time plus the pad is used, which
+//! defaults to the USB adapter's there. Its echo is whatever the hardware
+//! does, `Echo::None` unless configured.
 //! Kernel RS-485 is the same port with the kernel switching RTS around each
 //! write. `GpioDirectionPort` drains inside its write and holds the driver
 //! for its post-transmit delay before switching back, so the frame
@@ -74,12 +79,15 @@ impl<S: SerialPort> Mac<S> {
         }
         let octets = u32::try_from(self.tx_frame.len()).unwrap_or(u32::MAX);
         let wire_end = started + self.octet_time * octets;
+        // The earliest the frame can have ended: its wire time, and with no
+        // drain to say when the adapter finished, the transmit-latency pad
+        // on top, since its first octet left after the write began.
         let sent = match self.serial.write(&self.tx_frame).await {
             Ok(()) => match self.serial.drain().await {
                 Err(Error::Transport(error)) if error.kind() == std::io::ErrorKind::Unsupported => {
-                    Ok(())
+                    Ok(wire_end + self.transmit_pad)
                 }
-                drained => drained,
+                drained => drained.map(|()| wire_end),
             },
             Err(error) => {
                 // The failed write may have queued part of the frame.
@@ -87,19 +95,23 @@ impl<S: SerialPort> Mac<S> {
                 Err(error)
             }
         };
-        if let Err(error) = sent {
-            increment(&self.counts.serial_write_errors);
-            warn!("MS/TP write error: {error}");
-            let now = self.clock.now();
-            if let Err(error) = core.on_transmit_aborted(outgoing.id, TransmitFailure::Io, now) {
-                debug!(?error, "MS/TP abort refused");
+        let earliest_end = match sent {
+            Ok(earliest_end) => earliest_end,
+            Err(error) => {
+                increment(&self.counts.serial_write_errors);
+                warn!("MS/TP write error: {error}");
+                let now = self.clock.now();
+                if let Err(error) = core.on_transmit_aborted(outgoing.id, TransmitFailure::Io, now)
+                {
+                    debug!(?error, "MS/TP abort refused");
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        // The frame ended when the drain returned, or at its wire time if
-        // that is later. The timer may wake a little after that; the core is
-        // told the end itself.
-        let ended = wire_end.max(Instant::now());
+        };
+        // The frame ended when the drain returned, or at that earliest end
+        // if it is later. The timer may wake a little after that; the core
+        // is told the end itself.
+        let ended = earliest_end.max(Instant::now());
         if Instant::now() < ended {
             tokio::time::sleep_until(ended).await;
         }

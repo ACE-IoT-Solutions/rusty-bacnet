@@ -121,6 +121,8 @@ pub(super) struct Task<S> {
     pub(super) clock: CoreClock,
     pub(super) npdus: mpsc::Sender<ReceivedNpdu>,
     pub(super) counts: Arc<Counters>,
+    /// [`MstpConfig::transmit_latency_pad`](super::MstpConfig::transmit_latency_pad).
+    pub(super) transmit_pad: Duration,
 }
 
 impl<S: SerialPort> Task<S> {
@@ -133,6 +135,7 @@ impl<S: SerialPort> Task<S> {
             clock,
             npdus,
             counts,
+            transmit_pad,
         } = self;
         let _closed = CloseOnExit(queues.clone());
         let mut rx_storage = vec![
@@ -167,6 +170,7 @@ impl<S: SerialPort> Task<S> {
             counts,
             queues,
             octet_time: Duration::from(config.octet_time()),
+            transmit_pad,
             read_buf: vec![0; READ_CHUNK],
             tx_frame: Vec::with_capacity(MAX_EXTENDED_FRAME_LENGTH),
             outgoing: None,
@@ -259,6 +263,8 @@ struct Mac<S> {
     /// and for publishing their counters.
     queues: SharedQueues,
     octet_time: Duration,
+    /// Added to a frame's wire time when the port has no drain.
+    transmit_pad: Duration,
     read_buf: Vec<u8>,
     /// The octets of the frame handed over last.
     tx_frame: Vec<u8>,

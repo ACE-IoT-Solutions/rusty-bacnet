@@ -125,7 +125,8 @@ pub trait SerialPort: Send + Sync + 'static {
     /// An error leaves transmit completion unknown. The default is unsupported,
     /// rather than falsely reporting completion for existing custom backends;
     /// the transport then takes the frame's time on the wire at the configured
-    /// baud rate as its completion.
+    /// baud rate, plus [`MstpConfig::transmit_latency_pad`], as its
+    /// completion.
     fn drain(&self) -> impl std::future::Future<Output = Result<(), Error>> + Send {
         async {
             Err(Error::Transport(std::io::Error::new(
@@ -232,6 +233,23 @@ impl DedicatedRuntime {
 /// still arriving. The core times each octet from the read that returned it.
 pub const HOST_FRAME_ABORT_MS: u64 = 100;
 
+/// The transmit-latency pad for a USB serial adapter, and
+/// [`MstpConfig::transmit_latency_pad`]'s default on Windows: 4 ms.
+///
+/// A port with no drain can't say when its last stop bit left, so the
+/// transport counts the frame's time on the wire from just before the write.
+/// Through a USB adapter the first octet leaves later than that: USB full
+/// speed runs in 1 ms frames, and a host transfer requested between two
+/// frames waits for the next one to begin (FTDI's application note
+/// AN232B-04, "Data Throughput, Latency and Handshaking"; Silicon Labs
+/// CP210x and WCH CH340 parts are full-speed devices too). The pad allows
+/// one frame of waiting, one frame for the transfer itself, and 2 ms for the
+/// host controller and the serial driver to queue it. Unlike the receive
+/// side, where FTDI's latency timer holds back a short packet for 16 ms by
+/// default, nothing in this path waits for more data. A driver or a loaded
+/// host slower than that needs a larger pad.
+pub const USB_TRANSMIT_LATENCY_PAD: std::time::Duration = std::time::Duration::from_millis(4);
+
 /// Master node configuration.
 ///
 /// [`MstpTransport::start`](crate::port::TransportPort::start) maps it onto
@@ -267,6 +285,21 @@ pub struct MstpConfig {
     /// queue never fills are usually not committed. The core's action
     /// buffers, about 13 KiB, are sized for extended frames either way.
     pub extended_frames: bool,
+    /// Added to a frame's time on the wire when the port has no drain
+    /// ([`SerialPort::drain`] returns `Unsupported`), so that the frame is
+    /// not taken to have ended before its last stop bit left the adapter.
+    ///
+    /// The frame then ends no sooner than its write began plus its octets'
+    /// time at the baud rate plus this pad. That end starts T_turnaround and
+    /// the reply and usage timeouts, so a pad too short starts them early,
+    /// and one too long only delays this station's next frame. A port whose
+    /// drain works (`tcdrain` on Unix) is not padded.
+    ///
+    /// Default: [`USB_TRANSMIT_LATENCY_PAD`] on Windows, where
+    /// `TokioSerialPort` has no drain and the port is usually a USB adapter,
+    /// and zero elsewhere. [`Self::validate`] refuses a pad that leaves the
+    /// longest frame no room inside the core's transmit watchdog.
+    pub transmit_latency_pad: std::time::Duration,
 }
 
 impl Default for MstpConfig {
@@ -277,6 +310,11 @@ impl Default for MstpConfig {
             max_info_frames: 1,
             baud_rate: 9600,
             extended_frames: false,
+            transmit_latency_pad: if cfg!(windows) {
+                USB_TRANSMIT_LATENCY_PAD
+            } else {
+                std::time::Duration::ZERO
+            },
         }
     }
 }
@@ -288,8 +326,9 @@ impl MstpConfig {
     /// # Errors
     ///
     /// [`Error::Encoding`] naming the field: `max_master` above 127,
-    /// `this_station` above `max_master`, `max_info_frames` of zero, or a
-    /// `baud_rate` of zero or too low for Clause 9 timing.
+    /// `this_station` above `max_master`, `max_info_frames` of zero, a
+    /// `baud_rate` of zero or too low for Clause 9 timing, or a
+    /// `transmit_latency_pad` that would outlast the transmit watchdog.
     pub fn validate(&self) -> Result<(), Error> {
         self.core_config().map(drop)
     }
@@ -329,6 +368,16 @@ impl MstpConfig {
         config
             .validate()
             .map_err(|error| self.config_error(error))?;
+        // An unpadded frame already fits the watchdog; a padded one must
+        // too, or the core would abort a frame still on its way out.
+        let pad = CoreDuration::saturating_from_core(self.transmit_latency_pad);
+        if config.minimum_transmit_watchdog().saturating_add(pad) > config.transmit_watchdog {
+            return Err(Error::Encoding(format!(
+                "MS/TP transmit_latency_pad {:?} leaves the longest frame no room in the {:?} transmit watchdog",
+                self.transmit_latency_pad,
+                std::time::Duration::from(config.transmit_watchdog)
+            )));
+        }
         Ok(config)
     }
 
@@ -374,6 +423,8 @@ mod echo_tests;
 pub(crate) mod execution_tests;
 #[cfg(test)]
 mod extended_tests;
+#[cfg(test)]
+mod host_timing_tests;
 #[cfg(test)]
 mod late_answer_tests;
 #[cfg(test)]
