@@ -705,7 +705,7 @@ agree within 10%, which shows the run-to-run spread.
 | --- | --- | --- | --- | --- |
 | 1 | 5,296 | 5,540 | 5,644 | 8,560 |
 | 5 | 14,918 | 12,499 | 12,986 | 26,711 |
-| 10 | 23,317 | 23,975 | 24,478 | 50 (stalled; see below) |
+| 10 | 23,317 | 23,975 | 24,478 | 20,120 after the fix for #1712, measured 13 October 2026 (50 before it, stalled; see below) |
 | 25 | failed (see below) | 33,963 | failed (see below) | 62 (stalled) |
 
 What it shows:
@@ -722,10 +722,18 @@ What it shows:
   requests over several clients, or raise the server's limit, to go
   further.
 - **BACnet/SC stalled with 10 or more requests in flight from one Python
-  client:** most requests still took about 0.15 milliseconds, but a few
-  waited for the 5-second timeout, so the rate fell to 50 to 62 requests
-  per second. This is under investigation in
-  [#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712).
+  client, until a fix:** most requests still took about 0.15 milliseconds,
+  but a few waited for the 5-second timeout, so the rate fell to 50 to 62
+  requests per second. The cause was the admission quota on a BACnet/SC
+  node's receive queue: it held at most 4 messages from any one peer and
+  dropped the rest of a burst without telling the sender, whose request
+  then timed out. [#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712)
+  raised the quota to 32 messages, in a queue of 256. Measured again on
+  13 October 2026 after the fix, 10 requests in flight ran at 20,120
+  requests per second, with the slowest request under 2 milliseconds; four
+  runs ranged from 15,000 to 32,000 requests per second. With 25 in flight
+  the server now refuses the requests over its limit of 16 per peer
+  (aborted, out of resources), as on B/IP; the 25 row predates the fix.
 - The suites' Who-Is test waits a fixed 300 milliseconds for answers, so
   its 302-millisecond time measures the wait, not the stack.
 
@@ -767,12 +775,15 @@ Where the time goes, and what to measure next.
   (`scripts/bench-ab.sh`) would settle it, and decode of a ReadProperty
   request (4.3 nanoseconds then, 19.9 now) is a small place to start
   ([#1713](https://github.com/jscott3201/rusty-bacnet/issues/1713)).
-- **BACnet/SC stalls with several requests in flight.** From Python, 10 or
-  more concurrent requests from one client over BACnet/SC left a few
-  requests waiting for the 5-second timeout
-  ([section 9](#9-python-bindings)); B/IP did not. A Rust reproduction
-  with concurrent requests over one BACnet/SC connection is the first
-  step ([#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712)).
+- **BACnet/SC stalled with several requests in flight; now fixed.** From
+  Python, 10 or more concurrent requests from one client over BACnet/SC
+  left a few requests waiting for the 5-second timeout
+  ([section 9](#9-python-bindings)); B/IP did not. The cause was the
+  admission quota on a BACnet/SC node's receive queue, 4 messages from any
+  one peer, which dropped the rest of a burst without telling the sender.
+  [#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712) raised it
+  to 32, and a dropped message now logs a warning, at most one every 10
+  seconds, with the count since the last one.
 - **Concurrency peaks early.** One server peaks at 5 to 10 clients, near
   74,000 requests per second, and loses a little beyond that. Profiling the
   server's dispatch under 25 to 100 clients would show whether the limit is
