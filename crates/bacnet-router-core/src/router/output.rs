@@ -443,10 +443,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         None
     }
 
-    /// Note that the caller refused the send just polled: count it, and end
-    /// the table answer it belonged to.
-    pub(super) fn refused(&mut self) {
-        bump(&mut self.counters.refused);
+    /// The caller refused the send just polled: end the table answer it
+    /// belonged to. [`Router::refused`](super::Router::refused) counts it.
+    pub(super) fn end_refused_answer(&mut self) {
         if core::mem::take(&mut self.out.last_table_ack)
             && self
                 .out

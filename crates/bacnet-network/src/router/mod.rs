@@ -62,10 +62,12 @@ pub mod control_policy;
 mod dispatch;
 mod engine;
 mod hosted_host;
+mod limits;
 mod local_control;
 mod local_delivery;
 mod options;
 mod send_warning;
+mod sender;
 
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicU64;
@@ -73,7 +75,7 @@ use std::sync::Arc;
 
 /// The engine's counts, as [`BACnetRouter::counters`] reads them.
 pub use bacnet_router_core::router::Counters;
-use bacnet_router_core::{Instant, Mac};
+use bacnet_router_core::{Instant, Mac, PortId};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -124,7 +126,9 @@ enum SendRequest {
 /// starts it, so an MS/TP port takes and sends extended frames whatever its
 /// `MstpConfig` says: Clause 9.3 requires them of a routing node. Once the
 /// transport has started, it reads [`TransportPort::max_npdu`], and answers
-/// an NPDU too long for the port with reject reason 4 (#1665).
+/// an NPDU too long for the port with reject reason 4 (#1665). It follows
+/// the limit's changes after that, for a transport that publishes them
+/// ([`TransportPort::max_npdu_changes`], #1696).
 pub struct RouterPort<T: TransportPort> {
     /// The transport for this port.
     pub transport: T,
@@ -157,6 +161,9 @@ pub struct BACnetRouter {
     sender_tasks: Vec<JoinHandle<()>>,
     /// Background task that runs the engine's sweep when it is due.
     aging_task: Option<JoinHandle<()>>,
+    /// Tasks that follow a port's NPDU limit (one per port whose transport
+    /// publishes its changes).
+    limit_tasks: Vec<JoinHandle<()>>,
     /// Last sequence given to a control for the router's own consumer.
     network_control_ingress_sequence: Arc<AtomicU64>,
 }
@@ -249,7 +256,9 @@ impl BACnetRouter {
     /// what else the engine counts, such as the frames it refused as
     /// malformed, the relays a spent hop count stopped, the rejects it sent,
     /// the sends too long for their egress port (`egress_too_long`: the
-    /// limit its transport's [`TransportPort::max_npdu`] reports, #1665),
+    /// limit its transport's [`TransportPort::max_npdu`] reports, #1665, or
+    /// a send the transport refused as too long after that limit fell,
+    /// #1696),
     /// and the rewrites it couldn't write (`write_failures`: longer than its
     /// 65,556-octet scratch, or with a field no NPDU may carry). They
     /// saturate and name no peer. The table's own counts are
@@ -366,6 +375,7 @@ impl BACnetRouter {
         let mut configs = Vec::new();
         let mut groups = Vec::new();
         let mut networks = Vec::new();
+        let mut limit_changes = Vec::new();
 
         for port in &mut ports {
             // A routing node may owe its data link more than other nodes:
@@ -388,6 +398,9 @@ impl BACnetRouter {
                 mac,
                 port.transport.max_npdu(),
             ));
+            // Taken after that read; the task that follows it applies the
+            // value it holds first, so a change in between isn't lost.
+            limit_changes.push(port.transport.max_npdu_changes());
             groups.push(PortGroups {
                 groups: port.transport.group_destinations(),
                 local_broadcasts: port.transport.local_broadcast_destinations(),
@@ -397,47 +410,6 @@ impl BACnetRouter {
         let engine = Engine::new(&configs, RouterClock::start())
             .map_err(|error| Error::Encoding(error.to_string()))?;
 
-        // Move transports into sender tasks
-        let mut send_txs = Vec::new();
-        let mut sender_tasks = Vec::new();
-        for port in ports {
-            let (send_tx, mut send_rx) = mpsc::channel::<SendRequest>(256);
-            send_txs.push(send_tx);
-
-            let transport = port.transport;
-            let task = tokio::spawn(async move {
-                let warnings = send_warning::SendWarnings::default();
-                while let Some(req) = send_rx.recv().await {
-                    match req {
-                        SendRequest::Unicast {
-                            npdu,
-                            mac,
-                            data_attributes,
-                        } => {
-                            if let Err(e) = transport
-                                .send_unicast_with_data_attributes(&npdu, &mac, &data_attributes)
-                                .await
-                            {
-                                warnings.unicast_failed(&e);
-                            }
-                        }
-                        SendRequest::Broadcast {
-                            npdu,
-                            data_attributes,
-                        } => {
-                            if let Err(e) = transport
-                                .send_broadcast_with_data_attributes(&npdu, &data_attributes)
-                                .await
-                            {
-                                warnings.broadcast_failed(&e);
-                            }
-                        }
-                    }
-                }
-            });
-            sender_tasks.push(task);
-        }
-
         let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
         let shared = Arc::new(Shared {
             engine,
@@ -446,6 +418,31 @@ impl BACnetRouter {
             networks,
             warnings: Default::default(),
         });
+
+        // Move transports into sender tasks
+        let mut send_txs = Vec::new();
+        let mut sender_tasks = Vec::new();
+        for port in ports {
+            let (send_tx, send_rx) = mpsc::channel::<SendRequest>(256);
+            send_txs.push(send_tx);
+            sender_tasks.push(tokio::spawn(sender::run(
+                port.transport,
+                send_rx,
+                Arc::clone(&shared),
+            )));
+        }
+
+        // Follow the limits of the ports whose transports publish them.
+        let limit_tasks = limit_changes
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, changes)| {
+                // At most 255 ports, checked above.
+                let port = PortId(index as u8);
+                let task = limits::follow(Arc::clone(&shared), port, changes?);
+                Some(tokio::spawn(task))
+            })
+            .collect();
 
         // Startup: each port hears its own network number, in a
         // Network-Number-Is (R3, Clause 6.4.20), then, in an I-Am-Router,
@@ -502,6 +499,7 @@ impl BACnetRouter {
                 dispatch_tasks,
                 sender_tasks,
                 aging_task: Some(aging_task),
+                limit_tasks,
                 network_control_ingress_sequence,
             },
             local_rx,
@@ -535,7 +533,7 @@ impl BACnetRouter {
 
     /// Stop the router.
     ///
-    /// Aborts and awaits dispatch, sender and aging tasks without waiting for
+    /// Aborts and awaits dispatch, sender, aging and limit tasks without waiting for
     /// the local application consumer, even with a full queue. Queued local
     /// APDUs remain drainable, retaining their reply senders until consumed or
     /// the receiver is dropped. Stop is not an admission drop and does not clear
@@ -551,6 +549,10 @@ impl BACnetRouter {
             let _ = task.await;
         }
         if let Some(task) = self.aging_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        for task in self.limit_tasks.drain(..) {
             task.abort();
             let _ = task.await;
         }
@@ -580,6 +582,8 @@ mod corroboration_tests;
 #[cfg(test)]
 mod cutover_tests;
 #[cfg(test)]
+mod driven_port;
+#[cfg(test)]
 mod envelope_control_tests;
 #[cfg(test)]
 mod envelope_discovery_tests;
@@ -591,6 +595,8 @@ mod fixes_tests;
 mod ingress_harness;
 #[cfg(test)]
 mod init_routing_table_tests;
+#[cfg(test)]
+mod limit_tests;
 #[cfg(test)]
 mod mstp_extended_tests;
 #[cfg(test)]

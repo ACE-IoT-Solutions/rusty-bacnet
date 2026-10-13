@@ -111,9 +111,7 @@ impl Engine {
     }
 
     /// A port on `network` with the router's `mac` on it, carrying the
-    /// NPDUs its transport reports (`TransportPort::max_npdu`, #1665). A
-    /// report under [`Limits::MIN`] counts as that: the engine refuses a
-    /// smaller limit, and the transport still refuses what it can't carry.
+    /// NPDUs its transport reports ([`Self::limits`]).
     pub(super) fn port(
         network: u16,
         mac: bacnet_router_core::Mac,
@@ -122,10 +120,19 @@ impl Engine {
         PortConfig {
             network,
             mac,
-            max_npdu: Limits {
-                unicast: max_npdu.unicast.max(Limits::MIN),
-                broadcast: max_npdu.broadcast.max(Limits::MIN),
-            },
+            max_npdu: Self::limits(max_npdu),
+        }
+    }
+
+    /// The engine's limits for a port whose transport reports `reported`
+    /// (`TransportPort::max_npdu`, #1665), at start or later (#1696). A
+    /// report under [`Limits::MIN`] counts as that: the engine refuses a
+    /// smaller limit, and the transport still refuses what it can't carry.
+    /// None is over the scratch, which holds more than any `u16`.
+    pub(super) fn limits(reported: NpduLimits) -> Limits {
+        Limits {
+            unicast: reported.unicast.max(Limits::MIN),
+            broadcast: reported.broadcast.max(Limits::MIN),
         }
     }
 

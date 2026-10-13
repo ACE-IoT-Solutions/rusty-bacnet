@@ -8,6 +8,17 @@ use bacnet_transport::sc_frame::{
 use tokio::time::{timeout, Duration};
 
 async fn sc_hub_accept(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
+    sc_hub_accept_with_limits(ws_hub, hub_vmac, 1476, 1476).await;
+}
+
+/// Act as a hub: take the node's Connect-Request and accept it with the
+/// hub's Max-BVLC-Length and Max-NPDU-Length.
+pub(super) async fn sc_hub_accept_with_limits(
+    ws_hub: &LoopbackWebSocket,
+    hub_vmac: Vmac,
+    max_bvlc: u16,
+    max_npdu: u16,
+) {
     let data = ws_hub.recv().await.unwrap();
     let req = decode_sc_message(&data).unwrap();
     assert_eq!(req.function, ScFunction::ConnectRequest);
@@ -15,8 +26,8 @@ async fn sc_hub_accept(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
     let mut accept_payload = Vec::with_capacity(26);
     accept_payload.extend_from_slice(&hub_vmac);
     accept_payload.extend_from_slice(&[0x33; 16]);
-    accept_payload.extend_from_slice(&1476u16.to_be_bytes());
-    accept_payload.extend_from_slice(&1476u16.to_be_bytes());
+    accept_payload.extend_from_slice(&max_bvlc.to_be_bytes());
+    accept_payload.extend_from_slice(&max_npdu.to_be_bytes());
 
     let accept = ScMessage {
         function: ScFunction::ConnectAccept,

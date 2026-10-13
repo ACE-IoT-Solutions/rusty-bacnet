@@ -46,9 +46,11 @@ pub struct Counters {
     /// a field no NPDU may carry, such as an SNET of 0.
     pub write_failures: u64,
     /// Sends left out because their egress port can't carry them: by the
-    /// router's own check (R1), or refused by the port as too long.
+    /// router's own check (R1), or refused by the port as too long, at once
+    /// or later ([`Router::refused`](super::Router::refused),
+    /// [`Router::refused_later`](super::Router::refused_later)).
     pub egress_too_long: u64,
-    /// Sends the caller reported refused.
+    /// Sends the caller reported refused, at once or later.
     pub refused: u64,
     /// Actions dropped because a call came before they were polled.
     pub undrained: u64,

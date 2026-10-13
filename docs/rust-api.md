@@ -689,8 +689,8 @@ forwarding capacity remain independent. These APIs are new in
 
 `max_npdu()` reports the longest NPDU the link sends, as `NpduLimits` with a
 `unicast` and a `broadcast` limit in octets (#1665). `BACnetRouter` reads it
-once, when it starts the port, and answers an NPDU it would route there that
-is longer, once rewritten, with reject reason 4 instead of handing it to a send
+when it starts the port, and answers an NPDU it would route there that is
+longer, once rewritten, with reject reason 4 instead of handing it to a send
 that fails. The default is `NpduLimits::STANDARD`, 1,497 octets each way, what
 B/IPv6 and Ethernet carry (Table 6-1). MS/TP reports 501 octets without
 extended frames and 1,497 with them, so a router port, which turns them on,
@@ -700,15 +700,23 @@ carries with no data options: the hub's Max-NPDU-Length within its
 Max-BVLC-Length less the encapsulation, which can pass 1,497 between BACnet/SC
 ports (Clause 6.6). Data attributes a router forwards with an NPDU (Table 6-1,
 note 1) take more of the BVLC, so one at this limit with attributes can still
-fail the transport's Max-BVLC-Length check. The router keeps the limit it read
-at start through an SC failover or reconnect (#1696 tracks a refresh): if the
-new hub takes less, the transport refuses the longer sends with its throttled
-warning, which nothing counts and no reject answers; if it takes more, the
-router still answers reason 4 above the old limit until it restarts. A direct
-connection's own limit isn't part of it. Wrappers and `AnyTransport` delegate,
-and a wrapper around an MS/TP or BACnet/SC transport that doesn't loses its
-real limit. A custom transport that carries more than 1,497 octets must
-override it, or a router refuses what it could have sent; one that carries
+fail the transport's Max-BVLC-Length check. A direct connection's own limit
+isn't part of it.
+
+A failover or reconnect can change a BACnet/SC port's limit, so the transport
+publishes it through `max_npdu_changes()`, a `watch::Receiver<NpduLimits>`
+that changes only when a new hub connection carries more or less (#1696). The
+router follows it: it gives the engine's port each new limit as soon as it is
+published, and every frame it routes after that goes by it, so an NPDU too
+long for the new hub draws reason 4, and one the old hub refused goes. A send
+already on the port's queue when the limit falls can still be refused by the
+transport; the router counts that refusal in `counters().egress_too_long` and
+`refused` as well as logging it, but answers it with no reject. The default,
+`None`, says the limit never changes once started, which holds for the other
+built-in transports. Wrappers and `AnyTransport` delegate both methods, and a
+wrapper around an MS/TP or BACnet/SC transport that doesn't loses its real
+limit. A custom transport that carries more than 1,497 octets must override
+`max_npdu()`, or a router refuses what it could have sent; one that carries
 less must too, or the router assumes 1,497.
 
 ### Feature Flags
@@ -2285,8 +2293,9 @@ Where the router departed from Clause 6 before it moved onto the engine, it
 now follows the clause, with no switch to turn back (#1679):
 
 - **Egress limits (R1, #1665).** Each port carries the NPDUs its transport's
-  `max_npdu()` reports, read when the router starts it (a report under 64
-  octets counts as 64). An NPDU whose rewrite for its egress port is longer
+  `max_npdu()` reports, read when the router starts it and followed after
+  that through `max_npdu_changes()`, as on a BACnet/SC failover (#1696); a
+  report under 64 octets counts as 64. An NPDU whose rewrite for its egress port is longer
   than the port's limit for that kind of send, unicast or broadcast, draws
   Reject-Message-To-Network reason 4 naming its DNET, sent to its origin like
   any other reject (Clauses 6.4.4 and 6.6.3.5), and isn't sent. A remote

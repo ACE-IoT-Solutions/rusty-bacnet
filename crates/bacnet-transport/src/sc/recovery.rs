@@ -79,7 +79,7 @@ pub(super) struct Recovery<'a, W: WebSocketPort> {
     pub active_ws: &'a Arc<Mutex<Arc<W>>>,
     pub state_tx: &'a watch::Sender<ScConnectionState>,
     pub connect_timeout_ms: u64,
-    pub effective_max_apdu_length: &'a AtomicU16,
+    pub hub_limits: &'a HubLimits,
 }
 
 impl<W: WebSocketPort> Recovery<'_, W> {
@@ -219,7 +219,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             ws,
             probe,
             self.state_tx,
-            self.effective_max_apdu_length,
+            self.hub_limits,
         )
         .await;
     }
