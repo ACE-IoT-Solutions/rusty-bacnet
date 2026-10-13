@@ -118,6 +118,10 @@ named_codes! {
     /// (128-255); [`FrameType::from_raw`] wraps it all the same, and two
     /// frame types are equal when their octets are.
     ///
+    /// Frame types are numbered in decimal, as Clause 9.3 numbers them: the
+    /// constants' wire values below, and `Debug` and `Display` for a type no
+    /// constant names.
+    ///
     /// ```
     /// use bacnet_mstp_codec::FrameType;
     ///
@@ -125,40 +129,40 @@ named_codes! {
     /// assert_eq!(FrameType::TOKEN.name(), Some("TOKEN"));
     ///
     /// // A proprietary type has no name, but keeps its octet.
-    /// let proprietary = FrameType::from_raw(0x80);
+    /// let proprietary = FrameType::from_raw(128);
     /// assert!(proprietary.is_proprietary() && !proprietary.is_defined());
-    /// assert_eq!(proprietary.to_raw(), 0x80);
+    /// assert_eq!(proprietary.to_raw(), 128);
     /// assert_eq!(format!("{proprietary:?}"), "FrameType(128)");
     /// assert_eq!(format!("{:?}", FrameType::TOKEN), "FrameType::TOKEN");
     /// ```
     pub struct FrameType(u8);
 
     /// Token: passes the right to send to the next master (Clause 9.3.1).
-    const TOKEN = 0x00;
+    const TOKEN = 0;
     /// Poll For Master: looks for a master at an address (Clause 9.3.2).
-    const POLL_FOR_MASTER = 0x01;
+    const POLL_FOR_MASTER = 1;
     /// Reply To Poll For Master: a master answering a poll (Clause 9.3.3).
-    const REPLY_TO_POLL_FOR_MASTER = 0x02;
+    const REPLY_TO_POLL_FOR_MASTER = 2;
     /// Test_Request: asks the receiver to send its data back (Clause
     /// 9.3.4).
-    const TEST_REQUEST = 0x03;
+    const TEST_REQUEST = 3;
     /// Test_Response: the answer to a Test_Request (Clause 9.3.5).
-    const TEST_RESPONSE = 0x04;
+    const TEST_RESPONSE = 4;
     /// BACnet Data Expecting Reply: an NPDU whose sender waits for an
     /// answer (Clause 9.3.6).
-    const BACNET_DATA_EXPECTING_REPLY = 0x05;
+    const BACNET_DATA_EXPECTING_REPLY = 5;
     /// BACnet Data Not Expecting Reply: an NPDU that wants no answer (Clause
     /// 9.3.7).
-    const BACNET_DATA_NOT_EXPECTING_REPLY = 0x06;
+    const BACNET_DATA_NOT_EXPECTING_REPLY = 6;
     /// Reply Postponed: puts off the answer to a BACnet Data Expecting Reply
     /// (Clause 9.3.8).
-    const REPLY_POSTPONED = 0x07;
+    const REPLY_POSTPONED = 7;
     /// BACnet Extended Data Expecting Reply: an NPDU too long for a
     /// standard frame, COBS-encoded (Clause 9.3.9).
-    const BACNET_EXTENDED_DATA_EXPECTING_REPLY = 0x20;
+    const BACNET_EXTENDED_DATA_EXPECTING_REPLY = 32;
     /// BACnet Extended Data Not Expecting Reply: an NPDU too long for a
     /// standard frame, COBS-encoded (Clause 9.3.10).
-    const BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY = 0x21;
+    const BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY = 33;
 }
 
 impl FrameType {
@@ -181,7 +185,7 @@ impl FrameType {
     #[must_use]
     pub const fn is_cobs(self) -> bool {
         let raw = self.to_raw();
-        raw >= 0x20 && raw <= 0x7F
+        raw >= 32 && raw <= 127
     }
 
     /// Whether this is one of the two extended data types, 32 and 33: the
@@ -191,14 +195,14 @@ impl FrameType {
     /// is reserved.
     #[must_use]
     pub const fn is_extended_data(self) -> bool {
-        matches!(self.to_raw(), 0x20 | 0x21)
+        matches!(self.to_raw(), 32 | 33)
     }
 
     /// Whether this type is in the vendor-proprietary range, 128-255. Such a
     /// frame's data opens with a 2-octet vendor identifier (Clause 9.3.11).
     #[must_use]
     pub const fn is_proprietary(self) -> bool {
-        self.to_raw() >= 0x80
+        self.to_raw() >= 128
     }
 }
 

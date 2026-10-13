@@ -198,7 +198,12 @@ fn validated_frame_the_codec_would_refuse_changes_nothing() {
     );
     assert_eq!(
         core.on_validated_frame(
-            Frame::new(FrameType::from_raw(0x20), STATION, 5, &[1]),
+            Frame::new(
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
+                STATION,
+                5,
+                &[1]
+            ),
             late
         ),
         Err(CoreError::Frame(FrameError::UnsupportedCobsFrame {

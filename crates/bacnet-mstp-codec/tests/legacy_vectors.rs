@@ -9,12 +9,8 @@ use bacnet_mstp_codec::{
     MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 
-/// The receiver's header CRC register after a good header and its CRC
-/// octet. The register is the complement of what `crc8` returns.
-const HEADER_CRC_RESIDUAL: u8 = 0x55;
-/// The receiver's data CRC register after good data and its two CRC octets,
-/// the complement of what `crc16` returns.
-const DATA_CRC_RESIDUAL: u16 = 0xF0B8;
+mod support;
+use support::{DATA_CRC_RESIDUAL, HEADER_CRC_RESIDUAL};
 
 fn encode(frame: Frame<'_>) -> Vec<u8> {
     let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];

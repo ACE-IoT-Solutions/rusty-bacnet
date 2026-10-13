@@ -22,7 +22,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
-| Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
+| Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, the codecs' `named_codes!` copies, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
 | Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator, and the APDU image with one, checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`); also the [`no_std` crates](#no_std-checks)' tests and doctests with `alloc` and without `std` | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
@@ -1368,6 +1368,7 @@ bash scripts/ci/check-file-size.sh
 bash scripts/ci/test-check-no-secrets.sh && bash scripts/ci/check-no-secrets.sh
 python3 scripts/ci/test-check-msrv.py
 python3 scripts/ci/test-firmware-size.py
+python3 scripts/ci/check-named-codes.py     # the codecs' named_codes! copies match
 python3 -m unittest discover -s scripts/release
 python3 -m unittest discover -s scripts -p 'test_changelog.py'
 python3 scripts/changelog.py check
@@ -1383,6 +1384,14 @@ The no-secret scanner reports stable opaque path IDs and line numbers, never
 paths or matching text, because filenames can contain credentials too. Compare
 a suspected path locally with `printf '%s' "$path" | git hash-object --stdin`.
 Run the file-size gate in its default strict mode, without `CHECK_FILE_SIZE_WARN=1`.
+
+`bacnet-bip-codec` (`src/function.rs`) and `bacnet-mstp-codec`
+(`src/frame.rs`) each keep a private copy of the `named_codes!` macro, which
+builds their open wire-code types (`BvlcFunction`, `FrameType` and the rest):
+neither crate depends on the other (#1684). `check-named-codes.py` compares
+the two `macro_rules!` definitions, from that line to the closing brace,
+and fails with a diff when they differ, so a change to one is made to both.
+The doc comments above them may differ.
 
 `scripts/ci/check-msrv.sh --linux-native` needs a native Linux GNU host with
 the MSRV toolchain (`RUST_MSRV`) installed, Python 3, a C toolchain, `pkg-config`, `libpcap-dev`,

@@ -10,10 +10,8 @@ use bacnet_mstp_codec::{
 };
 use proptest::prelude::*;
 
-/// The receiver's CRC-32K register after a good extended frame's Encoded
-/// Data and the four CRC octets decoded from its Encoded CRC-32K (Clause
-/// 9.6.3). The register is the complement of what `crc32k` returns.
-const CRC32K_RESIDUAL: u32 = 0x0843_323B;
+mod support;
+use support::CRC32K_RESIDUAL;
 
 const EXPECTING: FrameType = FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY;
 const NOT_EXPECTING: FrameType = FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY;

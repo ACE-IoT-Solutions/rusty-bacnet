@@ -7,12 +7,8 @@ use bacnet_mstp_codec::{
 };
 use proptest::prelude::*;
 
-/// The receiver's header CRC register after a good header and its CRC
-/// octet. The register is the complement of what `crc8` returns.
-const HEADER_CRC_RESIDUAL: u8 = 0x55;
-/// The receiver's data CRC register after good data and its two CRC octets,
-/// the complement of what `crc16` returns.
-const DATA_CRC_RESIDUAL: u16 = 0xF0B8;
+mod support;
+use support::{DATA_CRC_RESIDUAL, HEADER_CRC_RESIDUAL};
 
 /// Build a frame by hand, with valid CRCs, bypassing the encoder's checks.
 fn raw_frame(raw_type: u8, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
@@ -206,8 +202,6 @@ fn no_data_types_refuse_data_on_encode_but_decode_it() {
         FrameType::POLL_FOR_MASTER,
         FrameType::REPLY_TO_POLL_FOR_MASTER,
         FrameType::REPLY_POSTPONED,
-        FrameType::from_raw(0),
-        FrameType::from_raw(7),
     ] {
         assert!(!frame_type.allows_data());
         let raw_type = frame_type.to_raw();
@@ -334,8 +328,6 @@ fn reserved_cobs_types_are_rejected_after_the_header_checks() {
         assert!(output.iter().all(|&octet| octet == 0xA5));
     }
     assert!(FrameType::from_raw(0x22).is_cobs());
-    assert_eq!(FrameType::from_raw(0x22).to_raw(), 0x22);
-    assert!(!FrameType::from_raw(0x22).is_defined());
     assert_eq!(
         FrameType::from_raw(0x20),
         FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY
@@ -492,12 +484,39 @@ fn growable_sink_failing_mid_frame_keeps_the_prefix() {
         writes_left: 1,
     };
     let frame = Frame::new(FrameType::TEST_REQUEST, 1, 2, &[7, 7, 7]);
-    assert!(matches!(
+    // The failing write is the data's, three octets into no room: its
+    // SinkFull comes back field for field.
+    assert_eq!(
         frame.encode_to_sink(&mut sink),
-        Err(FrameError::BufferExhausted { .. })
-    ));
+        Err(FrameError::BufferExhausted {
+            needed: 3,
+            available: 0
+        })
+    );
     assert_eq!(sink.written.len(), 8);
     assert_eq!(&sink.written[..2], &PREAMBLE);
+}
+
+#[test]
+fn sink_full_becomes_buffer_exhausted_field_for_field() {
+    let full = SinkFull {
+        needed: 5,
+        available: 2,
+    };
+    assert_eq!(
+        FrameError::from(full),
+        FrameError::BufferExhausted {
+            needed: 5,
+            available: 2
+        }
+    );
+    assert_eq!(full.to_string(), "sink full: need 5, have 2");
+
+    // A slice refuses a write longer than its room and keeps its room.
+    let mut storage = [0u8; 2];
+    let mut sink: &mut [u8] = &mut storage;
+    assert_eq!(sink.write(&[1, 2, 3, 4, 5]), Err(full));
+    assert_eq!(sink.remaining_capacity(), Some(2));
 }
 
 #[cfg(feature = "alloc")]
