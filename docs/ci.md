@@ -400,8 +400,9 @@ targets, so a crate that needs one builds only with a backend such as
     code placed in RAM would count toward flash only, and the alignment
     gaps between sections (at most 4 octets of flash per image today)
     count toward neither;
-  - the counts of `core::fmt` functions and of 64-bit division routines
-    linked in, the largest objects in RAM, and `.text` by crate.
+  - the counts of `core::fmt` functions, of 64-bit division routines and
+    of memmove routines linked in, the largest objects in RAM, and `.text`
+    by crate.
 
   It fails when a size is over budget, or when any formatting code is
   linked in: the panic handler never reads the message, so panics cost no
@@ -423,11 +424,22 @@ targets, so a crate that needs one builds only with a backend such as
   images must not be stripped. A size more than 20% under its budget gets a
   notice to tighten it, not a failure, and so does a count under its limit,
   so a ceiling such as the apdu image's 15 `core::fmt` functions comes
-  down once the code behind it goes. `scripts/ci/test-firmware-size.py`
-  tests the helper on small ELF files it builds itself, in the Lint job. CI
-  runs the check in the Clippy job, after the `no_std` check, which already
-  sets up bare-metal targets, rather than in a job of its own that would
-  install the toolchain again for builds that take seconds.
+  down once the code behind it goes. It fails the same way when an image
+  links more memmove routines than its `memmove_functions` allows:
+  compiler-builtins' `memmove` and the `memmove`, `__aeabi_memmove`,
+  `__aeabi_memmove4` and `__aeabi_memmove8` entry points to it, 0.8 to
+  1.4 KB in all. A copy of a whole value that the compiler can't prove
+  doesn't overlap its source, or a slice rotation, calls it. The bip, node
+  and bbmd images link none, and their limit of 0 keeps it out. The mstp
+  images need it for two shifts within a buffer, the codec stream
+  decoder's discard of octets it is done with and the heapless queue's
+  removal of a slot (3 functions on Cortex-M, 2 on RISC-V), and the apdu
+  image links it too (2); each limit is that count, with no headroom.
+  `scripts/ci/test-firmware-size.py` tests the helper on small ELF files
+  it builds itself, in the Lint job. CI runs the check in the Clippy job,
+  after the `no_std` check, which already sets up bare-metal targets,
+  rather than in a job of its own that would install the toolchain again
+  for builds that take seconds.
 - **What `.text` holds.** Each image's `.text` includes its scenario, not
   just the stack it links. The check's by-crate list shows the split: on
   `thumbv7m-none-eabi`, the MS/TP image's 17.9 KB is about 5.7 KB of
@@ -443,25 +455,29 @@ targets, so a crate that needs one builds only with a backend such as
   scenario with the library code it inlines, 3.7 KB of `core` (formatting
   among it), 2.8 KB of `bacnet-services`, 2.4 KB of `bytes` and 2.1 KB of
   compiler-builtins; about 4 KB of its 5.2 KB of `.rodata` is text, nearly
-  all of it error messages and their labels. Of the node image's 13.4 KB,
+  all of it error messages and their labels. Of the node image's 12.2 KB,
   about 3.0 KB is credited to `bacnet-bip-core`, 0.6 KB to
-  `bacnet-bip-codec`, 2.1 KB to compiler-builtins and 6.8 KB to the
-  scenario, which inlines much of the engine; of the bbmd image's 8.5 KB,
+  `bacnet-bip-codec`, 0.7 KB to compiler-builtins (memory copies and
+  fills) and 6.8 KB to the scenario, which inlines much of the engine; of
+  the bbmd image's 8.5 KB,
   4.8 KB to the scenario with the receive rules and table code it inlines,
   1.1 KB to the codec, 0.9 KB to `bacnet-bip-core` and 0.7 KB to
   compiler-builtins. The mstp-extended image's 17.6 KB is about 5.8 KB of
   `bacnet-mstp-core`, 5.6 KB of the scenario with the core code it
   inlines and 2.7 KB of the codec: smaller than the mstp image, whose
-  scenario also drives the codec's stream decoder on its own. On
-  `thumbv6m-none-eabi`, copying a whole 6-octet B/IP address into a BDT's
-  own row or an FDT row of a Read-FDT-Ack compiled to a call to
-  compiler-builtins' `memmove`, 1.3 KB there, so `bacnet-bip-core` copies
-  the IP and the port apart (#1667).
-- **RAM.** The scenarios' buffers are statics, so `.bss` measures them,
-  but for the mstp-extended image's, below. The MS/TP image keeps everything large the core borrows in its static, the
-  firmware pattern the core's crate docs describe: receive storage, queues
-  (3,360 octets for `HeaplessQueues<4, 2>`) and `ActionBuffers<1>` (1,028),
-  5,544 octets in all with the codec part's buffers. The core itself, 512
+  scenario also drives the codec's stream decoder on its own.
+  `bacnet-bip-core` avoids the two patterns that link `memmove` (#1667):
+  it copies a 6-octet B/IP address's IP and port apart into a BDT's own
+  row and the FDT rows of a Read-FDT-Ack, which copied whole linked it on
+  `thumbv6m-none-eabi`, and the node shifts its queued events by swaps,
+  where `rotate_left` linked it on every target.
+- **RAM.** Most scenarios keep their buffers in statics, so `.bss`
+  measures them; the mstp-extended image's scenario is the exception,
+  below. The MS/TP image keeps everything large the core borrows in its
+  static, the firmware pattern the core's crate docs describe: receive
+  storage, queues (3,360 octets for `HeaplessQueues<4, 2>`) and
+  `ActionBuffers<1>` (1,028), 5,544 octets in all with the codec part's
+  buffers. The core itself, 512
   octets on these targets, is built on the stack. `.bss` doesn't count the
   stack; the [emulation check](#emulation-manual) measures how deep it goes.
   The mstp-extended image's static holds only what the core borrows,
@@ -471,11 +487,12 @@ targets, so a crate that needs one builds only with a backend such as
   and only while it builds or checks them. The node image's `.bss` is its
   64-octet datagram buffer, and the bbmd image's its two datagram buffers
   and what the tables write a decision's destinations and a Read-FDT-Ack's
-  rows into, 240 octets; the node and the tables, a few hundred octets
-  each, are built on the stack. `cargo nextest run -p firmware-link`
-  prints the host sizes from the `ram_sizes` tests. The apdu image's `.bss` is its 1 KiB arena and the
-  allocator's 32-octet state: what its scenario builds lives in the arena
-  or on the stack, and `heap_fits_the_arena` measures the arena's use.
+  rows into, 240 octets; the node, 752 octets on these targets, and the
+  tables are built on the stack. `cargo nextest run -p firmware-link`
+  prints the host sizes from the `ram_sizes` tests. The apdu image's
+  `.bss` is its 1 KiB arena and the allocator's 32-octet state: what its
+  scenario builds lives in the arena or on the stack, and
+  `heap_fits_the_arena` measures the arena's use.
 - **Raising a budget.** Each budget is the measured size plus 12%, rounded
   up to 16 octets. When a change grows an image on purpose, the error
   suggests a new budget; update it and the measured sizes in the file's
@@ -508,12 +525,12 @@ schedule runs it, and no required check depends on it.
   the summary against the one the host test asserts:
   `firmware_link::mstp::EXPECTED`, `mstp_extended::EXPECTED`,
   `bip::EXPECTED`, `node::expected()`, `bbmd::EXPECTED` and
-  `apdu::expected()`, shared by both so they can't drift. It prints the summary and a verdict through semihosting and exits
-  with a status QEMU passes on (below). The build uses the `emulate`
-  profile, the `firmware` profile under its own name, so the link test's
-  images in `target/<triple>/firmware` stay as they were; they are built
-  without the feature, and are byte for byte what they were before it
-  existed.
+  `apdu::expected()`, shared by both so they can't drift. It prints the
+  summary and a verdict through semihosting and exits with a status QEMU
+  passes on (below). The build uses the `emulate` profile, the `firmware`
+  profile under its own name, so the link test's images in
+  `target/<triple>/firmware` stay as they were; they are built without the
+  feature, and are byte for byte what they were before it existed.
 - **Semihosting** comes from the `semihosting` crate (taiki-e), which
   covers Arm M-profile and RISC-V without `cortex-m`, whose `bare-metal`
   dependency Cargo Deny refuses (RUSTSEC-2026-0110). It is a bare-metal,
@@ -566,35 +583,39 @@ schedule runs it, and no required check depends on it.
 
   | Target (board) | mstp | mstp-extended | bip | node | bbmd | apdu |
   | --- | --- | --- | --- | --- | --- | --- |
-  | `thumbv6m-none-eabi` (`microbit`) | 3,216 (10,840) | 6,136 (8,672) | 2,220 (16,252) | 5,364 (16,320) | 2,300 (16,144) | 2,768 (15,328) |
-  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 2,796 | 4,836 | 2,100 | 4,732 | 2,228 | 2,536 |
-  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 2,788 | 4,836 | 2,100 | 4,732 | 2,228 | 2,536 |
-  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 2,676 (10,840) | 4,676 (8,672) | 2,020 (16,252) | 4,584 (16,320) | 2,132 (16,144) | 2,464 (15,328) |
+  | `thumbv6m-none-eabi` (`microbit`) | 3,216 (10,840) | 6,136 (8,672) | 2,220 (16,252) | 4,716 (16,320) | 2,300 (16,144) | 2,768 (15,328) |
+  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 2,796 | 4,836 | 2,100 | 4,188 | 2,228 | 2,536 |
+  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 2,788 | 4,836 | 2,100 | 4,188 | 2,228 | 2,536 |
+  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 2,676 (10,840) | 4,676 (8,672) | 2,020 (16,252) | 4,008 (16,320) | 2,132 (16,144) | 2,464 (15,328) |
 
   So on ARMv6-M the MS/TP image needs about 8.8 KB of RAM: 5,544 octets of
   statics and 3.2 KB of stack. With extended frames on it needs about
   13.8 KB, 7,712 octets of statics and 6.1 KB of stack, which leaves
   2.5 KB of a 16 KiB part free: the core's send of a queued NPDU, its
   deepest call, has buffers on the stack that grow from 501 octets to 1497.
+  The node image's peak is mostly the scenario's own: on ARMv6-M its frame
+  is 2.8 KB, holding the 800-octet summary, the 752-octet node and the
+  result `Node::new` builds it in, and the reset entry keeps the 0.8 KB
+  summary it gets back; the engine's calls go about 1.1 KB deeper.
 - **Stack budgets.** `firmware/link/stack-budget.toml` (#1660) holds a
   budget for each board and image, in a `[<board>]` table with a key per
   image: the peak measured when it was set plus 25%, rounded up to 16
-  octets as the size budgets are. That is more headroom than their 12%, since one more
-  buffer on the stack, or a change in what the compiler inlines, can move a
-  peak by a whole frame. After the runs, the script hands what they printed
-  to `scripts/ci/firmware_size.py --stack`, which reads the peak from each
-  PASS line and prints a table of peaks against budgets. The run fails, and
-  the script exits 1 as it does for a failed image, when a peak is over its
-  budget, when an image the board's table lists printed no PASS line, or
-  when one that passed has no budget. A run of every board also fails on a
-  table for a board it doesn't have, left from one since removed; a run of
-  some boards can't tell. When a run itself failed, the script keeps that
-  run's status. A peak that needs a budget more than 20% under the one it
-  has gets a notice to tighten it. As with a size budget, raising one is a
-  reviewed change: say why the stack grew. `emulate-firmware.sh --suggest`
-  prints the file's tables as the images run now, in place of the check; the
-  file's comments record the peaks. CI never reads the file, since CI never
-  runs the emulator.
+  octets as the size budgets are. That is more headroom than their 12%,
+  since one more buffer on the stack, or a change in what the compiler
+  inlines, can move a peak by a whole frame. After the runs, the script
+  hands what they printed to `scripts/ci/firmware_size.py --stack`, which
+  reads the peak from each PASS line and prints a table of peaks against
+  budgets. The run fails, and the script exits 1 as it does for a failed
+  image, when a peak is over its budget, when an image the board's table
+  lists printed no PASS line, or when one that passed has no budget. A run
+  of every board also fails on a table for a board it doesn't have, left
+  from one since removed; a run of some boards can't tell. When a run
+  itself failed, the script keeps that run's status. A peak that needs a
+  budget more than 20% under the one it has gets a notice to tighten it.
+  As with a size budget, raising one is a reviewed change: say why the
+  stack grew. `emulate-firmware.sh --suggest` prints the file's tables as
+  the images run now, in place of the check; the file's comments record
+  the peaks. CI never reads the file, since CI never runs the emulator.
 - **The runner.** `emulate-firmware.sh` builds the images on the host with
   the pinned toolchain (clippy first, as the link test does), then hands
   them to `scripts/emu/run-qemu.sh`, which runs each on its board with a

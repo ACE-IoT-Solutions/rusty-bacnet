@@ -29,7 +29,8 @@
 # (size-optimized, LTO, panic=abort); then, per image,
 # scripts/ci/firmware_size.py, which prints the loaded sections, the four
 # main sections and the flash and RAM totals against the budget, and any
-# core::fmt code or 64-bit division routine, and fails over budget. The
+# core::fmt code, 64-bit division routine or memmove routine, and fails over
+# budget. The
 # targets need only `rustup target add`: they link with the rust-lld that
 # rustc ships.
 set -euo pipefail

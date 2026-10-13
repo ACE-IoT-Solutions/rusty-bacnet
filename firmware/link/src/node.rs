@@ -242,19 +242,18 @@ const MAX_WAITS: usize = 16;
 pub fn run(memory: &mut Memory) -> Summary {
     let mut summary = Summary::new();
     summary.max_npdu = [LINK.max_npdu(Cast::Unicast), LINK.max_npdu(Cast::Broadcast)];
-    let Ok(node) = ForeignNode::new(LINK, at(0)) else {
-        summary.error();
-        return summary;
-    };
-    let mut device = Device {
-        node,
-        wire: &mut memory.wire,
-        now: at(0),
-        held: 0,
-        summary,
-    };
-    device.run();
-    device.summary
+    match ForeignNode::new(LINK, at(0)) {
+        Ok(mut node) => Device {
+            node: &mut node,
+            wire: &mut memory.wire,
+            now: at(0),
+            held: 0,
+            summary: &mut summary,
+        }
+        .run(),
+        Err(_) => summary.error(),
+    }
+    summary
 }
 
 /// What became of a received datagram, without its borrow of the buffer.
@@ -278,12 +277,12 @@ enum Seen {
 /// The device around the node: it sends what the node asks, keeps the held
 /// broadcasts, and keeps the time.
 struct Device<'m> {
-    node: ForeignNode,
+    node: &'m mut ForeignNode,
     wire: &'m mut [u8],
     now: Instant,
     /// Broadcasts the device keeps until the node releases them.
     held: u8,
-    summary: Summary,
+    summary: &'m mut Summary,
 }
 
 impl Device<'_> {

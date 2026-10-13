@@ -13,16 +13,16 @@ an emulation run reports against the stack budget (#1660).
 - every section the image loads, and whether it counts toward flash, RAM
   or both;
 - .text, .rodata, .data, .bss and the flash and RAM totals against the
-  table's budget, with the counts of core::fmt functions and of 64-bit
-  division routines linked in;
+  table's budget, with the counts of core::fmt functions, of 64-bit
+  division routines and of memmove routines linked in;
 - the largest objects in RAM, and .text by crate.
 
-It exits 1 when a size or either count is over budget, when the budget
-lacks an entry, or when the image has no symbol table to look for those
-functions in. A size more than 20% under its budget, or a count under its
-limit, gets a notice, not a failure. --suggest prints a budget table for the image instead, each size
-plus 12%. Used by check-firmware-link.sh; see docs/ci.md, "Firmware link
-test".
+It exits 1 when a size or a count is over budget, when the budget lacks an
+entry, or when the image has no symbol table to look for those functions
+in. A size more than 20% under its budget, or a count under its limit, gets
+a notice, not a failure. --suggest prints a budget table for the image
+instead, each size plus 12%. Used by check-firmware-link.sh; see
+docs/ci.md, "Firmware link test".
 
 --stack reads the output of scripts/emu/emulate-firmware.sh's run, whose
 images each print `PASS <image> on <board> (<target>): ...; stack peak N of
@@ -63,6 +63,7 @@ ROWS = tuple((name, name.lstrip(".")) for name in SECTIONS) + (
     ("ram", "ram"),
     ("core::fmt", "fmt_functions"),
     ("64-bit division", "div64_functions"),
+    ("memmove", "memmove_functions"),
 )
 # Counts of functions, budgeted as counts rather than sizes: (key, what each
 # listed function is called in the output, advice when over budget).
@@ -72,6 +73,9 @@ COUNTS = (
     ("div64_functions", "64-bit division function",
      "find the 64-bit division by a runtime value, starting from the functions listed"
      " above, and divide in 32 bits"),
+    ("memmove_functions", "memmove function",
+     "find the copy that calls memmove, starting from the functions listed above, and"
+     " copy field by field or swap instead"),
 )
 # What --suggest and the over-budget error add to a measured size.
 HEADROOM = 0.12
@@ -110,6 +114,13 @@ DIV64_ROUTINES = frozenset({
     "__udivmoddi4", "__divmoddi4", "__udivdi3", "__divdi3", "__umoddi3", "__moddi3",
 })
 DIV64_RUST = re.compile(r"specialized_div_rem.*[iu]64_div_rem")
+# memmove: compiler-builtins' Rust implementation, about 0.8-1.4 KB on these
+# targets, and the C-ABI entry points in front of it. A whole-value copy
+# the compiler can't prove doesn't overlap, or a slice rotation, calls it.
+MEMMOVE_ROUTINES = frozenset({
+    "memmove", "__aeabi_memmove", "__aeabi_memmove4", "__aeabi_memmove8",
+    "compiler_builtins::mem::memmove",
+})
 
 
 class InputError(Exception):
@@ -280,7 +291,7 @@ def measure(elf):
     symbols = read_symbols(data, sections)
     if not symbols or not any(s[2] == STT_FUNC for s in symbols):
         raise InputError(
-            f"{elf} has no function symbols, so core::fmt and 64-bit division"
+            f"{elf} has no function symbols, so core::fmt, 64-bit division and memmove"
             " can't be checked: the image must not be stripped"
         )
     loaded = [(s[0], s[4], counted_in(s[0], s[1], s[2])) for s in sections if s[2] & SHF_ALLOC]
@@ -294,6 +305,9 @@ def measure(elf):
     listed = {
         "fmt_functions": sorted({demangle(name) for name in functions if FMT_MARK in name}),
         "div64_functions": sorted({demangle(name) for name in functions if is_div64(name)}),
+        "memmove_functions": sorted({
+            demangle(name) for name in functions if demangle(name) in MEMMOVE_ROUTINES
+        }),
     }
     for key, names in listed.items():
         sizes[key] = len(names)

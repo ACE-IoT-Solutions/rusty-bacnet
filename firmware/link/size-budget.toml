@@ -14,17 +14,26 @@
 #   (`firmware_link::apdu::ARENA`). The stack the code uses at run time
 #   isn't counted here: the manual emulation check measures it and holds it
 #   to firmware/link/stack-budget.toml (docs/ci.md, "Emulation (manual)").
-# - fmt_functions, div64_functions: counts of functions, not octets, 0 for
-#   every image but apdu. A 64-bit division by a runtime value links
-#   compiler-builtins' routine, about 0.9 KB, which the 12% headroom would
-#   otherwise absorb; the MS/TP core divides in 32 bits (#1618). The apdu
-#   image's counts are what it links today, with no headroom, so a new
-#   function fails the check, and a count under its limit gets a notice to
-#   lower the limit. Its libraries build error messages with
-#   format!, which brings in core::fmt (15 functions, about 2.7 KB of text
-#   on ARMv7-M). On ARMv6-M, which has no multiply with a 64-bit product,
-#   formatting a u64 divides by a constant through the 64-bit division
-#   routine (3 functions).
+# - fmt_functions, div64_functions, memmove_functions: counts of functions,
+#   not octets. The first two are 0 for every image but apdu. A 64-bit
+#   division by a runtime value links compiler-builtins' routine, about
+#   0.9 KB, which the 12% headroom would otherwise absorb; the MS/TP core
+#   divides in 32 bits (#1618). The apdu image's counts are what it links
+#   today, with no headroom, so a new function fails the check, and a count
+#   under its limit gets a notice to lower the limit. Its libraries build
+#   error messages with format!, which brings in core::fmt (15 functions,
+#   about 2.7 KB of text on ARMv7-M). On ARMv6-M, which has no multiply
+#   with a 64-bit product, formatting a u64 divides by a constant through
+#   the 64-bit division routine (3 functions).
+# - memmove_functions counts compiler-builtins' memmove and the entry points
+#   in front of it (memmove, __aeabi_memmove, __aeabi_memmove4 and 8),
+#   0.8-1.4 KB in all, which a whole-value copy the compiler can't prove
+#   doesn't overlap, or a slice rotation, links. bip, node and bbmd link
+#   none, so a copy that brings it back fails the check. mstp and
+#   mstp-extended link it for the codec stream decoder's discard, which
+#   shifts its buffer, and the heapless queue's remove, which shifts the
+#   slots behind it (3 functions on Cortex-M, 2 on RISC-V); apdu links it
+#   too (2). Their limits are those counts, with no headroom.
 #
 # The totals go by section flags, not memory regions, and leave out the
 # alignment gaps between sections (at most 4 octets of flash per image today).
@@ -81,10 +90,10 @@
 #   thumbv6m mstp-extended     18676 /  984 / 0 /  7712   19852 /  7712
 #   riscv32imc mstp-extended   19440 / 1224 / 0 /  7712   20686 /  7712
 #   thumbv7em mstp-extended    17596 /  984 / 0 /  7712   19604 /  7712
-#   thumbv7m node              13400 /  288 / 0 /    64   14712 /    64
-#   thumbv6m node              15140 /  296 / 0 /    64   15628 /    64
-#   riscv32imc node            14720 /  720 / 0 /    64   15462 /    64
-#   thumbv7em node             13304 /  288 / 0 /    64   14616 /    64
+#   thumbv7m node              12184 /  288 / 0 /    64   13496 /    64
+#   thumbv6m node              13768 /  296 / 0 /    64   14256 /    64
+#   riscv32imc node            13828 /  720 / 0 /    64   14570 /    64
+#   thumbv7em node             12076 /  288 / 0 /    64   13388 /    64
 #   thumbv7m bbmd               8480 /  324 / 0 /   240    9828 /   240
 #   thumbv6m bbmd              10176 /  324 / 0 /   240   10692 /   240
 #   riscv32imc bbmd            10560 /  692 / 0 /   240   11274 /   240
@@ -99,7 +108,11 @@
 # than the 11,464 it measured before. Adding the three images left the
 # other images' code as it was: each of their functions is the size it
 # was, and their .text moved by at most 4 octets of alignment between
-# functions.
+# functions. The node rows are after the node engine stopped rotating its
+# queued events with rotate_left, which linked memmove on every target
+# (#1667), and after the scenario stopped moving its node and summary into
+# the struct that drives them: 1.2-1.4 KB less text on Cortex-M and 0.9 KB
+# on RISC-V than the 13400 / 15140 / 14720 / 13304 first measured.
 
 [thumbv7m-none-eabi.mstp]
 text = 20000
@@ -110,6 +123,7 @@ flash = 22336
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 3
 
 [thumbv7m-none-eabi.bip]
 text = 10016
@@ -120,6 +134,7 @@ flash = 12256
 ram = 160
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv7m-none-eabi.apdu]
 text = 41904
@@ -130,6 +145,7 @@ flash = 48864
 ram = 1184
 fmt_functions = 15
 div64_functions = 0
+memmove_functions = 2
 
 [thumbv7m-none-eabi.mstp-extended]
 text = 19760
@@ -140,16 +156,18 @@ flash = 22016
 ram = 8640
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 3
 
 [thumbv7m-none-eabi.node]
-text = 15008
+text = 13648
 rodata = 336
 data = 64
 bss = 80
-flash = 16480
+flash = 15120
 ram = 80
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv7m-none-eabi.bbmd]
 text = 9504
@@ -160,6 +178,7 @@ flash = 11008
 ram = 272
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv6m-none-eabi.mstp]
 text = 20928
@@ -170,6 +189,7 @@ flash = 22336
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 3
 
 [thumbv6m-none-eabi.bip]
 text = 11728
@@ -180,6 +200,7 @@ flash = 13040
 ram = 160
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv6m-none-eabi.apdu]
 text = 44576
@@ -190,6 +211,7 @@ flash = 50608
 ram = 1184
 fmt_functions = 15
 div64_functions = 3
+memmove_functions = 2
 
 [thumbv6m-none-eabi.mstp-extended]
 text = 20928
@@ -200,16 +222,18 @@ flash = 22240
 ram = 8640
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 3
 
 [thumbv6m-none-eabi.node]
-text = 16960
+text = 15424
 rodata = 336
 data = 64
 bss = 80
-flash = 17504
+flash = 15968
 ram = 80
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv6m-none-eabi.bbmd]
 text = 11408
@@ -220,6 +244,7 @@ flash = 11984
 ram = 272
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.mstp]
 text = 21952
@@ -230,6 +255,7 @@ flash = 23488
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 2
 
 [riscv32imc-unknown-none-elf.bip]
 text = 13248
@@ -240,6 +266,7 @@ flash = 14976
 ram = 160
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.apdu]
 text = 50672
@@ -250,6 +277,7 @@ flash = 57232
 ram = 1184
 fmt_functions = 15
 div64_functions = 0
+memmove_functions = 2
 
 [riscv32imc-unknown-none-elf.mstp-extended]
 text = 21776
@@ -260,16 +288,18 @@ flash = 23168
 ram = 8640
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 2
 
 [riscv32imc-unknown-none-elf.node]
-text = 16496
+text = 15488
 rodata = 816
 data = 64
 bss = 80
-flash = 17328
+flash = 16320
 ram = 80
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.bbmd]
 text = 11840
@@ -280,6 +310,7 @@ flash = 12640
 ram = 272
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv7em-none-eabihf.mstp]
 text = 19856
@@ -290,6 +321,7 @@ flash = 22192
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 3
 
 [thumbv7em-none-eabihf.bip]
 text = 9936
@@ -300,6 +332,7 @@ flash = 12176
 ram = 160
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv7em-none-eabihf.apdu]
 text = 41808
@@ -310,6 +343,7 @@ flash = 48752
 ram = 1184
 fmt_functions = 15
 div64_functions = 0
+memmove_functions = 2
 
 [thumbv7em-none-eabihf.mstp-extended]
 text = 19712
@@ -320,16 +354,18 @@ flash = 21968
 ram = 8640
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 3
 
 [thumbv7em-none-eabihf.node]
-text = 14912
+text = 13536
 rodata = 336
 data = 64
 bss = 80
-flash = 16384
+flash = 15008
 ram = 80
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv7em-none-eabihf.bbmd]
 text = 9456
@@ -340,3 +376,4 @@ flash = 10960
 ram = 272
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0

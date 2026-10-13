@@ -12,7 +12,7 @@
 # A peak is the depth of the deepest word the scenario wrote, measured from
 # the stack paint (firmware/link/src/bin/emulate/mod.rs). The board sets
 # the target the image is built for, so each board has its own table, though
-# lm3s6965evb's and netduinoplus2's are the same today.
+# lm3s6965evb's and netduinoplus2's budgets are the same today.
 #
 # Each budget is the peak measured when it was set plus 25%, rounded up to
 # 16 octets, as the size budgets are rounded: what `emulate-firmware.sh
@@ -45,6 +45,16 @@
 #   netduinoplus2   4836 / 4732 / 2228
 #   sifive_e        4676 / 4584 / 2132
 #
+# The node rows were measured again the same day, when the scenario
+# stopped moving its node and summary into the struct that drives them,
+# and the engine stopped rotating its events with rotate_left (#1667):
+# 544 to 648 octets shallower.
+#
+#   microbit        4716
+#   lm3s6965evb     4188
+#   netduinoplus2   4188
+#   sifive_e        4008
+#
 # The mstp-extended image's statics take 7,712 octets of the 16 KiB boards'
 # RAM, so its stack has 8,672 octets of room there, more than its budget.
 # Its deepest call is the core's send of a queued NPDU, whose buffers on
@@ -58,7 +68,7 @@
 mstp = 4016
 mstp-extended = 7680
 bip = 2784
-node = 6720
+node = 5904
 bbmd = 2880
 apdu = 3472
 
@@ -66,7 +76,7 @@ apdu = 3472
 mstp = 3488
 mstp-extended = 6048
 bip = 2640
-node = 5920
+node = 5248
 bbmd = 2800
 apdu = 3184
 
@@ -74,7 +84,7 @@ apdu = 3184
 mstp = 3488
 mstp-extended = 6048
 bip = 2640
-node = 5920
+node = 5248
 bbmd = 2800
 apdu = 3184
 
@@ -82,6 +92,6 @@ apdu = 3184
 mstp = 3312
 mstp-extended = 5856
 bip = 2528
-node = 5744
+node = 5024
 bbmd = 2672
 apdu = 3088
