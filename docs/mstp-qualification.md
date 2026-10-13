@@ -166,11 +166,29 @@ corrections; no licensed text/capture is bundled. One bit time is `1 / baud` sec
 | Last received stop-bit end to local DE assertion (also record first TX start) | Tturnaround minimum 40 bit times |
 | Last transmitted stop bit to DE release | Record offsets from **both beginning and end** of that stop bit. 9.2.3 uses beginning, while 9.5.3 defines Tpostdrive from end (15 bit times). Conservatively require release no later than 15 bit times from beginning and not before the stop bit is generated; retain both measurements, not a silently chosen origin. |
 | Within-frame idle interval: previous octet stop-bit beginning to next start-bit beginning (including the stop bit) | Tframe_gap maximum 20 bit times |
-| Transmitted request end to subsequent token activity when no reply begins | Observe Treply_timeout: 255 ms in this implementation; permitted enlargement only through 300 ms, not a tunable feature here |
-| Token pass/PFM end to successor activity, and no-activity retry interval | Record both; peer response uses the 15 ms usage limit. Sender Tusage_timeout is 20 ms here, permitted enlargement only through 35 ms, not a tunable feature here |
+| Transmitted request end to subsequent token activity when no reply begins | Observe Treply_timeout: 255 to 300 ms allowed; this implementation's host default is 300 ms (`MstpConfig::reply_timeout`), so record the configured value |
+| Token pass/PFM end to successor activity, and no-activity retry interval | Record both; peer response uses the 15 ms usage limit. Sender Tusage_timeout is 20 to 35 ms; the host default is 35 ms (`MstpConfig::usage_timeout`), so record the configured value |
 
 For timeout measurements, absence of DataAvailable/ReceiveError events is part of
-the condition; host snapshots cannot establish it. Wire idle and host scheduling
+the condition; host snapshots cannot establish it.
+
+**Host timeouts and USB latency (#1655).** A USB adapter hands the host what it
+receives late: FTDI parts hold a short read for their latency timer, 16 ms by
+default, and the host collects it at the next 1 ms USB frame. A successor that
+answers at the 15 ms usage limit therefore reaches the host about 32 ms after
+the token or poll ended, and an answer begun at the 250 ms reply limit about
+267 ms after the request. The shortest timeouts (20 and 255 ms) run out first,
+so every host port defaults to the longest ones 9.5.3 allows, 35 and 300 ms.
+That leaves 3 ms and 33 ms for an adapter whose latency is longer still, as an
+FTDI latency timer raised above 16 ms would be; lower the timer, rather than
+expect the timeouts to cover it. In the inventory, record the configured
+`usage_timeout`, `reply_timeout` and `transmit_latency_pad` with the adapter's
+latency setting. Signs that the latency exceeds the margin: `mac.token_retries`
+rising while the successor is present, `wait_for_reply_timeouts` rising with
+replies visible on the analyzer within 250 ms, or polls moving past a master
+that answered. The transport tests show the defaults absorb a 17 ms delivery
+delay where the minimums do not, and the simulator's invariants hold with the
+longer timeouts; that is host evidence, not a hardware result. Wire idle and host scheduling
 are different observations. Wire Tframe_abort starts at 60 bit times (allowed
 enlargement up to 100 ms); **do not apply it to host USB chunk gaps** or change the
 transport's stale-host policy. Unlike the fixed millisecond reply/usage limits,

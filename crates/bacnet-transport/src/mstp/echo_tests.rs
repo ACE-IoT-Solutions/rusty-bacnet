@@ -5,11 +5,10 @@
 use bacnet_mstp_codec::{decode_frame, FrameType};
 use tokio::time::Duration;
 
-use super::test_support::{config, encode, Bus, DrainMode, Port};
+use super::test_support::{config, encode, Bus, DrainMode, Port, T_USAGE_TIMEOUT};
 use super::{Echo, LoopbackSerial, MstpTransport, SerialPort};
 use crate::port::TransportPort;
 
-const T_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 const TICK: Duration = Duration::from_millis(1);
 
 pub(super) const ECHOING: Port = Port {

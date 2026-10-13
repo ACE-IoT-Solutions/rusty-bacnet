@@ -233,6 +233,32 @@ impl DedicatedRuntime {
 /// still arriving. The core times each octet from the read that returned it.
 pub const HOST_FRAME_ABORT_MS: u64 = 100;
 
+/// [`MstpConfig::usage_timeout`]'s default: 35 ms, the longest T_usage_timeout
+/// Clause 9.5.3 allows ([`bacnet_mstp_core::MAX_USAGE_TIMEOUT`]).
+///
+/// It is how long this station waits, after passing the token or polling,
+/// for the successor or the polled station to be heard. The successor may
+/// take up to T_usage_delay (15 ms) to begin, and on a host its first octets
+/// then come through the same adapter that delays a frame's tail (16 ms by
+/// default on FTDI parts), so the 20 ms minimum can run out while the answer
+/// is still in the adapter: the station would send the token again over it,
+/// or poll the next address. A USB adapter can't be told apart from a native
+/// UART on every platform, so every host port gets the longest value.
+pub const HOST_USAGE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_nanos(bacnet_mstp_core::MAX_USAGE_TIMEOUT.as_nanos());
+
+/// [`MstpConfig::reply_timeout`]'s default: 300 ms, the longest
+/// T_reply_timeout Clause 9.5.3 allows
+/// ([`bacnet_mstp_core::MAX_REPLY_TIMEOUT`]).
+///
+/// It is how long this station waits for an answer to a request it sent. A
+/// peer may begin its answer as late as T_reply_delay (250 ms), and on a
+/// host the answer's first octets reach the station late by the adapter's
+/// receive latency, so the 255 ms minimum leaves 5 ms where 300 ms leaves 50.
+/// As for [`HOST_USAGE_TIMEOUT`], every host port gets the longest value.
+pub const HOST_REPLY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_nanos(bacnet_mstp_core::MAX_REPLY_TIMEOUT.as_nanos());
+
 /// The transmit-latency pad for a USB serial adapter, and
 /// [`MstpConfig::transmit_latency_pad`]'s default on Windows: 4 ms.
 ///
@@ -256,7 +282,11 @@ pub const USB_TRANSMIT_LATENCY_PAD: std::time::Duration = std::time::Duration::f
 /// the core's [`MstpCoreConfig`] and refuses a configuration the core
 /// refuses; [`Self::validate`] runs the same checks without starting. Every
 /// Clause 9 timer the core uses comes from the baud rate and the fixed
-/// Clause 9.5.3 values, except T_frame_abort (see [`HOST_FRAME_ABORT_MS`]).
+/// Clause 9.5.3 values, except three that 9.5.3 lets a station lengthen and
+/// a host needs longer, for the latency of a USB adapter: T_frame_abort,
+/// fixed at its 100 ms maximum ([`HOST_FRAME_ABORT_MS`]), and
+/// T_usage_timeout and T_reply_timeout, which default to their maxima
+/// ([`Self::usage_timeout`], [`Self::reply_timeout`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MstpConfig {
     /// This station's MAC address (0..=max_master).
@@ -285,6 +315,17 @@ pub struct MstpConfig {
     /// queue never fills are usually not committed. The core's action
     /// buffers, about 13 KiB, are sized for extended frames either way.
     pub extended_frames: bool,
+    /// T_usage_timeout: how long after passing the token, or after a poll,
+    /// this station waits to hear the successor or the polled station.
+    /// Clause 9.5.3 allows 20 to 35 ms, and [`Self::validate`] refuses
+    /// anything else. Default: [`HOST_USAGE_TIMEOUT`], 35 ms, which leaves
+    /// room for a USB adapter's receive latency.
+    pub usage_timeout: std::time::Duration,
+    /// T_reply_timeout: how long after a data-expecting-reply frame this
+    /// station waits for the answer to begin. Clause 9.5.3 allows 255 to
+    /// 300 ms, and [`Self::validate`] refuses anything else. Default:
+    /// [`HOST_REPLY_TIMEOUT`], 300 ms.
+    pub reply_timeout: std::time::Duration,
     /// Added to a frame's time on the wire when the port has no drain
     /// ([`SerialPort::drain`] returns `Unsupported`), so that the frame is
     /// not taken to have ended before its last stop bit left the adapter.
@@ -310,6 +351,8 @@ impl Default for MstpConfig {
             max_info_frames: 1,
             baud_rate: 9600,
             extended_frames: false,
+            usage_timeout: HOST_USAGE_TIMEOUT,
+            reply_timeout: HOST_REPLY_TIMEOUT,
             transmit_latency_pad: if cfg!(windows) {
                 USB_TRANSMIT_LATENCY_PAD
             } else {
@@ -327,7 +370,8 @@ impl MstpConfig {
     ///
     /// [`Error::Encoding`] naming the field: `max_master` above 127,
     /// `this_station` above `max_master`, `max_info_frames` of zero, a
-    /// `baud_rate` of zero or too low for Clause 9 timing, or a
+    /// `baud_rate` of zero or too low for Clause 9 timing, a `usage_timeout`
+    /// or `reply_timeout` outside what Clause 9.5.3 allows, or a
     /// `transmit_latency_pad` that would outlast the transmit watchdog.
     pub fn validate(&self) -> Result<(), Error> {
         self.core_config().map(drop)
@@ -362,6 +406,8 @@ impl MstpConfig {
         config.max_master = self.max_master;
         config.max_info_frames = self.max_info_frames;
         config.t_frame_abort = CoreDuration::from_millis(HOST_FRAME_ABORT_MS);
+        config.t_usage_timeout = CoreDuration::saturating_from_core(self.usage_timeout);
+        config.t_reply_timeout = CoreDuration::saturating_from_core(self.reply_timeout);
         if self.extended_frames {
             config = config.with_extended_frames();
         }
@@ -396,6 +442,22 @@ impl MstpConfig {
                 "MS/TP max_info_frames must be in 1..=255".to_string()
             }
             ConfigError::ZeroBaudRate => "MS/TP baud_rate must not be zero".to_string(),
+            ConfigError::UsageTimeoutOutOfRange {
+                minimum, maximum, ..
+            } => format!(
+                "MS/TP usage_timeout {:?} is outside {:?}..={:?} (Clause 9.5.3)",
+                self.usage_timeout,
+                std::time::Duration::from(minimum),
+                std::time::Duration::from(maximum)
+            ),
+            ConfigError::ReplyTimeoutOutOfRange {
+                minimum, maximum, ..
+            } => format!(
+                "MS/TP reply_timeout {:?} is outside {:?}..={:?} (Clause 9.5.3)",
+                self.reply_timeout,
+                std::time::Duration::from(minimum),
+                std::time::Duration::from(maximum)
+            ),
             other => format!(
                 "MS/TP baud_rate {} is outside what Clause 9 timing allows ({other:?})",
                 self.baud_rate
@@ -431,5 +493,7 @@ mod late_answer_tests;
 mod late_echo_tests;
 #[cfg(test)]
 mod reply_tests;
+#[cfg(test)]
+mod slow_adapter_tests;
 #[cfg(test)]
 mod tests;

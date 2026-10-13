@@ -273,9 +273,9 @@ impl Bus {
     }
 }
 
-/// A station at 9600 baud with addresses `station` and `max_master`, and
-/// no transmit-latency pad on any platform, so a port without a drain is
-/// timed by the wire alone unless a test sets one.
+/// A station at 9600 baud with addresses `station` and `max_master`, the
+/// host's timeouts, and no transmit-latency pad on any platform, so a port
+/// without a drain is timed by the wire alone unless a test sets one.
 pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
     MstpConfig {
         this_station: station,
@@ -284,5 +284,12 @@ pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
         baud_rate: 9600,
         extended_frames: false,
         transmit_latency_pad: Duration::ZERO,
+        ..MstpConfig::default()
     }
 }
+
+/// T_usage_timeout as [`config`] sets it: the host's 35 ms.
+pub(super) const T_USAGE_TIMEOUT: Duration = super::HOST_USAGE_TIMEOUT;
+
+/// T_reply_timeout as [`config`] sets it: the host's 300 ms.
+pub(super) const T_REPLY_TIMEOUT: Duration = super::HOST_REPLY_TIMEOUT;

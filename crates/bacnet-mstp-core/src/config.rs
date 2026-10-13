@@ -8,13 +8,21 @@ use bacnet_time::Duration;
 
 const MAX_MASTER_ADDRESS: u8 = 127;
 const DEFAULT_BAUD_RATE: u32 = 9_600;
-const MAX_FRAME_ABORT: Duration = Duration::from_millis(100);
+/// The longest T_frame_abort a station may use (Clause 9.5.3): 100 ms.
+/// [`MstpCoreConfig::validate`] refuses a longer one.
+pub const MAX_FRAME_ABORT: Duration = Duration::from_millis(100);
 /// The shortest T_reply_timeout a station may use (Clause 9.5.3). No requester
 /// stops waiting for a reply sooner, so it bounds how late a reply may start.
 pub(crate) const MIN_REPLY_TIMEOUT: Duration = Duration::from_millis(255);
+/// The longest T_reply_timeout a station may use (Clause 9.5.3): 300 ms.
+/// [`MstpCoreConfig::validate`] refuses a longer one.
+pub const MAX_REPLY_TIMEOUT: Duration = Duration::from_millis(300);
 /// The shortest T_usage_timeout a station may use (Clause 9.5.3). No poller
 /// gives up on a Reply To Poll For Master sooner.
 pub(crate) const MIN_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
+/// The longest T_usage_timeout a station may use (Clause 9.5.3): 35 ms.
+/// [`MstpCoreConfig::validate`] refuses a longer one.
+pub const MAX_USAGE_TIMEOUT: Duration = Duration::from_millis(35);
 /// Default for [`MstpCoreConfig::reply_transmit_margin`], the value the host
 /// MS/TP transport reserves.
 const DEFAULT_REPLY_TRANSMIT_MARGIN: Duration = Duration::from_millis(25);
@@ -456,12 +464,11 @@ impl MstpCoreConfig {
                 reply_delay: self.t_reply_delay,
             });
         }
-        let reply_timeout_max = Duration::from_millis(300);
-        if self.t_reply_timeout < MIN_REPLY_TIMEOUT || self.t_reply_timeout > reply_timeout_max {
+        if self.t_reply_timeout < MIN_REPLY_TIMEOUT || self.t_reply_timeout > MAX_REPLY_TIMEOUT {
             return Err(ConfigError::ReplyTimeoutOutOfRange {
                 value: self.t_reply_timeout,
                 minimum: MIN_REPLY_TIMEOUT,
-                maximum: reply_timeout_max,
+                maximum: MAX_REPLY_TIMEOUT,
             });
         }
         if self.t_slot != Duration::from_millis(10) {
@@ -485,12 +492,11 @@ impl MstpCoreConfig {
                 maximum: Duration::from_millis(15),
             });
         }
-        let usage_timeout_max = Duration::from_millis(35);
-        if self.t_usage_timeout < MIN_USAGE_TIMEOUT || self.t_usage_timeout > usage_timeout_max {
+        if self.t_usage_timeout < MIN_USAGE_TIMEOUT || self.t_usage_timeout > MAX_USAGE_TIMEOUT {
             return Err(ConfigError::UsageTimeoutOutOfRange {
                 value: self.t_usage_timeout,
                 minimum: MIN_USAGE_TIMEOUT,
-                maximum: usage_timeout_max,
+                maximum: MAX_USAGE_TIMEOUT,
             });
         }
         if self.queue_max_age == Duration::ZERO {
@@ -886,6 +892,43 @@ mod tests {
         for baud in [9_600, 19_200, 38_400, 57_600, 76_800, 115_200] {
             let config = MstpCoreConfig::for_baud_rate(baud).unwrap();
             assert_eq!(config.transmit_watchdog, Duration::from_secs(1), "{baud}");
+        }
+    }
+
+    /// The longest T_frame_abort, T_reply_timeout and T_usage_timeout
+    /// Clause 9.5.3 allows, which a host transport uses, validate together
+    /// at every standard baud rate; a microsecond more of any is refused.
+    #[test]
+    fn the_longest_permitted_timeouts_validate() {
+        use super::{MAX_FRAME_ABORT, MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT};
+        assert_eq!(MAX_FRAME_ABORT, Duration::from_millis(100));
+        assert_eq!(MAX_REPLY_TIMEOUT, Duration::from_millis(300));
+        assert_eq!(MAX_USAGE_TIMEOUT, Duration::from_millis(35));
+        for baud in [9_600, 19_200, 38_400, 57_600, 76_800, 115_200] {
+            let host = MstpCoreConfig {
+                t_frame_abort: MAX_FRAME_ABORT,
+                t_reply_timeout: MAX_REPLY_TIMEOUT,
+                t_usage_timeout: MAX_USAGE_TIMEOUT,
+                ..MstpCoreConfig::for_baud_rate(baud).unwrap()
+            };
+            assert_eq!(host.validate(), Ok(()), "{baud}");
+            let more = Duration::from_micros(1);
+            for over in [
+                MstpCoreConfig {
+                    t_frame_abort: MAX_FRAME_ABORT + more,
+                    ..host
+                },
+                MstpCoreConfig {
+                    t_reply_timeout: MAX_REPLY_TIMEOUT + more,
+                    ..host
+                },
+                MstpCoreConfig {
+                    t_usage_timeout: MAX_USAGE_TIMEOUT + more,
+                    ..host
+                },
+            ] {
+                assert!(over.validate().is_err(), "{baud}");
+            }
         }
     }
 
