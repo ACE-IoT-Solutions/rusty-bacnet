@@ -8,7 +8,7 @@ mod glue;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::bbmd::{ForwardRefusal, RegistrationLimits, Reservation, Tables, Target};
-use bacnet_bip_core::node::{Discard, ForBbmd, Mode, Permissive};
+use bacnet_bip_core::node::{Cast, Discard, ForBbmd, Mode, Node, Permissive};
 use bacnet_router_core::bip::{
     group, port_config, BbmdPort, BipPort, HeldBroadcast, Ingress, PortError,
 };
@@ -77,16 +77,63 @@ fn ports_refuse_storage_that_doesnt_fit_the_node() {
     let refused =
         |mode, held: &mut [HeldBroadcast]| BipPort::<4>::new(BIP_PORT, node(mode, now), held).err();
     assert_eq!(refused(Mode::Bbmd, &mut none), Some(PortError::Mode));
-    assert_eq!(refused(foreign(2), &mut one), Some(PortError::HeldStorage));
+    assert_eq!(
+        refused(foreign(2), &mut one),
+        Some(PortError::HeldStorage {
+            needed: 2,
+            available: 1
+        })
+    );
     assert_eq!(refused(foreign(1), &mut one), None);
     assert_eq!(refused(Mode::Normal, &mut none), None);
-    // Without a send budget a held broadcast could outgrow its slot.
+    // Without a send budget a held broadcast could be as long as the
+    // largest BVLL message less its header: far past a slot.
     let unbounded = with(link(foreign(1)), |link| link.budget = None);
-    let node = bacnet_bip_core::node::Node::<4>::new(unbounded, now).unwrap();
+    let unbounded = Node::<4>::new(unbounded, now).unwrap();
     assert_eq!(
-        BipPort::new(BIP_PORT, node, &mut one).err(),
-        Some(PortError::HeldStorage)
+        BipPort::new(BIP_PORT, unbounded, &mut one).err(),
+        Some(PortError::HeldLength {
+            needed: 65_525,
+            available: 1497
+        })
     );
+
+    // Slots of N octets take a link whose broadcasts are no longer: a
+    // budget of 510 lets broadcasts of 500 through.
+    let budget = |octets| with(link(foreign(1)), |link| link.budget = Some(octets));
+    assert_eq!(budget(510).max_npdu(Cast::Broadcast), 500);
+    let mut short = [HeldBroadcast::<500>::EMPTY];
+    let port = BipPort::new(
+        BIP_PORT,
+        Node::<4>::new(budget(510), now).unwrap(),
+        &mut short,
+    );
+    assert!(port.is_ok());
+    let mut shorter = [HeldBroadcast::<499>::EMPTY];
+    let port = BipPort::new(
+        BIP_PORT,
+        Node::<4>::new(budget(510), now).unwrap(),
+        &mut shorter,
+    );
+    assert_eq!(
+        port.err(),
+        Some(PortError::HeldLength {
+            needed: 500,
+            available: 499
+        })
+    );
+    // The default budget sends B/IP's largest NPDU.
+    let mut small = [HeldBroadcast::<501>::EMPTY];
+    let port = BipPort::new(BIP_PORT, node(foreign(1), now), &mut small);
+    assert_eq!(
+        port.err(),
+        Some(PortError::HeldLength {
+            needed: 1497,
+            available: 501
+        })
+    );
+    // A normal node holds nothing, so any slots do.
+    assert!(BipPort::new(BIP_PORT, node(Mode::Normal, now), &mut shorter).is_ok());
 
     let mut tables: Tables<2, 2> = Tables::new(OWN);
     let mut targets = [Target::UNUSED; 5];
@@ -108,7 +155,10 @@ fn ports_refuse_storage_that_doesnt_fit_the_node() {
             &mut targets[..4]
         )
         .err(),
-        Some(PortError::TargetStorage)
+        Some(PortError::TargetStorage {
+            needed: Tables::<2, 2>::MAX_TARGETS,
+            available: 4
+        })
     );
 }
 

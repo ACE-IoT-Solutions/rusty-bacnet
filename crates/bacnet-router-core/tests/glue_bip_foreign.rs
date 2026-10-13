@@ -9,7 +9,7 @@ mod fixture;
 mod glue;
 
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
-use bacnet_bip_core::node::Permissive;
+use bacnet_bip_core::node::{Cast, Node, Permissive};
 use bacnet_router_core::bip::{BipPort, HeldBroadcast, Ingress, PortCounters};
 use bacnet_router_core::message::MessageType;
 use bacnet_router_core::router::{Options, SendRefusal};
@@ -133,7 +133,7 @@ fn foreign_port_announces_after_the_response_timeout() {
 }
 
 /// The BBMD's success, received at `now`.
-fn success_at(bip: &mut BipPort<'_>, now: Instant, out: &mut Wire) {
+fn success_at<const N: usize>(bip: &mut BipPort<'_, 4, N>, now: Instant, out: &mut Wire) {
     let success = encode(&Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION));
     let ingress = bip.receive(
         &datagram(&success, BBMD, UNICAST),
@@ -142,6 +142,37 @@ fn success_at(bip: &mut BipPort<'_>, now: Instant, out: &mut Wire) {
         out,
     );
     assert_eq!(ingress, Ingress::Handled);
+}
+
+/// Slots as long as the link's broadcast limit hold what it sends: with a
+/// send budget of 510 octets the link's broadcasts are at most 500 octets,
+/// and slots of 500 serve trace E as full-size ones do.
+#[test]
+fn slots_as_long_as_the_links_broadcasts_serve_trace_e() {
+    let t0 = Instant::ZERO;
+    let link = with(link(foreign(2)), |link| link.budget = Some(510));
+    assert_eq!(link.max_npdu(Cast::Broadcast), 500);
+    let mut held = [HeldBroadcast::<500>::EMPTY; 2];
+    let mut out = Wire::default();
+    let node = Node::<4>::new(link, t0).unwrap();
+    let mut bip = BipPort::new(BIP_PORT, node, &mut held).unwrap();
+    let mut router = router_with(&[bip.config(1), port_on(2, OWN_1)], Options::HOSTED);
+    bip.start(t0, &mut out);
+    router.start();
+    let results = pump(&mut router, |send| match send.port {
+        BIP_PORT => bip.send(send, t0, &mut out),
+        _ => Ok(()),
+    });
+    assert!(
+        results.iter().all(|(_, result)| result.is_ok()),
+        "{results:?}"
+    );
+    let mut trace = Vec::new();
+    sent_at(&mut out, t0, &mut trace);
+    let t10 = Instant::from_millis(10);
+    success_at(&mut bip, t10, &mut out);
+    sent_at(&mut out, t10, &mut trace);
+    assert_eq!(trace, trace_e(t10));
 }
 
 /// A broadcast the router sends after the first registration's response
@@ -220,7 +251,7 @@ fn a_refused_registration_discards_the_held_broadcasts() {
 #[test]
 fn a_registration_the_socket_refuses_ends_its_attempt() {
     let t0 = Instant::ZERO;
-    let mut held = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
+    let mut held: [HeldBroadcast; 2] = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
     let mut bip = BipPort::new(BIP_PORT, node(foreign(2), t0), &mut held).unwrap();
     let mut out = Wire {
         refuse: Some(SendRefusal::Full),

@@ -152,7 +152,22 @@ pub use router::{Router, Storage};
 
 /// The largest NPDU a B/IP or MS/TP port carries, in octets (Table 6-1;
 /// MS/TP needs extended frames for it, Clause 9.3).
+///
+/// With the glue features it is held equal to the link cores' own, so the
+/// three can't drift apart.
 pub const MAX_NPDU: usize = 1497;
+
+#[cfg(feature = "bip")]
+const _: () = assert!(
+    MAX_NPDU == bacnet_bip_core::node::MAX_NPDU,
+    "router-core's MAX_NPDU is bip-core's"
+);
+
+#[cfg(feature = "mstp")]
+const _: () = assert!(
+    MAX_NPDU == bacnet_mstp_core::codec::MAX_EXTENDED_MPDU_DATA,
+    "router-core's MAX_NPDU is the MS/TP codec's extended-frame limit"
+);
 
 /// The longest DADR, SADR or link MAC the core accepts, in octets.
 ///

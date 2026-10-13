@@ -140,28 +140,59 @@ pub enum Ingress<'d> {
 }
 
 /// Why a port refused its node and storage.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PortError {
     /// A [`BipPort`] was offered a BBMD's node, or a [`BbmdPort`] another
     /// mode's.
     Mode,
-    /// A foreign device holds more broadcasts than the port has room for,
-    /// or holds some with no send budget, so a held one could be longer
-    /// than a [`HeldBroadcast`].
-    HeldStorage,
+    /// A foreign device holds more broadcasts than the port has slots for.
+    HeldStorage {
+        /// The broadcasts the node holds ([`Foreign::hold`](node::Foreign::hold)).
+        needed: usize,
+        /// The slots lent.
+        available: usize,
+    },
+    /// A foreign device holds broadcasts longer than a slot: its link's
+    /// broadcast limit ([`Link::max_npdu`] for [`Cast::Broadcast`]) is
+    /// over the slots' `N`. A link with no send budget has no limit short
+    /// of the largest BVLL message.
+    HeldLength {
+        /// The longest broadcast the link sends, in octets.
+        needed: usize,
+        /// A slot's length, `N`.
+        available: usize,
+    },
     /// A [`BbmdPort`]'s target storage is shorter than
     /// [`Tables::MAX_TARGETS`].
-    TargetStorage,
+    TargetStorage {
+        /// [`Tables::MAX_TARGETS`].
+        needed: usize,
+        /// The targets lent.
+        available: usize,
+    },
 }
 
 impl fmt::Display for PortError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Mode => "the node's mode doesn't suit this port",
-            Self::HeldStorage => "no room for the broadcasts the node holds",
-            Self::TargetStorage => "no room for every target a BBMD forwards to",
-        })
+        match self {
+            Self::Mode => f.write_str("the node's mode doesn't suit this port"),
+            Self::HeldStorage { needed, available } => write!(
+                f,
+                "the node holds {needed} broadcasts, with slots for {available}"
+            ),
+            Self::HeldLength { needed, available } => write!(
+                f,
+                "a held broadcast may be {needed} octets, with slots of {available}"
+            ),
+            Self::TargetStorage { needed, available } => write!(
+                f,
+                "a BBMD forwards to up to {needed} targets, with room for {available}"
+            ),
+        }
     }
 }
 
@@ -187,56 +218,92 @@ pub struct PortCounters {
 /// first registration attempt resolves (Annex J.7.4; decision D17). It is
 /// all zero bits, so firmware lends the port a static's.
 ///
-/// Each slot holds B/IP's largest NPDU, 1,497 octets; the firmware router
-/// image's RAM budget (#1679) may make that a const generic.
-#[derive(Debug, Clone)]
-pub struct HeldBroadcast {
+/// A slot holds `N` octets, at most 65,535: by default [`MAX_NPDU`], B/IP's
+/// largest NPDU. A link with a smaller send budget sends shorter
+/// broadcasts, and its port can hold them in shorter slots;
+/// [`BipPort::new`] checks that the link's broadcast limit fits `N`.
+///
+/// ```
+/// use bacnet_router_core::bip::HeldBroadcast;
+///
+/// // Two slots of 501 octets, for a link whose broadcasts are no longer.
+/// let held = [HeldBroadcast::<501>::EMPTY; 2];
+/// # let _ = held;
+/// ```
+#[derive(Clone)]
+pub struct HeldBroadcast<const N: usize = MAX_NPDU> {
     len: u16,
-    npdu: [u8; MAX_NPDU],
+    npdu: [u8; N],
 }
 
-impl HeldBroadcast {
+impl<const N: usize> HeldBroadcast<N> {
     /// An empty slot.
-    pub const EMPTY: Self = Self {
-        len: 0,
-        npdu: [0; MAX_NPDU],
+    pub const EMPTY: Self = {
+        assert!(
+            N <= u16::MAX as usize,
+            "a held broadcast is at most 65,535 octets"
+        );
+        Self {
+            len: 0,
+            npdu: [0; N],
+        }
     };
 }
 
-impl Default for HeldBroadcast {
+impl<const N: usize> Default for HeldBroadcast<N> {
     fn default() -> Self {
         Self::EMPTY
     }
 }
 
+/// The length held, not the slot.
+impl<const N: usize> fmt::Debug for HeldBroadcast<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeldBroadcast")
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A router port on a B/IP node in normal or foreign-device mode, which it
-/// owns, with `X` exchange slots.
+/// owns, with `X` exchange slots and held-broadcast slots of `N` octets.
 #[derive(Debug)]
-pub struct BipPort<'h, const X: usize = 4> {
+pub struct BipPort<'h, const X: usize = 4, const N: usize = MAX_NPDU> {
     port: PortId,
     node: Node<X>,
-    held: &'h mut [HeldBroadcast],
+    held: &'h mut [HeldBroadcast<N>],
     held_len: usize,
     counters: PortCounters,
 }
 
-impl<'h, const X: usize> BipPort<'h, X> {
+impl<'h, const X: usize, const N: usize> BipPort<'h, X, N> {
     /// Port `port` on `node`, holding a foreign device's broadcasts in
-    /// `held`: at least [`Foreign::hold`](node::Foreign::hold) slots, and a
-    /// link with a send budget when it holds any. A normal node holds none.
+    /// `held`: at least [`Foreign::hold`](node::Foreign::hold) slots, each
+    /// as long as the link's broadcast limit ([`Link::max_npdu`] for
+    /// [`Cast::Broadcast`]) when it holds any. A normal node holds none.
     pub fn new(
         port: PortId,
         node: Node<X>,
-        held: &'h mut [HeldBroadcast],
+        held: &'h mut [HeldBroadcast<N>],
     ) -> Result<Self, PortError> {
         let link = node.link();
         let hold = match link.mode {
             Mode::Normal => 0,
-            Mode::Foreign(foreign) => foreign.hold,
+            Mode::Foreign(foreign) => usize::from(foreign.hold),
             Mode::Bbmd => return Err(PortError::Mode),
         };
-        if usize::from(hold) > held.len() || (hold > 0 && link.budget.is_none()) {
-            return Err(PortError::HeldStorage);
+        if hold > held.len() {
+            return Err(PortError::HeldStorage {
+                needed: hold,
+                available: held.len(),
+            });
+        }
+        let longest = link.max_npdu(Cast::Broadcast);
+        if hold > 0 && longest > N {
+            return Err(PortError::HeldLength {
+                needed: longest,
+                available: N,
+            });
         }
         Ok(Self {
             port,
@@ -378,14 +445,14 @@ impl<'h, const X: usize> BipPort<'h, X> {
             Admission::Send => out.send(outgoing.to, &outgoing.message),
             Admission::Hold => {
                 // `new` lent a slot for each broadcast the node holds, each
-                // as long as any the budget lets through.
+                // as long as any the link's limit lets through.
                 let slot = self.held.get_mut(self.held_len).ok_or(SendRefusal::Full)?;
                 let room = slot
                     .npdu
                     .get_mut(..npdu.len())
                     .ok_or(SendRefusal::TooLong)?;
                 room.copy_from_slice(npdu);
-                // At most MAX_NPDU octets.
+                // At most N octets, and N is at most 65,535.
                 slot.len = npdu.len() as u16;
                 self.held_len += 1;
                 Ok(())
@@ -453,7 +520,10 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
             return Err(PortError::Mode);
         }
         if targets.len() < Tables::<B, F>::MAX_TARGETS {
-            return Err(PortError::TargetStorage);
+            return Err(PortError::TargetStorage {
+                needed: Tables::<B, F>::MAX_TARGETS,
+                available: targets.len(),
+            });
         }
         Ok(Self {
             port,
