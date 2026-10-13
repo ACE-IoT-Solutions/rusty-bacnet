@@ -16,6 +16,15 @@
 //! take too, so firmware that runs a router between their ports feeds all
 //! three one clock.
 //!
+//! # Time
+//!
+//! A `now` earlier than the latest one passed in is taken as that latest
+//! one: time never runs backwards, so a clock that steps back holds the
+//! timers still instead of failing. Here that is the [`Router`]; the table
+//! and discovery keep no clock of their own, and count a `now` before a
+//! stamp as no time passed. The B/IP and MS/TP ports hand their `now` to
+//! their link core, which keeps the same rule.
+//!
 //! - [`npdu`]: a borrowed view of an NPDU's control information, held equal
 //!   to `bacnet-encoding`'s decoder field for field by a property test, and
 //!   a writer that refuses an NPDU too long for its buffer before writing an

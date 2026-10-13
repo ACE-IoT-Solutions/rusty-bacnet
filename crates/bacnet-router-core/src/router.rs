@@ -8,6 +8,12 @@
 //! poll until [`Action::Idle`]; a call made with actions still waiting drops
 //! them and counts them in [`Counters::undrained`].
 //!
+//! A `now` earlier than the latest one passed in is taken as that latest
+//! one: time never runs backwards, so a clock that steps back holds the
+//! timers still instead of failing. The router keeps that latest time, from
+//! [`Router::new`] on, for [`receive`](Router::receive) and
+//! [`on_deadline`](Router::on_deadline).
+//!
 //! To the router a port is data, a [`PortConfig`]: its network number, the
 //! router's MAC on it and the longest NPDU it carries. The link type never
 //! matters, so firmware joins B/IP and MS/TP ports through it, and the
@@ -169,6 +175,8 @@ pub struct Router<
     storage: S,
     options: Options,
     next_sweep: Instant,
+    /// The latest time any call has passed in.
+    latest: Instant,
 }
 
 impl<S, const P: usize, const R: usize, const H: usize, const D: usize, const N: usize> fmt::Debug
@@ -181,6 +189,7 @@ where
             .field("storage", self.storage.borrow())
             .field("options", &self.options)
             .field("next_sweep", &self.next_sweep)
+            .field("latest", &self.latest)
             .finish()
     }
 }
@@ -259,11 +268,19 @@ where
             storage,
             options,
             next_sweep: now + options.sweep,
+            latest: now,
         })
     }
 
     fn store(&mut self) -> &mut Storage<P, R, H, D, N> {
         self.storage.borrow_mut()
+    }
+
+    /// `now`, or the latest time passed in when that is later, which it
+    /// then stays (the clock rule in the module docs).
+    fn clock(&mut self, now: Instant) -> Instant {
+        self.latest = self.latest.max(now);
+        self.latest
     }
 
     /// Queue the startup announcements, port by port: a Network-Number-Is
@@ -276,15 +293,17 @@ where
         store.out.push(Task::announce());
     }
 
-    /// Take a frame that port `frame.port` received. What it means for the
-    /// router's own application comes back at once; what to send is polled
-    /// after.
+    /// Take a frame that port `frame.port` received at `now`. What it means
+    /// for the router's own application comes back at once; what to send is
+    /// polled after. A `now` before the latest one passed in is taken as
+    /// that one.
     pub fn receive<'f>(
         &mut self,
         frame: Frame<'f>,
         now: Instant,
         host: &mut impl Host,
     ) -> Received<'f> {
+        let now = self.clock(now);
         let options = self.options;
         self.store().receive(frame, now, &options, host)
     }
@@ -322,8 +341,10 @@ where
     /// hardened-mode claims and searches past their age, telling `host`
     /// about each. Busy marks are read at their deadline anyway, so when
     /// the sweep runs never changes a forwarding decision. The next sweep
-    /// is due a period later; one that is already past is skipped.
+    /// is due a period later; one that is already past is skipped. A `now`
+    /// before the latest one passed in is taken as that one.
     pub fn on_deadline(&mut self, now: Instant, host: &mut impl Host) {
+        let now = self.clock(now);
         if now < self.next_sweep {
             return;
         }

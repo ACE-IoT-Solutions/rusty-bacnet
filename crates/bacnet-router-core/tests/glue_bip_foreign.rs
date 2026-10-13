@@ -10,7 +10,7 @@ mod glue;
 
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::Permissive;
-use bacnet_router_core::bip::{BipPort, HeldBroadcast, Ingress};
+use bacnet_router_core::bip::{BipPort, HeldBroadcast, Ingress, PortCounters};
 use bacnet_router_core::message::MessageType;
 use bacnet_router_core::router::{Options, SendRefusal};
 use bacnet_router_core::Instant;
@@ -98,7 +98,7 @@ fn foreign_port_announces_after_registration() {
         (counters.broadcasts_held, counters.broadcasts_released),
         (2, 2)
     );
-    assert_eq!(bip.refused(), 0);
+    assert_eq!(bip.counters().refused, 0);
 
     // From now on a broadcast goes at once.
     let mut host = Recorder::default();
@@ -234,7 +234,7 @@ fn a_registration_the_socket_refuses_ends_its_attempt() {
     assert_eq!(bip.next_deadline(), Some(retry));
     let counters = bip.node_mut().take_counters();
     assert_eq!(counters.register_foreign_device.local_errors, 1);
-    assert_eq!(bip.refused(), 0, "the node counts its own attempt");
+    assert_eq!(bip.counters().refused, 0, "the node counts its own attempt");
 
     out.refuse = None;
     bip.on_deadline(retry, &mut out);
@@ -266,7 +266,8 @@ fn a_full_hold_refuses_the_next_broadcast() {
 }
 
 /// Each datagram of a foreign-device port's own that the socket refuses
-/// is counted once: a NAK, and each released broadcast.
+/// is counted once: a NAK, and each released broadcast. Taking the counts
+/// starts them again from zero.
 #[test]
 fn refused_datagrams_of_a_foreign_port_are_counted() {
     let mut held = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
@@ -281,7 +282,16 @@ fn refused_datagrams_of_a_foreign_port_are_counted() {
         &mut Permissive,
         &mut out,
     );
-    assert_eq!(bip.refused(), 1, "the NAK");
+    assert_eq!(bip.counters().refused, 1, "the NAK");
     success_at(&mut bip, t10, &mut out);
-    assert_eq!(bip.refused(), 3, "and the two held broadcasts");
+    assert_eq!(bip.counters().refused, 3, "and the two held broadcasts");
+    assert_eq!(bip.take_counters().refused, 3);
+    assert_eq!(bip.counters(), PortCounters::default(), "drained");
+    bip.receive(
+        &datagram(&read, PEER, UNICAST),
+        t10,
+        &mut Permissive,
+        &mut out,
+    );
+    assert_eq!(bip.take_counters().refused, 1, "counted from zero again");
 }

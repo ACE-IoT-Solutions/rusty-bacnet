@@ -55,8 +55,8 @@
 //! foreign-device port, a refused first registration drops the held
 //! broadcasts, a registration the socket refuses ends its attempt, and a
 //! full hold refuses the next broadcast as [`SendRefusal::Full`]; each
-//! datagram of a port's own that its socket refuses is counted once in
-//! `refused()` (`tests/glue_bip_foreign.rs`, `tests/glue_bip.rs`).
+//! datagram of a port's own that its socket refuses is counted once in its
+//! [`PortCounters`] (`tests/glue_bip_foreign.rs`, `tests/glue_bip.rs`).
 
 use core::fmt;
 use core::net::SocketAddrV4;
@@ -118,10 +118,10 @@ pub fn group(link: &Link, mac: &[u8]) -> Group {
 
 /// What a received datagram brought.
 ///
-/// It is `#[non_exhaustive]`, so a new case isn't a breaking change: a
-/// `match` needs a wildcard arm.
+/// It is exhaustive, as the router's [`Received`](crate::router::Received)
+/// and the node's [`Inbound`] are: the caller serves each case, a BBMD's
+/// [`Management`](Self::Management) requests included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Ingress<'d> {
     /// An NPDU for the router: pass [`Arrived::frame`] to
     /// [`Router::receive`](crate::Router::receive).
@@ -167,6 +167,22 @@ impl fmt::Display for PortError {
 
 impl core::error::Error for PortError {}
 
+/// What a B/IP port counted since its counters were last taken. Its node
+/// keeps counts of its own ([`Node::take_counters`]).
+///
+/// It is `#[non_exhaustive]`, so a new count isn't a breaking change.
+/// Outside this crate, build one from `PortCounters::default()` and set its
+/// fields.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PortCounters {
+    /// Datagrams of the port's own that the sink refused: a NAK, a
+    /// released broadcast, or a BBMD's forwarded copy. A refused
+    /// registration is the node's
+    /// [`local_errors`](node::ExchangeCounters::local_errors).
+    pub refused: u32,
+}
+
 /// Room for one broadcast that a foreign device's port holds until its
 /// first registration attempt resolves (Annex J.7.4; decision D17). It is
 /// all zero bits, so firmware lends the port a static's.
@@ -201,7 +217,7 @@ pub struct BipPort<'h, const X: usize = 4> {
     node: Node<X>,
     held: &'h mut [HeldBroadcast],
     held_len: usize,
-    refused: u32,
+    counters: PortCounters,
 }
 
 impl<'h, const X: usize> BipPort<'h, X> {
@@ -227,7 +243,7 @@ impl<'h, const X: usize> BipPort<'h, X> {
             node,
             held,
             held_len: 0,
-            refused: 0,
+            counters: PortCounters::default(),
         })
     }
 
@@ -262,11 +278,20 @@ impl<'h, const X: usize> BipPort<'h, X> {
         &mut self.node
     }
 
-    /// Datagrams of the port's own (a NAK, a released broadcast) that the
-    /// sink refused. A refused registration is the node's
-    /// [`local_errors`](node::ExchangeCounters::local_errors).
-    pub const fn refused(&self) -> u32 {
-        self.refused
+    /// The counts since the counters were last taken, which then start
+    /// again from zero: add them to your own totals, as wide as you need.
+    /// Each is a `u32` that saturates between takes.
+    #[must_use = "the counts are gone once taken; add them to your totals"]
+    pub fn take_counters(&mut self) -> PortCounters {
+        core::mem::take(&mut self.counters)
+    }
+
+    /// The counts since the counters were last taken, as
+    /// [`take_counters`](Self::take_counters) would return them, without
+    /// taking them.
+    #[must_use]
+    pub const fn counters(&self) -> PortCounters {
+        self.counters
     }
 
     /// Take a datagram the port's socket received.
@@ -281,7 +306,7 @@ impl<'h, const X: usize> BipPort<'h, X> {
         let ingress = match self.node.receive(datagram, now, policy) {
             Inbound::Deliver(delivery) => Ingress::Npdu(arrived(self.port, &delivery)),
             Inbound::Nak { to, code, .. } => {
-                count(&mut self.refused, out.send(to, &Bvll::BvlcResult(code)));
+                count(&mut self.counters, out.send(to, &Bvll::BvlcResult(code)));
                 Ingress::Handled
             }
             Inbound::Discarded(why) => Ingress::Discarded(why),
@@ -389,7 +414,7 @@ impl<'h, const X: usize> BipPort<'h, X> {
                             .broadcast(npdu)
                             .map_err(refusal)
                             .and_then(|(outgoing, _)| out.send(outgoing.to, &outgoing.message));
-                        count(&mut self.refused, sent);
+                        count(&mut self.counters, sent);
                     }
                     self.held_len = 0;
                 }
@@ -411,7 +436,7 @@ pub struct BbmdPort<'t, const B: usize, const F: usize, const X: usize = 4> {
     node: Node<X>,
     tables: &'t mut Tables<B, F>,
     targets: &'t mut [Target],
-    refused: u32,
+    counters: PortCounters,
 }
 
 impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
@@ -435,7 +460,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
             node,
             tables,
             targets,
-            refused: 0,
+            counters: PortCounters::default(),
         })
     }
 
@@ -475,10 +500,20 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         self.tables
     }
 
-    /// Datagrams of the port's own (a NAK, a forwarded copy) that the sink
-    /// refused.
-    pub const fn refused(&self) -> u32 {
-        self.refused
+    /// The counts since the counters were last taken, which then start
+    /// again from zero: add them to your own totals, as wide as you need.
+    /// Each is a `u32` that saturates between takes.
+    #[must_use = "the counts are gone once taken; add them to your totals"]
+    pub fn take_counters(&mut self) -> PortCounters {
+        core::mem::take(&mut self.counters)
+    }
+
+    /// The counts since the counters were last taken, as
+    /// [`take_counters`](Self::take_counters) would return them, without
+    /// taking them.
+    #[must_use]
+    pub const fn counters(&self) -> PortCounters {
+        self.counters
     }
 
     /// Take a datagram the port's socket received. The BBMD's share of it
@@ -495,7 +530,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         let ingress = match self.node.receive(datagram, now, policy) {
             Inbound::Deliver(delivery) => Ingress::Npdu(arrived(self.port, &delivery)),
             Inbound::Nak { to, code, .. } => {
-                count(&mut self.refused, out.send(to, &Bvll::BvlcResult(code)));
+                count(&mut self.counters, out.send(to, &Bvll::BvlcResult(code)));
                 Ingress::Handled
             }
             Inbound::Discarded(why) => Ingress::Discarded(why),
@@ -526,7 +561,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
                     delivery.npdu,
                     self.targets,
                 );
-                add(&mut self.refused, fan_out(out, sent.transmissions()));
+                add(&mut self.counters, fan_out(out, sent.transmissions()));
                 return Ingress::Npdu(arrived(port, &delivery));
             }
             ForBbmd::Forwarded {
@@ -552,7 +587,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
                     .targets
                     .iter()
                     .map(|target| (target.destination, message));
-                add(&mut self.refused, fan_out(out, copies));
+                add(&mut self.counters, fan_out(out, copies));
                 (origin, npdu)
             }
             ForBbmd::Distribute { sender, npdu } => {
@@ -560,10 +595,10 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
                     self.tables
                         .distribute_broadcast(&cx, &link.subnet, sender, npdu, self.targets);
                 match distribution {
-                    Ok(sent) => add(&mut self.refused, fan_out(out, sent.transmissions())),
+                    Ok(sent) => add(&mut self.counters, fan_out(out, sent.transmissions())),
                     Err(why) => {
                         let nak = Bvll::BvlcResult(why.result_code());
-                        count(&mut self.refused, out.send(sender, &nak));
+                        count(&mut self.counters, out.send(sender, &nak));
                         return Ingress::Handled;
                     }
                 }
@@ -599,7 +634,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
                 out.send(outgoing.to, &outgoing.message)?;
                 let cx = Context::new(now, F);
                 let sent = self.tables.own_broadcast(&cx, send.npdu, self.targets);
-                add(&mut self.refused, fan_out(out, sent.transmissions()));
+                add(&mut self.counters, fan_out(out, sent.transmissions()));
                 Ok(())
             }
         }
@@ -666,12 +701,12 @@ fn fan_out<'n>(
     })
 }
 
-/// Add `n` to a count, saturating.
-fn add(count: &mut u32, n: u32) {
-    *count = count.saturating_add(n);
+/// Add `n` refused sends to the counts, saturating.
+fn add(counters: &mut PortCounters, n: u32) {
+    counters.refused = counters.refused.saturating_add(n);
 }
 
 /// Count a refused send.
-fn count(refused: &mut u32, sent: Result<(), SendRefusal>) {
-    add(refused, u32::from(sent.is_err()));
+fn count(counters: &mut PortCounters, sent: Result<(), SendRefusal>) {
+    add(counters, u32::from(sent.is_err()));
 }

@@ -406,7 +406,7 @@ fn bbmd_port_delivers_and_forwards() {
             ttl: 30
         })
     );
-    assert_eq!(bbmd.refused(), 0);
+    assert_eq!(bbmd.counters().refused, 0);
 }
 
 /// The source of the NPDU `ingress` hands the router, which a BBMD port
@@ -546,8 +546,11 @@ fn refused_datagrams_of_a_bbmd_port_are_counted() {
             &mut out,
         );
         assert!(!matches!(ingress, Ingress::Discarded(_)), "{ingress:?}");
-        assert_eq!(bbmd.refused(), refused, "{message:?}");
+        assert_eq!(bbmd.counters().refused, refused, "{message:?}");
     }
+    // Taking the counts starts them again from zero.
+    assert_eq!(bbmd.take_counters().refused, 5);
+    assert_eq!(bbmd.counters().refused, 0);
 }
 
 /// A BBMD port whose socket refuses the router's broadcast on the subnet
@@ -568,6 +571,6 @@ fn a_bbmd_broadcast_the_socket_refuses_goes_nowhere() {
     let results = pump(&mut router, |send| bbmd.send(send, now, &mut out));
     assert_eq!(results, [(0, Err(SendRefusal::Full))]);
     assert_eq!(out.calls, 1, "no copy follows the refused broadcast");
-    assert_eq!(bbmd.refused(), 0, "the router counts it");
+    assert_eq!(bbmd.counters().refused, 0, "the router counts it");
     assert_eq!(router.counters().refused, 1);
 }

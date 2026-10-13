@@ -42,6 +42,7 @@
 
 use core::fmt;
 
+use bacnet_mstp_core::codec::BROADCAST_MAC;
 use bacnet_mstp_core::{
     CoreError, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal, QueueStorage,
     ReplyDecision, RequestId,
@@ -49,9 +50,6 @@ use bacnet_mstp_core::{
 
 use crate::router::{Dest, Group, Limits, PortConfig, Send, SendRefusal};
 use crate::{Arrived, Instant, Mac, PortId};
-
-/// MS/TP's broadcast station.
-pub const BROADCAST: u8 = 0xFF;
 
 /// A core configuration without extended frames, which a router's MS/TP
 /// port needs (Clause 9.3).
@@ -69,7 +67,7 @@ impl core::error::Error for NotExtended {}
 /// What `mac` is on an MS/TP port, for [`Host::group`](crate::router::Host::group):
 /// station 255 is its broadcast.
 pub fn group(mac: &[u8]) -> Group {
-    if mac == [BROADCAST] {
+    if mac == [BROADCAST_MAC] {
         Group::Broadcast
     } else {
         Group::No
@@ -116,7 +114,7 @@ impl MstpPort {
         Arrived {
             port: self.port,
             source: Mac::from_array([source]),
-            link_group: destination == BROADCAST,
+            link_group: destination == BROADCAST_MAC,
             npdu,
         }
     }
@@ -156,8 +154,8 @@ impl MstpPort {
             return Err(SendRefusal::Other);
         }
         let destination = match send.to {
-            Dest::Broadcast => BROADCAST,
-            Dest::Unicast(&[station]) if station != BROADCAST => station,
+            Dest::Broadcast => BROADCAST_MAC,
+            Dest::Unicast(&[station]) if station != BROADCAST_MAC => station,
             Dest::Unicast(_) => return Err(SendRefusal::Other),
         };
         let priority = NetworkPriority::try_from(send.priority).map_err(|_| SendRefusal::Other)?;

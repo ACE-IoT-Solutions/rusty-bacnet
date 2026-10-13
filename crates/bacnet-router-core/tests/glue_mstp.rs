@@ -10,7 +10,7 @@ use bacnet_mstp_codec::{Frame as MstpFrame, FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::{
     Action, CoreError, Instant, NetworkPriority, QueueStorage, ReplyDecision, RequestId,
 };
-use bacnet_router_core::mstp::{group, MstpPort, NotExtended, BROADCAST};
+use bacnet_router_core::mstp::{group, MstpPort, NotExtended};
 use bacnet_router_core::npdu::Npdu;
 use bacnet_router_core::router::{Dest, Group, Limits, Options, Received, SendRefusal};
 use bacnet_router_core::{Mac, PortId};
@@ -64,8 +64,7 @@ fn config_needs_extended_frames() {
 
 #[test]
 fn the_broadcast_station_is_the_only_group() {
-    assert_eq!(BROADCAST, BROADCAST_MAC);
-    assert_eq!(group(&[BROADCAST]), Group::Broadcast);
+    assert_eq!(group(&[BROADCAST_MAC]), Group::Broadcast);
     assert_eq!(group(&[5]), Group::No);
     assert_eq!(group(&[]), Group::No);
 }
@@ -83,7 +82,7 @@ fn deliveries_become_frames() {
     let global = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
     let frame = MstpFrame::new(
         FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
-        BROADCAST,
+        BROADCAST_MAC,
         7,
         &global,
     );
@@ -278,7 +277,7 @@ fn refusals_map_to_the_routers() {
         [(1, Err(SendRefusal::Full))]
     );
     // Station 255 is no unicast destination, nor is a two-octet MAC.
-    for dadr in [&[BROADCAST][..], &[1, 2]] {
+    for dadr in [&[BROADCAST_MAC][..], &[1, 2]] {
         let npdu = apdu_at(2, dadr, CONFIRMED, 0);
         assert_eq!(
             route(&mut router, &npdu, &mut core),
