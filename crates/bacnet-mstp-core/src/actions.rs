@@ -202,11 +202,10 @@ pub const DEFAULT_DELIVERY_SLOTS: usize = 8;
 /// [`MstpCoreConfig::extended_frames`](crate::MstpCoreConfig::extended_frames)
 /// on needs room for extended frames, [`ExtendedActionBuffers`]: `NPDU`
 /// [`MAX_EXTENDED_MPDU_DATA`] and `FRAME` [`MAX_EXTENDED_FRAME_LENGTH`].
-/// `NPDU` also sizes the core's own scratch for a queued NPDU, on the stack
-/// of the call that sends it, which is why the core carries it as its own
-/// parameter. `FRAME` must hold any standard frame and, when `NPDU` is more
-/// than 501, an extended frame carrying `NPDU` octets, or [`Self::new`]
-/// fails to compile.
+/// `NPDU` is also the longest queued NPDU the core sends, which is why the
+/// core carries it as its own parameter. `FRAME` must hold any standard
+/// frame and, when `NPDU` is more than 501, an extended frame carrying
+/// `NPDU` octets, or [`Self::new`] fails to compile.
 pub struct ActionBuffers<
     const DELIVERIES: usize = DEFAULT_DELIVERY_SLOTS,
     const NPDU: usize = MAX_STANDARD_MPDU_DATA,

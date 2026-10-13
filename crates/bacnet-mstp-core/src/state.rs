@@ -263,9 +263,11 @@ struct ActiveTransmit {
 /// stack; the crate docs show the pattern.
 ///
 /// `NPDU` is the size of the [`ActionBuffers`] delivery slots, which the
-/// core takes from them, and of the scratch it copies a queued NPDU into on
-/// the stack to send it. It defaults to a standard frame's 501 octets, so a
-/// core without extended frames costs what it always did; one with
+/// core takes from them, and the longest queued NPDU it sends; the queue
+/// drops a longer one. A queued NPDU is never copied onto the stack: the
+/// queue lends it, and the core encodes its frame from there. `NPDU`
+/// defaults to a standard frame's 501 octets, so a core without extended
+/// frames costs what it always did; one with
 /// [`MstpCoreConfig::extended_frames`] on needs
 /// [`MAX_EXTENDED_MPDU_DATA`]
 /// (see [`ExtendedActionBuffers`](crate::ExtendedActionBuffers)).

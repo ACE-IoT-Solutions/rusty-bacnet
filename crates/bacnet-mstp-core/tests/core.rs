@@ -1,7 +1,5 @@
 //! Integration tests for the portable MS/TP master core.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{Frame, FrameType, MAX_STANDARD_MPDU_DATA};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,

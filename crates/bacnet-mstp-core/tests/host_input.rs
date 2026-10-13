@@ -3,8 +3,6 @@
 //! the transitions the core's own decoder drives. Each test runs both paths
 //! where they can differ.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};

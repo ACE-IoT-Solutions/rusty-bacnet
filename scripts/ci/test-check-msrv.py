@@ -118,7 +118,7 @@ class MsrvScriptTests(unittest.TestCase):
         commands = self.commands()
         self.assertEqual(len(commands), 2)
         self.assertEqual(commands[0]["args"], ["check", "--locked", "-p", "eligible", "-p", "newly-eligible",
-            "--features", "bacnet-transport/sc-tls,bacnet-transport/ipv6,bacnet-client/sc-tls,bacnet-client/ipv6,bacnet-server/sc-tls,bacnet-cli/sc-tls,bacnet-cli/tui,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-mstp-core/heapless,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless"])
+            "--features", "bacnet-transport/sc-tls,bacnet-transport/ipv6,bacnet-client/sc-tls,bacnet-client/ipv6,bacnet-server/sc-tls,bacnet-cli/sc-tls,bacnet-cli/tui,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless"])
         self.assertEqual(commands[1]["args"], ["check", "--locked", *NO_STD_ALLOC])
 
     def test_native_sequence_compiler_target_and_nondefault_artifact(self):

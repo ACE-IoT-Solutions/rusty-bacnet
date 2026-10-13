@@ -7,6 +7,10 @@
 //! [`std::sync::Mutex`], which the core locks through [`QueueStorage`] for
 //! each queue operation and a send locks for one enqueue. Neither side holds
 //! it across an await.
+//!
+//! The core's handle, [`CoreQueues`], has one buffer of its own: a dequeue
+//! lends the NPDU, which can't stay borrowed from inside the lock, so it is
+//! copied there under the lock and lent from there.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -101,6 +105,15 @@ impl SharedQueues {
             .map_err(EnqueueError::Rejected)
     }
 
+    /// The core's handle on these queues.
+    pub(super) fn for_core(&self) -> CoreQueues {
+        let longest = self.lock().queues.max_npdu_length();
+        CoreQueues {
+            shared: self.clone(),
+            lent: vec![0; longest].into_boxed_slice(),
+        }
+    }
+
     /// The unicast and broadcast queue counters.
     pub(super) fn stats(&self) -> (QueueCounters, QueueCounters) {
         let shared = self.lock();
@@ -120,7 +133,21 @@ pub(super) fn npdu_priority(npdu: &[u8]) -> NetworkPriority {
         .unwrap_or(NetworkPriority::Normal)
 }
 
-impl QueueStorage for SharedQueues {
+/// The core's handle on the [`SharedQueues`], from
+/// [`SharedQueues::for_core`]: the queues, and a buffer as long as their
+/// slots, allocated once, that a dequeued NPDU is lent from.
+pub(super) struct CoreQueues {
+    shared: SharedQueues,
+    lent: Box<[u8]>,
+}
+
+impl CoreQueues {
+    fn lock(&self) -> MutexGuard<'_, Shared> {
+        self.shared.lock()
+    }
+}
+
+impl QueueStorage for CoreQueues {
     fn set_starvation_limit(&mut self, limit: u8) {
         self.lock().queues.set_starvation_limit(limit);
     }
@@ -154,13 +181,40 @@ impl QueueStorage for SharedQueues {
         self.lock().queues.peek_kind(kind, now)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: CoreInstant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        self.lock().queues.dequeue_kind_into(kind, now, scratch)
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+        let mut shared = self.shared.lock();
+        let Some(item) = shared.queues.dequeue_kind(kind, now, max_len)? else {
+            return Ok(None);
+        };
+        let len = item.npdu.len();
+        // The buffer is as long as the queues' slots and a queue lends at
+        // most a slot, so the else branch never runs. If it did, the item,
+        // already off its queue, would be lost without a count: a debug
+        // build stops first.
+        debug_assert!(
+            len <= self.lent.len(),
+            "a queue lent {len} octets, more than its {}-octet slots",
+            self.lent.len()
+        );
+        let Some(lent) = self.lent.get_mut(..len) else {
+            return Err(QueueRejectReason::Oversize);
+        };
+        lent.copy_from_slice(item.npdu);
+        let (destination, kind, priority, sequence) =
+            (item.destination, item.kind, item.priority, item.sequence);
+        drop(shared);
+        Ok(Some(DequeuedNpdu {
+            destination,
+            kind,
+            priority,
+            sequence,
+            npdu: &self.lent[..len],
+        }))
     }
 
     fn depth(&self, kind: QueueKind) -> usize {
@@ -237,6 +291,36 @@ mod tests {
             Err(EnqueueError::Closed)
         );
         assert_eq!(queues.stats().0.enqueued, 1);
+    }
+
+    #[test]
+    fn the_core_handle_lends_what_the_sends_queued() {
+        let queues = SharedQueues::new(true);
+        let mut core = queues.for_core();
+        let now = CoreInstant::ZERO;
+        let age = CoreDuration::from_secs(1);
+        // Normal priority (its control octet is 0), then an urgent one.
+        let mut long: Vec<u8> = (0..MAX_EXTENDED_MPDU_DATA).map(|i| i as u8).collect();
+        long[1] = 0;
+        let urgent = [1, 0x01, 9];
+        queues.enqueue(5, &long, now, age).unwrap();
+        queues.enqueue(5, &urgent, now, age).unwrap();
+        queues.enqueue(6, &[1, 0], now, age).unwrap();
+        let first = core.dequeue(now, MAX_EXTENDED_MPDU_DATA).unwrap().unwrap();
+        assert_eq!(
+            (first.destination, first.priority, first.npdu),
+            (5, NetworkPriority::Urgent, &urgent[..])
+        );
+        let second = core.dequeue(now, MAX_EXTENDED_MPDU_DATA).unwrap().unwrap();
+        assert_eq!((second.destination, second.npdu), (5, &long[..]));
+        // Longer than the core takes: dropped and counted.
+        assert_eq!(core.dequeue(now, 1), Err(QueueRejectReason::Oversize));
+        assert_eq!(core.dequeue(now, MAX_EXTENDED_MPDU_DATA), Ok(None));
+        let (unicast, _) = queues.stats();
+        assert_eq!(
+            (unicast.depth, unicast.dequeued, unicast.drops_oversize),
+            (0, 3, 1)
+        );
     }
 
     #[tokio::test(start_paused = true)]

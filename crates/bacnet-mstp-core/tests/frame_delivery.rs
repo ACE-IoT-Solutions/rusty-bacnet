@@ -2,8 +2,6 @@
 //! `Action::DeliverFrame`, where Clause 9.5.6 passes them to the layers
 //! above.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};

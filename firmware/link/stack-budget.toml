@@ -57,40 +57,59 @@
 #
 # The mstp-extended image's statics take 7,712 octets of the 16 KiB boards'
 # RAM, so its stack has 8,672 octets of room there, more than its budget.
-# Its deepest call is the core's send of a queued NPDU, whose buffers on
-# the stack grow from 501 octets to 1497 with extended frames on: about
+# Its deepest call was the core's send of a queued NPDU, whose buffers on
+# the stack grew from 501 octets to 1497 with extended frames on: about
 # 2 KB deeper than the mstp image's on ARMv7-M. The same run measured the
 # mstp image's peaks at 3216, 2796, 2788 and 2676 octets, as on the dev
 # branch these images were added to: a little deeper than the rows above,
 # within their budgets. The bip and apdu peaks are as above.
+#
+# The mstp and mstp-extended rows were measured again the same day, same
+# toolchain and QEMU, when the core began building a queued NPDU's frame
+# straight from the queue's slot, and the queues and the codec's stream
+# decoder stopped shifting their buffers (#1691), as mstp / mstp-extended
+# peaks:
+#
+#   microbit        2040 / 3020
+#   lm3s6965evb     1824 / 2868
+#   netduinoplus2   1832 / 2868
+#   sifive_e        1712 / 2732
+#
+# That is 1.9-3.1 KB shallower for mstp-extended and 1.0-1.2 KB for mstp.
+# The mstp-extended image's deepest point is now its scenario's: the core
+# takes in the peer's 600-octet reply while the scenario's own buffers for
+# it, about 1.2 KB, are live. Run with that reply skipped, the image peaked
+# at 2004 octets on micro:bit and 1796 on lm3s6965evb, under the mstp
+# image's peaks: the core's send of a queued NPDU no longer grows with
+# extended frames.
 
 [microbit]
-mstp = 4016
-mstp-extended = 7680
+mstp = 2560
+mstp-extended = 3776
 bip = 2784
 node = 5904
 bbmd = 2880
 apdu = 3472
 
 [lm3s6965evb]
-mstp = 3488
-mstp-extended = 6048
+mstp = 2288
+mstp-extended = 3600
 bip = 2640
 node = 5248
 bbmd = 2800
 apdu = 3184
 
 [netduinoplus2]
-mstp = 3488
-mstp-extended = 6048
+mstp = 2304
+mstp-extended = 3600
 bip = 2640
 node = 5248
 bbmd = 2800
 apdu = 3184
 
 [sifive_e]
-mstp = 3312
-mstp-extended = 5856
+mstp = 2144
+mstp-extended = 3424
 bip = 2528
 node = 5024
 bbmd = 2672

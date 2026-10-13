@@ -4,8 +4,6 @@
 //! (Clause 9.5.5.1). Only after the confirmed start is input taken for the
 //! station's own echo.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
