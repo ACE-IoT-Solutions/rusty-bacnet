@@ -25,13 +25,17 @@ pub(crate) fn only_on_bip(share_port_by_address: bool, transport: &str) -> PyRes
     Ok(())
 }
 
+/// The shortest renewal interval, in seconds: the transport's pacing floor.
+const MIN_RENEWAL_SECS: f64 = 0.1;
+
 /// A foreign-device registration, for the `foreign_device=` keyword (#938).
 ///
 /// `bbmd` is `"ip"` or `"ip:port"` (port 47808 by default). `ttl`, at
 /// least 1, is how many seconds the BBMD keeps the entry. `renewal` is the
-/// seconds between registrations, shorter than `ttl`; `None` renews at half
-/// the TTL. Behind NAT, renew often so the mapping the BBMD's replies come
-/// back on stays open, while the TTL stays long.
+/// seconds between registrations, at least 0.1 and shorter than `ttl`;
+/// `None` renews at half the TTL. Behind NAT, renew often so the mapping the
+/// BBMD's replies come back on stays open, while the TTL stays long. A bad
+/// value raises ValueError, or OverflowError for an integer out of range.
 #[pyclass(
     name = "ForeignDevice",
     module = "rusty_bacnet",
@@ -54,9 +58,10 @@ impl PyForeignDevice {
         }
         let renewal_interval = renewal
             .map(|seconds| {
-                if !(seconds > 0.0 && seconds < f64::from(ttl)) {
+                // The transport renews no faster than every 100 ms.
+                if !(seconds >= MIN_RENEWAL_SECS && seconds < f64::from(ttl)) {
                     return Err(PyValueError::new_err(
-                        "renewal must be more than 0 and less than ttl seconds",
+                        "renewal must be at least 0.1 and less than ttl seconds",
                     ));
                 }
                 Ok(Duration::from_secs_f64(seconds))
@@ -242,6 +247,8 @@ pub(crate) fn registration_dict(registration: ForeignRegistrationSnapshot) -> Py
         dict.set_item("attempts", registration.attempts)?;
         dict.set_item("accepted", registration.accepted)?;
         dict.set_item("refused", registration.refused)?;
+        dict.set_item("lapses", registration.lapses)?;
+        dict.set_item("renewal_hints", registration.renewal_hints)?;
         Ok(dict.into_any().unbind())
     })
 }

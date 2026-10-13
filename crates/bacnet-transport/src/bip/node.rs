@@ -417,9 +417,14 @@ impl NodeHandle {
     /// Fill in a foreign device's registration as of now: the time until
     /// its next automatic attempt (while one is in flight, the latest the
     /// next can go, one renewal interval after it started), and its lease.
-    /// Nothing changes in the other modes.
+    /// Nothing changes in the other modes, or once the node has stopped: a
+    /// status handle can read it in the moment before the transport clears
+    /// its status, and a stopped node holds no lease.
     pub(super) fn fill_registration(&self, foreign: &mut ForeignRegistrationSnapshot) {
         let state = self.lock();
+        if state.stopped {
+            return;
+        }
         let now = self.clock.now();
         let Some(view) = state.node.registration(now) else {
             return;

@@ -2,6 +2,7 @@
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -78,11 +79,16 @@ async fn a_mode_replaces_the_one_before_it() {
     let mut transport = transport();
     transport.enable_bbmd(Vec::new());
     transport.set_bdt_persist_path(PathBuf::from("bdt.bin"));
+    transport.set_fanout_policy(FanoutPolicy {
+        max_fanout_per_input: 7,
+        ..FanoutPolicy::default()
+    });
     transport.register_as_foreign_device(foreign_to(47808));
     transport.set_mode(BipMode::Normal);
     assert!(transport.bbmd_config.is_none());
     assert!(transport.foreign_device.is_none());
     assert!(transport.bdt_persist_path.is_none());
+    assert_eq!(transport.fanout_policy, FanoutPolicy::default());
     let _rx = transport.start().await.unwrap();
     assert!(transport.bbmd_state().is_none());
     transport.stop().await.unwrap();
@@ -97,7 +103,8 @@ async fn a_mode_replaces_the_one_before_it() {
 }
 
 /// The handle reads the registration of a transport another task owns, and
-/// sees it cleared when that task stops the transport.
+/// sees it cleared when that task stops the transport, even in the moment
+/// between the node stopping and the status clearing.
 #[tokio::test]
 async fn the_status_handle_follows_a_transport_it_does_not_own() {
     let bbmd = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -107,18 +114,28 @@ async fn the_status_handle_follows_a_transport_it_does_not_own() {
     )));
     let status = transport.bvlc_client_status();
     assert!(!status.snapshot().running);
+    let in_the_gap = Arc::new(std::sync::Mutex::new(None));
+    let (gap_status, gap) = (status.clone(), Arc::clone(&in_the_gap));
+    transport.between_stops = Some(Box::new(move || {
+        *gap.lock().unwrap() = Some(gap_status.snapshot());
+    }));
     let _rx = transport.start().await.unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let owner = tokio::spawn(async move {
         let _ = stopped.await;
         transport.stop().await.unwrap();
     });
+    // Every registration is answered, so one answered late is retried.
+    tokio::spawn(async move {
+        let mut packet = [0; 64];
+        while let Ok((len, from)) = bbmd.recv_from(&mut packet).await {
+            if packet[..len] == [0x81, 5, 0, 6, 0, 60] {
+                let _ = bbmd.send_to(&[0x81, 0, 0, 6, 0, 0], from).await;
+            }
+        }
+    });
 
-    let mut packet = [0; 64];
-    let (len, from) = bbmd.recv_from(&mut packet).await.unwrap();
-    assert_eq!(&packet[..len], &[0x81, 5, 0, 6, 0, 60]);
-    bbmd.send_to(&[0x81, 0, 0, 6, 0, 0], from).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(20), async {
         while !status.snapshot().foreign_registration.registered {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -132,9 +149,13 @@ async fn the_status_handle_follows_a_transport_it_does_not_own() {
 
     stop.send(()).unwrap();
     owner.await.unwrap();
+    let gap = in_the_gap.lock().unwrap().take().expect("read in the gap");
+    assert!(gap.running);
+    assert!(!gap.foreign_registration.registered);
+    assert_eq!(gap.foreign_registration.lease_remaining, None);
     let after = status.snapshot();
     assert!(!after.running);
     assert!(!after.foreign_registration.registered);
     assert_eq!(after.foreign_registration.next_attempt_in, None);
-    assert_eq!(after.foreign_registration.accepted, 1);
+    assert!(after.foreign_registration.accepted >= 1);
 }

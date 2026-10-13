@@ -34,9 +34,14 @@ class OptionTests(unittest.TestCase):
                        {"bbmd": "224.0.0.1"}, {"bbmd": "192.0.2.10", "ttl": 0},
                        {"bbmd": "192.0.2.10", "ttl": 60, "renewal": 0},
                        {"bbmd": "192.0.2.10", "ttl": 60, "renewal": 60},
-                       {"bbmd": "192.0.2.10", "ttl": 60, "renewal": float("nan")}):
+                       {"bbmd": "192.0.2.10", "ttl": 60, "renewal": float("nan")},
+                       {"bbmd": "192.0.2.10", "ttl": 60, "renewal": 0.05}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ForeignDevice(**kwargs)
+        self.assertEqual(ForeignDevice("192.0.2.10", ttl=60, renewal=0.1).renewal, 0.1)
+        for ttl in (-1, 65536):
+            with self.subTest(ttl=ttl), self.assertRaises(OverflowError):
+                ForeignDevice("192.0.2.10", ttl=ttl)
 
     def test_bbmd_keeps_its_settings(self):
         bbmd = Bbmd(["10.0.5.2", ("10.0.6.2:47809", "255.255.255.0")],
@@ -86,19 +91,21 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
         await server.start()
         try:
             address = await server.local_address()
-            foreign = ForeignDevice(address, ttl=60, renewal=1)
+            foreign = ForeignDevice(address, ttl=60, renewal=10)
             async with BACnetClient(interface="127.0.0.1", port=0,
                                     foreign_device=foreign) as client:
                 async def registered():
                     status = await client.foreign_registration()
                     return status if status["registered"] else None
-                status = await eventually(registered)
+                status = await eventually(registered, seconds=20)
                 self.assertEqual(status["last_outcome"], "accepted")
                 self.assertEqual(status["last_result"], 0)
                 self.assertEqual(status["last_bbmd"], address)
+                self.assertGreaterEqual(status["accepted"], 1)
+                self.assertEqual((status["refused"], status["lapses"]), (0, 0))
                 self.assertGreater(status["lease_remaining"], 50)
-                # Renewed every second, not at half the 60 s TTL.
-                self.assertLessEqual(status["next_attempt_in"], 1.0)
+                # Renewed every 10 s, not at half the 60 s TTL.
+                self.assertLessEqual(status["next_attempt_in"], 10.0)
 
                 # The Who-Is goes to the BBMD, which hands it to its own
                 # device; the I-Am comes back forwarded.
@@ -128,10 +135,11 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
                 async def refused():
                     status = await endpoint.foreign_registration()
                     return status if status["refused"] else None
-                status = await eventually(refused)
+                status = await eventually(refused, seconds=20)
                 self.assertFalse(status["registered"])
                 self.assertEqual(status["last_outcome"], "refused")
                 self.assertEqual(status["last_result"], 0x0030)
+                self.assertEqual((status["accepted"], status["renewal_hints"]), (0, 0))
         finally:
             await server.stop()
 

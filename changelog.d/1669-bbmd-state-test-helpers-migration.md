@@ -1,8 +1,8 @@
 ---
 section: Migration notes
 ---
-- **BBMD forwarding (Rust API, #1669):** To ask where a broadcast would go,
-  or whether a foreign device is registered, use the decisions in
-  `bacnet_bip_core::bbmd` (`Tables::broadcast_targets`,
-  `Tables::foreign_device_targets`, `Fdt::is_registered_at`) in place of the
-  removed `BbmdState` helpers.
+- **BBMD forwarding (Rust API, #1669):** In place of the removed `BbmdState`
+  helpers, read a live BBMD's rows with `BbmdState::bdt()` and `fdt()`, build
+  `bacnet_bip_core::bbmd` tables from them, and ask those where a broadcast
+  goes (`Tables::broadcast_targets`, `Tables::foreign_device_targets`) or
+  whether a device is registered (`Fdt::is_registered_at`).

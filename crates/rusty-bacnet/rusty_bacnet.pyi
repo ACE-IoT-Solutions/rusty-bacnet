@@ -1830,11 +1830,12 @@ class ForeignDevice:
     ``BACnetClient``, ``BACnetServer`` and ``BipEndpoint`` (B/IP only).
 
     ``bbmd`` is ``"ip"`` or ``"ip:port"`` (port 47808 by default). ``ttl`` is
-    how many seconds the BBMD keeps the entry, at least 1. ``renewal`` is
-    the seconds between registrations, more than 0 and less than ``ttl``;
+    how many seconds the BBMD keeps the entry, 1 to 65535. ``renewal`` is
+    the seconds between registrations, at least 0.1 and less than ``ttl``;
     ``None`` renews at half the TTL. Behind NAT, renew often so the mapping
     the BBMD's replies come back on stays open, while the TTL stays long.
-    Invalid values raise ValueError.
+    Invalid values raise ValueError, or OverflowError for an integer out of
+    range.
 
     The owner registers at start and renews on its own. Its broadcasts go
     through the BBMD; the first few wait for the first registration to be
@@ -1861,7 +1862,7 @@ class Bbmd:
     Device Table entries (default: none). ``bdt_persist_path`` names a file
     holding a BDT, 10 octets per row, to start with instead of ``bdt`` when
     it loads. Write-BDT from the network is always refused. Invalid values
-    raise ValueError.
+    raise ValueError, or OverflowError for an integer out of range.
     """
 
     def __init__(
@@ -1890,7 +1891,9 @@ class ForeignRegistrationStatus(TypedDict):
     refusal) and ``last_outcome`` (``"pending"``, ``"accepted"``,
     ``"refused"``, ``"timed_out"``, ``"local_error"`` or ``"cancelled"``)
     describe the latest attempt and clear when the owner stops. The totals
-    survive it."""
+    survive it: ``lapses`` counts leases that ran out with no newer success,
+    and ``renewal_hints`` the BBMD's Distribute-Broadcast-To-Network NAKs,
+    each of which brings the next attempt forward."""
     registered: bool
     lease_remaining: Optional[float]
     next_attempt_in: Optional[float]
@@ -1900,6 +1903,8 @@ class ForeignRegistrationStatus(TypedDict):
     attempts: int
     accepted: int
     refused: int
+    lapses: int
+    renewal_hints: int
 
 
 # ---------------------------------------------------------------------------

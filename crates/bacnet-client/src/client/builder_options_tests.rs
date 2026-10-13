@@ -66,8 +66,10 @@ async fn bip_builder_foreign_device_validates_settings_before_io() {
     }
 }
 
-/// A foreign client whose BBMD, a bare socket, answers its first
-/// registration with `code`, once the client has observed that answer.
+/// A foreign client whose BBMD, a bare socket, answers every registration
+/// with `code`, returned once the client has seen that answer. An attempt
+/// the answer comes too late for is retried and answered, so a slow runner
+/// only delays it.
 async fn foreign_client_answered_with(
     code: BvlcResultCode,
     renewal_interval: Option<Duration>,
@@ -87,15 +89,17 @@ async fn foreign_client_answered_with(
         .build()
         .await
         .unwrap();
-    let mut packet = [0; 64];
-    let (len, from) = bbmd.recv_from(&mut packet).await.unwrap();
-    assert_eq!(&packet[..len], &[0x81, 5, 0, 6, 0, 60]);
     let [high, low] = code.to_raw().to_be_bytes();
-    bbmd.send_to(&[0x81, 0, 0, 6, high, low], from)
-        .await
-        .unwrap();
-    timeout(Duration::from_secs(2), async {
-        while client.foreign_registration().unwrap().last_result.is_none() {
+    tokio::spawn(async move {
+        let mut packet = [0; 64];
+        while let Ok((len, from)) = bbmd.recv_from(&mut packet).await {
+            if packet[..len] == [0x81, 5, 0, 6, 0, 60] {
+                let _ = bbmd.send_to(&[0x81, 0, 0, 6, high, low], from).await;
+            }
+        }
+    });
+    timeout(Duration::from_secs(20), async {
+        while client.foreign_registration().unwrap().last_result != Some(code) {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
@@ -110,7 +114,7 @@ async fn foreign_client_answered_with(
 async fn bip_builder_foreign_mode_reports_the_lease_and_renews_on_its_interval() {
     let mut client = foreign_client_answered_with(
         BvlcResultCode::SUCCESSFUL_COMPLETION,
-        Some(Duration::from_secs(1)),
+        Some(Duration::from_secs(10)),
     )
     .await;
     let registration = client.foreign_registration().unwrap();
@@ -121,7 +125,7 @@ async fn bip_builder_foreign_mode_reports_the_lease_and_renews_on_its_interval()
     );
     assert!(registration.lease_remaining.unwrap() > Duration::from_secs(50));
     // Half the 60 s TTL would put it 30 s out.
-    assert!(registration.next_attempt_in.unwrap() <= Duration::from_secs(1));
+    assert!(registration.next_attempt_in.unwrap() <= Duration::from_secs(10));
     client.stop().await.unwrap();
 }
 

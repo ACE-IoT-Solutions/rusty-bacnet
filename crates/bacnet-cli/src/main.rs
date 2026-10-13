@@ -575,8 +575,12 @@ async fn cli_main(cli: Cli) -> CliResult {
                 // taken the registration (#938).
                 if let Some(bbmd) = cli.foreign_bbmd {
                     if let Err(e) = foreign::await_registration(&client, bbmd).await {
-                        client.stop().await?;
-                        return Err(e.into());
+                        // The registration's failure is the error to report.
+                        return Err(match client.stop().await {
+                            Ok(()) => e,
+                            Err(stop) => format!("{e}; stopping the client also failed: {stop}"),
+                        }
+                        .into());
                     }
                 }
                 if !execute_bip_command(&client, cmd, cli.ttl, format).await? {

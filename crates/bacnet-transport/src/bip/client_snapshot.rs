@@ -185,6 +185,11 @@ impl BvlcClientSnapshot {
 /// (#938). It reads what
 /// [`BipTransport::bvlc_client_snapshot`](super::BipTransport::bvlc_client_snapshot)
 /// reads, across stop and start; cloning it is cheap.
+///
+/// Unlike the transport's own method, it can run while the transport stops.
+/// A read in the middle of a stop sees `running` still true, with the
+/// registration's lease and countdown already gone: the node stops first,
+/// then the status clears.
 #[derive(Clone, Debug)]
 pub struct BvlcClientStatus(pub(super) Arc<ClientRecord>);
 

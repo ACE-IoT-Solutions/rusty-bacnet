@@ -73,12 +73,15 @@ impl BipTransport {
     /// with the setters below: [`enable_bbmd`](Self::enable_bbmd) and the
     /// BBMD setters for [`BipMode::Bbmd`], and
     /// [`register_as_foreign_device`](Self::register_as_foreign_device) for
-    /// [`BipMode::Foreign`]. Call it before the first `start()`: a transport
-    /// that has run as a BBMD keeps its tables and stays one.
+    /// [`BipMode::Foreign`]. Everything a BBMD set up before goes back to
+    /// its default, its fanout policy included. Call it before the first
+    /// `start()`: a transport that has run as a BBMD keeps its tables and
+    /// stays one.
     pub fn set_mode(&mut self, mode: BipMode) {
         self.bbmd_config = None;
         self.foreign_device = None;
         self.bdt_persist_path = None;
+        self.set_fanout_policy(FanoutPolicy::default());
         match mode {
             BipMode::Normal => {}
             BipMode::Foreign(config) => self.register_as_foreign_device(config),

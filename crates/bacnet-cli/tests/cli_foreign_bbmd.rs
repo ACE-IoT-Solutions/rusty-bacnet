@@ -90,7 +90,8 @@ async fn discover_reaches_a_device_through_the_bbmd() {
     server.stop().await.unwrap();
 }
 
-/// A refused registration stops a one-shot command before it runs.
+/// A refused registration stops a one-shot command before it runs, and the
+/// error names the BBMD's result code.
 #[tokio::test]
 async fn a_refused_registration_fails_the_command() {
     let mut server = bbmd(3202, false).await;
@@ -107,8 +108,34 @@ async fn a_refused_registration_fails_the_command() {
         "0",
     ])
     .await;
-    failure(&output, "refused the foreign-device registration");
+    failure(
+        &output,
+        "refused the foreign-device registration (REGISTER_FOREIGN_DEVICE_NAK)",
+    );
     server.stop().await.unwrap();
+}
+
+/// A BBMD that never answers fails the command once the transport gives the
+/// attempt up, before the CLI's own backstop.
+#[tokio::test]
+async fn a_silent_bbmd_fails_the_command() {
+    let silent = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let output = run([
+        "--interface",
+        "127.0.0.1",
+        "--port",
+        "0",
+        "--foreign-bbmd",
+        &silent.local_addr().unwrap().to_string(),
+        "--json",
+        "discover",
+        "--wait",
+        "0",
+    ])
+    .await;
+    failure(&output, "did not answer the foreign-device registration");
 }
 
 #[tokio::test]

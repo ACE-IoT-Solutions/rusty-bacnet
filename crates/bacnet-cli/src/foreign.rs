@@ -3,8 +3,8 @@
 //!
 //! The transport registers at start and renews on its own. A one-shot
 //! command waits for the first registration to be answered before it runs,
-//! and fails when the BBMD refuses it or doesn't answer; the shell reports
-//! the outcome and carries on.
+//! and fails when the BBMD refuses it or doesn't answer; the shell and the
+//! TUI report the outcome and carry on.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
@@ -14,8 +14,9 @@ use bacnet_transport::bip::{
     BipTransport, ForeignDeviceConfig, ForeignRegistrationOutcome, DEFAULT_BACNET_PORT,
 };
 
-/// How long a one-shot command waits for the first registration's answer:
-/// the transport waits at most three seconds for it.
+/// How long a one-shot command waits for the first registration's answer.
+/// The transport gives an attempt up after at most three seconds, so this
+/// is a backstop for an attempt that never resolves.
 const REGISTRATION_WAIT: Duration = Duration::from_secs(5);
 
 /// Parse a `--foreign-bbmd` address: `ip` or `ip:port` (47808 by default).
@@ -63,10 +64,12 @@ pub(crate) async fn await_registration(
         match registration.last_outcome {
             Some(ForeignRegistrationOutcome::Accepted) => return Ok(()),
             Some(ForeignRegistrationOutcome::Refused) => {
+                let result = registration
+                    .last_result
+                    .map_or_else(String::new, |result| format!(" ({result})"));
                 return Err(format!(
-                    "BBMD {bbmd} refused the foreign-device registration ({:?})",
-                    registration.last_result
-                ))
+                    "BBMD {bbmd} refused the foreign-device registration{result}"
+                ));
             }
             Some(ForeignRegistrationOutcome::LocalError) => {
                 return Err(format!(
@@ -74,16 +77,18 @@ pub(crate) async fn await_registration(
                 ))
             }
             Some(ForeignRegistrationOutcome::TimedOut | ForeignRegistrationOutcome::Cancelled) => {
-                break
+                return Err(format!(
+                    "BBMD {bbmd} did not answer the foreign-device registration"
+                ))
             }
             Some(ForeignRegistrationOutcome::Pending) | None => {}
         }
         if tokio::time::Instant::now() >= deadline {
-            break;
+            return Err(format!(
+                "the foreign-device registration with BBMD {bbmd} had no outcome after {} s",
+                REGISTRATION_WAIT.as_secs()
+            ));
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    Err(format!(
-        "BBMD {bbmd} did not answer the foreign-device registration"
-    ))
 }
