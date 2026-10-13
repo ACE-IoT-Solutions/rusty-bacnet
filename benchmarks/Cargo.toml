@@ -6,6 +6,9 @@ publish = false
 
 [dependencies]
 bacnet-types = { path = "../crates/bacnet-types" }
+bacnet-bip-codec = { path = "../crates/bacnet-bip-codec" }
+bacnet-mstp-codec = { path = "../crates/bacnet-mstp-codec" }
+bacnet-router-core = { path = "../crates/bacnet-router-core" }
 bacnet-encoding = { path = "../crates/bacnet-encoding" }
 bacnet-services = { path = "../crates/bacnet-services" }
 bacnet-transport = { path = "../crates/bacnet-transport", features = ["sc-tls", "ipv6"] }
@@ -59,6 +62,10 @@ path = "src/bin/stress_orchestrator.rs"
 
 [[bench]]
 name = "encoding"
+harness = false
+
+[[bench]]
+name = "codecs"
 harness = false
 
 [[bench]]
