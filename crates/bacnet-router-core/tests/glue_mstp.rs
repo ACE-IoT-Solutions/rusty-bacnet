@@ -82,7 +82,7 @@ fn deliveries_become_frames() {
 
     let global = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
     let frame = MstpFrame::new(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         BROADCAST,
         7,
         &global,
@@ -124,7 +124,7 @@ fn relayed_requests_are_postponed() {
     request.destination = Some(addr(1, NODE_A));
     request.expecting_reply = true;
     let request = bytes(&request);
-    let frame = MstpFrame::new(FrameType::BACnetDataExpectingReply, STATION, 7, &request);
+    let frame = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &request);
     core.on_validated_frame(frame, now).unwrap();
     let (source, destination, id, npdu) = delivered(&mut core);
     assert!(id.is_some());
@@ -141,7 +141,7 @@ fn relayed_requests_are_postponed() {
     let answer = next_frame(&mut core, now).unwrap();
     assert_eq!(
         (answer.frame_type, answer.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
 
     // A request for the router's own application, which answers it.
@@ -149,7 +149,7 @@ fn relayed_requests_are_postponed() {
     local.expecting_reply = true;
     let local = bytes(&local);
     let later = now + bacnet_router_core::Duration::from_millis(100);
-    let frame = MstpFrame::new(FrameType::BACnetDataExpectingReply, STATION, 7, &local);
+    let frame = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &local);
     core.on_validated_frame(frame, later).unwrap();
     let (source, destination, id, npdu) = delivered(&mut core);
     let arrived = MSTP_PORT.arrived(source, destination, &npdu);
@@ -165,7 +165,11 @@ fn relayed_requests_are_postponed() {
     let answer = next_frame(&mut core, later).unwrap();
     assert_eq!(
         (answer.frame_type, answer.destination, answer.data),
-        (FrameType::BACnetDataNotExpectingReply, 7, reply.to_vec())
+        (
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+            7,
+            reply.to_vec()
+        )
     );
     // A clock that ran backwards is the core's to report.
     let stale = RequestId::new(99);
@@ -186,7 +190,7 @@ fn a_late_release_leaves_the_next_request_alone() {
     let mut local = Npdu::apdu(CONFIRMED);
     local.expecting_reply = true;
     let local = bytes(&local);
-    let request = MstpFrame::new(FrameType::BACnetDataExpectingReply, STATION, 7, &local);
+    let request = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &local);
 
     core.on_validated_frame(request, now).unwrap();
     let (.., first, _) = delivered(&mut core);
@@ -194,7 +198,10 @@ fn a_late_release_leaves_the_next_request_alone() {
     core.complete_request(first.unwrap(), ReplyDecision::Data(&reply), now)
         .unwrap();
     let answer = next_frame(&mut core, now).unwrap();
-    assert_eq!(answer.frame_type, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(
+        answer.frame_type,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+    );
 
     let later = now + bacnet_router_core::Duration::from_millis(100);
     core.on_validated_frame(request, later).unwrap();
@@ -206,7 +213,7 @@ fn a_late_release_leaves_the_next_request_alone() {
     let answer = next_frame(&mut core, later).unwrap();
     assert_eq!(
         (answer.frame_type, answer.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
 }
 
@@ -326,7 +333,11 @@ fn relayed_in_one_extended_frame(len: usize) {
     let wired = token_then_frame(&mut core, now).unwrap();
     assert_eq!(
         (wired.frame_type, wired.destination, wired.data.len()),
-        (FrameType::BACnetExtendedDataNotExpectingReply, NEXT, len)
+        (
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
+            NEXT,
+            len
+        )
     );
     assert_eq!(wired.data[7..11], NODE_A[2..], "the SADR names node A");
     assert_eq!(wired.data[11..], npdu[7..], "the APDU travels whole");

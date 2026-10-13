@@ -355,9 +355,9 @@ async fn unix_serial_with_echo_drops_its_own_frames() {
     assert_eq!(
         polls,
         [
-            (FrameType::PollForMaster, 4),
-            (FrameType::PollForMaster, 5),
-            (FrameType::PollForMaster, 6)
+            (FrameType::POLL_FOR_MASTER, 4),
+            (FrameType::POLL_FOR_MASTER, 5),
+            (FrameType::POLL_FOR_MASTER, 6)
         ]
     );
     let counts = diagnostics.snapshot();
@@ -510,7 +510,7 @@ async fn dedicated_blocking_io_keeps_app_responsive_and_stop_waits_for_release()
             direction: SoftwareDirection::new(0),
         };
         let mut incoming = Vec::new();
-        Frame::new(FrameType::PollForMaster, 0, 7, &[])
+        Frame::new(FrameType::POLL_FOR_MASTER, 0, 7, &[])
             .encode_to_sink(&mut incoming)
             .unwrap();
         peer.write(&incoming).await.unwrap();

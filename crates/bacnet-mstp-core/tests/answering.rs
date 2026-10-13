@@ -25,7 +25,7 @@ fn config() -> MstpCoreConfig {
 /// Deliver a request from station 7 at 1 ms and return its identifier.
 fn receive_request(core: &mut MasterCore<'_, Queues>) -> RequestId {
     core.on_validated_frame(
-        Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[1, 0x04]),
+        Frame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[1, 0x04]),
         ms(1),
     )
     .unwrap();
@@ -63,15 +63,15 @@ fn send_reply(core: &mut MasterCore<'_, Queues>, id: RequestId) {
     let (tx, header) = take_transmit(core, ms(30));
     assert_eq!(
         (header.frame_type, header.destination),
-        (FrameType::BACnetDataNotExpectingReply, 7)
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 7)
     );
     finish(core, tx, ms(31));
 }
 
 #[test]
 fn data_is_delivered_and_a_token_kept_while_answering() {
-    let token = Frame::new(FrameType::Token, 1, 2, &[]);
-    let data = Frame::new(FrameType::BACnetDataNotExpectingReply, 1, 5, &[7]);
+    let token = Frame::new(FrameType::TOKEN, 1, 2, &[]);
+    let data = Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 1, 5, &[7]);
     for (first, second) in [(token, data), (data, token)] {
         let mut rx = [0; 64];
         let mut actions = Actions::new();
@@ -109,7 +109,7 @@ fn data_is_delivered_and_a_token_kept_while_answering() {
         let (_, header) = take_transmit(&mut core, due);
         assert_eq!(
             (header.frame_type, header.destination),
-            (FrameType::BACnetDataNotExpectingReply, 2)
+            (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 2)
         );
     }
 }
@@ -117,9 +117,9 @@ fn data_is_delivered_and_a_token_kept_while_answering() {
 #[test]
 fn frames_wanting_a_prompt_answer_are_dropped_and_counted() {
     for frame in [
-        Frame::new(FrameType::PollForMaster, 1, 5, &[]),
-        Frame::new(FrameType::BACnetDataExpectingReply, 1, 5, &[1, 0x04]),
-        Frame::new(FrameType::TestRequest, 1, 5, &[1]),
+        Frame::new(FrameType::POLL_FOR_MASTER, 1, 5, &[]),
+        Frame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 5, &[1, 0x04]),
+        Frame::new(FrameType::TEST_REQUEST, 1, 5, &[1]),
     ] {
         let mut rx = [0; 64];
         let mut actions = Actions::new();
@@ -162,8 +162,8 @@ fn broadcast_data_is_delivered_while_answering() {
     .unwrap();
     let id = receive_request(&mut core);
     for (kind, npdu) in [
-        (FrameType::BACnetDataExpectingReply, [1u8, 0x04]),
-        (FrameType::BACnetDataNotExpectingReply, [2u8, 0x00]),
+        (FrameType::BACNET_DATA_EXPECTING_REPLY, [1u8, 0x04]),
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, [2u8, 0x00]),
     ] {
         core.on_validated_frame(Frame::new(kind, 0xFF, 5, &npdu), ms(10))
             .unwrap();
@@ -194,10 +194,10 @@ fn a_later_frame_replaces_a_kept_token() {
     )
     .unwrap();
     let id = receive_request(&mut core);
-    core.on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), ms(10))
+    core.on_validated_frame(Frame::new(FrameType::TOKEN, 1, 2, &[]), ms(10))
         .unwrap();
     // The token moved on to station 3: the one kept for this station is stale.
-    core.on_validated_frame(Frame::new(FrameType::Token, 3, 2, &[]), ms(20))
+    core.on_validated_frame(Frame::new(FrameType::TOKEN, 3, 2, &[]), ms(20))
         .unwrap();
     send_reply(&mut core, id);
     assert_eq!(core.state(), MasterState::Idle);
@@ -217,7 +217,7 @@ fn a_kept_token_is_used_when_the_request_is_abandoned() {
     )
     .unwrap();
     let id = receive_request(&mut core);
-    core.on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), ms(10))
+    core.on_validated_frame(Frame::new(FrameType::TOKEN, 1, 2, &[]), ms(10))
         .unwrap();
     core.complete_request(id, ReplyDecision::Abandoned, ms(20))
         .unwrap();
@@ -225,7 +225,7 @@ fn a_kept_token_is_used_when_the_request_is_abandoned() {
     // once since the line has been quiet longer than the turnaround.
     assert_eq!(core.state(), MasterState::PollForMaster);
     let (_, header) = take_transmit(&mut core, ms(20));
-    assert_eq!(header.frame_type, FrameType::PollForMaster);
+    assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
 }
 
 /// The reply times: give-up is 255 ms after the request at 1 ms, less one
@@ -272,7 +272,7 @@ fn the_reply_window_closes_under_steady_line_activity() {
     assert_eq!(core.poll_action(), Action::Idle);
     // The requester timed out and passes this station the token, which it
     // now takes up.
-    core.on_validated_frame(Frame::new(FrameType::Token, 1, 7, &[]), ms(258))
+    core.on_validated_frame(Frame::new(FrameType::TOKEN, 1, 7, &[]), ms(258))
         .unwrap();
     assert_eq!(core.state(), MasterState::PollForMaster);
 }

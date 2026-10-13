@@ -10,7 +10,7 @@ impl Checker<'_> {
     pub(super) fn permit(&self, frame: &Seen, now: u64, ps: Option<u8>) -> Result<Role, String> {
         match self.permit_held(frame, now, ps) {
             Err(why)
-                if frame.frame_type == FrameType::PollForMaster
+                if frame.frame_type == FrameType::POLL_FOR_MASTER
                     && !matches!(self.custody, Custody::Free)
                     && self.lapsible(now) =>
             {
@@ -28,21 +28,20 @@ impl Checker<'_> {
         ps: Option<u8>,
     ) -> Result<Role, String> {
         match frame.frame_type {
-            FrameType::ReplyToPollForMaster => self.answer(Ask::Poll, frame, now),
-            FrameType::TestResponse => self.answer(Ask::Test, frame, now),
-            FrameType::ReplyPostponed => self.answer(Ask::Reply, frame, now),
-            FrameType::BACnetDataNotExpectingReply
-            | FrameType::BACnetExtendedDataNotExpectingReply => {
+            FrameType::REPLY_TO_POLL_FOR_MASTER => self.answer(Ask::Poll, frame, now),
+            FrameType::TEST_RESPONSE => self.answer(Ask::Test, frame, now),
+            FrameType::REPLY_POSTPONED => self.answer(Ask::Reply, frame, now),
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY => {
                 self.holder_data(frame).or_else(|holder| {
                     self.answer(Ask::Reply, frame, now)
                         .map_err(|answer| format!("{holder}; as an answer, {answer}"))
                 })
             }
-            FrameType::BACnetDataExpectingReply | FrameType::BACnetExtendedDataExpectingReply => {
-                self.holder_data(frame)
-            }
-            FrameType::Token => self.token(frame, now),
-            FrameType::PollForMaster => self.poll(frame, now, ps),
+            FrameType::BACNET_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY => self.holder_data(frame),
+            FrameType::TOKEN => self.token(frame, now),
+            FrameType::POLL_FOR_MASTER => self.poll(frame, now, ps),
             other => Err(format!(
                 "sent a frame of type {other:?}, which this station never originates"
             )),
@@ -50,7 +49,7 @@ impl Checker<'_> {
     }
 
     pub(super) fn answer(&self, ask: Ask, frame: &Seen, now: u64) -> Result<Role, String> {
-        if ask == Ask::Reply && frame.frame_type != FrameType::ReplyPostponed {
+        if ask == Ask::Reply && frame.frame_type != FrameType::REPLY_POSTPONED {
             let extended = frame.data.len() > MAX_STANDARD_MPDU_DATA;
             if frame.frame_type.is_cobs() != extended {
                 return Err(format!(
@@ -68,7 +67,7 @@ impl Checker<'_> {
                     Ask::Poll => true,
                     Ask::Test => owed.data == frame.data,
                     Ask::Reply => {
-                        frame.frame_type == FrameType::ReplyPostponed
+                        frame.frame_type == FrameType::REPLY_POSTPONED
                             || owed.decided.as_deref() == Some(&frame.data[..])
                     }
                 }

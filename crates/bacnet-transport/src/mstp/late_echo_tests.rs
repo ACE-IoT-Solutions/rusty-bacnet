@@ -55,11 +55,11 @@ async fn a_short_echo_does_not_swallow_the_reply_behind_it() {
         .unwrap();
     bus.return_token(&token, 4).await;
     let request = bus.next().await;
-    assert_eq!(request.frame_type, FrameType::BACnetDataExpectingReply);
+    assert_eq!(request.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
     bus.until(request.end + TICK).await;
     let mut chunk = octets(&request)[3..].to_vec();
     chunk.extend(encode(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         3,
         4,
         &[1, 0, 0x20],
@@ -68,7 +68,7 @@ async fn a_short_echo_does_not_swallow_the_reply_behind_it() {
     let reply = bus.npdus.recv().await.unwrap();
     assert_eq!(reply.npdu.as_ref(), &[1, 0, 0x20]);
     let token = bus.next().await;
-    assert_eq!((token.frame_type, token.destination), (FrameType::Token, 4));
+    assert_eq!((token.frame_type, token.destination), (FrameType::TOKEN, 4));
     assert!(token.start >= heard + bus.turnaround);
     assert!(token.start <= heard + bus.turnaround + TICK);
     let counts = bus.transport.diagnostics().snapshot();
@@ -94,13 +94,13 @@ async fn a_peer_frame_where_the_echo_should_be_reaches_the_core_whole() {
         },
     )
     .await;
-    bus.send(FrameType::Token, 3, 6, &[]);
+    bus.send(FrameType::TOKEN, 3, 6, &[]);
     let poll = bus.next().await;
     assert_eq!(poll.destination, 4);
     bus.until(poll.end + bus.turnaround).await;
-    bus.send(FrameType::ReplyToPollForMaster, 3, 4, &[]);
+    bus.send(FrameType::REPLY_TO_POLL_FOR_MASTER, 3, 4, &[]);
     let token = bus.next().await;
-    assert_eq!((token.frame_type, token.destination), (FrameType::Token, 4));
+    assert_eq!((token.frame_type, token.destination), (FrameType::TOKEN, 4));
     bus.stop().await;
 }
 
@@ -113,12 +113,12 @@ async fn a_late_echo_in_pass_token_is_not_the_successor() {
     let (mut bus, token) = ring(SHORT_GRACE).await;
     bus.return_token(&token, 4).await;
     let passed = bus.next().await;
-    assert_eq!(passed.frame_type, FrameType::Token);
+    assert_eq!(passed.frame_type, FrameType::TOKEN);
     bus.until(passed.end + GRACE + Duration::from_millis(3))
         .await;
     bus.send_raw(&octets(&passed));
     let retry = bus.next().await;
-    assert_eq!((retry.frame_type, retry.destination), (FrameType::Token, 4));
+    assert_eq!((retry.frame_type, retry.destination), (FrameType::TOKEN, 4));
     assert!(retry.start >= passed.end + T_USAGE_TIMEOUT);
     assert!(retry.start <= passed.end + T_USAGE_TIMEOUT + TICK);
     let counts = bus.transport.diagnostics().snapshot();
@@ -141,14 +141,19 @@ async fn a_late_echo_in_wait_for_reply_keeps_the_token() {
         .unwrap();
     bus.return_token(&token, 4).await;
     let request = bus.next().await;
-    assert_eq!(request.frame_type, FrameType::BACnetDataExpectingReply);
+    assert_eq!(request.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
     bus.until(request.end + GRACE + Duration::from_millis(3))
         .await;
     bus.send_raw(&octets(&request));
     bus.until(request.end + Duration::from_millis(15)).await;
-    let heard = bus.send(FrameType::BACnetDataNotExpectingReply, 3, 4, &[1, 0, 0x20]);
+    let heard = bus.send(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        3,
+        4,
+        &[1, 0, 0x20],
+    );
     let token = bus.next().await;
-    assert_eq!((token.frame_type, token.destination), (FrameType::Token, 4));
+    assert_eq!((token.frame_type, token.destination), (FrameType::TOKEN, 4));
     assert!(token.start <= heard + bus.turnaround + TICK, "{token:?}");
     assert_eq!(bus.npdus.recv().await.unwrap().npdu.as_ref(), &[1, 0, 0x20]);
     assert_eq!(
@@ -175,7 +180,7 @@ async fn a_late_echo_in_poll_for_master_keeps_the_token() {
         },
     )
     .await;
-    bus.send(FrameType::Token, 3, 6, &[]);
+    bus.send(FrameType::TOKEN, 3, 6, &[]);
     let poll = bus.next().await;
     assert_eq!(poll.destination, 4);
     bus.until(poll.end + GRACE + Duration::from_millis(3)).await;
@@ -183,7 +188,7 @@ async fn a_late_echo_in_poll_for_master_keeps_the_token() {
     let next = bus.next().await;
     assert_eq!(
         (next.frame_type, next.destination),
-        (FrameType::PollForMaster, 5)
+        (FrameType::POLL_FOR_MASTER, 5)
     );
     assert!(next.start >= poll.end + T_USAGE_TIMEOUT);
     assert!(next.start <= poll.end + T_USAGE_TIMEOUT + TICK);
@@ -204,7 +209,7 @@ async fn the_rest_of_an_echo_cut_by_the_grace_is_still_dropped() {
         .await;
     bus.send_raw(&echo[4..]);
     let retry = bus.next().await;
-    assert_eq!((retry.frame_type, retry.destination), (FrameType::Token, 4));
+    assert_eq!((retry.frame_type, retry.destination), (FrameType::TOKEN, 4));
     assert!(retry.start >= passed.end + T_USAGE_TIMEOUT);
     let counts = bus.transport.diagnostics().snapshot();
     assert_eq!((counts.echo_missing, counts.echo_mismatches), (0, 0));
@@ -227,7 +232,7 @@ async fn stray_octets_before_the_echo_do_not_hide_it() {
         .await;
         bus.return_token(&token, 4).await;
         let passed = bus.next().await;
-        assert_eq!(passed.frame_type, FrameType::Token);
+        assert_eq!(passed.frame_type, FrameType::TOKEN);
         bus.until(passed.end + TICK).await;
         let mut chunk = stray.to_vec();
         chunk.extend(octets(&passed));
@@ -235,7 +240,7 @@ async fn stray_octets_before_the_echo_do_not_hide_it() {
         let retry = bus.next().await;
         assert_eq!(
             (retry.frame_type, retry.destination),
-            (FrameType::Token, 4),
+            (FrameType::TOKEN, 4),
             "stray {stray:02x?}"
         );
         assert!(
@@ -265,11 +270,11 @@ async fn a_stray_octet_and_a_reply_without_echo_reach_the_core() {
         .unwrap();
     bus.return_token(&token, 4).await;
     let request = bus.next().await;
-    assert_eq!(request.frame_type, FrameType::BACnetDataExpectingReply);
+    assert_eq!(request.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
     bus.until(request.end + bus.turnaround).await;
     let mut chunk = vec![0xFF];
     chunk.extend(encode(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         3,
         4,
         &[1, 0, 0x20],
@@ -277,7 +282,7 @@ async fn a_stray_octet_and_a_reply_without_echo_reach_the_core() {
     let heard = bus.send_raw(&chunk);
     assert_eq!(bus.npdus.recv().await.unwrap().npdu.as_ref(), &[1, 0, 0x20]);
     let token = bus.next().await;
-    assert_eq!((token.frame_type, token.destination), (FrameType::Token, 4));
+    assert_eq!((token.frame_type, token.destination), (FrameType::TOKEN, 4));
     assert!(token.start <= heard + bus.turnaround + TICK);
     assert_eq!(
         bus.transport
@@ -301,7 +306,7 @@ async fn an_unfinished_echo_is_dropped_and_counted_at_the_next_start() {
     bus.until(passed.end + TICK).await;
     bus.send_raw(&octets(&passed)[..4]);
     let retry = bus.next().await;
-    assert_eq!((retry.frame_type, retry.destination), (FrameType::Token, 4));
+    assert_eq!((retry.frame_type, retry.destination), (FrameType::TOKEN, 4));
     assert!(retry.start >= passed.end + T_USAGE_TIMEOUT);
     bus.until(retry.end).await;
     bus.send_raw(&octets(&retry));
@@ -344,7 +349,7 @@ async fn a_refused_start_keeps_a_peer_preamble_held_after_the_grace() {
         },
     )
     .await;
-    bus.send(FrameType::BACnetDataExpectingReply, 3, 7, &[1, 4, 0x10]);
+    bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 7, &[1, 4, 0x10]);
     let first = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
     first.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
     let answer = bus.next().await;
@@ -355,10 +360,10 @@ async fn a_refused_start_keeps_a_peer_preamble_held_after_the_grace() {
     echo[3] ^= 0x40;
     bus.send_raw(&echo[3..8]);
     bus.until(answer.end + GRACE + TICK * 2).await;
-    bus.send(FrameType::BACnetDataExpectingReply, 3, 7, &[1, 4, 0x11]);
+    bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 7, &[1, 4, 0x11]);
     let second = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
     bus.until(Instant::now() + Duration::from_millis(10)).await;
-    let peer = encode(FrameType::Token, 10, 9, &[]);
+    let peer = encode(FrameType::TOKEN, 10, 9, &[]);
     bus.send_raw(&[0xFF, peer[0], peer[1]]);
     second.send(Bytes::from_static(&[1, 0, 0x31])).unwrap();
     bus.until(Instant::now() + TICK).await;
@@ -366,7 +371,7 @@ async fn a_refused_start_keeps_a_peer_preamble_held_after_the_grace() {
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.data),
-        (FrameType::BACnetDataNotExpectingReply, vec![1, 0, 0x31])
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, vec![1, 0, 0x31])
     );
     assert!(sent.start >= heard + bus.turnaround);
     bus.until(sent.end + GRACE + TICK).await;

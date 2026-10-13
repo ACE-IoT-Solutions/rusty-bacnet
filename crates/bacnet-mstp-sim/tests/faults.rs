@@ -26,7 +26,8 @@ fn with_slave(reply: impl Fn(u8) -> ScriptSend + 'static) -> Sim {
     sim.add_master(MasterSpec::new(0, 3, BAUD))
         .add_master(MasterSpec::new(3, 3, BAUD))
         .add_scripted(40, move |frame: &SeenFrame, sends: &mut Vec<ScriptSend>| {
-            if frame.destination == 40 && frame.frame_type == FrameType::BACnetDataExpectingReply {
+            if frame.destination == 40 && frame.frame_type == FrameType::BACNET_DATA_EXPECTING_REPLY
+            {
                 sends.push(reply(frame.source));
             }
         })
@@ -37,7 +38,7 @@ fn with_slave(reply: impl Fn(u8) -> ScriptSend + 'static) -> Sim {
 fn request_and_next(frames: &[WireFrame]) -> (&WireFrame, &WireFrame, &WireFrame) {
     let index = frames
         .iter()
-        .position(|frame| frame.is(FrameType::BACnetDataExpectingReply, 0, 40))
+        .position(|frame| frame.is(FrameType::BACNET_DATA_EXPECTING_REPLY, 0, 40))
         .expect("the request");
     (&frames[index], &frames[index + 1], &frames[index + 2])
 }
@@ -50,7 +51,7 @@ fn an_invalid_reply_ends_the_wait_at_once() {
     let mut sim = with_slave(|to| {
         ScriptSend::frame(
             millis(2),
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             to,
             40,
             &REPLY,
@@ -60,7 +61,7 @@ fn an_invalid_reply_ends_the_wait_at_once() {
     sim.run_until(ms(2_000));
     let (request, reply, next) = request_and_next(sim.frames());
     assert_eq!(reply.driver, bacnet_mstp_sim::Driver::Station(40));
-    assert!(next.is(FrameType::Token, 0, 3), "{next}");
+    assert!(next.is(FrameType::TOKEN, 0, 3), "{next}");
     assert_eq!(next.start, reply.end + sim.timing().bits(40));
     assert!(next.start < request.end + millis(255));
     assert_eq!(sim.core(0).unwrap().counters().parser_errors, 1);
@@ -79,7 +80,7 @@ fn an_invalid_reply_header_still_passes_the_token() {
     let mut sim = with_slave(|to| {
         ScriptSend::frame(
             millis(2),
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             to,
             40,
             &REPLY,
@@ -88,7 +89,7 @@ fn an_invalid_reply_header_still_passes_the_token() {
     });
     sim.run_until(ms(2_500));
     let (_, reply, next) = request_and_next(sim.frames());
-    assert!(next.is(FrameType::Token, 0, 3), "{next}");
+    assert!(next.is(FrameType::TOKEN, 0, 3), "{next}");
     assert_eq!(next.start, reply.end + sim.timing().bits(40));
     let counters = sim.core(0).unwrap().counters();
     assert_eq!(counters.parser_errors, 1);
@@ -106,7 +107,7 @@ fn a_bad_data_crc_on_a_frame_for_someone_else_is_not_an_invalid_reply() {
     let mut sim = with_slave(|_| {
         ScriptSend::frame(
             millis(2),
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             3,
             40,
             &REPLY,
@@ -115,7 +116,7 @@ fn a_bad_data_crc_on_a_frame_for_someone_else_is_not_an_invalid_reply() {
     });
     sim.run_until(ms(2_000));
     let (_, reply, next) = request_and_next(sim.frames());
-    assert!(next.is(FrameType::Token, 0, 3), "{next}");
+    assert!(next.is(FrameType::TOKEN, 0, 3), "{next}");
     assert_eq!(next.start, reply.end + millis(255));
     assert_eq!(sim.core(0).unwrap().counters().parser_errors, 0);
     sim.assert_no_violations();
@@ -130,7 +131,7 @@ fn an_unexpected_frame_while_waiting_drops_the_token() {
     let mut sim = with_slave(|_| {
         ScriptSend::frame(
             millis(2),
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             0xFF,
             40,
             &REPLY,
@@ -138,8 +139,8 @@ fn an_unexpected_frame_while_waiting_drops_the_token() {
     });
     sim.run_until(ms(2_500));
     let (_, reply, next) = request_and_next(sim.frames());
-    assert!(reply.is(FrameType::BACnetDataNotExpectingReply, 40, 0xFF));
-    assert!(next.is(FrameType::PollForMaster, 0, 1), "{next}");
+    assert!(reply.is(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 40, 0xFF));
+    assert!(next.is(FrameType::POLL_FOR_MASTER, 0, 1), "{next}");
     assert!(next.generation);
     assert_eq!(next.start, reply.end + millis(500));
     sim.assert_no_violations();
@@ -152,7 +153,7 @@ fn with_poll_answer(answer: impl Fn(u8) -> ScriptSend + 'static) -> Sim {
     sim.add_master(MasterSpec::new(0, 7, BAUD)).add_scripted(
         2,
         move |frame: &SeenFrame, sends: &mut Vec<ScriptSend>| {
-            if frame.destination == 2 && frame.frame_type == FrameType::PollForMaster {
+            if frame.destination == 2 && frame.frame_type == FrameType::POLL_FOR_MASTER {
                 sends.push(answer(frame.source));
             }
         },
@@ -166,19 +167,19 @@ fn with_poll_answer(answer: impl Fn(u8) -> ScriptSend + 'static) -> Sim {
 #[test]
 fn an_invalid_answer_to_a_poll_moves_on_at_once() {
     let mut sim = with_poll_answer(|to| {
-        ScriptSend::frame(millis(1), FrameType::ReplyToPollForMaster, to, 2, &[])
+        ScriptSend::frame(millis(1), FrameType::REPLY_TO_POLL_FOR_MASTER, to, 2, &[])
             .corrupted(HEADER_CRC, 0x01)
     });
     sim.run_until(ms(700));
     let frames = sim.frames();
     let index = frames
         .iter()
-        .position(|frame| frame.is(FrameType::PollForMaster, 0, 2))
+        .position(|frame| frame.is(FrameType::POLL_FOR_MASTER, 0, 2))
         .expect("the poll of 2");
     let answer = &frames[index + 1];
     let next = &frames[index + 2];
     assert_eq!(answer.driver, bacnet_mstp_sim::Driver::Station(2));
-    assert!(next.is(FrameType::PollForMaster, 0, 3), "{next}");
+    assert!(next.is(FrameType::POLL_FOR_MASTER, 0, 3), "{next}");
     assert_eq!(next.start, answer.end + sim.timing().bits(40));
     sim.assert_no_violations();
 }
@@ -188,17 +189,17 @@ fn an_invalid_answer_to_a_poll_moves_on_at_once() {
 #[test]
 fn an_unexpected_answer_to_a_poll_drops_the_token() {
     let mut sim = with_poll_answer(|_| {
-        ScriptSend::frame(millis(1), FrameType::ReplyToPollForMaster, 5, 2, &[])
+        ScriptSend::frame(millis(1), FrameType::REPLY_TO_POLL_FOR_MASTER, 5, 2, &[])
     });
     sim.run_until(ms(1_500));
     let frames = sim.frames();
     let index = frames
         .iter()
-        .position(|frame| frame.is(FrameType::PollForMaster, 0, 2))
+        .position(|frame| frame.is(FrameType::POLL_FOR_MASTER, 0, 2))
         .expect("the poll of 2");
     let answer = &frames[index + 1];
     let next = &frames[index + 2];
-    assert!(next.is(FrameType::PollForMaster, 0, 1), "{next}");
+    assert!(next.is(FrameType::POLL_FOR_MASTER, 0, 1), "{next}");
     assert!(next.generation);
     assert_eq!(next.start, answer.end + millis(500));
     sim.assert_no_violations();
@@ -210,7 +211,7 @@ fn run_to_damaged_token(sim: &mut Sim, at: Instant) -> WireFrame {
         at,
         Fault::CorruptNext {
             station: 3,
-            frame_type: Some(FrameType::Token),
+            frame_type: Some(FrameType::TOKEN),
             offset: 3,
             corruption: Corruption::Xor(0x01),
         },
@@ -238,7 +239,7 @@ fn a_damaged_token_is_sent_again() {
     let damaged = run_to_damaged_token(&mut sim, ms(2_000));
     sim.run_until(ms(3_000));
     let again = first_after(sim.frames(), damaged.end, |_| true).expect("a frame after");
-    assert!(again.is(FrameType::Token, 3, 10), "{again}");
+    assert!(again.is(FrameType::TOKEN, 3, 10), "{again}");
     assert_eq!(again.start, damaged.end + millis(20));
     assert_eq!(sim.core(10).unwrap().counters().parser_errors, 1);
     sim.assert_no_violations();
@@ -269,10 +270,10 @@ fn noise_after_a_damaged_token_counts_as_the_successor_from_five_octets() {
         })
         .expect("a frame after the noise");
         if octets == 4 {
-            assert!(next.is(FrameType::Token, 3, 10), "{next}");
+            assert!(next.is(FrameType::TOKEN, 3, 10), "{next}");
             assert_eq!(next.start, noise_end + millis(20));
         } else {
-            assert!(next.is(FrameType::PollForMaster, 0, 1), "{next}");
+            assert!(next.is(FrameType::POLL_FOR_MASTER, 0, 1), "{next}");
             assert!(next.generation);
             assert_eq!(next.start, noise_end + millis(500));
         }
@@ -289,7 +290,7 @@ fn noise_after_a_damaged_token_counts_as_the_successor_from_five_octets() {
 fn noise_in_the_turnaround_only_delays_a_pending_frame() {
     let mut sim = ring(BAUD, &[0, 3, 10, 30], 31);
     let token = run_until_frame(&mut sim, ms(2_000), ms(3_000), |frame| {
-        frame.is(FrameType::Token, 0, 3)
+        frame.is(FrameType::TOKEN, 0, 3)
     });
     let noise_at = token + Duration::from_micros(300);
     sim.inject(noise_at, Fault::Noise { octets: vec![0x00] });
@@ -297,7 +298,7 @@ fn noise_in_the_turnaround_only_delays_a_pending_frame() {
     let noise_end = noise_at + sim.timing().octet();
     let next = first_after(sim.frames(), noise_end, |_| true).expect("a frame after");
     // Station 3's turn for a maintenance poll, which goes out late but whole.
-    assert!(next.is(FrameType::PollForMaster, 3, 7), "{next}");
+    assert!(next.is(FrameType::POLL_FOR_MASTER, 3, 7), "{next}");
     assert_eq!(next.start, noise_end + sim.timing().bits(40));
     assert_eq!(sim.core(3).unwrap().counters().cancelled_sends, 0);
     sim.assert_no_violations();

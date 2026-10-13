@@ -63,18 +63,18 @@ fn a_type_32_request_is_answered_with_a_type_33() {
     sim.run_until(ms(3_000));
     let frames = sim.frames();
     let index = position(frames, |frame| {
-        frame.is(FrameType::BACnetExtendedDataExpectingReply, 0, 3)
+        frame.is(FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY, 0, 3)
     });
     assert_eq!(frames[index].data, request);
     let reply = &frames[index + 1];
     assert!(
-        reply.is(FrameType::BACnetExtendedDataNotExpectingReply, 3, 0),
+        reply.is(FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY, 3, 0),
         "{reply}"
     );
     assert_eq!(reply.data, answer);
     assert_eq!(reply.start, frames[index].end + millis(5));
     let pass = &frames[index + 2];
-    assert!(pass.is(FrameType::Token, 0, 3), "{pass}");
+    assert!(pass.is(FrameType::TOKEN, 0, 3), "{pass}");
     assert_eq!(pass.start, reply.end + sim.timing().bits(40));
     assert!(sim
         .deliveries(3)
@@ -102,14 +102,17 @@ fn a_postponed_type_32_request_is_answered_later_with_a_type_33() {
     sim.run_until(ms(4_000));
     let frames = sim.frames();
     let index = position(frames, |frame| {
-        frame.is(FrameType::BACnetExtendedDataExpectingReply, 0, 3)
+        frame.is(FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY, 0, 3)
     });
     let postponed = &frames[index + 1];
-    assert!(postponed.is(FrameType::ReplyPostponed, 3, 0), "{postponed}");
+    assert!(
+        postponed.is(FrameType::REPLY_POSTPONED, 3, 0),
+        "{postponed}"
+    );
     assert_eq!(postponed.start, frames[index].end + millis(10));
-    assert!(frames[index + 2].is(FrameType::Token, 0, 3));
+    assert!(frames[index + 2].is(FrameType::TOKEN, 0, 3));
     let late = first_after(frames, postponed.end, |frame| {
-        frame.is(FrameType::BACnetExtendedDataNotExpectingReply, 3, 0)
+        frame.is(FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY, 3, 0)
     })
     .expect("the answer follows with a later token");
     assert_eq!(late.data, answer);
@@ -136,7 +139,7 @@ fn a_broadcast_type_33_reaches_every_capable_master() {
     let frames = sim.frames();
     let index = position(frames, |frame| {
         frame.is(
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             3,
             BROADCAST_MAC,
         )
@@ -223,7 +226,7 @@ fn a_master_without_extended_frames_counts_them_invalid_and_the_ring_is_unchange
         .frames()
         .iter()
         .filter(|frame| {
-            frame.frame_type() == Some(FrameType::BACnetExtendedDataNotExpectingReply)
+            frame.frame_type() == Some(FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY)
                 && matches!(frame.destination(), Some(5 | BROADCAST_MAC))
         })
         .count();
@@ -232,7 +235,7 @@ fn a_master_without_extended_frames_counts_them_invalid_and_the_ring_is_unchange
     let to_zero = sent_by(
         without.frames(),
         3,
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
     )
     .iter()
     .filter(|frame| frame.destination() == Some(0))
@@ -269,10 +272,10 @@ fn a_type_32_request_to_a_master_without_extended_frames_times_out() {
     sim.run_until(ms(3_000));
     let frames = sim.frames();
     let index = position(frames, |frame| {
-        frame.is(FrameType::BACnetExtendedDataExpectingReply, 0, 3)
+        frame.is(FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY, 0, 3)
     });
     let pass = &frames[index + 1];
-    assert!(pass.is(FrameType::Token, 0, 3), "{pass}");
+    assert!(pass.is(FrameType::TOKEN, 0, 3), "{pass}");
     assert_eq!(pass.start, frames[index].end + millis(255));
     assert_eq!(sim.core(3).unwrap().counters().parser_errors, 1);
     assert!(sim.deliveries(3).is_empty());

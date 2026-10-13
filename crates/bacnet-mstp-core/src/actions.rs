@@ -154,8 +154,8 @@ pub enum Action<'a> {
     /// broadcast one of a type that expects a reply: Clause 9.5.6.2 counts
     /// both as unwanted (ReceivedUnwantedFrame, cases (c) and (b)).
     DeliverFrame {
-        /// [`FrameType::TestResponse`], or a proprietary
-        /// [`FrameType::Unknown`] type.
+        /// [`FrameType::TEST_RESPONSE`], or a proprietary type (128-255),
+        /// which no [`FrameType`] constant names.
         frame_type: FrameType,
         /// Source MS/TP station.
         source: u8,
@@ -473,10 +473,10 @@ impl<'b, const NPDU: usize> ActionQueue<'b, NPDU> {
 pub(crate) const fn carries_npdu(frame_type: FrameType) -> bool {
     matches!(
         frame_type,
-        FrameType::BACnetDataExpectingReply
-            | FrameType::BACnetDataNotExpectingReply
-            | FrameType::BACnetExtendedDataExpectingReply
-            | FrameType::BACnetExtendedDataNotExpectingReply
+        FrameType::BACNET_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
     )
 }
 
@@ -494,7 +494,7 @@ fn wrap(index: usize, length: usize) -> usize {
 mod tests {
     use super::*;
 
-    const NPDU: FrameType = FrameType::BACnetDataNotExpectingReply;
+    const NPDU: FrameType = FrameType::BACNET_DATA_NOT_EXPECTING_REPLY;
 
     fn header(frame_type: FrameType, source: u8, destination: u8) -> FrameHeader {
         FrameHeader::new(frame_type, destination, source)
@@ -503,7 +503,7 @@ mod tests {
     /// Encode a one-octet test frame and queue it as transmit `id`.
     fn queue_frame(actions: &mut ActionQueue<'_, MAX_STANDARD_MPDU_DATA>, id: u32, octet: u8) {
         actions
-            .encode_frame(Frame::new(FrameType::TestRequest, 2, 1, &[octet]))
+            .encode_frame(Frame::new(FrameType::TEST_REQUEST, 2, 1, &[octet]))
             .unwrap();
         actions.queue_transmit(TransmitId::new(id));
     }
@@ -524,7 +524,7 @@ mod tests {
             .unwrap();
         queue_frame(&mut actions, 9, 0xA5);
         let request = Some(RequestId::new(7));
-        let expecting = FrameType::BACnetDataExpectingReply;
+        let expecting = FrameType::BACNET_DATA_EXPECTING_REPLY;
         actions
             .enqueue_delivery(header(expecting, 3, 4), &[2], request)
             .unwrap();
@@ -594,9 +594,9 @@ mod tests {
     fn whole_frames_go_up_as_frames() {
         let mut buffers = ActionBuffers::<2>::new();
         let mut actions = ActionQueue::new(&mut buffers);
-        let proprietary = FrameType::Unknown(0x80);
+        let proprietary = FrameType::from_raw(0x80);
         actions
-            .enqueue_delivery(header(FrameType::TestResponse, 5, 1), &[9, 9], None)
+            .enqueue_delivery(header(FrameType::TEST_RESPONSE, 5, 1), &[9, 9], None)
             .unwrap();
         actions
             .enqueue_delivery(header(proprietary, 6, 0xFF), &[0x01, 0x04, 3], None)
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(
             actions.poll(),
             Action::DeliverFrame {
-                frame_type: FrameType::TestResponse,
+                frame_type: FrameType::TEST_RESPONSE,
                 source: 5,
                 destination: 1,
                 data: &[9, 9],

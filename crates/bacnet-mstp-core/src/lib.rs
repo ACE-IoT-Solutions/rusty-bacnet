@@ -6,9 +6,9 @@
 //!
 //! Time is an [`Instant`] in nanoseconds from an epoch the caller chooses,
 //! with a [`Duration`] for lengths: `bacnet-time`'s types, re-exported here.
-//! `bacnet-bip-core` takes the same ones, so firmware that runs both feeds
-//! them one clock. A microsecond tick becomes an instant with
-//! [`Instant::from_micros`].
+//! `bacnet-bip-core` and `bacnet-router-core` take the same ones, so firmware
+//! that runs several of them feeds them one clock. A microsecond tick becomes
+//! an instant with [`Instant::from_micros`].
 //!
 //! # The adapter's side
 //!

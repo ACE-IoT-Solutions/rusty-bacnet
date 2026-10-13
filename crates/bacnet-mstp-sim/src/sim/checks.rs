@@ -220,14 +220,14 @@ impl Sim {
         if header.destination != station
             || !matches!(
                 header.frame_type,
-                FrameType::Token | FrameType::PollForMaster
+                FrameType::TOKEN | FrameType::POLL_FOR_MASTER
             )
         {
             return;
         }
-        let answering_poll = header.frame_type == FrameType::PollForMaster;
+        let answering_poll = header.frame_type == FrameType::POLL_FOR_MASTER;
         let sends_reply = super::decode_whole(&pending.octets)
-            .is_some_and(|(header, _)| header.frame_type == FrameType::ReplyToPollForMaster);
+            .is_some_and(|(header, _)| header.frame_type == FrameType::REPLY_TO_POLL_FOR_MASTER);
         if answering_poll && !sends_reply {
             return;
         }
@@ -323,7 +323,7 @@ mod tests {
 
     fn token(from: u8, to: u8) -> Vec<u8> {
         let mut wire = [0u8; 8];
-        Frame::new(FrameType::Token, to, from, &[])
+        Frame::new(FrameType::TOKEN, to, from, &[])
             .encode_into(&mut wire)
             .expect("a Token encodes");
         wire.to_vec()

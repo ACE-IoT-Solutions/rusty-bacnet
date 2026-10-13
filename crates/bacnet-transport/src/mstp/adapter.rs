@@ -211,17 +211,18 @@ impl SentKind {
     fn of(frame: &[u8], answering: bool) -> Self {
         match frame.get(2).copied().map(FrameType::from_raw) {
             Some(
-                FrameType::BACnetDataExpectingReply | FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_DATA_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
             ) => Self::DataExpectingReply,
             Some(
-                FrameType::BACnetDataNotExpectingReply
-                | FrameType::BACnetExtendedDataNotExpectingReply,
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             ) if answering => Self::DirectAnswer,
             Some(
-                FrameType::BACnetDataNotExpectingReply
-                | FrameType::BACnetExtendedDataNotExpectingReply,
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             ) => Self::QueuedData,
-            Some(FrameType::ReplyPostponed) => Self::ReplyPostponed,
+            Some(FrameType::REPLY_POSTPONED) => Self::ReplyPostponed,
             _ => Self::Other,
         }
     }

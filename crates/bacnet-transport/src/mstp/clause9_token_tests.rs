@@ -31,7 +31,7 @@ async fn u1_maintenance_poll_follows_npoll_token_passes() {
         token = bus.next().await;
         assert_eq!(
             (token.frame_type, token.destination),
-            (FrameType::Token, 5),
+            (FrameType::TOKEN, 5),
             "token use {pass} must pass the token"
         );
     }
@@ -39,12 +39,12 @@ async fn u1_maintenance_poll_follows_npoll_token_passes() {
     let poll = bus.next().await;
     assert_eq!(
         (poll.frame_type, poll.destination),
-        (FrameType::PollForMaster, 4),
+        (FrameType::POLL_FOR_MASTER, 4),
         "the 51st token use polls the gap"
     );
     // Nobody answers: DoneWithPFM passes the token to the known successor.
     let token = bus.next().await;
-    assert_eq!((token.frame_type, token.destination), (FrameType::Token, 5));
+    assert_eq!((token.frame_type, token.destination), (FrameType::TOKEN, 5));
     assert!(token.start >= poll.end + T_USAGE_TIMEOUT);
     bus.stop().await;
 }
@@ -58,18 +58,18 @@ async fn u1_maintenance_poll_follows_npoll_token_passes() {
 #[tokio::test(start_paused = true)]
 async fn u2_poll_for_master_waits_the_usage_timeout() {
     let mut bus = Bus::start(config(3, 7)).await;
-    bus.send(FrameType::Token, 3, 6, &[]);
+    bus.send(FrameType::TOKEN, 3, 6, &[]);
 
     // No answer from 4: the next poll comes T_usage_timeout after the first.
     let first = bus.next().await;
     assert_eq!(
         (first.frame_type, first.destination),
-        (FrameType::PollForMaster, 4)
+        (FrameType::POLL_FOR_MASTER, 4)
     );
     let second = bus.next().await;
     assert_eq!(
         (second.frame_type, second.destination),
-        (FrameType::PollForMaster, 5)
+        (FrameType::POLL_FOR_MASTER, 5)
     );
     assert!(
         second.start >= first.end + T_USAGE_TIMEOUT,
@@ -79,11 +79,11 @@ async fn u2_poll_for_master_waits_the_usage_timeout() {
 
     // Station 5 answers as late as T_usage_delay allows.
     bus.until(second.end + T_USAGE_DELAY).await;
-    let answered = bus.send(FrameType::ReplyToPollForMaster, 3, 5, &[]);
+    let answered = bus.send(FrameType::REPLY_TO_POLL_FOR_MASTER, 3, 5, &[]);
     let token = bus.next().await;
     assert_eq!(
         (token.frame_type, token.destination),
-        (FrameType::Token, 5),
+        (FrameType::TOKEN, 5),
         "a lawful late answer names the successor"
     );
     assert!(token.start >= answered + bus.turnaround);
@@ -104,7 +104,7 @@ async fn u5_token_generation_uses_the_stations_own_slot() {
         let slot = started + T_NO_TOKEN + T_SLOT * u32::from(station);
         assert_eq!(
             poll.frame_type,
-            FrameType::PollForMaster,
+            FrameType::POLL_FOR_MASTER,
             "station {station}"
         );
         assert_eq!(poll.destination, (station + 1) % 8);
@@ -133,7 +133,7 @@ async fn u5_traffic_in_no_token_returns_to_idle() {
         .await;
     let transitions = || bus.transport.diagnostics().snapshot().mac.state_transitions;
     assert_eq!(transitions(), 1, "IDLE to NO_TOKEN");
-    let heard = bus.send(FrameType::BACnetDataNotExpectingReply, 2, 1, &[1, 0, 9]);
+    let heard = bus.send(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 2, 1, &[1, 0, 9]);
     tokio::time::sleep(TICK).await;
     assert_eq!(
         transitions(),
@@ -141,7 +141,7 @@ async fn u5_traffic_in_no_token_returns_to_idle() {
         "the frame did not send NO_TOKEN back to IDLE"
     );
     let poll = bus.next().await;
-    assert_eq!(poll.frame_type, FrameType::PollForMaster);
+    assert_eq!(poll.frame_type, FrameType::POLL_FOR_MASTER);
     let slot = heard + T_NO_TOKEN + T_SLOT * 3;
     assert!(
         poll.start >= slot,

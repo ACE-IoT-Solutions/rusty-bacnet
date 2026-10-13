@@ -93,8 +93,8 @@ impl Checker<'_> {
     fn start_holder(&mut self, handover: &super::Handover) {
         let frame = &handover.frame;
         let checked = match frame.frame_type {
-            FrameType::Token => self.token(frame, self.now).map(|_| 0),
-            FrameType::PollForMaster => self.poll(frame, self.now, handover.ps).and_then(|_| {
+            FrameType::TOKEN => self.token(frame, self.now).map(|_| 0),
+            FrameType::POLL_FOR_MASTER => self.poll(frame, self.now, handover.ps).and_then(|_| {
                 let Custody::Holding(hold) = &self.custody else {
                     unreachable!("a holder's poll was permitted");
                 };
@@ -109,12 +109,12 @@ impl Checker<'_> {
             unreachable!("a holder's frame was permitted");
         };
         match frame.frame_type {
-            FrameType::Token => {
+            FrameType::TOKEN => {
                 hold.last_poll = None;
                 self.sole = false;
                 self.ns = Some(frame.destination);
             }
-            FrameType::PollForMaster => {
+            FrameType::POLL_FOR_MASTER => {
                 hold.last_poll = Some(frame.destination);
                 hold.sweep = sweep;
             }
@@ -165,7 +165,7 @@ impl Checker<'_> {
                 });
             }
             Role::Holder | Role::FindSuccessor | Role::Generate => {
-                if frame.frame_type == FrameType::Token {
+                if frame.frame_type == FrameType::TOKEN {
                     self.custody = Custody::Passed(Pass {
                         to: frame.destination,
                         retried: false,
@@ -176,7 +176,7 @@ impl Checker<'_> {
                 let Custody::Holding(hold) = &mut self.custody else {
                     self.fail("a holder's frame completed after it lost the token");
                 };
-                hold.after = if frame.frame_type == FrameType::PollForMaster {
+                hold.after = if frame.frame_type == FrameType::POLL_FOR_MASTER {
                     After::Poll {
                         to: frame.destination,
                         moved: false,

@@ -1,7 +1,8 @@
 //! Integration tests for the incremental MS/TP stream decoder.
 
+use bacnet_mstp_codec::crc::{crc16, crc8};
 use bacnet_mstp_codec::{
-    crc16, crc8, DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase,
+    DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase,
     MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH, PREAMBLE,
 };
 use proptest::prelude::*;
@@ -33,7 +34,7 @@ fn drain(decoder: &mut StreamDecoder<'_>) -> Vec<(FrameType, u8, u8)> {
 
 #[test]
 fn stream_resync_and_bad_data_crc_discard() {
-    let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &[1, 2]);
+    let frame = Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0, 7, &[1, 2]);
     let mut wire = encode(frame);
     let used = wire.len();
     wire[used - 1] ^= 0x80;
@@ -70,7 +71,7 @@ fn stream_phase_excludes_retained_resynchronization_noise() {
     assert_eq!(decoder.phase(), StreamPhase::Header);
 
     let mut encoded = encode(Frame::new(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         1,
         2,
         &[9],
@@ -90,8 +91,8 @@ fn stream_phase_excludes_retained_resynchronization_noise() {
 
 #[test]
 fn stream_retains_suffix_after_two_frames_in_one_slice() {
-    let mut wire = encode(Frame::new(FrameType::Token, 0, 7, &[]));
-    wire.extend(encode(Frame::new(FrameType::PollForMaster, 7, 0, &[])));
+    let mut wire = encode(Frame::new(FrameType::TOKEN, 0, 7, &[]));
+    wire.extend(encode(Frame::new(FrameType::POLL_FOR_MASTER, 7, 0, &[])));
     let mut storage = [0u8; 16];
     let mut decoder = StreamDecoder::new(&mut storage);
     assert!(matches!(
@@ -110,7 +111,7 @@ fn stream_retains_suffix_after_two_frames_in_one_slice() {
 
 #[test]
 fn stream_exhaustion_preserves_state_and_recovers() {
-    let wire = encode(Frame::new(FrameType::Token, 0, 7, &[]));
+    let wire = encode(Frame::new(FrameType::TOKEN, 0, 7, &[]));
     let mut storage = [0u8; 8];
     let mut decoder = StreamDecoder::new(&mut storage);
     assert_eq!(
@@ -131,7 +132,7 @@ fn stream_exhaustion_preserves_state_and_recovers() {
 /// not totals, and leaves what was buffered alone.
 #[test]
 fn refused_slice_reports_its_length_and_the_free_room() {
-    let wire = encode(Frame::new(FrameType::TestRequest, 1, 2, &[0xAB; 6]));
+    let wire = encode(Frame::new(FrameType::TEST_REQUEST, 1, 2, &[0xAB; 6]));
     assert_eq!(wire.len(), 16);
     let mut storage = [0u8; 20];
     let mut decoder = StreamDecoder::new(&mut storage);
@@ -155,7 +156,7 @@ fn refused_slice_reports_its_length_and_the_free_room() {
 /// frame is not delivered again.
 #[test]
 fn refused_slice_after_a_delivered_frame_counts_the_frame_as_committed() {
-    let token = encode(Frame::new(FrameType::Token, 1, 2, &[]));
+    let token = encode(Frame::new(FrameType::TOKEN, 1, 2, &[]));
     let mut wire = token.clone();
     wire.extend_from_slice(&token[..4]);
     let mut storage = [0u8; 16];
@@ -186,7 +187,7 @@ fn refused_slice_after_a_delivered_frame_counts_the_frame_as_committed() {
 #[test]
 fn storage_of_exactly_one_frame_decodes_it() {
     let wire = encode(Frame::new(
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         9,
         8,
         &[0x01, 0x04, 0x00, 0x05],
@@ -222,9 +223,9 @@ fn frames_behind_others_in_one_push_decode_where_they_lie() {
     let extended: Vec<u8> = (0..600u16).map(|index| (index % 7) as u8).collect();
     let mut stream = vec![0x00];
     for frame in [
-        Frame::new(FrameType::BACnetDataNotExpectingReply, 1, 2, &standard),
+        Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 1, 2, &standard),
         Frame::new(
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             3,
             2,
             &extended,
@@ -235,7 +236,7 @@ fn frames_behind_others_in_one_push_decode_where_they_lie() {
         stream.extend_from_slice(&wire[..used]);
     }
     let mut bad = encode(Frame::new(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         5,
         2,
         &[1, 2, 3],
@@ -301,7 +302,7 @@ fn a_frame_behind_dropped_octets_moves_to_the_front_intact() {
     for length in [1, 2, 7, 40, 200, 501] {
         let data: Vec<u8> = (0..length).map(|index| (index * 13 + 5) as u8).collect();
         let wire = encode(Frame::new(
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             4,
             3,
             &data,
@@ -375,7 +376,7 @@ fn malformed_candidates_carry_a_trusted_destination() {
     assert_eq!(drain(&mut decoder), []);
 
     // A bad header CRC: the destination octet can't be trusted.
-    let mut bad = encode(Frame::new(FrameType::Token, 5, 1, &[]));
+    let mut bad = encode(Frame::new(FrameType::TOKEN, 5, 1, &[]));
     bad[7] ^= 0xFF;
     assert_eq!(
         decoder.push_slice(&bad),
@@ -394,13 +395,13 @@ fn malformed_candidates_carry_a_trusted_destination() {
 #[test]
 fn frame_longer_than_storage_is_reported_once_then_decoding_resumes() {
     let long = encode(Frame::new(
-        FrameType::TestRequest,
+        FrameType::TEST_REQUEST,
         1,
         2,
         &[0x11, 0x22, 0x33],
     ));
     assert_eq!(long.len(), 13);
-    let token = encode(Frame::new(FrameType::Token, 4, 3, &[]));
+    let token = encode(Frame::new(FrameType::TOKEN, 4, 3, &[]));
     let mut storage = [0u8; 12];
     let mut decoder = StreamDecoder::new(&mut storage);
 
@@ -429,7 +430,7 @@ fn frame_longer_than_storage_is_reported_once_then_decoding_resumes() {
     }
     frames.extend(drain(&mut decoder));
     assert_eq!(too_long, 1);
-    assert_eq!(frames, [(FrameType::Token, 4, 3)]);
+    assert_eq!(frames, [(FrameType::TOKEN, 4, 3)]);
 
     // The same storage still takes a frame that fits.
     decoder.reset();
@@ -444,7 +445,7 @@ fn frame_longer_than_storage_is_reported_once_then_decoding_resumes() {
 #[test]
 fn full_storage_with_an_unfinishable_frame_recovers() {
     let long = encode(Frame::new(
-        FrameType::TestRequest,
+        FrameType::TEST_REQUEST,
         1,
         2,
         &[0x11, 0x22, 0x33],
@@ -472,7 +473,7 @@ fn full_storage_with_an_unfinishable_frame_recovers() {
 /// wedge either.
 #[test]
 fn storage_smaller_than_a_header_reports_and_resynchronizes() {
-    let token = encode(Frame::new(FrameType::Token, 4, 3, &[]));
+    let token = encode(Frame::new(FrameType::TOKEN, 4, 3, &[]));
     let mut storage = [0u8; 4];
     let mut decoder = StreamDecoder::new(&mut storage);
     let mut reports = 0;
@@ -533,7 +534,7 @@ proptest! {
         garbage in prop::collection::vec(0u8..=0x54, 0..64),
         payload in prop::collection::vec(any::<u8>(), 0..64),
     ) {
-        let wire = encode(Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &payload));
+        let wire = encode(Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0, 7, &payload));
         let used = wire.len();
         let mut storage = [0u8; MAX_STANDARD_FRAME_LENGTH];
         let mut decoder = StreamDecoder::new(&mut storage);
@@ -559,7 +560,7 @@ proptest! {
         capacity in 1usize..64,
         noise in prop::collection::vec(any::<u8>(), 0..128),
     ) {
-        let token = encode(Frame::new(FrameType::Token, 4, 3, &[]));
+        let token = encode(Frame::new(FrameType::TOKEN, 4, 3, &[]));
         let mut storage = vec![0u8; capacity];
         let mut decoder = StreamDecoder::new(&mut storage);
         for &byte in noise.iter().chain(&token) {

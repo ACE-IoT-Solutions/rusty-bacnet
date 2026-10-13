@@ -3,8 +3,8 @@
 The time the portable cores of
 [rusty-bacnet](https://github.com/jscott3201/rusty-bacnet) share: a monotonic
 `Instant` and a `Duration`, both counted in nanoseconds on a `u64`.
-`bacnet-mstp-core` and `bacnet-bip-core` take it, so firmware that runs both
-feeds them one clock.
+`bacnet-mstp-core`, `bacnet-bip-core` and `bacnet-router-core` take it, so
+firmware that runs several of them feeds them one clock.
 
 - `#![no_std]`, no allocator, no dependencies, no features.
 - The epoch is yours: the cores read no clock, and each call that depends on

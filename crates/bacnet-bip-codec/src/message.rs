@@ -213,6 +213,7 @@ pub enum Bvll<'a> {
 
 impl<'a> Bvll<'a> {
     /// The message's function code.
+    #[must_use]
     pub const fn function(&self) -> BvlcFunction {
         match self {
             Self::BvlcResult(_) => BvlcFunction::BVLC_RESULT,
@@ -237,6 +238,7 @@ impl<'a> Bvll<'a> {
     }
 
     /// The NPDU, for the four functions that carry one.
+    #[must_use]
     pub const fn npdu(&self) -> Option<&'a [u8]> {
         match *self {
             Self::ForwardedNpdu { npdu, .. }
@@ -248,6 +250,7 @@ impl<'a> Bvll<'a> {
     }
 
     /// A Forwarded-NPDU's originating address.
+    #[must_use]
     pub const fn origin(&self) -> Option<SocketAddrV4> {
         match *self {
             Self::ForwardedNpdu { origin, .. } => Some(origin),

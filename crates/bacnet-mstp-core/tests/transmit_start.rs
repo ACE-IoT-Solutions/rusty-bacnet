@@ -27,7 +27,7 @@ fn a_frame_heard_before_the_confirmed_start_is_received() {
     core.on_deadline(handed).unwrap();
     let (id, _) = handed_over(&mut core);
     let frame = encode(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         BROADCAST_MAC,
         3,
         &[1, 0, 7],
@@ -51,7 +51,7 @@ fn a_frame_heard_before_the_confirmed_start_is_received() {
     core.on_deadline(due).unwrap();
     let (again, header) = handed_over(&mut core);
     assert_ne!(again, id);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     assert_eq!(
         core.on_transmit_started(id, due),
         Err(CoreError::StaleTransmit)
@@ -127,7 +127,7 @@ fn input_after_the_confirmed_start_is_echo() {
     let (id, _) = handed_over(&mut core);
     core.on_transmit_started(id, due).unwrap();
     let before = (core.counters(), core.state(), core.next_deadline());
-    let echo = encode(FrameType::Token, PEER, STATION, &[]);
+    let echo = encode(FrameType::TOKEN, PEER, STATION, &[]);
     let last = feed(&mut core, &echo, due + us(100));
     for step in 1..=5 {
         core.on_receive_error(ReceiveError::Framing, last + us(step))
@@ -157,7 +157,7 @@ fn a_reply_handed_over_waits_within_its_window() {
         let mut core = new_core(&mut rx, &mut actions);
         validated(
             &mut core,
-            FrameType::BACnetDataExpectingReply,
+            FrameType::BACNET_DATA_EXPECTING_REPLY,
             STATION,
             7,
             &[1, 4],
@@ -175,7 +175,7 @@ fn a_reply_handed_over_waits_within_its_window() {
         let handed = core.next_deadline().unwrap();
         core.on_deadline(handed).unwrap();
         let (id, header) = handed_over(&mut core);
-        assert!(is(header, FrameType::BACnetDataNotExpectingReply, 7));
+        assert!(is(header, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 7));
         core.on_octet(0x00, activity).unwrap();
         if activity == give_up {
             assert_eq!(core.counters().expired_requests, 1);
@@ -231,11 +231,18 @@ fn an_aborted_unstarted_answer_counts_as_expired() {
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
-    validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
+    validated(
+        &mut core,
+        FrameType::POLL_FOR_MASTER,
+        STATION,
+        7,
+        &[],
+        ms(1),
+    );
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
     let (id, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::ReplyToPollForMaster, 7));
+    assert!(is(header, FrameType::REPLY_TO_POLL_FOR_MASTER, 7));
     core.on_transmit_aborted(id, TransmitFailure::Io, due)
         .unwrap();
     expect_receive_only(&mut core);

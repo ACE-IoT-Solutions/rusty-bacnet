@@ -29,7 +29,7 @@ fn an_adapter_that_falls_behind_never_costs_a_dequeued_npdu() {
     let mut now = ms(10);
     for _ in 0..CYCLES {
         enqueue(&mut core, false, now);
-        validated(&mut core, FrameType::Token, STATION, PEER, &[], now);
+        validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], now);
         let handed = core.next_deadline().unwrap();
         core.on_deadline(handed).unwrap();
         assert!(core.snapshot().transmit_id.is_some());
@@ -46,9 +46,9 @@ fn an_adapter_that_falls_behind_never_costs_a_dequeued_npdu() {
     expect_receive_only(&mut core);
 
     enqueue(&mut core, false, now);
-    validated(&mut core, FrameType::Token, STATION, PEER, &[], now);
+    validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], now);
     let (_, header) = send_next(&mut core);
-    assert!(is(header, FrameType::BACnetDataNotExpectingReply, PEER));
+    assert!(is(header, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, PEER));
     let counters = core.counters();
     assert_eq!(counters.unicast.dequeued, CYCLES + 1);
     assert_eq!(counters.frames_transmitted, 1);
@@ -95,15 +95,15 @@ fn full_delivery_slots_drop_data_but_never_controls() {
     let mut rx = [0; 64];
     let mut actions = ActionBuffers::<1>::new();
     let mut core = new_core(&mut rx, &mut actions);
-    let broadcast = FrameType::BACnetDataNotExpectingReply;
+    let broadcast = FrameType::BACNET_DATA_NOT_EXPECTING_REPLY;
     validated(&mut core, broadcast, BROADCAST_MAC, 3, &[1, 0, 1], ms(10));
     validated(&mut core, broadcast, BROADCAST_MAC, 3, &[1, 0, 2], ms(15));
     assert_eq!(core.counters().delivery_drops, 1);
-    validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(20));
+    validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], ms(20));
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
     let (_, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     assert!(matches!(
         core.poll_action(),
         Action::DeliverNpdu {
@@ -122,14 +122,14 @@ fn a_request_that_finds_no_slot_is_postponed() {
     let mut rx = [0; 64];
     let mut actions = ActionBuffers::<1>::new();
     let mut core = new_core(&mut rx, &mut actions);
-    let broadcast = FrameType::BACnetDataNotExpectingReply;
+    let broadcast = FrameType::BACNET_DATA_NOT_EXPECTING_REPLY;
     validated(&mut core, broadcast, BROADCAST_MAC, 3, &[1, 0, 1], ms(10));
-    let request = FrameType::BACnetDataExpectingReply;
+    let request = FrameType::BACNET_DATA_EXPECTING_REPLY;
     validated(&mut core, request, STATION, PEER, &[1, 4, 7], ms(15));
     assert_eq!(core.counters().delivery_drops, 1);
     assert_eq!(core.snapshot().request_id, None);
     let (_, header) = send_next(&mut core);
-    assert!(is(header, FrameType::ReplyPostponed, PEER));
+    assert!(is(header, FrameType::REPLY_POSTPONED, PEER));
 }
 
 /// The core can borrow its queues, as firmware keeping them in a static

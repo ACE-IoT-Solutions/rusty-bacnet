@@ -232,7 +232,7 @@ fn mstp_delivery_becomes_bip_original_unicast_with_reply_postponed() {
 
     let mut request = routed(40, BIP_NET, &mac(DEVICE_44));
     request[1] |= 0x04;
-    let frame = MstpFrame::new(FrameType::BACnetDataExpectingReply, STATION, 7, &request);
+    let frame = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &request);
     core.on_validated_frame(frame, now).unwrap();
     let (id, received) = match core.poll_action() {
         Action::DeliverNpdu {
@@ -273,7 +273,7 @@ fn mstp_delivery_becomes_bip_original_unicast_with_reply_postponed() {
     let answer = next_frame(&mut core, now).unwrap();
     assert_eq!(
         (answer.frame_type, answer.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
 }
 

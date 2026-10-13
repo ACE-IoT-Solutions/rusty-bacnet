@@ -34,7 +34,7 @@ async fn an_echoing_port_does_not_hear_its_own_token_as_the_successor() {
     let mut bus = Bus::start_with(config(3, 4), ECHOING).await;
     let token = bus.join(4).await;
     let retry = bus.next().await;
-    assert_eq!((retry.frame_type, retry.destination), (FrameType::Token, 4));
+    assert_eq!((retry.frame_type, retry.destination), (FrameType::TOKEN, 4));
     assert!(retry.start >= token.end + T_USAGE_TIMEOUT);
     assert!(retry.start <= token.end + T_USAGE_TIMEOUT + TICK);
     let counts = bus.transport.diagnostics().snapshot();
@@ -51,19 +51,19 @@ async fn an_echoing_port_does_not_hear_its_own_token_as_the_successor() {
 async fn octets_after_the_echo_in_one_read_are_line_activity() {
     let mut bus = Bus::start_with(config(3, 4), SCRIPTED_ECHO).await;
     // Joining: echo each poll and the Token by hand.
-    bus.send(FrameType::Token, 3, 4, &[]);
+    bus.send(FrameType::TOKEN, 3, 4, &[]);
     let poll = bus.next().await;
     assert_eq!(poll.destination, 4);
     let mut chunk = encode(poll.frame_type, poll.destination, poll.source, &[]);
-    chunk.extend(encode(FrameType::ReplyToPollForMaster, 3, 4, &[]));
+    chunk.extend(encode(FrameType::REPLY_TO_POLL_FOR_MASTER, 3, 4, &[]));
     bus.send_raw(&chunk);
     let token = bus.next().await;
-    assert_eq!((token.frame_type, token.destination), (FrameType::Token, 4));
-    let mut chunk = encode(FrameType::Token, 4, 3, &[]);
-    chunk.extend(encode(FrameType::Token, 3, 4, &[]));
+    assert_eq!((token.frame_type, token.destination), (FrameType::TOKEN, 4));
+    let mut chunk = encode(FrameType::TOKEN, 4, 3, &[]);
+    chunk.extend(encode(FrameType::TOKEN, 3, 4, &[]));
     bus.send_raw(&chunk);
     let again = bus.next().await;
-    assert_eq!((again.frame_type, again.destination), (FrameType::Token, 4));
+    assert_eq!((again.frame_type, again.destination), (FrameType::TOKEN, 4));
     assert!(
         again.start < token.end + T_USAGE_TIMEOUT,
         "a retry: {again:?}"
@@ -84,7 +84,7 @@ async fn octets_after_the_echo_in_one_read_are_line_activity() {
 #[tokio::test(start_paused = true)]
 async fn a_corrupted_echo_is_fed_and_counted() {
     let mut bus = Bus::start_with(config(3, 4), SCRIPTED_ECHO).await;
-    bus.send(FrameType::Token, 3, 4, &[]);
+    bus.send(FrameType::TOKEN, 3, 4, &[]);
     let poll = bus.next().await;
     let mut echo = encode(poll.frame_type, poll.destination, poll.source, &[]);
     echo[4] ^= 0x40;
@@ -93,7 +93,7 @@ async fn a_corrupted_echo_is_fed_and_counted() {
     let next = bus.next().await;
     assert_eq!(
         (next.frame_type, next.destination),
-        (FrameType::PollForMaster, 0)
+        (FrameType::POLL_FOR_MASTER, 0)
     );
     assert!(next.start >= heard + bus.turnaround);
     assert!(next.start < poll.end + T_USAGE_TIMEOUT, "{next:?}");
@@ -111,10 +111,10 @@ async fn a_corrupted_echo_is_fed_and_counted() {
 #[tokio::test(start_paused = true)]
 async fn a_missing_echo_is_counted_after_the_grace() {
     let mut bus = Bus::start_with(config(3, 4), SCRIPTED_ECHO).await;
-    bus.send(FrameType::Token, 3, 4, &[]);
+    bus.send(FrameType::TOKEN, 3, 4, &[]);
     let poll = bus.next().await;
     let next = bus.next().await;
-    assert_eq!(next.frame_type, FrameType::PollForMaster);
+    assert_eq!(next.frame_type, FrameType::POLL_FOR_MASTER);
     assert!(next.start >= poll.end + super::DEFAULT_ECHO_GRACE);
     let counts = bus.transport.diagnostics().snapshot();
     assert!(counts.echo_missing >= 1);
@@ -155,7 +155,7 @@ async fn loopback_with_echo_polls_on_past_its_own_echo() {
         let (frame, _) = decode_frame(&buf[..count]).unwrap();
         assert_eq!(
             (frame.header.frame_type, frame.header.destination),
-            (FrameType::PollForMaster, destination)
+            (FrameType::POLL_FOR_MASTER, destination)
         );
     }
     let counts = transport.diagnostics().snapshot();

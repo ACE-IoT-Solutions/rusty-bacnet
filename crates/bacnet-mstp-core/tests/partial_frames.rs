@@ -29,7 +29,7 @@ fn a_partial_frame_dies_when_a_poll_starts() {
     assert_eq!(core.next_deadline(), Some(due));
     core.on_deadline(due).unwrap();
     let (id, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     core.on_transmit_started(id, due).unwrap();
 
     // Where the partial frame's abort would have fallen, mid-poll.
@@ -61,10 +61,10 @@ fn a_partial_frame_does_not_end_the_wait_for_a_reply() {
     let mut actions = Actions::new();
     let mut core = Core::new(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     enqueue(&mut core, true, ms(1));
-    validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
+    validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
     let last = feed(&mut core, &PARTIAL, ms(11));
     let (start, header) = send_next(&mut core);
-    assert!(is(header, FrameType::BACnetDataExpectingReply, PEER));
+    assert!(is(header, FrameType::BACNET_DATA_EXPECTING_REPLY, PEER));
     assert_eq!(start, last + turnaround(&core));
     assert_eq!(core.state(), MasterState::WaitForReply);
     let complete = start + Duration::from_millis(1);

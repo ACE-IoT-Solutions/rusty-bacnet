@@ -247,20 +247,20 @@ impl Bus {
     /// give it the token, let it poll up to `peer`, answer as `peer`, and
     /// take the token it passes. Returns that Token.
     pub(super) async fn join(&mut self, peer: u8) -> Sent {
-        self.send(FrameType::Token, self.station, peer, &[]);
+        self.send(FrameType::TOKEN, self.station, peer, &[]);
         loop {
             let poll = self.next().await;
-            assert_eq!(poll.frame_type, FrameType::PollForMaster, "{poll:?}");
+            assert_eq!(poll.frame_type, FrameType::POLL_FOR_MASTER, "{poll:?}");
             if poll.destination == peer {
                 self.until(poll.end + self.turnaround).await;
-                self.send(FrameType::ReplyToPollForMaster, self.station, peer, &[]);
+                self.send(FrameType::REPLY_TO_POLL_FOR_MASTER, self.station, peer, &[]);
                 break;
             }
         }
         let token = self.next().await;
         assert_eq!(
             (token.frame_type, token.destination),
-            (FrameType::Token, peer),
+            (FrameType::TOKEN, peer),
             "{token:?}"
         );
         token
@@ -270,7 +270,7 @@ impl Bus {
     /// T_turnaround, which shows the station its successor took it.
     pub(super) async fn return_token(&mut self, token: &Sent, peer: u8) -> Instant {
         self.until(token.end + self.turnaround).await;
-        self.send(FrameType::Token, self.station, peer, &[])
+        self.send(FrameType::TOKEN, self.station, peer, &[])
     }
 
     /// Stop the station.

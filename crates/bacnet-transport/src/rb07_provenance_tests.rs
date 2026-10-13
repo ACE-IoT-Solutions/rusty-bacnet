@@ -98,7 +98,7 @@ async fn mstp_frame_path_yields_unverified() {
     let mut rx = transport.start().await.unwrap();
     let mut wire = Vec::new();
     Frame::new(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         3,
         7,
         &[0x01, 0x00, 0x30],

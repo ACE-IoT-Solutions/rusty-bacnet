@@ -23,7 +23,7 @@ fn config() -> MstpCoreConfig {
 fn queue_a_transmit(core: &mut MasterCore<'_, Queues>) -> Instant {
     core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
-    core.on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), Instant::ZERO)
+    core.on_validated_frame(Frame::new(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
         .unwrap();
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();

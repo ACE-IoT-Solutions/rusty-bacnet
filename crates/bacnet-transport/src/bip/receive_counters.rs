@@ -137,7 +137,8 @@ impl DropReason {
     /// Why a datagram failed to decode, in its header
     /// ([`BvllFrame::decode`](bacnet_bip_codec::BvllFrame::decode)) or its
     /// payload ([`BvllFrame::message`](bacnet_bip_codec::BvllFrame::message)).
-    /// Every error is named, so a new one has to be filed here.
+    /// Every error the codec has today is named; one it adds later counts as
+    /// a malformed payload until it is filed here.
     pub(super) fn of_decode_error(error: &BvllError) -> Self {
         match error {
             BvllError::TooShort { .. } => Self::TooShort,
@@ -151,6 +152,7 @@ impl DropReason {
             BvllError::TooLong { .. }
             | BvllError::UndefinedResultCode { .. }
             | BvllError::BufferExhausted { .. } => Self::MalformedPayload,
+            _ => Self::MalformedPayload,
         }
     }
 

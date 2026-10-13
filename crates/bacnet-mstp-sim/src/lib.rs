@@ -21,7 +21,7 @@
 //! sim.run_until(Instant::from_micros(1_000_000));
 //! // Station 0's generation slot comes first, 500 ms into the silence.
 //! let first = &sim.frames()[0];
-//! assert!(first.is(FrameType::PollForMaster, 0, 1));
+//! assert!(first.is(FrameType::POLL_FOR_MASTER, 0, 1));
 //! assert_eq!(first.start, Instant::from_micros(500_000));
 //! sim.assert_no_violations();
 //! ```

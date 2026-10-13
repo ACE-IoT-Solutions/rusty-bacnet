@@ -175,7 +175,7 @@ async fn long_answer_impl(mode: MstpExecutionMode) {
     let mut h = Harness::with_database(mode, SessionRole::Both, Frames::Extended, id, db).await;
     let request = read_apdu(5, 1, PropertyIdentifier::OBJECT_NAME, 1476);
     h.peer_send(&MstpFrame {
-        frame_type: FrameType::BACnetDataExpectingReply,
+        frame_type: FrameType::BACNET_DATA_EXPECTING_REPLY,
         destination: SESSION_MAC,
         source: PEER_MAC,
         data: local_npdu(request, true),
@@ -186,14 +186,14 @@ async fn long_answer_impl(mode: MstpExecutionMode) {
             f.destination == PEER_MAC
                 && matches!(
                     f.frame_type,
-                    FrameType::BACnetDataNotExpectingReply
-                        | FrameType::BACnetExtendedDataNotExpectingReply
+                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                        | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
                 )
         })
         .await;
     assert_eq!(
         reply.frame_type,
-        FrameType::BACnetExtendedDataNotExpectingReply
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
     );
     let npdu = decode_npdu(reply.data.clone()).unwrap();
     let apdu_length = npdu.payload.len();

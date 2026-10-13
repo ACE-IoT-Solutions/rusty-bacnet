@@ -24,7 +24,7 @@ fn config() -> MstpCoreConfig {
 fn next_frame_after_token<Q: QueueStorage, const NPDU: usize>(
     core: &mut MasterCore<'_, Q, NPDU>,
 ) -> FrameHeader {
-    core.on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), Instant::ZERO)
+    core.on_validated_frame(Frame::new(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
         .unwrap();
     let due = core.next_deadline().unwrap();
     assert!(due > Instant::ZERO, "the next deadline is in the future");
@@ -84,7 +84,7 @@ fn an_oversize_npdu_already_queued_is_dropped_and_the_token_moves_on() {
     let header = next_frame_after_token(&mut core);
     assert_eq!(
         (header.frame_type, header.destination),
-        (FrameType::BACnetDataNotExpectingReply, 2)
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 2)
     );
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 
@@ -98,7 +98,7 @@ fn an_oversize_npdu_already_queued_is_dropped_and_the_token_moves_on() {
     let mut actions = Actions::new();
     let mut core = MasterCore::new(config(), queues, &mut rx, &mut actions, Instant::ZERO).unwrap();
     let header = next_frame_after_token(&mut core);
-    assert_eq!(header.frame_type, FrameType::PollForMaster);
+    assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 }
@@ -117,7 +117,7 @@ fn the_queue_counts_an_npdu_longer_than_the_core_takes() {
         let mut core =
             MasterCore::new(config(), &mut queues, &mut rx, &mut actions, Instant::ZERO).unwrap();
         let header = next_frame_after_token(&mut core);
-        assert_eq!(header.frame_type, FrameType::PollForMaster);
+        assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
         assert_eq!(core.counters().unicast.drops_oversize, 1);
     }
     let stats = queues.stats(QueueKind::Unicast);
@@ -141,7 +141,7 @@ fn a_core_without_extended_frames_never_sends_a_long_npdu() {
     let mut core: MasterCore<'_, _, MAX_EXTENDED_MPDU_DATA> =
         MasterCore::new(config(), queues, &mut rx, &mut actions, Instant::ZERO).unwrap();
     let header = next_frame_after_token(&mut core);
-    assert_eq!(header.frame_type, FrameType::PollForMaster);
+    assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 }
 
@@ -215,7 +215,7 @@ fn a_queue_overstating_an_npdu_length_cannot_hold_the_token() {
     core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
     let header = next_frame_after_token(&mut core);
-    assert_eq!(header.frame_type, FrameType::PollForMaster);
+    assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 }
 
@@ -237,6 +237,6 @@ fn a_queue_lending_more_than_the_core_takes_cannot_hold_the_token() {
     core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
     let header = next_frame_after_token(&mut core);
-    assert_eq!(header.frame_type, FrameType::PollForMaster);
+    assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 }

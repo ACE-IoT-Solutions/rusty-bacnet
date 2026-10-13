@@ -41,9 +41,30 @@
 //! # Features
 //!
 //! None, and no dependencies: the crate is `no_std` and needs no allocator.
+//!
+//! # Example
+//!
+//! ```
+//! use bacnet_time::{Duration, Instant};
+//!
+//! // A deadline 500 ms after a millisecond tick of 1250.
+//! let now = Instant::from_millis(1_250);
+//! let deadline = now + Duration::from_millis(500);
+//! assert_eq!(deadline.saturating_duration_since(now), Duration::from_millis(500));
+//!
+//! // Arithmetic saturates; the checked forms say when it would have.
+//! assert_eq!(now - deadline, Duration::ZERO);
+//! assert_eq!(Instant::ZERO.checked_sub(Duration::from_secs(1)), None);
+//!
+//! // A host's clock, through core::time::Duration.
+//! let elapsed = core::time::Duration::from_micros(2_500);
+//! assert_eq!(Duration::try_from(elapsed), Ok(Duration::from_micros(2_500)));
+//! ```
 
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
+#![warn(missing_debug_implementations, clippy::must_use_candidate)]
 
 mod convert;
 mod divide;

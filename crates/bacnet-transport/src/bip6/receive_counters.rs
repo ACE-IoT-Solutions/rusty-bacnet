@@ -174,8 +174,9 @@ pub(super) enum DropReason {
 impl DropReason {
     /// Why a datagram failed to decode, in its header
     /// ([`Bvll6Frame::decode`](super::Bvll6Frame::decode)) or its payload
-    /// ([`Bvll6Frame::message`](super::Bvll6Frame::message)). Every error is
-    /// named, so a new one has to be filed here.
+    /// ([`Bvll6Frame::message`](super::Bvll6Frame::message)). Every error the
+    /// codec has today is named; one it adds later counts as a malformed
+    /// payload until it is filed here.
     pub(super) fn of_decode_error(error: &Bvll6Error) -> Self {
         match error {
             Bvll6Error::TooShort { .. } => Self::TooShort,
@@ -189,6 +190,7 @@ impl DropReason {
             Bvll6Error::TooLong { .. }
             | Bvll6Error::UndefinedResultCode { .. }
             | Bvll6Error::BufferExhausted { .. } => Self::MalformedPayload,
+            _ => Self::MalformedPayload,
         }
     }
 }

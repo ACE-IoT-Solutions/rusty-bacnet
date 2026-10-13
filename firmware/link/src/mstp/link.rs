@@ -89,25 +89,30 @@ pub(crate) fn run(storage: Storage<'_>, wire: &mut [u8], oversize: &[u8], summar
     receive(
         core,
         wire,
-        Frame::new(FrameType::Token, STATION, PEER, &[]),
+        Frame::new(FrameType::TOKEN, STATION, PEER, &[]),
         &mut clock,
         summary,
     );
     wait(core, &mut clock, summary);
     wait(core, &mut clock, summary);
     // The peer answers the poll, so the token goes to it.
-    let reply = Frame::new(FrameType::ReplyToPollForMaster, STATION, PEER, &[]);
+    let reply = Frame::new(FrameType::REPLY_TO_POLL_FOR_MASTER, STATION, PEER, &[]);
     receive(core, wire, reply, &mut clock, summary);
     wait(core, &mut clock, summary);
     // The peer uses the token: a broadcast shows it was taken up, then it
     // announces itself with a broadcast Test_Response, then a request that
     // this station answers at once.
-    let broadcast = Frame::new(FrameType::BACnetDataNotExpectingReply, 0xFF, PEER, &WHO_IS);
+    let broadcast = Frame::new(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        0xFF,
+        PEER,
+        &WHO_IS,
+    );
     receive(core, wire, broadcast, &mut clock, summary);
-    let announce = Frame::new(FrameType::TestResponse, 0xFF, PEER, &[]);
+    let announce = Frame::new(FrameType::TEST_RESPONSE, 0xFF, PEER, &[]);
     receive(core, wire, announce, &mut clock, summary);
     let request = Frame::new(
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         STATION,
         PEER,
         &READ_PROPERTY,

@@ -311,14 +311,14 @@ impl Line<'_> {
         self.enqueue_request(core);
         // The peer passes the token, and the request goes out once the line
         // has been quiet long enough.
-        self.receive_bare(core, FrameType::Token);
+        self.receive_bare(core, FrameType::TOKEN);
         self.wait(core);
         // The peer's reply, a longer NPDU in an extended frame.
         self.receive_reply(core);
         // With no successor known, the core polls the next station for a
         // master, which is the peer. It answers, so the token goes to it.
         self.wait(core);
-        self.receive_bare(core, FrameType::ReplyToPollForMaster);
+        self.receive_bare(core, FrameType::REPLY_TO_POLL_FOR_MASTER);
         self.wait(core);
         self.summary.state = core.state();
     }
@@ -351,7 +351,7 @@ impl Line<'_> {
         let mut wire = [0; extended_frame(REPLY_LENGTH)];
         let reply = REPLY.write(&mut buffer);
         let frame = Frame::new(
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             STATION,
             PEER,
             reply,
@@ -447,7 +447,7 @@ impl Line<'_> {
             return;
         };
         let frame_type = FrameType::from_raw(raw_type);
-        if frame_type == FrameType::BACnetExtendedDataExpectingReply {
+        if frame_type == FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY {
             self.summary.request_intact = carries_request(frame);
         }
         let length = u16::try_from(frame.len()).unwrap_or(u16::MAX);

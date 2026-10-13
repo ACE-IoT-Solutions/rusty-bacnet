@@ -31,7 +31,7 @@ async fn sending_two_frames(drain: DrainMode, pad: Duration) -> (Bus, Instant) {
     // Not before the station can have finished its Token, padded or not:
     // what arrives sooner is read only after that, and stamped then.
     bus.until(token.end + pad + bus.turnaround).await;
-    let heard = bus.send(FrameType::Token, 3, 4, &[]);
+    let heard = bus.send(FrameType::TOKEN, 3, 4, &[]);
     (bus, heard)
 }
 
@@ -63,14 +63,17 @@ async fn a_port_without_drain_is_held_to_its_wire_time_plus_the_pad() {
     ] {
         let (mut bus, heard) = sending_two_frames(drain, configured).await;
         let first = bus.next().await;
-        assert_eq!(first.frame_type, FrameType::BACnetDataNotExpectingReply);
+        assert_eq!(first.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
         assert!(first.start >= heard + bus.turnaround, "{first:?}");
         assert!(first.start <= heard + bus.turnaround + TICK, "{first:?}");
         let second = bus.next().await;
-        assert_eq!(second.frame_type, FrameType::BACnetDataNotExpectingReply);
+        assert_eq!(
+            second.frame_type,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+        );
         assert_ended(&bus, &first, &second, padded);
         let pass = bus.next().await;
-        assert_eq!((pass.frame_type, pass.destination), (FrameType::Token, 4));
+        assert_eq!((pass.frame_type, pass.destination), (FrameType::TOKEN, 4));
         assert_ended(&bus, &second, &pass, padded);
         bus.until(pass.end + padded + TICK).await;
         let counts = bus.transport.diagnostics().snapshot();
@@ -169,7 +172,7 @@ async fn a_failed_drain_aborts_the_frame() {
     // With no traffic the station generates a token: its first frame is a
     // Poll For Master, written but never confirmed as sent.
     let poll = bus.next().await;
-    assert_eq!(poll.frame_type, FrameType::PollForMaster);
+    assert_eq!(poll.frame_type, FrameType::POLL_FOR_MASTER);
     bus.until(poll.end + Duration::from_millis(6) + TICK).await;
     let counts = bus.transport.diagnostics().snapshot();
     assert_eq!(counts.serial_write_errors, 1);

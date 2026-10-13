@@ -13,7 +13,7 @@
 //! first preamble octet.
 
 use crate::crc::crc32k_update;
-use crate::{FrameError, FrameSink};
+use crate::{FrameSink, SinkFull};
 
 /// What each octet of both encoded fields is XORed with on the wire: the
 /// first preamble octet (Clause 9.10.2).
@@ -75,7 +75,7 @@ struct Output<'s, S: FrameSink + ?Sized> {
     chunk: [u8; CHUNK],
     used: usize,
     crc: u32,
-    result: Result<(), FrameError>,
+    result: Result<(), SinkFull>,
 }
 
 impl<S: FrameSink + ?Sized> Output<'_, S> {
@@ -115,7 +115,7 @@ impl<S: FrameSink + ?Sized> Output<'_, S> {
 pub(crate) fn write_fields<S: FrameSink + ?Sized>(
     data: &[u8],
     sink: &mut S,
-) -> Result<(), FrameError> {
+) -> Result<(), SinkFull> {
     let mut output = Output {
         sink,
         chunk: [0; CHUNK],

@@ -205,7 +205,7 @@ fn group_read_frame(invoke_id: u8, instance: u32) -> MstpFrame {
     )
     .unwrap();
     MstpFrame {
-        frame_type: FrameType::BACnetDataExpectingReply,
+        frame_type: FrameType::BACNET_DATA_EXPECTING_REPLY,
         destination: SESSION_MAC,
         source: PEER_MAC,
         data: npdu.freeze(),
@@ -265,16 +265,16 @@ async fn read_group(peer: &LoopbackSerial, invoke_id: u8, instance: u32) -> Apdu
                 continue;
             }
             match frame.frame_type {
-                FrameType::ReplyPostponed => {
+                FrameType::REPLY_POSTPONED => {
                     let token = MstpFrame {
-                        frame_type: FrameType::Token,
+                        frame_type: FrameType::TOKEN,
                         destination: SESSION_MAC,
                         source: PEER_MAC,
                         data: Bytes::new(),
                     };
                     peer_send(peer, &token).await;
                 }
-                FrameType::BACnetDataNotExpectingReply => {
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY => {
                     let npdu = decode_npdu(frame.data).unwrap();
                     let apdu = decode_apdu(npdu.payload).unwrap();
                     let answered = match &apdu {

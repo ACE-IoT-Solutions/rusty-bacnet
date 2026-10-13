@@ -384,8 +384,8 @@ impl<'s> Checker<'s> {
         let station = self.params.station;
         if frame.destination == station {
             let ask = match frame.frame_type {
-                FrameType::PollForMaster => Some(Ask::Poll),
-                FrameType::TestRequest => Some(Ask::Test),
+                FrameType::POLL_FOR_MASTER => Some(Ask::Poll),
+                FrameType::TEST_REQUEST => Some(Ask::Test),
                 _ if frame.expects_reply() => Some(Ask::Reply),
                 _ => None,
             };
@@ -395,19 +395,19 @@ impl<'s> Checker<'s> {
         }
         if (frame.destination == station || frame.destination == BROADCAST_MAC)
             && (frame.carries_npdu()
-                || frame.frame_type == FrameType::TestResponse
+                || frame.frame_type == FrameType::TEST_RESPONSE
                 || (frame.frame_type.is_proprietary() && frame.data.len() >= 2))
         {
             self.deliverable.push_back(frame.clone());
         }
-        let token = frame.is(FrameType::Token, station);
+        let token = frame.is(FrameType::TOKEN, station);
         let reply = frame.destination == station
             && matches!(
                 frame.frame_type,
-                FrameType::BACnetDataNotExpectingReply
-                    | FrameType::BACnetExtendedDataNotExpectingReply
-                    | FrameType::TestResponse
-                    | FrameType::ReplyPostponed
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                    | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
+                    | FrameType::TEST_RESPONSE
+                    | FrameType::REPLY_POSTPONED
             );
         if token && !matches!(self.custody, Custody::Holding(_)) && !self.answering() {
             // ReceivedToken (Clause 9.5.6.2), which a station not holding the
@@ -432,7 +432,7 @@ impl<'s> Checker<'s> {
                     };
                 }
                 After::Poll { moved: false, .. }
-                    if frame.is(FrameType::ReplyToPollForMaster, station) =>
+                    if frame.is(FrameType::REPLY_TO_POLL_FOR_MASTER, station) =>
                 {
                     hold.after = After::Successor(frame.source);
                     self.sole = false;
@@ -448,7 +448,7 @@ impl<'s> Checker<'s> {
                         data_ok: true,
                     };
                 }
-                _ if frame.is(FrameType::ReplyToPollForMaster, station) => {
+                _ if frame.is(FrameType::REPLY_TO_POLL_FOR_MASTER, station) => {
                     // A late answer, which the core takes up while its next
                     // poll waits to go out, and otherwise discards.
                     hold.own_reply |= frame.source == station;
@@ -488,7 +488,7 @@ impl<'s> Checker<'s> {
             }
             (Err(why), None) => self.fail(&format!("{why} [{frame:?}]")),
         };
-        if frame.frame_type == FrameType::PollForMaster {
+        if frame.frame_type == FrameType::POLL_FOR_MASTER {
             self.ps = Some(frame.destination);
         }
         match role {
@@ -497,7 +497,7 @@ impl<'s> Checker<'s> {
             // A poll to TS + 1 from a core that may have gone back to IDLE
             // unseen may be a generated token's, which forgets NS.
             Role::Holder
-                if frame.frame_type == FrameType::PollForMaster
+                if frame.frame_type == FrameType::POLL_FOR_MASTER
                     && frame.destination == self.params.next(self.params.station)
                     && self.lapsible(now) =>
             {

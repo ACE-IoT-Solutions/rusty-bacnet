@@ -219,7 +219,7 @@ async fn empty_reads_between_frames_are_not_the_end_of_the_port() {
     for fill in fills {
         script.extend([Vec::new(), Vec::new()]);
         script.push_back(encode(
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             3,
             7,
             &[1, 0, fill],
@@ -258,15 +258,24 @@ async fn frame_type_follows_the_npdu_and_destination() {
     let first = bus.next().await;
     assert_eq!(
         (first.frame_type, first.destination, first.data.as_slice()),
-        (FrameType::BACnetDataExpectingReply, 4, &[1, 0x04, 0xA1][..])
+        (
+            FrameType::BACNET_DATA_EXPECTING_REPLY,
+            4,
+            &[1, 0x04, 0xA1][..]
+        )
     );
     // Answer it, then check the not-expecting unicast and the broadcast.
     bus.until(first.end + bus.turnaround).await;
-    bus.send(FrameType::BACnetDataNotExpectingReply, 3, 4, &[1, 0, 0xB1]);
+    bus.send(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        3,
+        4,
+        &[1, 0, 0xB1],
+    );
     let reply = bus.npdus.recv().await.unwrap();
     assert_eq!(reply.npdu.as_ref(), &[1, 0, 0xB1]);
     let token = bus.next().await;
-    assert_eq!(token.frame_type, FrameType::Token);
+    assert_eq!(token.frame_type, FrameType::TOKEN);
 
     bus.transport
         .send_unicast(&[1, 0, 0xA2], &[4])
@@ -286,9 +295,13 @@ async fn frame_type_follows_the_npdu_and_destination() {
     assert_eq!(
         kinds,
         [
-            (FrameType::BACnetDataNotExpectingReply, 4, vec![1, 0, 0xA2]),
             (
-                FrameType::BACnetDataNotExpectingReply,
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+                4,
+                vec![1, 0, 0xA2]
+            ),
+            (
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
                 BROADCAST_MAC,
                 vec![1, 0x04, 0xA3]
             ),
@@ -353,14 +366,14 @@ async fn coalesced_frames_and_noise_in_one_read_are_all_delivered() {
     let mut chunk = vec![0x00, 0x55, 0x13];
     for fill in [0x10u8, 0x20, 0x30] {
         chunk.extend(encode(
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             3,
             7,
             &[1, 0, fill],
         ));
     }
     chunk.extend(encode(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         3,
         7,
         &[1; 501],
@@ -384,7 +397,12 @@ async fn coalesced_frames_and_noise_in_one_read_are_all_delivered() {
 #[tokio::test(start_paused = true)]
 async fn a_late_tail_completes_its_frame_within_the_host_frame_abort() {
     let mut bus = Bus::start(config(3, 127)).await;
-    let frame = encode(FrameType::BACnetDataNotExpectingReply, 3, 7, &[1, 0, 0x44]);
+    let frame = encode(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        3,
+        7,
+        &[1, 0, 0x44],
+    );
     let split = frame.len() - 1;
     for (gap, delivered) in [(40, true), (HOST_FRAME_ABORT_MS + 1, false)] {
         bus.send_raw(&frame[..split]);
@@ -404,14 +422,14 @@ async fn a_late_tail_completes_its_frame_within_the_host_frame_abort() {
 #[tokio::test(start_paused = true)]
 async fn turnaround_counts_from_the_last_chunk_read() {
     let mut bus = Bus::start(config(3, 127)).await;
-    let frame = encode(FrameType::PollForMaster, 3, 7, &[]);
+    let frame = encode(FrameType::POLL_FOR_MASTER, 3, 7, &[]);
     bus.send_raw(&frame[..4]);
     tokio::time::sleep(Duration::from_millis(30)).await;
     let tail = bus.send_raw(&frame[4..]);
     let reply = bus.next().await;
     assert_eq!(
         (reply.frame_type, reply.destination),
-        (FrameType::ReplyToPollForMaster, 7)
+        (FrameType::REPLY_TO_POLL_FOR_MASTER, 7)
     );
     assert!(reply.start >= tail + bus.turnaround);
     assert!(reply.start < tail + bus.turnaround + Duration::from_millis(2));

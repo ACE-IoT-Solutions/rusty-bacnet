@@ -116,7 +116,7 @@ pub fn next_frame<const U: usize>(core: &mut Core<'_, U>, now: Instant) -> Optio
 /// The core takes the token from [`NEXT`] at `now`, and sends the first
 /// frame it has queued.
 pub fn token_then_frame<const U: usize>(core: &mut Core<'_, U>, now: Instant) -> Option<Wired> {
-    let token = Frame::new(FrameType::Token, STATION, NEXT, &[]);
+    let token = Frame::new(FrameType::TOKEN, STATION, NEXT, &[]);
     core.on_validated_frame(token, now).unwrap();
     next_frame(core, now)
 }

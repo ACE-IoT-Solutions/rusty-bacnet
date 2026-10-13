@@ -260,7 +260,7 @@ fn read_name_frame(invoke_id: u8) -> Vec<u8> {
     .unwrap();
     let mut wire = Vec::new();
     codec::Frame::new(
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         SESSION_MAC,
         PEER_MAC,
         &npdu,
@@ -284,7 +284,8 @@ async fn answer_to_peer(peer: &LoopbackSerial) -> (FrameType, Vec<u8>) {
         let (frame, _) = codec::decode_frame_in_place(&mut buf[..read]).unwrap();
         let data_frame = matches!(
             frame.header.frame_type,
-            FrameType::BACnetDataNotExpectingReply | FrameType::BACnetExtendedDataNotExpectingReply
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
         );
         if frame.header.destination == PEER_MAC && data_frame {
             return (frame.header.frame_type, frame.data.to_vec());
@@ -342,7 +343,10 @@ fn an_extended_endpoint_answers_a_long_read_in_an_extended_frame() {
     run(pyo3::ffi::c_str!(
         "import asyncio\nasync def go():\n    await endpoint.close()\nasyncio.run(go())\n"
     ));
-    assert_eq!(frame_type, FrameType::BACnetExtendedDataNotExpectingReply);
+    assert_eq!(
+        frame_type,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
+    );
     let npdu = decode_npdu(npdu.into()).unwrap();
     assert!(npdu.payload.len() > 480, "{}", npdu.payload.len());
     let Apdu::ComplexAck(ack) = decode_apdu(npdu.payload).unwrap() else {

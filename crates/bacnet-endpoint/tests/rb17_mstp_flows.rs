@@ -48,7 +48,7 @@ async fn dropped_sender_impl(mode: MstpExecutionMode, frames: Frames) {
     h.peer_send(&data_expecting(1, 44)).await;
     let postponed = h
         .wait_for("ReplyPostponed", |f| {
-            f.frame_type == FrameType::ReplyPostponed && f.destination == PEER_MAC
+            f.frame_type == FrameType::REPLY_POSTPONED && f.destination == PEER_MAC
         })
         .await;
     assert_eq!(postponed.destination, PEER_MAC);
@@ -65,12 +65,12 @@ async fn dropped_sender_impl(mode: MstpExecutionMode, frames: Frames) {
         let frame = h.next_frame().await;
         assert_ne!(
             frame.frame_type,
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             "released reply must never produce late bytes"
         );
         if matches!(
             frame.frame_type,
-            FrameType::PollForMaster | FrameType::Token
+            FrameType::POLL_FOR_MASTER | FrameType::TOKEN
         ) {
             saw_token_use = true;
             break;
@@ -120,8 +120,8 @@ async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
     for _ in 0..16 {
         let frame = h.next_frame().await;
         match frame.frame_type {
-            FrameType::ReplyPostponed if frame.destination == PEER_MAC => postponed = true,
-            FrameType::BACnetDataNotExpectingReply if frame.destination == PEER_MAC => {
+            FrameType::REPLY_POSTPONED if frame.destination == PEER_MAC => postponed = true,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY if frame.destination == PEER_MAC => {
                 early_data = Some(frame);
             }
             _ => {}
@@ -141,7 +141,7 @@ async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
         None => {
             let late = h
                 .drive_token_until_data("deferred ComplexAck", |f| {
-                    f.frame_type == FrameType::BACnetDataNotExpectingReply
+                    f.frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
                         && f.destination == PEER_MAC
                 })
                 .await;
@@ -555,14 +555,14 @@ async fn nonrouting_impl(mode: MstpExecutionMode, frames: Frames) {
     )
     .unwrap();
     h.peer_send(&MstpFrame {
-        frame_type: FrameType::BACnetDataExpectingReply,
+        frame_type: FrameType::BACNET_DATA_EXPECTING_REPLY,
         destination: SESSION_MAC,
         source: PEER_MAC,
         data: routed.freeze(),
     })
     .await;
     h.wait_for("postponed for discarded routed", |f| {
-        f.frame_type == FrameType::ReplyPostponed && f.destination == PEER_MAC
+        f.frame_type == FrameType::REPLY_POSTPONED && f.destination == PEER_MAC
     })
     .await;
     // A valid local request on the same link is still served; the routed
@@ -571,7 +571,7 @@ async fn nonrouting_impl(mode: MstpExecutionMode, frames: Frames) {
     let mut routed_answered = false;
     let reply = h
         .wait_for("local ComplexAck", |f| {
-            if f.frame_type == FrameType::BACnetDataNotExpectingReply {
+            if f.frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY {
                 if let Ok(npdu) = decode_npdu(f.data.clone()) {
                     if let Ok(Apdu::ComplexAck(ack)) = decode_apdu(npdu.payload) {
                         if ack.invoke_id == 77 {
