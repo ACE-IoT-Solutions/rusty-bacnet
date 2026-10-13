@@ -45,6 +45,7 @@ mod bbmd_start;
 mod client_snapshot;
 mod exchange;
 mod foreign_device;
+mod mode;
 mod node;
 mod send;
 mod send_counters;
@@ -53,10 +54,11 @@ mod send_sink;
 #[cfg(test)]
 mod test_support;
 pub use client_snapshot::{
-    BvlcClientSnapshot, BvlcRequestCounters, ForeignRegistrationOutcome,
+    BvlcClientSnapshot, BvlcClientStatus, BvlcRequestCounters, ForeignRegistrationOutcome,
     ForeignRegistrationSnapshot,
 };
 pub use foreign_device::ForeignDeviceConfig;
+pub use mode::{BbmdOptions, BipMode};
 mod fanout;
 mod groups;
 mod socket;
@@ -692,6 +694,7 @@ impl TransportPort for BipTransport {
             }
         };
 
+        self.client_record.attach(&node);
         self.port = local_port;
         self.local_mac = encode_bip_mac(local_ip.octets(), local_port);
         self.socket = Some(Arc::clone(&socket));
@@ -853,6 +856,8 @@ mod held_broadcast_tests;
 mod malformed_bvll_tests;
 #[cfg(test)]
 mod management_ack_tests;
+#[cfg(test)]
+mod mode_tests;
 #[cfg(test)]
 mod npdu_addressing_tests;
 #[cfg(test)]

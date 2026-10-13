@@ -191,6 +191,7 @@ mod tests {
             port: 0,
             broadcast_address: "255.255.255.255".into(),
             share_port_by_address: false,
+            bip_mode: Default::default(),
             sc_hub: None,
             sc_vmac: None,
             sc_device_uuid: [0; 16],

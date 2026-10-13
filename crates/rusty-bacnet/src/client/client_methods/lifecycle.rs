@@ -29,7 +29,9 @@ impl BACnetClient {
         sc_device_uuid=None,
         share_port_by_address=false,
         min_request_interval_ms=0,
-        ipv6_device_instance=None
+        ipv6_device_instance=None,
+        bbmd=None,
+        foreign_device=None
     ))]
     fn new(
         interface: &str,
@@ -57,8 +59,11 @@ impl BACnetClient {
         share_port_by_address: bool,
         min_request_interval_ms: u64,
         ipv6_device_instance: Option<u32>,
+        bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
+        foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
     ) -> PyResult<Self> {
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
+        let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
         let ipv6_device_instance = ipv6_device_instance_for(transport, ipv6_device_instance)?;
         if transport == "sc" {
             crate::tls::required_sc_credentials(
@@ -77,6 +82,7 @@ impl BACnetClient {
             port,
             broadcast_address: broadcast_address.to_string(),
             share_port_by_address,
+            bip_mode,
             apdu_timeout_ms,
             sc_hub,
             sc_vmac,
@@ -111,6 +117,7 @@ impl BACnetClient {
         let port = slf.borrow().port;
         let broadcast_str = slf.borrow().broadcast_address.clone();
         let share_port_by_address = slf.borrow().share_port_by_address;
+        let bip_mode = slf.borrow().bip_mode.clone();
         let timeout_ms = slf.borrow().apdu_timeout_ms;
         let sc_hub = slf.borrow().sc_hub.clone();
         let sc_vmac = slf.borrow().sc_vmac.clone();
@@ -136,6 +143,7 @@ impl BACnetClient {
                         .map_err(|e| PyRuntimeError::new_err(format!("invalid broadcast: {e}")))?;
                     let mut bip = BipTransport::new(interface, port, broadcast);
                     bip.set_share_port_by_address(share_port_by_address);
+                    bip.set_mode(bip_mode);
                     AnyTransport::Bip(Box::new(bip))
                 }
                 "ipv6" => {

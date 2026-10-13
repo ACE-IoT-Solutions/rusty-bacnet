@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_transport::bip::BipMode;
 
 #[tokio::test]
 async fn registered_port_invalid_selection_profile_and_identity_fail_before_publication() {
@@ -20,8 +21,8 @@ async fn registered_port_invalid_selection_profile_and_identity_fail_before_publ
         assert!(endpoint.bip_local_address().is_none());
     }
     // BBMD and foreign-device links register in their own mode (#939); a
-    // link configured as both, a wildcard interface and an identity mismatch
-    // are refused.
+    // foreign device the transport refuses to start, a wildcard interface
+    // and an identity mismatch are refused.
     for mode in 1..4 {
         let id = if mode == 2 {
             crate::DeviceIdentity::new(785, 555)
@@ -43,13 +44,14 @@ async fn registered_port_invalid_selection_profile_and_identity_fail_before_publ
         builder = match mode {
             1 => builder
                 .identity(id)
-                .enable_bbmd(vec![])
-                .register_as_foreign_device(bacnet_transport::bip::ForeignDeviceConfig {
-                    bbmd_ip: Ipv4Addr::LOCALHOST,
-                    bbmd_port: 47808,
-                    renewal_interval: None,
-                    ttl: 60,
-                }),
+                .mode(bacnet_transport::bip::BipMode::Foreign(
+                    bacnet_transport::bip::ForeignDeviceConfig {
+                        bbmd_ip: Ipv4Addr::LOCALHOST,
+                        bbmd_port: 47808,
+                        renewal_interval: None,
+                        ttl: 0,
+                    },
+                )),
             2 => builder.identity(id),
             _ => builder.identity(
                 crate::DeviceIdentity::new(785, 555)
@@ -62,7 +64,7 @@ async fn registered_port_invalid_selection_profile_and_identity_fail_before_publ
         let error = endpoint.start().await.unwrap_err().to_string();
         if mode == 1 {
             assert!(
-                error.contains("a BBMD that also registers as a foreign device"),
+                error.contains("foreign-device mode needs TTL > 0"),
                 "{error}"
             );
         }
@@ -102,16 +104,16 @@ async fn registered_port_publishes_the_bbmd_or_foreign_mode() {
                 .identity(id)
                 .database(db)
                 .registered_network_port(port());
-        builder = if bbmd {
-            builder.enable_bbmd(vec![])
+        builder = builder.mode(if bbmd {
+            BipMode::Bbmd(bacnet_transport::bip::BbmdOptions::default())
         } else {
-            builder.register_as_foreign_device(bacnet_transport::bip::ForeignDeviceConfig {
+            BipMode::Foreign(bacnet_transport::bip::ForeignDeviceConfig {
                 bbmd_ip: Ipv4Addr::LOCALHOST,
                 bbmd_port: stand_in.local_addr().unwrap().port(),
                 renewal_interval: None,
                 ttl: 60,
             })
-        };
+        });
         let mut endpoint = builder.build_session().unwrap();
         endpoint.start().await.unwrap();
         let address = endpoint.bip_local_address().unwrap();

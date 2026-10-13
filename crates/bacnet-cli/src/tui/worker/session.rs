@@ -96,7 +96,20 @@ async fn connect(plan: ConnectPlan, sink: EventSink, mut commands: mpsc::Receive
     let style = plan.kind.style();
     match plan.kind {
         TransportKind::Bip => match Box::pin(transport::build_bip_client(&args)).await {
-            Ok(client) => Box::pin(serve(client, style, sink, commands)).await,
+            Ok(client) => {
+                // `--foreign-bbmd`: say in the log pane how the first
+                // registration went, as the shell does at start (#938).
+                if let Some(foreign) = &args.foreign_device {
+                    let bbmd = std::net::SocketAddrV4::new(foreign.bbmd_ip, foreign.bbmd_port);
+                    match crate::foreign::await_registration(&client, bbmd).await {
+                        Ok(()) => tracing::info!(
+                            "BBMD {bbmd} accepted the foreign-device registration; it renews automatically"
+                        ),
+                        Err(error) => tracing::warn!("{error}; retrying in the background"),
+                    }
+                }
+                Box::pin(serve(client, style, sink, commands)).await
+            }
             Err(error) => failed(&sink, error).await,
         },
         TransportKind::Bip6 => match Box::pin(transport::build_bip6_client(&args)).await {

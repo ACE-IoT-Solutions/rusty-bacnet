@@ -115,6 +115,8 @@ pub struct BACnetClient {
     broadcast_address: String,
     /// See `BipTransport::set_share_port_by_address` (#1538).
     share_port_by_address: bool,
+    /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
+    bip_mode: bacnet_transport::bip::BipMode,
     apdu_timeout_ms: u64,
     // SC config
     sc_hub: Option<String>,
@@ -140,6 +142,7 @@ mod client_methods {
     mod cov_discovery;
     mod enrollment_alarm_covmulti_who_writegroup;
     mod file_list_private_text_life;
+    mod foreign_registration;
     mod lifecycle;
     mod log_read;
     mod object_device_alarm;
