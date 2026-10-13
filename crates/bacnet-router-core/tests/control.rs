@@ -122,6 +122,17 @@ fn one_message_never_corroborates_itself() {
     assert_eq!(router.table().claim_counters().pending_started, 1);
     assert_eq!(router.table().claim_counters().corroborated_applied, 0);
 
+    // A repeat after a lower network is still one claim: the set of
+    // networks claimed stays sorted however the list runs.
+    let mut router = router_with(&fixture::two_ports(), options);
+    learn_9_via_r7(&mut router, at(0));
+    let r7 = Mac::from_slice(R7).unwrap();
+    assert!(router.table_mut().add_learned(8, PortId(1), r7, at(0)));
+    deliver_broadcast(&mut router, &mut host, 0, NODE_A, &i_am(&[9, 8, 9]), at(1));
+    assert_eq!(router.table().lookup(9).unwrap().port(), PortId(1));
+    assert_eq!(router.table().claim_counters().pending_started, 2);
+    assert_eq!(router.table().claim_counters().corroborated_applied, 0);
+
     // In standard mode the first moves it and the repeat refreshes it.
     let mut router = fixture::router();
     learn_9_via_r7(&mut router, at(0));

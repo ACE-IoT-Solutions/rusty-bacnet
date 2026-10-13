@@ -4,7 +4,7 @@ use core::fmt;
 
 use super::{Reachability, Table, Timing};
 use crate::message::RejectReason;
-use crate::{Instant, PortId};
+use crate::{swap_apart, Instant, PortId};
 
 /// What [`Table::apply_reject`] did.
 ///
@@ -114,11 +114,12 @@ impl<const H: usize> Holds<H> {
 
     /// Drop every record for `network`: fresh learning or removal re-arms it.
     pub(super) fn forget(&mut self, network: u16) {
+        // Each kept record is swapped forward, never copied over another:
+        // that copy linked a memmove call on ARMv6-M (`swap_apart`).
         let mut kept = 0;
         for index in 0..self.len {
-            let hold = self.records[index];
-            if hold.network != network {
-                self.records[kept] = hold;
+            if self.records[index].network != network {
+                swap_apart(&mut self.records, kept, index);
                 kept += 1;
             }
         }
