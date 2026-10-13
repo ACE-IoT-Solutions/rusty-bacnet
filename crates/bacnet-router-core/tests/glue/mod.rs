@@ -6,8 +6,8 @@
 
 use core::borrow::BorrowMut;
 
-use bacnet_router_core::router::{Action, Send, SendRefusal};
-use bacnet_router_core::{Router, Storage};
+use bacnet_router_core::router::{Action, Frame, Send, SendRefusal};
+use bacnet_router_core::{PortId, Router, Storage};
 
 #[cfg(feature = "bip")]
 pub use self::bip::*;
@@ -16,6 +16,23 @@ pub use self::mstp::*;
 
 #[cfg(feature = "mstp")]
 mod mstp;
+
+/// The B/IP port in the B/IP suites: port 0, on network 1. The router's
+/// other port there is port 1 on network 2, with 1-octet MACs.
+pub const BIP_PORT: PortId = PortId(0);
+
+/// A global-broadcast Who-Is.
+pub const GLOBAL_WHO_IS: [u8; 8] = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
+
+/// What port `port` received from `source`.
+pub fn frame<'f>(port: u8, source: &'f [u8], link_group: bool, npdu: &'f [u8]) -> Frame<'f> {
+    Frame {
+        port: PortId(port),
+        source,
+        link_group,
+        npdu,
+    }
+}
 
 /// Poll `router` until idle, handing each send to `each` and telling the
 /// router of each refusal, as a firmware loop does. Returns each send's

@@ -277,22 +277,68 @@ fn mstp_delivery_becomes_bip_original_unicast_with_reply_postponed() {
     );
 }
 
-/// A datagram that fails B/IP's checks changes nothing: the router never
-/// sees it, and the MS/TP queue stays empty.
+/// A datagram that fails B/IP's checks changes nothing: driven as a
+/// firmware loop drives the port, the router never sees it, and the MS/TP
+/// queue stays empty. Each carries an NPDU for station 5 on MS/TP, which
+/// the same datagram, well formed, does queue.
 ///
 /// Ported from ACE IoT's `strict_bip_failure_precedes_router_or_queue_mutation`.
 #[test]
 fn strict_bip_failure_precedes_router_or_queue_mutation() {
     let now = Instant::from_millis(1);
     let mut bip = bip_port(link(Mode::Normal));
-    let router = router(&bip, None, Options::HOSTED);
+    let mut router = router(&bip, None, Options::HOSTED);
+    let mut host = Groups {
+        link: *bip.node().link(),
+    };
     let (mut bus, mut out) = (Bus::<1>::new(), Wire::default());
-    let core = bus.core(true);
-    let ingress = into_bip(&mut bip, &[0x81, 0x0A], PEER, UNICAST, &mut out, now);
-    assert_eq!(ingress, Ingress::Discarded(Discard::TooShort));
+    let mut core = bus.core(true);
+    let npdu = routed(20, MSTP_NET, &[5]);
+    let good = encode(&Bvll::OriginalUnicastNpdu(&npdu));
+    let mut long = good.clone();
+    long[3] += 1;
+    let unknown = bacnet_bip_core::node::Datagram {
+        to: None,
+        ..datagram(&good, PEER, UNICAST)
+    };
+    // What the port made of a datagram, with any NPDU handed to the router
+    // and every send carried out.
+    let mut drive = |datagram: &bacnet_bip_core::node::Datagram<'_>,
+                     router: &mut TestRouter,
+                     out: &mut Wire| {
+        let dropped = match bip.receive(datagram, now, &mut Permissive, out) {
+            Ingress::Npdu(arrived) => {
+                router.receive(arrived.frame(), now, &mut host);
+                None
+            }
+            Ingress::Discarded(reason) => Some(reason),
+            other => panic!("{other:?}"),
+        };
+        pump(router, |send| match send.port {
+            BIP => Err(SendRefusal::Other),
+            _ => MSTP.send(&mut core, send, now),
+        });
+        dropped
+    };
+
+    for (datagram, reason) in [
+        (datagram(&[0x81, 0x0A], PEER, UNICAST), Discard::TooShort),
+        (datagram(&long, PEER, UNICAST), Discard::LengthMismatch),
+        (
+            datagram(&good, PEER, TO_BROADCAST),
+            Discard::DestinationMismatch,
+        ),
+        (unknown, Discard::UnknownDestination),
+    ] {
+        assert_eq!(drive(&datagram, &mut router, &mut out), Some(reason));
+    }
     assert_eq!(router.counters(), Default::default());
-    assert_eq!(core.counters().unicast.depth, 0);
+    assert_eq!(router.table().len(), 2, "the two direct routes");
     assert_eq!(out.calls, 0);
+
+    let well_formed = datagram(&good, PEER, UNICAST);
+    assert_eq!(drive(&well_formed, &mut router, &mut out), None);
+    assert_eq!(core.counters().unicast.depth, 1, "the well-formed one");
 }
 
 /// Every way the MS/TP port can take or refuse a relay from B/IP, each

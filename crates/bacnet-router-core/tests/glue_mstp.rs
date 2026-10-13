@@ -175,6 +175,41 @@ fn relayed_requests_are_postponed() {
     ));
 }
 
+/// The release of a request the application answered, made once the next
+/// request is already waiting, leaves that one alone; its own release then
+/// answers it Reply Postponed.
+#[test]
+fn a_late_release_leaves_the_next_request_alone() {
+    let now = Instant::from_millis(1);
+    let mut bus = Bus::<2>::new();
+    let mut core = bus.core(true);
+    let mut local = Npdu::apdu(CONFIRMED);
+    local.expecting_reply = true;
+    let local = bytes(&local);
+    let request = MstpFrame::new(FrameType::BACnetDataExpectingReply, STATION, 7, &local);
+
+    core.on_validated_frame(request, now).unwrap();
+    let (.., first, _) = delivered(&mut core);
+    let reply = [0x30, 0x05, 0x0C];
+    core.complete_request(first.unwrap(), ReplyDecision::Data(&reply), now)
+        .unwrap();
+    let answer = next_frame(&mut core, now).unwrap();
+    assert_eq!(answer.frame_type, FrameType::BACnetDataNotExpectingReply);
+
+    let later = now + bacnet_router_core::Duration::from_millis(100);
+    core.on_validated_frame(request, later).unwrap();
+    let (.., second, _) = delivered(&mut core);
+    assert_ne!(first, second);
+    MstpPort::release(&mut core, first, later).unwrap();
+    assert_eq!(core.snapshot().request_id, second, "still waiting");
+    MstpPort::release(&mut core, second, later).unwrap();
+    let answer = next_frame(&mut core, later).unwrap();
+    assert_eq!(
+        (answer.frame_type, answer.destination),
+        (FrameType::ReplyPostponed, 7)
+    );
+}
+
 /// What the router relays at life-safety priority leaves the MS/TP queues
 /// before what it relayed earlier at normal priority.
 #[test]

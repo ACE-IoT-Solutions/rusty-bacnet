@@ -29,10 +29,12 @@
 //!   [`Link::unicast`], which refuses a group address (#1677); a broadcast
 //!   through [`Link::broadcast`], held while a foreign device's first
 //!   registration is outstanding, and also forwarded by a BBMD.
+//! - **Start:** call [`BipPort::start`] once, before anything else: a
+//!   foreign device's first registration is due at once, and its response
+//!   timeout is the port's first deadline. A [`BbmdPort`] registers
+//!   nowhere, and needs no start.
 //! - **Timers:** sleep until the earliest of the router's and the ports'
-//!   `next_deadline`, and call each one's `on_deadline`. Call a
-//!   [`BipPort`]'s once at start too: a foreign device's first
-//!   registration is due at once.
+//!   `next_deadline`, and call each one's `on_deadline`.
 //! - **Groups:** answer [`Host::group`](crate::router::Host::group) for
 //!   the port with [`group`].
 //!
@@ -41,7 +43,7 @@
 //! | Obligation, in our words | Clause | Test |
 //! | --- | --- | --- |
 //! | A Forwarded-NPDU's originating address is the source of its NPDU, so a router names it in the SADR it adds, and the network priority travels with the message | J.2.5, 6.2.2, 6.5.4 | `tests/glue_bip_mstp.rs`: `forwarded_origin_and_priority_survive_bip_to_mstp_composition` |
-//! | A port that is a foreign-device registration registers before the router announces its networks there | J.7.2, J.7.4 | `tests/glue_bip.rs`: `foreign_port_announces_after_registration`, `foreign_port_announces_after_the_response_timeout` |
+//! | A port that is a foreign-device registration registers before the router announces its networks there | J.7.2, J.7.4 | `tests/glue_bip_foreign.rs`: `foreign_port_announces_after_registration`, `foreign_port_announces_after_the_response_timeout`, `held_broadcasts_leave_before_a_later_one` |
 //! | A BBMD port hands the router the broadcasts its subnet, its peers and its foreign devices send, and forwards them, and forwards the router's own broadcasts too | J.4.5, J.7.1 | `tests/glue_bip.rs`: `bbmd_port_delivers_and_forwards` |
 //! | A directed message goes to one node's own address, never to a group address | J.2.11, J.3 | `tests/glue_bip.rs`: `unicast_group_destinations_are_rejected_before_encoding_or_send` |
 //!
@@ -49,7 +51,12 @@
 //! changes no router or queue state (`tests/glue_bip_mstp.rs`:
 //! `strict_bip_failure_precedes_router_or_queue_mutation`); each refusal of
 //! a router send maps to one [`SendRefusal`] and is counted once
-//! (`real_bip_success_and_admission_failures_are_observed_once`).
+//! (`real_bip_success_and_admission_failures_are_observed_once`). On a
+//! foreign-device port, a refused first registration drops the held
+//! broadcasts, a registration the socket refuses ends its attempt, and a
+//! full hold refuses the next broadcast as [`SendRefusal::Full`]; each
+//! datagram of a port's own that its socket refuses is counted once in
+//! `refused()` (`tests/glue_bip_foreign.rs`, `tests/glue_bip.rs`).
 
 use core::fmt;
 use core::net::SocketAddrV4;
@@ -69,8 +76,10 @@ pub trait Datagrams {
     /// Send `message` to `to` from the port's own socket.
     ///
     /// Encode it with [`Bvll::encode_into`] or [`Bvll::encode_to_sink`]
-    /// straight into the socket's buffer, and keep no borrow of it. Refuse
-    /// it with [`SendRefusal::Full`] when the socket can't take it now.
+    /// straight into the socket's buffer, sized by [`Bvll::encoded_len`],
+    /// and keep no borrow of it. Refuse it with [`SendRefusal::Full`] when
+    /// the socket can't take it now, and with [`SendRefusal::Other`] when it
+    /// can't be encoded there (`BufferExhausted`, say).
     fn send(&mut self, to: SocketAddrV4, message: &Bvll<'_>) -> Result<(), SendRefusal>;
 }
 
@@ -161,6 +170,9 @@ impl core::error::Error for PortError {}
 /// Room for one broadcast that a foreign device's port holds until its
 /// first registration attempt resolves (Annex J.7.4; decision D17). It is
 /// all zero bits, so firmware lends the port a static's.
+///
+/// Each slot holds B/IP's largest NPDU, 1,497 octets; the firmware router
+/// image's RAM budget (#1679) may make that a const generic.
 #[derive(Debug, Clone)]
 pub struct HeldBroadcast {
     len: u16,
@@ -239,10 +251,13 @@ impl<'h, const X: usize> BipPort<'h, X> {
         &self.node
     }
 
-    /// The node, to read its registration or take its counters. The port
-    /// carries out every action the node queues, and drops the
-    /// registration events and the end of a manual exchange, so a caller
-    /// that needs those drives a node of its own.
+    /// The node, to take its counters. The port carries out every action
+    /// the node queues and drops the rest: the registration events, and a
+    /// manual exchange's end, whose response it also swallows (the node
+    /// matches it, and [`receive`](Self::receive) says only
+    /// [`Ingress::Handled`]). What the events carried stays readable in
+    /// [`Node::registration`] and [`Node::take_counters`]; a caller that
+    /// runs manual exchanges drives a node of its own.
     pub fn node_mut(&mut self) -> &mut Node<X> {
         &mut self.node
     }
@@ -280,8 +295,22 @@ impl<'h, const X: usize> BipPort<'h, X> {
         ingress
     }
 
+    /// Start the port at `now`, once, before anything else: a foreign
+    /// device's first registration goes out, and its response timeout
+    /// becomes [`next_deadline`](Self::next_deadline). Until then the
+    /// registration waits in the node's queue, and nothing wakes the port
+    /// for it.
+    pub fn start(&mut self, now: Instant, out: &mut impl Datagrams) {
+        self.on_deadline(now, out);
+    }
+
     /// Carry out one of the router's sends on this port; one for another
     /// port is refused.
+    ///
+    /// The node is first brought up to `now`, and what it owes from before
+    /// then goes out first: broadcasts it held for a first registration
+    /// whose response timeout has passed unserved leave before this one,
+    /// in the order they were held.
     pub fn send(
         &mut self,
         send: &Send<'_>,
@@ -291,7 +320,7 @@ impl<'h, const X: usize> BipPort<'h, X> {
         if send.port != self.port {
             return Err(SendRefusal::Other);
         }
-        self.drain(now, out);
+        self.on_deadline(now, out);
         let result = match send.to {
             Dest::Unicast(mac) => unicast(self.node.link(), mac, send.npdu, out),
             Dest::Broadcast => self.broadcast(send.npdu, now, out),

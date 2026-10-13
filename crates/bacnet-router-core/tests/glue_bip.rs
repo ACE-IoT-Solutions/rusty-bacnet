@@ -12,21 +12,11 @@ use bacnet_bip_core::node::{Datagram, Discard, ForBbmd, Link, Mode, Permissive};
 use bacnet_router_core::bip::{
     group, port_config, BbmdPort, BipPort, HeldBroadcast, Ingress, PortError,
 };
-use bacnet_router_core::message::code;
-use bacnet_router_core::router::{
-    Frame, Group, Limits, Options, PortConfig, Received, SendRefusal,
-};
-use bacnet_router_core::{Instant, PortId};
+use bacnet_router_core::router::{Group, Limits, Options, PortConfig, Received, SendRefusal};
+use bacnet_router_core::Instant;
 
 use fixture::*;
 use glue::*;
-
-/// The B/IP port: port 0, on network 1. The router's other port is port
-/// 1 on network 2, with 1-octet MACs.
-const BIP_PORT: PortId = PortId(0);
-
-/// A global-broadcast Who-Is.
-const GLOBAL_WHO_IS: [u8; 8] = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
 
 fn bip_port(mode: Mode, held: &mut [HeldBroadcast]) -> BipPort<'_> {
     BipPort::new(BIP_PORT, node(mode, Instant::ZERO), held).unwrap()
@@ -35,16 +25,6 @@ fn bip_port(mode: Mode, held: &mut [HeldBroadcast]) -> BipPort<'_> {
 /// The router, with `bip` as port 0 and an MS/TP-like port 1.
 fn router_on(bip: PortConfig) -> TestRouter {
     router_with(&[bip, port_on(2, OWN_1)], Options::HOSTED)
-}
-
-/// What port `port` received from `source`.
-fn frame<'f>(port: u8, source: &'f [u8], link_group: bool, npdu: &'f [u8]) -> Frame<'f> {
-    Frame {
-        port: PortId(port),
-        source,
-        link_group,
-        npdu,
-    }
 }
 
 #[test]
@@ -312,16 +292,8 @@ fn naks_and_drops_stay_at_the_port() {
 fn bbmd_port_delivers_and_forwards() {
     let now = Instant::from_secs(1);
     let mut tables: Tables<2, 2> = Tables::new(OWN);
-    let peer_row = [BdtEntry::new(BBMD, core::net::Ipv4Addr::BROADCAST)];
-    tables.bdt.set(BdtEntries::from_entries(&peer_row)).unwrap();
-    let limits = RegistrationLimits::default();
-    let registered = tables
-        .fdt
-        .register(DEVICE, 60, now, &limits, Reservation::Ordinary, || true);
-    assert!(registered.result.is_ok());
     let mut targets = [Target::UNUSED; Tables::<2, 2>::MAX_TARGETS];
-    let mut bbmd =
-        BbmdPort::<2, 2>::new(BIP_PORT, node(Mode::Bbmd, now), &mut tables, &mut targets).unwrap();
+    let mut bbmd = bbmd_port(&mut tables, &mut targets, now);
     let mut router = router_on(bbmd.config(1));
     let (mut out, mut host) = (Wire::default(), Recorder::default());
 
@@ -533,113 +505,83 @@ fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
     assert_eq!(router.counters().refused, 3);
 }
 
-/// Each datagram the sink sent since the last call, with when.
-fn sent_at(out: &mut Wire, now: Instant, trace: &mut Vec<(Instant, Out)>) {
-    trace.extend(out.take().into_iter().map(|sent| (now, sent)));
+/// A BBMD port at [`OWN`] with one peer BBMD, reached two-hop, and one
+/// foreign device registered at `now`, over `tables` and `targets`.
+fn bbmd_port<'t>(
+    tables: &'t mut Tables<2, 2>,
+    targets: &'t mut [Target],
+    now: Instant,
+) -> BbmdPort<'t, 2, 2> {
+    let peer_row = [BdtEntry::new(BBMD, core::net::Ipv4Addr::BROADCAST)];
+    tables.bdt.set(BdtEntries::from_entries(&peer_row)).unwrap();
+    let limits = RegistrationLimits::default();
+    let registered = tables
+        .fdt
+        .register(DEVICE, 60, now, &limits, Reservation::Ordinary, || true);
+    assert!(registered.result.is_ok());
+    BbmdPort::new(BIP_PORT, node(Mode::Bbmd, now), tables, targets).unwrap()
 }
 
-/// A foreign-device port holding two broadcasts, on a router with fix R3
-/// on, started at `t0`: its first registration sent, and the router's
-/// startup announcements carried out.
-fn started_foreign_port<'h>(
-    held: &'h mut [HeldBroadcast],
-    out: &mut Wire,
-) -> (BipPort<'h>, TestRouter) {
-    let t0 = Instant::ZERO;
-    let mut bip = BipPort::new(BIP_PORT, node(foreign(2), t0), held).unwrap();
-    let r3 = options(|options| options.fixes.announce_numbers = true);
-    let mut router = router_with(&[bip.config(1), port_on(2, OWN_1)], r3);
-    bip.on_deadline(t0, out);
-    router.start();
-    let results = pump(&mut router, |send| match send.port {
-        BIP_PORT => bip.send(send, t0, out),
-        _ => Ok(()),
-    });
-    assert_eq!(
-        results,
-        [(0, Ok(())), (0, Ok(())), (1, Ok(())), (1, Ok(()))]
-    );
-    (bip, router)
-}
-
-/// What trace E sends at start, and later the two held announcements
-/// released at `released`, each as a Distribute-Broadcast-To-Network.
-fn trace_e(released: Instant) -> [(Instant, Out); 3] {
-    let dbtn = BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK;
-    let ttl = 60u16.to_be_bytes();
-    let number_is = message(code::NETWORK_NUMBER_IS, &[0, 1, 1]);
-    [
+/// Each datagram of a BBMD port's own that the socket refuses is counted
+/// once: a NAK, and each forwarded copy.
+#[test]
+fn refused_datagrams_of_a_bbmd_port_are_counted() {
+    let mut out = Wire {
+        refuse: Some(SendRefusal::Full),
+        ..Wire::default()
+    };
+    let now = Instant::from_secs(1);
+    let mut tables: Tables<2, 2> = Tables::new(OWN);
+    let mut targets = [Target::UNUSED; Tables::<2, 2>::MAX_TARGETS];
+    let mut bbmd = bbmd_port(&mut tables, &mut targets, now);
+    let who_is = [0x01, 0x00, 0x10, 0x08];
+    let forwarded = Bvll::ForwardedNpdu {
+        origin: ORIGIN,
+        npdu: &who_is,
+    };
+    for (message, from, to, refused) in [
+        // A subnet broadcast, to the peer and the device.
+        (Bvll::OriginalBroadcastNpdu(&who_is), PEER, TO_BROADCAST, 2),
+        // The peer's forward, to the subnet and the device.
+        (forwarded, BBMD, UNICAST, 4),
+        // A broadcast from a device that isn't registered: its NAK.
         (
-            Instant::ZERO,
-            Out::new(BBMD, BvlcFunction::REGISTER_FOREIGN_DEVICE, &ttl),
+            Bvll::DistributeBroadcastToNetwork(&who_is),
+            PEER,
+            UNICAST,
+            5,
         ),
-        (released, Out::new(BBMD, dbtn, &number_is)),
-        (released, Out::new(BBMD, dbtn, &i_am(&[2]))),
-    ]
+    ] {
+        let payload = encode(&message);
+        let ingress = bbmd.receive(
+            &datagram(&payload, from, to),
+            now,
+            &mut Permissive,
+            &mut out,
+        );
+        assert!(!matches!(ingress, Ingress::Discarded(_)), "{ingress:?}");
+        assert_eq!(bbmd.refused(), refused, "{message:?}");
+    }
 }
 
-/// Trace E (design 5.2): a router port that is a foreign device, holding
-/// two broadcasts. At start it registers, and holds its two startup
-/// announcements, the Network-Number-Is and the I-Am-Router (fix R3 on);
-/// the BBMD's success 10 ms later releases them, in order (Annex J.7.4;
-/// decision D17).
+/// A BBMD port whose socket refuses the router's broadcast on the subnet
+/// forwards it nowhere, and the router hears of the refusal.
 #[test]
-fn foreign_port_announces_after_registration() {
-    let mut held = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
-    let mut out = Wire::default();
-    let (mut bip, mut router) = started_foreign_port(&mut held, &mut out);
-    let mut trace = Vec::new();
-    sent_at(&mut out, Instant::ZERO, &mut trace);
-    let view = bip.node().registration(Instant::ZERO).unwrap();
-    assert_eq!((view.held, view.first_resolved), (2, false));
-
-    let t10 = Instant::from_millis(10);
-    let success = encode(&Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION));
-    let ingress = bip.receive(
-        &datagram(&success, BBMD, UNICAST),
-        t10,
-        &mut Permissive,
-        &mut out,
-    );
-    assert_eq!(ingress, Ingress::Handled);
-    sent_at(&mut out, t10, &mut trace);
-    assert_eq!(trace, trace_e(t10));
-    assert!(bip.node().registration(t10).unwrap().registered);
-    let counters = bip.node_mut().take_counters();
-    assert_eq!(
-        (counters.broadcasts_held, counters.broadcasts_released),
-        (2, 2)
-    );
-    assert_eq!(bip.refused(), 0);
-
-    // From now on a broadcast goes at once.
+fn a_bbmd_broadcast_the_socket_refuses_goes_nowhere() {
+    let now = Instant::from_secs(1);
+    let mut tables: Tables<2, 2> = Tables::new(OWN);
+    let mut targets = [Target::UNUSED; Tables::<2, 2>::MAX_TARGETS];
+    let mut bbmd = bbmd_port(&mut tables, &mut targets, now);
+    let mut router = router_on(bbmd.config(1));
+    let mut out = Wire {
+        refuse: Some(SendRefusal::Full),
+        ..Wire::default()
+    };
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
-    let results = pump(&mut router, |send| bip.send(send, t10, &mut out));
-    assert_eq!(results, [(0, Ok(()))]);
-    assert_eq!(
-        out.take()[0].function,
-        BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK
-    );
-}
-
-/// Trace E's second run: the BBMD never answers, so the held announcements
-/// go out when the first attempt's response timeout passes, 3 s after it
-/// (D17), and the next attempt comes later.
-#[test]
-fn foreign_port_announces_after_the_response_timeout() {
-    let mut held = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
-    let mut out = Wire::default();
-    let (mut bip, _router) = started_foreign_port(&mut held, &mut out);
-    let mut trace = Vec::new();
-    sent_at(&mut out, Instant::ZERO, &mut trace);
-
-    let timeout = bip.next_deadline().unwrap();
-    assert_eq!(timeout, Instant::from_secs(3));
-    bip.on_deadline(timeout, &mut out);
-    sent_at(&mut out, timeout, &mut trace);
-    assert_eq!(trace, trace_e(timeout));
-    let view = bip.node().registration(timeout).unwrap();
-    assert!(view.first_resolved && !view.registered);
-    assert!(view.next_attempt.is_some_and(|next| next > timeout));
+    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), now, &mut host);
+    let results = pump(&mut router, |send| bbmd.send(send, now, &mut out));
+    assert_eq!(results, [(0, Err(SendRefusal::Full))]);
+    assert_eq!(out.calls, 1, "no copy follows the refused broadcast");
+    assert_eq!(bbmd.refused(), 0, "the router counts it");
+    assert_eq!(router.counters().refused, 1);
 }

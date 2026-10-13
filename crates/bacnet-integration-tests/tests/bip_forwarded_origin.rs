@@ -18,7 +18,9 @@ use bacnet_transport::bip::BipTransport;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::NoSerial;
 use bacnet_transport::port::TransportPort;
+use bacnet_types::MacAddr;
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
 /// The B/IP network, and the one behind the router.
@@ -28,31 +30,51 @@ const OTHER_NET: u16 = 2;
 /// The forward's origin: 198.51.100.10, UDP port 0xBAC1.
 const ORIGIN: [u8; 6] = [198, 51, 100, 10, 0xBA, 0xC1];
 
+/// A router whose B/IP port is on loopback, its broadcasts to its own
+/// address, at a UDP port picked here so the test can address it; its
+/// other port's far end, the station at MAC 0x05; where the router's
+/// unicasts there went; and the B/IP port.
+///
+/// The transport binds its own socket, so the pick has to let go of the
+/// port before the router takes it, and another process can take it in
+/// between: a start that fails is tried again on a fresh port.
+async fn start() -> (
+    BACnetRouter,
+    LoopbackTransport,
+    mpsc::UnboundedReceiver<MacAddr>,
+    u16,
+) {
+    for _ in 0..8 {
+        let port = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let bip = BipTransport::new(Ipv4Addr::LOCALHOST, port, Ipv4Addr::LOCALHOST);
+        let (mut router_end, station) = LoopbackTransport::pair(vec![0x01], vec![0x05]);
+        let unicast_to = router_end.record_unicast_destinations();
+        let ports = vec![
+            RouterPort {
+                transport: AnyTransport::<NoSerial>::Bip(Box::new(bip)),
+                network_number: BIP_NET,
+            },
+            RouterPort {
+                transport: AnyTransport::Loopback(router_end),
+                network_number: OTHER_NET,
+            },
+        ];
+        if let Ok(StartedRouter { router, .. }) =
+            BACnetRouter::start(ports, RouterOptions::new()).await
+        {
+            return (router, station, unicast_to, port);
+        }
+    }
+    panic!("no loopback UDP port the router could bind");
+}
+
 #[tokio::test]
 async fn forwarded_origin_and_priority_survive_routing() {
-    // The router's B/IP port, on loopback at a port picked here so the
-    // test can address it; its broadcasts go to its own address.
-    let port = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let bip = BipTransport::new(Ipv4Addr::LOCALHOST, port, Ipv4Addr::LOCALHOST);
-    let (mut router_end, mut station) = LoopbackTransport::pair(vec![0x01], vec![0x05]);
-    let mut unicast_to = router_end.record_unicast_destinations();
-    let ports = vec![
-        RouterPort {
-            transport: AnyTransport::<NoSerial>::Bip(Box::new(bip)),
-            network_number: BIP_NET,
-        },
-        RouterPort {
-            transport: AnyTransport::Loopback(router_end),
-            network_number: OTHER_NET,
-        },
-    ];
-    let StartedRouter { mut router, .. } = BACnetRouter::start(ports, RouterOptions::new())
-        .await
-        .unwrap();
+    let (mut router, mut station, mut unicast_to, port) = start().await;
     let mut from_router = station.start().await.unwrap();
 
     // A BBMD forwards a broadcast from the origin: an NPDU for station 5
@@ -84,7 +106,11 @@ async fn forwarded_origin_and_priority_survive_routing() {
     assert_eq!(relayed.npdu.as_ref(), expected);
     assert_eq!(relayed.npdu[1] & 0x03, 3, "life-safety priority");
     assert!(!relayed.link_layer_group);
-    assert_eq!(unicast_to.recv().await.unwrap().as_slice(), [0x05]);
+    let to = timeout(Duration::from_secs(5), unicast_to.recv())
+        .await
+        .expect("the relay's destination is recorded")
+        .unwrap();
+    assert_eq!(to.as_slice(), [0x05]);
 
     router.stop().await;
     station.stop().await.unwrap();
