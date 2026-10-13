@@ -16,7 +16,7 @@ const readRepo = path => readFile(new URL(path, repo), 'utf8');
 const series = release.split('.').slice(0, 2).join('.');
 // The release project/upgrading.md moves from. The upgrade guide and the lab's
 // recorded evidence may name it; nothing else may.
-const previous = '0.11.0';
+const previous = '0.12.0';
 const history = new Set(['project/upgrading.md', 'start/local-lab.mdx']);
 // A 0.x.y version, alone or as v0.x.y, but not part of an address such as 0.0.0.0.
 const versions = text => [...new Set([...text.matchAll(/(?<![\w.])v?(0\.\d+\.\d+)(?![.\d])/g)].map(match => match[1]))];

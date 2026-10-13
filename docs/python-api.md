@@ -2,8 +2,8 @@
 
 `rusty_bacnet` provides Python bindings for the Rust BACnet protocol stack via PyO3. All I/O operations are async (`asyncio`-based).
 
-This reference follows the `dev` branch. At the `v0.12.0` tag it describes the
-[published 0.12.0 package](https://pypi.org/project/rusty-bacnet/0.12.0/), which
+This reference follows the `dev` branch. At the `v0.13.0` tag it describes the
+[published 0.13.0 package](https://pypi.org/project/rusty-bacnet/0.13.0/), which
 the site's tutorials also target; see the [installation guidance](../README.md#install).
 Changes merged after the release wait in [`changelog.d/`](../changelog.d/); to
 use them, follow [Build from source](../README.md#build-from-source).
@@ -34,10 +34,10 @@ that yields a notification or raises `StopAsyncIteration` when the channel close
 
 ## Installation
 
-Install the published 0.12.0 package with:
+Install the published 0.13.0 package with:
 
 ```bash
-pip install "rusty-bacnet==0.12.0"
+pip install "rusty-bacnet==0.13.0"
 ```
 
 Wheels cover CPython 3.11 to 3.14 on Linux (glibc 2.17 or newer; x86_64,
