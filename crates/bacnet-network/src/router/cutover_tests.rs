@@ -6,7 +6,10 @@
 //! - the control authorizer runs under the engine's lock;
 //! - an I-Could-Be-Router for a new network stops at the route cap;
 //! - `start` refuses what the engine can't run: no port, more than 255,
-//!   or a router MAC longer than 18 octets.
+//!   or a router MAC longer than 18 octets;
+//! - a rewrite longer than the engine's scratch isn't routed.
+//!
+//! The bounded hold-down pool is `bacnet-router-core`'s own, tested there.
 
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
@@ -198,4 +201,45 @@ async fn start_refuses_what_the_engine_cannot_run() {
     .await
     .expect("18 octets is within the bound");
     router.stop().await;
+}
+
+/// A rewrite that fits the engine's 65,556-octet scratch is routed; one
+/// octet more is dropped, logged and counted in `write_failures`, where the
+/// router before the engine sent NPDUs of any length on to the port.
+#[tokio::test]
+async fn a_rewrite_past_the_scratch_is_dropped_and_counted() {
+    use super::envelope_harness::Harness;
+    use bacnet_encoding::npdu::NpduAddress;
+
+    // Version and control, SNET, SLEN and an 18-octet SADR: 23 octets
+    // before the APDU.
+    for (apdu_len, routed) in [(65_533, true), (65_534, false)] {
+        let mut h = Harness::two_port();
+        let npdu = Npdu {
+            destination: Some(NpduAddress {
+                network: 2000,
+                mac_address: MacAddr::from_slice(&[5]),
+            }),
+            hop_count: 255,
+            payload: Bytes::from(vec![0x10; apdu_len]),
+            ..Npdu::default()
+        };
+        h.dispatch(h.ctx(0, &[0xA5; 18], npdu)).await;
+        let sent = h.drain(1);
+        if routed {
+            let [SendRequest::Unicast { npdu, mac, .. }] = &sent[..] else {
+                panic!("expected the rewrite on port 1, got {sent:?}");
+            };
+            assert_eq!(npdu.len(), 65_556);
+            assert_eq!(mac.as_slice(), [5]);
+        } else {
+            assert!(sent.is_empty(), "{apdu_len}");
+        }
+        assert_eq!(
+            h.counters().write_failures,
+            u64::from(!routed),
+            "{apdu_len}"
+        );
+        h.assert_quiet();
+    }
 }

@@ -2031,6 +2031,13 @@ with a MAC of at most `NpduAddress::MAX_MAC_LEN` octets, and `start` refuses
 anything else. The table stops at its route cap, direct routes included, for
 learning, Initialize-Routing-Table updates and I-Could-Be-Router offers
 alike, counting each refusal in its claim counters' `learned_cap_ignored`.
+Two more bounds come with the engine. A rewritten NPDU longer than the
+engine's 65,556-octet scratch (the largest BACnet/SC NPDU, 65,535 octets,
+plus the SNET, SLEN and longest SADR a router adds) isn't routed: it is
+dropped, logged and counted in `BACnetRouter::counters().write_failures`.
+And the table keeps at most `HOLD_RECORDS` (1,024) reject hold-down records,
+one per network and arrival port; a full pool gives up its oldest record,
+counted in its claim counters' `hold_evicted`.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

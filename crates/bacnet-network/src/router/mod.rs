@@ -71,7 +71,8 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, MutexGuard};
 
-use bacnet_router_core::router::Counters;
+/// The engine's counts, as [`BACnetRouter::counters`] reads them.
+pub use bacnet_router_core::router::Counters;
 use bacnet_router_core::{Instant, Mac};
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
@@ -231,8 +232,14 @@ impl BACnetRouter {
         self.shared.gate.snapshot()
     }
 
-    /// The engine's counts so far.
-    fn counters(&self) -> Counters {
+    /// The engine's counts since start: the four drop counts below, and
+    /// what else the engine counts, such as the frames it refused as
+    /// malformed, the relays a spent hop count stopped, the rejects it sent,
+    /// and the rewrites it couldn't write (`write_failures`: longer than its
+    /// 65,556-octet scratch, or with a field no NPDU may carry). They
+    /// saturate and name no peer. The table's own counts are
+    /// [`claim_counters`](crate::router_table::Table::claim_counters).
+    pub fn counters(&self) -> Counters {
         self.shared.engine.lock().counters()
     }
 
