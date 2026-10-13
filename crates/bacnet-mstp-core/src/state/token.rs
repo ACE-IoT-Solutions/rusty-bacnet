@@ -115,39 +115,34 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// an extended one when it is longer than 501 octets (Clauses 9.3.9,
     /// 9.3.10), which only extended frames let into the queue.
     ///
+    /// The frame is encoded straight from the queue's slot, which lends the
+    /// NPDU, into the action buffers' frame buffer: nothing NPDU-sized goes
+    /// on the stack.
+    ///
     /// An NPDU that cannot go out (longer than this station sends, or than
-    /// its `NPDU`-octet scratch holds) is dropped, counted as oversize, and
-    /// the next one is tried, so it never holds the token. The attempts are
-    /// bounded in case a [`QueueStorage`] fails to drop it.
+    /// an `NPDU`-octet delivery slot holds) is dropped, counted as oversize,
+    /// and the next one is tried, so it never holds the token. The attempts
+    /// are bounded in case a [`QueueStorage`] fails to drop it.
     fn dequeue_and_send(&mut self, now: Instant) -> Result<bool, CoreError> {
         self.queues.expire(now);
-        let mut npdu = [0; NPDU];
         for _ in 0..=self.queues.total_depth() {
             let Some(kind) = self.next_queue_kind(now) else {
                 return Ok(false);
             };
-            let (destination, copied) = match self.queues.dequeue_kind(kind, now, NPDU) {
-                Ok(Some(item)) => {
-                    let copied = npdu
-                        .get_mut(..item.npdu.len())
-                        .map(|data| data.copy_from_slice(item.npdu))
-                        .map(|()| item.npdu.len());
-                    (item.destination, copied)
-                }
+            let item = match self.queues.dequeue_kind(kind, now, NPDU) {
+                Ok(Some(item)) => item,
                 Ok(None) => return Ok(false),
-                // Too long for the scratch: the queue dropped and counted it.
+                // Longer than NPDU: the queue dropped and counted it.
                 Err(_) => continue,
             };
-            let Some(data) = copied
-                .and_then(|len| npdu.get(..len))
-                .filter(|data| data.len() <= self.config.max_npdu_length())
-            else {
+            let data = item.npdu;
+            if data.len() > NPDU || data.len() > self.config.max_npdu_length() {
                 // The queue lent more octets than it was asked for, or holds
                 // an NPDU this station doesn't send, which a queue fed only
                 // through `enqueue_npdu` never does.
                 self.record_oversize_npdu(kind);
                 continue;
-            };
+            }
             self.consecutive_broadcast = if kind == QueueKind::Broadcast {
                 self.consecutive_broadcast.saturating_add(1)
             } else {
@@ -174,7 +169,15 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                     PostTransmit::ContinueToken,
                 ),
             };
-            self.queue_frame(frame_type, destination, data, post, Origin::Holder, now)?;
+            // The lent NPDU borrows the queues, and the frame buffer is the
+            // action buffers': the two never overlap.
+            self.actions.encode_frame(Frame::new(
+                frame_type,
+                item.destination,
+                self.config.station,
+                data,
+            ))?;
+            self.send_encoded(post, Origin::Holder, now)?;
             return Ok(true);
         }
         Ok(false)

@@ -8,8 +8,8 @@
 //!
 //! # Extended frames
 //!
-//! The action buffers and the core's NPDU scratch are always sized for
-//! extended frames, whatever the configuration: on a host they cost only
+//! The action buffers, and so the core's `NPDU` parameter, are always sized
+//! for extended frames, whatever the configuration: on a host they cost only
 //! memory, and one core type serves both settings. What changes behaviour
 //! follows [`MstpConfig::extended_frames`](super::MstpConfig::extended_frames):
 //! the core's flag, the receive storage (a standard frame's, or an extended
