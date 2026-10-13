@@ -429,12 +429,10 @@ targets, so a crate that needs one builds only with a backend such as
   compiler-builtins' `memmove` and the `memmove`, `__aeabi_memmove`,
   `__aeabi_memmove4` and `__aeabi_memmove8` entry points to it, 0.8 to
   1.4 KB in all. A copy of a whole value that the compiler can't prove
-  doesn't overlap its source, or a slice rotation, calls it. The bip, node
-  and bbmd images link none, and their limit of 0 keeps it out. The mstp
-  images need it for two shifts within a buffer, the codec stream
-  decoder's discard of octets it is done with and the heapless queue's
-  removal of a slot (3 functions on Cortex-M, 2 on RISC-V), and the apdu
-  image links it too (2); each limit is that count, with no headroom.
+  doesn't overlap its source, or a slice rotation, calls it. The bip,
+  node, bbmd, mstp and mstp-extended images link none, and their limit of
+  0 keeps it out. The apdu image links it (2); its limit is that count,
+  with no headroom.
   `scripts/ci/test-firmware-size.py` tests the helper on small ELF files
   it builds itself, in the Lint job. CI runs the check in the Clippy job,
   after the `no_std` check, which already sets up bare-metal targets,
@@ -442,11 +440,11 @@ targets, so a crate that needs one builds only with a backend such as
   for builds that take seconds.
 - **What `.text` holds.** Each image's `.text` includes its scenario, not
   just the stack it links. The check's by-crate list shows the split: on
-  `thumbv7m-none-eabi`, the MS/TP image's 17.9 KB is about 5.7 KB of
-  `bacnet-mstp-core`, 5.7 KB of the scenario (with the core code it
-  inlines), 3.5 KB of compiler-builtins and startup code (memory copies
+  `thumbv7m-none-eabi`, the MS/TP image's 16.4 KB is about 6.4 KB of
+  `bacnet-mstp-core`, 5.5 KB of the scenario (with the core code it
+  inlines), 1.5 KB of compiler-builtins and startup code (memory copies
   and fills, and the reset handler; the list shows the unmangled part
-  separately) and 2.7 KB of `bacnet-mstp-codec`, about 1.3 KB of it the
+  separately) and 2.9 KB of `bacnet-mstp-codec`, about 1.3 KB of it the
   COBS and CRC-32K of extended frames, which its stream decoder and
   encoder can reach though the scenario sends none. Only `thumbv6m-none-eabi`,
   which has no divide instruction, also links compiler-builtins' 32-bit
@@ -462,22 +460,26 @@ targets, so a crate that needs one builds only with a backend such as
   the bbmd image's 8.5 KB,
   4.8 KB to the scenario with the receive rules and table code it inlines,
   1.1 KB to the codec, 0.9 KB to `bacnet-bip-core` and 0.7 KB to
-  compiler-builtins. The mstp-extended image's 17.6 KB is about 5.8 KB of
+  compiler-builtins. The mstp-extended image's 15.5 KB is about 5.5 KB of
   `bacnet-mstp-core`, 5.6 KB of the scenario with the core code it
-  inlines and 2.7 KB of the codec: smaller than the mstp image, whose
+  inlines and 2.9 KB of the codec: smaller than the mstp image, whose
   scenario also drives the codec's stream decoder on its own.
   `bacnet-bip-core` avoids the two patterns that link `memmove` (#1667):
   it copies a 6-octet B/IP address's IP and port apart into a BDT's own
   row and the FDT rows of a Read-FDT-Ack, which copied whole linked it on
   `thumbv6m-none-eabi`, and the node shifts its queued events by swaps,
-  where `rotate_left` linked it on every target.
+  where `rotate_left` linked it on every target. The MS/TP stack avoids
+  them too (#1691): the codec's stream decoder drops octets by moving a
+  start offset and moves what it holds to the front only in pieces that
+  don't overlap, and the core's queues keep each item in its slot until
+  it leaves, so no removal shifts the others.
 - **RAM.** Most scenarios keep their buffers in statics, so `.bss`
   measures them; the mstp-extended image's scenario is the exception,
   below. The MS/TP image keeps everything large the core borrows in its
   static, the firmware pattern the core's crate docs describe: receive
   storage, queues (3,360 octets for `HeaplessQueues<4, 2>`) and
   `ActionBuffers<1>` (1,028), 5,544 octets in all with the codec part's
-  buffers. The core itself, 512
+  buffers. The core itself, 520
   octets on these targets, is built on the stack. `.bss` doesn't count the
   stack; the [emulation check](#emulation-manual) measures how deep it goes.
   The mstp-extended image's static holds only what the core borrows,
@@ -578,21 +580,27 @@ schedule runs it, and no required check depends on it.
   uncounted, and it covers the emulation build, which runs the same
   scenario code with the same profile as the link test's image. The peaks,
   measured with Rust 1.99.0 and QEMU 10.0.13 when the mstp-extended, node
-  and bbmd images joined (#1664, #1667), in octets, and on the two 16 KiB
-  boards the stack's room, all of RAM above the statics:
+  and bbmd images joined (#1664, #1667), and the two MS/TP images' again
+  when the core stopped copying a queued NPDU onto its stack (#1691), in
+  octets, and on the two 16 KiB boards the stack's room, all of RAM above
+  the statics:
 
   | Target (board) | mstp | mstp-extended | bip | node | bbmd | apdu |
   | --- | --- | --- | --- | --- | --- | --- |
-  | `thumbv6m-none-eabi` (`microbit`) | 3,216 (10,840) | 6,136 (8,672) | 2,220 (16,252) | 4,716 (16,320) | 2,300 (16,144) | 2,768 (15,328) |
-  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 2,796 | 4,836 | 2,100 | 4,188 | 2,228 | 2,536 |
-  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 2,788 | 4,836 | 2,100 | 4,188 | 2,228 | 2,536 |
-  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 2,676 (10,840) | 4,676 (8,672) | 2,020 (16,252) | 4,008 (16,320) | 2,132 (16,144) | 2,464 (15,328) |
+  | `thumbv6m-none-eabi` (`microbit`) | 2,040 (10,840) | 3,020 (8,672) | 2,220 (16,252) | 4,716 (16,320) | 2,300 (16,144) | 2,768 (15,328) |
+  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 1,824 | 2,868 | 2,100 | 4,188 | 2,228 | 2,536 |
+  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 1,832 | 2,868 | 2,100 | 4,188 | 2,228 | 2,536 |
+  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 1,712 (10,840) | 2,732 (8,672) | 2,020 (16,252) | 4,008 (16,320) | 2,132 (16,144) | 2,464 (15,328) |
 
-  So on ARMv6-M the MS/TP image needs about 8.8 KB of RAM: 5,544 octets of
-  statics and 3.2 KB of stack. With extended frames on it needs about
-  13.8 KB, 7,712 octets of statics and 6.1 KB of stack, which leaves
-  2.5 KB of a 16 KiB part free: the core's send of a queued NPDU, its
-  deepest call, has buffers on the stack that grow from 501 octets to 1497.
+  So on ARMv6-M the MS/TP image needs about 7.6 KB of RAM: 5,544 octets of
+  statics and 2.0 KB of stack. With extended frames on it needs about
+  10.7 KB, 7,712 octets of statics and 3.0 KB of stack, which leaves
+  5.6 KB of a 16 KiB part free. The core encodes a queued NPDU's frame
+  straight from the queue's slot, so its send no longer grows with
+  extended frames; the mstp-extended image's deepest point is its
+  scenario's, taking in the peer's 600-octet reply with about 1.2 KB of
+  the scenario's own buffers for it live. Until #1691 the core copied the
+  NPDU onto its stack, and the image peaked at 6,136 octets there.
   The node image's peak is mostly the scenario's own: on ARMv6-M its frame
   is 2.8 KB, holding the 800-octet summary, the 752-octet node and the
   result `Node::new` builds it in, and the reset entry keeps the 0.8 KB

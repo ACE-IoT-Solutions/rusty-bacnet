@@ -28,12 +28,9 @@
 # - memmove_functions counts compiler-builtins' memmove and the entry points
 #   in front of it (memmove, __aeabi_memmove, __aeabi_memmove4 and 8),
 #   0.8-1.4 KB in all, which a whole-value copy the compiler can't prove
-#   doesn't overlap, or a slice rotation, links. bip, node and bbmd link
-#   none, so a copy that brings it back fails the check. mstp and
-#   mstp-extended link it for the codec stream decoder's discard, which
-#   shifts its buffer, and the heapless queue's remove, which shifts the
-#   slots behind it (3 functions on Cortex-M, 2 on RISC-V); apdu links it
-#   too (2). Their limits are those counts, with no headroom.
+#   doesn't overlap, or a slice rotation, links. bip, node, bbmd, mstp and
+#   mstp-extended link none, so a copy that brings it back fails the check.
+#   apdu links it (2); its limit is that count, with no headroom.
 #
 # The totals go by section flags, not memory regions, and leave out the
 # alignment gaps between sections (at most 4 octets of flash per image today).
@@ -113,17 +110,36 @@
 # (#1667), and after the scenario stopped moving its node and summary into
 # the struct that drives them: 1.2-1.4 KB less text on Cortex-M and 0.9 KB
 # on RISC-V than the 13400 / 15140 / 14720 / 13304 first measured.
+#
+# The mstp and mstp-extended rows were measured again on 2026-10-12, same
+# toolchain, when the codec's stream decoder stopped shifting its buffer,
+# the queues stopped shifting their slots and the core stopped copying a
+# queued NPDU onto its stack (#1691). Neither image links memmove any more:
+# 1.0-1.7 KB less text for mstp and 1.4-2.1 KB for mstp-extended, with
+# .rodata and RAM unchanged. compiler-builtins' memmove accounts for most
+# of it; in the mstp image, the queues' slot code and the decoder's start
+# offset add 0.15-0.4 KB to the core and the codec together. Their budgets
+# are those sizes plus 12%, as text / flash:
+#
+#   thumbv7m mstp              16448 / 18532
+#   thumbv6m mstp              17596 / 18848
+#   riscv32imc mstp            19048 / 20394
+#   thumbv7em mstp             16416 / 18500
+#   thumbv7m mstp-extended     15528 / 17536
+#   thumbv6m mstp-extended     16684 / 17860
+#   riscv32imc mstp-extended   18052 / 19298
+#   thumbv7em mstp-extended    15528 / 17536
 
 [thumbv7m-none-eabi.mstp]
-text = 20000
+text = 18432
 rodata = 1200
 data = 64
 bss = 6224
-flash = 22336
+flash = 20768
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
-memmove_functions = 3
+memmove_functions = 0
 
 [thumbv7m-none-eabi.bip]
 text = 10016
@@ -148,15 +164,15 @@ div64_functions = 0
 memmove_functions = 2
 
 [thumbv7m-none-eabi.mstp-extended]
-text = 19760
+text = 17392
 rodata = 1104
 data = 64
 bss = 8640
-flash = 22016
+flash = 19648
 ram = 8640
 fmt_functions = 0
 div64_functions = 0
-memmove_functions = 3
+memmove_functions = 0
 
 [thumbv7m-none-eabi.node]
 text = 13648
@@ -181,15 +197,15 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.mstp]
-text = 20928
+text = 19712
 rodata = 1200
 data = 64
 bss = 6224
-flash = 22336
+flash = 21120
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
-memmove_functions = 3
+memmove_functions = 0
 
 [thumbv6m-none-eabi.bip]
 text = 11728
@@ -214,15 +230,15 @@ div64_functions = 3
 memmove_functions = 2
 
 [thumbv6m-none-eabi.mstp-extended]
-text = 20928
+text = 18688
 rodata = 1104
 data = 64
 bss = 8640
-flash = 22240
+flash = 20016
 ram = 8640
 fmt_functions = 0
 div64_functions = 0
-memmove_functions = 3
+memmove_functions = 0
 
 [thumbv6m-none-eabi.node]
 text = 15424
@@ -247,15 +263,15 @@ div64_functions = 0
 memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.mstp]
-text = 21952
+text = 21344
 rodata = 1520
 data = 64
 bss = 6224
-flash = 23488
+flash = 22848
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
-memmove_functions = 2
+memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.bip]
 text = 13248
@@ -280,15 +296,15 @@ div64_functions = 0
 memmove_functions = 2
 
 [riscv32imc-unknown-none-elf.mstp-extended]
-text = 21776
+text = 20224
 rodata = 1376
 data = 64
 bss = 8640
-flash = 23168
+flash = 21616
 ram = 8640
 fmt_functions = 0
 div64_functions = 0
-memmove_functions = 2
+memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.node]
 text = 15488
@@ -313,15 +329,15 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.mstp]
-text = 19856
+text = 18400
 rodata = 1200
 data = 64
 bss = 6224
-flash = 22192
+flash = 20720
 ram = 6224
 fmt_functions = 0
 div64_functions = 0
-memmove_functions = 3
+memmove_functions = 0
 
 [thumbv7em-none-eabihf.bip]
 text = 9936
@@ -346,15 +362,15 @@ div64_functions = 0
 memmove_functions = 2
 
 [thumbv7em-none-eabihf.mstp-extended]
-text = 19712
+text = 17392
 rodata = 1104
 data = 64
 bss = 8640
-flash = 21968
+flash = 19648
 ram = 8640
 fmt_functions = 0
 div64_functions = 0
-memmove_functions = 3
+memmove_functions = 0
 
 [thumbv7em-none-eabihf.node]
 text = 13536
