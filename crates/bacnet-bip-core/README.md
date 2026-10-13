@@ -5,11 +5,20 @@ Portable BACnet/IP behaviour from Annex J of ASHRAE 135, for
 `bacnet-bip-codec`, which has the wire format, and below a socket.
 
 - `#![no_std]`, no allocator, no dependencies besides `bacnet-bip-codec`
-  and `bacnet-time`.
+  and `bacnet-time`. The codec is re-exported as `bacnet_bip_core::codec`,
+  since the API speaks its types.
 - Tables live in arrays whose size you pick with a const generic.
 - Time is an `Instant` you pass to each call; the crate reads no clock. It
   is `bacnet-time`'s, in nanoseconds, re-exported here, the same type
-  `bacnet-mstp-core` takes, so firmware feeds both one clock.
+  `bacnet-mstp-core` and `bacnet-router-core` take, so firmware feeds them
+  one clock. A `now` earlier than the latest one passed in is taken as
+  that latest one: time never runs backwards, so a clock that steps back
+  holds the timers still instead of failing.
+- The types that may grow are `#[non_exhaustive]`: build a `Datagram` or a
+  `bbmd::Context` with `new`, start a `Link`, a `Foreign` or the
+  `RegistrationLimits` from `new` or `DEFAULT` and set the fields to
+  change, and give a `match` on an error, refusal or `Discard` a wildcard
+  arm.
 
 ## What it has
 
@@ -50,8 +59,8 @@ this crate.
 
 ```rust
 use core::net::{Ipv4Addr, SocketAddrV4};
-use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{Context, Tables, Target};
+use bacnet_bip_core::codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::Instant;
 
 let own = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 1), 47808);

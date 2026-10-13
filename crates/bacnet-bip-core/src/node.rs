@@ -34,7 +34,7 @@
 //!
 //! ```
 //! use core::net::{Ipv4Addr, SocketAddrV4};
-//! use bacnet_bip_codec::{BvlcResultCode, Bvll};
+//! use bacnet_bip_core::codec::{BvlcResultCode, Bvll};
 //! use bacnet_bip_core::node::{
 //!     Action, Addressed, Datagram, Foreign, Inbound, Link, Mode, Node, Permissive,
 //! };

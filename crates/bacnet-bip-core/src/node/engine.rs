@@ -617,7 +617,9 @@ impl<const X: usize> Node<X> {
             .map(|lifecycle| lifecycle.snapshot(now.max(self.now)))
     }
 
-    /// The counts since the last call, which start again from zero.
+    /// The counts since the last call, which start again from zero: add
+    /// them to the host's own totals, as wide as it needs. Each count is a
+    /// `u32` that saturates between calls.
     pub fn take_counters(&mut self) -> NodeCounters {
         core::mem::take(&mut self.counters)
     }

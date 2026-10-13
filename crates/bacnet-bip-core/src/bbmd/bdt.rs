@@ -24,7 +24,7 @@ const EMPTY_ROW: BdtEntry = BdtEntry::new(
 ///
 /// ```
 /// use core::net::{Ipv4Addr, SocketAddrV4};
-/// use bacnet_bip_codec::BdtEntry;
+/// use bacnet_bip_core::codec::BdtEntry;
 /// use bacnet_bip_core::bbmd::distribution_address;
 ///
 /// let peer = SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 1), 47808);

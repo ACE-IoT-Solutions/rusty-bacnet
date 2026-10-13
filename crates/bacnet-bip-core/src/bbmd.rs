@@ -29,7 +29,7 @@
 //!
 //! ```
 //! use core::net::{Ipv4Addr, SocketAddrV4};
-//! use bacnet_bip_codec::{BdtEntries, BdtEntry};
+//! use bacnet_bip_core::codec::{BdtEntries, BdtEntry};
 //! use bacnet_bip_core::bbmd::{Context, RegistrationLimits, Reservation, Tables, Target, Via};
 //! use bacnet_bip_core::Instant;
 //!

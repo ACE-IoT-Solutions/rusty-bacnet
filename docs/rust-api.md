@@ -2069,6 +2069,49 @@ endpoint keeps its transport out of reach, so the builder takes a
 handing a transport to another owner. A registered Network Port reports the
 mode in `BACnet_IP_Mode`.
 
+### bacnet-bip-core (firmware)
+
+The B/IP node and BBMD above run on `bacnet-bip-core`, which firmware can use
+on its own: `no_std`, no allocator, and time as a `bacnet-time` `Instant`
+passed to each call (see
+[the architecture notes](architecture.md#the-bip-bbmd-and-the-portable-core)).
+It re-exports the BVLL codec as `bacnet_bip_core::codec`. A `now` earlier than
+the latest one passed in is taken as that latest one, so a clock that steps
+back holds the node's timers still instead of failing.
+
+Since 0.13.0 the types that may grow are `#[non_exhaustive]` (#1684), so code
+outside the crate builds them like this:
+
+- `node::Datagram::new(payload, source, to)`: read whole by the primary
+  socket; set `path` or `truncated` on the result when they differ.
+- `bbmd::Context::new(now, fdt_fanout)`.
+- `node::Link::new(address, subnet, mode)` and `node::Foreign::new(bbmd,
+  ttl)`, then set the fields to change (a link's `budget`, a registration's
+  `hold` or `retry`); `Node::new` checks the link again.
+- `bbmd::RegistrationLimits::DEFAULT` (also its `Default`), then set the
+  limits.
+- `node::NodeCounters` and `node::ExchangeCounters` from `Default`, then set
+  the counts.
+
+The core builds the rest, which a caller reads but can't build, or match
+without `..`: `NodeCounters`, `ExchangeCounters`, `RegisterAttempt`,
+`RegistrationSnapshot`, `Delivery`, `Response` (`Node::resolve` takes the one
+`Link::receive` returned), and `bbmd::Fanout`, `Distribution` and
+`RegisterOutcome`. A `match` on `ConfigError`, `Discard`, `ExchangeRefusal`,
+`LocalFailure`, `AttemptOutcome`, `RegistrationEvent`, `Retry`,
+`ForwardedTrust`, `ForwardRefusal`, `DistributeRefusal`, `RegistrationRefusal`,
+`BdtError` or `InvalidEntry` needs a wildcard arm. The enums a host acts on
+case by case stay exhaustive: `Action`, `Received`, `Inbound`, `ForBbmd`,
+`Mode`, `Arrival`, `Cast`, `Path`, `Via`, `Reservation`, `Registered`,
+`Admission` and `Operation`.
+
+Renamed in 0.13.0: `node::RegistrationView` is `RegistrationSnapshot`;
+`bbmd::GRACE_PERIOD_SECS` (a `u16`) is `GRACE_PERIOD`, a `Duration`;
+`bbmd::StorageFull` carries `needed` and `available`, in entries, as the
+codec's `SinkFull` does in octets; and `BdtError::Capacity`'s `capacity` is
+`available`. `RegistrationRefusal` and `InvalidEntry` implement
+`core::error::Error`.
+
 ---
 
 ## bacnet-network
