@@ -196,6 +196,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
             clock,
             npdus: npdu_tx,
             counts: self.diagnostics.counters.clone(),
+            transmit_pad: self.config.transmit_latency_pad,
         };
         let task = match &dedicated_runtime {
             Some(runtime) => runtime.handle.spawn(task.run()),

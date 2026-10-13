@@ -329,7 +329,7 @@ async fn unix_serial_with_echo_drops_its_own_frames() {
         max_master: 7,
         max_info_frames: 1,
         baud_rate: 38_400,
-        extended_frames: false,
+        ..MstpConfig::default()
     };
     let mut transport = MstpTransport::new(WithoutDrain(serial), config);
     let diagnostics = transport.diagnostics();

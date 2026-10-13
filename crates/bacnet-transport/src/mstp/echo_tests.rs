@@ -5,11 +5,10 @@
 use bacnet_mstp_codec::{decode_frame, FrameType};
 use tokio::time::Duration;
 
-use super::test_support::{config, encode, Bus, DrainMode, Port};
-use super::{Echo, LoopbackSerial, MstpConfig, MstpTransport, SerialPort};
+use super::test_support::{config, encode, Bus, DrainMode, Port, T_USAGE_TIMEOUT};
+use super::{Echo, LoopbackSerial, MstpTransport, SerialPort};
 use crate::port::TransportPort;
 
-const T_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 const TICK: Duration = Duration::from_millis(1);
 
 pub(super) const ECHOING: Port = Port {
@@ -119,41 +118,6 @@ async fn a_missing_echo_is_counted_after_the_grace() {
     assert!(next.start >= poll.end + super::DEFAULT_ECHO_GRACE);
     let counts = bus.transport.diagnostics().snapshot();
     assert!(counts.echo_missing >= 1);
-    bus.stop().await;
-}
-
-/// A port without a drain is timed by the baud rate alone: each frame ends
-/// its wire time after it started, and the next one keeps T_turnaround from
-/// that end.
-#[tokio::test(start_paused = true)]
-async fn a_port_without_drain_is_timed_by_the_wire() {
-    let port = Port {
-        drain: DrainMode::Unsupported,
-        ..Port::PLAIN
-    };
-    let mut bus = Bus::start_with(
-        MstpConfig {
-            max_info_frames: 2,
-            ..config(3, 4)
-        },
-        port,
-    )
-    .await;
-    let token = bus.join(4).await;
-    bus.transport.send_unicast(&[1, 0, 1], &[4]).await.unwrap();
-    bus.transport.send_unicast(&[1, 0, 2], &[4]).await.unwrap();
-    let mut last_end = bus.return_token(&token, 4).await;
-    for _ in 0..3 {
-        let sent = bus.next().await;
-        assert!(sent.start >= last_end + bus.turnaround, "{sent:?}");
-        assert!(sent.start <= last_end + bus.turnaround + TICK, "{sent:?}");
-        last_end = sent.end;
-    }
-    bus.until(last_end + TICK).await;
-    let counts = bus.transport.diagnostics().snapshot();
-    assert_eq!(counts.serial_write_errors, 0);
-    // Joining's poll and Token, two data frames and a Token.
-    assert_eq!(counts.mac.frames_transmitted, 5);
     bus.stop().await;
 }
 

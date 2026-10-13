@@ -25,6 +25,9 @@ pub(super) enum DrainMode {
     Immediate,
     /// `drain` is unsupported, as for a custom backend that has none.
     Unsupported,
+    /// `drain` fails with a transport error other than unsupported, as a
+    /// port whose transmit completion is unknown does.
+    Fails,
 }
 
 /// The station's end of the line.
@@ -79,6 +82,9 @@ impl SerialPort for WireSerial {
             DrainMode::Unsupported => Err(Error::Transport(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "no drain",
+            ))),
+            DrainMode::Fails => Err(Error::Transport(std::io::Error::other(
+                "simulated drain failure",
             ))),
         }
     }
@@ -273,7 +279,9 @@ impl Bus {
     }
 }
 
-/// A station at 9600 baud with addresses `station` and `max_master`.
+/// A station at 9600 baud with addresses `station` and `max_master`, the
+/// host's timeouts, and no transmit-latency pad on any platform, so a port
+/// without a drain is timed by the wire alone unless a test sets one.
 pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
     MstpConfig {
         this_station: station,
@@ -281,5 +289,13 @@ pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
         max_info_frames: 1,
         baud_rate: 9600,
         extended_frames: false,
+        transmit_latency_pad: Duration::ZERO,
+        ..MstpConfig::default()
     }
 }
+
+/// T_usage_timeout as [`config`] sets it: the host's 35 ms.
+pub(super) const T_USAGE_TIMEOUT: Duration = super::HOST_USAGE_TIMEOUT;
+
+/// T_reply_timeout as [`config`] sets it: the host's 300 ms.
+pub(super) const T_REPLY_TIMEOUT: Duration = super::HOST_REPLY_TIMEOUT;

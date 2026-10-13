@@ -2,7 +2,9 @@
 //! masters take extended frames, drives traffic through it and injects
 //! noise, damaged octets, power cuts, joins and a slow adapter for most of a
 //! run, then leaves it quiet; every invariant must hold throughout, and the
-//! ring must be whole again at the end.
+//! ring must be whole again at the end. Each seed runs with the shortest
+//! timeouts Clause 9.5.3 allows, then with a host transport's longest ones
+//! on every master and on every other master.
 //!
 //! Run it alone with `cargo nextest run -p bacnet-mstp-sim -E 'binary(property)'`.
 //! `MSTP_SIM_SEEDS=<n>` runs more seeds; `MSTP_SIM_SEED=<seed>` runs one;
@@ -11,7 +13,7 @@
 mod common;
 
 use bacnet_mstp_codec::FrameType;
-use bacnet_mstp_core::{Duration, Instant};
+use bacnet_mstp_core::{Duration, Instant, MAX_FRAME_ABORT, MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT};
 use bacnet_mstp_sim::analysis::token_users;
 use bacnet_mstp_sim::{
     AdapterSpec, CollisionClass, Corruption, Fault, MasterSpec, ReplyPolicy, Sim, SimConfig, SimRng,
@@ -66,7 +68,21 @@ fn reply_policy(rng: &mut SimRng, extended: bool) -> ReplyPolicy {
     }
 }
 
-fn plan(seed: u64) -> Plan {
+/// The timeouts every master in a run uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Timing {
+    /// The baud-rate constructors' values: the shortest T_frame_abort,
+    /// T_reply_timeout and T_usage_timeout Clause 9.5.3 allows.
+    Standard,
+    /// A host transport's values (#1655): the longest it allows, 100, 300
+    /// and 35 ms.
+    Host,
+    /// Host values on every other master, in address order, and standard
+    /// ones on the rest: hosts beside UART-driven devices.
+    Mixed,
+}
+
+fn plan(seed: u64, timing: Timing) -> Plan {
     let mut rng = SimRng::new(seed);
     let baud = if rng.chance(30) { SLOW_BAUD } else { BAUD };
     let mut config = SimConfig::new(baud);
@@ -94,7 +110,7 @@ fn plan(seed: u64) -> Plan {
     // About half the masters take extended frames (Types 32 and 33); the
     // rest count them as invalid frames, as nodes without COBS support do.
     let extended: Vec<bool> = stations.iter().map(|_| rng.chance(50)).collect();
-    for (&station, &extended) in stations.iter().zip(&extended) {
+    for (index, (&station, &extended)) in stations.iter().zip(&extended).enumerate() {
         let mut adapter = AdapterSpec {
             deadline_jitter: Duration::from_micros(rng.range(0, 900)),
             echo: rng.chance(20),
@@ -113,6 +129,11 @@ fn plan(seed: u64) -> Plan {
         }
         if extended {
             spec = spec.extended_frames();
+        }
+        if timing == Timing::Host || (timing == Timing::Mixed && index % 2 == 0) {
+            spec.config.t_frame_abort = MAX_FRAME_ABORT;
+            spec.config.t_reply_timeout = MAX_REPLY_TIMEOUT;
+            spec.config.t_usage_timeout = MAX_USAGE_TIMEOUT;
         }
         sim.add_master(spec);
     }
@@ -229,8 +250,8 @@ fn settle_after_a_clean_rotation(sim: &mut Sim, limit: Instant, seed: u64) {
     }
 }
 
-fn check(seed: u64) {
-    let Plan { mut sim, stations } = plan(seed);
+fn check(seed: u64, timing: Timing) {
+    let Plan { mut sim, stations } = plan(seed, timing);
     // The faults stop at 12 s and every node is powered again at 13 s. From
     // 14 s, once the bus has settled, every listening master must count every
     // clean frame again for the rest of the run.
@@ -303,7 +324,20 @@ fn seeds() -> Vec<u64> {
 #[test]
 fn random_faults_never_break_the_invariants_or_the_ring() {
     for seed in seeds() {
-        check(seed);
+        check(seed, Timing::Standard);
+    }
+}
+
+/// The same with host transports' timeouts, the longest Clause 9.5.3
+/// allows (#1655): T_frame_abort 100 ms, T_reply_timeout 300 ms and
+/// T_usage_timeout 35 ms, on every master and then on every other one.
+/// Waiting longer for a successor, a poll answer or a reply still keeps one
+/// token on the bus and the ring whole.
+#[test]
+fn host_timeouts_never_break_the_invariants_or_the_ring() {
+    for seed in seeds() {
+        check(seed, Timing::Host);
+        check(seed, Timing::Mixed);
     }
 }
 
@@ -311,7 +345,7 @@ fn random_faults_never_break_the_invariants_or_the_ring() {
 #[test]
 fn a_seed_replays_exactly() {
     let run = |seed| {
-        let mut plan = plan(seed);
+        let mut plan = plan(seed, Timing::Standard);
         plan.sim.run_until(ms(6_000));
         plan.sim
             .frames()

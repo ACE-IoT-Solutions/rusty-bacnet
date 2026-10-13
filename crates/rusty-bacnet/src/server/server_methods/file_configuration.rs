@@ -210,6 +210,7 @@ mod tests {
                 extended_frames: false,
                 echo: false,
                 echo_grace_ms: None,
+                timing: crate::mstp_py::MstpTiming::default(),
             },
             dcc_password: None,
             mutation_policy: bacnet_server::mutation::MutationPolicy::default(),

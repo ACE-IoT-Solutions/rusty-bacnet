@@ -657,16 +657,35 @@ Rust side.
 `mstp_baud` (9600, 19200, 38400, 57600, 76800 or 115200; default 38400),
 `mstp_mac` (default 1), `mstp_max_master` (default 127),
 `mstp_max_info_frames` (default 1), `mstp_extended_frames` (default False),
-`mstp_echo` (default False) and `mstp_echo_grace_ms` (default None).
-`BACnetServer` takes the same options, and `MstpEndpoint` its own
-`serial_port` and all of them but `mstp_extended_frames` and the two echo
-options.
+`mstp_echo` (default False), `mstp_echo_grace_ms` (default None),
+`mstp_transmit_latency_pad_ms`, `mstp_usage_timeout_ms` and
+`mstp_reply_timeout_ms` (each default None).
+`BACnetServer` and `MstpEndpoint` take the same options; `MstpEndpoint` takes
+`serial_port` through `mstp_max_info_frames` by position or keyword, and the
+others by keyword only.
 `mstp_extended_frames=True` turns on extended frames (Types 32 and 33), which
 carry NPDUs of up to 1497 octets, so the link carries APDUs of up to 1476
 instead of 480; without it, an extended frame the link hears counts as an
 invalid frame. Routers need them (Clause 9.3); for a device they are
-optional. The link runs the same Clause 9 master
-core as the Rust transport.
+optional, and every node on the link must take them. `MstpEndpoint` checks
+its `max_apdu` against the link: up to 480 by default, up to 1476 with
+`mstp_extended_frames=True`, and a `ValueError` beyond. The memory cost is in
+the transmit queues each port reserves: 768 KiB of slots with extended frames
+against 272 KiB without, which become resident as the queues fill. The link
+runs the same Clause 9 master core as the Rust transport.
+
+The three timing options are in milliseconds, and None keeps the transport's
+own value (see [MS/TP](rust-api.md#mstp-serial-rs-485) for why).
+`mstp_transmit_latency_pad_ms` is added to a frame's time on the wire when
+the port can't say when its last octet left: 4 ms on Windows, whose serial
+port has no drain and is usually a USB adapter, and 0 elsewhere; raise it,
+up to 15 ms, for a slower adapter or driver. `mstp_usage_timeout_ms` (20 to
+35, default 35) is how long the station waits to hear its successor or a
+polled station, and `mstp_reply_timeout_ms` (255 to 300, default 300) how
+long it waits for an answer to a request; the defaults leave room for a USB
+adapter's receive latency. A value outside those ranges raises `ValueError`
+at start, before the port opens (`MstpEndpoint` raises it when it is built);
+a negative one raises `OverflowError` when the object is built.
 
 The port is taken not to hear its own frames (transceiver receiver off while
 transmitting). `mstp_echo=True` declares an adapter that returns every octet
@@ -676,8 +695,9 @@ traffic, as `TokioSerialPort::with_echo` does from Rust (see
 [Echo](rust-api.md#echo)). `mstp_echo_grace_ms` is how long after a frame its
 echo may still be arriving, 40 ms when not given, enough for a USB adapter's
 receive latency. A grace of 0, or one given without `mstp_echo=True`, raises
-`ValueError` at start, before the port opens; a negative grace, or one above
-4294967295, raises `OverflowError` when the client or server is built.
+`ValueError` at start, before the port opens (`MstpEndpoint` raises it when
+it is built); a negative grace, or one above 4294967295, raises
+`OverflowError` when the client, server or endpoint is built.
 
 ```python
 from rusty_bacnet import BACnetClient
@@ -689,6 +709,19 @@ client = BACnetClient(
     mstp_mac=3,
     mstp_echo=True,          # this adapter echoes what it sends
     mstp_echo_grace_ms=60,   # its echo can lag a frame by up to 60 ms
+)
+```
+
+```python
+from rusty_bacnet import MstpEndpoint
+
+endpoint = MstpEndpoint(
+    device_instance=3001,
+    serial_port="/dev/ttyUSB0",
+    mstp_mac=3,
+    max_apdu=1476,               # needs extended frames on the link
+    mstp_extended_frames=True,
+    mstp_echo=True,
 )
 ```
 

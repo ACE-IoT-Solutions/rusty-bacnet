@@ -92,7 +92,7 @@ async fn mstp_frame_path_yields_unverified() {
         max_master: 127,
         max_info_frames: 1,
         baud_rate: 9600,
-        extended_frames: false,
+        ..MstpConfig::default()
     };
     let mut transport = MstpTransport::new(serial, config);
     let mut rx = transport.start().await.unwrap();

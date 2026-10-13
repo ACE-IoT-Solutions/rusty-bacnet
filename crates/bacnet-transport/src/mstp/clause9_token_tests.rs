@@ -7,11 +7,10 @@
 use bacnet_mstp_codec::FrameType;
 use tokio::time::{Duration, Instant};
 
-use super::test_support::{config, Bus};
+use super::test_support::{config, Bus, T_USAGE_TIMEOUT};
 
 const T_NO_TOKEN: Duration = Duration::from_millis(500);
 const T_SLOT: Duration = Duration::from_millis(10);
-const T_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 const T_USAGE_DELAY: Duration = Duration::from_millis(15);
 /// Slack for Tokio's millisecond timer wheel.
 const TICK: Duration = Duration::from_millis(1);
@@ -54,7 +53,8 @@ async fn u1_maintenance_poll_follows_npoll_token_passes() {
 /// to its poll (Clause 9.5.6.8, SendNextPFM and the others). A polled
 /// master may take up to T_usage_delay (15 ms) to answer (Clause 9.5.3), so
 /// an answer that starts 15 ms after the poll makes it the successor, and
-/// without one the next poll waits the full T_usage_timeout (20 ms).
+/// without one the next poll waits the full T_usage_timeout (the host's
+/// 35 ms).
 #[tokio::test(start_paused = true)]
 async fn u2_poll_for_master_waits_the_usage_timeout() {
     let mut bus = Bus::start(config(3, 7)).await;
