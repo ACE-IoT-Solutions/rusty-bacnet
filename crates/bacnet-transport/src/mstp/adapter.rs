@@ -96,7 +96,7 @@ use tracing::{debug, warn};
 
 use super::diagnostics::{increment, Counters};
 use super::echo::{EchoFilter, Ended, Pushed};
-use super::queues::{CoreClock, EnqueueError, SharedQueues};
+use super::queues::{CoreClock, CoreQueues, EnqueueError, SharedQueues};
 use super::replies::{Finished, Late, Replies, Resolved};
 use super::{Echo, SerialPort};
 use crate::port::{ReceivedNpdu, TransportProvenance};
@@ -111,7 +111,7 @@ const READ_CHUNK: usize = 512;
 /// from a port that breaks the contract does not end it.
 pub(super) const END_OF_FILE_READS: u32 = 3;
 
-type Core<'a> = MasterCore<'a, SharedQueues, MAX_EXTENDED_MPDU_DATA>;
+type Core<'a> = MasterCore<'a, CoreQueues, MAX_EXTENDED_MPDU_DATA>;
 
 /// The transport's task: everything it needs, moved in at start.
 pub(super) struct Task<S> {
@@ -144,15 +144,20 @@ impl<S: SerialPort> Task<S> {
             }
         ];
         let mut buffers: Box<ExtendedActionBuffers> = Box::default();
-        let shared = queues.clone();
-        let mut core =
-            match MasterCore::new(config, queues, &mut rx_storage, &mut buffers, clock.now()) {
-                Ok(core) => core,
-                Err(error) => {
-                    warn!(?error, "MS/TP core refused its configuration");
-                    return;
-                }
-            };
+        let core_queues = queues.for_core();
+        let mut core = match MasterCore::new(
+            config,
+            core_queues,
+            &mut rx_storage,
+            &mut buffers,
+            clock.now(),
+        ) {
+            Ok(core) => core,
+            Err(error) => {
+                warn!(?error, "MS/TP core refused its configuration");
+                return;
+            }
+        };
         let max_age = Duration::from(config.queue_max_age);
         let mut mac = Mac {
             echo: serial.echo(),
@@ -160,7 +165,7 @@ impl<S: SerialPort> Task<S> {
             clock,
             npdus,
             counts,
-            queues: shared,
+            queues,
             octet_time: Duration::from(config.octet_time()),
             read_buf: vec![0; READ_CHUNK],
             tx_frame: Vec::with_capacity(MAX_EXTENDED_FRAME_LENGTH),

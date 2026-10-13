@@ -126,18 +126,24 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             let Some(kind) = self.next_queue_kind(now) else {
                 return Ok(false);
             };
-            let item = match self.queues.dequeue_kind_into(kind, now, &mut npdu) {
-                Ok(Some(item)) => item,
+            let (destination, copied) = match self.queues.dequeue_kind(kind, now, NPDU) {
+                Ok(Some(item)) => {
+                    let copied = npdu
+                        .get_mut(..item.npdu.len())
+                        .map(|data| data.copy_from_slice(item.npdu))
+                        .map(|()| item.npdu.len());
+                    (item.destination, copied)
+                }
                 Ok(None) => return Ok(false),
                 // Too long for the scratch: the queue dropped and counted it.
                 Err(_) => continue,
             };
-            let Some(data) = npdu
-                .get(..item.len)
+            let Some(data) = copied
+                .and_then(|len| npdu.get(..len))
                 .filter(|data| data.len() <= self.config.max_npdu_length())
             else {
-                // The queue claims more octets than it copied, or holds an
-                // NPDU this station doesn't send, which a queue fed only
+                // The queue lent more octets than it was asked for, or holds
+                // an NPDU this station doesn't send, which a queue fed only
                 // through `enqueue_npdu` never does.
                 self.record_oversize_npdu(kind);
                 continue;
@@ -168,14 +174,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                     PostTransmit::ContinueToken,
                 ),
             };
-            self.queue_frame(
-                frame_type,
-                item.destination,
-                data,
-                post,
-                Origin::Holder,
-                now,
-            )?;
+            self.queue_frame(frame_type, destination, data, post, Origin::Holder, now)?;
             return Ok(true);
         }
         Ok(false)

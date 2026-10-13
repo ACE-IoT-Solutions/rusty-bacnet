@@ -5,6 +5,10 @@
 //! short-lived receive buffer, while the core must retain it until a token is
 //! available.  The alloc implementation reserves all of its item storage in
 //! its constructor; enqueue and dequeue do not grow a vector.
+//!
+//! A dequeue lends the NPDU from where it was queued rather than copying it
+//! out, so the core builds a frame straight from the queue's slot, with no
+//! NPDU-sized buffer on its stack.
 
 #[cfg(any(feature = "alloc", feature = "heapless"))]
 use bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA;
@@ -81,8 +85,8 @@ pub enum QueueRejectReason {
     /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than
     /// the station sends
     /// ([`MstpCoreConfig::max_npdu_length`](crate::MstpCoreConfig::max_npdu_length)).
-    /// A dequeue also returns it when it dropped an item too long for the
-    /// caller's scratch.
+    /// A dequeue also returns it when it dropped an item longer than the
+    /// caller takes (see [`QueueStorage::dequeue`]).
     Oversize,
     /// The supplied expiry is at or before the enqueue time, or an item
     /// reached its expiry boundary while waiting.
@@ -92,19 +96,24 @@ pub enum QueueRejectReason {
     Starved,
 }
 
-/// Metadata returned after copying a queued NPDU into caller-owned storage.
+/// An NPDU taken off its queue, with its octets lent by the queue.
+///
+/// The item has left the queue, but [`Self::npdu`] borrows the queue: the
+/// octets stay where they were queued until the queue is next used
+/// mutably, so the caller reads or sends them from there instead of copying
+/// them out.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DequeuedNpdu {
+pub struct DequeuedNpdu<'a> {
     /// Destination MAC address.
     pub destination: u8,
     /// Whether this was taken from the unicast or broadcast queue.
     pub kind: QueueKind,
     /// BACnet network priority.
     pub priority: NetworkPriority,
-    /// Number of bytes copied into the caller's scratch buffer.
-    pub len: usize,
     /// Sequence assigned when the item was accepted.
     pub sequence: u64,
+    /// The NPDU, lent by the queue.
+    pub npdu: &'a [u8],
 }
 
 /// A non-mutating view of the next item selected by queue policy.
@@ -172,32 +181,33 @@ pub trait QueueStorage {
     /// broadcast/unicast service ratio.
     fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo>;
 
-    /// Copy the selected payload into `scratch` and remove it atomically.
+    /// Remove the item that policy would service next, after removing the
+    /// expired ones, and lend its NPDU until the queue is next used mutably.
     ///
-    /// If `scratch` is too small, the item is dropped, counted in
-    /// `drops_oversize`, and [`QueueRejectReason::Oversize`] is returned. The
-    /// core's scratch holds the longest NPDU its delivery slots do, so such
-    /// an item could never be sent; leaving it queued would keep it at the
-    /// head.
-    fn dequeue_into(
+    /// An item longer than `max_len` octets is dropped instead, counted in
+    /// `drops_oversize`, and [`QueueRejectReason::Oversize`] is returned.
+    /// The core passes the longest NPDU its delivery slots hold, its `NPDU`,
+    /// so such an item could never be sent; leaving it queued would keep it
+    /// at the head.
+    fn dequeue(
         &mut self,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
         let Some(info) = self.peek(now) else {
             return Ok(None);
         };
-        self.dequeue_kind_into(info.kind, now, scratch)
+        self.dequeue_kind(info.kind, now, max_len)
     }
 
-    /// Copy and remove the next item from one destination class, with the
-    /// oversize rule of [`Self::dequeue_into`].
-    fn dequeue_kind_into(
+    /// Remove the next item from one destination class and lend its NPDU,
+    /// as [`Self::dequeue`] does, with its oversize rule.
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason>;
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason>;
 
     /// Current depth for one destination class.
     fn depth(&self, kind: QueueKind) -> usize;
@@ -245,21 +255,21 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         (**self).peek_kind(kind, now)
     }
 
-    fn dequeue_into(
+    fn dequeue(
         &mut self,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        (**self).dequeue_into(now, scratch)
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+        (**self).dequeue(now, max_len)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        (**self).dequeue_kind_into(kind, now, scratch)
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+        (**self).dequeue_kind(kind, now, max_len)
     }
 
     fn depth(&self, kind: QueueKind) -> usize {

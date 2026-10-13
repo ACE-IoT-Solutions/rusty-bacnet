@@ -19,22 +19,12 @@ fn exercise<Q: QueueStorage>(mut queue: Q) {
         ),
         Ok(())
     );
-    let mut scratch = [0; 4];
-    let first = queue
-        .dequeue_into(Instant::ZERO, &mut scratch)
-        .unwrap()
-        .unwrap();
-    assert_eq!(first.destination, 2);
-    let second = queue
-        .dequeue_into(Instant::ZERO, &mut scratch)
-        .unwrap()
-        .unwrap();
-    assert_eq!(second.destination, 1);
-    let third = queue
-        .dequeue_into(Instant::ZERO, &mut scratch)
-        .unwrap()
-        .unwrap();
-    assert_eq!(third.kind, QueueKind::Broadcast);
+    let first = queue.dequeue(Instant::ZERO, 4).unwrap().unwrap();
+    assert_eq!((first.destination, first.npdu), (2, &[2][..]));
+    let second = queue.dequeue(Instant::ZERO, 4).unwrap().unwrap();
+    assert_eq!((second.destination, second.npdu), (1, &[1][..]));
+    let third = queue.dequeue(Instant::ZERO, 4).unwrap().unwrap();
+    assert_eq!((third.kind, third.npdu), (QueueKind::Broadcast, &[3][..]));
 }
 
 #[test]
@@ -45,8 +35,8 @@ fn priority_and_destination_selection() {
     exercise(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 4));
 }
 
-/// An item too long for the caller's scratch is dropped and counted, so it
-/// can't stay at the head of its queue.
+/// An item longer than the caller takes is dropped and counted, so it can't
+/// stay at the head of its queue.
 fn drop_item_too_long_for_scratch<Q: QueueStorage>(mut queue: Q) {
     queue
         .enqueue_npdu(1, &[1, 2, 3], NetworkPriority::Urgent, Instant::ZERO, None)
@@ -54,18 +44,14 @@ fn drop_item_too_long_for_scratch<Q: QueueStorage>(mut queue: Q) {
     queue
         .enqueue_npdu(1, &[4], NetworkPriority::Normal, Instant::ZERO, None)
         .unwrap();
-    let mut scratch = [0; 2];
     assert_eq!(
-        queue.dequeue_into(Instant::ZERO, &mut scratch),
+        queue.dequeue(Instant::ZERO, 2),
         Err(QueueRejectReason::Oversize)
     );
     let stats = queue.stats(QueueKind::Unicast);
     assert_eq!((stats.depth, stats.drops_oversize), (1, 1));
-    let next = queue
-        .dequeue_into(Instant::ZERO, &mut scratch)
-        .unwrap()
-        .unwrap();
-    assert_eq!((next.len, scratch[0]), (1, 4));
+    let next = queue.dequeue(Instant::ZERO, 2).unwrap().unwrap();
+    assert_eq!(next.npdu, [4]);
 }
 
 #[test]
@@ -139,25 +125,8 @@ fn starvation_forces_old_item_after_service_opportunities() {
         queue
             .enqueue_npdu(1, &[2], NetworkPriority::LifeSafety, Instant::ZERO, None)
             .unwrap();
-        let mut scratch = [0; 2];
-        assert_eq!(
-            queue
-                .dequeue_into(Instant::ZERO, &mut scratch)
-                .unwrap()
-                .unwrap()
-                .len,
-            1
-        );
-        assert_eq!(scratch[0], 2);
-        assert_eq!(
-            queue
-                .dequeue_into(Instant::ZERO, &mut scratch)
-                .unwrap()
-                .unwrap()
-                .len,
-            1
-        );
-        assert_eq!(scratch[0], 1);
+        assert_eq!(queue.dequeue(Instant::ZERO, 2).unwrap().unwrap().npdu, [2]);
+        assert_eq!(queue.dequeue(Instant::ZERO, 2).unwrap().unwrap().npdu, [1]);
     }
     #[cfg(feature = "alloc")]
     {
@@ -168,25 +137,8 @@ fn starvation_forces_old_item_after_service_opportunities() {
         queue
             .enqueue_npdu(1, &[2], NetworkPriority::LifeSafety, Instant::ZERO, None)
             .unwrap();
-        let mut scratch = [0; 2];
-        assert_eq!(
-            queue
-                .dequeue_into(Instant::ZERO, &mut scratch)
-                .unwrap()
-                .unwrap()
-                .len,
-            1
-        );
-        assert_eq!(scratch[0], 2);
-        assert_eq!(
-            queue
-                .dequeue_into(Instant::ZERO, &mut scratch)
-                .unwrap()
-                .unwrap()
-                .len,
-            1
-        );
-        assert_eq!(scratch[0], 1);
+        assert_eq!(queue.dequeue(Instant::ZERO, 2).unwrap().unwrap().npdu, [2]);
+        assert_eq!(queue.dequeue(Instant::ZERO, 2).unwrap().unwrap().npdu, [1]);
     }
 }
 
@@ -245,14 +197,13 @@ fn kind_specific_selection_preserves_independent_capacity() {
 /// Dequeue every item, up to four, and return each one's payload octet in
 /// the order they leave.
 fn drain_first_octets<Q: QueueStorage>(queue: &mut Q, now: Instant) -> [u8; 4] {
-    let mut scratch = [0; 4];
     let mut order = [0; 4];
     for octet in &mut order {
-        let item = queue.dequeue_into(now, &mut scratch).unwrap().unwrap();
-        assert_eq!(item.len, 1);
-        *octet = scratch[0];
+        let item = queue.dequeue(now, 4).unwrap().unwrap();
+        assert_eq!(item.npdu.len(), 1);
+        *octet = item.npdu[0];
     }
-    assert_eq!(queue.dequeue_into(now, &mut scratch), Ok(None));
+    assert_eq!(queue.dequeue(now, 4), Ok(None));
     order
 }
 
@@ -272,9 +223,7 @@ fn freed_slots_keep_the_order<Q: QueueStorage>(mut queue: Q) {
             .unwrap();
     }
     // The urgent item leaves first, freeing the second slot.
-    let mut scratch = [0; 4];
-    queue.dequeue_into(now, &mut scratch).unwrap().unwrap();
-    assert_eq!(scratch[0], 2);
+    assert_eq!(queue.dequeue(now, 4).unwrap().unwrap().npdu, [2]);
     // The newest item takes that slot, ahead of two older ones; a fifth
     // finds the queue full.
     queue

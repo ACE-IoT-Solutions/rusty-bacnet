@@ -165,30 +165,29 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         self.select_kind(kind, now).map(|selected| selected.2)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
         self.expire(now);
         let Some((_, index, info)) = self.select_kind(kind, now) else {
             return Ok(None);
         };
         self.lane_mut(kind).remove(index);
-        if scratch.len() < info.len {
+        if info.len > max_len {
             self.lane_mut(kind).counters.record_drop_oversize();
             return Err(QueueRejectReason::Oversize);
         }
         self.unicast.bump_waits();
         self.broadcast.bump_waits();
-        scratch[..info.len].copy_from_slice(self.lane(kind).slots[index].payload());
         Ok(Some(DequeuedNpdu {
             destination: info.destination,
             kind,
             priority: info.priority,
-            len: info.len,
             sequence: info.sequence,
+            npdu: self.lane(kind).slots[index].payload(),
         }))
     }
 

@@ -171,12 +171,12 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         self.select_kind(kind, now).map(|selected| selected.2)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
         self.expire(now);
         let Some((_, index, info)) = self.select_kind(kind, now) else {
             return Ok(None);
@@ -185,19 +185,18 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
             QueueKind::Unicast => self.unicast.remove(index),
             QueueKind::Broadcast => self.broadcast.remove(index),
         }
-        if scratch.len() < info.len {
+        if info.len > max_len {
             self.counters_mut(kind).record_drop_oversize();
             return Err(QueueRejectReason::Oversize);
         }
         self.unicast.bump_waits();
         self.broadcast.bump_waits();
-        scratch[..info.len].copy_from_slice(self.slot(kind, index).payload());
         Ok(Some(DequeuedNpdu {
             destination: info.destination,
             kind,
             priority: info.priority,
-            len: info.len,
             sequence: info.sequence,
+            npdu: self.slot(kind, index).payload(),
         }))
     }
 

@@ -306,13 +306,13 @@ impl QueueStorage for Unsized {
         self.0.peek_kind(kind, now)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        self.0.dequeue_kind_into(kind, now, scratch)
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+        self.0.dequeue_kind(kind, now, max_len)
     }
 
     fn depth(&self, kind: QueueKind) -> usize {

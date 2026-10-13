@@ -21,8 +21,8 @@ pub struct QueueCounters {
     pub drops_full: u32,
     /// Entries refused or dropped as too long: refused at enqueue because the
     /// NPDU exceeds the queue's slot or a standard frame's 501 octets (the
-    /// core's own check), or dropped at dequeue because it would not fit the
-    /// caller's scratch.
+    /// core's own check), or dropped at dequeue because it was longer than
+    /// the caller takes.
     pub drops_oversize: u32,
     /// Entries removed after exceeding their configured age.
     pub drops_expired: u32,

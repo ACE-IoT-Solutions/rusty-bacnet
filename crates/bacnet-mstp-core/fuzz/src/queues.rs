@@ -6,6 +6,10 @@
 //! nothing longer than the station sends gets in or comes out. It also notes
 //! the NPDU the queue handed out last, which the checker compares with the
 //! data frame the core then sends.
+//!
+//! A dequeue lends the NPDU from the queue, which stays borrowed while it is
+//! lent, so the wrapper copies it into a buffer of its own and lends it from
+//! there: that frees the queue for the depth check that follows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -32,6 +36,8 @@ pub struct Logged<Q> {
     capacity: [usize; 2],
     max_npdu: usize,
     log: Rc<RefCell<QueueLog>>,
+    /// The NPDU the last dequeue lent, copied out of the queue.
+    lent: Vec<u8>,
 }
 
 impl<Q: QueueStorage> Logged<Q> {
@@ -49,6 +55,7 @@ impl<Q: QueueStorage> Logged<Q> {
             capacity: [unicast, broadcast],
             max_npdu,
             log,
+            lent: Vec::new(),
         }
     }
 
@@ -138,19 +145,31 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         self.inner.peek_kind(kind, now)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        let result = self.inner.dequeue_kind_into(kind, now, scratch);
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+        // The item, its NPDU copied into `lent` so the queue is free again.
+        let result = self.inner.dequeue_kind(kind, now, max_len).map(|item| {
+            item.map(|item| {
+                self.lent.clear();
+                self.lent.extend_from_slice(item.npdu);
+                DequeuedNpdu {
+                    destination: item.destination,
+                    kind: item.kind,
+                    priority: item.priority,
+                    sequence: item.sequence,
+                    npdu: &[],
+                }
+            })
+        });
         if let Ok(Some(item)) = result {
-            if item.len > scratch.len() || item.len > self.max_npdu {
+            let len = self.lent.len();
+            if len > max_len || len > self.max_npdu {
                 self.broken(format!(
-                    "the queue handed out {} octets, for a scratch of {} and a station that sends {}",
-                    item.len,
-                    scratch.len(),
+                    "the queue handed out {len} octets, for a caller that takes {max_len} and a station that sends {}",
                     self.max_npdu
                 ));
             } else if item.kind != kind
@@ -161,12 +180,16 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
                     item.kind, item.destination
                 ));
             } else {
-                self.log.borrow_mut().last_dequeued =
-                    Some((item.destination, scratch[..item.len].to_vec()));
+                self.log.borrow_mut().last_dequeued = Some((item.destination, self.lent.clone()));
             }
         }
         self.check_depths("a dequeue");
-        result
+        result.map(|item| {
+            item.map(|item| DequeuedNpdu {
+                npdu: &self.lent,
+                ..item
+            })
+        })
     }
 
     fn depth(&self, kind: QueueKind) -> usize {

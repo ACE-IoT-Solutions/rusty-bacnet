@@ -103,8 +103,9 @@ fn an_oversize_npdu_already_queued_is_dropped_and_the_token_moves_on() {
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 }
 
-/// A queue storage that reports more octets than it copied.
-struct Overstating(HeaplessQueues<4, 4>);
+/// A queue storage that lends more octets than it was asked for: 600, from
+/// a buffer of its own, for each item it takes off its queue.
+struct Overstating(HeaplessQueues<4, 4>, [u8; 600]);
 
 impl QueueStorage for Overstating {
     fn set_starvation_limit(&mut self, limit: u8) {
@@ -135,14 +136,17 @@ impl QueueStorage for Overstating {
         self.0.peek_kind(kind, now)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        let item = self.0.dequeue_kind_into(kind, now, scratch)?;
-        Ok(item.map(|item| DequeuedNpdu { len: 600, ..item }))
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+        let item = self.0.dequeue_kind(kind, now, max_len)?;
+        Ok(item.map(|item| DequeuedNpdu {
+            npdu: &self.1,
+            ..item
+        }))
     }
 
     fn depth(&self, kind: QueueKind) -> usize {
@@ -160,7 +164,7 @@ fn a_queue_overstating_an_npdu_length_cannot_hold_the_token() {
     let mut actions = Actions::new();
     let mut core = MasterCore::new(
         config(),
-        Overstating(HeaplessQueues::new()),
+        Overstating(HeaplessQueues::new(), [0; 600]),
         &mut rx,
         &mut actions,
         Instant::ZERO,
