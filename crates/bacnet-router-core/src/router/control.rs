@@ -17,6 +17,7 @@ use crate::message::{
     Networks, Reject, RejectReason, WhoIsRouter,
 };
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
+use crate::swap_apart;
 use crate::table::Learned;
 
 impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
@@ -494,8 +495,12 @@ impl<const R: usize> Claimed<R> {
             Err(at) => {
                 // Full can't happen: the table holds at most R networks.
                 if self.len < R {
-                    self.networks.copy_within(at..self.len, at + 1);
-                    self.networks[at] = network;
+                    // Swapped back into place from the end, with no
+                    // memmove (`swap_apart`).
+                    self.networks[self.len] = network;
+                    for index in (at..self.len).rev() {
+                        swap_apart(&mut self.networks, index, index + 1);
+                    }
                     self.len += 1;
                 }
                 true

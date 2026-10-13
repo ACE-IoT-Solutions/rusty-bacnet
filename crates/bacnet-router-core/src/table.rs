@@ -46,7 +46,7 @@ mod holds;
 
 use core::fmt;
 
-use crate::{Duration, Instant, Mac, PortId};
+use crate::{swap_apart, Duration, Instant, Mac, PortId};
 
 pub use claims::{LearnRefusal, Learned};
 pub use holds::RejectEffect;
@@ -459,8 +459,12 @@ impl<const R: usize, const H: usize> Table<R, H> {
             Ok(index) => self.slots[index] = slot,
             Err(_) if self.len == R => return false,
             Err(index) => {
-                self.slots.copy_within(index..self.len, index + 1);
-                self.slots[index] = slot;
+                // Into the free slot at the end, then back to its place one
+                // swap at a time, with no memmove (`swap_apart`).
+                self.slots[self.len] = slot;
+                for at in (index..self.len).rev() {
+                    swap_apart(&mut self.slots, at, at + 1);
+                }
                 self.len += 1;
             }
         }
@@ -479,7 +483,11 @@ impl<const R: usize, const H: usize> Table<R, H> {
     pub fn remove(&mut self, network: u16) -> Option<Route> {
         let index = self.find(network).ok()?;
         let route = self.slots[index].route;
-        self.slots.copy_within(index + 1..self.len, index);
+        // The emptied slot moves to the end one swap at a time, with no
+        // memmove (`swap_apart`).
+        for at in index + 1..self.len {
+            swap_apart(&mut self.slots, at - 1, at);
+        }
         self.len -= 1;
         self.slots[self.len] = VACANT;
         self.holds.forget(network);
@@ -682,13 +690,14 @@ impl<const R: usize, const H: usize> Table<R, H> {
         for slot in self.stored().iter().filter(|slot| stale(slot)) {
             purged(slot.network);
         }
+        // Each kept route is swapped forward, never copied over another,
+        // with no memmove (`swap_apart`).
         let mut kept = 0;
         for index in 0..self.len {
-            let slot = self.slots[index];
-            if stale(&slot) {
-                self.holds.forget(slot.network);
+            if stale(&self.slots[index]) {
+                self.holds.forget(self.slots[index].network);
             } else {
-                self.slots[kept] = slot;
+                swap_apart(&mut self.slots, kept, index);
                 kept += 1;
             }
         }

@@ -279,6 +279,33 @@ impl PortId {
     }
 }
 
+/// Swap `slice[low]` and `slice[high]`.
+///
+/// The caller keeps `low <= high < slice.len()`, which a debug assertion
+/// checks; `low == high` leaves the slice as it is, which a compaction
+/// that has kept everything so far relies on. A release build given
+/// anything else does nothing.
+///
+/// The table and its hold-down records, the searches, the set of networks
+/// one message claims and the output queue shift and compact their arrays
+/// with this, one element at a time, never with `copy_within` or a copy
+/// from one element to another, which compile to a memmove call:
+/// 0.8-1.4 KB of code on a microcontroller. `slice::swap` would link one
+/// too for a large element, such as a route, since it has to allow equal
+/// indices; two borrows of distinct elements can't overlap, so their swap
+/// needs no memmove.
+pub(crate) fn swap_apart<T>(slice: &mut [T], low: usize, high: usize) {
+    debug_assert!(
+        low <= high && high < slice.len(),
+        "swap_apart needs low <= high < len"
+    );
+    if let Some((front, back)) = slice.split_at_mut_checked(high) {
+        if let (Some(first), Some(second)) = (front.get_mut(low), back.first_mut()) {
+            core::mem::swap(first, second);
+        }
+    }
+}
+
 /// The README's example, compiled and run as a doctest.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]

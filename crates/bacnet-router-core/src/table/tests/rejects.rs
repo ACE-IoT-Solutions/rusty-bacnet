@@ -495,6 +495,37 @@ fn a_full_hold_pool_evicts_its_oldest_record_and_counts_it() {
     assert_eq!(bare.claim_counters().hold_evicted, 1);
 }
 
+/// Dropping a network's records keeps the others in the order they were
+/// made, which decides the eviction between two records made at the same
+/// instant: the earlier one goes. A compaction that refilled the gap from
+/// the end would evict the later one instead.
+#[test]
+fn forgetting_keeps_the_pools_order_for_eviction() {
+    let mut table: Table<8, 3> = Table::new();
+    for network in [10, 20, 30, 40, 50] {
+        table.add_learned(network, port(0), mac(&[1]), BASE);
+    }
+    let busy = |table: &mut Table<8, 3>, network, at| {
+        table.apply_reject(network, port(0), RejectReason::ROUTER_BUSY, at, &TIMING)
+    };
+    busy(&mut table, 10, BASE + secs(1));
+    // Two records made at the same instant, 20's first.
+    busy(&mut table, 20, BASE + secs(2));
+    busy(&mut table, 30, BASE + secs(2));
+    // Removing 10 drops its record; 20's and 30's keep their order.
+    table.remove(10);
+    let order: Vec<u16> = table.holds().map(|hold| hold.network).collect();
+    assert_eq!(order, [20, 30]);
+    busy(&mut table, 40, BASE + secs(3));
+    assert_eq!(table.claim_counters().hold_evicted, 0);
+    // The pool is full: the next record evicts the oldest, and of the two
+    // equally old, 20's, made first.
+    busy(&mut table, 50, BASE + secs(4));
+    assert_eq!(table.claim_counters().hold_evicted, 1);
+    assert_eq!(table.held_since(20, port(0)), None);
+    assert_eq!(table.held_since(30, port(0)), Some(BASE + secs(2)));
+}
+
 #[test]
 fn the_hold_down_and_busy_period_follow_the_timing() {
     let mut table: Hosted = learned_table();

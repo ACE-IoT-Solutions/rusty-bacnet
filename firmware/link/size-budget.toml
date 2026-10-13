@@ -1,5 +1,6 @@
 # Size budget for the firmware link test's images (#1626, #1635, #1664,
-# #1667), in octets: one table per target and image, `[<target>.<image>]`.
+# #1667, #1679), in octets: one table per target and image,
+# `[<target>.<image>]`.
 # scripts/ci/check-firmware-link.sh builds the images with the `firmware`
 # profile and fails when a size outgrows its budget, or when more core::fmt
 # functions are linked in than `fmt_functions` allows, or more 64-bit
@@ -28,8 +29,9 @@
 # - memmove_functions counts compiler-builtins' memmove and the entry points
 #   in front of it (memmove, __aeabi_memmove, __aeabi_memmove4 and 8),
 #   0.8-1.4 KB in all, which a whole-value copy the compiler can't prove
-#   doesn't overlap, or a slice rotation, links. bip, node, bbmd, mstp and
-#   mstp-extended link none, so a copy that brings it back fails the check.
+#   doesn't overlap, or a slice rotation, links. bip, node, bbmd, mstp,
+#   mstp-extended and router link none, so a copy that brings it back fails
+#   the check.
 #   apdu links it (2); its limit is that count, with no headroom.
 #
 # The totals go by section flags, not memory regions, and leave out the
@@ -181,6 +183,26 @@
 #   thumbv6m mstp-extended     16396 /  968 / 7696 / 17556
 #   riscv32imc mstp-extended   17604 / 1208 / 7696 / 18834
 #   thumbv7em mstp-extended    15120 /  968 / 7696 / 17112
+#
+# The router rows are from when that image joined, on 2026-10-13, same
+# toolchain (#1679), as text / rodata / data / bss, then flash / ram:
+#
+#   thumbv7m router     42804 / 1320 / 0 / 15504   45148 / 15504
+#   thumbv6m router     46136 / 1328 / 0 / 15504   47656 / 15504
+#   riscv32imc router   49392 / 1952 / 0 / 15504   51366 / 15504
+#   thumbv7em router    42544 / 1320 / 0 / 15504   44888 / 15504
+#
+# Its .bss is one static of 15,504 octets: the router's Storage<2, 8, 8, 4>
+# (3,216: a 1,497-octet scratch, a table of 8 routes and 8 hold-down
+# records, 4 searches, the output queue and the counters); the MS/TP
+# core's receive storage (1,516), HeaplessQueues<1, 2, 1497> (4,688) and
+# ExtendedActionBuffers<1> (3,028); the B/IP socket's two datagram buffers
+# (2 x 1,507); and where the BBMD writes a decision's destinations (40).
+# The BBMD port holds no broadcasts: only a foreign device's port does. The
+# rows are after bacnet-router-core stopped shifting and compacting its
+# arrays with copies, which linked memmove on every target (#1679): 1,444 /
+# 1,140 / 780 / 1,424 octets less text on thumbv7m / thumbv6m / riscv32imc
+# / thumbv7em than it measured before.
 
 [thumbv7m-none-eabi.mstp]
 text = 18320
@@ -244,6 +266,17 @@ data = 64
 bss = 272
 flash = 11008
 ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7m-none-eabi.router]
+text = 47952
+rodata = 1488
+data = 64
+bss = 17376
+flash = 50576
+ram = 17376
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -314,6 +347,17 @@ fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
+[thumbv6m-none-eabi.router]
+text = 51680
+rodata = 1488
+data = 64
+bss = 17376
+flash = 53376
+ram = 17376
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
 [riscv32imc-unknown-none-elf.mstp]
 text = 21008
 rodata = 1472
@@ -380,6 +424,17 @@ fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
+[riscv32imc-unknown-none-elf.router]
+text = 55328
+rodata = 2192
+data = 64
+bss = 17376
+flash = 57536
+ram = 17376
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
 [thumbv7em-none-eabihf.mstp]
 text = 18224
 rodata = 1184
@@ -442,6 +497,17 @@ data = 64
 bss = 272
 flash = 10960
 ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7em-none-eabihf.router]
+text = 47664
+rodata = 1488
+data = 64
+bss = 17376
+flash = 50288
+ram = 17376
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0

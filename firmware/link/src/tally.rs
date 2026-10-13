@@ -1,6 +1,6 @@
 //! Tallies the scenarios keep of what they encode: a running FNV-1a hash,
-//! and for the B/IP node and BBMD, [`Sent`], a record of every datagram
-//! they send.
+//! and for the B/IP node, the BBMD and the router, [`Sent`], a record of
+//! every datagram, or MS/TP frame, they send.
 
 use core::net::SocketAddrV4;
 
@@ -21,7 +21,8 @@ pub(crate) fn fnv1a(hash: u32, octets: &[u8]) -> u32 {
 /// The datagrams a scenario sent, in order: how many, their octets, and a
 /// 32-bit FNV-1a hash over each one's destination (its six B/IP address
 /// octets, the port high octet first) followed by the datagram. Any change
-/// to what was sent, or where, changes the hash.
+/// to what was sent, or where, changes the hash. The router scenario keeps
+/// a second one for its MS/TP frames, each hashed whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sent {
     /// Datagrams sent.
@@ -59,5 +60,15 @@ impl Sent {
             .saturating_add(u16::try_from(length).unwrap_or(u16::MAX));
         self.fnv = fnv1a(fnv1a(self.fnv, &address_to_octets(to)), datagram);
         Some(datagram)
+    }
+
+    /// Count `frame`, an MS/TP frame whole as it goes on the line. Its
+    /// header names where it goes, so the hash takes the frame alone.
+    pub(crate) fn frame(&mut self, frame: &[u8]) {
+        self.count = self.count.saturating_add(1);
+        self.octets = self
+            .octets
+            .saturating_add(u16::try_from(frame.len()).unwrap_or(u16::MAX));
+        self.fnv = fnv1a(self.fnv, frame);
     }
 }

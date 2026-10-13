@@ -1,7 +1,8 @@
 # Stack budget for the firmware link test's images under emulation (#1660,
-# #1664, #1667), in octets: one table per board, `[<board>]`, named by its
-# QEMU machine, with a key per image. scripts/emu/emulate-firmware.sh, the
-# manual emulation check, runs each image on each board; the image reports
+# #1664, #1667, #1679), in octets: one table per board, `[<board>]`, named
+# by its QEMU machine, with a key per image. scripts/emu/emulate-firmware.sh,
+# the manual emulation check, runs each image on each board it fits (the
+# router doesn't fit the two 16 KiB boards; see below); the image reports
 # how deep its stack went, and scripts/ci/firmware_size.py --stack fails the
 # run when a peak is over its budget, or when an image the table lists has
 # no peak or a peak has no budget; a run of every board also fails on a
@@ -82,6 +83,19 @@
 # at 2004 octets on micro:bit and 1796 on lm3s6965evb, under the mstp
 # image's peaks: the core's send of a queued NPDU no longer grows with
 # extended frames.
+#
+# The router rows are from when that image joined, on 2026-10-13, same
+# toolchain and QEMU (#1679): peaks of 5648 octets on lm3s6965evb and 5640
+# on netduinoplus2. Most of it is the scenario's own frame, 3.8 KB on
+# ARMv7-M, which holds the 704-octet summary, the MS/TP core (528), the
+# BBMD port with its node (712), the router (88) and the BBMD's tables
+# (72); the router's receive and the B/IP port's send go about 1.8 KB
+# deeper. micro:bit and SiFive E have no router row: the image's statics,
+# 15,504 octets, leave 880 octets of their 16 KiB for a stack that needs
+# 5.6 KB, so emulate-firmware.sh builds it for them but doesn't run it.
+# Run there, it faults as its stack reaches the statics. No smaller router
+# image is offered: Clause 9.3 asks a router's MS/TP port for extended
+# frames, and their buffers are most of the statics.
 
 [microbit]
 mstp = 2560
@@ -97,6 +111,7 @@ mstp-extended = 3600
 bip = 2640
 node = 5248
 bbmd = 2800
+router = 7072
 apdu = 3184
 
 [netduinoplus2]
@@ -105,6 +120,7 @@ mstp-extended = 3600
 bip = 2640
 node = 5248
 bbmd = 2800
+router = 7056
 apdu = 3184
 
 [sifive_e]

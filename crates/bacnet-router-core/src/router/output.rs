@@ -15,7 +15,7 @@ use super::tasks::{Task, TaskKind};
 use super::Storage;
 use crate::message::{MessageType, RejectReason};
 use crate::npdu::Npdu;
-use crate::{Mac, PortId};
+use crate::{swap_apart, Mac, PortId};
 
 /// What to do next. Poll [`Router::poll_action`](super::Router::poll_action)
 /// until [`Action::Idle`] after every call into the router.
@@ -301,7 +301,11 @@ impl Outputs {
     /// Drop the front task.
     pub(super) fn pop(&mut self) {
         if self.len > 0 {
-            self.tasks.copy_within(1..self.len, 0);
+            // The front slot moves to the back one swap at a time, with no
+            // memmove (`swap_apart`).
+            for at in 1..self.len {
+                swap_apart(&mut self.tasks, at - 1, at);
+            }
             self.len -= 1;
             self.tasks[self.len] = Task::EMPTY;
         }

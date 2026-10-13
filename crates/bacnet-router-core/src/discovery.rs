@@ -16,7 +16,7 @@
 
 use core::fmt;
 
-use crate::{Duration, Instant};
+use crate::{swap_apart, Duration, Instant};
 
 /// When a network was last looked for.
 #[derive(Debug, Clone, Copy)]
@@ -93,8 +93,12 @@ impl<const D: usize> Discovery<D> {
             }
             Err(_) if self.len == D => return false,
             Err(index) => {
-                self.entries.copy_within(index..self.len, index + 1);
-                self.entries[index] = entry;
+                // Into the free slot at the end, then back to its place one
+                // swap at a time, with no memmove (`swap_apart`).
+                self.entries[self.len] = entry;
+                for at in (index..self.len).rev() {
+                    swap_apart(&mut self.entries, at, at + 1);
+                }
                 self.len += 1;
             }
         }
@@ -116,11 +120,12 @@ impl<const D: usize> Discovery<D> {
         for entry in self.stored().iter().filter(|entry| old(entry)) {
             expired(entry.network);
         }
+        // Each kept search is swapped forward, never copied over another,
+        // with no memmove (`swap_apart`).
         let mut kept = 0;
         for index in 0..self.len {
-            let entry = self.entries[index];
-            if !old(&entry) {
-                self.entries[kept] = entry;
+            if !old(&self.entries[index]) {
+                swap_apart(&mut self.entries, kept, index);
                 kept += 1;
             }
         }
