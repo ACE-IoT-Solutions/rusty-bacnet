@@ -241,3 +241,90 @@ fn kind_specific_selection_preserves_independent_capacity() {
         );
     }
 }
+
+/// Dequeue every item, up to four, and return each one's payload octet in
+/// the order they leave.
+fn drain_first_octets<Q: QueueStorage>(queue: &mut Q, now: Instant) -> [u8; 4] {
+    let mut scratch = [0; 4];
+    let mut order = [0; 4];
+    for octet in &mut order {
+        let item = queue.dequeue_into(now, &mut scratch).unwrap().unwrap();
+        assert_eq!(item.len, 1);
+        *octet = scratch[0];
+    }
+    assert_eq!(queue.dequeue_into(now, &mut scratch), Ok(None));
+    order
+}
+
+/// Items leave by priority, then oldest first, wherever they lie: an item
+/// written into a slot freed in the middle, or before older items, still
+/// leaves after every older item of its priority.
+fn freed_slots_keep_the_order<Q: QueueStorage>(mut queue: Q) {
+    let now = Instant::ZERO;
+    for (octet, priority) in [
+        (1, NetworkPriority::Normal),
+        (2, NetworkPriority::Urgent),
+        (3, NetworkPriority::Normal),
+        (4, NetworkPriority::Normal),
+    ] {
+        queue
+            .enqueue_npdu(1, &[octet], priority, now, None)
+            .unwrap();
+    }
+    // The urgent item leaves first, freeing the second slot.
+    let mut scratch = [0; 4];
+    queue.dequeue_into(now, &mut scratch).unwrap().unwrap();
+    assert_eq!(scratch[0], 2);
+    // The newest item takes that slot, ahead of two older ones; a fifth
+    // finds the queue full.
+    queue
+        .enqueue_npdu(1, &[5], NetworkPriority::Normal, now, None)
+        .unwrap();
+    assert_eq!(
+        queue.enqueue_npdu(1, &[6], NetworkPriority::Normal, now, None),
+        Err(QueueRejectReason::Full)
+    );
+    assert_eq!(queue.depth(QueueKind::Unicast), 4);
+    assert_eq!(drain_first_octets(&mut queue, now), [1, 3, 4, 5]);
+    let stats = queue.stats(QueueKind::Unicast);
+    assert_eq!(
+        (
+            stats.depth,
+            stats.high_water,
+            stats.enqueued,
+            stats.dequeued
+        ),
+        (0, 4, 5, 5)
+    );
+    assert_eq!(stats.drops_full, 1);
+
+    // Expiry frees slots in the middle too, and new items reuse them.
+    let at = Instant::from_nanos;
+    queue
+        .enqueue_npdu(1, &[7], NetworkPriority::Normal, now, None)
+        .unwrap();
+    queue
+        .enqueue_npdu(1, &[8], NetworkPriority::Normal, now, Some(at(5)))
+        .unwrap();
+    queue
+        .enqueue_npdu(1, &[9], NetworkPriority::Normal, now, None)
+        .unwrap();
+    assert_eq!(queue.expire(at(5)), 1);
+    queue
+        .enqueue_npdu(1, &[10], NetworkPriority::Normal, at(5), None)
+        .unwrap();
+    queue
+        .enqueue_npdu(1, &[11], NetworkPriority::Normal, at(5), None)
+        .unwrap();
+    assert_eq!(drain_first_octets(&mut queue, at(5)), [7, 9, 10, 11]);
+    let stats = queue.stats(QueueKind::Unicast);
+    assert_eq!((stats.depth, stats.drops_expired), (0, 1));
+}
+
+#[test]
+fn freed_slots_are_reused_without_changing_the_order() {
+    #[cfg(feature = "heapless")]
+    freed_slots_keep_the_order(HeaplessQueues::<4, 1>::new());
+    #[cfg(feature = "alloc")]
+    freed_slots_keep_the_order(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 1));
+}

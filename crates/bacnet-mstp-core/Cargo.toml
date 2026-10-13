@@ -10,15 +10,16 @@ keywords = ["bacnet", "mstp", "embedded", "no-std"]
 categories = ["embedded", "network-programming", "no-std"]
 
 # No feature needs std: each one only adds a QueueStorage backend.
+# `heapless` is the fixed-capacity one, HeaplessQueues, which keeps its
+# slots in arrays and needs no dependency.
 [features]
 default = []
 alloc = []
-heapless = ["dep:heapless"]
+heapless = []
 
 [dependencies]
 bacnet-mstp-codec = { workspace = true, default-features = false }
 bacnet-time = { workspace = true }
-heapless = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
