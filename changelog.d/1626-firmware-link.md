@@ -1,7 +1,8 @@
 ---
 section: Added
 ---
-- Test-only: CI links two bare-metal images with no allocator, one with the
-  MS/TP codec and master core and one with the B/IP BVLL codec, for Cortex-M0,
-  Cortex-M3 and RV32IMC, and checks their flash and RAM against a size budget;
-  native tests run each image's scenario (#1626).
+- Test-only: CI links bare-metal images (MS/TP with and without extended
+  frames; the B/IP codec, a foreign device and a BBMD; the alloc crates)
+  for Cortex-M0, M3, M4F and RV32IMC, checks flash and RAM against size
+  budgets, and runs each image's scenario natively (#1626, #1635, #1660,
+  #1664, #1667).
