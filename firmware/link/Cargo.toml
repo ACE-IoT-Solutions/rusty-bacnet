@@ -1,6 +1,6 @@
 [package]
 name = "firmware-link"
-description = "Firmware link test and size budget for the MS/TP, B/IP and APDU stacks"
+description = "Firmware link test and size budget for the MS/TP, B/IP, router and APDU stacks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -41,6 +41,12 @@ bench = false
 [[bin]]
 name = "mstp-extended"
 path = "src/bin/mstp_extended.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "router"
+path = "src/bin/router.rs"
 test = false
 bench = false
 
@@ -99,15 +105,17 @@ board-netduinoplus2 = ["emulate"]
 # QEMU's SiFive E board, an E31 core (RV32IMAC): riscv32imc-unknown-none-elf.
 board-sifive-e = ["emulate"]
 
-# Default features, so no allocator, plus the BVLL codec's heapless sink.
-# The MS/TP core's HeaplessQueues need no feature, and bacnet-bip-core has
-# none. The alloc stack is `no_std` with `alloc`, as the libraries
-# document.
+# Default features, so no allocator, plus the BVLL codec's heapless sink
+# and the router core's B/IP and MS/TP glue, which need neither std nor an
+# allocator. The MS/TP core's HeaplessQueues need no feature, and
+# bacnet-bip-core has none. The alloc stack is `no_std` with `alloc`, as
+# the libraries document.
 [dependencies]
 bacnet-mstp-codec = { workspace = true }
 bacnet-mstp-core = { workspace = true }
 bacnet-bip-codec = { workspace = true, features = ["heapless"] }
 bacnet-bip-core = { workspace = true }
+bacnet-router-core = { workspace = true, features = ["bip", "mstp"] }
 heapless = { workspace = true }
 bacnet-types = { workspace = true, features = ["alloc"], optional = true }
 bacnet-encoding = { workspace = true, features = ["alloc"], optional = true }
