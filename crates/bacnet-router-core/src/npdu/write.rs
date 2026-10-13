@@ -9,14 +9,18 @@ use super::{
 use crate::MAX_MAC_LEN;
 
 /// Why [`Npdu::write`] wrote nothing.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WriteError {
     /// The buffer is shorter than the NPDU.
     NoRoom {
         /// The NPDU's length, [`Npdu::encoded_len`].
         needed: usize,
         /// The buffer's length.
-        capacity: usize,
+        available: usize,
     },
     /// A DNET of 0, or an SNET of 0 or 0xFFFF, which no parser accepts.
     ReservedNetwork,
@@ -29,8 +33,8 @@ pub enum WriteError {
 impl fmt::Display for WriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoRoom { needed, capacity } => {
-                write!(f, "an NPDU of {needed} octets doesn't fit in {capacity}")
+            Self::NoRoom { needed, available } => {
+                write!(f, "an NPDU of {needed} octets doesn't fit in {available}")
             }
             Self::ReservedNetwork => f.write_str("NPDU names a reserved network number"),
             Self::EmptySource => f.write_str("NPDU source SLEN=0 is invalid"),
@@ -86,10 +90,10 @@ impl Npdu<'_> {
             }
         }
         let needed = self.encoded_len();
-        let capacity = out.len();
+        let available = out.len();
         let out = out
             .get_mut(..needed)
-            .ok_or(WriteError::NoRoom { needed, capacity })?;
+            .ok_or(WriteError::NoRoom { needed, available })?;
 
         let mut control = self.priority & PRIORITY;
         if self.message_type.is_some() {

@@ -3,9 +3,9 @@
 //! A router asked to reach a network it has no route to sends a
 //! Who-Is-Router for it before refusing the message (Clause 6.6.3.1).
 //! [`Discovery`] decides when to send one: at most once per network per
-//! cooldown ([`Discovery::COOLDOWN`] in the hosted router), for up to `D`
-//! networks at a time, each forgotten past its age
-//! ([`Discovery::MAX_AGE`]) at the next sweep. Messages that wait for an
+//! cooldown, for up to `D` networks at a time, each forgotten past its age
+//! at the next sweep; the router's
+//! [`Options`](crate::router::Options) set both. Messages that wait for an
 //! answer are refused at once, not buffered, and the hosted router refuses
 //! them with reject reason 1; once the answer has taught the table a route,
 //! the next message takes it. Network 0 and 0xFFFF are never looked for,
@@ -59,12 +59,6 @@ impl<const D: usize> Default for Discovery<D> {
 }
 
 impl<const D: usize> Discovery<D> {
-    /// The hosted router's cooldown between two searches for one network.
-    pub const COOLDOWN: Duration = Duration::from_secs(5);
-
-    /// The hosted router's age at which the sweep forgets a search.
-    pub const MAX_AGE: Duration = Duration::from_secs(30);
-
     /// Nothing looked for yet: all zero bits.
     pub const fn new() -> Self {
         Self {

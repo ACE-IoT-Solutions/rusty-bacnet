@@ -4,7 +4,7 @@
 mod fixture;
 
 use bacnet_router_core::message::{code, RoutingEntries};
-use bacnet_router_core::router::{ControlClass, DropReason, Event, Kind, Options, SendRefusal};
+use bacnet_router_core::router::{ControlClass, Discard, Event, Kind, Options, SendRefusal};
 use bacnet_router_core::{Mac, PortId};
 use fixture::{
     at, deliver, drain_refusing, learn_9_via_r7, message, port_on, router, router_with, Outcome,
@@ -226,7 +226,7 @@ fn malformed_or_refused_updates_change_nothing() {
     };
     for bad in [truncated, trailing] {
         let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bad, at(1));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::BadMessage));
+        assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
         assert!(sent.is_empty());
     }
     let (outcome, sent) = deliver(
@@ -237,7 +237,7 @@ fn malformed_or_refused_updates_change_nothing() {
         &init_rt(&[(44, 1)], &[]),
         at(1),
     );
-    assert_eq!(outcome, Outcome::Dropped(DropReason::Denied));
+    assert_eq!(outcome, Outcome::Discarded(Discard::Denied));
     assert!(sent.is_empty());
     assert!(router.table().lookup(44).is_none());
 }

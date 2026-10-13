@@ -48,7 +48,7 @@ use core::fmt;
 
 use crate::{Duration, Instant, Mac, PortId};
 
-pub use claims::{Learned, Refusal};
+pub use claims::{LearnRefusal, Learned};
 pub use holds::RejectEffect;
 
 /// How far a route can be used.
@@ -77,7 +77,12 @@ pub enum Convergence {
 }
 
 /// The way to one network.
+///
+/// It is `#[non_exhaustive]`, so a new field isn't a breaking change:
+/// outside this crate, build one with [`Route::direct`] or
+/// [`Route::learned`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Route {
     /// The port the network is reached through.
     pub port: PortId,
@@ -142,7 +147,11 @@ impl Route {
 }
 
 /// A hardened-mode claim waiting for its second (see [`Table::pending`]).
+///
+/// The table builds it. It is `#[non_exhaustive]`, so a new field isn't a
+/// breaking change: a pattern needs `..`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Pending {
     /// The port the claim would move the route to.
     pub port: PortId,
@@ -250,7 +259,7 @@ const fn is_reserved(network: u16) -> bool {
 /// A full table refuses a new network: [`add_direct`](Self::add_direct)
 /// and [`add_learned`](Self::add_learned) return `false`, and
 /// [`learn`](Self::learn) and [`apply_claim`](Self::apply_claim) return
-/// [`Refusal::Full`]. Routes it holds can still be refreshed, moved and
+/// [`LearnRefusal::Full`]. Routes it holds can still be refreshed, moved and
 /// removed. A router keeps its route cap at or below `R`, so the cap, which
 /// it counts, is met first.
 ///
@@ -322,16 +331,10 @@ impl<const R: usize, const H: usize> Table<R, H> {
         self.counters = ClaimCounters::default();
     }
 
-    /// An empty table with hardened convergence.
-    pub const fn new_hardened() -> Self {
-        let mut table = Self::new();
-        table.convergence = Convergence::Hardened;
-        table
-    }
-
     /// Choose the convergence mode for later claims. Routes stay; a pending
-    /// claim waits for its next claim or the sweep, as before.
-    pub fn set_convergence(&mut self, convergence: Convergence) {
+    /// claim waits for its next claim or the sweep, as before. It is a
+    /// `const fn`, so a table in a `static` can start hardened.
+    pub const fn set_convergence(&mut self, convergence: Convergence) {
         self.convergence = convergence;
     }
 

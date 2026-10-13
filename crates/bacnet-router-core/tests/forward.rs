@@ -5,7 +5,7 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{Cause, DropReason, Event, Kind, Limits, Options};
+use bacnet_router_core::router::{Cause, Discard, Event, Kind, Limits, Options};
 use bacnet_router_core::PortId;
 use fixture::{
     addr, apdu_to, at, bytes, deliver, learn_9_via_r7, port_on, router, router_with, sent_reject,
@@ -109,7 +109,7 @@ fn hop_count_reaching_zero_is_not_relayed() {
     };
     for count in [0, 1] {
         let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &hops(9, count), at(1));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::HopCount));
+        assert_eq!(outcome, Outcome::Discarded(Discard::HopCount));
         assert!(sent.is_empty(), "no reject either");
     }
     assert_eq!(router.counters().hop_count_drops, 2);
@@ -147,7 +147,7 @@ fn hop_count_reaching_zero_stops_routed_network_messages() {
     for mut message in [i_am, reject] {
         message.hop_count = 1;
         let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&message), at(1));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::HopCount));
+        assert_eq!(outcome, Outcome::Discarded(Discard::HopCount));
         assert!(sent.is_empty());
         message.hop_count = 2;
         let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&message), at(1));
@@ -249,7 +249,7 @@ fn unwritable_rewrites_are_dropped_and_counted() {
     let ports = [port_on(0, OWN_0), port_on(2, OWN_1)];
     let mut router = router_with(&ports, Options::HOSTED);
     let mut host = Recorder::default();
-    let unwritable = Outcome::Dropped(DropReason::Unwritable);
+    let unwritable = Outcome::Discarded(Discard::Unwritable);
     let (outcome, _) = deliver(
         &mut router,
         &mut host,

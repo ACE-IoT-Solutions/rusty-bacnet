@@ -3,12 +3,15 @@
 //! [`code`] has their message types and [`reason`] the reject reasons, the
 //! values `bacnet-types` gives them. The views below read a message's data,
 //! the payload of an [`Npdu`](crate::npdu::Npdu) whose message type names
-//! it, in place: each parses the whole payload or refuses it, so a router
-//! never acts on part of a malformed message. The writers fill the caller's
-//! buffer and return the length, or `None` when it doesn't fit.
+//! it, in place: each parses the whole payload or refuses it with a
+//! [`DataError`], so a router never acts on part of a malformed message.
+//! The writers fill the caller's buffer and return the length, or a
+//! [`DataError`] with nothing written.
 //!
 //! The views check layout only. Policy, such as which network numbers a
 //! router may learn, stays with the router.
+
+use core::fmt;
 
 /// Message types (Clause 6.2.4), grouped by what a router does with them,
 /// and by name within a group.
@@ -74,6 +77,61 @@ pub mod reason {
     pub const ADDRESSING_ERROR: u8 = 6;
 }
 
+/// Why a view refused a message's data, or a writer wrote nothing.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DataError {
+    /// Read: the data isn't the length its layout gives it. It ends inside
+    /// a field, or goes on past the last one.
+    Length {
+        /// The data's length, in octets.
+        length: usize,
+    },
+    /// Write: the buffer is shorter than the data.
+    NoRoom {
+        /// The data's length, in octets.
+        needed: usize,
+        /// The buffer's length.
+        available: usize,
+    },
+    /// Write: more routing entries than a one-octet count can state.
+    TooManyEntries {
+        /// The entries offered.
+        count: usize,
+    },
+}
+
+impl fmt::Display for DataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Length { length } => {
+                write!(f, "{length} octets of message data don't fit its layout")
+            }
+            Self::NoRoom { needed, available } => {
+                write!(
+                    f,
+                    "message data of {needed} octets doesn't fit in {available}"
+                )
+            }
+            Self::TooManyEntries { count } => {
+                write!(f, "{count} routing entries, more than a count can state")
+            }
+        }
+    }
+}
+
+impl core::error::Error for DataError {}
+
+/// The refusal of `payload` for its length.
+const fn bad_length(payload: &[u8]) -> DataError {
+    DataError::Length {
+        length: payload.len(),
+    }
+}
+
 /// A list of two-octet network numbers: the data of I-Am-Router,
 /// Router-Busy and Router-Available, and a scoped Who-Is-Router's one
 /// network.
@@ -86,13 +144,13 @@ impl<'a> Networks<'a> {
     /// The empty list: for flow control, every network the sender serves.
     pub const EMPTY: Networks<'static> = Networks { octets: &[] };
 
-    /// The list in `payload`, or `None` for an odd length, which ends inside
+    /// The list in `payload`, refused for an odd length, which ends inside
     /// a network number.
-    pub const fn parse(payload: &'a [u8]) -> Option<Self> {
+    pub const fn parse(payload: &'a [u8]) -> Result<Self, DataError> {
         if payload.len().is_multiple_of(2) {
-            Some(Self { octets: payload })
+            Ok(Self { octets: payload })
         } else {
-            None
+            Err(bad_length(payload))
         }
     }
 
@@ -125,21 +183,24 @@ impl<'a> Networks<'a> {
             .map(|pair| u16::from_be_bytes(*pair))
     }
 
-    /// Write `networks` as a list into `out`, returning its length, or
-    /// `None`, with nothing written, if they don't all fit. The iterator is
-    /// cloned to count the networks before any octet is written.
-    pub fn write<I>(networks: I, out: &mut [u8]) -> Option<usize>
+    /// Write `networks` as a list into `out` and return its length. Nothing
+    /// is written unless they all fit. The iterator is cloned to count the
+    /// networks before any octet is written.
+    pub fn write<I>(networks: I, out: &mut [u8]) -> Result<usize, DataError>
     where
         I: IntoIterator<Item = u16>,
         I::IntoIter: Clone,
     {
         let networks = networks.into_iter();
-        let len = networks.clone().count().checked_mul(2)?;
-        let out = out.get_mut(..len)?;
+        let available = out.len();
+        let needed = networks.clone().count().saturating_mul(2);
+        let out = out
+            .get_mut(..needed)
+            .ok_or(DataError::NoRoom { needed, available })?;
         for (pair, network) in out.as_chunks_mut::<2>().0.iter_mut().zip(networks) {
             *pair = network.to_be_bytes();
         }
-        Some(len)
+        Ok(needed)
     }
 }
 
@@ -154,13 +215,13 @@ pub enum WhoIsRouter {
 
 impl WhoIsRouter {
     /// Read a Who-Is-Router's data: nothing, or one network number. Any
-    /// other length is malformed, so a bad tail never widens a scoped
+    /// other length is refused, so a bad tail never widens a scoped
     /// question into one about every network.
-    pub const fn parse(payload: &[u8]) -> Option<Self> {
+    pub const fn parse(payload: &[u8]) -> Result<Self, DataError> {
         match *payload {
-            [] => Some(Self::All),
-            [high, low] => Some(Self::Network(u16::from_be_bytes([high, low]))),
-            _ => None,
+            [] => Ok(Self::All),
+            [high, low] => Ok(Self::Network(u16::from_be_bytes([high, low]))),
+            _ => Err(bad_length(payload)),
         }
     }
 }
@@ -176,13 +237,13 @@ pub struct Reject {
 
 impl Reject {
     /// Read exactly a reason octet and a network number.
-    pub const fn parse(payload: &[u8]) -> Option<Self> {
+    pub const fn parse(payload: &[u8]) -> Result<Self, DataError> {
         match *payload {
-            [reason, high, low] => Some(Self {
+            [reason, high, low] => Ok(Self {
                 reason,
                 network: u16::from_be_bytes([high, low]),
             }),
-            _ => None,
+            _ => Err(bad_length(payload)),
         }
     }
 
@@ -194,10 +255,10 @@ impl Reject {
 }
 
 /// Read three octets as a two-octet network and the octet that follows.
-const fn network_and_octet(payload: &[u8]) -> Option<(u16, u8)> {
+const fn network_and_octet(payload: &[u8]) -> Result<(u16, u8), DataError> {
     match *payload {
-        [high, low, octet] => Some((u16::from_be_bytes([high, low]), octet)),
-        _ => None,
+        [high, low, octet] => Ok((u16::from_be_bytes([high, low]), octet)),
+        _ => Err(bad_length(payload)),
     }
 }
 
@@ -212,13 +273,13 @@ pub struct ICouldBeRouter {
 
 impl ICouldBeRouter {
     /// Read exactly a network number and the index.
-    pub const fn parse(payload: &[u8]) -> Option<Self> {
+    pub const fn parse(payload: &[u8]) -> Result<Self, DataError> {
         match network_and_octet(payload) {
-            Some((network, performance_index)) => Some(Self {
+            Ok((network, performance_index)) => Ok(Self {
                 network,
                 performance_index,
             }),
-            None => None,
+            Err(error) => Err(error),
         }
     }
 }
@@ -235,22 +296,33 @@ pub struct EstablishConnection {
 
 impl EstablishConnection {
     /// Read exactly a network number and the time.
-    pub const fn parse(payload: &[u8]) -> Option<Self> {
+    pub const fn parse(payload: &[u8]) -> Result<Self, DataError> {
         match network_and_octet(payload) {
-            Some((network, termination_time)) => Some(Self {
+            Ok((network, termination_time)) => Ok(Self {
                 network,
                 termination_time,
             }),
-            None => None,
+            Err(error) => Err(error),
         }
     }
 }
 
-/// Read a Disconnect-Connection's data: exactly one network number.
-pub const fn parse_disconnect(payload: &[u8]) -> Option<u16> {
-    match *payload {
-        [high, low] => Some(u16::from_be_bytes([high, low])),
-        _ => None,
+/// A Disconnect-Connection's data: the network whose connection to end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisconnectConnection {
+    /// The network.
+    pub network: u16,
+}
+
+impl DisconnectConnection {
+    /// Read exactly one network number.
+    pub const fn parse(payload: &[u8]) -> Result<Self, DataError> {
+        match *payload {
+            [high, low] => Ok(Self {
+                network: u16::from_be_bytes([high, low]),
+            }),
+            _ => Err(bad_length(payload)),
+        }
     }
 }
 
@@ -269,10 +341,10 @@ impl NetworkNumberIs {
     pub const CONFIGURED: u8 = 1;
 
     /// Read exactly a network number and the flag.
-    pub const fn parse(payload: &[u8]) -> Option<Self> {
+    pub const fn parse(payload: &[u8]) -> Result<Self, DataError> {
         match network_and_octet(payload) {
-            Some((network, flag)) => Some(Self { network, flag }),
-            None => None,
+            Ok((network, flag)) => Ok(Self { network, flag }),
+            Err(error) => Err(error),
         }
     }
 
@@ -316,18 +388,18 @@ impl<'a> RoutingEntries<'a> {
     /// Octets an entry takes with no Port Info.
     pub const ENTRY_LEN: usize = 4;
 
-    /// Read the count and exactly that many entries, or `None` when the
+    /// Read the count and exactly that many entries, refused when the
     /// payload is empty, ends inside an entry, or runs past the last one.
-    pub fn parse(payload: &'a [u8]) -> Option<Self> {
-        let (&count, entries) = payload.split_first()?;
+    pub fn parse(payload: &'a [u8]) -> Result<Self, DataError> {
+        let (&count, entries) = payload.split_first().ok_or(bad_length(payload))?;
         let mut rest = entries;
         for _ in 0..count {
-            rest = split_entry(rest)?.1;
+            rest = split_entry(rest).ok_or(bad_length(payload))?.1;
         }
         if !rest.is_empty() {
-            return None;
+            return Err(bad_length(payload));
         }
-        Some(Self { count, entries })
+        Ok(Self { count, entries })
     }
 
     /// The count, which is 0 for a query.
@@ -346,25 +418,33 @@ impl<'a> RoutingEntries<'a> {
     }
 
     /// Write a count and an entry with no Port Info for each (network,
-    /// Port ID) pair into `out`, returning the length, or `None`, with
-    /// nothing written, when they don't fit or number more than 255. The
-    /// iterator is cloned to count the entries before any octet is written.
-    pub fn write<I>(entries: I, out: &mut [u8]) -> Option<usize>
+    /// Port ID) pair into `out` and return the length. Nothing is written
+    /// unless they all fit and number at most 255. The iterator is cloned
+    /// to count the entries before any octet is written.
+    pub fn write<I>(entries: I, out: &mut [u8]) -> Result<usize, DataError>
     where
         I: IntoIterator<Item = (u16, u8)>,
         I::IntoIter: Clone,
     {
         let entries = entries.into_iter();
-        let count = u8::try_from(entries.clone().count()).ok()?;
-        let len = 1 + usize::from(count) * Self::ENTRY_LEN;
-        let (first, rest) = out.get_mut(..len)?.split_first_mut()?;
+        let count = entries.clone().count();
+        let count = u8::try_from(count).map_err(|_| DataError::TooManyEntries { count })?;
+        let needed = 1 + usize::from(count) * Self::ENTRY_LEN;
+        let available = out.len();
+        let room = out
+            .get_mut(..needed)
+            .ok_or(DataError::NoRoom { needed, available })?;
+        // At least the count octet: `needed` is 1 or more.
+        let (first, rest) = room
+            .split_first_mut()
+            .ok_or(DataError::NoRoom { needed, available })?;
         *first = count;
         // Four octets each: ENTRY_LEN.
         for (slot, (network, port_id)) in rest.as_chunks_mut::<4>().0.iter_mut().zip(entries) {
             let [high, low] = network.to_be_bytes();
             *slot = [high, low, port_id, 0];
         }
-        Some(len)
+        Ok(needed)
     }
 }
 

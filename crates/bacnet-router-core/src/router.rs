@@ -61,7 +61,7 @@ use core::fmt;
 pub use config::{ConfigError, Limits, Options, PortConfig};
 pub use counters::Counters;
 pub use host::{Claim, ControlClass, Event, Group, Host, Permissive, Targets};
-pub use ingress::{DropReason, Frame, Local, Received};
+pub use ingress::{Discard, Frame, Local, Received};
 pub use output::{Action, Cause, Dest, Kind, Send, SendRefusal};
 
 use counters::bump;
@@ -156,9 +156,16 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 }
 
 /// A sans-IO BACnet router over the [`Storage`] it borrows or owns (`S` is
-/// `&mut Storage<..>` in firmware, a `Box<Storage<..>>` on a host).
-pub struct Router<S, const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-{
+/// `&mut Storage<..>` in firmware, a `Box<Storage<..>>` on a host). `D` and
+/// `N` default as [`Storage`]'s do.
+pub struct Router<
+    S,
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize = 16,
+    const N: usize = MAX_NPDU,
+> {
     storage: S,
     options: Options,
     next_sweep: Instant,

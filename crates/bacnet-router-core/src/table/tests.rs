@@ -5,7 +5,7 @@
 
 mod rejects;
 
-use super::{ClaimCounters, Reachability, Table};
+use super::{ClaimCounters, Convergence, Reachability, Table};
 use crate::{Duration, Instant, Mac, PortId};
 
 use support::{Hosted, BASE, TIMING};
@@ -148,7 +148,8 @@ fn counters_saturate_without_affecting_decisions_and_snapshots_are_owned() {
 
 #[test]
 fn new_counters_saturate_without_affecting_gate_and_clones_are_independent() {
-    let mut table = Hosted::new_hardened();
+    let mut table = Hosted::new();
+    table.set_convergence(Convergence::Hardened);
     learned(&mut table);
     table.counters = ClaimCounters {
         pending_started: MAX - 1,

@@ -226,12 +226,12 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 let message = code::I_AM_ROUTER_TO_NETWORK;
                 if task.network != 0 {
                     let len = write_message(&mut self.scratch, message, |data| {
-                        Networks::write([task.network], data)
+                        Networks::write([task.network], data).ok()
                     });
                     Some((len, kind, Cause::Ingress, target))
                 } else if others.peek().is_some() {
                     let len = write_message(&mut self.scratch, message, |data| {
-                        Networks::write(others, data)
+                        Networks::write(others, data).ok()
                     });
                     Some((len, kind, Cause::Ingress, target))
                 } else {
@@ -256,7 +256,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 } else {
                     let message = code::INITIALIZE_ROUTING_TABLE_ACK;
                     let len = write_message(&mut self.scratch, message, |data| {
-                        RoutingEntries::write(entries, data)
+                        RoutingEntries::write(entries, data).ok()
                     });
                     // A write that fails ends the answer, as an encode
                     // failure does in the hosted router.
@@ -338,7 +338,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             } else if self.port_count > 1 {
                 let others = other_networks(&self.ports[..self.port_count], port);
                 let len = write_message(&mut self.scratch, code::I_AM_ROUTER_TO_NETWORK, |data| {
-                    Networks::write(others, data)
+                    Networks::write(others, data).ok()
                 });
                 return Some((at, len));
             }

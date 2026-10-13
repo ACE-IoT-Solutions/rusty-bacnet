@@ -4,8 +4,8 @@
 
 use bacnet_encoding::npdu::{decode_npdu, decode_reject_message_to_network};
 use bacnet_router_core::message::{
-    code, parse_disconnect, reason, EstablishConnection, ICouldBeRouter, NetworkNumberIs, Networks,
-    Reject, RoutingEntries, RoutingEntry, WhoIsRouter,
+    code, reason, DataError, DisconnectConnection, EstablishConnection, ICouldBeRouter,
+    NetworkNumberIs, Networks, Reject, RoutingEntries, RoutingEntry, WhoIsRouter,
 };
 use bacnet_router_core::npdu::Npdu;
 use bacnet_types::enums::{NetworkMessageType, RejectMessageReason};
@@ -148,7 +148,7 @@ proptest! {
     /// it back unchanged.
     #[test]
     fn reject_agrees_with_bacnet_encoding(payload in prop::collection::vec(any::<u8>(), 0..5)) {
-        let view = Reject::parse(&payload);
+        let view = Reject::parse(&payload).ok();
         let decoded = decode_reject_message_to_network(&payload).ok();
         prop_assert_eq!(view.is_some(), decoded.is_some());
         if let (Some(view), Some(decoded)) = (view, decoded) {
@@ -165,7 +165,11 @@ proptest! {
     fn routing_entries_agree_with_an_independent_walk(payload in routing_payload()) {
         let view = RoutingEntries::parse(&payload);
         let walked = peer_entries(&payload);
-        prop_assert_eq!(view.is_some(), walked.is_some());
+        prop_assert_eq!(view.is_ok(), walked.is_some());
+        if view.is_err() {
+            prop_assert_eq!(view, Err(DataError::Length { length: payload.len() }));
+        }
+        let view = view.ok();
         let (Some(view), Some(walked)) = (view, walked) else {
             return Ok(());
         };
@@ -181,7 +185,7 @@ proptest! {
                 walked.iter().map(|(network, port_id, _)| (*network, *port_id)),
                 &mut out,
             );
-            prop_assert_eq!(len, Some(payload.len()));
+            prop_assert_eq!(len, Ok(payload.len()));
             prop_assert_eq!(out, payload);
         }
     }
@@ -191,7 +195,7 @@ proptest! {
     #[test]
     fn networks_round_trip(networks in prop::collection::vec(any::<u16>(), 0..8), odd in any::<u8>()) {
         let mut out = vec![0u8; networks.len() * 2];
-        prop_assert_eq!(Networks::write(networks.iter().copied(), &mut out), Some(out.len()));
+        prop_assert_eq!(Networks::write(networks.iter().copied(), &mut out), Ok(out.len()));
         let view = Networks::parse(&out).unwrap();
         prop_assert_eq!(view.len(), networks.len());
         prop_assert_eq!(view.is_empty(), networks.is_empty());
@@ -201,7 +205,8 @@ proptest! {
             prop_assert!(view.contains(*network));
         }
         out.push(odd);
-        prop_assert_eq!(Networks::parse(&out), None);
+        let length = out.len();
+        prop_assert_eq!(Networks::parse(&out), Err(DataError::Length { length }));
     }
 }
 
@@ -209,25 +214,29 @@ proptest! {
 fn writers_refuse_what_does_not_fit() {
     // A refusal writes nothing at all, not even the part that would fit.
     let untouched = |out: &[u8]| out.iter().all(|&octet| octet == 0xA5);
+    let no_room = |needed, available| Err(DataError::NoRoom { needed, available });
     let mut out = [0xA5u8; 5];
-    assert_eq!(Networks::write([1, 2, 3], &mut out), None);
+    assert_eq!(Networks::write([1, 2, 3], &mut out), no_room(6, 5));
     assert!(untouched(&out));
-    assert_eq!(RoutingEntries::write([(1, 1), (2, 1)], &mut out), None);
+    assert_eq!(
+        RoutingEntries::write([(1, 1), (2, 1)], &mut out),
+        no_room(9, 5)
+    );
     assert!(untouched(&out));
-    assert_eq!(RoutingEntries::write([], &mut []), None);
+    assert_eq!(RoutingEntries::write([], &mut []), no_room(1, 0));
 
-    assert_eq!(Networks::write([1, 2], &mut out), Some(4));
+    assert_eq!(Networks::write([1, 2], &mut out), Ok(4));
     assert_eq!(out, [0x00, 0x01, 0x00, 0x02, 0xA5]);
-    assert_eq!(RoutingEntries::write([(1, 1)], &mut out), Some(5));
+    assert_eq!(RoutingEntries::write([(1, 1)], &mut out), Ok(5));
     assert_eq!(out, [1, 0x00, 0x01, 1, 0]);
-    assert_eq!(RoutingEntries::write([], &mut out[..1]), Some(1));
+    assert_eq!(RoutingEntries::write([], &mut out[..1]), Ok(1));
     assert_eq!(out[0], 0);
 
     // The count octet names at most 255 entries.
     let mut big = vec![0xA5u8; 1 + 256 * RoutingEntries::ENTRY_LEN];
     assert_eq!(
         RoutingEntries::write((0..256).map(|n| (n, 1)), &mut big),
-        None
+        Err(DataError::TooManyEntries { count: 256 })
     );
     assert!(untouched(&big));
     let len = RoutingEntries::write((0..255).map(|n| (n, 1)), &mut big).unwrap();
@@ -240,7 +249,10 @@ fn routing_entries_tell_a_query_from_an_update_ack() {
     assert_eq!(query.count(), 0);
     assert_eq!(query.iter().count(), 0);
     // An Ack to an update has no data at all, not even a count.
-    assert_eq!(RoutingEntries::parse(&[]), None);
+    assert_eq!(
+        RoutingEntries::parse(&[]),
+        Err(DataError::Length { length: 0 })
+    );
     let entries = RoutingEntries::parse(&[1, 0x0B, 0xB8, 0x02, 0x01, 0xAA]).unwrap();
     assert_eq!(
         entries.iter().collect::<Vec<_>>(),
@@ -254,31 +266,37 @@ fn routing_entries_tell_a_query_from_an_update_ack() {
 
 #[test]
 fn fixed_payloads_take_exactly_their_length() {
-    assert_eq!(WhoIsRouter::parse(&[]), Some(WhoIsRouter::All));
+    let wrong = |payload: &[u8]| DataError::Length {
+        length: payload.len(),
+    };
+    assert_eq!(WhoIsRouter::parse(&[]), Ok(WhoIsRouter::All));
     assert_eq!(
         WhoIsRouter::parse(&[0x0B, 0xB8]),
-        Some(WhoIsRouter::Network(3000))
+        Ok(WhoIsRouter::Network(3000))
     );
     for bad in [&[0x0B][..], &[0x0B, 0xB8, 0x00]] {
         // A bad tail never widens a scoped question to every network.
-        assert_eq!(WhoIsRouter::parse(bad), None);
+        assert_eq!(WhoIsRouter::parse(bad), Err(wrong(bad)));
     }
 
     assert_eq!(
         ICouldBeRouter::parse(&[0x0B, 0xB8, 7]),
-        Some(ICouldBeRouter {
+        Ok(ICouldBeRouter {
             network: 3000,
             performance_index: 7,
         })
     );
     assert_eq!(
         EstablishConnection::parse(&[0x0B, 0xB8, 0]),
-        Some(EstablishConnection {
+        Ok(EstablishConnection {
             network: 3000,
             termination_time: 0,
         })
     );
-    assert_eq!(parse_disconnect(&[0x0B, 0xB8]), Some(3000));
+    assert_eq!(
+        DisconnectConnection::parse(&[0x0B, 0xB8]),
+        Ok(DisconnectConnection { network: 3000 })
+    );
     let number = NetworkNumberIs::parse(&[0x00, 0x05, 1]).unwrap();
     assert_eq!((number.network, number.is_configured()), (5, true));
     assert_eq!(number.to_bytes(), [0x00, 0x05, 1]);
@@ -287,14 +305,36 @@ fn fixed_payloads_take_exactly_their_length() {
         .is_configured());
 
     for short in [&[][..], &[0x0B], &[0x0B, 0xB8], &[0x0B, 0xB8, 1, 2]] {
-        assert_eq!(ICouldBeRouter::parse(short), None);
-        assert_eq!(EstablishConnection::parse(short), None);
-        assert_eq!(NetworkNumberIs::parse(short), None);
-        assert_eq!(Reject::parse(short), None);
+        let refused = wrong(short);
+        assert_eq!(ICouldBeRouter::parse(short), Err(refused));
+        assert_eq!(EstablishConnection::parse(short), Err(refused));
+        assert_eq!(NetworkNumberIs::parse(short), Err(refused));
+        assert_eq!(Reject::parse(short), Err(refused));
     }
-    for wrong in [&[][..], &[0x0B], &[0x0B, 0xB8, 0]] {
-        assert_eq!(parse_disconnect(wrong), None);
+    for bad in [&[][..], &[0x0B], &[0x0B, 0xB8, 0]] {
+        assert_eq!(DisconnectConnection::parse(bad), Err(wrong(bad)));
     }
+}
+
+#[test]
+fn data_errors_say_what_was_wrong() {
+    use std::string::ToString;
+    assert_eq!(
+        DataError::Length { length: 2 }.to_string(),
+        "2 octets of message data don't fit its layout"
+    );
+    assert_eq!(
+        DataError::NoRoom {
+            needed: 6,
+            available: 5
+        }
+        .to_string(),
+        "message data of 6 octets doesn't fit in 5"
+    );
+    assert_eq!(
+        DataError::TooManyEntries { count: 256 }.to_string(),
+        "256 routing entries, more than a count can state"
+    );
 }
 
 #[test]

@@ -5,7 +5,7 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{ControlClass, DropReason, Event, Kind};
+use bacnet_router_core::router::{ControlClass, Discard, Event, Kind};
 use bacnet_router_core::table::{Reachability, RejectEffect};
 use fixture::{
     addr, apdu_to, at, bytes, deliver, learn_9_via_r7, reject_data, router, sent_reject, Outcome,
@@ -176,7 +176,7 @@ fn received_rejects_relay_by_their_destination() {
         reject(Some((44, &[5]))),
     ] {
         let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &frame, at(4));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::Unroutable));
+        assert_eq!(outcome, Outcome::Discarded(Discard::Unroutable));
         assert!(sent.is_empty(), "nothing answers a reject");
     }
     assert_eq!(router.counters().unroutable_rejects, 3);
@@ -230,7 +230,7 @@ fn denied_and_malformed_rejects_do_nothing() {
     );
     npdu.destination = Some(addr(1, NODE_A));
     let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &bytes(&npdu), at(1));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::Denied));
+    assert_eq!(outcome, Outcome::Discarded(Discard::Denied));
     assert!(sent.is_empty());
     assert_eq!(
         router.table().lookup(9).unwrap().reachability,
@@ -241,7 +241,7 @@ fn denied_and_malformed_rejects_do_nothing() {
 
     let short = fixture::message(code::REJECT_MESSAGE_TO_NETWORK, &[1, 0]);
     let (outcome, _) = deliver(&mut router, &mut host, 1, R7, &short, at(1));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::BadMessage));
+    assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
     assert_eq!(host.asked.len(), 1);
     assert_eq!(router.counters().denied, 1);
 }

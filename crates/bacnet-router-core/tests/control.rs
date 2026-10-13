@@ -5,7 +5,7 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{ControlClass, DropReason, Event, Kind, Options};
+use bacnet_router_core::router::{ControlClass, Discard, Event, Kind, Options};
 use bacnet_router_core::table::{Convergence, Reachability};
 use bacnet_router_core::{Mac, PortId};
 use fixture::{
@@ -88,12 +88,12 @@ fn i_am_router_learns_then_rebroadcasts() {
         message(code::I_AM_ROUTER_TO_NETWORK, &[0, 44, 0]),
     ] {
         let (outcome, sent) = deliver_broadcast(&mut router, &mut host, 1, R7, &bad, at(2));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::BadMessage));
+        assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
         assert!(sent.is_empty());
     }
     host.deny.push(ControlClass::IAm);
     let (outcome, sent) = deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[44]), at(3));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::Denied));
+    assert_eq!(outcome, Outcome::Discarded(Discard::Denied));
     assert!(sent.is_empty());
     assert!(router.table().lookup(44).is_none());
 }
@@ -197,7 +197,7 @@ fn scoped_who_is_router_cases() {
         message(code::WHO_IS_ROUTER_TO_NETWORK, &[0, 9, 0]),
     ] {
         let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bad, at(1));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::BadMessage));
+        assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
         assert!(sent.is_empty());
     }
     assert!(host.asked.is_empty(), "discovery is never gated");
@@ -289,11 +289,11 @@ fn flow_control_covers_what_the_sender_serves() {
     // Refused or malformed: no marks, nothing passed on.
     host.deny.push(ControlClass::Busy);
     let (outcome, sent) = deliver_broadcast(&mut router, &mut host, 1, R8, &busy(&[4000]), at(5));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::Denied));
+    assert_eq!(outcome, Outcome::Discarded(Discard::Denied));
     assert!(sent.is_empty());
     let odd = message(code::ROUTER_AVAILABLE_TO_NETWORK, &[0]);
     let (outcome, sent) = deliver_broadcast(&mut router, &mut host, 1, R8, &odd, at(5));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::BadMessage));
+    assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
     assert!(sent.is_empty());
     assert_eq!(
         router.table().lookup(4000).unwrap().reachability,
@@ -327,14 +327,14 @@ fn network_number_messages_stay_local() {
     number_routed.source = Some(addr(7, &[1]));
     for frame in [bytes(&directed), bytes(&with_data), bytes(&number_routed)] {
         let (outcome, sent) = deliver_broadcast(&mut router, &mut host, 0, NODE_A, &frame, at(2));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::BadMessage));
+        assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
         assert!(sent.is_empty(), "never routed");
     }
     let number = message(code::NETWORK_NUMBER_IS, &[0, 5, 1]);
     let (outcome, _) = deliver(&mut router, &mut host, 0, NODE_A, &number, at(3));
     assert_eq!(
         outcome,
-        Outcome::Dropped(DropReason::BadMessage),
+        Outcome::Discarded(Discard::BadMessage),
         "a unicast"
     );
     let (outcome, sent) = deliver_broadcast(&mut router, &mut host, 0, NODE_A, &number, at(3));
@@ -389,7 +389,7 @@ fn ptp_messages_change_nothing() {
         message(code::DISCONNECT_CONNECTION_TO_NETWORK, &[0, 9, 0]),
     ] {
         let (outcome, _) = deliver(&mut router, &mut host, 1, R7, &bad, at(1));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::BadMessage));
+        assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
     }
     assert_eq!(
         router.table().claim_counters().disconnect_removal_ignored,
@@ -430,7 +430,7 @@ fn i_could_be_router_fills_only_gaps() {
     assert_eq!(host.asked[1].targets, [44]);
     host.deny.push(ControlClass::ICouldBe);
     let (outcome, _) = deliver(&mut router, &mut host, 1, R8, &could_be(45), at(1));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::Denied));
+    assert_eq!(outcome, Outcome::Discarded(Discard::Denied));
     assert!(router.table().lookup(45).is_none());
 }
 

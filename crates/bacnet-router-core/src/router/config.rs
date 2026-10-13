@@ -150,7 +150,7 @@ impl fmt::Display for ConfigError {
                 write!(f, "{count} ports offered, room for {capacity}")
             }
             Self::DuplicateNetwork(network) => {
-                write!(f, "Duplicate network number {network} in router ports")
+                write!(f, "duplicate network number {network} in router ports")
             }
             Self::Limit(port) => write!(
                 f,

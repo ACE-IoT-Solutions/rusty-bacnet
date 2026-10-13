@@ -2,7 +2,7 @@
 
 use super::counters::bump;
 use super::host::{Event, Group, Host};
-use super::ingress::{Arrival, DropReason, Received};
+use super::ingress::{Arrival, Discard, Received};
 use super::tasks::Task;
 use super::Storage;
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
@@ -90,7 +90,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             Some(route) => self.forward(at, npdu, &route, host),
             None => {
                 bump(&mut self.counters.unroutable_rejects);
-                Received::Dropped(DropReason::Unroutable)
+                Received::Discarded(Discard::Unroutable)
             }
         }
     }

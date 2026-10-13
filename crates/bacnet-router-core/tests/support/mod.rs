@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use bacnet_router_core::table::{ClaimCounters, Table, Timing};
+use bacnet_router_core::table::{ClaimCounters, Convergence, Table, Timing};
 use bacnet_router_core::{Duration, Instant, Mac, PortId};
 
 /// The hosted router's sizes: 256 routes, 1,024 hold-down records.
@@ -61,9 +61,16 @@ pub fn learned_table() -> Hosted {
     table
 }
 
+/// An empty table under hardened convergence.
+pub fn hardened() -> Hosted {
+    let mut table = Hosted::new();
+    table.set_convergence(Convergence::Hardened);
+    table
+}
+
 /// The same, under hardened convergence.
 pub fn learned_hardened() -> Hosted {
-    let mut table = Hosted::new_hardened();
+    let mut table = hardened();
     table.add_learned(3000, port(0), mac(&[1]), BASE);
     table
 }

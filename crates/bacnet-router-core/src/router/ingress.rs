@@ -37,8 +37,8 @@ pub enum Received<'f> {
     ToRouter(Npdu<'f>),
     /// Routed, answered, relayed or taken into the table: see the actions.
     Handled,
-    /// Dropped, and counted, for this reason.
-    Dropped(DropReason),
+    /// Discarded, and counted, for this reason.
+    Discarded(Discard),
 }
 
 /// An APDU for the router's own application entity.
@@ -58,18 +58,19 @@ pub struct Local<'f> {
     pub global: bool,
     /// Whether its sender expects a reply.
     pub expecting_reply: bool,
-    /// Its network priority.
+    /// Its network priority: the control octet's two low bits, 0 (normal)
+    /// to 3 (life safety), so never more than 3.
     pub priority: u8,
 }
 
-/// Why a frame was dropped. Each has its count in
+/// Why a frame was discarded. Each has its count in
 /// [`Counters`](super::Counters).
 ///
 /// It is `#[non_exhaustive]`, so a new reason isn't a breaking change: a
 /// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum DropReason {
+pub enum Discard {
     /// It came on a port the router doesn't have, or its route names one
     /// (a route written through [`Router::table_mut`](super::Router::table_mut)).
     UnknownPort,
@@ -162,11 +163,11 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         self.drop_undrained();
         let Some(config) = self.ports[..self.port_count].get(usize::from(frame.port.0)) else {
             bump(&mut self.counters.unknown_port);
-            return Received::Dropped(DropReason::UnknownPort);
+            return Received::Discarded(Discard::UnknownPort);
         };
         let Ok(source_mac) = Mac::from_slice(frame.source) else {
             bump(&mut self.counters.address_length_drops);
-            return Received::Dropped(DropReason::SourceTooLong {
+            return Received::Discarded(Discard::SourceTooLong {
                 length: frame.source.len(),
             });
         };
@@ -192,23 +193,23 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 if let Some(dnet) = dnet.filter(|&dnet| dnet != GLOBAL_NETWORK) {
                     self.reject(&at, source, dnet, reason::ADDRESSING_ERROR, host);
                 }
-                return Received::Dropped(DropReason::AddressTooLong { field, length });
+                return Received::Discarded(Discard::AddressTooLong { field, length });
             }
             Err(ParseError::Malformed(fault)) => {
                 bump(&mut self.counters.malformed);
-                return Received::Dropped(DropReason::Malformed(fault));
+                return Received::Discarded(Discard::Malformed(fault));
             }
         };
         if let Some(destination) = npdu.destination {
             let global = destination.network == GLOBAL_NETWORK;
             if global && !destination.mac.is_empty() {
                 bump(&mut self.counters.global_broadcast_dadr_drops);
-                return Received::Dropped(DropReason::GlobalWithDadr);
+                return Received::Discarded(Discard::GlobalWithDadr);
             }
             let broadcast = global || destination.mac.is_empty();
             if broadcast && !npdu.is_network_message() && !is_unconfirmed(npdu.payload) {
                 bump(&mut self.counters.broadcast_pdu_type_drops);
-                return Received::Dropped(DropReason::BroadcastNotUnconfirmed);
+                return Received::Discarded(Discard::BroadcastNotUnconfirmed);
             }
         }
         if npdu.is_network_message() {
@@ -329,6 +330,6 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// Count a frame dropped for a group DADR (#1504, #1677).
     pub(super) fn group_drop<'f>(&mut self) -> Received<'f> {
         bump(&mut self.counters.group_dadr_drops);
-        Received::Dropped(DropReason::GroupDadr)
+        Received::Discarded(Discard::GroupDadr)
     }
 }

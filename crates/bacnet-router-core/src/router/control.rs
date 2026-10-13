@@ -8,13 +8,13 @@
 use super::config::Options;
 use super::counters::bump;
 use super::host::{Claim, ControlClass, Event, Group, Host, Targets};
-use super::ingress::{Arrival, DropReason, Received};
+use super::ingress::{Arrival, Discard, Received};
 use super::output::Kind;
 use super::tasks::Task;
 use super::Storage;
 use crate::message::{
-    code, parse_disconnect, reason, EstablishConnection, ICouldBeRouter, NetworkNumberIs, Networks,
-    Reject, WhoIsRouter,
+    code, reason, DisconnectConnection, EstablishConnection, ICouldBeRouter, NetworkNumberIs,
+    Networks, Reject, WhoIsRouter,
 };
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
 use crate::table::Learned;
@@ -66,7 +66,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
             code::INITIALIZE_ROUTING_TABLE_ACK => self.routing_table_ack(at, npdu, options, host),
             code::ESTABLISH_CONNECTION_TO_NETWORK => {
-                let Some(request) = EstablishConnection::parse(npdu.payload) else {
+                let Ok(request) = EstablishConnection::parse(npdu.payload) else {
                     return self.bad_message();
                 };
                 host.observe(Event::EstablishConnection {
@@ -76,10 +76,12 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 Received::Handled
             }
             code::DISCONNECT_CONNECTION_TO_NETWORK => {
-                let Some(network) = parse_disconnect(npdu.payload) else {
+                let Ok(request) = DisconnectConnection::parse(npdu.payload) else {
                     return self.bad_message();
                 };
-                host.observe(Event::DisconnectIgnored { network });
+                host.observe(Event::DisconnectIgnored {
+                    network: request.network,
+                });
                 self.table.record_disconnect_removal_ignored();
                 Received::Handled
             }
@@ -110,7 +112,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// allow.
     pub(super) fn bad_message<'f>(&mut self) -> Received<'f> {
         bump(&mut self.counters.bad_messages);
-        Received::Dropped(DropReason::BadMessage)
+        Received::Discarded(Discard::BadMessage)
     }
 
     /// Ask the host whether to act on a protected message, counting a
@@ -157,12 +159,12 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         host: &mut impl Host,
     ) -> Received<'f> {
         let network = match WhoIsRouter::parse(npdu.payload) {
-            None | Some(WhoIsRouter::Network(0)) => return self.bad_message(),
-            Some(WhoIsRouter::All) => {
+            Err(_) | Ok(WhoIsRouter::Network(0)) => return self.bad_message(),
+            Ok(WhoIsRouter::All) => {
                 self.out.push(Task::i_am_answer(at.port, None));
                 return Received::Handled;
             }
-            Some(WhoIsRouter::Network(network)) => network,
+            Ok(WhoIsRouter::Network(network)) => network,
         };
         match self.table.lookup(network) {
             Some(route) if route.port != at.port => {
@@ -185,7 +187,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         if self.write_fan_out(&relay, kind, at.port, host) {
             Received::Handled
         } else {
-            Received::Dropped(DropReason::Unwritable)
+            Received::Discarded(Discard::Unwritable)
         }
     }
 
@@ -202,7 +204,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         if self.write_fan_out(&relay, Kind::Relay(kind), at.port, host) {
             Received::Handled
         } else {
-            Received::Dropped(DropReason::Unwritable)
+            Received::Discarded(Discard::Unwritable)
         }
     }
 
@@ -216,11 +218,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        let Some(list) = Networks::parse(npdu.payload).filter(|list| !list.is_empty()) else {
+        let Some(list) = Networks::parse(npdu.payload)
+            .ok()
+            .filter(|list| !list.is_empty())
+        else {
             return self.bad_message();
         };
         if !self.authorize(at, npdu, ControlClass::IAm, Targets::Networks(list), host) {
-            return Received::Dropped(DropReason::Denied);
+            return Received::Discarded(Discard::Denied);
         }
         let mut claimed = Claimed::new();
         for network in list.iter() {
@@ -291,7 +296,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        let Some(offer) = ICouldBeRouter::parse(npdu.payload) else {
+        let Ok(offer) = ICouldBeRouter::parse(npdu.payload) else {
             return self.bad_message();
         };
         let named = Networks::parse(&npdu.payload[..2]).unwrap_or(Networks::EMPTY);
@@ -302,7 +307,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             Targets::Networks(named),
             host,
         ) {
-            return Received::Dropped(DropReason::Denied);
+            return Received::Discarded(Discard::Denied);
         }
         let network = offer.network;
         let new = network != 0 && network != GLOBAL_NETWORK && self.table.lookup(network).is_none();
@@ -336,7 +341,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        let Some(reject) = Reject::parse(npdu.payload) else {
+        let Ok(reject) = Reject::parse(npdu.payload) else {
             return self.bad_message();
         };
         let named = Networks::parse(&npdu.payload[1..]).unwrap_or(Networks::EMPTY);
@@ -347,7 +352,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             Targets::Networks(named),
             host,
         ) {
-            return Received::Dropped(DropReason::Denied);
+            return Received::Discarded(Discard::Denied);
         }
         let effect = self.table.apply_reject(
             reject.network,
@@ -378,7 +383,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        let Some(list) = Networks::parse(npdu.payload) else {
+        let Ok(list) = Networks::parse(npdu.payload) else {
             return self.bad_message();
         };
         let class = if busy {
@@ -387,7 +392,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             ControlClass::Available
         };
         if !self.authorize(at, npdu, class, Targets::Networks(list), host) {
-            return Received::Dropped(DropReason::Denied);
+            return Received::Discarded(Discard::Denied);
         }
         let deadline = at.now + options.timing.busy_for;
         let mut mark = |table: &mut crate::table::Table<R, H>, network| {
@@ -436,7 +441,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         if npdu.source.is_some() || npdu.destination.is_some() || !at.link_group {
             return self.bad_message();
         }
-        let Some(number) = NetworkNumberIs::parse(npdu.payload) else {
+        let Ok(number) = NetworkNumberIs::parse(npdu.payload) else {
             return self.bad_message();
         };
         if number.network != at.network {

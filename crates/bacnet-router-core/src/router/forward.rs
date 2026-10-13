@@ -2,7 +2,7 @@
 
 use super::counters::bump;
 use super::host::{Event, Host};
-use super::ingress::{Arrival, DropReason, Received};
+use super::ingress::{Arrival, Discard, Received};
 use super::output::{Kind, Target};
 use super::Storage;
 use super::MIN_LIMIT;
@@ -40,7 +40,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             .destination
             .map_or(0, |destination| destination.network);
         host.observe(Event::HopCountSpent { network });
-        Received::Dropped(DropReason::HopCount)
+        Received::Discarded(Discard::HopCount)
     }
 
     /// Send `npdu` on along `route`. Onto a directly attached network it
@@ -71,7 +71,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         // router doesn't have; the hosted router drops its traffic too.
         let Some(egress) = self.ports[..self.port_count].get(usize::from(route.port.0)) else {
             bump(&mut self.counters.unknown_port);
-            return Received::Dropped(DropReason::UnknownPort);
+            return Received::Discarded(Discard::UnknownPort);
         };
         let limits = egress.max_npdu;
         let (destination, hop_count, to) = if route.direct {
@@ -112,7 +112,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         if self.write_now(&rewritten, Kind::Forward, Target::Toward(route.port, to)) {
             Received::Handled
         } else {
-            Received::Dropped(DropReason::Unwritable)
+            Received::Discarded(Discard::Unwritable)
         }
     }
 

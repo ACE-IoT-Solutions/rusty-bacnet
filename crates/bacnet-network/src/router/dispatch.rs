@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use bacnet_router_core::npdu::{AddressField, Malformed};
-use bacnet_router_core::router::{DropReason, Frame, Received};
+use bacnet_router_core::router::{Discard, Frame, Received};
 use bacnet_router_core::PortId;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 use tokio::sync::mpsc;
@@ -87,8 +87,8 @@ enum Outcome {
     Local(Delivery),
     /// A reject addressed to the router.
     ToRouter,
-    /// Dropped, and counted, for this reason.
-    Dropped(DropReason),
+    /// Discarded, and counted, for this reason.
+    Discarded(Discard),
     /// Routed, answered or taken: the sends say the rest.
     Handled,
 }
@@ -134,13 +134,13 @@ impl PortDispatch {
             let outcome = match router.receive(frame, shared.engine.now(), &mut host) {
                 Received::Local(local) => Outcome::Local(Delivery::of(&local)),
                 Received::ToRouter(_) => Outcome::ToRouter,
-                Received::Dropped(reason) => Outcome::Dropped(reason),
+                Received::Discarded(reason) => Outcome::Discarded(reason),
                 Received::Handled => Outcome::Handled,
             };
             // A rewrite or relay that couldn't be written; one the frame's
             // own result names is logged below.
             if router.counters().write_failures != failures
-                && !matches!(outcome, Outcome::Dropped(DropReason::Unwritable))
+                && !matches!(outcome, Outcome::Discarded(Discard::Unwritable))
             {
                 warn!(port = self.port, "Failed to encode forwarded NPDU");
             }
@@ -159,23 +159,25 @@ impl PortDispatch {
                     .try_send_apdu(delivery.application(received, network));
             }
             Outcome::ToRouter => outputs.local_control.deliver(&received),
-            Outcome::Dropped(reason) => log_drop(reason, self.port, received.source_mac.len()),
+            Outcome::Discarded(reason) => {
+                log_discard(reason, self.port, received.source_mac.len());
+            }
             Outcome::Handled => {}
         }
     }
 }
 
-/// Log a dropped frame as the router logged it before the engine. Hop
+/// Log a discarded frame as the router logged it before the engine. Hop
 /// counts are logged by the engine's event; denials, refused network
 /// messages and unroutable rejects drop without a word, as they did.
-fn log_drop(reason: DropReason, port: u8, source_len: usize) {
+fn log_discard(reason: Discard, port: u8, source_len: usize) {
     match reason {
-        DropReason::SourceTooLong { .. } => warn!(
+        Discard::SourceTooLong { .. } => warn!(
             octets = source_len,
             limit = bacnet_router_core::MAX_MAC_LEN,
             "Dropping a frame whose link-layer source MAC is over the limit"
         ),
-        DropReason::AddressTooLong { field, length } => {
+        Discard::AddressTooLong { field, length } => {
             let octet = match field {
                 AddressField::Destination => "DLEN",
                 AddressField::Source => "SLEN",
@@ -189,32 +191,34 @@ fn log_drop(reason: DropReason, port: u8, source_len: usize) {
                 "Router refused an NPDU"
             );
         }
-        DropReason::Malformed(fault) => {
+        Discard::Malformed(fault) => {
             let error = match fault {
                 Malformed::Truncated => "NPDU truncated",
                 Malformed::Version => "unsupported BACnet protocol version",
                 Malformed::ReservedNetwork => "NPDU names a reserved network number",
                 Malformed::EmptySource => "NPDU source SLEN=0 is invalid",
+                // A fault a later engine adds.
+                _ => "NPDU malformed",
             };
             warn!(error, port, "Router decode failed");
         }
-        DropReason::GlobalWithDadr => {
+        Discard::GlobalWithDadr => {
             warn!("Dropping a global broadcast NPDU that also names a DADR")
         }
-        DropReason::BroadcastNotUnconfirmed => {
+        Discard::BroadcastNotUnconfirmed => {
             warn!("Dropping a broadcast NPDU whose APDU isn't an Unconfirmed-Request")
         }
-        DropReason::GroupDadr => warn!(
+        Discard::GroupDadr => warn!(
             port,
             "Dropping a routed NPDU for a group DADR its port's broadcast doesn't stand for, \
              or that isn't an Unconfirmed-Request"
         ),
-        DropReason::Unwritable => warn!(port, "Failed to encode forwarded NPDU"),
-        DropReason::UnknownPort
-        | DropReason::HopCount
-        | DropReason::Denied
-        | DropReason::BadMessage
-        | DropReason::Unroutable => {}
+        Discard::Unwritable => warn!(port, "Failed to encode forwarded NPDU"),
+        Discard::UnknownPort
+        | Discard::HopCount
+        | Discard::Denied
+        | Discard::BadMessage
+        | Discard::Unroutable => {}
         // A reason a later engine adds.
         _ => debug!(port, ?reason, "Router dropped a frame"),
     }

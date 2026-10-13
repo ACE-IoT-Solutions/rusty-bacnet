@@ -71,7 +71,11 @@ impl Host for Permissive {}
 
 /// The protected classes of network message, one per kind of change a
 /// message can make to the routing table.
+///
+/// It is `#[non_exhaustive]`, so a new class isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ControlClass {
     /// I-Am-Router learning.
     IAm,
@@ -121,7 +125,11 @@ impl<'c> Targets<'c> {
 
 /// What [`Host::authorize`] is told about a protected message. It carries
 /// what the message claims, none of it verified.
+///
+/// The router builds it. It is `#[non_exhaustive]`, so a new field isn't a
+/// breaking change: a pattern needs `..`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Claim<'c> {
     /// The class of change it would make.
     pub class: ControlClass,

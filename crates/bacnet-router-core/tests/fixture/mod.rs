@@ -12,8 +12,8 @@
 use bacnet_router_core::message::code;
 use bacnet_router_core::npdu::{Address, Npdu};
 use bacnet_router_core::router::{
-    Action, Cause, Claim, ControlClass, Counters, Dest, DropReason, Event, Frame, Group, Host,
-    Kind, Limits, Options, PortConfig, Received, SendRefusal,
+    Action, Cause, Claim, ControlClass, Counters, Dest, Discard, Event, Frame, Group, Host, Kind,
+    Limits, Options, PortConfig, Received, SendRefusal,
 };
 use bacnet_router_core::table::ClaimCounters;
 use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
@@ -192,7 +192,7 @@ pub enum Outcome {
     },
     ToRouter(Vec<u8>),
     Handled,
-    Dropped(DropReason),
+    Discarded(Discard),
 }
 
 impl Outcome {
@@ -215,7 +215,7 @@ impl Outcome {
                 Self::ToRouter(out)
             }
             Received::Handled => Self::Handled,
-            Received::Dropped(reason) => Self::Dropped(reason),
+            Received::Discarded(reason) => Self::Discarded(reason),
         }
     }
 }

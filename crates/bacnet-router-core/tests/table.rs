@@ -7,7 +7,7 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use bacnet_router_core::table::{Learned, Reachability, Refusal, RejectEffect, Table};
+use bacnet_router_core::table::{LearnRefusal, Learned, Reachability, RejectEffect, Table};
 use bacnet_router_core::{Mac, PortId};
 use proptest::prelude::*;
 use support::{mac, port, purge, secs, Hosted, BASE, NANO, TIMING};
@@ -230,7 +230,7 @@ fn add_learned_flap_rejects_direct_route() {
     let mut table = Hosted::new();
     table.add_direct(1000, port(0));
     let result = table.learn(1000, port(1), mac(&[10, 0, 2, 1]), BASE);
-    assert_eq!(result, Learned::Refused(Refusal::Direct));
+    assert_eq!(result, Learned::Refused(LearnRefusal::Direct));
     assert!(table.lookup(1000).unwrap().direct);
 }
 
@@ -468,20 +468,20 @@ fn a_full_table_refuses_new_networks_and_keeps_serving_old_ones() {
     assert!(!table.add_learned(8, port(1), mac(&[7]), BASE));
     assert_eq!(
         table.learn(8, port(1), mac(&[7]), BASE),
-        Learned::Refused(Refusal::Full)
+        Learned::Refused(LearnRefusal::Full)
     );
     assert_eq!(
         table.apply_claim(8, port(1), mac(&[7]), BASE, &TIMING),
-        Learned::Refused(Refusal::Full)
+        Learned::Refused(LearnRefusal::Full)
     );
     // The three refusals stay apart on a full table.
     assert_eq!(
         table.learn(0xFFFF, port(1), mac(&[7]), BASE),
-        Learned::Refused(Refusal::Reserved)
+        Learned::Refused(LearnRefusal::Reserved)
     );
     assert_eq!(
         table.learn(1, port(1), mac(&[7]), BASE),
-        Learned::Refused(Refusal::Direct)
+        Learned::Refused(LearnRefusal::Direct)
     );
     // Refreshing or moving a stored network still works.
     assert!(table.add_learned(9, port(1), mac(&[6]), BASE + secs(1)));

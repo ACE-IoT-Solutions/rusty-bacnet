@@ -5,8 +5,7 @@ mod fixture;
 
 use bacnet_router_core::message::code;
 use bacnet_router_core::router::{
-    Action, ConfigError, DropReason, Event, Frame, Limits, Options, Permissive, Received,
-    SendRefusal,
+    Action, ConfigError, Discard, Event, Frame, Limits, Options, Permissive, Received, SendRefusal,
 };
 use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
 use fixture::{
@@ -226,7 +225,7 @@ fn a_route_to_a_missing_port_carries_nothing() {
     assert!(router.table_mut().add_learned(9, PortId(3), peer, at(0)));
     let frame = apdu_to(9, &[5], CONFIRMED);
     let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(1));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::UnknownPort));
+    assert_eq!(outcome, Outcome::Discarded(Discard::UnknownPort));
     assert!(sent.is_empty());
     assert_eq!(router.counters().unknown_port, 1);
 }
@@ -342,18 +341,18 @@ proptest! {
                 now,
                 &mut host,
             );
-            if let Received::Dropped(reason) = received {
+            if let Received::Discarded(reason) = received {
                 let key = match reason {
-                    DropReason::SourceTooLong { .. } | DropReason::AddressTooLong { .. } => "address",
-                    DropReason::Malformed(_) => "malformed",
+                    Discard::SourceTooLong { .. } | Discard::AddressTooLong { .. } => "address",
+                    Discard::Malformed(_) => "malformed",
                     other => match other {
-                        DropReason::UnknownPort => "port",
-                        DropReason::GlobalWithDadr => "global",
-                        DropReason::BroadcastNotUnconfirmed => "broadcast",
-                        DropReason::GroupDadr => "group",
-                        DropReason::Denied => "denied",
-                        DropReason::BadMessage => "bad",
-                        DropReason::Unroutable => "unroutable",
+                        Discard::UnknownPort => "port",
+                        Discard::GlobalWithDadr => "global",
+                        Discard::BroadcastNotUnconfirmed => "broadcast",
+                        Discard::GroupDadr => "group",
+                        Discard::Denied => "denied",
+                        Discard::BadMessage => "bad",
+                        Discard::Unroutable => "unroutable",
                         _ => "other",
                     },
                 };

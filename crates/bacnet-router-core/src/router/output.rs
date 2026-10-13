@@ -40,7 +40,9 @@ pub struct Send<'a> {
     pub to: Dest<'a>,
     /// The NPDU, in the router's scratch until the next poll.
     pub npdu: &'a [u8],
-    /// The NPDU's network priority, 0 to 3, for a port that queues by it.
+    /// The NPDU's network priority, 0 (normal) to 3 (life safety), for a
+    /// port that queues by it: the control octet's two low bits, so never
+    /// more than 3.
     pub priority: u8,
     /// Why the router sends it.
     pub kind: Kind,

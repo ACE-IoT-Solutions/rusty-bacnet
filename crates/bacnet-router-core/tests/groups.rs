@@ -8,7 +8,7 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{DropReason, Group, Kind};
+use bacnet_router_core::router::{Discard, Group, Kind};
 use bacnet_router_core::PortId;
 use fixture::{
     addr, apdu_to, at, bytes, deliver, learn_9_via_r7, reject_data, router, Outcome, Recorder,
@@ -34,7 +34,7 @@ fn host() -> Recorder {
 }
 
 fn dropped(router: &TestRouter, outcome: &Outcome, sent: &[fixture::Sent], drops: u64) {
-    assert_eq!(*outcome, Outcome::Dropped(DropReason::GroupDadr));
+    assert_eq!(*outcome, Outcome::Discarded(Discard::GroupDadr));
     assert!(sent.is_empty(), "no send and no reject");
     assert_eq!(router.counters().group_dadr_drops, drops);
     assert_eq!(router.counters().rejects, 0);
@@ -143,7 +143,7 @@ fn other_apdus_and_foreign_groups_are_dropped() {
             &apdu_to(1, OTHER_GROUP, apdu),
             at(1),
         );
-        assert_eq!(outcome, Outcome::Dropped(DropReason::GroupDadr));
+        assert_eq!(outcome, Outcome::Discarded(Discard::GroupDadr));
         assert!(sent.is_empty());
     }
     // From the arrival network too: nothing delivered, nothing sent back.

@@ -17,7 +17,10 @@ pub struct Mac {
 }
 
 /// A MAC longer than [`MAX_MAC_LEN`] octets was offered to [`Mac`].
+///
+/// It is `#[non_exhaustive]`: only the crate builds one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MacTooLong {
     /// The length offered.
     pub length: usize,

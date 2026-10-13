@@ -65,7 +65,9 @@ pub struct Address<'a> {
 pub struct Npdu<'a> {
     /// Whether the sender expects a reply.
     pub expecting_reply: bool,
-    /// The network priority, 0 (normal) to 3 (life safety).
+    /// The network priority, 0 (normal) to 3 (life safety): the control
+    /// octet's two low bits. A parsed NPDU never has more than 3, and the
+    /// writer writes only those two bits.
     pub priority: u8,
     /// DNET and DADR, for a remote destination or a global broadcast.
     pub destination: Option<Address<'a>>,
@@ -96,7 +98,11 @@ pub enum AddressField {
 }
 
 /// Why [`Npdu::parse`] refused a frame.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParseError<'a> {
     /// A DLEN or SLEN past [`MAX_MAC_LEN`]: an address no data link uses,
     /// which draws reject reason 6 (Clause 6.4.4) if the frame names a DNET.
@@ -117,7 +123,11 @@ pub enum ParseError<'a> {
 }
 
 /// What made a frame malformed.
+///
+/// It is `#[non_exhaustive]`, so a new fault isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Malformed {
     /// The frame ends inside a field it announces.
     Truncated,
@@ -135,6 +145,19 @@ impl From<Malformed> for ParseError<'_> {
     }
 }
 
+impl fmt::Display for Malformed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Truncated => "NPDU truncated",
+            Self::Version => "unsupported BACnet protocol version",
+            Self::ReservedNetwork => "NPDU names a reserved network number",
+            Self::EmptySource => "NPDU source SLEN=0 is invalid",
+        })
+    }
+}
+
+impl core::error::Error for Malformed {}
+
 impl fmt::Display for ParseError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -148,12 +171,7 @@ impl fmt::Display for ParseError<'_> {
                     "NPDU {octet}={length} exceeds the {MAX_MAC_LEN}-octet address limit"
                 )
             }
-            Self::Malformed(fault) => f.write_str(match fault {
-                Malformed::Truncated => "NPDU truncated",
-                Malformed::Version => "unsupported BACnet protocol version",
-                Malformed::ReservedNetwork => "NPDU names a reserved network number",
-                Malformed::EmptySource => "NPDU source SLEN=0 is invalid",
-            }),
+            Self::Malformed(fault) => fault.fmt(f),
         }
     }
 }

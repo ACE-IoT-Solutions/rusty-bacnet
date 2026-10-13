@@ -5,11 +5,11 @@
 mod support;
 
 use bacnet_router_core::table::{Convergence, Learned, Reachability, RejectEffect};
-use bacnet_router_core::table::{Refusal, Timing};
+use bacnet_router_core::table::{LearnRefusal, Timing};
 use bacnet_router_core::{Instant, Mac, PortId};
 use support::{
-    claim_counts, expire_pending, learned_hardened as learned_table, mac, port, purge, secs,
-    Hosted, BASE, CORROBORATION_WINDOW, HOLD_DOWN, NANO, TIMING,
+    claim_counts, expire_pending, hardened, learned_hardened as learned_table, mac, port, purge,
+    secs, Hosted, BASE, CORROBORATION_WINDOW, HOLD_DOWN, NANO, TIMING,
 };
 
 fn claim(table: &mut Hosted, port: u8, now: Instant) -> bool {
@@ -109,7 +109,7 @@ fn alternating_challengers_replace_slot_and_reset_first_seen() {
 
 #[test]
 fn absent_current_port_direct_and_reserved_claims_remain_immediate() {
-    let mut table = Hosted::new_hardened();
+    let mut table = hardened();
     let now = BASE;
     assert!(claim(&mut table, 0, now));
     assert_eq!(table.pending_count(), 0);
@@ -126,9 +126,9 @@ fn absent_current_port_direct_and_reserved_claims_remain_immediate() {
     assert!(!claim(&mut table, 1, now)); // The refresh discarded the earlier vote.
     table.add_direct(3000, port(0));
     for (net, refusal) in [
-        (0, Refusal::Reserved),
-        (0xffff, Refusal::Reserved),
-        (3000, Refusal::Direct),
+        (0, LearnRefusal::Reserved),
+        (0xffff, LearnRefusal::Reserved),
+        (3000, LearnRefusal::Direct),
     ] {
         for _ in 0..2 {
             assert_eq!(
@@ -224,7 +224,7 @@ fn cleanup_never_leaves_pending_without_a_learned_route() {
 
 #[test]
 fn pending_store_is_bounded_and_networks_are_independent() {
-    let mut table = Hosted::new_hardened();
+    let mut table = hardened();
     let now = BASE;
     for net in 1..=256u16 {
         table.add_learned(net, port(0), Mac::EMPTY, now);
@@ -299,7 +299,7 @@ fn standard_converges_on_single_claim_under_sustained_traffic() {
 
 #[test]
 fn hardened_holds_then_reaps_then_recovers() {
-    let mut table = Hosted::new_hardened();
+    let mut table = hardened();
     table.add_learned(3000, port(0), mac(&[1]), BASE);
     assert!(!table
         .apply_claim(3000, port(1), mac(&[2]), BASE, &TIMING)
@@ -327,7 +327,7 @@ fn hardened_holds_then_reaps_then_recovers() {
 fn hardened_alternation_never_converges_robustness_only() {
     // Cyclic alternation is a bounded-robustness check, never a supported
     // topology claim: the slot resets each time and the old route forwards.
-    let mut table = Hosted::new_hardened();
+    let mut table = hardened();
     table.add_learned(3000, port(0), mac(&[1]), BASE);
     for i in 0..10u64 {
         assert!(!table

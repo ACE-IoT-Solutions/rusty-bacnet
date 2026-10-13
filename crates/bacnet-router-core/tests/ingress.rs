@@ -5,7 +5,7 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::{AddressField, Malformed, Npdu};
-use bacnet_router_core::router::{DropReason, Kind, Options};
+use bacnet_router_core::router::{Discard, Kind, Options};
 use fixture::{
     addr, apdu_to, at, bytes, deliver, deliver_broadcast, learn_9_via_r7, port_on, router,
     router_counts, router_with, sent_reject, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1,
@@ -55,7 +55,7 @@ fn over_long(dnet: Option<u16>, long_source: bool, source: Option<(u16, &[u8])>)
 fn over_long_addresses_reject_with_reason_6() {
     let mut router = router();
     let mut host = Recorder::default();
-    let dropped = |field, length| Outcome::Dropped(DropReason::AddressTooLong { field, length });
+    let dropped = |field, length| Outcome::Discarded(Discard::AddressTooLong { field, length });
 
     // A long DADR from a local sender: reason 6 back to it, naming 9.
     let (outcome, sent) = deliver(
@@ -137,7 +137,7 @@ fn an_over_long_link_source_is_dropped_unanswered() {
     );
     assert_eq!(
         outcome,
-        Outcome::Dropped(DropReason::SourceTooLong { length: 19 })
+        Outcome::Discarded(Discard::SourceTooLong { length: 19 })
     );
     assert!(sent.is_empty());
     assert_eq!(router.counters().address_length_drops, 1);
@@ -167,13 +167,13 @@ fn malformed_frames_and_unknown_ports_are_dropped_and_counted() {
     );
     assert_eq!(
         outcome,
-        Outcome::Dropped(DropReason::Malformed(Malformed::Version))
+        Outcome::Discarded(Discard::Malformed(Malformed::Version))
     );
     assert!(sent.is_empty());
     let (outcome, _) = deliver(&mut router, &mut host, 0, NODE_A, &[1], at(1));
     assert_eq!(
         outcome,
-        Outcome::Dropped(DropReason::Malformed(Malformed::Truncated))
+        Outcome::Discarded(Discard::Malformed(Malformed::Truncated))
     );
     let (outcome, _) = deliver(
         &mut router,
@@ -183,7 +183,7 @@ fn malformed_frames_and_unknown_ports_are_dropped_and_counted() {
         &apdu_to(9, &[5], CONFIRMED),
         at(1),
     );
-    assert_eq!(outcome, Outcome::Dropped(DropReason::UnknownPort));
+    assert_eq!(outcome, Outcome::Discarded(Discard::UnknownPort));
     assert_eq!(
         router.counters(),
         router_counts(|c| {
@@ -206,7 +206,7 @@ fn a_global_broadcast_with_a_dadr_goes_nowhere() {
         bytes(&npdu)
     }] {
         let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &frame, at(1));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::GlobalWithDadr));
+        assert_eq!(outcome, Outcome::Discarded(Discard::GlobalWithDadr));
         assert!(sent.is_empty());
     }
     assert!(router.table().lookup(9).is_none());
@@ -220,7 +220,7 @@ fn a_global_broadcast_with_a_dadr_goes_nowhere() {
 fn broadcast_addresses_carry_only_unconfirmed() {
     let mut router = router();
     let mut host = Recorder::default();
-    let refused = Outcome::Dropped(DropReason::BroadcastNotUnconfirmed);
+    let refused = Outcome::Discarded(Discard::BroadcastNotUnconfirmed);
     for frame in [
         apdu_to(0xFFFF, &[], CONFIRMED),
         apdu_to(2, &[], CONFIRMED),

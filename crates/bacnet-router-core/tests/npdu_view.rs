@@ -278,7 +278,7 @@ proptest! {
         let mut out = vec![0xA5u8; needed - 1];
         prop_assert_eq!(
             view.write(&mut out),
-            Err(WriteError::NoRoom { needed, capacity: needed - 1 })
+            Err(WriteError::NoRoom { needed, available: needed - 1 })
         );
         prop_assert!(out.iter().all(|&octet| octet == 0xA5));
     }
