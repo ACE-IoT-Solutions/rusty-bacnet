@@ -24,6 +24,7 @@ pub struct Arrived<'d> {
 
 impl Arrived<'_> {
     /// The frame for [`Router::receive`](crate::Router::receive).
+    #[must_use]
     pub fn frame(&self) -> Frame<'_> {
         Frame {
             port: self.port,

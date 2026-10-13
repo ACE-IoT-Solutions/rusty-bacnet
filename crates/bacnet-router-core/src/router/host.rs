@@ -118,6 +118,7 @@ impl<'c> Targets<'c> {
     }
 
     /// Whether it names none.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.iter().next().is_none()
     }

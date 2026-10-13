@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 readme = "README.md"
 keywords = ["bacnet", "router", "npdu", "embedded", "no-std"]
-categories = ["embedded", "network-programming", "no-std"]
+categories = ["embedded", "network-programming", "no-std", "no-std::no-alloc"]
 
 # The table, discovery and the engine's scratch live in caller-sized arrays
 # (const generics), and NPDUs are borrowed or written into caller storage,
@@ -39,10 +39,12 @@ bytes = { workspace = true }
 proptest.workspace = true
 
 [package.metadata.docs.rs]
-# Built for a bare-metal target too, so the docs show the crate without std,
-# and with both glue features.
+# Every feature, and a bare-metal target too, so the docs show the B/IP and
+# MS/TP glue and the crate without std; --cfg docsrs labels the modules
+# each feature adds.
+all-features = true
 targets = ["x86_64-unknown-linux-gnu", "thumbv7em-none-eabihf"]
-features = ["bip", "mstp"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true

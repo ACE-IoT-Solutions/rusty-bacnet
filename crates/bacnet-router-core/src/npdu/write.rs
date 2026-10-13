@@ -48,6 +48,7 @@ impl core::error::Error for WriteError {}
 impl Npdu<'_> {
     /// The octets [`write`](Self::write) produces: the NPCI the fields call
     /// for, then the payload.
+    #[must_use]
     pub fn encoded_len(&self) -> usize {
         let address = |address: Option<Address<'_>>| address.map_or(0, |a| 3 + a.mac.len());
         let message = match self.message_type {

@@ -16,8 +16,8 @@ and is meant to join their ports in firmware, and to run under the hosted
   is `bacnet-time`'s, in nanoseconds, re-exported here, the same type the
   MS/TP and B/IP cores take, so firmware feeds all three one clock.
 
-`bacnet-network`'s hosted `BACnetRouter` runs on it, and a firmware router
-image follows (#1679).
+`bacnet-network`'s hosted `BACnetRouter` runs on it, as does a firmware
+router image (#1679 PR 6).
 
 ## What it has
 
@@ -68,7 +68,7 @@ use bacnet_router_core::{Instant, Mac, PortId};
 let now = Instant::from_secs(1);
 let mut table: Table<8, 8> = Table::new();
 table.add_direct(1, PortId(0));
-table.learn(9, PortId(1), Mac::from_array([0x07]), now);
+assert!(table.learn(9, PortId(1), Mac::from_array([0x07]), now).applied());
 
 // Node 0x0A on network 1 sends an APDU to node 0x05 on network 9.
 let frame = [0x01, 0x20, 0x00, 0x09, 0x01, 0x05, 0xFF, 0x10, 0x08];

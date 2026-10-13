@@ -123,6 +123,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     Storage<P, R, H, D, N>
 {
     /// Empty storage: all zero bits.
+    #[must_use]
     pub const fn new() -> Self {
         const { assert!(P <= 255, "a router has at most 255 ports") };
         const { assert!(N >= MAX_NPDU, "the scratch holds at least MAX_NPDU") };

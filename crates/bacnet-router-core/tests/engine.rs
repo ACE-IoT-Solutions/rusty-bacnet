@@ -107,7 +107,7 @@ fn undrained_actions_are_dropped_and_counted() {
     router.start();
     // The startup announcements are never polled.
     let frame = apdu_to(44, &[5], CONFIRMED);
-    router.receive(
+    let _ = router.receive(
         Frame {
             port: PortId(0),
             source: NODE_A,
@@ -137,7 +137,7 @@ fn refusals_are_counted() {
         SendRefusal::PortDown,
     ] {
         let frame = apdu_to(2, &[5], CONFIRMED);
-        router.receive(
+        let _ = router.receive(
             Frame {
                 port: PortId(0),
                 source: NODE_A,
@@ -264,7 +264,7 @@ fn discovery_is_bounded() {
     let mut solicited = 0;
     for network in 40..46 {
         let frame = apdu_to(network, &[5], CONFIRMED);
-        router.receive(
+        let _ = router.receive(
             Frame {
                 port: PortId(0),
                 source: NODE_A,

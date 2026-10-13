@@ -239,7 +239,7 @@ fn priority_reaches_the_queue() {
         let mut router = router();
         let mut host = Recorder::default();
         for npdu in [&normal, &urgent] {
-            router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
+            let _ = router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
             let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
             assert_eq!(results, [(1, Ok(()))]);
         }
@@ -263,7 +263,7 @@ fn refusals_map_to_the_routers() {
     let mut router = router();
     let mut host = Recorder::default();
     let mut route = |router: &mut TestRouter, npdu: &[u8], core: &mut Core<'_, 1>| {
-        router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
+        let _ = router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
         pump(router, |send| MSTP_PORT.send(core, send, now))
     };
 
@@ -295,7 +295,7 @@ fn refusals_map_to_the_routers() {
     );
     // A send for another port.
     let other = MstpPort::new(PortId(0));
-    router.receive(frame_on(0, NODE_A, &fits), now, &mut host);
+    let _ = router.receive(frame_on(0, NODE_A, &fits), now, &mut host);
     let results = pump(&mut router, |send| other.send(&mut core, send, now));
     assert_eq!(results, [(1, Err(SendRefusal::Other))]);
 
@@ -335,7 +335,7 @@ fn relayed_in_one_extended_frame(len: usize) {
     let mut core = bus.core(true);
     let mut router = router();
     let npdu = relayed_as(len);
-    router.receive(frame_on(0, NODE_A, &npdu), now, &mut Recorder::default());
+    let _ = router.receive(frame_on(0, NODE_A, &npdu), now, &mut Recorder::default());
     let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
     assert_eq!(results, [(1, Ok(()))]);
 
@@ -419,7 +419,7 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(true);
     let mut rejects = Vec::new();
-    router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
+    let _ = router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
     let results = pump(&mut router, |send| match send.port {
         PortId(0) => {
             let to = match send.to {
@@ -443,7 +443,7 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
     let mut router = self::router();
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(false);
-    router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
+    let _ = router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
     let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
     assert_eq!(results, [(1, Err(SendRefusal::TooLong))]);
     let counters = core.counters().unicast;
@@ -473,7 +473,7 @@ fn saturated_queue_backpressures_network_control() {
         &[0],
     );
     let arrived = MSTP_PORT.arrived(7, STATION, &query);
-    router.receive(arrived.frame(), now, &mut Recorder::default());
+    let _ = router.receive(arrived.frame(), now, &mut Recorder::default());
     let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
     assert_eq!(results, [(1, Ok(())), (1, Err(SendRefusal::Full))]);
     assert_eq!(router.counters().refused, 1);
@@ -482,7 +482,7 @@ fn saturated_queue_backpressures_network_control() {
     // With room, the whole answer goes: three parts.
     let mut bus = Bus::<4>::new();
     let mut core = bus.core(true);
-    router.receive(arrived.frame(), now, &mut Recorder::default());
+    let _ = router.receive(arrived.frame(), now, &mut Recorder::default());
     let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
     assert_eq!(results, [(1, Ok(())), (1, Ok(())), (1, Ok(()))]);
 }

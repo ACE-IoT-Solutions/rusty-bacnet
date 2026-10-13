@@ -20,6 +20,7 @@ use crate::{Mac, PortId};
 /// What to do next. Poll [`Router::poll_action`](super::Router::poll_action)
 /// until [`Action::Idle`] after every call into the router.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "carry out each send, and poll until Idle"]
 pub enum Action<'a> {
     /// Send an NPDU.
     Send(Send<'a>),

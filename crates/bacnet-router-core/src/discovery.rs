@@ -60,6 +60,7 @@ impl<const D: usize> Default for Discovery<D> {
 
 impl<const D: usize> Discovery<D> {
     /// Nothing looked for yet: all zero bits.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             entries: [NO_ENTRY; D],
@@ -144,22 +145,26 @@ impl<const D: usize> Discovery<D> {
     }
 
     /// Whether [`cancel`](Self::cancel) was called.
+    #[must_use]
     pub const fn is_cancelled(&self) -> bool {
         self.cancelled
     }
 
     /// When `network` was last looked for, while that is remembered.
+    #[must_use]
     pub fn last_solicited(&self, network: u16) -> Option<Instant> {
         let index = self.find(network).ok()?;
         Some(self.entries[index].solicited)
     }
 
     /// How many networks are being looked for.
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.len
     }
 
     /// Whether none are.
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }

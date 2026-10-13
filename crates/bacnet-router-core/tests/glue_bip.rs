@@ -199,7 +199,7 @@ fn deliveries_become_frames_and_sends_become_annex_j_messages() {
 
     // Node 5 answers: an Original-Unicast to the peer.
     let answer = apdu_to(1, &mac(PEER), CONFIRMED);
-    router.receive(frame(1, &[5], false, &answer), now, &mut host);
+    let _ = router.receive(frame(1, &[5], false, &answer), now, &mut host);
     let results = pump(&mut router, |send| bip.send(send, now, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     let wire = out.take();
@@ -219,7 +219,7 @@ fn deliveries_become_frames_and_sends_become_annex_j_messages() {
     );
 
     // A global broadcast from network 2 is an Original-Broadcast here.
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), now, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), now, &mut host);
     let results = pump(&mut router, |send| bip.send(send, now, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     let wire = out.take();
@@ -265,19 +265,19 @@ fn refusals_map_to_the_routers() {
 
     // Too long for the budget.
     let long = apdu_to(1, &mac(PEER), &[0x10; 80]);
-    router.receive(frame(1, &[5], false, &long), now, &mut host);
+    let _ = router.receive(frame(1, &[5], false, &long), now, &mut host);
     let results = pump(&mut router, |send| bip.send(send, now, &mut out));
     assert_eq!(results, [(0, Err(SendRefusal::TooLong))]);
     // A DADR that isn't six octets.
     let short = apdu_to(1, &[7], CONFIRMED);
-    router.receive(frame(1, &[5], false, &short), now, &mut host);
+    let _ = router.receive(frame(1, &[5], false, &short), now, &mut host);
     let results = pump(&mut router, |send| bip.send(send, now, &mut out));
     assert_eq!(results, [(0, Err(SendRefusal::Other))]);
     assert_eq!(out.calls, 0, "nothing reached the socket");
     // The socket is full.
     out.refuse = Some(SendRefusal::Full);
     let fits = apdu_to(1, &mac(PEER), CONFIRMED);
-    router.receive(frame(1, &[5], false, &fits), now, &mut host);
+    let _ = router.receive(frame(1, &[5], false, &fits), now, &mut host);
     let results = pump(&mut router, |send| bip.send(send, now, &mut out));
     assert_eq!(results, [(0, Err(SendRefusal::Full))]);
 
@@ -337,7 +337,7 @@ fn bbmd_port_delivers_and_forwards() {
 
     // The router's own broadcast: the subnet, then the peer and the
     // device, as the BBMD's own broadcast.
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), now, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), now, &mut host);
     let results = pump(&mut router, |send| bbmd.send(send, now, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     let relayed = out.take();
@@ -533,7 +533,7 @@ fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
         sock(239, 1, 2, 3, PORT),
     ] {
         let npdu = apdu_to(1, &mac(group), UNCONFIRMED);
-        router.receive(frame(1, &[5], false, &npdu), now, &mut host);
+        let _ = router.receive(frame(1, &[5], false, &npdu), now, &mut host);
         let results = pump(&mut router, |send| bip.send(send, now, &mut out));
         assert_eq!(results, [(0, Err(SendRefusal::Other))], "{group}");
     }
@@ -617,7 +617,7 @@ fn a_bbmd_broadcast_the_socket_refuses_goes_nowhere() {
         ..Wire::default()
     };
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), now, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), now, &mut host);
     let results = pump(&mut router, |send| bbmd.send(send, now, &mut out));
     assert_eq!(results, [(0, Err(SendRefusal::Full))]);
     assert_eq!(out.calls, 1, "no copy follows the refused broadcast");

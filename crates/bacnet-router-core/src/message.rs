@@ -96,21 +96,25 @@ impl<'a> Networks<'a> {
     }
 
     /// How many networks it lists.
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.octets.len() / 2
     }
 
     /// Whether it lists none.
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.octets.is_empty()
     }
 
     /// The octets, as received.
+    #[must_use]
     pub const fn as_bytes(&self) -> &'a [u8] {
         self.octets
     }
 
     /// Whether `network` is listed.
+    #[must_use]
     pub fn contains(&self, network: u16) -> bool {
         self.iter().any(|listed| listed == network)
     }
@@ -189,6 +193,7 @@ impl Reject {
     }
 
     /// The data, as sent.
+    #[must_use]
     pub const fn to_bytes(self) -> [u8; 3] {
         let [high, low] = self.network.to_be_bytes();
         [self.reason.to_raw(), high, low]
@@ -290,11 +295,13 @@ impl NetworkNumberIs {
     }
 
     /// Whether the number was configured.
+    #[must_use]
     pub const fn is_configured(self) -> bool {
         self.flag == Self::CONFIGURED
     }
 
     /// The data, as sent.
+    #[must_use]
     pub const fn to_bytes(self) -> [u8; 3] {
         let [high, low] = self.network.to_be_bytes();
         [high, low, self.flag]
@@ -344,6 +351,7 @@ impl<'a> RoutingEntries<'a> {
     }
 
     /// The count, which is 0 for a query.
+    #[must_use]
     pub const fn count(&self) -> u8 {
         self.count
     }

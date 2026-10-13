@@ -184,7 +184,7 @@ fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
         else {
             panic!("not delivered");
         };
-        router.receive(arrived.frame(), now, &mut host);
+        let _ = router.receive(arrived.frame(), now, &mut host);
         let results = pump(router, |send| match send.port {
             BIP => bip.send(send, now, &mut out),
             _ => MSTP.send(core, send, now),
@@ -307,7 +307,7 @@ fn strict_bip_failure_precedes_router_or_queue_mutation() {
                      out: &mut Wire| {
         let dropped = match bip.receive(datagram, now, &mut Permissive, out) {
             Ingress::Npdu(arrived) => {
-                router.receive(arrived.frame(), now, &mut host);
+                let _ = router.receive(arrived.frame(), now, &mut host);
                 None
             }
             Ingress::Discarded(reason) => Some(reason),
@@ -367,7 +367,7 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
         else {
             panic!("not delivered");
         };
-        router.receive(arrived.frame(), now, &mut host);
+        let _ = router.receive(arrived.frame(), now, &mut host);
         pump(router, each)
     };
     let short = routed(100, MSTP_NET, &[5]);
@@ -443,7 +443,7 @@ fn real_bip_success_and_admission_failures_are_observed_once() {
     let mut out = Wire::default();
     let mut relay = |router: &mut TestRouter, npdu: &[u8], out: &mut Wire| {
         let arrived = MSTP.arrived(7, STATION, npdu);
-        router.receive(arrived.frame(), now, &mut host);
+        let _ = router.receive(arrived.frame(), now, &mut host);
         pump(router, |send| bip.send(send, now, out))
     };
     let short = routed(40, BIP_NET, &mac(DEVICE_44));
@@ -504,7 +504,7 @@ fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
         .chain(elsewhere.iter().map(|group| (group, UNCONFIRMED)))
     {
         let npdu = apdu_to(BIP_NET, &mac(*group), apdu);
-        router.receive(MSTP.arrived(7, STATION, &npdu).frame(), now, &mut groups);
+        let _ = router.receive(MSTP.arrived(7, STATION, &npdu).frame(), now, &mut groups);
         let results = pump(&mut router, |send| bip.send(send, now, &mut out));
         assert!(results.iter().all(|(_, result)| result.is_ok()));
         sent.extend(out.take());
@@ -535,7 +535,7 @@ fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
     let calls = out.calls;
     for group in local.iter().chain(&elsewhere) {
         let npdu = apdu_to(BIP_NET, &mac(*group), UNCONFIRMED);
-        router.receive(
+        let _ = router.receive(
             MSTP.arrived(7, STATION, &npdu).frame(),
             now,
             &mut permissive,

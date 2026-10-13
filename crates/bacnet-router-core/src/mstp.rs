@@ -18,8 +18,8 @@
 //!   [`MstpPort::release`]. Unless the router's own application already
 //!   answered it, the core answers Reply Postponed at once, as a router
 //!   does for a request it passes on (Clauses 6.5.4, 9.5.6.9), and as the
-//!   hosted router does today. Carrying the far side's answer back in the
-//!   reply window is a follow-up.
+//!   hosted router does. The port doesn't carry the far side's answer back
+//!   within the reply window.
 //! - **Send:** hand each [`Send`] for the port to [`MstpPort::send`], and
 //!   an error to [`Router::refused`](crate::Router::refused). It queues
 //!   the NPDU with [`MasterCore::enqueue_npdu`] at the send's network
@@ -66,6 +66,7 @@ impl core::error::Error for NotExtended {}
 
 /// What `mac` is on an MS/TP port, for [`Host::group`](crate::router::Host::group):
 /// station 255 is its broadcast.
+#[must_use]
 pub fn group(mac: &[u8]) -> Group {
     if mac == [BROADCAST_MAC] {
         Group::Broadcast
@@ -82,11 +83,13 @@ pub struct MstpPort {
 
 impl MstpPort {
     /// Port `port`.
+    #[must_use]
     pub const fn new(port: PortId) -> Self {
         Self { port }
     }
 
     /// The port's index.
+    #[must_use]
     pub const fn port(&self) -> PortId {
         self.port
     }
@@ -110,6 +113,7 @@ impl MstpPort {
     /// The router's view of a delivery the core polled
     /// ([`Action::DeliverNpdu`](bacnet_mstp_core::Action::DeliverNpdu)):
     /// from station `source`, a link broadcast when `destination` is 255.
+    #[must_use]
     pub fn arrived<'d>(&self, source: u8, destination: u8, npdu: &'d [u8]) -> Arrived<'d> {
         Arrived {
             port: self.port,

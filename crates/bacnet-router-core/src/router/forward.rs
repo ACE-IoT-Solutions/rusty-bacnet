@@ -128,7 +128,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         host: &mut impl Host,
     ) {
         if npdu.hop_count <= 1 {
-            self.hop_count_spent(npdu, host);
+            // Counted and reported; the frame is still delivered here.
+            let _ = self.hop_count_spent(npdu, host);
             return;
         }
         let rewritten = Npdu {

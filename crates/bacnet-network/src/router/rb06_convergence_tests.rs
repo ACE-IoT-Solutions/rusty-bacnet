@@ -283,7 +283,7 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
         let now = router.now();
         let mac = crate::router_table::Mac::from_array([2]);
         let port = crate::router_table::PortId(1);
-        router.table().learn(3000, port, mac, now);
+        let _ = router.table().learn(3000, port, mac, now);
     }
     tx0.send(ingress(apdu_to(3000))).await.unwrap();
     let mut forwarded = false;

@@ -178,6 +178,7 @@ impl core::error::Error for ParseError<'_> {}
 
 impl<'a> Npdu<'a> {
     /// An APDU for the local network: no addresses, normal priority.
+    #[must_use]
     pub const fn apdu(payload: &'a [u8]) -> Self {
         Self {
             expecting_reply: false,
@@ -194,6 +195,7 @@ impl<'a> Npdu<'a> {
 
     /// A network-layer message of a standard type for the local network: no
     /// addresses, normal priority, no vendor ID.
+    #[must_use]
     pub const fn message(message_type: MessageType, payload: &'a [u8]) -> Self {
         let mut npdu = Self::apdu(payload);
         npdu.message_type = Some(message_type);
@@ -201,11 +203,13 @@ impl<'a> Npdu<'a> {
     }
 
     /// Whether it carries a network-layer message rather than an APDU.
+    #[must_use]
     pub const fn is_network_message(&self) -> bool {
         self.message_type.is_some()
     }
 
     /// Whether its DNET is the global broadcast network.
+    #[must_use]
     pub fn is_global(&self) -> bool {
         self.destination
             .is_some_and(|destination| destination.network == GLOBAL_NETWORK)

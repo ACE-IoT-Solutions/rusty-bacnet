@@ -27,6 +27,7 @@ pub struct Frame<'f> {
 /// What a frame means for the router itself. It borrows the frame, not the
 /// router, so the caller can poll the actions the frame also prompted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a frame may be for the router's own application"]
 pub enum Received<'f> {
     /// An APDU for the router's own application entity, if it has one. It
     /// may come with sends: a global broadcast, or a DLEN 0 broadcast on

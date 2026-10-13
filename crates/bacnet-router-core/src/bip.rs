@@ -86,6 +86,7 @@ pub trait Datagrams {
 /// A B/IP port's [`PortConfig`] on `network`: the router's MAC is the
 /// link's own B/IP address, and its limits are [`Link::max_npdu`] for each
 /// cast, at most [`MAX_NPDU`] (Table 6-1).
+#[must_use]
 pub fn port_config(link: &Link, network: u16) -> PortConfig {
     // At most MAX_NPDU, so the casts are exact.
     let limit = |cast| link.max_npdu(cast).min(MAX_NPDU) as u16;
@@ -103,6 +104,7 @@ pub fn port_config(link: &Link, network: u16) -> PortConfig {
 /// one of the link's group addresses ([`Link::groups`]) at the link's own
 /// UDP port is its local broadcast; one at another port belongs to another
 /// B/IP network, and is refused (#1677, decision L24).
+#[must_use]
 pub fn group(link: &Link, mac: &[u8]) -> Group {
     match address_from_slice(mac) {
         Ok(address) if link.groups().contains(address) => {
@@ -315,21 +317,25 @@ impl<'h, const X: usize, const N: usize> BipPort<'h, X, N> {
     }
 
     /// The port's index.
+    #[must_use]
     pub const fn port(&self) -> PortId {
         self.port
     }
 
     /// The port's [`PortConfig`] on `network` ([`port_config`]).
+    #[must_use]
     pub fn config(&self, network: u16) -> PortConfig {
         port_config(self.node.link(), network)
     }
 
     /// What `mac` is on this port ([`group`]).
+    #[must_use]
     pub fn group(&self, mac: &[u8]) -> Group {
         group(self.node.link(), mac)
     }
 
     /// The node.
+    #[must_use]
     pub const fn node(&self) -> &Node<X> {
         &self.node
     }
@@ -422,6 +428,7 @@ impl<'h, const X: usize, const N: usize> BipPort<'h, X, N> {
     }
 
     /// When the node next has work of its own ([`Node::next_deadline`]).
+    #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         self.node.next_deadline()
     }
@@ -535,21 +542,25 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
     }
 
     /// The port's index.
+    #[must_use]
     pub const fn port(&self) -> PortId {
         self.port
     }
 
     /// The port's [`PortConfig`] on `network` ([`port_config`]).
+    #[must_use]
     pub fn config(&self, network: u16) -> PortConfig {
         port_config(self.node.link(), network)
     }
 
     /// What `mac` is on this port ([`group`]).
+    #[must_use]
     pub fn group(&self, mac: &[u8]) -> Group {
         group(self.node.link(), mac)
     }
 
     /// The node.
+    #[must_use]
     pub const fn node(&self) -> &Node<X> {
         &self.node
     }
@@ -560,6 +571,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
     }
 
     /// The tables.
+    #[must_use]
     pub fn tables(&self) -> &Tables<B, F> {
         self.tables
     }
@@ -712,6 +724,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
 
     /// When the node next has work of its own: a manual exchange's
     /// response timeout.
+    #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         self.node.next_deadline()
     }

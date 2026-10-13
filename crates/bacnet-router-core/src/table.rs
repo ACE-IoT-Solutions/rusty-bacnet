@@ -113,6 +113,7 @@ impl Route {
     };
 
     /// A directly attached network on `port`.
+    #[must_use]
     pub const fn direct(port: PortId) -> Self {
         let mut route = Self::ZERO;
         route.port = port;
@@ -121,6 +122,7 @@ impl Route {
     }
 
     /// A network reached through `next_hop` on `port`, confirmed `now`.
+    #[must_use]
     pub const fn learned(port: PortId, next_hop: Mac, now: Instant) -> Self {
         let mut route = Self::ZERO;
         route.port = port;
@@ -356,6 +358,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     pub const CAPACITY: usize = R;
 
     /// An empty table with standard convergence: all zero bits.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             slots: [VACANT; R],
@@ -398,26 +401,31 @@ impl<const R: usize, const H: usize> Table<R, H> {
     }
 
     /// The convergence mode.
+    #[must_use]
     pub const fn convergence(&self) -> Convergence {
         self.convergence
     }
 
     /// The claim counts so far.
+    #[must_use]
     pub const fn claim_counters(&self) -> ClaimCounters {
         self.counters
     }
 
     /// How many routes it holds.
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.len
     }
 
     /// Whether it holds none.
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Whether a new network has no room.
+    #[must_use]
     pub const fn is_full(&self) -> bool {
         self.len == R
     }
@@ -460,6 +468,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     }
 
     /// The route to `network`.
+    #[must_use]
     pub fn lookup(&self, network: u16) -> Option<Route> {
         let index = self.find(network).ok()?;
         Some(self.slots[index].route)
@@ -595,6 +604,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// learned route through that port to that next router. This is the
     /// scope of a flow-control message from `peer`, whose own list, when it
     /// has one, is intersected with it.
+    #[must_use]
     pub fn is_served_via_peer(&self, network: u16, port: PortId, peer: &[u8]) -> bool {
         self.lookup(network)
             .is_some_and(|route| route.served_via(port, peer))
@@ -629,6 +639,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
 
     /// The reachability of `network` at `now`: a busy mark reads
     /// `Reachable` from its deadline on, whether or not the sweep has run.
+    #[must_use]
     pub fn effective_reachability(&self, network: u16, now: Instant) -> Option<Reachability> {
         let route = self.lookup(network)?;
         Some(match route.busy_until {

@@ -45,6 +45,7 @@ impl core::error::Error for LearnRefusal {}
 /// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
+#[must_use]
 pub enum Learned {
     /// Nothing, for the reason given.
     Refused(LearnRefusal),
@@ -63,11 +64,13 @@ pub enum Learned {
 
 impl Learned {
     /// Whether the route was installed or refreshed.
+    #[must_use]
     pub const fn applied(self) -> bool {
         matches!(self, Self::Applied | Self::Moved { .. })
     }
 
     /// Whether this move reached the flap warning.
+    #[must_use]
     pub const fn flapping(self) -> bool {
         matches!(self, Self::Moved { flaps, .. } if flaps >= FLAP_WARNING)
     }
@@ -199,12 +202,14 @@ impl<const R: usize, const H: usize> Table<R, H> {
     }
 
     /// The claim pending for `network` under hardened convergence.
+    #[must_use]
     pub fn pending(&self, network: u16) -> Option<Pending> {
         let index = self.find(network).ok()?;
         self.slots[index].pending
     }
 
     /// How many claims are pending: at most one per learned route.
+    #[must_use]
     pub fn pending_count(&self) -> usize {
         self.stored()
             .iter()

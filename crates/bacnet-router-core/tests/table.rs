@@ -215,8 +215,8 @@ fn add_learned_flap_always_updates_different_port() {
 #[test]
 fn add_learned_flap_increments_flap_count() {
     let mut table = Hosted::new();
-    table.learn(3000, port(0), mac(&[10, 0, 1, 1]), BASE);
-    table.learn(3000, port(1), mac(&[10, 0, 2, 1]), BASE);
+    let _ = table.learn(3000, port(0), mac(&[10, 0, 1, 1]), BASE);
+    let _ = table.learn(3000, port(1), mac(&[10, 0, 2, 1]), BASE);
     assert_eq!(table.lookup(3000).unwrap().flap_count(), 1);
     let result = table.learn(3000, port(0), mac(&[10, 0, 1, 1]), BASE);
     assert_eq!(table.lookup(3000).unwrap().flap_count(), 2);
@@ -239,8 +239,8 @@ fn add_learned_flap_rejects_direct_route() {
 fn the_flap_window_is_sixty_seconds_exclusive() {
     // A move just inside 60 s of the last counts toward the warning.
     let mut table = Hosted::new();
-    table.learn(3000, port(0), Mac::EMPTY, BASE);
-    table.learn(3000, port(1), Mac::EMPTY, BASE);
+    let _ = table.learn(3000, port(0), Mac::EMPTY, BASE);
+    let _ = table.learn(3000, port(1), Mac::EMPTY, BASE);
     let inside = table.learn(3000, port(0), Mac::EMPTY, BASE + secs(60) - NANO);
     assert_eq!(
         inside,
@@ -251,8 +251,8 @@ fn the_flap_window_is_sixty_seconds_exclusive() {
     );
     // One exactly 60 s after starts the count again.
     let mut table = Hosted::new();
-    table.learn(3000, port(0), Mac::EMPTY, BASE);
-    table.learn(3000, port(1), Mac::EMPTY, BASE);
+    let _ = table.learn(3000, port(0), Mac::EMPTY, BASE);
+    let _ = table.learn(3000, port(1), Mac::EMPTY, BASE);
     let outside = table.learn(3000, port(0), Mac::EMPTY, BASE + secs(60));
     assert_eq!(
         outside,

@@ -21,6 +21,7 @@ impl Limits {
     pub const MIN: u16 = 64;
 
     /// The same limit both ways.
+    #[must_use]
     pub const fn both(octets: u16) -> Self {
         Self {
             unicast: octets,
@@ -29,6 +30,7 @@ impl Limits {
     }
 
     /// The limit for a broadcast, or for a unicast.
+    #[must_use]
     pub const fn get(self, broadcast: bool) -> usize {
         if broadcast {
             self.broadcast as usize

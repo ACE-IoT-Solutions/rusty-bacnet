@@ -102,7 +102,7 @@ fn foreign_port_announces_after_registration() {
 
     // From now on a broadcast goes at once.
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
     let results = pump(&mut router, |send| bip.send(send, t10, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     assert_eq!(
@@ -188,7 +188,7 @@ fn held_broadcasts_leave_before_a_later_one() {
 
     let late = Instant::from_millis(3_500);
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), late, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), late, &mut host);
     let results = pump(&mut router, |send| bip.send(send, late, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     let sent = out.take();
@@ -237,7 +237,7 @@ fn a_refused_registration_discards_the_held_broadcasts() {
     );
 
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
     let results = pump(&mut router, |send| bip.send(send, t10, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     let sent = out.take();
@@ -285,7 +285,7 @@ fn a_full_hold_refuses_the_next_broadcast() {
     let (mut bip, mut router) = started_foreign_port(&mut held, &mut out);
     let t1 = Instant::from_millis(1);
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t1, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t1, &mut host);
     let results = pump(&mut router, |send| bip.send(send, t1, &mut out));
     assert_eq!(results, [(0, Err(SendRefusal::Full))]);
     assert_eq!(router.counters().refused, 1);

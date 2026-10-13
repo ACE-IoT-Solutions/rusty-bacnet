@@ -57,6 +57,77 @@
 //! their link. Each module documents its wiring, and the clauses its tests
 //! cover.
 //!
+//! The types that may grow are `#[non_exhaustive]`. Start the
+//! [`Options`](router::Options) from `HOSTED` and set the fields to change;
+//! build a [`Route`](table::Route), for comparison, with its `direct` or
+//! `learned`, and counters from `Default`; and give a `match` on an error,
+//! a refusal, a [`Discard`](router::Discard), an
+//! [`Event`](router::Event), a [`Kind`](router::Kind) or another of these
+//! enums a wildcard arm. The enums a host acts on case by case,
+//! [`Action`](router::Action), [`Received`](router::Received) and the B/IP
+//! glue's `Ingress`, stay exhaustive, as do the closed sets such as
+//! [`Dest`](router::Dest), [`Group`](router::Group) and
+//! [`Reachability`](table::Reachability). The wire codes,
+//! [`MessageType`](message::MessageType) and
+//! [`RejectReason`](message::RejectReason), are open: any octet converts,
+//! so a `match` on their constants needs a wildcard arm too.
+//!
+//! # Example
+//!
+//! A router between network 1, a B/IP-like link with six-octet MACs, and
+//! network 2, an MS/TP-like one, passes a request from station 5 on network
+//! 2 on to a node on network 1:
+//!
+//! ```
+//! use bacnet_router_core::npdu::{Address, Npdu};
+//! use bacnet_router_core::router::{
+//!     Action, Dest, Frame, Limits, Options, Permissive, PortConfig, Received,
+//! };
+//! use bacnet_router_core::{Instant, Mac, PortId, Router, Storage};
+//!
+//! let ports = [
+//!     PortConfig {
+//!         network: 1,
+//!         mac: Mac::from_array([192, 0, 2, 1, 0xBA, 0xC0]),
+//!         max_npdu: Limits::both(1497),
+//!     },
+//!     PortConfig {
+//!         network: 2,
+//!         mac: Mac::from_array([1]),
+//!         max_npdu: Limits::both(1497),
+//!     },
+//! ];
+//! // Two ports, a table of 8 routes and 8 hold-down records; firmware
+//! // keeps the storage in a static.
+//! let mut storage = Storage::<2, 8, 8>::new();
+//! let mut options = Options::HOSTED;
+//! options.route_cap = 8;
+//! let mut router = Router::new(&mut storage, &ports, options, Instant::ZERO)?;
+//!
+//! // A confirmed request for the node at 192.0.2.9 on network 1.
+//! let node = [192, 0, 2, 9, 0xBA, 0xC0];
+//! let mut request = Npdu::apdu(&[0x00, 0x05, 0x01, 0x0C]);
+//! request.destination = Some(Address { network: 1, mac: &node });
+//! request.expecting_reply = true;
+//! let mut frame = [0u8; 32];
+//! let len = request.write(&mut frame)?;
+//!
+//! let arrived = Frame { port: PortId(1), source: &[5], link_group: false, npdu: &frame[..len] };
+//! let received = router.receive(arrived, Instant::from_secs(1), &mut Permissive);
+//! assert_eq!(received, Received::Handled);
+//!
+//! // It goes to the node on port 0, with the station as its source.
+//! let Action::Send(send) = router.poll_action() else {
+//!     panic!("a send");
+//! };
+//! assert_eq!((send.port, send.to), (PortId(0), Dest::Unicast(&node[..])));
+//! let relayed = Npdu::parse(send.npdu).expect("an NPDU");
+//! assert_eq!(relayed.source, Some(Address { network: 2, mac: &[5] }));
+//! assert_eq!(relayed.destination, None);
+//! assert_eq!(router.poll_action(), Action::Idle);
+//! # Ok::<(), Box<dyn core::error::Error>>(())
+//! ```
+//!
 //! # Clause 6 coverage
 //!
 //! What the core is answerable for, in our words, with the tests that show
@@ -128,6 +199,9 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_debug_implementations)]
+#![warn(clippy::must_use_candidate)]
 
 #[cfg(test)]
 extern crate std;
@@ -187,6 +261,7 @@ pub struct PortId(pub u8);
 impl PortId {
     /// This port's Port ID in a routing table on the wire, or `None` for
     /// index 255, which the one-octet field can't name.
+    #[must_use]
     pub const fn wire_id(self) -> Option<u8> {
         self.0.checked_add(1)
     }
@@ -194,6 +269,7 @@ impl PortId {
     /// The port a wire Port ID names on a router with `port_count` ports:
     /// `None` for Port ID 0, the delete request, and for a Port ID past the
     /// last port.
+    #[must_use]
     pub const fn from_wire_id(id: u8, port_count: usize) -> Option<Self> {
         match id.checked_sub(1) {
             Some(index) if (index as usize) < port_count => Some(Self(index)),
