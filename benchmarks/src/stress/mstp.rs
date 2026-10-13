@@ -3,8 +3,9 @@
 //! Two master stations, a client at MAC 0 and a server at MAC 1, run the
 //! real MS/TP transport over [`SimWire`]: a [`LoopbackSerial`] pair that
 //! delivers each frame's octets no sooner than a UART shifting them out at
-//! the baud rate would, in 4-millisecond chunks, and counts what it carries. One client reads a property in a loop at each baud rate; the
-//! scenario reports the rate and latency it got next to the wire limit: the
+//! the baud rate would, in 4-millisecond chunks, and counts what it carries.
+//! One client reads a property in a loop at each baud rate; the scenario
+//! reports the rate and latency it got next to the wire limit: the
 //! rate a line at that baud rate carries the same data frames at, with only
 //! the token pass and the mandatory turnarounds between them.
 

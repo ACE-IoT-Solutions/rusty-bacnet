@@ -71,8 +71,9 @@ host.
 - **Resource limits by design.** A server accepts 64 COV subscriptions per
   subscriber by default, 16 confirmed requests in flight per client, a
   ReadPropertyMultiple answer of at most 256 results, and a BBMD (the B/IP
-  broadcast relay) admits 16 registrations per source address per second. The stress results run into these limits on purpose; each is
-  noted where it shows.
+  broadcast relay) admits 16 registrations per source address per second.
+  Some stress steps go past these limits on purpose; each place is noted
+  where it shows.
 
 ## 2. Test environment
 
@@ -312,9 +313,9 @@ What it shows:
 | MS/TP at 38,400 baud, small reply | 29,000 | 34.4 | 34.4 |
 
 BACnet/SC costs about 50% more per request than B/IP: the TLS record
-layer and the hub's extra hop. MS/TP is three orders of magnitude slower
-than the IP transports because the wire is; the stack's own share of an
-MS/TP request is a few milliseconds.
+layer and the hub's extra hop. An MS/TP request takes several hundred
+times as long as one over IP because the serial line is that much slower;
+the stack's own share of an MS/TP request is a few milliseconds.
 
 ## 5. Routing
 
@@ -723,13 +724,10 @@ What it shows:
 - **BACnet/SC stalled with 10 or more requests in flight from one Python
   client:** most requests still took about 0.15 milliseconds, but a few
   waited for the 5-second timeout, so the rate fell to 50 to 62 requests
-  per second. This is worth an investigation (see
-  [section 10](#10-guidance-for-future-work)).
+  per second. This is under investigation in
+  [#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712).
 - The suites' Who-Is test waits a fixed 300 milliseconds for answers, so
   its 302-millisecond time measures the wait, not the stack.
-- The package built for CPython 3.14.8 failed to import ("module functions
-  cannot set METH_CLASS or METH_STATIC"); 3.13.15 worked. See
-  [section 10](#10-guidance-for-future-work).
 
 To run them:
 
@@ -765,15 +763,16 @@ Where the time goes, and what to measure next.
   client at 73,948 requests per second, on a machine of the same model.
   This run measured 35.5 microseconds and 30,502. The operating system and
   compiler differ between the two runs, so this is not yet a confirmed
-  regression; an A/B run of 0.8.0 against 0.13.0 on one machine
+  regression. An A/B run of 0.8.0 against 0.13.0 on one machine
   (`scripts/bench-ab.sh`) would settle it, and decode of a ReadProperty
-  request (4.3 nanoseconds then, 19.9 now) is a small place to start.
+  request (4.3 nanoseconds then, 19.9 now) is a small place to start
+  ([#1713](https://github.com/jscott3201/rusty-bacnet/issues/1713)).
 - **BACnet/SC stalls with several requests in flight.** From Python, 10 or
   more concurrent requests from one client over BACnet/SC left a few
   requests waiting for the 5-second timeout
   ([section 9](#9-python-bindings)); B/IP did not. A Rust reproduction
   with concurrent requests over one BACnet/SC connection is the first
-  step.
+  step ([#1712](https://github.com/jscott3201/rusty-bacnet/issues/1712)).
 - **Concurrency peaks early.** One server peaks at 5 to 10 clients, near
   74,000 requests per second, and loses a little beyond that. Profiling the
   server's dispatch under 25 to 100 clients would show whether the limit is
@@ -781,7 +780,9 @@ Where the time goes, and what to measure next.
 - **MS/TP's host overhead is per frame.** About 1.5 to 2 milliseconds per
   frame of timer and scheduling delay halves small-request throughput at
   115,200 baud. The MS/TP transport's `DedicatedThread` execution mode,
-  or finer timers, would be the next thing to measure.
+  or finer timers, would be the next thing to measure (see also
+  [#501](https://github.com/jscott3201/rusty-bacnet/issues/501), a
+  deterministic Linux execution mode).
 - **The router hop costs 13 to 18 microseconds**, about half of a direct
   request. Most of it is two more datagrams; a profile of the router's
   per-packet path would show what is left to cut.
@@ -799,7 +800,8 @@ Where the time goes, and what to measure next.
   does for B/IP.
 - Stack peaks re-measured under emulation after the next toolchain bump.
 
-**Harness notes.**
+**Harness notes.** These and the measurements above are tracked in
+[#1714](https://github.com/jscott3201/rusty-bacnet/issues/1714).
 
 - `stress-test whois` reads known devices rather than discovering them,
   and prints a throughput computed from whole milliseconds, which is
@@ -814,10 +816,7 @@ Where the time goes, and what to measure next.
   ([section 7.1](#71-cross-network-orchestrator)).
 - The Python suites' file names no longer match what they run (all start
   both ends from Python), and one client with 25 requests in flight runs
-  into the server's per-client limit of 16. The Python package built for
-  CPython 3.14.8 failed to import on this machine; 3.13.15 worked. The
-  bindings' CI job uses the runner's system Python, so a 3.14 check there
-  would catch this.
+  into the server's per-client limit of 16.
 
 ## 11. How to reproduce
 
