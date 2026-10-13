@@ -9,6 +9,7 @@
 //! from the slot they happen to be in.
 
 use core::cmp::Ordering;
+use core::fmt;
 
 use bacnet_time::Instant;
 
@@ -16,8 +17,9 @@ use crate::counters::QueueCounters;
 
 use super::{NetworkPriority, QueueItemInfo, QueueKind};
 
-/// One queue slot: an item, or room for one.
-#[derive(Debug)]
+/// One queue slot: an item, or room for one. A freed slot keeps the octets
+/// of the item that left it, so [`LiveItems`] is how a queue shows its
+/// slots.
 pub(super) struct Slot<const N: usize> {
     /// Whether the slot holds an item. The other fields mean nothing
     /// without one.
@@ -108,7 +110,6 @@ pub(super) type Selected = (QueueKind, usize, QueueItemInfo);
 /// One destination class's queue: its slots, how many hold an item, and its
 /// counters. `S` keeps the slots: an array in `HeaplessQueues`, a vector
 /// that grows to its capacity in `AllocQueues`.
-#[derive(Debug)]
 pub(super) struct Lane<S> {
     pub(super) slots: S,
     /// Slots that hold an item.
@@ -193,7 +194,6 @@ impl<S> Lane<S> {
 
     /// The first free slot, if there is one. (`AllocQueues` adds a slot
     /// instead when none is free.)
-    #[cfg(feature = "heapless")]
     pub(super) fn free_slot<const N: usize>(&mut self) -> Option<&mut Slot<N>>
     where
         S: AsMut<[Slot<N>]>,
@@ -205,6 +205,52 @@ impl<S> Lane<S> {
     pub(super) fn record_enqueue(&mut self) {
         self.depth += 1;
         self.counters.record_enqueue(self.depth);
+    }
+
+    /// Every item waiting here, with its octets, for the tests' model.
+    #[cfg(test)]
+    pub(super) fn snapshot<const N: usize>(
+        &self,
+        kind: QueueKind,
+    ) -> impl Iterator<Item = (QueueItemInfo, &[u8])>
+    where
+        S: AsRef<[Slot<N>]>,
+    {
+        self.slots
+            .as_ref()
+            .iter()
+            .filter(|slot| !slot.is_free())
+            .map(move |slot| (slot.info(kind), slot.payload()))
+    }
+}
+
+/// A lane's items, for a queue's `Debug`: free slots, and the octets they
+/// still hold, are left out.
+pub(super) struct LiveItems<'a, const N: usize>(pub(super) &'a [Slot<N>]);
+
+impl<const N: usize> fmt::Debug for LiveItems<'_, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().filter(|slot| !slot.is_free()).map(LiveItem))
+            .finish()
+    }
+}
+
+/// One item, as [`LiveItems`] shows it: its NPDU's octets, not the slot's.
+struct LiveItem<'a, const N: usize>(&'a Slot<N>);
+
+impl<const N: usize> fmt::Debug for LiveItem<'_, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let slot = self.0;
+        f.debug_struct("Item")
+            .field("destination", &slot.destination)
+            .field("priority", &slot.priority)
+            .field("enqueued_at", &slot.enqueued_at)
+            .field("expires_at", &slot.expires_at)
+            .field("sequence", &slot.sequence)
+            .field("service_wait", &slot.service_wait)
+            .field("npdu", &slot.payload())
+            .finish()
     }
 }
 

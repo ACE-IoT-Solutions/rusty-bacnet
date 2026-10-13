@@ -1,12 +1,13 @@
 //! Allocation-backed queue storage.
 
 use alloc::vec::Vec;
+use core::fmt;
 
 use bacnet_time::Instant;
 
 use crate::counters::QueueCounters;
 
-use super::slots::{expired, Lane, Selected, Slot};
+use super::slots::{expired, Lane, LiveItems, Selected, Slot};
 use super::{
     DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
     MAX_STANDARD_MPDU_DATA,
@@ -15,17 +16,28 @@ use super::{
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
 ///
-/// `N` is the longest NPDU a slot holds, as for `HeaplessQueues` (the
-/// `heapless` feature): 501 octets by default, and
+/// `N` is the longest NPDU a slot holds, as for
+/// [`HeaplessQueues`](crate::HeaplessQueues): 501 octets by default, and
 /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
 /// a core with extended frames on. `N` can be at most 65,535, or the
-/// constructors fail to compile.
+/// constructors fail to compile:
+///
+/// ```
+/// use bacnet_mstp_core::AllocQueues;
+///
+/// let longest = AllocQueues::<65_535>::new(1, 0);
+/// ```
+///
+/// ```compile_fail
+/// use bacnet_mstp_core::AllocQueues;
+///
+/// let too_long = AllocQueues::<65_536>::new(1, 0);
+/// ```
 ///
 /// Each item is written into a free slot and stays there until it leaves,
 /// so no removal moves another item. A slot is first used only when every
 /// one before it is in use, so the reserved memory is touched as the queue
 /// fills.
-#[derive(Debug)]
 pub struct AllocQueues<const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: Lane<Vec<Slot<N>>>,
     broadcast: Lane<Vec<Slot<N>>>,
@@ -88,11 +100,47 @@ impl<const N: usize> AllocQueues<N> {
         }
     }
 
+    /// Every item waiting, with its octets, for the tests' model.
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> Vec<(QueueItemInfo, Vec<u8>)> {
+        self.unicast
+            .snapshot(QueueKind::Unicast)
+            .chain(self.broadcast.snapshot(QueueKind::Broadcast))
+            .map(|(info, npdu)| (info, npdu.to_vec()))
+            .collect()
+    }
+
+    /// Each lane's slots so far, and the room reserved for them.
+    #[cfg(test)]
+    pub(super) fn slot_room(&self) -> [(usize, usize); 2] {
+        [
+            (self.unicast.slots.len(), self.unicast.slots.capacity()),
+            (self.broadcast.slots.len(), self.broadcast.slots.capacity()),
+        ]
+    }
+
     fn lane_mut(&mut self, kind: QueueKind) -> &mut Lane<Vec<Slot<N>>> {
         match kind {
             QueueKind::Unicast => &mut self.unicast,
             QueueKind::Broadcast => &mut self.broadcast,
         }
+    }
+}
+
+/// The items waiting, oldest slot first, with their sequence numbers, the
+/// capacities and the counters; free slots are left out.
+impl<const N: usize> fmt::Debug for AllocQueues<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AllocQueues")
+            .field("unicast", &LiveItems(&self.unicast.slots))
+            .field("broadcast", &LiveItems(&self.broadcast.slots))
+            .field("unicast_capacity", &self.unicast_capacity)
+            .field("broadcast_capacity", &self.broadcast_capacity)
+            .field("sequence", &self.sequence)
+            .field("starvation_limit", &self.starvation_limit)
+            .field("unicast_counters", &self.unicast.counters)
+            .field("broadcast_counters", &self.broadcast.counters)
+            .finish()
     }
 }
 

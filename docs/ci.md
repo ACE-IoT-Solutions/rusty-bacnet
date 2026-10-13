@@ -206,7 +206,7 @@ bare-metal images, one per stack, because code can't be credited to a crate
 reliably within one LTO image:
 
 - `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
-  features, plus the core's `heapless` queues) and through the core
+  features, with the core's `HeaplessQueues`) and through the core
   `bacnet-time`, with no global allocator;
 - `mstp-extended` links the same core with extended frames on, and the
   buffers they need: 1516 octets of receive storage, `ExtendedActionBuffers`
@@ -1318,8 +1318,9 @@ Clippy runs six ways:
   (#1679), plus the `no_std` builds of `bacnet-types`, `bacnet-encoding` and
   `bacnet-services` (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
   how docs.rs builds, a rustdoc-only run of `bacnet-cli` without the TUI,
-  and rustdoc-only runs of `bacnet-mstp-core`, `bacnet-mstp-codec` and
-  `bacnet-bip-codec` with `alloc` alone and `heapless` alone (#1681).
+  and rustdoc-only runs of `bacnet-mstp-core` with `alloc`, and of
+  `bacnet-mstp-codec` and `bacnet-bip-codec` with `alloc` alone and
+  `heapless` alone (#1681).
 
 The last catches code that compiles only when another crate's feature unifies
 in. With no arguments it checks the host; given target triples, it checks

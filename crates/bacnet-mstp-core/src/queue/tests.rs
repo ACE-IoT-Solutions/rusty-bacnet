@@ -29,7 +29,6 @@ fn exercise<Q: QueueStorage>(mut queue: Q) {
 
 #[test]
 fn priority_and_destination_selection() {
-    #[cfg(feature = "heapless")]
     exercise(HeaplessQueues::<4, 4>::new());
     #[cfg(feature = "alloc")]
     exercise(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 4));
@@ -37,7 +36,7 @@ fn priority_and_destination_selection() {
 
 /// An item longer than the caller takes is dropped and counted, so it can't
 /// stay at the head of its queue.
-fn drop_item_too_long_for_scratch<Q: QueueStorage>(mut queue: Q) {
+fn drop_items_longer_than_the_caller_takes<Q: QueueStorage>(mut queue: Q) {
     queue
         .enqueue_npdu(1, &[1, 2, 3], NetworkPriority::Urgent, Instant::ZERO, None)
         .unwrap();
@@ -55,16 +54,14 @@ fn drop_item_too_long_for_scratch<Q: QueueStorage>(mut queue: Q) {
 }
 
 #[test]
-fn an_item_too_long_for_the_scratch_is_dropped() {
-    #[cfg(feature = "heapless")]
-    drop_item_too_long_for_scratch(HeaplessQueues::<4, 4>::new());
+fn an_item_longer_than_the_caller_takes_is_dropped() {
+    drop_items_longer_than_the_caller_takes(HeaplessQueues::<4, 4>::new());
     #[cfg(feature = "alloc")]
-    drop_item_too_long_for_scratch(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 4));
+    drop_items_longer_than_the_caller_takes(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 4));
 }
 
 #[test]
 fn exact_expiry_boundary_and_atomic_oversize() {
-    #[cfg(feature = "heapless")]
     {
         let mut queue = HeaplessQueues::<1, 1>::new();
         assert_eq!(
@@ -116,7 +113,6 @@ fn exact_expiry_boundary_and_atomic_oversize() {
 
 #[test]
 fn starvation_forces_old_item_after_service_opportunities() {
-    #[cfg(feature = "heapless")]
     {
         let mut queue = HeaplessQueues::<4, 0>::with_starvation_limit(1);
         queue
@@ -144,7 +140,6 @@ fn starvation_forces_old_item_after_service_opportunities() {
 
 #[test]
 fn kind_specific_selection_preserves_independent_capacity() {
-    #[cfg(feature = "heapless")]
     {
         let mut queue = HeaplessQueues::<2, 1>::new();
         queue
@@ -272,7 +267,6 @@ fn freed_slots_keep_the_order<Q: QueueStorage>(mut queue: Q) {
 
 #[test]
 fn freed_slots_are_reused_without_changing_the_order() {
-    #[cfg(feature = "heapless")]
     freed_slots_keep_the_order(HeaplessQueues::<4, 1>::new());
     #[cfg(feature = "alloc")]
     freed_slots_keep_the_order(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 1));
@@ -309,7 +303,6 @@ fn starved_items_go_first<Q: QueueStorage>(mut queue: Q) {
 
 #[test]
 fn starved_items_go_ahead_of_higher_priorities() {
-    #[cfg(feature = "heapless")]
     starved_items_go_first(HeaplessQueues::<4, 1>::new());
     #[cfg(feature = "alloc")]
     starved_items_go_first(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 1));
@@ -344,7 +337,6 @@ fn peeks_skip_expired_items<Q: QueueStorage>(mut queue: Q) {
 
 #[test]
 fn peeks_never_show_an_expired_item() {
-    #[cfg(feature = "heapless")]
     peeks_skip_expired_items(HeaplessQueues::<2, 1>::new());
     #[cfg(feature = "alloc")]
     peeks_skip_expired_items(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(2, 1));
@@ -378,8 +370,31 @@ fn npdus_longer_than_a_slot_are_refused<Q: QueueStorage>(mut queue: Q) {
 
 #[test]
 fn a_slot_holds_its_length_and_no_more() {
-    #[cfg(feature = "heapless")]
     npdus_longer_than_a_slot_are_refused(HeaplessQueues::<1, 1>::new());
     #[cfg(feature = "alloc")]
     npdus_longer_than_a_slot_are_refused(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(1, 1));
+}
+
+/// A queue's `Debug` shows the items waiting, not the freed slots or the
+/// octets they still hold.
+fn debug_shows_only_waiting_items<Q: QueueStorage + core::fmt::Debug>(mut queue: Q) {
+    let now = Instant::ZERO;
+    queue
+        .enqueue_npdu(1, &[0xA1, 0xA2], NetworkPriority::Urgent, now, None)
+        .unwrap();
+    queue
+        .enqueue_npdu(1, &[0xB1], NetworkPriority::Normal, now, None)
+        .unwrap();
+    assert_eq!(queue.dequeue(now, 4).unwrap().unwrap().npdu, [0xA1, 0xA2]);
+    let shown = std::format!("{queue:?}");
+    assert_eq!(shown.matches("Item {").count(), 1, "{shown}");
+    assert!(shown.contains("npdu: [177]"), "{shown}");
+    assert!(!shown.contains("161"), "{shown}");
+}
+
+#[test]
+fn debug_leaves_out_freed_slots() {
+    debug_shows_only_waiting_items(HeaplessQueues::<2, 1>::new());
+    #[cfg(feature = "alloc")]
+    debug_shows_only_waiting_items(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(2, 1));
 }

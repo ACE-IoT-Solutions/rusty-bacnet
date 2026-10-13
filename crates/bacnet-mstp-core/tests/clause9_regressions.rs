@@ -1,7 +1,5 @@
 //! Public-API regressions for Clause 9 transitions and local scheduling.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,

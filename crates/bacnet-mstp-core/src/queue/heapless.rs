@@ -1,10 +1,12 @@
 //! Fixed-capacity queue storage, with no allocator.
 
+use core::fmt;
+
 use bacnet_time::Instant;
 
 use crate::counters::QueueCounters;
 
-use super::slots::{expired, Lane, Selected, Slot};
+use super::slots::{expired, Lane, LiveItems, Selected, Slot};
 use super::{
     DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
     MAX_STANDARD_MPDU_DATA,
@@ -30,7 +32,19 @@ const DEFAULT_STARVATION_LIMIT: u8 = 16;
 /// NPDU a slot holds: a standard frame's 501 octets by default, and
 /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
 /// a core with extended frames on. `N` can be at most 65,535, or the
-/// constructors fail to compile.
+/// constructors fail to compile:
+///
+/// ```
+/// use bacnet_mstp_core::HeaplessQueues;
+///
+/// static LONGEST: HeaplessQueues<1, 0, 65_535> = HeaplessQueues::new();
+/// ```
+///
+/// ```compile_fail
+/// use bacnet_mstp_core::HeaplessQueues;
+///
+/// static TOO_LONG: HeaplessQueues<1, 0, 65_536> = HeaplessQueues::new();
+/// ```
 ///
 /// Each item is written into a free slot and stays there until it leaves,
 /// so no removal moves another item.
@@ -38,7 +52,6 @@ const DEFAULT_STARVATION_LIMIT: u8 = 16;
 /// [`Self::new`] is a `const fn` whose result is all zero bits, so the
 /// queues can live in a zero-initialized static (`.bss`) and be lent to the
 /// core as `&mut` (see the crate docs).
-#[derive(Debug)]
 pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: Lane<[Slot<N>; U]>,
     broadcast: Lane<[Slot<N>; B]>,
@@ -99,11 +112,36 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
         }
     }
 
+    /// Every item waiting, with its octets, for the tests' model.
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> std::vec::Vec<(QueueItemInfo, std::vec::Vec<u8>)> {
+        self.unicast
+            .snapshot(QueueKind::Unicast)
+            .chain(self.broadcast.snapshot(QueueKind::Broadcast))
+            .map(|(info, npdu)| (info, npdu.to_vec()))
+            .collect()
+    }
+
     fn counters_mut(&mut self, kind: QueueKind) -> &mut QueueCounters {
         match kind {
             QueueKind::Unicast => &mut self.unicast.counters,
             QueueKind::Broadcast => &mut self.broadcast.counters,
         }
+    }
+}
+
+/// The items waiting, oldest slot first, with their sequence numbers, and
+/// the counters; free slots are left out.
+impl<const U: usize, const B: usize, const N: usize> fmt::Debug for HeaplessQueues<U, B, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeaplessQueues")
+            .field("unicast", &LiveItems(&self.unicast.slots))
+            .field("broadcast", &LiveItems(&self.broadcast.slots))
+            .field("sequence", &self.sequence)
+            .field("starvation_limit", &self.starvation_limit())
+            .field("unicast_counters", &self.unicast.counters)
+            .field("broadcast_counters", &self.broadcast.counters)
+            .finish()
     }
 }
 

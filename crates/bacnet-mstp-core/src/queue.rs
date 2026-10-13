@@ -10,7 +10,6 @@
 //! out, so the core builds a frame straight from the queue's slot, with no
 //! NPDU-sized buffer on its stack.
 
-#[cfg(any(feature = "alloc", feature = "heapless"))]
 use bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA;
 use bacnet_time::Instant;
 
@@ -285,15 +284,11 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
     }
 }
 
-// The slots and selection policy are shared by the two queue backends, so
-// they build only when one of them does.
-#[cfg(any(feature = "alloc", feature = "heapless"))]
+// The slots and selection policy that the two queue backends share.
 mod slots;
 
-#[cfg(feature = "heapless")]
 mod heapless;
 
-#[cfg(feature = "heapless")]
 pub use heapless::HeaplessQueues;
 
 #[cfg(feature = "alloc")]
@@ -301,5 +296,7 @@ mod alloc;
 
 #[cfg(feature = "alloc")]
 pub use alloc::AllocQueues;
-#[cfg(all(test, any(feature = "alloc", feature = "heapless")))]
+#[cfg(test)]
+mod model_tests;
+#[cfg(test)]
 mod tests;

@@ -1,8 +1,6 @@
 //! An NPDU too long for a standard frame never holds the token: it is
 //! refused at the queue, or dropped and counted when it gets in anyway.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType, MAX_EXTENDED_MPDU_DATA};
 use bacnet_mstp_core::{
     Action, DequeuedNpdu, Direction, ExtendedActionBuffers, HeaplessQueues, Instant, MasterCore,
@@ -105,8 +103,8 @@ fn an_oversize_npdu_already_queued_is_dropped_and_the_token_moves_on() {
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 }
 
-/// The queue itself drops an NPDU longer than the core takes, and counts
-/// it in its own counters, as it did one too long for the core's scratch.
+/// The queue itself drops an NPDU longer than the core takes, its `NPDU`,
+/// and counts it in its own counters, not the core's.
 #[test]
 fn the_queue_counts_an_npdu_longer_than_the_core_takes() {
     let mut queues = BigQueues::new();

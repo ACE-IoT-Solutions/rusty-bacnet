@@ -73,7 +73,7 @@ done
 # Their defaults have none, and the workspace runs turn on all of them, so
 # an intra-doc link to an item behind the other feature breaks only here
 # (#1681).
-for spec in "bacnet-mstp-core alloc" "bacnet-mstp-core heapless" \
+for spec in "bacnet-mstp-core alloc" \
   "bacnet-mstp-codec alloc" "bacnet-mstp-codec heapless" \
   "bacnet-bip-codec alloc" "bacnet-bip-codec heapless"; do
   read -r crate features <<<"$spec"

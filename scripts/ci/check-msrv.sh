@@ -97,7 +97,7 @@ FEATURES="$FEATURES,bacnet-client/sc-tls,bacnet-client/ipv6"
 FEATURES="$FEATURES,bacnet-server/sc-tls"
 FEATURES="$FEATURES,bacnet-cli/sc-tls,bacnet-cli/tui"
 FEATURES="$FEATURES,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless"
-FEATURES="$FEATURES,bacnet-mstp-core/alloc,bacnet-mstp-core/heapless"
+FEATURES="$FEATURES,bacnet-mstp-core/alloc"
 FEATURES="$FEATURES,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless"
 
 # The no_std builds (std off, alloc on) of the crates that have one (#1613).

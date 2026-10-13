@@ -31,7 +31,6 @@ pub struct QueueCounters {
 }
 
 // Only the queue backends record queue counters.
-#[cfg(any(feature = "alloc", feature = "heapless", test))]
 impl QueueCounters {
     /// Record an enqueue and the resulting depth.
     pub(crate) fn record_enqueue(&mut self, depth: usize) {

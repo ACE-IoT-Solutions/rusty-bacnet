@@ -62,13 +62,12 @@
 //!
 //! On firmware, keep the buffers together in one static whose initializer is
 //! a `const fn` of zeros, so the linker puts it in `.bss` and no flash holds
-//! an initial image; [`ActionBuffers::new`] and `HeaplessQueues::new` are
-//! both all zero bits. Then build the core on the stack over that storage.
-//! This needs no `unsafe` in the library and does not depend on the compiler
-//! constructing anything in place:
+//! an initial image; [`ActionBuffers::new`] and [`HeaplessQueues::new`]
+//! are both all zero bits. Then build the core on the stack over that
+//! storage. This needs no `unsafe` in the library and does not depend on the
+//! compiler constructing anything in place:
 //!
 //! ```
-//! # #[cfg(feature = "heapless")]
 //! # mod example {
 //! use bacnet_mstp_codec::MAX_STANDARD_FRAME_LENGTH;
 //! use bacnet_mstp_core::{ActionBuffers, HeaplessQueues, Instant, MasterCore, MstpCoreConfig};
@@ -130,21 +129,20 @@
 //! provide for. Each token generated that way is counted in
 //! [`MstpCounters::missed_generation_slots`]; see [`MasterCore`].
 //!
-//! # Features
+//! # Queue storage, and the one feature
 //!
-//! No feature needs `std`. Each adds a [`QueueStorage`] backend for the
-//! transmit queues:
-//!
-//! - `heapless`: `HeaplessQueues`, with capacities fixed at compile time.
-//! - `alloc`: `AllocQueues`, which reserves its capacity when built.
-//!
-//! Without either, the caller implements [`QueueStorage`] itself.
+//! [`HeaplessQueues`] keeps the transmit queues in arrays sized at compile
+//! time, with no allocator and no feature. The `alloc` feature adds
+//! `AllocQueues`, which reserves its capacity when built; no feature needs
+//! `std`. A caller may also implement [`QueueStorage`] itself.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod actions;
 mod config;
@@ -161,10 +159,9 @@ pub use config::{ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, M
 pub use counters::{MstpCounters, QueueCounters};
 #[cfg(feature = "alloc")]
 pub use queue::AllocQueues;
-#[cfg(feature = "heapless")]
-pub use queue::HeaplessQueues;
 pub use queue::{
-    DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
+    DequeuedNpdu, HeaplessQueues, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason,
+    QueueStorage,
 };
 pub use state::{
     CoreError, MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision, LATE_DEADLINE,

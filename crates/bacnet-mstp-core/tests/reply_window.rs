@@ -2,8 +2,6 @@
 //! deadline keeps a transmit margin inside T_reply_delay, and a late deadline
 //! call or transmit start still answers with Reply Postponed (Clause 9.5.6.9).
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,

@@ -1,8 +1,6 @@
 //! A Reply To Poll For Master that arrives after the poller has moved on
 //! (Clause 9.5.6.8), while the poller's next frame has not started yet.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::FrameType;

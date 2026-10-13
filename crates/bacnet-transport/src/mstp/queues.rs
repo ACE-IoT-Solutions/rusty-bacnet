@@ -192,8 +192,15 @@ impl QueueStorage for CoreQueues {
             return Ok(None);
         };
         let len = item.npdu.len();
-        // The buffer is as long as the queues' slots, so this never fails:
-        // a queue lends at most a slot.
+        // The buffer is as long as the queues' slots and a queue lends at
+        // most a slot, so the else branch never runs. If it did, the item,
+        // already off its queue, would be lost without a count: a debug
+        // build stops first.
+        debug_assert!(
+            len <= self.lent.len(),
+            "a queue lent {len} octets, more than its {}-octet slots",
+            self.lent.len()
+        );
         let Some(lent) = self.lent.get_mut(..len) else {
             return Err(QueueRejectReason::Oversize);
         };
