@@ -107,11 +107,8 @@ async fn the_os_reports_a_listed_destination_for_unicast_to_a_wildcard_socket() 
         let IpAddr::V4(destination) = received.destination else {
             panic!("an IPv4 destination: {received:?}");
         };
-        let local = LocalAddresses {
-            own: Ipv4Addr::UNSPECIFIED,
-            broadcast: Ipv4Addr::BROADCAST,
-            wildcard: Some(&listed),
-        };
+        let mut local = LocalAddresses::new(Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST);
+        local.wildcard = Some(&listed);
         let to = Addressed::classify(destination, received.os_group_delivery, &local);
         assert!(to.broadcast && !to.node, "{received:?}");
         assert!(
