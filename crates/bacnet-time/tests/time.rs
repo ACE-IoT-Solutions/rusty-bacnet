@@ -16,6 +16,7 @@ fn constructors_scale_exactly() {
     assert_eq!(Instant::from_millis(7).as_nanos(), 7_000_000);
     assert_eq!(Instant::from_secs(7).as_nanos(), 7_000_000_000);
     assert_eq!(Duration::from_secs(0), Duration::ZERO);
+    assert!(Duration::ZERO.is_zero() && !Duration::from_nanos(1).is_zero());
     assert_eq!(Instant::from_millis(0), Instant::ZERO);
 }
 
@@ -257,7 +258,10 @@ fn core_durations_convert_exactly_or_are_refused() {
         core::time::Duration::new(MAX / 1_000_000_000 + 1, 0),
         core::time::Duration::MAX,
     ] {
-        assert_eq!(Duration::try_from(long), Err(DurationTooLong), "{long:?}");
+        assert!(
+            matches!(Duration::try_from(long), Err(DurationTooLong { .. })),
+            "{long:?}"
+        );
         assert_eq!(
             Duration::saturating_from_core(long),
             Duration::MAX,
@@ -266,8 +270,9 @@ fn core_durations_convert_exactly_or_are_refused() {
     }
     const FROM_CORE: Duration = Duration::saturating_from_core(core::time::Duration::from_secs(3));
     assert_eq!(FROM_CORE, Duration::from_secs(3));
+    let too_long = Duration::try_from(core::time::Duration::MAX).unwrap_err();
     assert_eq!(
-        DurationTooLong.to_string(),
+        too_long.to_string(),
         "duration longer than u64::MAX nanoseconds (about 584 years)"
     );
 }

@@ -9,8 +9,11 @@ use crate::{Duration, NANOS_PER_SEC};
 /// `u64::MAX` nanoseconds, about 584 years. What
 /// `Duration::try_from(core::time::Duration)` returns for one;
 /// [`Duration::saturating_from_core`] clamps it instead.
+///
+/// Only the conversion builds one, as with the standard library's
+/// `TryFromIntError`, so the type can carry more detail later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DurationTooLong;
+pub struct DurationTooLong(());
 
 impl fmt::Display for DurationTooLong {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,7 +55,7 @@ impl TryFrom<core::time::Duration> for Duration {
     /// [`Duration::MAX`]: a `core::time::Duration` reaches about 584
     /// billion years.
     fn try_from(duration: core::time::Duration) -> Result<Self, DurationTooLong> {
-        Self::checked_from_core(duration).ok_or(DurationTooLong)
+        Self::checked_from_core(duration).ok_or(DurationTooLong(()))
     }
 }
 

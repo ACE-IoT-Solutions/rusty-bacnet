@@ -80,6 +80,12 @@ impl Duration {
         self.0
     }
 
+    /// Whether the length is zero.
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+
     /// The whole microseconds in the length, rounded toward zero.
     #[must_use]
     pub const fn as_micros(self) -> u64 {
