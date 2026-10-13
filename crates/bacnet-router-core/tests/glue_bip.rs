@@ -12,6 +12,7 @@ use bacnet_bip_core::node::{Datagram, Discard, ForBbmd, Link, Mode, Permissive};
 use bacnet_router_core::bip::{
     group, port_config, BbmdPort, BipPort, HeldBroadcast, Ingress, PortError,
 };
+use bacnet_router_core::message::code;
 use bacnet_router_core::router::{
     Frame, Group, Limits, Options, PortConfig, Received, SendRefusal,
 };
@@ -501,4 +502,144 @@ fn ingress_fails_closed_before_the_router() {
         );
     }
     assert_eq!(out.calls, 0);
+}
+
+/// Nothing goes to a group address as a unicast: a router send to the
+/// subnet broadcast, the limited broadcast or a multicast address, which a
+/// host that knows no groups lets through, is refused before anything is
+/// encoded or reaches the socket (#1677, decision L19).
+///
+/// Ported from ACE IoT's bacnet-router-adapters
+/// (ACE-IoT-Solutions/rusty-bacnet#5), thanks @acedrew, where it is
+/// `unicast_group_destinations_are_rejected_before_encoding_or_send`;
+/// `bacnet-bip-core`'s `tests/node_send.rs` ports its link half.
+#[test]
+fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
+    let now = Instant::ZERO;
+    let mut bip = bip_port(Mode::Normal, &mut []);
+    let mut router = router_on(bip.config(1));
+    let (mut out, mut host) = (Wire::default(), Recorder::default());
+    for group in [
+        SUBNET.broadcast,
+        sock(255, 255, 255, 255, PORT),
+        sock(239, 1, 2, 3, PORT),
+    ] {
+        let npdu = apdu_to(1, &mac(group), UNCONFIRMED);
+        router.receive(frame(1, &[5], false, &npdu), now, &mut host);
+        let results = pump(&mut router, |send| bip.send(send, now, &mut out));
+        assert_eq!(results, [(0, Err(SendRefusal::Other))], "{group}");
+    }
+    assert_eq!(out.calls, 0);
+    assert_eq!(router.counters().refused, 3);
+}
+
+/// Each datagram the sink sent since the last call, with when.
+fn sent_at(out: &mut Wire, now: Instant, trace: &mut Vec<(Instant, Out)>) {
+    trace.extend(out.take().into_iter().map(|sent| (now, sent)));
+}
+
+/// A foreign-device port holding two broadcasts, on a router with fix R3
+/// on, started at `t0`: its first registration sent, and the router's
+/// startup announcements carried out.
+fn started_foreign_port<'h>(
+    held: &'h mut [HeldBroadcast],
+    out: &mut Wire,
+) -> (BipPort<'h>, TestRouter) {
+    let t0 = Instant::ZERO;
+    let mut bip = BipPort::new(BIP_PORT, node(foreign(2), t0), held).unwrap();
+    let r3 = options(|options| options.fixes.announce_numbers = true);
+    let mut router = router_with(&[bip.config(1), port_on(2, OWN_1)], r3);
+    bip.on_deadline(t0, out);
+    router.start();
+    let results = pump(&mut router, |send| match send.port {
+        BIP_PORT => bip.send(send, t0, out),
+        _ => Ok(()),
+    });
+    assert_eq!(
+        results,
+        [(0, Ok(())), (0, Ok(())), (1, Ok(())), (1, Ok(()))]
+    );
+    (bip, router)
+}
+
+/// What trace E sends at start, and later the two held announcements
+/// released at `released`, each as a Distribute-Broadcast-To-Network.
+fn trace_e(released: Instant) -> [(Instant, Out); 3] {
+    let dbtn = BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK;
+    let ttl = 60u16.to_be_bytes();
+    let number_is = message(code::NETWORK_NUMBER_IS, &[0, 1, 1]);
+    [
+        (
+            Instant::ZERO,
+            Out::new(BBMD, BvlcFunction::REGISTER_FOREIGN_DEVICE, &ttl),
+        ),
+        (released, Out::new(BBMD, dbtn, &number_is)),
+        (released, Out::new(BBMD, dbtn, &i_am(&[2]))),
+    ]
+}
+
+/// Trace E (design 5.2): a router port that is a foreign device, holding
+/// two broadcasts. At start it registers, and holds its two startup
+/// announcements, the Network-Number-Is and the I-Am-Router (fix R3 on);
+/// the BBMD's success 10 ms later releases them, in order (Annex J.7.4;
+/// decision D17).
+#[test]
+fn foreign_port_announces_after_registration() {
+    let mut held = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
+    let mut out = Wire::default();
+    let (mut bip, mut router) = started_foreign_port(&mut held, &mut out);
+    let mut trace = Vec::new();
+    sent_at(&mut out, Instant::ZERO, &mut trace);
+    let view = bip.node().registration(Instant::ZERO).unwrap();
+    assert_eq!((view.held, view.first_resolved), (2, false));
+
+    let t10 = Instant::from_millis(10);
+    let success = encode(&Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION));
+    let ingress = bip.receive(
+        &datagram(&success, BBMD, UNICAST),
+        t10,
+        &mut Permissive,
+        &mut out,
+    );
+    assert_eq!(ingress, Ingress::Handled);
+    sent_at(&mut out, t10, &mut trace);
+    assert_eq!(trace, trace_e(t10));
+    assert!(bip.node().registration(t10).unwrap().registered);
+    let counters = bip.node_mut().take_counters();
+    assert_eq!(
+        (counters.broadcasts_held, counters.broadcasts_released),
+        (2, 2)
+    );
+    assert_eq!(bip.refused(), 0);
+
+    // From now on a broadcast goes at once.
+    let mut host = Recorder::default();
+    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
+    let results = pump(&mut router, |send| bip.send(send, t10, &mut out));
+    assert_eq!(results, [(0, Ok(()))]);
+    assert_eq!(
+        out.take()[0].function,
+        BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK
+    );
+}
+
+/// Trace E's second run: the BBMD never answers, so the held announcements
+/// go out when the first attempt's response timeout passes, 3 s after it
+/// (D17), and the next attempt comes later.
+#[test]
+fn foreign_port_announces_after_the_response_timeout() {
+    let mut held = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
+    let mut out = Wire::default();
+    let (mut bip, _router) = started_foreign_port(&mut held, &mut out);
+    let mut trace = Vec::new();
+    sent_at(&mut out, Instant::ZERO, &mut trace);
+
+    let timeout = bip.next_deadline().unwrap();
+    assert_eq!(timeout, Instant::from_secs(3));
+    bip.on_deadline(timeout, &mut out);
+    sent_at(&mut out, timeout, &mut trace);
+    assert_eq!(trace, trace_e(timeout));
+    let view = bip.node().registration(timeout).unwrap();
+    assert!(view.first_resolved && !view.registered);
+    assert!(view.next_attempt.is_some_and(|next| next > timeout));
 }

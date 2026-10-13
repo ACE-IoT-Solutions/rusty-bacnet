@@ -12,7 +12,7 @@ use bacnet_mstp_core::{
 };
 use bacnet_router_core::mstp::{group, MstpPort, NotExtended, BROADCAST};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{Group, Limits, Options, Received, SendRefusal};
+use bacnet_router_core::router::{Dest, Group, Limits, Options, Received, SendRefusal};
 use bacnet_router_core::{Mac, PortId};
 
 use fixture::*;
@@ -264,4 +264,171 @@ fn frame_on<'f>(
         link_group: false,
         npdu,
     }
+}
+
+/// An APDU from node A on network 1 for station [`NEXT`] on network 2,
+/// whose relay onto MS/TP is `len` octets: the router drops the DNET, DADR
+/// and hop count (7 octets of NPCI with the version) and adds SNET 1 and
+/// A's six-octet SADR (11).
+fn relayed_as(len: usize) -> Vec<u8> {
+    let mut apdu = vec![0x5A; len - 11];
+    apdu[0] = 0x10;
+    apdu_to(2, &[NEXT], &apdu)
+}
+
+/// The router relays an NPDU of `len` octets onto MS/TP, in one extended
+/// frame that a station taking them delivers whole.
+fn relayed_in_one_extended_frame(len: usize) {
+    let now = Instant::from_millis(1);
+    let mut bus = Bus::<1>::new();
+    let mut core = bus.core(true);
+    let mut router = router();
+    let npdu = relayed_as(len);
+    router.receive(frame_on(0, NODE_A, &npdu), now, &mut Recorder::default());
+    let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
+    assert_eq!(results, [(1, Ok(()))]);
+
+    let wired = token_then_frame(&mut core, now).unwrap();
+    assert_eq!(
+        (wired.frame_type, wired.destination, wired.data.len()),
+        (FrameType::BACnetExtendedDataNotExpectingReply, NEXT, len)
+    );
+    assert_eq!(wired.data[7..11], NODE_A[2..], "the SADR names node A");
+    assert_eq!(wired.data[11..], npdu[7..], "the APDU travels whole");
+
+    let mut peer_bus = Bus::<1>::new();
+    let mut peer = peer_bus.core_at(NEXT, true);
+    for &octet in &wired.octets {
+        peer.on_octet(octet, now).unwrap();
+    }
+    let delivered = loop {
+        match peer.poll_action() {
+            Action::DeliverNpdu {
+                source,
+                destination,
+                npdu,
+                ..
+            } => break (source, destination, npdu.to_vec()),
+            Action::SetDirection(_) => {}
+            other => panic!("expected the relay, got {other:?}"),
+        }
+    };
+    assert_eq!(delivered, (STATION, NEXT, wired.data));
+}
+
+/// The largest NPDU B/IP carries, 1,497 octets, crosses onto MS/TP whole,
+/// in one extended frame (Clause 9.3, Table 6-1).
+///
+/// Ported from ACE IoT's bacnet-router-adapters
+/// (ACE-IoT-Solutions/rusty-bacnet#5), thanks @acedrew, where it is
+/// `extended_profile_admits_1497_bytes_and_emits_decodable_extended_frame`.
+#[test]
+fn extended_profile_admits_1497_bytes_and_emits_decodable_extended_frame() {
+    relayed_in_one_extended_frame(1497);
+}
+
+/// The shortest NPDU that needs an extended frame, 502 octets, goes in
+/// one.
+///
+/// Ported from ACE IoT's bacnet-router-adapters
+/// (ACE-IoT-Solutions/rusty-bacnet#5), thanks @acedrew, where it is
+/// `extended_profile_admits_the_first_extended_boundary`.
+#[test]
+fn extended_profile_admits_the_first_extended_boundary() {
+    relayed_in_one_extended_frame(502);
+}
+
+/// A router's MS/TP port has no standard-frame profile: a core
+/// configuration without extended frames is refused (Clause 9.3). Where a
+/// port is held to 501 octets anyway, fix R1 keeps a 502-octet NPDU from it
+/// with reject reason 4 to its sender (#1665), and a core without extended
+/// frames refuses one itself; either way nothing is queued.
+///
+/// Ported from ACE IoT's bacnet-router-adapters
+/// (ACE-IoT-Solutions/rusty-bacnet#5), thanks @acedrew, where it is
+/// `standard_profile_rejects_502_bytes_before_queue_mutation` and the
+/// standard profile is an adapter setting.
+#[test]
+fn standard_profile_rejects_502_bytes_before_queue_mutation() {
+    let now = Instant::from_millis(1);
+    let mut host = Recorder::default();
+    assert_eq!(MstpPort::config(&config(false), 2), Err(NotExtended));
+    let npdu = relayed_as(502);
+
+    // The router's own check, on a port held to 501 octets.
+    let held_to_501 = bacnet_router_core::router::PortConfig {
+        max_npdu: Limits::both(501),
+        ..MstpPort::config(&config(true), 2).unwrap()
+    };
+    let r1 = options(|options| options.fixes.egress_limits = true);
+    let mut router = router_with(&[port_on(1, OWN_0), held_to_501], r1);
+    let mut bus = Bus::<1>::new();
+    let mut core = bus.core(true);
+    let mut rejects = Vec::new();
+    router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
+    let results = pump(&mut router, |send| match send.port {
+        PortId(0) => {
+            let to = match send.to {
+                Dest::Unicast(mac) => Some(mac.to_vec()),
+                Dest::Broadcast => None,
+            };
+            rejects.push((to, send.npdu.to_vec()));
+            Ok(())
+        }
+        _ => MSTP_PORT.send(&mut core, send, now),
+    });
+    assert_eq!(results, [(0, Ok(()))]);
+    let (to, reject) = &rejects[0];
+    assert_eq!(to.as_deref(), Some(NODE_A));
+    let reject = Npdu::parse(reject).unwrap();
+    assert_eq!(reject.payload, [4, 0, 2]);
+    assert_eq!(router.counters().egress_too_long, 1);
+    assert_eq!(core.counters().unicast.depth, 0);
+
+    // A core without extended frames, behind a port that claims 1,497.
+    let mut router = self::router();
+    let mut bus = Bus::<1>::new();
+    let mut core = bus.core(false);
+    router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
+    let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
+    assert_eq!(results, [(1, Err(SendRefusal::TooLong))]);
+    let counters = core.counters().unicast;
+    assert_eq!((counters.depth, counters.drops_oversize), (0, 1));
+}
+
+/// A full MS/TP queue refuses the next part of a routing-table answer, and
+/// the router sends no more of it: the refusal is counted once, and the
+/// rest of the answer never comes.
+///
+/// Ported from ACE IoT's bacnet-router-adapters
+/// (ACE-IoT-Solutions/rusty-bacnet#5), thanks @acedrew, where it is
+/// `saturated_queue_backpressures_network_control`.
+#[test]
+fn saturated_queue_backpressures_network_control() {
+    let now = Instant::from_millis(1);
+    let mut router = router();
+    // 250 learned routes and the two direct ones: three Acks' worth.
+    let via = Mac::from_slice(NODE_A).unwrap();
+    for network in 100..350 {
+        assert!(router.table_mut().add_learned(network, PortId(0), via, now));
+    }
+    let mut bus = Bus::<1>::new();
+    let mut core = bus.core(true);
+    let query = message(
+        bacnet_router_core::message::code::INITIALIZE_ROUTING_TABLE,
+        &[0],
+    );
+    let arrived = MSTP_PORT.arrived(7, STATION, &query);
+    router.receive(arrived.frame(), now, &mut Recorder::default());
+    let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
+    assert_eq!(results, [(1, Ok(())), (1, Err(SendRefusal::Full))]);
+    assert_eq!(router.counters().refused, 1);
+    assert_eq!(core.counters().unicast.depth, 1);
+
+    // With room, the whole answer goes: three parts.
+    let mut bus = Bus::<4>::new();
+    let mut core = bus.core(true);
+    router.receive(arrived.frame(), now, &mut Recorder::default());
+    let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
+    assert_eq!(results, [(1, Ok(())), (1, Ok(())), (1, Ok(()))]);
 }

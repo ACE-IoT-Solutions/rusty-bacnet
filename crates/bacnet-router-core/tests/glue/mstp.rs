@@ -22,8 +22,13 @@ pub type Core<'a, const U: usize> = MasterCore<'a, &'a mut Queues<U>, MAX_EXTEND
 /// The router's station, masters 0 to 2, with extended frames on, or
 /// without them when `extended` is false.
 pub fn config(extended: bool) -> MstpCoreConfig {
+    config_at(STATION, extended)
+}
+
+/// The same for `station`.
+pub fn config_at(station: u8, extended: bool) -> MstpCoreConfig {
     let config = MstpCoreConfig {
-        station: STATION,
+        station,
         max_master: 2,
         ..MstpCoreConfig::default()
     };
@@ -51,10 +56,15 @@ impl<const U: usize> Bus<U> {
         }
     }
 
-    /// A core with extended frames on, or off, built at t = 0.
+    /// The router's core, with extended frames on, or off, built at t = 0.
     pub fn core(&mut self, extended: bool) -> Core<'_, U> {
+        self.core_at(STATION, extended)
+    }
+
+    /// The core of `station`, with extended frames on, or off.
+    pub fn core_at(&mut self, station: u8, extended: bool) -> Core<'_, U> {
         MasterCore::new(
-            config(extended),
+            config_at(station, extended),
             &mut *self.queues,
             &mut self.rx,
             &mut self.actions,
@@ -70,6 +80,8 @@ pub struct Wired {
     pub frame_type: FrameType,
     pub destination: u8,
     pub data: Vec<u8>,
+    /// The frame as it went on the wire.
+    pub octets: Vec<u8>,
 }
 
 /// The next frame the core sends from `now` on, serving its deadlines
@@ -79,14 +91,16 @@ pub fn next_frame<const U: usize>(core: &mut Core<'_, U>, now: Instant) -> Optio
     for _ in 0..32 {
         match core.poll_action() {
             Action::Transmit { id, frame } => {
-                let mut octets = frame.to_vec();
+                let octets = frame.to_vec();
                 core.on_transmit_started(id, now).unwrap();
                 core.on_transmit_complete(id, now).unwrap();
-                let (frame, _) = decode_frame_in_place(&mut octets).unwrap();
+                let mut decoded = octets.clone();
+                let (frame, _) = decode_frame_in_place(&mut decoded).unwrap();
                 return Some(Wired {
                     frame_type: frame.header.frame_type,
                     destination: frame.header.destination,
                     data: frame.data.to_vec(),
+                    octets,
                 });
             }
             Action::Idle => {
