@@ -4,11 +4,10 @@
 mod fixture;
 
 use bacnet_router_core::message::{MessageType, RoutingEntries};
-use bacnet_router_core::router::{ControlClass, Discard, Event, Kind, Options, SendRefusal};
+use bacnet_router_core::router::{ControlClass, Discard, Event, Kind, SendRefusal};
 use bacnet_router_core::{Mac, PortId};
 use fixture::{
-    at, deliver, drain_refusing, learn_9_via_r7, message, port_on, router, router_with, Outcome,
-    Recorder, NODE_A, OWN_0, OWN_1, R7,
+    at, deliver, drain_refusing, learn_9_via_r7, message, router, Outcome, Recorder, NODE_A, R7,
 };
 
 /// An Initialize-Routing-Table with these (network, Port ID) entries, each
@@ -151,10 +150,10 @@ fn query_splits_into_bounded_acks() {
 /// update's Ack with no data (init_routing_table_tests.rs:104).
 #[test]
 fn an_empty_table_answers_with_one_count_zero_ack() {
-    let mut router = router_with(
-        &[port_on(0, OWN_0), port_on(0xFFFF, OWN_1)],
-        Options::HOSTED,
-    );
+    let mut router = router();
+    for network in [1, 2] {
+        router.table_mut().remove(network);
+    }
     assert!(router.table().is_empty());
     let (_, sent) = deliver(
         &mut router,

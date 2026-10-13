@@ -2273,8 +2273,12 @@ drop(table);
 
 The control authorizer runs under the same lock, one call at a time, so it
 must not block or call into the router. A router has 1 to 255 ports, each
-with a MAC of at most `NpduAddress::MAX_MAC_LEN` octets, and `start` refuses
-anything else. The table stops at its route cap, direct routes included, for
+on a network from 1 to 65534 and with a MAC of at most
+`NpduAddress::MAX_MAC_LEN` octets, and `start` refuses anything else, the
+network numbers before it starts any transport. Network 0 is no network, and
+0xFFFF, the global broadcast DNET, can't be the SNET the router puts in what
+it relays from the port (Clause 6.2.2.1); the core's `Router::new` refuses
+both too, with `ConfigError::ReservedNetwork` (#1698). The table stops at its route cap, direct routes included, for
 learning, Initialize-Routing-Table updates and I-Could-Be-Router offers
 alike, counting each refusal in its claim counters' `learned_cap_ignored`. At
 the cap, an I-Am-Router-To-Network or an Initialize-Routing-Table-Ack still
@@ -2314,9 +2318,8 @@ now follows the clause, with no switch to turn back (#1679):
   route. Every reject is still passed on toward its destination.
 - **Network numbers at startup (R3).** Each port first broadcasts a
   Network-Number-Is with its network number, flagged as configured (Clause
-  6.4.20), then its I-Am-Router; a one-port router sends only the first, and
-  a port numbered 0 or 0xFFFF has no number to send. Before, each port heard
-  only the I-Am-Router.
+  6.4.20), then its I-Am-Router; a one-port router sends only the first.
+  Before, each port heard only the I-Am-Router.
 - **Reachable networks only (R4).** A Who-Is-Router that names no network is
   answered with the networks reached through the other ports, in ascending
   order, leaving out any marked unreachable; busy ones stay (Clause 6.6.3.2).

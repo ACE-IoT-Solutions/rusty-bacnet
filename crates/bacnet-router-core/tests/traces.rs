@@ -502,8 +502,7 @@ fn d_a_repeat_past_the_window_starts_over() {
 }
 
 /// The startup announcements of a one-port router: its number, and no
-/// I-Am-Router, since no network lies beyond another port. One on network
-/// 0, which names no network, announces nothing.
+/// I-Am-Router, since no network lies beyond another port.
 #[test]
 fn a_one_port_router_announces_only_its_number() {
     let mut router = router_with(&[fixture::port_on(1, OWN_0)], Options::HOSTED);
@@ -515,8 +514,4 @@ fn a_one_port_router_announces_only_its_number() {
         sent[0].npdu,
         message(MessageType::NETWORK_NUMBER_IS, &[0, 1, 1])
     );
-
-    let mut router = router_with(&[fixture::port_on(0, OWN_0)], Options::HOSTED);
-    router.start();
-    assert!(drain(&mut router).is_empty());
 }

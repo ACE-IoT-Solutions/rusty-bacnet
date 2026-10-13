@@ -76,6 +76,7 @@ use output::Outputs;
 use tasks::Task;
 
 use crate::discovery::Discovery;
+use crate::npdu::GLOBAL_NETWORK;
 use crate::table::Table;
 use crate::{Instant, PortId, MAX_NPDU};
 
@@ -206,11 +207,10 @@ where
     /// convergence set from `options`, and the first sweep due
     /// `options.sweep` after `now`. Whatever `storage` held is cleared.
     ///
-    /// Refused: no port; more than `P` or 255; two ports with one network
-    /// number; a limit under 64 octets or over the scratch; a route cap
-    /// over `R`; a table too small for every port's network; a zero sweep.
-    /// A port numbered 0 or 0xFFFF is taken, with no direct route, as the
-    /// hosted router takes one.
+    /// Refused: no port; more than `P` or 255; a port numbered 0 or 0xFFFF
+    /// ([`PortConfig::network`]); two ports with one network number; a
+    /// limit under 64 octets or over the scratch; a route cap over `R`; a
+    /// table too small for every port's network; a zero sweep.
     pub fn new(
         mut storage: S,
         ports: &[PortConfig],
@@ -227,6 +227,14 @@ where
             });
         }
         for (index, port) in ports.iter().enumerate() {
+            // At most 255 ports.
+            let id = PortId(index as u8);
+            if port.network == 0 || port.network == GLOBAL_NETWORK {
+                return Err(ConfigError::ReservedNetwork {
+                    port: id,
+                    network: port.network,
+                });
+            }
             if ports[..index]
                 .iter()
                 .any(|other| other.network == port.network)
@@ -234,8 +242,7 @@ where
                 return Err(ConfigError::DuplicateNetwork(port.network));
             }
             if !port.max_npdu.fit(N) {
-                // At most 255 ports.
-                return Err(ConfigError::Limit(PortId(index as u8)));
+                return Err(ConfigError::Limit(id));
             }
         }
         if usize::from(options.route_cap) > R {
@@ -257,8 +264,7 @@ where
         store.ports[..ports.len()].copy_from_slice(ports);
         store.port_count = ports.len();
         for (index, port) in ports.iter().enumerate() {
-            let reserved = port.network == 0 || port.network == 0xFFFF;
-            if !store.table.add_direct(port.network, PortId(index as u8)) && !reserved {
+            if !store.table.add_direct(port.network, PortId(index as u8)) {
                 return Err(ConfigError::TableTooSmall);
             }
         }
@@ -282,9 +288,9 @@ where
     }
 
     /// Queue the startup announcements, port by port: a Network-Number-Is
-    /// for a port with a usable number, then an I-Am-Router listing every
-    /// other port's network (none on a one-port router). They carry no
-    /// ingress data.
+    /// with the port's number, then an I-Am-Router listing every other
+    /// port's network (none on a one-port router). They carry no ingress
+    /// data.
     pub fn start(&mut self) {
         let store = self.store();
         store.drop_undrained();

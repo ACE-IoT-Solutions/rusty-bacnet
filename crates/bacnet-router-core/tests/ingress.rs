@@ -453,10 +453,3 @@ fn a_dlen_0_broadcast_is_never_the_routers_own_address() {
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!((sent[0].port, sent[0].is_broadcast()), (1, true));
 }
-
-/// A port numbered 0 or 0xFFFF is taken with no direct route, as today.
-#[test]
-fn a_reserved_port_number_has_no_direct_route() {
-    let router = router_with(&[port_on(0, OWN_0), port_on(2, OWN_1)], Options::HOSTED);
-    assert_eq!(router.table().networks().collect::<Vec<_>>(), [2]);
-}

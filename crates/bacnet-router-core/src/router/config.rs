@@ -53,8 +53,10 @@ impl Limits {
 /// caller drives the link and carries out the router's sends on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortConfig {
-    /// The network number. A port numbered 0 or 0xFFFF is accepted, as the
-    /// hosted router accepts one, and gets no direct route.
+    /// The network number, 1 to 65534: 0 is never a valid network number,
+    /// and 0xFFFF, the global broadcast DNET, can't be an SNET (Clause
+    /// 6.2.2.1), which the router puts in what it relays from the port.
+    /// [`Router::new`](super::Router::new) refuses either.
     pub network: u16,
     /// The router's own MAC on the port.
     pub mac: Mac,
@@ -140,6 +142,14 @@ pub enum ConfigError {
     },
     /// Two ports share a network number.
     DuplicateNetwork(u16),
+    /// A port's network number is 0 or 0xFFFF, which no port can use
+    /// ([`PortConfig::network`]).
+    ReservedNetwork {
+        /// The port.
+        port: PortId,
+        /// Its network number.
+        network: u16,
+    },
     /// A port's limit is under [`Limits::MIN`] or over the scratch.
     Limit(PortId),
     /// The route cap is over the table's capacity.
@@ -165,6 +175,11 @@ impl fmt::Display for ConfigError {
             Self::DuplicateNetwork(network) => {
                 write!(f, "duplicate network number {network} in router ports")
             }
+            Self::ReservedNetwork { port, network } => write!(
+                f,
+                "port {} is on network {network}, which no port can use: 1 to 65534 can",
+                port.0
+            ),
             Self::Limit(port) => write!(
                 f,
                 "port {} has an NPDU limit under 64 octets or over the scratch",

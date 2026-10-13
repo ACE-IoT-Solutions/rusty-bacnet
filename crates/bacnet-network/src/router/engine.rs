@@ -99,8 +99,9 @@ pub(super) struct Engine {
 impl Engine {
     /// An engine on `ports`, in port order, started on `clock`: each port's
     /// network installed as a direct route and the first sweep a period
-    /// away. Refused as the core refuses: no port, more than 255, two on
-    /// one network, or a router MAC longer than 18 octets.
+    /// away. Refused as the core refuses: no port, more than 255, one on
+    /// network 0 or 0xFFFF, two on one network, or a router MAC longer than
+    /// 18 octets.
     pub(super) fn new(ports: &[PortConfig], clock: RouterClock) -> Result<Self, ConfigError> {
         let router = Router::new(boxed_storage(), ports, OPTIONS, clock.now())?;
         Ok(Self {

@@ -7,7 +7,7 @@ use super::Storage;
 use crate::message::{
     MessageType, NetworkNumberIs, Networks, Reject, RejectReason, RoutingEntries,
 };
-use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
+use crate::npdu::{Address, Npdu};
 use crate::table::{Reachability, Table};
 use crate::{Mac, PortId};
 
@@ -326,19 +326,17 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// Write the next startup announcement from `cursor` (port index × 2 +
-    /// step): a Network-Number-Is for a port with a usable number (Clause
-    /// 6.4.20); then an I-Am-Router listing every other port's network, in
+    /// step): a Network-Number-Is with the port's number (Clause 6.4.20);
+    /// then an I-Am-Router listing every other port's network, in
     /// port order, when there is another port. Returns its cursor and its
     /// length (`None`: the writer refused it), or `None` when none is left.
     fn next_announcement(&mut self, cursor: u32) -> Option<(u32, Option<usize>)> {
         for at in cursor..self.announce_end() {
             let port = PortId((at >> 1) as u8);
             if at & 1 == 0 {
-                let network = self.ports[usize::from(port.0)].network;
-                if network != 0 && network != GLOBAL_NETWORK {
-                    return Some((at, self.write_number_is(port)));
-                }
-            } else if self.port_count > 1 {
+                return Some((at, self.write_number_is(port)));
+            }
+            if self.port_count > 1 {
                 let others = other_networks(&self.ports[..self.port_count], port);
                 let len = write_message(
                     &mut self.scratch,

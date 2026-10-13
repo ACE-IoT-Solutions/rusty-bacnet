@@ -132,7 +132,10 @@ enum SendRequest {
 pub struct RouterPort<T: TransportPort> {
     /// The transport for this port.
     pub transport: T,
-    /// The network number assigned to this port.
+    /// The network number assigned to this port: 1 to 65534.
+    /// [`BACnetRouter::start`] refuses 0, which is no network, and 0xFFFF,
+    /// the global broadcast DNET, which can't be the SNET the router puts
+    /// in what it relays from the port (Clause 6.2.2.1).
     pub network_number: u16,
 }
 
@@ -218,8 +221,10 @@ impl BACnetRouter {
     /// network-control receiver, which combine freely.
     ///
     /// Fails if there are no ports or more than 255 (a routing table's Port
-    /// ID names at most 255), if two ports share a network number, if a
-    /// transport fails to start, or if a transport's own MAC is longer than
+    /// ID names at most 255), if a port's network number is 0 or 0xFFFF
+    /// ([`RouterPort::network_number`]), or if two ports share one, all
+    /// before any transport starts; and if a transport fails to start, or
+    /// if a transport's own MAC is longer than
     /// [`NpduAddress::MAX_MAC_LEN`](bacnet_encoding::npdu::NpduAddress::MAX_MAC_LEN)
     /// octets.
     pub async fn start<T, A, C>(
@@ -355,10 +360,16 @@ impl BACnetRouter {
                 ports.len()
             )));
         }
-        // Reject duplicate network numbers
+        // Refuse reserved and duplicate network numbers
         {
             let mut seen = std::collections::HashSet::new();
             for port in &ports {
+                if matches!(port.network_number, 0 | 0xFFFF) {
+                    return Err(Error::Encoding(format!(
+                        "A router port can't be on network {}: ports take 1 to 65534",
+                        port.network_number
+                    )));
+                }
                 if !seen.insert(port.network_number) {
                     return Err(Error::Encoding(format!(
                         "Duplicate network number {} in router ports",

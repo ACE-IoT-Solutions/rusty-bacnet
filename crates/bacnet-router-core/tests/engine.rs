@@ -39,6 +39,18 @@ fn new_refuses_what_it_cannot_route() {
         new(&[port_on(1, OWN_0), port_on(1, OWN_1)], hosted),
         Err(ConfigError::DuplicateNetwork(1))
     );
+    // Clause 6.2.2.1: 0 is no network, and 0xFFFF no SNET (#1698).
+    for network in [0, 0xFFFF] {
+        assert_eq!(
+            new(&[port_on(1, OWN_0), port_on(network, OWN_1)], hosted),
+            Err(ConfigError::ReservedNetwork {
+                port: PortId(1),
+                network
+            })
+        );
+    }
+    let ends = [port_on(1, OWN_0), port_on(0xFFFE, OWN_1)];
+    assert_eq!(new(&ends, hosted), Ok(()));
     for limits in [
         Limits::both(63),
         Limits::both(1498),
