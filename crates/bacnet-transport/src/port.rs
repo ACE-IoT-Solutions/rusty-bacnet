@@ -334,6 +334,37 @@ pub struct BipPort {
     pub mode: bacnet_types::bip_port::BipPortMode,
 }
 
+/// The longest NPDU a link carries, in octets, to one node and to every
+/// node on it ([`TransportPort::max_npdu`]; Table 6-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NpduLimits {
+    /// To one node.
+    pub unicast: u16,
+    /// To every node on the link.
+    pub broadcast: u16,
+}
+
+impl NpduLimits {
+    /// 1,497 octets each way: what B/IP, B/IPv6, Ethernet and MS/TP with
+    /// extended frames carry (Table 6-1).
+    pub const STANDARD: Self = Self::both(1497);
+
+    /// The same limit both ways.
+    pub const fn both(octets: u16) -> Self {
+        Self {
+            unicast: octets,
+            broadcast: octets,
+        }
+    }
+}
+
+/// [`NpduLimits::STANDARD`].
+impl Default for NpduLimits {
+    fn default() -> Self {
+        Self::STANDARD
+    }
+}
+
 /// Trait for BACnet data-link transports.
 ///
 /// Implementations handle the data-link framing (e.g., BVLL for BACnet/IP)
@@ -476,6 +507,20 @@ pub trait TransportPort: Send + Sync {
     /// This may change as a connection negotiates remote receive limits.
     fn egress_apdu_limit(&self) -> u16 {
         1476
+    }
+
+    /// The longest NPDU this link sends, to one node and to every node.
+    ///
+    /// `bacnet_network`'s `BACnetRouter` reads it once, when it starts the
+    /// port, and answers an NPDU it would route here that is longer than
+    /// that with a reject (reason 4, Clause 6.4.4, #1665), where it used to
+    /// hand it to a send that failed. The default,
+    /// [`NpduLimits::STANDARD`], is what B/IPv6 and Ethernet carry. MS/TP
+    /// reports 501 octets without extended frames, B/IP its node's budget
+    /// for each kind of send, and BACnet/SC what its hub connection carries
+    /// once it has started. Wrappers must delegate.
+    fn max_npdu(&self) -> NpduLimits {
+        NpduLimits::default()
     }
 
     /// Whether `mac` is this data link's broadcast address.

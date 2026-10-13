@@ -18,6 +18,8 @@ async fn an_npdu_past_1497_octets_is_refused_and_counted() {
     );
     let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _rx = transport.start().await.unwrap();
+    // What it reports to a router, from the running node's link (#1665).
+    assert_eq!(transport.max_npdu(), NpduLimits::both(LONGEST as u16));
 
     transport.send_unicast(&[0x01; LONGEST], &to).await.unwrap();
     let mut packet = [0; 2048];

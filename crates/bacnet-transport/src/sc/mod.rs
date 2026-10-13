@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::port::{DataAttribute, ReceivedNpdu, TransportPort};
+use crate::port::{DataAttribute, NpduLimits, ReceivedNpdu, TransportPort};
 #[cfg(test)]
 use crate::sc_frame::{decode_sc_bvlc_result, ScMessage};
 use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction, Vmac, BROADCAST_VMAC};
@@ -35,6 +35,7 @@ pub(crate) mod direct_membership;
 mod direct_pool;
 pub(crate) mod direct_receive;
 pub(crate) mod direct_socket;
+mod egress_limits;
 mod empty_npdu;
 mod errors;
 mod failover;
@@ -64,8 +65,7 @@ pub(crate) use random48::set_test_random48_vmac_generator;
 pub use reconnect::ScReconnectConfig;
 
 const DEFAULT_MAX_APDU_LENGTH: u16 = 1476;
-use crate::sc_limits::LOCAL_NPDU_HEADER_LEN;
-const SC_ENCAPSULATED_NPDU_BASE_HEADER_LEN: u16 = 10;
+use egress_limits::publish_effective_max_apdu_length;
 
 // ---------------------------------------------------------------------------
 // WebSocket abstraction
@@ -248,18 +248,6 @@ impl<W: WebSocketPort> ScTransport<W> {
     pub fn connection_state_changes(&self) -> watch::Receiver<ScConnectionState> {
         self.state_tx.subscribe()
     }
-}
-
-fn effective_max_apdu_length(conn: &ScConnection) -> u16 {
-    let bvlc_npdu_budget = conn
-        .hub_max_bvlc_length
-        .saturating_sub(SC_ENCAPSULATED_NPDU_BASE_HEADER_LEN);
-    let effective_npdu = conn.hub_max_apdu_length.min(bvlc_npdu_budget);
-    effective_npdu.saturating_sub(LOCAL_NPDU_HEADER_LEN)
-}
-
-fn publish_effective_max_apdu_length(store: &AtomicU16, conn: &ScConnection) {
-    store.store(effective_max_apdu_length(conn), Ordering::Relaxed);
 }
 
 async fn publish_connected_ws<W: WebSocketPort>(
@@ -825,6 +813,13 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
 
     fn egress_apdu_limit(&self) -> u16 {
         self.effective_max_apdu_length.load(Ordering::Relaxed)
+    }
+
+    /// Once started, what the hub connection carries: the hub's
+    /// Max-NPDU-Length, within its Max-BVLC-Length less the encapsulation,
+    /// both ways. Before start, the default.
+    fn max_npdu(&self) -> NpduLimits {
+        self.hub_npdu_limits()
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {

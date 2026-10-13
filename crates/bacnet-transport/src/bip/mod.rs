@@ -27,13 +27,13 @@ use crate::bvll::BvllMessage;
 use crate::bvll::{
     decode_bip_mac, decode_bvll, forwarded_message, forwarded_wire, origin_of, raw_frame,
 };
-use crate::port::{BipPort, ReceivedNpdu, TransportPort};
+use crate::port::{BipPort, NpduLimits, ReceivedNpdu, TransportPort};
 #[cfg(test)]
 use crate::udp_metadata::{DestinationReceiver, IpVersion};
 use bacnet_bip_codec as codec;
 #[cfg(test)]
 use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
-use bacnet_bip_core::node::{Link, Mode};
+use bacnet_bip_core::node::{Cast, Link, Mode};
 use bacnet_bip_core::LocalSubnet;
 use bacnet_types::bip_port::{BbmdTables, BipPortMode};
 use bacnet_types::constructed::BACnetHostNPort;
@@ -783,6 +783,20 @@ impl TransportPort for BipTransport {
 
     fn local_receive_apdu_capacity(&self) -> u16 {
         1476
+    }
+
+    /// The running node's [`Link::max_npdu`] for each kind of send: 1497
+    /// octets each way, within the datagram budget (#1622). Before start,
+    /// the default, which is the same.
+    fn max_npdu(&self) -> NpduLimits {
+        let Some(node) = &self.node else {
+            return NpduLimits::default();
+        };
+        let octets = |cast| u16::try_from(node.link().max_npdu(cast)).unwrap_or(u16::MAX);
+        NpduLimits {
+            unicast: octets(Cast::Unicast),
+            broadcast: octets(Cast::Broadcast),
+        }
     }
 
     fn local_mac(&self) -> &[u8] {

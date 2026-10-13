@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use bacnet_encoding::npdu::{encode_npdu, Npdu};
 use bacnet_router_core::Instant;
-use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportProvenance};
+use bacnet_transport::port::{DataAttribute, NpduLimits, ReceivedNpdu, TransportProvenance};
 use bacnet_types::enums::NetworkMessageType;
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
@@ -179,10 +179,31 @@ impl Harness {
         Self::build(networks, Arc::new(ControlGate::permissive()), &capacities)
     }
 
+    /// A router with a port on each of `networks`, carrying the NPDUs
+    /// `limits` gives it, as its transport would report them, with the
+    /// permissive gate and 16-request queues.
+    pub(super) fn with_limits(networks: &[u16], limits: &[NpduLimits]) -> Self {
+        let capacities = vec![16; networks.len()];
+        let gate = Arc::new(ControlGate::permissive());
+        Self::build_with(networks, limits, gate, &capacities)
+    }
+
     fn build(networks: &[u16], gate: Arc<ControlGate>, capacities: &[usize]) -> Self {
+        let limits = vec![NpduLimits::default(); networks.len()];
+        Self::build_with(networks, &limits, gate, capacities)
+    }
+
+    fn build_with(
+        networks: &[u16],
+        limits: &[NpduLimits],
+        gate: Arc<ControlGate>,
+        capacities: &[usize],
+    ) -> Self {
         let configs: Vec<_> = (0u8..)
-            .zip(networks)
-            .map(|(index, &network)| Engine::port(network, Mac::from_array([index + 1])))
+            .zip(networks.iter().zip(limits))
+            .map(|(index, (&network, &limits))| {
+                Engine::port(network, Mac::from_array([index + 1]), limits)
+            })
             .collect();
         let engine = Engine::new(&configs, RouterClock::start()).unwrap();
         let shared = Arc::new(Shared {

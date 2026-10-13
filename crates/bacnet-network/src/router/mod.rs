@@ -122,7 +122,9 @@ enum SendRequest {
 /// [`BACnetRouter::start`] calls
 /// [`TransportPort::prepare_for_routing`] on each port's transport before it
 /// starts it, so an MS/TP port takes and sends extended frames whatever its
-/// `MstpConfig` says: Clause 9.3 requires them of a routing node.
+/// `MstpConfig` says: Clause 9.3 requires them of a routing node. Once the
+/// transport has started, it reads [`TransportPort::max_npdu`], and answers
+/// an NPDU too long for the port with reject reason 4 (#1665).
 pub struct RouterPort<T: TransportPort> {
     /// The transport for this port.
     pub transport: T,
@@ -243,6 +245,8 @@ impl BACnetRouter {
     /// The engine's counts since start: the four drop counts below, and
     /// what else the engine counts, such as the frames it refused as
     /// malformed, the relays a spent hop count stopped, the rejects it sent,
+    /// the sends too long for their egress port (`egress_too_long`: the
+    /// limit its transport's [`TransportPort::max_npdu`] reports, #1665),
     /// and the rewrites it couldn't write (`write_failures`: longer than its
     /// 65,556-octet scratch, or with a field no NPDU may carry). They
     /// saturate and name no peer. The table's own counts are
@@ -373,7 +377,14 @@ impl BACnetRouter {
                     bacnet_router_core::MAX_MAC_LEN
                 ))
             })?;
-            configs.push(Engine::port(port.network_number, mac));
+            // Read once the transport has started: MS/TP's grows with the
+            // extended frames routing turned on, and BACnet/SC's comes from
+            // its hub connection.
+            configs.push(Engine::port(
+                port.network_number,
+                mac,
+                port.transport.max_npdu(),
+            ));
             groups.push(PortGroups {
                 groups: port.transport.group_destinations(),
                 local_broadcasts: port.transport.local_broadcast_destinations(),
@@ -569,6 +580,8 @@ mod envelope_control_tests;
 mod envelope_discovery_tests;
 #[cfg(test)]
 mod envelope_harness;
+#[cfg(test)]
+mod fixes_tests;
 #[cfg(test)]
 mod ingress_harness;
 #[cfg(test)]

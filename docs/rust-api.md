@@ -681,6 +681,21 @@ intake. Complete BVLC bounds, remote/path limits, routed overhead and the Hub's
 forwarding capacity remain independent. These APIs are new in
 0.12.0; this bounded evidence is not a full Annex AB or hardware qualification.
 
+`max_npdu()` reports the longest NPDU the link sends, as `NpduLimits` with a
+`unicast` and a `broadcast` limit in octets (#1665). `BACnetRouter` reads it
+once, when it starts the port, and answers an NPDU it would route there that
+is longer, once rewritten, with reject reason 4 instead of handing it to a send
+that fails. The default is `NpduLimits::STANDARD`, 1,497 octets each way, what
+B/IPv6 and Ethernet carry (Table 6-1). MS/TP reports 501 octets without
+extended frames and 1,497 with them, so a router port, which turns them on,
+reports 1,497. B/IP reports its node's budget for each kind of send, 1,497
+octets each way. BACnet/SC reports, once started, what its hub connection
+carries: the hub's Max-NPDU-Length within its Max-BVLC-Length, which can pass
+1,497 between BACnet/SC ports (Clause 6.6); a direct connection's own limit
+isn't part of it. Wrappers and `AnyTransport` delegate. A custom transport that
+carries more than 1,497 octets must override it, or a router refuses what it
+could have sent.
+
 ### Feature Flags
 
 | Feature | Platforms | Transport |
@@ -2112,10 +2127,27 @@ engine's 65,556-octet scratch isn't routed: it is dropped, logged and
 counted in `BACnetRouter::counters().write_failures`. The scratch is the
 largest BVLC message, 65,535 octets, plus the SNET, SLEN and longest SADR a
 router adds, so any BACnet/SC NPDU (at most 61,327 octets, Table 6-1) fits
-with its added source address.
+with its added source address. No port carries more than 65,535 octets, so in
+practice only a global broadcast meets this bound: anything routed toward one
+network meets its port's limit first (below).
 And the table keeps at most `HOLD_RECORDS` (1,024) reject hold-down records,
 one per network and arrival port; a full pool gives up its oldest record,
 counted in its claim counters' `hold_evicted`.
+
+Where the router departed from Clause 6 before it moved onto the engine, it
+now follows the clause, each fix a switch in the core's `Fixes` (all on in
+the hosted router, and the core's default; `Fixes::NONE` is the router before
+them):
+
+- **Egress limits (R1, #1665).** Each port carries the NPDUs its transport's
+  `max_npdu()` reports, read when the router starts it (a report under 64
+  octets counts as 64). An NPDU whose rewrite for its egress port is longer
+  than the port's limit for that kind of send, unicast or broadcast, draws
+  Reject-Message-To-Network reason 4 naming its DNET, sent to its origin like
+  any other reject (Clauses 6.4.4 and 6.6.3.5), and isn't sent. A remote
+  broadcast (a DNET with DLEN 0) does too. A global broadcast, or any other
+  message the router sends to every other port, leaves out a port too short
+  for it, with no reject. Both count in `counters().egress_too_long`.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

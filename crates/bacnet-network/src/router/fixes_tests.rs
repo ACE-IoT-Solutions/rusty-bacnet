@@ -1,0 +1,141 @@
+//! The Clause 6 fixes the hosted router took after it moved onto the
+//! engine (#1679), each on the hosted engine through
+//! [`envelope_harness`](super::envelope_harness). `bacnet-router-core`'s
+//! tests hold each one against the clause, and pin the router before it
+//! with the fix's switch off.
+
+use bacnet_encoding::npdu::{decode_npdu, Npdu, NpduAddress};
+use bacnet_transport::port::NpduLimits;
+use bacnet_types::MacAddr;
+use bytes::Bytes;
+
+use super::envelope_harness::Harness;
+use super::SendRequest;
+
+/// The link sender of the NPDUs below: a B/IP node on port 0.
+const SENDER: [u8; 6] = [10, 0, 0, 9, 0xBA, 0xC0];
+
+fn address(network: u16, mac: &[u8]) -> NpduAddress {
+    NpduAddress {
+        network,
+        mac_address: MacAddr::from_slice(mac),
+    }
+}
+
+/// An NPDU of `len` octets carrying an Unconfirmed-Request for `network`
+/// and `mac`, with no source fields and a hop count of 255.
+fn npdu_of(len: usize, network: u16, mac: &[u8]) -> Npdu {
+    let header = 6 + mac.len();
+    Npdu {
+        destination: Some(address(network, mac)),
+        hop_count: 255,
+        payload: Bytes::from(vec![0x10; len - header]),
+        ..Npdu::default()
+    }
+}
+
+/// The reason and network of the one reject queued on `port`.
+fn reject_on(h: &mut Harness, port: usize) -> (u8, u16, MacAddr) {
+    let sent = h.drain(port);
+    let [SendRequest::Unicast { npdu, mac, .. }] = &sent[..] else {
+        panic!("expected one reject on port {port}, got {sent:?}");
+    };
+    let npdu = decode_npdu(npdu.clone()).unwrap();
+    assert_eq!(npdu.message_type, Some(0x03));
+    let [reason, high, low] = npdu.payload[..] else {
+        panic!("a reject's data is three octets");
+    };
+    (reason, u16::from_be_bytes([high, low]), mac.clone())
+}
+
+/// The lengths of the NPDUs queued on `port`.
+fn lengths_on(h: &mut Harness, port: usize) -> Vec<usize> {
+    h.drain(port)
+        .into_iter()
+        .map(|sent| match sent {
+            SendRequest::Unicast { npdu, .. } | SendRequest::Broadcast { npdu, .. } => npdu.len(),
+        })
+        .collect()
+}
+
+// --- R1 (#1665): reason 4 for an NPDU too long for its egress port ---
+
+/// #1665: an NPDU routed onto an MS/TP network whose rewrite is one octet
+/// past what the port carries draws reject reason 4, naming that network,
+/// back to its sender; it is counted and not sent. With extended frames
+/// that is 1,498 octets, and 502 on a port with standard frames only. One
+/// octet shorter goes out. The rewrite here gains 4 octets: the B/IP
+/// sender's source fields come, the destination fields and hop count go.
+#[tokio::test]
+async fn r1_an_npdu_too_long_for_an_mstp_port_draws_reason_4() {
+    for limit in [1497, 501] {
+        let mut h = Harness::with_limits(
+            &[1000, 2000],
+            &[NpduLimits::STANDARD, NpduLimits::both(limit)],
+        );
+        let longest = usize::from(limit) - 4;
+        h.dispatch(h.ctx(0, &SENDER, npdu_of(longest + 1, 2000, &[5])))
+            .await;
+        assert_eq!(
+            reject_on(&mut h, 0),
+            (4, 2000, MacAddr::from_slice(&SENDER))
+        );
+        h.assert_quiet();
+        let counters = h.counters();
+        assert_eq!((counters.egress_too_long, counters.rejects), (1, 1));
+
+        h.dispatch(h.ctx(0, &SENDER, npdu_of(longest, 2000, &[5])))
+            .await;
+        assert_eq!(lengths_on(&mut h, 1), [usize::from(limit)]);
+        h.assert_quiet();
+
+        // A remote broadcast goes by the same rule, a DLEN 0 rewrite
+        // gaining 5 octets.
+        h.dispatch(h.ctx(0, &SENDER, npdu_of(longest, 2000, &[])))
+            .await;
+        assert_eq!(
+            reject_on(&mut h, 0),
+            (4, 2000, MacAddr::from_slice(&SENDER))
+        );
+        h.assert_quiet();
+        assert_eq!(h.counters().egress_too_long, 2);
+    }
+}
+
+/// A transport that reports a limit under the engine's least, 64 octets,
+/// still starts: the router takes 64, and refuses a longer rewrite.
+#[tokio::test]
+async fn r1_a_port_reporting_under_64_octets_carries_64() {
+    let mut h = Harness::with_limits(&[1000, 2000], &[NpduLimits::STANDARD, NpduLimits::both(8)]);
+    h.dispatch(h.ctx(0, &SENDER, npdu_of(60, 2000, &[5]))).await;
+    assert_eq!(lengths_on(&mut h, 1), [64]);
+    h.dispatch(h.ctx(0, &SENDER, npdu_of(61, 2000, &[5]))).await;
+    assert_eq!(
+        reject_on(&mut h, 0),
+        (4, 2000, MacAddr::from_slice(&SENDER))
+    );
+    h.assert_quiet();
+}
+
+/// A fan-out leaves out a port too short for it, counted, and sends no
+/// reject (decision D21 on #1679): the global broadcast still reaches
+/// network 3000 and the router's own application.
+#[tokio::test]
+async fn r1_a_global_broadcast_skips_a_port_too_short_for_it() {
+    let mut h = Harness::with_limits(
+        &[1000, 2000, 3000],
+        &[
+            NpduLimits::STANDARD,
+            NpduLimits::both(501),
+            NpduLimits::STANDARD,
+        ],
+    );
+    h.dispatch(h.ctx(0, &SENDER, npdu_of(600, 0xFFFF, &[])))
+        .await;
+    // 600 octets plus SNET, SLEN and SADR.
+    assert_eq!(lengths_on(&mut h, 2), [609]);
+    assert!(h.apdus.try_recv().is_ok(), "delivered locally");
+    h.assert_quiet();
+    let counters = h.counters();
+    assert_eq!((counters.egress_too_long, counters.rejects), (1, 0));
+}

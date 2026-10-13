@@ -31,9 +31,9 @@
 //! - [`router`]: the sans-IO engine that joins them: a [`Router`] over a
 //!   [`Storage`] takes each frame a port receives, says what it means for
 //!   the router's own application, and asks for the sends it calls for,
-//!   which the caller polls. It takes the time with every call and keeps
-//!   the hosted router's behaviour, with the clause's fixes behind
-//!   switches.
+//!   which the caller polls. It takes the time with every call. Where the
+//!   hosted router once departed from the clause, a switch picks the
+//!   clause's way, the default, or the old one.
 //!
 //! A port is identified by its index, a [`PortId`]; its MAC is a [`Mac`] of
 //! up to [`MAX_MAC_LEN`] octets.
@@ -79,7 +79,7 @@
 //! | The network-number messages stay on their link | 6.4.19, 6.4.20 | `tests/control.rs`: `network_number_messages_stay_local` |
 //! | At start each port hears which networks lie beyond the others, and, with fix R3, its own number first | 6.4.20, 6.6.3.3 | `tests/traces.rs`: `a_discovery_learning_and_aging`, `startup_with_r3` |
 //! | With no point-to-point links, connection messages change nothing | 6.6.3.10, 6.6.3.11 | `tests/control.rs`: `ptp_messages_change_nothing` |
-//! | With fix R1, a message too long for its egress port draws reason 4, and a fan-out leaves that port out | 6.4.4, 6.6.3.5 | `tests/forward.rs`: `egress_limits_with_r1_on` |
+//! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out (R1) | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4` |
 //!
 //! Rules of this stack beyond the clause, each tested in the same files:
 //! the 18-octet address bound (#1141, #1198); a DADR beside DNET 0xFFFF
@@ -94,12 +94,12 @@
 //! route cap; a discovery cooldown, cap and expiry; no reject for a global
 //! broadcast, and none to the router itself.
 //!
-//! Where the hosted router departed from the clause, the engine does too,
-//! for now, so `bacnet-network`'s router moved onto it without changing
-//! behaviour; #1679 lists the fixes. A received reject with a reason other
-//! than 1 or 2 removes the learned route, where Clause 6.6.3.5 changes the
-//! table for those two reasons only (R2). The engine's [`router::Fixes`]
-//! holds the fixes it has so far, each off by default.
+//! Where the hosted router departed from the clause, `bacnet-network`'s
+//! router first moved onto the engine unchanged, then took the fixes #1679
+//! lists. Each is a switch in [`router::Fixes`], on by default, and the
+//! tests pin the old way with it off. One is still to come: a received
+//! reject with a reason other than 1 or 2 removes the learned route, where
+//! Clause 6.6.3.5 changes the table for those two reasons only (R2).
 //!
 //! # Features
 //!

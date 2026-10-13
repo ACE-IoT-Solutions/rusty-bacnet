@@ -41,8 +41,9 @@
 //! group addresses on a port ([`Group`]), and whether to act on a
 //! protected network message.
 //!
-//! [`Fixes`] holds the changes Clause 6 calls for, each off by default so
-//! the engine behaves as the hosted router does today.
+//! [`Fixes`] holds where the engine departs from what the router did before
+//! #1679, to do what Clause 6 asks, each behind a switch: all on by
+//! default, all off for the router before them.
 
 mod config;
 mod control;
@@ -73,7 +74,7 @@ use crate::table::Table;
 use crate::{Instant, PortId, MAX_NPDU};
 
 /// The NPDU limits a port may have: at least this.
-pub(crate) const MIN_LIMIT: u16 = 64;
+pub(crate) const MIN_LIMIT: u16 = Limits::MIN;
 
 /// Everything large a [`Router`] keeps: up to `P` ports, a table of `R`
 /// routes and `H` hold-down records, `D` searches, and an output scratch of
