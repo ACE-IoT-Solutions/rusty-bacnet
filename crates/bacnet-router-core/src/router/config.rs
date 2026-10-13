@@ -99,6 +99,13 @@ pub struct Fixes {
     /// searches only for a network the table lacks). Off, it is passed on
     /// to the other ports as for an unknown network.
     pub search_unknown_only: bool,
+    /// R6: the hop count comes down before the router decides (Clauses
+    /// 6.2.3, 6.3.2), so a relay toward the next router never leaves with
+    /// 0, and a global broadcast that arrives with 1 is delivered here and
+    /// passed on nowhere; each is counted as spent. Delivery onto an
+    /// attached network carries no hop count, and is unchanged. Off, one
+    /// that arrives with 1 leaves with 0.
+    pub hop_count: bool,
 }
 
 impl Fixes {
@@ -109,6 +116,7 @@ impl Fixes {
         announce_numbers: false,
         answer_reachable: false,
         search_unknown_only: false,
+        hop_count: false,
     };
 
     /// Every switch on: the recommended setting.
@@ -118,6 +126,7 @@ impl Fixes {
         announce_numbers: true,
         answer_reachable: true,
         search_unknown_only: true,
+        hop_count: true,
     };
 }
 
@@ -161,7 +170,7 @@ impl Options {
     /// The hosted router's values: standard convergence, 256 routes, 300 s
     /// learned age, a 60 s sweep, [`Timing::DEFAULT`], a 5 s discovery
     /// cooldown and 30 s age, and the fixes it has turned on so far: R1 to
-    /// R5.
+    /// R6.
     pub const HOSTED: Self = Self {
         convergence: Convergence::Standard,
         route_cap: 256,
@@ -176,6 +185,7 @@ impl Options {
             announce_numbers: true,
             answer_reachable: true,
             search_unknown_only: true,
+            hop_count: true,
             ..Fixes::NONE
         },
     };

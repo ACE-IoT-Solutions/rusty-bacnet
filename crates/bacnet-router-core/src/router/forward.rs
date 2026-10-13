@@ -50,9 +50,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// added when missing, and the rest travels unchanged.
     ///
     /// One that arrives with a hop count of 0 goes nowhere, and so does one
-    /// whose route names a port the router doesn't have. One that
-    /// arrives with 1 leaves with 0, as in the hosted router (fix R6 in
-    /// #1679 changes that later). With R1 on, one too long for the egress
+    /// whose route names a port the router doesn't have. Toward the next
+    /// router, one that arrives with 1 goes nowhere either with R6 on, and
+    /// leaves with 0 with it off. With R1 on, one too long for the egress
     /// port draws reject reason 4 naming its DNET. A reject passing
     /// through never draws one: it can't be that long
     /// ([`LONGEST_REJECT`]).
@@ -64,7 +64,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        if npdu.hop_count == 0 {
+        let last_hop = options.fixes.hop_count && !route.direct && npdu.hop_count == 1;
+        if npdu.hop_count == 0 || last_hop {
             return self.hop_count_spent(npdu, host);
         }
         // A route written through `Router::table_mut` may name a port the
@@ -113,16 +114,19 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 
     /// Pass a global broadcast on to every port but the arrival one, with
     /// DNET 0xFFFF and DLEN 0 kept, SNET and SADR added when missing, and
-    /// the hop count one lower; nothing when it has run out. With R1 on, a
-    /// port that can't carry it is left out and counted when polled, with
-    /// no reject (decision D21 on #1679).
+    /// the hop count one lower; nothing when it has run out, which with R6
+    /// on is when it arrives with 1 as well as 0. With R1 on, a port that
+    /// can't carry it is left out and counted when polled, with no reject
+    /// (decision D21 on #1679).
     pub(super) fn forward_global(
         &mut self,
         at: &Arrival<'_>,
         npdu: &Npdu<'_>,
+        options: &Options,
         host: &mut impl Host,
     ) {
-        if npdu.hop_count == 0 {
+        let last_hop = options.fixes.hop_count && npdu.hop_count == 1;
+        if npdu.hop_count == 0 || last_hop {
             self.hop_count_spent(npdu, host);
             return;
         }

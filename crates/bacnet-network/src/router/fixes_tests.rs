@@ -243,3 +243,36 @@ async fn r5_a_network_behind_the_arrival_port_is_neither_answered_nor_searched()
     assert_eq!(relayed.len(), 1, "an unknown network is searched for");
     h.assert_quiet();
 }
+
+// --- R6: the hop count comes down before the router decides ---
+
+/// R6 (Clauses 6.2.3, 6.3.2): an NPDU for 3000, behind the router at [9] on
+/// port 1, that arrives with a hop count of 1 would leave with 0, so it goes
+/// nowhere, counted, with no reject; before the fix it went on with 0. A
+/// global broadcast with 1 left is delivered here and passed on nowhere.
+/// Onto network 2000, attached, an NPDU with 1 left still goes, since it
+/// leaves with no hop count at all.
+#[tokio::test]
+async fn r6_a_relay_never_leaves_with_a_hop_count_of_0() {
+    let mut h = Harness::two_port();
+    h.learned(3000, 1, &[9]);
+    let mut to_3000 = npdu_of(20, 3000, &[5]);
+    to_3000.hop_count = 1;
+    h.dispatch(h.ctx(0, &SENDER, to_3000)).await;
+    h.assert_quiet();
+    let counters = h.counters();
+    assert_eq!((counters.hop_count_drops, counters.rejects), (1, 0));
+
+    let mut global = npdu_of(20, 0xFFFF, &[]);
+    global.hop_count = 1;
+    h.dispatch(h.ctx(0, &SENDER, global)).await;
+    h.assert_quiet();
+    assert!(h.apdus.try_recv().is_ok(), "delivered locally");
+    assert_eq!(h.counters().hop_count_drops, 2);
+
+    let mut to_2000 = npdu_of(20, 2000, &[5]);
+    to_2000.hop_count = 1;
+    h.dispatch(h.ctx(0, &SENDER, to_2000)).await;
+    assert_eq!(lengths_on(&mut h, 1), [24]);
+    h.assert_quiet();
+}

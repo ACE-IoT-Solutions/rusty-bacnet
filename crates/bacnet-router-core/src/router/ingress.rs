@@ -229,7 +229,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return Received::Local(local(npdu, at.link_group, false));
         };
         if destination.network == GLOBAL_NETWORK {
-            self.forward_global(at, npdu, host);
+            self.forward_global(at, npdu, options, host);
             return Received::Local(local(npdu, true, true));
         }
         let Some(route) = self.find_route(at, npdu, destination.network, options, host) else {

@@ -35,7 +35,8 @@
 //!    when missing; onto a directly attached network without its DNET,
 //!    DADR and hop count, to the DADR or as a broadcast; toward the next
 //!    router with its hop count one lower. One that arrives with a hop
-//!    count of 0 goes nowhere.
+//!    count of 0 goes nowhere, and with fix R6 one whose count would leave
+//!    at 0 doesn't go either.
 //!
 //! The [`Host`] answers what the router can't know itself: which MACs are
 //! group addresses on a port ([`Group`]), and whether to act on a

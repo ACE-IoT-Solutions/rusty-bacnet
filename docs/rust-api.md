@@ -2167,6 +2167,13 @@ them):
   included, gets no answer and isn't passed on: the router that serves it is
   on the asker's network (Clause 6.6.3.2 searches only for a network the
   table lacks). Before, it was passed on to the other ports.
+- **Hop count (R6).** The hop count comes down before the router decides
+  (Clauses 6.2.3 and 6.3.2): an NPDU for another router that arrives with a
+  hop count of 1 isn't relayed, and a global broadcast that arrives with 1 is
+  delivered to the router's own application and passed on nowhere. Each
+  counts in `counters().hop_count_drops`, with no reject. Delivery onto an
+  attached network, where the NPDU carries no hop count, is unchanged.
+  Before, such an NPDU left with a hop count of 0.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

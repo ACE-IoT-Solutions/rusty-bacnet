@@ -91,34 +91,64 @@ fn next_router_keeps_destination_and_counts_down() {
     assert_eq!(parsed.hop_count, 16);
 }
 
-/// A hop count of 0 ends the relay; today one of 1 still leaves, with 0,
-/// as the hosted router sends it (router/forwarding.rs:28-31, 51; fix R6
-/// in #1679 changes that later).
+/// R6 (Clauses 6.2.3 and 6.5.4): the hop count comes down before the
+/// router decides, so toward the next router one that arrives with 0 or 1
+/// goes nowhere, counted and reported, with no reject; 2 leaves with 1.
+/// Onto an attached network the NPDU carries no hop count, so one that
+/// arrives with 1 is still delivered there.
 #[test]
-fn hop_count_zero_is_not_relayed_and_one_leaves_with_zero() {
-    let mut router = router();
+fn hop_count_reaching_zero_is_not_relayed() {
+    let mut router = router_with(&two_ports(), options(|o| o.fixes = Fixes::ALL));
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
-    let hops = |count: u8| {
+    let hops = |network: u16, count: u8| {
         let mut request = Npdu::apdu(CONFIRMED);
-        request.destination = Some(addr(9, &[5]));
+        request.destination = Some(addr(network, &[5]));
         request.hop_count = count;
         bytes(&request)
     };
-    let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &hops(0), at(1));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::HopCount));
-    assert!(sent.is_empty(), "no reject either");
-    assert_eq!(router.counters().hop_count_drops, 1);
-    assert_eq!(host.events, [Event::HopCountSpent { network: 9 }]);
+    for count in [0, 1] {
+        let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &hops(9, count), at(1));
+        assert_eq!(outcome, Outcome::Dropped(DropReason::HopCount));
+        assert!(sent.is_empty(), "no reject either");
+    }
+    assert_eq!(router.counters().hop_count_drops, 2);
+    assert_eq!(router.counters().rejects, 0);
+    let spent = Event::HopCountSpent { network: 9 };
+    assert_eq!(host.events, [spent, spent]);
 
-    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &hops(1), at(1));
+    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &hops(9, 2), at(1));
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].to.as_deref(), Some(R7));
+    assert_eq!(sent[0].parsed().hop_count, 1);
+
+    let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &hops(2, 1), at(1));
+    assert_eq!(outcome, Outcome::Handled);
+    assert_eq!((sent[0].port, sent[0].to.as_deref()), (1, Some(&[5][..])));
+    assert_eq!(sent[0].parsed().destination, None);
+    assert_eq!(router.counters().hop_count_drops, 2);
+}
+
+/// Before R6, the hosted router let one that arrived with 1 leave with 0
+/// (router/forwarding.rs:28-31, 51), for the next router to drop.
+#[test]
+fn without_r6_a_hop_count_of_one_leaves_with_zero() {
+    let mut router = router_with(&two_ports(), options(|o| o.fixes = Fixes::NONE));
+    let mut host = Recorder::default();
+    learn_9_via_r7(&mut router, at(0));
+    let mut request = Npdu::apdu(CONFIRMED);
+    request.destination = Some(addr(9, &[5]));
+    request.hop_count = 1;
+    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&request), at(1));
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].parsed().hop_count, 0);
+    assert_eq!(router.counters().hop_count_drops, 0);
 }
 
 /// Clauses 6.3.2 and 6.5.4: a global broadcast goes to every attached
 /// network but the one it came from, keeping DNET 0xFFFF and DLEN 0, and is
-/// delivered locally too. With its hop count spent it is only delivered.
+/// delivered locally too. With its hop count spent it is only delivered:
+/// with R6, one that arrives with 1 as well as 0.
 #[test]
 fn global_broadcast_fans_out_and_delivers() {
     let ports = [port_on(1, OWN_0), port_on(2, OWN_1), port_on(3, &[0x33])];
@@ -140,8 +170,8 @@ fn global_broadcast_fans_out_and_delivers() {
             ..
         }
     ));
-    let ports: Vec<u8> = sent.iter().map(|sent| sent.port).collect();
-    assert_eq!(ports, [0, 2]);
+    let egress: Vec<u8> = sent.iter().map(|sent| sent.port).collect();
+    assert_eq!(egress, [0, 2]);
     for sent in &sent {
         assert!(sent.is_broadcast());
         assert_eq!(sent.kind, Kind::Global);
@@ -151,23 +181,28 @@ fn global_broadcast_fans_out_and_delivers() {
         assert_eq!(parsed.hop_count, 254);
     }
 
-    // With 1 left it still goes on, with 0, as today (fix R6 later).
+    // Spent, with 1 or 0 left: delivered, not relayed, and the host hears
+    // of it, as the hosted router logs it (router/forwarding.rs:117-120).
     let mut last = Npdu::apdu(UNCONFIRMED);
     last.destination = Some(addr(0xFFFF, &[]));
+    for count in [1, 0] {
+        last.hop_count = count;
+        let (outcome, sent) = deliver(&mut router, &mut host, 1, &[0x20], &bytes(&last), at(1));
+        assert!(matches!(outcome, Outcome::Local { global: true, .. }));
+        assert!(sent.is_empty(), "{count}");
+    }
+    assert_eq!(router.counters().hop_count_drops, 2);
+    let spent = Event::HopCountSpent { network: 0xFFFF };
+    assert_eq!(host.events, [spent, spent]);
+
+    // Before R6 one with 1 left still went on, with 0.
+    let options = options(|o| o.fixes.hop_count = false);
+    let mut before = router_with(&ports, options);
     last.hop_count = 1;
-    let (_, sent) = deliver(&mut router, &mut host, 1, &[0x20], &bytes(&last), at(1));
+    let (outcome, sent) = deliver(&mut before, &mut host, 1, &[0x20], &bytes(&last), at(1));
+    assert!(matches!(outcome, Outcome::Local { global: true, .. }));
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().all(|sent| sent.parsed().hop_count == 0));
-
-    // Spent: delivered, not relayed, and the host hears of it, as the
-    // hosted router logs it (router/forwarding.rs:117-120).
-    let mut spent = last;
-    spent.hop_count = 0;
-    let (outcome, sent) = deliver(&mut router, &mut host, 1, &[0x20], &bytes(&spent), at(1));
-    assert!(matches!(outcome, Outcome::Local { global: true, .. }));
-    assert!(sent.is_empty());
-    assert_eq!(router.counters().hop_count_drops, 1);
-    assert_eq!(host.events, [Event::HopCountSpent { network: 0xFFFF }]);
 }
 
 /// Clauses 6.2.5 and 6.5.4: a network message for another network, a

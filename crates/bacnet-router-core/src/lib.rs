@@ -63,8 +63,8 @@
 //! | Only an Unconfirmed-Request may use a broadcast network address | 6.3 | `tests/ingress.rs`: `broadcast_addresses_carry_only_unconfirmed` |
 //! | Missing SNET and SADR are filled in from the arrival network and the link sender; present ones travel unchanged | 6.5.4 | `tests/forward.rs`: `source_is_added_once_and_kept_after` |
 //! | Onto an attached network the destination fields and hop count are dropped, and the frame goes to the DADR, or to every node for DLEN 0 | 6.5.4 | `tests/forward.rs`: `direct_delivery_strips_destination` |
-//! | Toward another router the destination fields stay and the hop count falls by one; a spent hop count goes no further | 6.2.3, 6.5.4 | `tests/forward.rs`: `next_router_keeps_destination_and_counts_down`, `hop_count_zero_is_not_relayed_and_one_leaves_with_zero` |
-//! | A global broadcast reaches every attached network but the one it came from, still global, and the router's own application too | 6.3.2, 6.5.4 | `tests/forward.rs`: `global_broadcast_fans_out_and_delivers` |
+//! | Toward another router the destination fields stay and the hop count falls by one; a count that would reach zero goes no further (R6) | 6.2.3, 6.5.4 | `tests/forward.rs`: `next_router_keeps_destination_and_counts_down`, `hop_count_reaching_zero_is_not_relayed` |
+//! | A global broadcast reaches every attached network but the one it came from, still global, and the router's own application too; one whose count would reach zero is only delivered (R6) | 6.3.2, 6.5.4 | `tests/forward.rs`: `global_broadcast_fans_out_and_delivers` |
 //! | A network message for another network is routed like an APDU, a proprietary one included, vendor ID and all | 6.2.5, 6.5.4 | `tests/forward.rs`: `proprietary_messages_route_opaquely` |
 //! | Lacking a route, the router searches for one and refuses the message with reason 1 | 6.6.3.1 | `tests/traces.rs`: `a_discovery_learning_and_aging` |
 //! | A refusal goes to whoever first sent the refused message, as its source fields say | 6.4.4, 6.5.4 | `tests/reject.rs`: `reject_path_follows_the_origin` |
