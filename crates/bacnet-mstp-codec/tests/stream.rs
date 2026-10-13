@@ -211,6 +211,45 @@ fn storage_of_exactly_one_frame_decodes_it() {
     ));
 }
 
+/// Octets dropped from the front leave the rest where they are, so a frame
+/// that then needs the whole storage is moved to its front, here past a
+/// one-octet gap, and still decodes whole: every octet of it in place, at
+/// any data length.
+#[test]
+fn a_frame_behind_dropped_octets_moves_to_the_front_intact() {
+    for length in [1, 2, 7, 40, 200, 501] {
+        let data: Vec<u8> = (0..length).map(|index| (index * 13 + 5) as u8).collect();
+        let wire = encode(Frame::new(
+            FrameType::BACnetDataNotExpectingReply,
+            4,
+            3,
+            &data,
+        ));
+        let mut storage = vec![0u8; wire.len()];
+        let mut decoder = StreamDecoder::new(&mut storage);
+        // A lone 0x55 might start a preamble, so it is kept, then dropped as
+        // noise once the next octet, the frame's own 0x55, follows it.
+        assert_eq!(decoder.push(PREAMBLE[0]), DecodeEvent::NeedMore);
+        let (head, last) = wire.split_at(wire.len() - 1);
+        assert_eq!(
+            decoder.push_slice(head),
+            DecodeEvent::Invalid { discard: 1 }
+        );
+        assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
+        assert_eq!(decoder.buffered_len(), head.len());
+        match decoder.push_slice(last) {
+            DecodeEvent::Frame { frame, consumed } => {
+                assert_eq!(consumed, wire.len());
+                assert_eq!((frame.header.destination, frame.header.source), (4, 3));
+                assert_eq!(frame.data, &data[..], "data length {length}");
+            }
+            other => panic!("data length {length}: {other:?}"),
+        }
+        assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
+        assert_eq!(decoder.buffered_len(), 0);
+    }
+}
+
 /// A dropped candidate carries its destination once the header CRC passed,
 /// so a receiver can ignore trouble on frames meant for other stations.
 #[test]
