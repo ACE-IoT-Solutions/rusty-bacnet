@@ -6,7 +6,8 @@ the portable MS/TP and B/IP cores, `bacnet-mstp-core` and `bacnet-bip-core`,
 and is meant to join their ports in firmware, and to run under the hosted
 `BACnetRouter` of `bacnet-network`.
 
-- `#![no_std]`, no allocator, no dependencies besides `bacnet-time`.
+- `#![no_std]`, no allocator, and by default no dependencies besides
+  `bacnet-time`.
 - NPDUs are read in place from your frame and written into your buffer.
 - The routing table, the discovery state and the router's output scratch
   live in arrays whose size you pick with const generics, all zero bits
@@ -41,6 +42,21 @@ image follows (#1679).
   MAC there, and the longest NPDU the port carries), so B/IP, MS/TP and the
   hosted transports all plug in the same way. It behaves as the hosted
   router does today, with the clause's fixes behind switches.
+- `bip` (feature `bip`): B/IP ports over `bacnet-bip-core`'s node engine,
+  in normal or foreign-device mode, or as a BBMD over its tables. A
+  Forwarded-NPDU reaches the router from its origin, a unicast to a group
+  address is refused, and a foreign device's startup announcements wait
+  for its registration. Datagrams leave through a sink you implement,
+  which encodes each straight into your socket's buffer.
+- `mstp` (feature `mstp`): MS/TP ports over `bacnet-mstp-core`'s master
+  core, which must run with extended frames. Sends queue at their network
+  priority, and a request passed on is answered Reply Postponed.
+
+## Features
+
+None by default. `bip` adds `bacnet-bip-core` and `bacnet-bip-codec`, and
+`mstp` adds `bacnet-mstp-core`. Neither needs `std` or an allocator, and
+every combination builds on bare-metal targets.
 
 ## Example
 
