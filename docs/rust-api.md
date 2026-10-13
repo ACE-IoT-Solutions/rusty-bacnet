@@ -1553,7 +1553,7 @@ standalone/Docker migration did not change production CLI or node APIs; the
 subsequent built-in node API migration follows.
 Benchmark compilation and functional TLS tests are not new performance qualification.
 The server-auth-only `sc_latency`/`sc_throughput` targets are retired; the original
-mTLS targets remain, with historical results and limits in [Benchmarks](../Benchmarks.md).
+mTLS targets remain, with current results in [Benchmarks](../Benchmarks.md#4-transports).
 
 #### Strict local node TLS configuration
 
