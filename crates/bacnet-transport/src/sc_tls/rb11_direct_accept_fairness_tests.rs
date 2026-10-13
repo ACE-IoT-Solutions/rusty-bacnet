@@ -6,6 +6,7 @@
 //! that startup validation rejects bad limits before binding.
 
 use super::{DirectAcceptConfig, DirectListener};
+use crate::sc::npdu_admission::{DEFAULT_NPDU_PER_ORIGIN_LIMIT as QUOTA, SC_NPDU_QUEUE_CAPACITY};
 use crate::sc::{ScConnection, WebSocketPort};
 use crate::sc_frame::{decode_sc_message, encode_sc_message, ScFunction};
 use crate::sc_tls::ScNodeTlsConfig;
@@ -144,7 +145,7 @@ async fn bursty_peer_capped_while_other_peer_progresses() {
     let (ws_b, mut conn_b) = dialed_peer(&addr, &ca, PEER_B_VMAC).await;
     // Bursty peer floods: only its quota survives, whatever the interleave
     // with the legitimate peer (distinct keys, room in the queue).
-    for seq in 0..20u8 {
+    for seq in 0..(QUOTA + 16) as u8 {
         send_direct_npdu(&ws_a, &mut conn_a, &[0x01, 0x00, 0xA0, seq]).await;
     }
     send_direct_npdu(&ws_b, &mut conn_b, &[0x01, 0x00, 0xB0, 0]).await;
@@ -154,7 +155,7 @@ async fn bursty_peer_capped_while_other_peer_progresses() {
     drop(ws_a);
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if listener.active_connections() == 1 && rx.len() == 6 {
+            if listener.active_connections() == 1 && rx.len() == QUOTA + 2 {
                 break;
             }
             tokio::task::yield_now().await;
@@ -168,8 +169,8 @@ async fn bursty_peer_capped_while_other_peer_progresses() {
     assert_eq!(counts.closed_drops, 0);
     let mut from_a = 0;
     let mut from_b = 0;
-    for _ in 0..6 {
-        let received = rx.try_recv().expect("6 queued NPDUs must drain");
+    for _ in 0..QUOTA + 2 {
+        let received = rx.try_recv().expect("the queued NPDUs must drain");
         assert!(received.provenance.is_direct_peer());
         assert!(received.reply_tx.is_none());
         assert!(!received.link_layer_group);
@@ -181,7 +182,7 @@ async fn bursty_peer_capped_while_other_peer_progresses() {
             panic!("unexpected source {:?}", received.source_mac);
         }
     }
-    assert_eq!((from_a, from_b), (4, 2));
+    assert_eq!((from_a, from_b), (QUOTA, 2));
     drop(ws_b);
     listener.stop().await;
     // Counters survive stop.
@@ -191,7 +192,7 @@ async fn bursty_peer_capped_while_other_peer_progresses() {
 #[tokio::test]
 async fn invalid_per_origin_limit_rejected_before_bind() {
     let ca = TestCa::generate();
-    for limit in [0, 65, usize::MAX] {
+    for limit in [0, SC_NPDU_QUEUE_CAPACITY + 1, usize::MAX] {
         let tls = ca.node_config(vec!["localhost".into(), "127.0.0.1".into()]);
         let config = DirectAcceptConfig::new(loopback_addr(), LISTENER_VMAC, LISTENER_UUID, tls)
             .with_npdu_per_origin_limit(limit);

@@ -45,7 +45,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::port::ReceivedNpdu;
-use crate::sc::npdu_admission::{ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts};
+use crate::sc::npdu_admission::{
+    ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts, SC_NPDU_QUEUE_CAPACITY,
+};
 use crate::sc_frame::{
     decode_sc_message, encode_sc_message, validate_connect_request, ScFunction, ScMessage, Vmac,
     BACNET_SC_DIRECT_SUBPROTOCOL,
@@ -67,9 +69,10 @@ pub const DIRECT_ACCEPT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// NPDU receive channel capacity for the listener.
 ///
-/// Matches the hub transport's bounded channel; delivery uses `try_send`
-/// and drops on full with a diagnostic, never blocking the accept loop.
-const DIRECT_ACCEPT_NPDU_CHANNEL_CAPACITY: usize = 64;
+/// The hub transport's capacity, which the shared admission checks; delivery
+/// uses `try_send` and drops on full with a throttled warning, never blocking
+/// the accept loop.
+const DIRECT_ACCEPT_NPDU_CHANNEL_CAPACITY: usize = SC_NPDU_QUEUE_CAPACITY;
 
 /// Default Connect-handshake wait for an accepted peer (owner-local).
 const DIRECT_ACCEPT_DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
@@ -153,8 +156,8 @@ impl DirectAcceptConfig {
 
     /// Set the per-origin queued-NPDU quota (builder-style).
     ///
-    /// Defaults to the network-layer 16/256 ratio scaled to the 64-item
-    /// listener queue (4 per peer VMAC). [`DirectListener::start`] validates
+    /// Defaults to 32 per peer VMAC in the 256-item listener queue, as on the
+    /// hub path (#1712). [`DirectListener::start`] validates
     /// the limit before binding and rejects zero or above-capacity values;
     /// the aggregate cap stays the fixed channel capacity. The peer VMAC is
     /// a scheduling key, never identity.

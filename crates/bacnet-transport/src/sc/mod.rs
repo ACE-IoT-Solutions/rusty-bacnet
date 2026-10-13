@@ -279,9 +279,6 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             config.validate()?;
         }
 
-        /// NPDU receive channel capacity — smaller than BIP/Ethernet since SC is hub-relayed.
-        const NPDU_CHANNEL_CAPACITY: usize = 64;
-
         #[cfg(test)]
         let validate_heartbeat_timing = !self.allow_test_heartbeat_timing;
         #[cfg(not(test))]
@@ -302,7 +299,8 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             return Err(Error::Encoding("SC VMAC is zero or broadcast".into()));
         }
 
-        let (npdu_tx, npdu_rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
+        // The capacity is the admission's aggregate cap (256, as on B/IP).
+        let (npdu_tx, npdu_rx) = mpsc::channel(npdu_admission::SC_NPDU_QUEUE_CAPACITY);
         let npdu_admission = Arc::new(npdu_admission::ScNpduAdmission::new(
             self.npdu_admission_policy,
         ));
