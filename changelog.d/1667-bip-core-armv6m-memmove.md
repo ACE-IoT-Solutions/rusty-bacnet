@@ -1,6 +1,6 @@
 ---
 section: Changed
 ---
-- `bacnet-bip-core`'s BBMD tables copy a B/IP address's IP and port
-  apart, so ARMv6-M (Cortex-M0) firmware no longer links a 1.3 KB
-  `memmove` for them (#1667).
+- `bacnet-bip-core` no longer links a `memmove` into firmware: its BBMD
+  tables copy a B/IP address's IP and port apart, and its node engine
+  shifts queued events by swaps, saving 0.8 to 1.4 KB of code (#1667).

@@ -108,7 +108,12 @@ impl<const X: usize> Actions<X> {
             }
         }
         if let Some(event) = self.events[0].take() {
-            self.events.rotate_left(1);
+            // The emptied slot moves to the back one swap at a time:
+            // `rotate_left` compiles to a memmove call, 0.8-1.4 KB of code
+            // on a microcontroller.
+            for index in 1..EVENTS {
+                self.events.swap(index - 1, index);
+            }
             return Action::Registration(event);
         }
         if let Some(release) = self.held.take() {
@@ -122,5 +127,63 @@ impl<const X: usize> Actions<X> {
             Some((exchange, to, ttl)) => Action::Register { exchange, to, ttl },
             None => Action::Idle,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_time::Instant;
+
+    use super::{Action, Actions, RegistrationEvent, EVENTS};
+
+    const fn renewed(secs: u64) -> RegistrationEvent {
+        RegistrationEvent::Renewed {
+            until: Instant::from_secs(secs),
+        }
+    }
+
+    /// Every event `actions` holds, in the order polled.
+    fn polled(actions: &mut Actions<1>) -> [Option<RegistrationEvent>; EVENTS + 1] {
+        let mut out = [None; EVENTS + 1];
+        for slot in &mut out {
+            match actions.poll() {
+                Action::Registration(event) => *slot = Some(event),
+                Action::Idle => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn events_are_polled_in_order() {
+        let mut actions = Actions::<1>::new();
+        for secs in 1..=3 {
+            actions.event(renewed(secs));
+        }
+        assert_eq!(
+            polled(&mut actions),
+            [Some(renewed(1)), Some(renewed(2)), Some(renewed(3)), None]
+        );
+        // Polling frees the slots for the next ones.
+        actions.event(RegistrationEvent::Lapsed);
+        actions.event(RegistrationEvent::Unanswered);
+        let next = [RegistrationEvent::Lapsed, RegistrationEvent::Unanswered];
+        assert_eq!(
+            polled(&mut actions),
+            [Some(next[0]), Some(next[1]), None, None]
+        );
+    }
+
+    #[test]
+    fn the_newest_event_replaces_the_last_when_the_list_is_full() {
+        let mut actions = Actions::<1>::new();
+        for secs in 1..=4 {
+            actions.event(renewed(secs));
+        }
+        assert_eq!(
+            polled(&mut actions),
+            [Some(renewed(1)), Some(renewed(2)), Some(renewed(4)), None]
+        );
     }
 }
