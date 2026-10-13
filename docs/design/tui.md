@@ -260,7 +260,7 @@ distinctly.
 ### 6.2 Crate and module layout
 
 Everything stays in `crates/bacnet-cli`, behind the `tui` cargo feature
-(opt-in until the TUI ships in 0.13.0, #975), and outside the workspace's `default-members` as before. A separate
+(opt-in until the TUI ships in 0.14.0, #975), and outside the workspace's `default-members` as before. A separate
 crate is not justified until a second consumer exists. Building without
 the feature drops ratatui and crossterm; `bacnet tui` then prints rebuild
 advice and exits 1.

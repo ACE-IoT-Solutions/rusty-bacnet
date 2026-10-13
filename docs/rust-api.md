@@ -19,6 +19,12 @@ bacnet-types → bacnet-encoding → bacnet-services → bacnet-transport → ba
                                                                    bacnet-server
 ```
 
+The portable `no_std` crates sit apart, below `bacnet-transport` and
+`bacnet-network`: `bacnet-time` and the two codecs depend on nothing,
+`bacnet-mstp-core` and `bacnet-bip-core` take `bacnet-time` and their codec,
+and `bacnet-router-core` takes all of them. The Tokio MS/TP and B/IP transports
+run on the MS/TP and B/IP cores, and `BACnetRouter` on the router core.
+
 ---
 
 ## bacnet-types
@@ -884,9 +890,9 @@ The transport sends NPDUs up to 1497 octets, the most a B/IP data link
 carries (Table 6-1); a BBMD's Forwarded-NPDU of one is a 1507-octet datagram.
 A longer NPDU, unicast or broadcast, fails with `Error::Encoding` before
 anything is sent, and counts in `send_counters().npdu_too_long`, whose totals
-survive a restart (#1622). A router forwarding one onto a B/IP port logs the
-failed send, but doesn't tell the sender yet; the Reject-Message-To-Network
-for it comes with #1665. One exception: a BBMD passing on what it received,
+survive a restart (#1622). A router doesn't hand such an NPDU to a B/IP port:
+it answers the sender with Reject-Message-To-Network reason 4 instead (#1665,
+see [bacnet-network](#bacnet-network)). One exception: a BBMD passing on what it received,
 a broadcast to its BDT peers, foreign devices or subnet, or a foreign
 device's Distribute-Broadcast-To-Network, forwards it as it came, without
 this check or count.
@@ -1867,8 +1873,8 @@ than the latest one passed in is taken as that latest one, so a clock that
 steps back holds the core's timers still instead of failing;
 `enqueue_npdu` takes its `now` the same way without moving the clock.
 
-Since 0.13.0 the types that may grow are `#[non_exhaustive]` (#1684), so code
-outside the crate builds them like this:
+The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
+crate builds them like this:
 
 - `MstpCoreConfig::STANDARD` (also its `Default`) or
   `MstpCoreConfig::for_baud_rate(baud)`, then set the fields to change.
@@ -1898,30 +1904,13 @@ take. `QueueStorage::stats` is `counters` (a look) and `take_counters` (a
 take). Receive errors and transmit aborts count by kind (`framing_errors`,
 `transmit_timeouts` and the rest).
 
-Renamed or removed in 0.13.0:
-
-- `QueueRejectReason` is `QueueRefusal`; its reserved `Starved` and
-  `QueueCounters::drops_starved` are gone.
-- `max_npdu_length()` is `max_npdu()`, on `MstpCoreConfig` and
-  `QueueStorage`.
-- `MstpCoreConfig::standard()` is `MstpCoreConfig::STANDARD`.
-- `MstpCoreConfig`'s `n_poll`, `n_retry_token`, `n_min_octets`,
-  `t_no_token` and `t_slot`, which could hold only one value, are the
-  constants `N_POLL`, `N_RETRY_TOKEN`, `N_MIN_OCTETS`, `T_NO_TOKEN` and
-  `T_SLOT`, and their `ConfigError` variants are gone.
-- `NetworkPriority::from_u8` and `as_u8` are `NetworkPriority::try_from`
-  (refusing with `PriorityError`) and `u8::from`.
-- `ReplyDecision::Cancelled`, which sent Reply Postponed, is gone: use
-  `Postponed`.
-- `RequestId::raw` and `TransmitId::raw` are gone: use `generation`.
-- `QueueKind::BROADCAST_DESTINATION` is gone: use the codec's
-  `BROADCAST_MAC`.
-- `HeaplessQueues::with_starvation_limit` and
-  `AllocQueues::with_starvation_limit` are gone: the limit is
-  `MstpCoreConfig::starvation_limit`, which `MasterCore::new` hands to the
-  queues. Queues used without a core start at that field's default, 8,
-  where they started at 16.
-- `CoreError::ClockRegression` is gone, under the clock rule above.
+The Clause 9 values a station can't change are constants: `N_POLL`,
+`N_RETRY_TOKEN`, `N_MIN_OCTETS`, `T_NO_TOKEN` and `T_SLOT`.
+`NetworkPriority` converts with `try_from` (refusing with `PriorityError`)
+and `u8::from`. The queues' starvation limit is
+`MstpCoreConfig::starvation_limit`, which `MasterCore::new` hands to them;
+queues used without a core start at its default, 8. A broadcast's
+destination is the codec's `BROADCAST_MAC`.
 
 `ConfigError`, `CoreError`, `QueueRefusal` and `PriorityError` implement
 `core::error::Error`.
@@ -2165,8 +2154,8 @@ It re-exports the BVLL codec as `bacnet_bip_core::codec`. A `now` earlier than
 the latest one passed in is taken as that latest one, so a clock that steps
 back holds the node's timers still instead of failing.
 
-Since 0.13.0 the types that may grow are `#[non_exhaustive]` (#1684), so code
-outside the crate builds them like this:
+The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
+crate builds them like this:
 
 - `node::Datagram::new(payload, source, to)`: read whole by the primary
   socket; set `path` or `truncated` on the result when they differ.
@@ -2206,12 +2195,10 @@ The enums a host acts on case by case, and the closed sets, stay exhaustive:
 `Action`, `Received`, `Inbound`, `ForBbmd`, `Mode`, `Arrival`, `Cast`,
 `Via`, `Registered`, `Admission` and `Operation`.
 
-Renamed in 0.13.0: `node::RegistrationView` is `RegistrationSnapshot`;
-`bbmd::InvalidEntry` is `EntryError`; `bbmd::GRACE_PERIOD_SECS` (a `u16`)
-is `GRACE_PERIOD`, a `Duration`; `bbmd::StorageFull` carries `needed` and
-`available`, in entries, as the codec's `SinkFull` does in octets; and
-`BdtError::Capacity`'s `capacity` is `available`. `RegistrationRefusal` and
-`EntryError` implement `core::error::Error`.
+`bbmd::GRACE_PERIOD` is a `Duration`. `bbmd::StorageFull` and
+`BdtError::Capacity` carry `needed` and `available`, in entries, as the
+codec's `SinkFull` does in octets. `RegistrationRefusal` and `EntryError`
+implement `core::error::Error`.
 
 ---
 
@@ -2518,13 +2505,11 @@ and time as a `bacnet-time` `Instant` passed to each call. Its `bip` and
 `bacnet-mstp-core`. A `now` earlier than the latest one passed in is taken
 as that latest one, so a clock that steps back holds the router's timers
 still instead of failing; the router keeps that time from `Router::new` on.
+The router always follows Clause 6, R1 to R7 above included, with no switch
+back to the hosted router's behaviour before 0.13.0.
 
-The router always follows Clause 6 (#1684): `router::Fixes` and
-`Options::fixes` are gone, with every switch back to the hosted router's
-behaviour before #1679.
-
-Since 0.13.0 the types that may grow are `#[non_exhaustive]`, so code
-outside the crate builds them like this:
+The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
+crate builds them like this:
 
 - `router::Options::HOSTED` (also its `Default`), then set the fields to
   change: a `Storage` smaller than the hosted router's needs a smaller
@@ -2562,7 +2547,8 @@ cover the ranges.
 A `Route` is a copy of the table's row, read through its getters:
 `port()`, `is_direct()`, `next_hop()`, `last_seen()`, `last_used()`,
 `reachability()`, `busy_until()`, `flap_count()` and `last_port_change()`.
-`Table::lookup_mut` is gone, and only the table's own calls change a row:
+There is no `lookup_mut`, as 0.12's `RouterTable` had: only the table's own
+calls change a row:
 
 - a route's port, next hop or `last_seen`: `add_learned` (or `learn` and
   `apply_claim`, which also detect flaps and keep the convergence mode);
@@ -2585,27 +2571,12 @@ octets, `MAX_NPDU` by default. `BipPort::new` checks that the link's
 broadcast limit fits: a link with a smaller send budget can lend shorter
 slots.
 
-Renamed or removed in 0.13.0:
-
-- `router::DropReason` is `Discard`, and `Received::Dropped` is
-  `Discarded`.
-- `table::Refusal` is `LearnRefusal`.
-- `WriteError::NoRoom`'s `capacity` is `available`.
-- `message::code` and `message::reason` are `MessageType` and
-  `RejectReason`; `npdu::PROPRIETARY_FIRST` and `code::SECURITY_FIRST`/
-  `SECURITY_LAST` are `MessageType::is_proprietary` and
-  `is_removed_security`.
-- The message views return `Result<_, DataError>` where they returned
-  `Option`, and their writers `Result<usize, DataError>`;
-  `parse_disconnect(payload)` is `DisconnectConnection::parse(payload)`.
-- `Discovery::COOLDOWN` and `MAX_AGE` are gone: `Options::HOSTED` holds
-  them. `Table::new_hardened()` is gone: `set_convergence`, now a
-  `const fn`.
-- `BipPort::refused()` and `BbmdPort::refused()` are `counters().refused`.
-- `PortError::HeldStorage` and `TargetStorage` carry `needed` and
-  `available`; a link with no send budget, or a broadcast limit past the
-  slots, is `PortError::HeldLength`.
-- `mstp::BROADCAST` is gone: use the codec's `BROADCAST_MAC`.
+The network-message views return `Result<_, DataError>`, and their writers
+`Result<usize, DataError>`. Route discovery's cooldown and maximum age are
+fields of `router::Options` (`Options::HOSTED` holds the hosted router's).
+`PortError::HeldStorage` and `TargetStorage` carry `needed` and
+`available`; a link with no send budget, or a broadcast limit past the
+slots, is `PortError::HeldLength`.
 
 `Malformed`, `LearnRefusal` and `DataError` implement `Display` and
 `core::error::Error`, as the crate's other errors do.
