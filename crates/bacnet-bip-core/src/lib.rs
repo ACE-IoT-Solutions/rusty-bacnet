@@ -25,13 +25,15 @@
 //!   both depend on, and [`LocalSubnet`], the subnet it reaches that way.
 //!
 //! The types that may grow are `#[non_exhaustive]`. Build a
-//! [`Datagram`](node::Datagram) or a [`Context`](bbmd::Context) with its
-//! `new`; start a [`Link`](node::Link), a [`Foreign`](node::Foreign) or the
-//! [`RegistrationLimits`](bbmd::RegistrationLimits) from `new` or
-//! `DEFAULT` and set the fields to change; and give a `match` on an error,
-//! a refusal or a [`Discard`](node::Discard) a wildcard arm. The enums a
-//! host acts on case by case, such as [`Action`](node::Action) and
-//! [`Received`](node::Received), stay exhaustive.
+//! [`Datagram`](node::Datagram), a [`Context`](bbmd::Context), a
+//! [`LocalSubnet`] or a [`Registration`](bbmd::Registration) with its
+//! `new`; start a [`Link`](node::Link) or a [`Foreign`](node::Foreign) from
+//! its `new`, or the [`RegistrationLimits`](bbmd::RegistrationLimits) from
+//! `DEFAULT`, and set the fields to change; and give a `match` on an
+//! error, a refusal, a [`Discard`](node::Discard) or another of these
+//! enums a wildcard arm. The enums a host acts on case by case, such as
+//! [`Action`](node::Action) and [`Received`](node::Received), stay
+//! exhaustive.
 //!
 //! # Example
 //!
@@ -45,10 +47,7 @@
 //! use bacnet_bip_core::{Instant, LocalSubnet};
 //!
 //! let own = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 47808);
-//! let subnet = LocalSubnet {
-//!     broadcast: SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 255), 47808),
-//!     mask: None,
-//! };
+//! let subnet = LocalSubnet::new(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 255), 47808));
 //! let link = Link::new(own, subnet, Mode::Normal)?;
 //!
 //! // A peer's Original-Unicast-NPDU, sent to this node's own address.

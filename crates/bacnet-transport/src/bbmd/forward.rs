@@ -56,10 +56,9 @@ impl BbmdState {
 
     /// This BBMD's subnet, with `broadcast` as its broadcast address.
     fn local_subnet(&self, broadcast: SocketAddrV4) -> LocalSubnet {
-        LocalSubnet {
-            broadcast,
-            mask: self.subnet_mask,
-        }
+        let mut subnet = LocalSubnet::new(broadcast);
+        subnet.mask = self.subnet_mask;
+        subnet
     }
 
     /// Count `sent` and copy it out.

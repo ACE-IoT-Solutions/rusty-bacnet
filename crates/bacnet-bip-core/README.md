@@ -14,11 +14,11 @@ Portable BACnet/IP behaviour from Annex J of ASHRAE 135, for
   one clock. A `now` earlier than the latest one passed in is taken as
   that latest one: time never runs backwards, so a clock that steps back
   holds the timers still instead of failing.
-- The types that may grow are `#[non_exhaustive]`: build a `Datagram` or a
-  `bbmd::Context` with `new`, start a `Link`, a `Foreign` or the
-  `RegistrationLimits` from `new` or `DEFAULT` and set the fields to
-  change, and give a `match` on an error, refusal or `Discard` a wildcard
-  arm.
+- The types that may grow are `#[non_exhaustive]`: build a `Datagram`, a
+  `bbmd::Context`, a `LocalSubnet` or a `bbmd::Registration` with `new`;
+  start a `Link` or a `Foreign` from `new`, or the `RegistrationLimits`
+  from `DEFAULT`, and set the fields to change; and give a `match` on an
+  error, a refusal, a `Discard` or another of these enums a wildcard arm.
 
 ## What it has
 

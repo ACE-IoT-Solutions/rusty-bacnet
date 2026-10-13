@@ -7,7 +7,7 @@ use core::net::Ipv4Addr;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{
-    canonicalize, distribution_address, validate_entry, Bdt, BdtError, InvalidEntry, TWO_HOP_MASK,
+    canonicalize, distribution_address, validate_entry, Bdt, BdtError, EntryError, TWO_HOP_MASK,
 };
 use support::{addr, row, MASK_24, MASK_32, OWN, PORT};
 
@@ -142,7 +142,7 @@ fn a_bad_row_past_the_capacity_is_reported_before_the_capacity() {
         set(&mut bdt, &[rows[0], rows[1], rows[2], bad]),
         Err(BdtError::Invalid {
             entry: bad,
-            reason: InvalidEntry::MulticastAddress
+            reason: EntryError::MulticastAddress
         })
     );
     // Duplicates of rows that found no room still collapse.
@@ -208,46 +208,46 @@ fn canonicalize_writes_distinct_rows_without_an_own_row() {
 #[test]
 fn each_validation_rule_refuses_its_row() {
     let cases = [
-        (row(addr(10, 0, 0, 6, 0), MASK_32), InvalidEntry::ZeroPort),
+        (row(addr(10, 0, 0, 6, 0), MASK_32), EntryError::ZeroPort),
         (
             row(addr(0, 0, 0, 0, PORT), MASK_32),
-            InvalidEntry::UnspecifiedAddress,
+            EntryError::UnspecifiedAddress,
         ),
         (
             row(addr(255, 255, 255, 255, PORT), MASK_32),
-            InvalidEntry::LimitedBroadcastAddress,
+            EntryError::LimitedBroadcastAddress,
         ),
         (
             row(addr(224, 0, 0, 1, PORT), MASK_32),
-            InvalidEntry::MulticastAddress,
+            EntryError::MulticastAddress,
         ),
         (
             row(addr(239, 255, 255, 250, PORT), MASK_32),
-            InvalidEntry::MulticastAddress,
+            EntryError::MulticastAddress,
         ),
         (
             row(addr(10, 0, 0, 5, PORT), Ipv4Addr::new(255, 0, 255, 0)),
-            InvalidEntry::NonContiguousMask,
+            EntryError::NonContiguousMask,
         ),
         (
             row(addr(10, 0, 0, 5, PORT), Ipv4Addr::new(254, 0, 0, 0)),
-            InvalidEntry::MaskTooWide,
+            EntryError::MaskTooWide,
         ),
         (
             row(addr(10, 0, 0, 5, PORT), Ipv4Addr::UNSPECIFIED),
-            InvalidEntry::MaskTooWide,
+            EntryError::MaskTooWide,
         ),
         (
             row(addr(192, 168, 1, 0, PORT), MASK_24),
-            InvalidEntry::NetworkAddress,
+            EntryError::NetworkAddress,
         ),
         (
             row(addr(192, 168, 1, 255, PORT), MASK_24),
-            InvalidEntry::DirectedBroadcastAddress,
+            EntryError::DirectedBroadcastAddress,
         ),
         (
             row(addr(255, 0, 0, 1, PORT), Ipv4Addr::new(255, 0, 0, 0)),
-            InvalidEntry::LimitedBroadcastTarget,
+            EntryError::LimitedBroadcastTarget,
         ),
     ];
     for (entry, reason) in cases {
@@ -283,7 +283,7 @@ fn errors_display_what_went_wrong() {
     let entry = row(addr(10, 0, 0, 6, 0), MASK_32);
     let invalid = BdtError::Invalid {
         entry,
-        reason: InvalidEntry::ZeroPort,
+        reason: EntryError::ZeroPort,
     };
     assert!(invalid.to_string().contains("10.0.0.6:0"));
     assert!(invalid.to_string().contains("invalid port 0"));

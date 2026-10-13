@@ -39,6 +39,7 @@ use super::config::{Foreign, Retry};
 /// Distribute-Broadcast-To-Network NAK that follows is taken as a hint to
 /// register again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Lease {
     /// The earliest send the proving success could answer.
     pub since: Instant,

@@ -64,11 +64,8 @@ pub(super) fn admitted_delivery(
     let IpAddr::V4(destination) = destination else {
         return None;
     };
-    let local = LocalAddresses {
-        own: local_ip,
-        broadcast: configured_broadcast,
-        wildcard: wildcard_bind.then_some(local_unicast_ips),
-    };
+    let mut local = LocalAddresses::new(local_ip, configured_broadcast);
+    local.wildcard = wildcard_bind.then_some(local_unicast_ips);
     let link = test_link(
         SocketAddrV4::new(local_ip, 0xBAC0),
         SocketAddrV4::new(configured_broadcast, 0xBAC0),
@@ -87,11 +84,7 @@ pub(super) fn admitted_delivery(
 /// A link at `own`, whose local broadcasts go to `broadcast`, in `mode`,
 /// sending NPDUs up to 1497 octets, as the transport runs it.
 pub(super) fn test_link(own: SocketAddrV4, broadcast: SocketAddrV4, mode: Mode) -> Link {
-    let subnet = LocalSubnet {
-        broadcast,
-        mask: None,
-    };
-    let mut link = Link::new(own, subnet, mode).expect("a valid test link");
+    let mut link = Link::new(own, LocalSubnet::new(broadcast), mode).expect("a valid test link");
     link.budget = Some(super::DATAGRAM_BUDGET);
     link
 }

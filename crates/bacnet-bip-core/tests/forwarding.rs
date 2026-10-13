@@ -7,10 +7,10 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::Bvll;
 use bacnet_bip_core::bbmd::{Context, DistributeRefusal, ForwardRefusal, Tables, Target, Via};
-use bacnet_bip_core::{Arrival, Instant, LocalSubnet};
+use bacnet_bip_core::{Arrival, Instant};
 use support::{
-    addr, context, destinations, register_all, row, secs, storage, tables, Small, LOCAL_BROADCAST,
-    MASK_24, MASK_32, OWN, PORT, SUBNET,
+    addr, context, destinations, register_all, row, secs, storage, tables, target, Small,
+    LOCAL_BROADCAST, MASK_24, MASK_32, OWN, PORT, SUBNET,
 };
 
 const NPDU: &[u8] = &[0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
@@ -24,10 +24,6 @@ const ONE_HOP: SocketAddrV4 = addr(192, 168, 2, 1, PORT);
 /// Two foreign devices.
 const FD1: SocketAddrV4 = addr(172, 16, 0, 5, PORT);
 const FD2: SocketAddrV4 = addr(172, 16, 0, 6, 47809);
-
-fn target(destination: SocketAddrV4, via: Via) -> Target {
-    Target { destination, via }
-}
 
 /// The BBMD with both peers and both foreign devices.
 fn site() -> Small {
@@ -283,10 +279,8 @@ fn a_forward_from_a_sender_on_the_own_subnet_is_not_rebroadcast() {
     let neighbour = addr(192, 168, 1, 2, PORT);
     let mut tables = tables(&[row(neighbour, MASK_32), row(TWO_HOP, MASK_32)]);
     register_all(&mut tables, &[FD1], 60, T0);
-    let known = LocalSubnet {
-        mask: Some(MASK_24),
-        ..SUBNET
-    };
+    let mut known = SUBNET;
+    known.mask = Some(MASK_24);
     let mut out = storage();
     let sent = tables
         .forwarded_npdu(

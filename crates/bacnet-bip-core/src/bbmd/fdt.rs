@@ -11,10 +11,15 @@ use bacnet_time::{Duration, Instant};
 pub const GRACE_PERIOD: Duration = Duration::from_secs(30);
 
 /// [`GRACE_PERIOD`] in whole seconds, worked out when the crate is built.
-const GRACE_PERIOD_SECS: u64 = GRACE_PERIOD.as_secs();
+const GRACE_WHOLE_SECONDS: u64 = GRACE_PERIOD.as_secs();
 
 /// One foreign device's registration, as a BBMD keeps it.
+///
+/// It is `#[non_exhaustive]`, so a new detail of a registration isn't a
+/// breaking change: outside this crate, build one for
+/// [`Fdt::restore`] with [`Registration::new`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Registration {
     /// The foreign device's B/IP address: where the registration came from.
     pub address: SocketAddrV4,
@@ -25,18 +30,29 @@ pub struct Registration {
 }
 
 /// An unused slot of storage.
-const EMPTY_SLOT: Registration = Registration {
-    address: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
-    ttl: 0,
-    registered_at: Instant::ZERO,
-};
+const EMPTY_SLOT: Registration = Registration::new(
+    SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
+    0,
+    Instant::ZERO,
+);
 
 impl Registration {
+    /// The registration of `address` for `ttl` seconds, made or last
+    /// renewed at `registered_at`.
+    #[must_use]
+    pub const fn new(address: SocketAddrV4, ttl: u16, registered_at: Instant) -> Self {
+        Self {
+            address,
+            ttl,
+            registered_at,
+        }
+    }
+
     /// How long the registration lasts from `registered_at`: its time-to-live
     /// plus the [`GRACE_PERIOD`].
     #[must_use]
     pub const fn lifetime(&self) -> Duration {
-        Duration::from_secs(self.ttl as u64 + GRACE_PERIOD_SECS)
+        Duration::from_secs(self.ttl as u64 + GRACE_WHOLE_SECONDS)
     }
 
     /// Whether the registration has lapsed at `now`: more than its
@@ -56,7 +72,7 @@ impl Registration {
     /// live, on.
     #[must_use]
     pub fn seconds_remaining_at(&self, now: Instant) -> u16 {
-        let lifetime_secs = u64::from(self.ttl) + GRACE_PERIOD_SECS;
+        let lifetime_secs = u64::from(self.ttl) + GRACE_WHOLE_SECONDS;
         let passed = now.saturating_duration_since(self.registered_at).as_secs();
         u16::try_from(lifetime_secs.saturating_sub(passed)).unwrap_or(u16::MAX)
     }
@@ -110,6 +126,7 @@ impl Default for RegistrationLimits {
 /// Whether a registrant may use the slots [`RegistrationLimits::
 /// reserved_capacity`] keeps back. Which sources may is the caller's policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Reservation {
     /// An ordinary source: it may fill all but the reserved slots.
     Ordinary,
@@ -322,11 +339,7 @@ impl<const N: usize> Fdt<N> {
         if !admit() {
             return Err(RegistrationRefusal::NotAdmitted);
         }
-        let registration = Registration {
-            address: source,
-            ttl,
-            registered_at: now,
-        };
+        let registration = Registration::new(source, ttl, now);
         if let Some(slot) = self.slots[..self.len]
             .iter_mut()
             .find(|entry| entry.address == source)
@@ -378,11 +391,12 @@ impl<const N: usize> Fdt<N> {
             *slot = registration;
             return Ok(());
         }
-        let full = StorageFull {
-            needed: self.len + 1,
-            available: N,
+        let Some(slot) = self.slots.get_mut(self.len) else {
+            return Err(StorageFull {
+                needed: self.len + 1,
+                available: N,
+            });
         };
-        let slot = self.slots.get_mut(self.len).ok_or(full)?;
         *slot = registration;
         self.len += 1;
         Ok(())

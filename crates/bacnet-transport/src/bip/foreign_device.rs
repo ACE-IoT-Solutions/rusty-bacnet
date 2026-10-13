@@ -58,10 +58,7 @@ impl ForeignDeviceConfig {
     /// starts.
     pub(super) fn check_bbmd(&self, broadcast: Ipv4Addr, interface: Ipv4Addr) -> Result<(), Error> {
         // Only the IP test is read, so the broadcast's port doesn't matter.
-        let groups = Groups {
-            broadcast: SocketAddrV4::new(broadcast, 0),
-            interface,
-        };
+        let groups = Groups::new(SocketAddrV4::new(broadcast, 0), interface);
         let refusal = if self.bbmd_port == 0 {
             ConfigError::BbmdPort
         } else if self.bbmd_ip.is_unspecified() || groups.contains_ip(self.bbmd_ip) {

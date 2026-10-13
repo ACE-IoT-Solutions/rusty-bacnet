@@ -9,7 +9,12 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 /// A BBMD passes it to the decisions that can send to its subnet,
 /// [`Tables::forwarded_npdu`](crate::bbmd::Tables::forwarded_npdu) and
 /// [`Tables::distribute_broadcast`](crate::bbmd::Tables::distribute_broadcast).
+///
+/// It is `#[non_exhaustive]`, so a new detail of the subnet isn't a
+/// breaking change: outside this crate, build it with
+/// [`LocalSubnet::new`] and set [`mask`](Self::mask) when it is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LocalSubnet {
     /// Where a broadcast to the network's devices goes: the subnet's
     /// directed broadcast address (or 255.255.255.255) at the B/IP
@@ -22,4 +27,15 @@ pub struct LocalSubnet {
     /// Leave it `None` when it isn't known, or when the own address isn't
     /// on the subnet, as behind NAT; such a forward is then broadcast.
     pub mask: Option<Ipv4Addr>,
+}
+
+impl LocalSubnet {
+    /// The subnet whose broadcasts go to `broadcast`, its mask not known.
+    #[must_use]
+    pub const fn new(broadcast: SocketAddrV4) -> Self {
+        Self {
+            broadcast,
+            mask: None,
+        }
+    }
 }

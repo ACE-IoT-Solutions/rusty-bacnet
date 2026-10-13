@@ -208,10 +208,7 @@ fn group_sources_and_origins_are_dropped() {
     }
     // A loopback broadcast IP, as loopback tests set up, is a group only at
     // the network's port.
-    let loopback = LocalSubnet {
-        broadcast: addr(127, 0, 0, 1, PORT),
-        mask: None,
-    };
+    let loopback = LocalSubnet::new(addr(127, 0, 0, 1, PORT));
     let link = Link::new(addr(127, 0, 0, 1, 47_809), loopback, Mode::Normal).unwrap();
     let peer = addr(127, 0, 0, 1, 47_810);
     assert_eq!(
@@ -304,15 +301,11 @@ fn listeners_keep_only_this_links_broadcasts() {
 #[test]
 fn wildcard_binds_take_unicast_only_at_own_addresses() {
     let own_ips = [Ipv4Addr::new(10, 0, 0, 5), Ipv4Addr::new(192, 168, 1, 10)];
-    let wildcard = LocalAddresses {
-        own: Ipv4Addr::new(192, 168, 1, 10),
-        broadcast: Ipv4Addr::new(192, 168, 1, 255),
-        wildcard: Some(&own_ips),
-    };
-    let bound = LocalAddresses {
-        wildcard: None,
-        ..wildcard
-    };
+    let bound = LocalAddresses::new(
+        Ipv4Addr::new(192, 168, 1, 10),
+        Ipv4Addr::new(192, 168, 1, 255),
+    );
+    let wildcard = with(bound, |local| local.wildcard = Some(&own_ips));
     let classify = |ip: [u8; 4], os, local: &LocalAddresses<'_>| {
         let addressed = Addressed::classify(Ipv4Addr::from(ip), os, local);
         (addressed.node, addressed.broadcast)
@@ -342,18 +335,11 @@ fn wildcard_binds_take_unicast_only_at_own_addresses() {
     // A wildcard bind never counts the broadcast address as its own, even
     // when the host lists it.
     let odd = [Ipv4Addr::new(192, 168, 1, 255)];
-    let listed = LocalAddresses {
-        wildcard: Some(&odd),
-        ..wildcard
-    };
+    let listed = with(wildcard, |local| local.wildcard = Some(&odd));
     assert_eq!(classify([192, 168, 1, 255], None, &listed), (false, true));
     // A bound socket whose broadcast address is its own, as in loopback
     // tests, has both.
-    let loopback = LocalAddresses {
-        own: Ipv4Addr::LOCALHOST,
-        broadcast: Ipv4Addr::LOCALHOST,
-        wildcard: None,
-    };
+    let loopback = LocalAddresses::new(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
     assert_eq!(classify([127, 0, 0, 1], None, &loopback), (true, true));
 }
 

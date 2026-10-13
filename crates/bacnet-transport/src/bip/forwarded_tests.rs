@@ -401,11 +401,7 @@ async fn forwarded_npdu_bbmd_self_sender_is_ignored_before_delivery_and_fanout()
 fn delivery_is_broadcast_only_for_the_configured_or_limited_broadcast_address() {
     use bacnet_bip_core::node::{Addressed, LocalAddresses};
     let configured = Ipv4Addr::new(192, 0, 2, 255);
-    let local = LocalAddresses {
-        own: Ipv4Addr::new(192, 0, 2, 10),
-        broadcast: configured,
-        wildcard: None,
-    };
+    let local = LocalAddresses::new(Ipv4Addr::new(192, 0, 2, 10), configured);
     for (destination, os, broadcast) in [
         (configured, None, true),
         (Ipv4Addr::BROADCAST, None, true),

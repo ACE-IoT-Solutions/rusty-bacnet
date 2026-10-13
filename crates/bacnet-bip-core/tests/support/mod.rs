@@ -5,7 +5,7 @@
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
-use bacnet_bip_core::bbmd::{Context, RegistrationLimits, Reservation, Tables, Target};
+use bacnet_bip_core::bbmd::{Context, RegistrationLimits, Reservation, Tables, Target, Via};
 use bacnet_bip_core::LocalSubnet;
 use bacnet_bip_core::{Duration, Instant};
 
@@ -31,10 +31,7 @@ pub const OWN: SocketAddrV4 = addr(192, 168, 1, 1, PORT);
 /// Its subnet's broadcast address.
 pub const LOCAL_BROADCAST: SocketAddrV4 = addr(192, 168, 1, 255, PORT);
 /// Its subnet, its mask unknown.
-pub const SUBNET: LocalSubnet = LocalSubnet {
-    broadcast: LOCAL_BROADCAST,
-    mask: None,
-};
+pub const SUBNET: LocalSubnet = LocalSubnet::new(LOCAL_BROADCAST);
 
 /// Small tables, as firmware would size them.
 pub type Small = Tables<8, 8>;
@@ -94,4 +91,24 @@ pub const fn secs(secs: u64) -> Duration {
 /// The destinations of `targets`.
 pub fn destinations(targets: &[Target]) -> Vec<SocketAddrV4> {
     targets.iter().map(|target| target.destination).collect()
+}
+
+/// A destination a test expects. [`Target`] is `#[non_exhaustive]`, so a
+/// test outside the crate can't build one to compare with: a `Target`, or
+/// a slice of them, compares with this instead.
+#[derive(Debug, Clone, Copy)]
+pub struct ExpectedTarget {
+    pub destination: SocketAddrV4,
+    pub via: Via,
+}
+
+impl PartialEq<ExpectedTarget> for Target {
+    fn eq(&self, expected: &ExpectedTarget) -> bool {
+        self.destination == expected.destination && self.via == expected.via
+    }
+}
+
+/// A [`Target`] at `destination` of kind `via`, as a test expects it.
+pub const fn target(destination: SocketAddrV4, via: Via) -> ExpectedTarget {
+    ExpectedTarget { destination, via }
 }

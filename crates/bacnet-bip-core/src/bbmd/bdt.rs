@@ -46,7 +46,7 @@ pub const fn distribution_address(row: BdtEntry) -> SocketAddrV4 {
 /// isn't one BBMD or one subnet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum InvalidEntry {
+pub enum EntryError {
     /// UDP port 0.
     ZeroPort,
     /// The address 0.0.0.0.
@@ -69,7 +69,7 @@ pub enum InvalidEntry {
     LimitedBroadcastTarget,
 }
 
-impl InvalidEntry {
+impl EntryError {
     /// A short description, as the host transport's errors print it.
     #[must_use]
     pub const fn reason(self) -> &'static str {
@@ -87,13 +87,13 @@ impl InvalidEntry {
     }
 }
 
-impl fmt::Display for InvalidEntry {
+impl fmt::Display for EntryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.reason())
     }
 }
 
-impl core::error::Error for InvalidEntry {}
+impl core::error::Error for EntryError {}
 
 /// Why a BDT was refused. A refused table changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +104,7 @@ pub enum BdtError {
         /// The row.
         entry: BdtEntry,
         /// The rule it broke.
-        reason: InvalidEntry,
+        reason: EntryError,
     },
     /// Two rows for one B/IP address with different masks.
     ConflictingMasks {
@@ -145,9 +145,9 @@ impl fmt::Display for BdtError {
 impl core::error::Error for BdtError {}
 
 /// Check one BDT row against the local security policy (see
-/// [`InvalidEntry`]). Contiguous masks of /8 to /32 pass, with any unicast
+/// [`EntryError`]). Contiguous masks of /8 to /32 pass, with any unicast
 /// address that isn't its subnet's network or broadcast address.
-pub const fn validate_entry(entry: BdtEntry) -> Result<(), InvalidEntry> {
+pub const fn validate_entry(entry: BdtEntry) -> Result<(), EntryError> {
     let ip = entry.address.ip().to_bits();
     let mask = entry.mask.to_bits();
     let host = !mask;
@@ -155,23 +155,23 @@ pub const fn validate_entry(entry: BdtEntry) -> Result<(), InvalidEntry> {
     let prefix = mask.count_ones();
     let first_octet = ip >> 24;
     let reason = if entry.address.port() == 0 {
-        InvalidEntry::ZeroPort
+        EntryError::ZeroPort
     } else if ip == 0 {
-        InvalidEntry::UnspecifiedAddress
+        EntryError::UnspecifiedAddress
     } else if ip == u32::MAX {
-        InvalidEntry::LimitedBroadcastAddress
+        EntryError::LimitedBroadcastAddress
     } else if matches!(first_octet, 224..=239) {
-        InvalidEntry::MulticastAddress
+        EntryError::MulticastAddress
     } else if !contiguous {
-        InvalidEntry::NonContiguousMask
+        EntryError::NonContiguousMask
     } else if prefix < 8 {
-        InvalidEntry::MaskTooWide
+        EntryError::MaskTooWide
     } else if prefix < 32 && ip & host == 0 {
-        InvalidEntry::NetworkAddress
+        EntryError::NetworkAddress
     } else if prefix < 32 && ip | mask == u32::MAX {
-        InvalidEntry::DirectedBroadcastAddress
+        EntryError::DirectedBroadcastAddress
     } else if ip | host == u32::MAX {
-        InvalidEntry::LimitedBroadcastTarget
+        EntryError::LimitedBroadcastTarget
     } else {
         return Ok(());
     };

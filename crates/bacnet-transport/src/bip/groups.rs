@@ -30,10 +30,7 @@ impl BipGroups {
     /// The groups of a link bound to `interface` at `port` whose configured
     /// broadcast IP is `broadcast`.
     pub(super) fn new(broadcast: Ipv4Addr, port: u16, interface: Ipv4Addr) -> Self {
-        Self(Groups {
-            broadcast: SocketAddrV4::new(broadcast, port),
-            interface,
-        })
+        Self(Groups::new(SocketAddrV4::new(broadcast, port), interface))
     }
 
     pub(super) fn contains(self, mac: &[u8]) -> bool {

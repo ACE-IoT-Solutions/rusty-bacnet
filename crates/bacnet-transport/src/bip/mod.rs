@@ -670,10 +670,7 @@ impl TransportPort for BipTransport {
             (None, Some(_)) => Mode::Bbmd,
             (None, None) => Mode::Normal,
         };
-        let subnet = LocalSubnet {
-            broadcast: SocketAddrV4::new(self.broadcast_address, local_port),
-            mask: None,
-        };
+        let subnet = LocalSubnet::new(SocketAddrV4::new(self.broadcast_address, local_port));
         let link =
             Link::new(SocketAddrV4::new(local_ip, local_port), subnet, mode).map(|mut link| {
                 // NPDUs up to the 1497 octets B/IP carries (Table 6-1, #1622).

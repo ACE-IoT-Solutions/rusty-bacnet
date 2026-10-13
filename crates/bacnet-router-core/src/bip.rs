@@ -394,7 +394,8 @@ impl<'h, const X: usize> BipPort<'h, X> {
                     self.held_len = 0;
                 }
                 Action::DiscardHeld => self.held_len = 0,
-                // The node keeps both in its registration view and counters.
+                // The node keeps both in its registration snapshot and
+                // counters.
                 Action::ExchangeEnded { .. } | Action::Registration(_) => {}
             }
         }

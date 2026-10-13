@@ -3,26 +3,32 @@
 
 mod node_support;
 
+use core::net::SocketAddrV4;
+
 use bacnet_bip_codec::Bvll;
 use bacnet_bip_core::node::{
-    Cast, ConfigError, Foreign, ForwardedTrust, Link, Mode, Outgoing, Retry, SendRefusal,
-    MAX_DATAGRAM, MAX_NPDU, MIN_RENEWAL,
+    Cast, ConfigError, Foreign, ForwardedTrust, Link, Mode, Retry, SendRefusal, MAX_DATAGRAM,
+    MAX_NPDU, MIN_RENEWAL,
 };
 use bacnet_bip_core::{Duration, LocalSubnet};
 use node_support::*;
 
 const NPDU: &[u8] = &[0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
 
+/// What `link` sends to broadcast [`NPDU`], with [`sent`]'s pair for the
+/// message, and whether to forward it too.
+fn broadcast(link: &Link) -> Result<((SocketAddrV4, Bvll<'static>), bool), SendRefusal> {
+    link.broadcast(NPDU)
+        .map(|(outgoing, forward)| (sent(outgoing), forward))
+}
+
 #[test]
 fn unicast_is_original_unicast() {
     for mode in [Mode::Normal, Mode::Foreign(foreign()), Mode::Bbmd] {
         let peer = addr(192, 168, 1, 20, 50_000);
         assert_eq!(
-            link(mode).unicast(peer, NPDU),
-            Ok(Outgoing {
-                to: peer,
-                message: Bvll::OriginalUnicastNpdu(NPDU)
-            })
+            link(mode).unicast(peer, NPDU).map(sent),
+            Ok((peer, Bvll::OriginalUnicastNpdu(NPDU)))
         );
     }
 }
@@ -73,21 +79,12 @@ fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
 #[test]
 fn normal_broadcast_is_original_broadcast_at_the_network_port() {
     assert_eq!(
-        link(Mode::Normal).broadcast(NPDU),
-        Ok((
-            Outgoing {
-                to: BROADCAST,
-                message: Bvll::OriginalBroadcastNpdu(NPDU)
-            },
-            false
-        ))
+        broadcast(&link(Mode::Normal)),
+        Ok(((BROADCAST, Bvll::OriginalBroadcastNpdu(NPDU)), false))
     );
     // The configured broadcast address, port and all, even for a node on
     // an ephemeral port.
-    let other = LocalSubnet {
-        broadcast: addr(10, 1, 255, 255, 47_809),
-        mask: None,
-    };
+    let other = LocalSubnet::new(addr(10, 1, 255, 255, 47_809));
     let link = Link::new(addr(10, 1, 0, 3, 54_321), other, Mode::Normal).unwrap();
     let (outgoing, _) = link.broadcast(NPDU).unwrap();
     assert_eq!(outgoing.to, other.broadcast);
@@ -98,28 +95,16 @@ fn foreign_broadcast_is_always_dbtn_to_the_bbmd() {
     let bbmd = addr(10, 0, 0, 1, 47_809);
     let link = foreign_link(Foreign::new(bbmd, 60));
     assert_eq!(
-        link.broadcast(NPDU),
-        Ok((
-            Outgoing {
-                to: bbmd,
-                message: Bvll::DistributeBroadcastToNetwork(NPDU)
-            },
-            false
-        ))
+        broadcast(&link),
+        Ok(((bbmd, Bvll::DistributeBroadcastToNetwork(NPDU)), false))
     );
 }
 
 #[test]
 fn a_bbmd_broadcasts_locally_and_forwards_its_own() {
     assert_eq!(
-        link(Mode::Bbmd).broadcast(NPDU),
-        Ok((
-            Outgoing {
-                to: BROADCAST,
-                message: Bvll::OriginalBroadcastNpdu(NPDU)
-            },
-            true
-        ))
+        broadcast(&link(Mode::Bbmd)),
+        Ok(((BROADCAST, Bvll::OriginalBroadcastNpdu(NPDU)), true))
     );
 }
 
@@ -283,10 +268,7 @@ fn a_bbmd_at_no_single_address_is_refused() {
     }
     assert_eq!(check(BBMD), Ok(()));
     // A loopback test's broadcast address is a group only at its port.
-    let loopback = LocalSubnet {
-        broadcast: addr(127, 0, 0, 1, PORT),
-        mask: None,
-    };
+    let loopback = LocalSubnet::new(addr(127, 0, 0, 1, PORT));
     let own = addr(127, 0, 0, 1, 47_809);
     let on_loopback = |bbmd| Link::new(own, loopback, Mode::Foreign(Foreign::new(bbmd, 60)));
     assert!(on_loopback(addr(127, 0, 0, 1, 47_810)).is_ok());

@@ -52,8 +52,10 @@ impl<'d> Datagram<'d> {
     }
 }
 
-/// Which socket read a datagram.
+/// Which socket read a datagram. The host builds it, and the node matches
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Path {
     /// The socket every send leaves from.
     Primary,

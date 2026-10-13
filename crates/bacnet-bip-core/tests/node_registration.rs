@@ -7,8 +7,8 @@ mod node_support;
 
 use bacnet_bip_codec::{BdtEntries, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{
-    Action, Admission, AttemptOutcome, ExchangeId, ExchangeRefusal, Foreign, Inbound, Lease,
-    LocalFailure, Mode, Node, Permissive, Received, RegistrationEvent, Retry, SendRefusal,
+    Action, Admission, AttemptOutcome, ExchangeId, ExchangeRefusal, Foreign, Inbound, LocalFailure,
+    Mode, Node, Permissive, Received, RegistrationEvent, Retry, SendRefusal,
 };
 use bacnet_bip_core::{Duration, Instant};
 use node_support::*;
@@ -78,13 +78,7 @@ fn success_registers() {
     bbmd_says(&mut node, SUCCESS, at(10));
     assert_eq!(act(&mut node, at(10)), (None, vec![registered(0, 60_000)]));
     let view = node.registration(at(10)).unwrap();
-    assert_eq!(
-        view.lease,
-        Some(Lease {
-            since: at(0),
-            until: at(60_000)
-        })
-    );
+    assert_eq!(view.lease.map(span), Some((at(0), at(60_000))));
     assert!(view.registered);
     assert_eq!(view.lease_remaining, Some(ms(59_990)));
     assert_eq!(view.next_attempt, Some(at(30_000)));
@@ -520,13 +514,7 @@ fn a_short_ttl_renews_once_per_interval() {
     let starts = answered_starts(&mut node, ms(10), at(10_010), 40);
     assert_eq!(starts, every_second);
     let lease = node.registration(at(10_010)).unwrap().lease.unwrap();
-    assert_eq!(
-        lease,
-        Lease {
-            since: at(10_000),
-            until: at(12_000)
-        }
-    );
+    assert_eq!(span(lease), (at(10_000), at(12_000)));
 }
 
 #[test]

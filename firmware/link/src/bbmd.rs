@@ -38,7 +38,7 @@ use bacnet_bip_codec::{
 };
 use bacnet_bip_core::bbmd::{
     Context, Fanout, ForwardRefusal, Registered, RegistrationLimits, RegistrationRefusal,
-    Reservation, Tables, Target, TWO_HOP_MASK,
+    Reservation, Tables, Target, Via, TWO_HOP_MASK,
 };
 use bacnet_bip_core::node::{Addressed, Datagram, ForBbmd, Link, Mode, Permissive, Received};
 use bacnet_bip_core::{Instant, LocalSubnet};
@@ -59,15 +59,50 @@ pub const MAX_TARGETS: usize = BbmdTables::MAX_TARGETS;
 /// Where one forwarded message went, in order.
 pub type Fan = [Option<Target>; MAX_TARGETS];
 
+/// A [`Fan`] as [`EXPECTED`] gives it: each [`Target`]'s destination and
+/// kind. `Target` is `#[non_exhaustive]`, so `EXPECTED` can't build one.
+pub type ExpectedFan = [Option<(SocketAddrV4, Via)>; MAX_TARGETS];
+
+/// What a good run's [`Summary`] holds, as [`EXPECTED`] gives it: the
+/// summary, its three fans as [`ExpectedFan`]s. A summary is compared with
+/// it fan by fan there and whole everywhere else. The comparison happens
+/// outside [`run`], so the image links none of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Expected {
+    /// The summary, with nothing in its three fans.
+    pub summary: Summary,
+    /// [`Summary::original`].
+    pub original: ExpectedFan,
+    /// [`Summary::forwarded`].
+    pub forwarded: ExpectedFan,
+    /// [`Summary::distributed`].
+    pub distributed: ExpectedFan,
+}
+
+impl PartialEq<Expected> for Summary {
+    fn eq(&self, expected: &Expected) -> bool {
+        let pairs = |fan: Fan| fan.map(|slot| slot.map(|target| (target.destination, target.via)));
+        let mut rest = *self;
+        rest.original = [None; MAX_TARGETS];
+        rest.forwarded = [None; MAX_TARGETS];
+        rest.distributed = [None; MAX_TARGETS];
+        rest == expected.summary
+            && pairs(self.original) == expected.original
+            && pairs(self.forwarded) == expected.forwarded
+            && pairs(self.distributed) == expected.distributed
+    }
+}
+
 /// The most foreign devices one message goes to.
 const FDT_FANOUT: usize = FDT_ENTRIES;
 
 /// This BBMD.
 pub const OWN: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 0xBAC0);
 /// Its subnet, a /24: the broadcast address and the mask.
-pub const SUBNET: LocalSubnet = LocalSubnet {
-    broadcast: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 255), 0xBAC0),
-    mask: Some(Ipv4Addr::new(255, 255, 255, 0)),
+pub const SUBNET: LocalSubnet = {
+    let mut subnet = LocalSubnet::new(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 255), 0xBAC0));
+    subnet.mask = Some(Ipv4Addr::new(255, 255, 255, 0));
+    subnet
 };
 /// A peer BBMD reached by one-hop distribution: its subnet's directed
 /// broadcast address.

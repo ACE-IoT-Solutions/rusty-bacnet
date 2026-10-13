@@ -87,9 +87,10 @@ mod bip {
     /// The router's own B/IP address.
     pub const OWN: SocketAddrV4 = sock(192, 0, 2, 10, PORT);
     /// Its subnet, by broadcast address, with a /24 mask.
-    pub const SUBNET: LocalSubnet = LocalSubnet {
-        broadcast: sock(192, 0, 2, 255, PORT),
-        mask: Some(Ipv4Addr::new(255, 255, 255, 0)),
+    pub const SUBNET: LocalSubnet = {
+        let mut subnet = LocalSubnet::new(sock(192, 0, 2, 255, PORT));
+        subnet.mask = Some(Ipv4Addr::new(255, 255, 255, 0));
+        subnet
     };
     /// A device on the subnet.
     pub const PEER: SocketAddrV4 = sock(192, 0, 2, 20, PORT);

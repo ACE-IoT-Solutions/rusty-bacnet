@@ -26,8 +26,10 @@ pub enum Via {
     ForeignDevice,
 }
 
-/// One destination of a forwarded message.
+/// One destination of a forwarded message. The decisions write it; a
+/// caller fills its storage with [`Target::UNUSED`] first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Target {
     /// Where to send it.
     pub destination: SocketAddrV4,

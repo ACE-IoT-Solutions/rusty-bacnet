@@ -426,17 +426,17 @@ impl NodeHandle {
             return;
         }
         let now = self.clock.now();
-        let Some(view) = state.node.registration(now) else {
+        let Some(snapshot) = state.node.registration(now) else {
             return;
         };
-        let next = view
+        let next = snapshot
             .next_attempt
             .or_else(|| Some(state.attempt_started? + self.renewal?));
         let until =
             |at: CoreInstant| Duration::from_nanos(at.saturating_duration_since(now).as_nanos());
         foreign.next_attempt_in = next.map(until);
-        foreign.registered = view.registered;
-        foreign.lease_remaining = view
+        foreign.registered = snapshot.registered;
+        foreign.lease_remaining = snapshot
             .lease_remaining
             .map(|left| Duration::from_nanos(left.as_nanos()));
     }

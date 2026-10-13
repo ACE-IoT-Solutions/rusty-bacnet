@@ -367,9 +367,8 @@ async fn a_bbmd_registers_and_forwards_nothing_from_a_group_source() {
 /// sends, at any port; configured anywhere else it is a group at every port.
 #[test]
 fn a_broadcast_address_that_is_this_nodes_own_is_no_group_source() {
-    let sources = |broadcast, interface| bacnet_bip_core::node::Groups {
-        broadcast: SocketAddrV4::new(broadcast, 0xBAC0),
-        interface,
+    let sources = |broadcast, interface| {
+        bacnet_bip_core::node::Groups::new(SocketAddrV4::new(broadcast, 0xBAC0), interface)
     };
     let own = sources(LOCAL, LOCAL);
     let loopback = sources(Ipv4Addr::LOCALHOST, LOCAL);

@@ -42,10 +42,7 @@
 //!
 //! let own = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 47808);
 //! let bbmd = SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 1), 47808);
-//! let subnet = LocalSubnet {
-//!     broadcast: SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 255), 47808),
-//!     mask: None,
-//! };
+//! let subnet = LocalSubnet::new(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 255), 47808));
 //! let link = Link::new(own, subnet, Mode::Foreign(Foreign::new(bbmd, 60)))?;
 //! let start = Instant::from_secs(1);
 //! let mut node: Node = Node::new(link, start)?;

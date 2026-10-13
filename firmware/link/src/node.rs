@@ -53,8 +53,8 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{
     Action, Addressed, Admission, AttemptOutcome, Cast, Datagram, Discard, Foreign, ForwardedTrust,
-    Inbound, Lease, Link, Mode, Node, NodeCounters, Permissive, RegisterAttempt, RegistrationEvent,
-    RegistrationSnapshot, Retry, SendRefusal, MAX_DATAGRAM,
+    Inbound, Link, Mode, Node, NodeCounters, Permissive, RegisterAttempt, RegistrationEvent,
+    RegistrationSnapshot, Retry, SendRefusal,
 };
 use bacnet_bip_core::{Duration, Instant, LocalSubnet};
 
@@ -77,10 +77,8 @@ pub const TTL: u16 = 60;
 /// This node.
 pub const OWN: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 10), 0xBAC0);
 /// Its subnet: the broadcast address, with no mask.
-pub const SUBNET: LocalSubnet = LocalSubnet {
-    broadcast: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 255), 0xBAC0),
-    mask: None,
-};
+pub const SUBNET: LocalSubnet =
+    LocalSubnet::new(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 255), 0xBAC0));
 /// Its BBMD, on another subnet.
 pub const BBMD: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 0xBAC0);
 /// A peer on its subnet, which sends it the requests only a BBMD serves.
@@ -103,15 +101,13 @@ pub const FOREIGN: Foreign = {
     foreign
 };
 
-/// The node's link, with B/IP's largest datagram as its send budget, so
+/// The node's link, with [`Link::new`]'s send budget, B/IP's largest
+/// datagram ([`MAX_DATAGRAM`](bacnet_bip_core::node::MAX_DATAGRAM)), so
 /// NPDUs of up to 1497 octets go out, unicast or broadcast. It is checked
 /// when the image is built.
-pub const LINK: Link = {
-    let Ok(mut link) = Link::new(OWN, SUBNET, Mode::Foreign(FOREIGN)) else {
-        panic!("the scenario's link is invalid");
-    };
-    link.budget = Some(MAX_DATAGRAM as u16);
-    link
+pub const LINK: Link = match Link::new(OWN, SUBNET, Mode::Foreign(FOREIGN)) {
+    Ok(link) => link,
+    Err(_) => panic!("the scenario's link is invalid"),
 };
 
 /// A global-broadcast Who-Is in an NPDU: what the node broadcasts, and what
@@ -265,8 +261,10 @@ impl PartialEq<Expected> for Summary {
 /// The node's [`RegistrationSnapshot`], field by field, for [`Expected`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Registration {
-    /// The newest proven lease.
-    pub lease: Option<Lease>,
+    /// The newest proven lease, as its start and end:
+    /// [`Lease`](bacnet_bip_core::node::Lease) is
+    /// `#[non_exhaustive]` too.
+    pub lease: Option<(Instant, Instant)>,
     /// Whether that lease is live.
     pub registered: bool,
     /// Its time left, while live.
@@ -288,7 +286,7 @@ pub struct Registration {
 impl Registration {
     fn of(snapshot: RegistrationSnapshot) -> Self {
         Self {
-            lease: snapshot.lease,
+            lease: snapshot.lease.map(|lease| (lease.since, lease.until)),
             registered: snapshot.registered,
             lease_remaining: snapshot.lease_remaining,
             attempt_in_flight: snapshot.attempt_in_flight,

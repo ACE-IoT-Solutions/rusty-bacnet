@@ -76,11 +76,11 @@ impl FdtEntry {
     /// the registration time, and that clock.
     fn registration(&self) -> (core_bbmd::Registration, CoreClock) {
         let clock = CoreClock::new(self.registered_at);
-        let registration = core_bbmd::Registration {
-            address: address(self.ip, self.port),
-            ttl: self.ttl,
-            registered_at: clock.to_core(self.registered_at),
-        };
+        let registration = core_bbmd::Registration::new(
+            address(self.ip, self.port),
+            self.ttl,
+            clock.to_core(self.registered_at),
+        );
         (registration, clock)
     }
 
@@ -142,7 +142,7 @@ fn bdt_error(error: BdtError) -> Error {
             // A mask under /8 can direct a broadcast to 255.255.255.255,
             // which this error has always named, and the tests check.
             let reason = match reason {
-                core_bbmd::InvalidEntry::MaskTooWide => {
+                core_bbmd::EntryError::MaskTooWide => {
                     "mask prefix too wide (< /8) or limited-broadcast target"
                 }
                 other => other.reason(),
@@ -585,11 +585,11 @@ impl BbmdState {
     /// once pushed onto the old table's `Vec` did.
     #[cfg(test)]
     pub(crate) fn insert_fdt_entry_for_test(&mut self, entry: FdtEntry) {
-        let registration = core_bbmd::Registration {
-            address: address(entry.ip, entry.port),
-            ttl: entry.ttl,
-            registered_at: self.clock.to_core(entry.registered_at),
-        };
+        let registration = core_bbmd::Registration::new(
+            address(entry.ip, entry.port),
+            entry.ttl,
+            self.clock.to_core(entry.registered_at),
+        );
         self.tables.fdt.restore(registration).expect("FDT has room");
     }
 

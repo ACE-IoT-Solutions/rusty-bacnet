@@ -231,11 +231,8 @@ pub(super) fn addressed(
         return Addressed::default();
     };
     let link = ctx.node.link();
-    let addresses = LocalAddresses {
-        own: *link.address.ip(),
-        broadcast: *link.subnet.broadcast.ip(),
-        wildcard: local.wildcard_bind.then_some(local.unicast_ips.as_slice()),
-    };
+    let mut addresses = LocalAddresses::new(*link.address.ip(), *link.subnet.broadcast.ip());
+    addresses.wildcard = local.wildcard_bind.then_some(local.unicast_ips.as_slice());
     Addressed::classify(destination, os_group_delivery, &addresses)
 }
 

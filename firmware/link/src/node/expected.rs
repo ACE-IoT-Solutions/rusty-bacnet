@@ -4,7 +4,7 @@
 
 use bacnet_bip_codec::BvlcResultCode;
 use bacnet_bip_core::node::{
-    Admission, AttemptOutcome, Discard, ExchangeCounters, Lease, NodeCounters, RegistrationEvent,
+    Admission, AttemptOutcome, Discard, ExchangeCounters, NodeCounters, RegistrationEvent,
     SendRefusal,
 };
 use bacnet_bip_core::{Duration, Instant};
@@ -140,10 +140,7 @@ pub fn expected() -> Expected {
         // At 100.02 s: the last renewal's lease, from the 100 s attempt, and
         // the next renewal one interval into it.
         registration: Registration {
-            lease: Some(Lease {
-                since: at(100_000),
-                until: at(160_000),
-            }),
+            lease: Some((at(100_000), at(160_000))),
             registered: true,
             lease_remaining: Some(Duration::from_millis(59_980)),
             attempt_in_flight: false,

@@ -324,8 +324,9 @@ fn add_exchange(total: &mut BvlcRequestCounters, delta: &ExchangeCounters) {
     add(&mut total.malformed_responses, delta.malformed_responses);
 }
 
-/// The transport's name for an attempt's outcome; `None`, reported as not
-/// known, for one the core has and this transport doesn't name yet.
+/// The transport's name for an attempt's outcome; `None` for one the core
+/// has and this transport doesn't name yet. The snapshot then shows no
+/// outcome, which reads like a cleared one, so it is logged.
 fn outcome(outcome: AttemptOutcome) -> Option<ForeignRegistrationOutcome> {
     Some(match outcome {
         AttemptOutcome::Pending => ForeignRegistrationOutcome::Pending,
@@ -334,7 +335,13 @@ fn outcome(outcome: AttemptOutcome) -> Option<ForeignRegistrationOutcome> {
         AttemptOutcome::TimedOut => ForeignRegistrationOutcome::TimedOut,
         AttemptOutcome::LocalError => ForeignRegistrationOutcome::LocalError,
         AttemptOutcome::Cancelled => ForeignRegistrationOutcome::Cancelled,
-        _ => return None,
+        other => {
+            tracing::debug!(
+                ?other,
+                "Foreign registration outcome this transport doesn't name; reported as none"
+            );
+            return None;
+        }
     })
 }
 
