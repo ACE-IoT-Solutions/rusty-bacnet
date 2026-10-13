@@ -112,12 +112,18 @@
 #[cfg(test)]
 extern crate std;
 
+#[cfg(any(feature = "bip", feature = "mstp"))]
+mod arrived;
+#[cfg(feature = "bip")]
+pub mod bip;
 pub mod discovery;
 pub mod message;
 pub mod npdu;
 pub mod router;
 pub mod table;
 
+#[cfg(any(feature = "bip", feature = "mstp"))]
+pub use arrived::Arrived;
 pub use bacnet_time::{Duration, Instant};
 pub use npdu::{Mac, MacTooLong};
 pub use router::{Router, Storage};
