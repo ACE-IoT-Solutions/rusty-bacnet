@@ -93,22 +93,15 @@ use engine::{Engine, HostedRouter, RouterClock, PORTS};
 use hosted_host::PortGroups;
 pub use options::{LocalApduReceiver, NetworkControlReceiver, RouterOptions, StartedRouter};
 
-#[cfg(test)]
-pub(crate) use legacy::IngressContext;
-
-// The in-memory suites run on the legacy copy until they are re-pointed at
-// the engine (#1679): the names they took from this module before.
+// The suites that start a router take these names from here, as before the
+// engine.
 #[cfg(test)]
 use {
-    bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress},
+    bacnet_encoding::npdu::{encode_npdu, Npdu},
     bacnet_transport::port::TransportProvenance,
     bacnet_types::enums::NetworkMessageType,
-    bytes::{BufMut, BytesMut},
-    legacy::local_control::{LocalControl, OwnAddresses},
-    legacy::router_table::RouterTable,
-    legacy::DiscoveryTracker,
+    bytes::BytesMut,
     std::time::Duration,
-    tokio::sync::Mutex,
 };
 
 /// A send request to be forwarded on a port.
