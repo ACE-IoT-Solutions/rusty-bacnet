@@ -430,9 +430,11 @@ name = "bacnet-network"
 version = "0.12.0"
 dependencies = [
  "bacnet-encoding",
+ "bacnet-router-core",
  "bacnet-transport",
  "bacnet-types",
  "bytes",
+ "proptest",
  "tokio",
  "tracing",
 ]

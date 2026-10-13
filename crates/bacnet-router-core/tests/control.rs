@@ -426,6 +426,47 @@ fn i_could_be_router_fills_only_gaps() {
     assert!(router.table().lookup(45).is_none());
 }
 
+/// The route cap turns an I-Could-Be-Router for a new network away, and
+/// counts it as the cap's other refusals are; reserved networks and ones
+/// the table holds are no new network, so they don't count. The hosted
+/// router stored these past its cap before #1679.
+#[test]
+fn the_route_cap_turns_i_could_be_router_away() {
+    let options = Options {
+        route_cap: 3,
+        ..Options::HOSTED
+    };
+    let mut router = router_with(&fixture::two_ports(), options);
+    let mut host = Recorder::default();
+    let could_be = |network: u16| {
+        let [high, low] = network.to_be_bytes();
+        message(code::I_COULD_BE_ROUTER_TO_NETWORK, &[high, low, 7])
+    };
+    deliver(&mut router, &mut host, 1, R8, &could_be(44), at(1));
+    assert!(router.table().lookup(44).is_some());
+    for network in [45, 44, 0, 0xFFFF] {
+        let (outcome, sent) = deliver(&mut router, &mut host, 1, R8, &could_be(network), at(2));
+        assert_eq!(outcome, Outcome::Handled, "{network}");
+        assert!(sent.is_empty(), "{network}");
+    }
+    assert_eq!(router.table().networks().collect::<Vec<_>>(), [1, 2, 44]);
+    assert_eq!(router.table().claim_counters().learned_cap_ignored, 1);
+    assert_eq!(
+        host.events[1..3],
+        [
+            Event::RouteCap {
+                class: ControlClass::ICouldBe
+            },
+            Event::ICouldBe {
+                network: 45,
+                performance_index: 7,
+                stored: false
+            },
+        ]
+    );
+    assert_eq!(host.events.len(), 6, "{:?}", host.events);
+}
+
 /// RB-09: the host sees each protected message once, after its data is
 /// read and before anything changes, with what it claims; read-only ones
 /// never reach it.

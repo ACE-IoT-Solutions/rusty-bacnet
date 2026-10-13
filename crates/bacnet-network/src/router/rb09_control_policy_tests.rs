@@ -5,12 +5,12 @@
 
 use super::control_policy::{ControlAuthorizer, ControlGate, ControlPolicy};
 use super::envelope_harness::*;
+use super::legacy::router_table::ReachabilityStatus;
 use super::*;
-use crate::router_table::ReachabilityStatus;
 use bacnet_encoding::npdu::NpduAddress;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use tokio::time::{Duration, Instant};
 
 fn hardened() -> Arc<ControlGate> {
     Arc::new(ControlGate::hardened())
@@ -630,7 +630,8 @@ fn control_context_debug_is_redacted() {
         })
     };
     let gate = ControlGate::new(ControlPolicy::Hardened, Some(auth));
-    assert!(!gate.authorize(
+    assert!(!super::legacy::authorize(
+        &gate,
         &ingress,
         super::control_policy::ControlClass::IAm,
         &[3000],

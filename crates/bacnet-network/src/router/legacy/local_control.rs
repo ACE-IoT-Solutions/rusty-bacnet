@@ -21,29 +21,29 @@ use crate::layer::{next_ingress_sequence, AdmissionSender, ReceivedNetworkContro
 /// The router's own address on each port, by port index: the network the
 /// port is attached to, with the router's MAC on that link.
 #[derive(Debug, Default)]
-pub(super) struct OwnAddresses(Vec<NpduAddress>);
+pub(in crate::router) struct OwnAddresses(Vec<NpduAddress>);
 
 impl OwnAddresses {
-    pub(super) fn new(addresses: Vec<NpduAddress>) -> Self {
+    pub(in crate::router) fn new(addresses: Vec<NpduAddress>) -> Self {
         Self(addresses)
     }
 
     /// Whether `address` is this router: the network of one of its ports,
     /// paired with the router's own MAC on that port.
-    pub(super) fn contains(&self, address: &NpduAddress) -> bool {
+    pub(in crate::router) fn contains(&self, address: &NpduAddress) -> bool {
         self.0.contains(address)
     }
 
     /// The port attached to `network`, if that network is one of the
     /// router's own.
-    pub(super) fn port_on(&self, network: u16) -> Option<usize> {
+    pub(in crate::router) fn port_on(&self, network: u16) -> Option<usize> {
         self.0.iter().position(|own| own.network == network)
     }
 }
 
 /// Where network controls addressed to this router go.
 #[derive(Default)]
-pub(super) struct LocalControl {
+pub(in crate::router) struct LocalControl {
     /// The router's own address on each port.
     addresses: OwnAddresses,
     /// What each port's group destinations let through (#1504, #1677).
@@ -55,7 +55,7 @@ pub(super) struct LocalControl {
 }
 
 impl LocalControl {
-    pub(super) fn new(
+    pub(in crate::router) fn new(
         addresses: OwnAddresses,
         tx: Option<AdmissionSender<ReceivedNetworkControl>>,
         ingress_sequence: Arc<AtomicU64>,
@@ -69,32 +69,32 @@ impl LocalControl {
     }
 
     /// The same, judging a DADR by `groups`.
-    pub(super) fn with_groups(self, groups: GroupRules) -> Self {
+    pub(in crate::router) fn with_groups(self, groups: GroupRules) -> Self {
         Self { groups, ..self }
     }
 
     /// What becomes of `npdu`, which this router would deliver on the port
     /// `route` names, when its DADR is a group there.
-    pub(super) fn group_dadr(&self, route: &RouteEntry, npdu: &Npdu) -> GroupDadr {
+    pub(in crate::router) fn group_dadr(&self, route: &RouteEntry, npdu: &Npdu) -> GroupDadr {
         self.groups.check(route, npdu)
     }
 
     /// The router's own address on each port, which also tells the reject
     /// path which networks are directly connected.
-    pub(super) fn addresses(&self) -> &OwnAddresses {
+    pub(in crate::router) fn addresses(&self) -> &OwnAddresses {
         &self.addresses
     }
 
     /// Whether `dest` is this router: its network is one of the router's
     /// ports and its MAC is the router's own MAC on that port.
-    pub(super) fn is_own_address(&self, dest: &NpduAddress) -> bool {
+    pub(in crate::router) fn is_own_address(&self, dest: &NpduAddress) -> bool {
         self.addresses.contains(dest)
     }
 
     /// Offer the control in `ctx` to the consumer. Like the router's local
     /// APDU queue, a full or closed consumer drops the arriving control and
     /// never holds up routing.
-    pub(super) fn deliver(&self, ctx: &IngressContext) {
+    pub(in crate::router) fn deliver(&self, ctx: &IngressContext) {
         let Some(tx) = self.tx.as_ref() else {
             return;
         };

@@ -172,7 +172,8 @@ pub struct ClaimCounters {
     /// Learning claims that added or refreshed a learned route.
     pub learned_ok: u64,
     /// Learning claims that met the router's route cap and ended the
-    /// message's learning.
+    /// message's learning, and I-Could-Be-Router offers the cap turned
+    /// away.
     pub learned_cap_ignored: u64,
     /// Moves that reached the flap warning.
     pub flap_warned: u64,

@@ -28,7 +28,7 @@ use super::{try_send_as, IngressContext, SendKind};
 use crate::layer::count_drop;
 
 /// What a reject needs to know about the NPDU it refuses.
-pub(super) struct Refused<'a> {
+pub(in crate::router) struct Refused<'a> {
     /// Every port's send queue, by port index.
     pub send_txs: &'a [mpsc::Sender<SendRequest>],
     /// The router's own address on each port.
@@ -45,7 +45,7 @@ pub(super) struct Refused<'a> {
 
 impl<'a> Refused<'a> {
     /// A decoded NPDU refused on port `port_idx`.
-    pub(super) fn frame(
+    pub(in crate::router) fn frame(
         send_txs: &'a [mpsc::Sender<SendRequest>],
         own: &'a OwnAddresses,
         port_idx: usize,
@@ -63,7 +63,7 @@ impl<'a> Refused<'a> {
     }
 
     /// A network message refused at the control admission point.
-    pub(super) fn control(
+    pub(in crate::router) fn control(
         send_txs: &'a [mpsc::Sender<SendRequest>],
         own: &'a OwnAddresses,
         ctx: &'a IngressContext,
@@ -97,7 +97,7 @@ impl<'a> Refused<'a> {
 
 /// The reject reason for a route the table holds but cannot use right now
 /// (Clauses 6.6.3.5 and 6.6.3.6), or `None` when the route is usable.
-pub(super) fn route_refusal(
+pub(in crate::router) fn route_refusal(
     reachability: Option<ReachabilityStatus>,
 ) -> Option<RejectMessageReason> {
     match reachability.unwrap_or(ReachabilityStatus::Reachable) {
@@ -132,7 +132,7 @@ pub(super) fn route_refusal(
 ///
 /// Locally generated, but ingress-triggered: the caller's data attributes
 /// travel with the reject instead of being silently dropped (RB-03).
-pub(super) fn send_reject(
+pub(in crate::router) fn send_reject(
     refused: &Refused<'_>,
     rejected_network: u16,
     reason: RejectMessageReason,
@@ -190,7 +190,7 @@ pub(super) fn send_reject(
 /// and a router there at least learns its relay failed. A global broadcast,
 /// like everywhere else in this router, draws no reject, and an NPDU without a
 /// DNET has none to report, so both are only dropped.
-pub(super) fn refuse_address_too_long(
+pub(in crate::router) fn refuse_address_too_long(
     send_txs: &[mpsc::Sender<SendRequest>],
     own: &OwnAddresses,
     port_idx: usize,
@@ -232,7 +232,7 @@ pub(super) fn refuse_address_too_long(
 /// broadcast DNET, or the arrival network, where the sender could have
 /// reached the node itself. One for a DADR that is a group on a directly
 /// connected port is dropped and counted in `group_dadr_drops` (#1677).
-pub(super) async fn route_received_reject(
+pub(in crate::router) async fn route_received_reject(
     table: &Mutex<RouterTable>,
     send_txs: &[mpsc::Sender<SendRequest>],
     local: &LocalControl,

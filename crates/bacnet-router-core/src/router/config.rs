@@ -91,8 +91,9 @@ impl Fixes {
 pub struct Options {
     /// How a claim that moves a route to another port is taken.
     pub convergence: Convergence,
-    /// The most routes, direct ones included, that learning and
-    /// management may fill the table to. At most the table's capacity.
+    /// The most routes, direct ones included, that learning, management
+    /// and I-Could-Be-Router offers may fill the table to. At most the
+    /// table's capacity.
     pub route_cap: u16,
     /// How long a learned route lives without confirmation.
     pub learned_age: Duration,

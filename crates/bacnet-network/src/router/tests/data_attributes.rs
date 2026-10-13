@@ -37,13 +37,13 @@ fn forward_unicast_preserves_data_attributes() {
     let (tx_b, mut rx_b) = mpsc::channel::<SendRequest>(256);
     let send_txs = vec![tx_a, tx_b];
 
-    let route = crate::router_table::RouteEntry {
+    let route = super::super::legacy::router_table::RouteEntry {
         port_index: 1,
         directly_connected: true,
         next_hop_mac: MacAddr::new(),
         last_seen: None,
         last_used: None,
-        reachability: crate::router_table::ReachabilityStatus::Reachable,
+        reachability: super::super::legacy::router_table::ReachabilityStatus::Reachable,
         busy_until: None,
         flap_count: 0,
         last_port_change: None,

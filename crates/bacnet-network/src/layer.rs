@@ -104,8 +104,11 @@ pub use issuance::IssuedApdu;
 
 #[path = "layer_admission.rs"]
 mod admission;
+pub(crate) use admission::AdmissionSender;
+// The router's legacy copy, kept for the cutover's differential test (#1679).
+#[cfg(test)]
 pub(crate) use admission::{
-    broadcast_carries_unconfirmed, destination_is_coherent, link_source_fits, AdmissionSender,
+    broadcast_carries_unconfirmed, destination_is_coherent, link_source_fits,
 };
 pub use admission::{AdmissionReceiver, QueueAdmissionCounters, QueueAdmissionSnapshot};
 

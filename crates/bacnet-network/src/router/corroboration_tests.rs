@@ -1,6 +1,7 @@
+use super::legacy::control_messages::handle_network_message;
+use super::legacy::forwarding::forward_unicast;
+use super::legacy::router_table::{ReachabilityStatus, RoutingClaimSnapshot};
 use super::*;
-use crate::router::forwarding::forward_unicast;
-use crate::router_table::{ReachabilityStatus, RoutingClaimSnapshot};
 use bacnet_encoding::npdu::decode_npdu;
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,7 +31,7 @@ impl DebugCounter {
 impl tracing::Subscriber for DebugCounter {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         *metadata.level() == tracing::Level::DEBUG
-            && metadata.target() == "bacnet_network::router::control_messages"
+            && metadata.target() == "bacnet_network::router::legacy::control_messages"
     }
     fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
         tracing::span::Id::from_u64(1)
@@ -83,7 +84,7 @@ impl Fixture {
             &self.txs,
             &ctx,
             &crate::router::control_policy::ControlGate::permissive(),
-            &crate::router::local_control::LocalControl::default(),
+            &LocalControl::default(),
         )
         .await;
         for (index, rx) in self.rxs.iter_mut().enumerate() {

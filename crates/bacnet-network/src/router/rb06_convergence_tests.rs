@@ -7,13 +7,13 @@
 //! In-memory only, deterministic time via table/tracker injection, no sleeps.
 
 use super::envelope_harness::{broadcast_data, control_npdu, Harness};
+use super::legacy::router_table::ConvergenceMode;
 use super::*;
-use crate::router_table::ConvergenceMode;
 use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
 use bacnet_transport::port::ReceivedNpdu;
 use bacnet_transport::port::TransportProvenance;
 use bacnet_types::enums::RejectMessageReason;
-use std::time::Instant;
+use tokio::time::Instant;
 
 fn learned_at(port: usize, now: Instant) -> RouterTable {
     let mut table = RouterTable::new();
@@ -448,9 +448,10 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
     assert!(saw_reject, "expected honest retryable reject");
     // Answer installs the route; the retry forwards without a reject.
     {
-        let mut tbl = router.table().lock().await;
-        tbl.apply_learning_claim(3000, 1, MacAddr::from_slice(&[2]), Instant::now());
-        tbl.record_learned();
+        let now = router.now();
+        let mac = crate::router_table::Mac::from_array([2]);
+        let port = crate::router_table::PortId(1);
+        router.table().learn(3000, port, mac, now);
     }
     tx0.send(ingress(apdu_to(3000))).await.unwrap();
     let mut forwarded = false;
@@ -517,13 +518,11 @@ async fn stop_cancels_pending_discovery() {
     tx0.send(ingress(apdu_to(4000))).await.unwrap();
     for _ in 0..10 {
         tokio::task::yield_now().await;
-        if router.discovery.lock().await.len() == 1 {
+        if router.searches().0 == 1 {
             break;
         }
     }
-    assert_eq!(router.discovery.lock().await.len(), 1);
+    assert_eq!(router.searches(), (1, false));
     router.stop().await;
-    let disc = router.discovery.lock().await;
-    assert!(disc.is_cancelled());
-    assert_eq!(disc.len(), 0);
+    assert_eq!(router.searches(), (0, true));
 }

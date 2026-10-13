@@ -29,13 +29,13 @@
     reason = "the cutover's differential test, in the next commit, is the only user"
 )]
 
-pub(super) mod control_messages;
-pub(super) mod dispatch;
-pub(super) mod forwarding;
-pub(super) mod group_dadr;
-pub(super) mod local_control;
-pub(super) mod reject;
-pub(super) mod router_table;
+pub(in crate::router) mod control_messages;
+pub(in crate::router) mod dispatch;
+pub(in crate::router) mod forwarding;
+pub(in crate::router) mod group_dadr;
+pub(in crate::router) mod local_control;
+pub(in crate::router) mod reject;
+pub(in crate::router) mod router_table;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -56,9 +56,44 @@ use super::SendRequest;
 use crate::layer::ReceivedApdu;
 use router_table::RouterTable;
 
+/// The `SendRequest` constructors of `router/mod.rs`.
+impl SendRequest {
+    pub(in crate::router) fn broadcast(npdu: Bytes) -> Self {
+        Self::broadcast_with_attributes(npdu, &[])
+    }
+
+    /// Ingress-triggered unicast: carries the ingress data attributes instead
+    /// of silently dropping them (RB-03). Locally-originated messages with no
+    /// ingress attributes pass an empty slice.
+    pub(in crate::router) fn unicast_with_attributes(
+        npdu: Bytes,
+        mac: MacAddr,
+        data_attributes: &[DataAttribute],
+    ) -> Self {
+        Self::Unicast {
+            npdu,
+            mac,
+            data_attributes: data_attributes.to_vec(),
+        }
+    }
+
+    /// Ingress-triggered broadcast: carries the ingress data attributes
+    /// instead of silently dropping them (RB-03). Locally-originated
+    /// messages with no ingress attributes use [`Self::broadcast`].
+    pub(in crate::router) fn broadcast_with_attributes(
+        npdu: Bytes,
+        data_attributes: &[DataAttribute],
+    ) -> Self {
+        Self::Broadcast {
+            npdu,
+            data_attributes: data_attributes.to_vec(),
+        }
+    }
+}
+
 /// Why the copy sent an NPDU, recorded at each send site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SendKind {
+pub(in crate::router) enum SendKind {
     /// Routed toward its DNET.
     Forward,
     /// A global broadcast passed on.
@@ -78,10 +113,13 @@ pub(super) enum SendKind {
 thread_local! {
     /// What each send that went into a queue carried, and its kind.
     static SENT: RefCell<Vec<(Bytes, SendKind)>> = const { RefCell::new(Vec::new()) };
+    /// Sends a full or closed queue refused.
+    static REFUSED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// `tx.try_send(request)`, recording `kind` when it went in.
-pub(super) fn try_send_as(
+/// `tx.try_send(request)`, recording `kind` when it went in, and counting
+/// a refusal when it didn't.
+pub(in crate::router) fn try_send_as(
     tx: &mpsc::Sender<SendRequest>,
     request: SendRequest,
     kind: SendKind,
@@ -89,13 +127,21 @@ pub(super) fn try_send_as(
     let npdu = match &request {
         SendRequest::Unicast { npdu, .. } | SendRequest::Broadcast { npdu, .. } => npdu.clone(),
     };
-    tx.try_send(request)?;
+    if let Err(error) = tx.try_send(request) {
+        REFUSED.with(|refused| refused.set(refused.get() + 1));
+        return Err(error);
+    }
     SENT.with(|sent| sent.borrow_mut().push((npdu, kind)));
     Ok(())
 }
 
+/// The sends refused on this thread since the last call.
+pub(in crate::router) fn take_refused() -> u64 {
+    REFUSED.with(|refused| refused.replace(0))
+}
+
 /// The sends recorded on this thread since the last call.
-pub(super) fn take_sent() -> Vec<(Bytes, SendKind)> {
+pub(in crate::router) fn take_sent() -> Vec<(Bytes, SendKind)> {
     SENT.with(|sent| std::mem::take(&mut *sent.borrow_mut()))
 }
 
@@ -112,14 +158,14 @@ const DISCOVERY_MAX_AGE: Duration = Duration::from_secs(30);
 const DISCOVERY_MAX_PENDING: usize = 256;
 
 #[derive(Debug, Default)]
-pub(crate) struct DiscoveryTracker {
+pub(in crate::router) struct DiscoveryTracker {
     last_solicited: HashMap<u16, Instant>,
     cancelled: bool,
 }
 
 impl DiscoveryTracker {
     /// Decide whether an unknown `dnet` should solicit now; records it if so.
-    pub(crate) fn should_solicit_at(&mut self, dnet: u16, now: Instant) -> bool {
+    pub(in crate::router) fn should_solicit_at(&mut self, dnet: u16, now: Instant) -> bool {
         if self.cancelled || dnet == 0 || dnet == 0xFFFF {
             return false;
         }
@@ -135,12 +181,12 @@ impl DiscoveryTracker {
     }
 
     /// Wall-clock wrapper for dispatch paths.
-    pub(crate) fn should_solicit(&mut self, dnet: u16) -> bool {
+    pub(in crate::router) fn should_solicit(&mut self, dnet: u16) -> bool {
         self.should_solicit_at(dnet, Instant::now())
     }
 
     /// Reap entries older than 30s; returns the reaped DNETs ascending.
-    pub(crate) fn expire_at(&mut self, now: Instant) -> Vec<u16> {
+    pub(in crate::router) fn expire_at(&mut self, now: Instant) -> Vec<u16> {
         let mut out: Vec<u16> = self
             .last_solicited
             .iter()
@@ -155,21 +201,21 @@ impl DiscoveryTracker {
     }
 
     /// Cancel all pending discovery (router stop).
-    pub(crate) fn cancel(&mut self) {
+    pub(in crate::router) fn cancel(&mut self) {
         self.cancelled = true;
         self.last_solicited.clear();
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(in crate::router) fn len(&self) -> usize {
         self.last_solicited.len()
     }
 
-    pub(crate) fn is_cancelled(&self) -> bool {
+    pub(in crate::router) fn is_cancelled(&self) -> bool {
         self.cancelled
     }
 
     /// Added for the differential test: each network looked for, with when.
-    pub(crate) fn solicited(&self) -> Vec<(u16, Instant)> {
+    pub(in crate::router) fn solicited(&self) -> Vec<(u16, Instant)> {
         let mut out: Vec<(u16, Instant)> = self
             .last_solicited
             .iter()
@@ -254,7 +300,7 @@ impl IngressContext {
 /// from immutable ingress + validated targets and decide. Call after
 /// validation, before any table lock. `targets_omitted` marks Busy/Available
 /// omitted-list scope (all served via peer).
-pub(super) fn authorize(
+pub(in crate::router) fn authorize(
     control: &ControlGate,
     ingress: &IngressContext,
     class: ControlClass,
@@ -279,10 +325,10 @@ pub(super) fn authorize(
 
 /// Transfer original-ingress metadata to every local router delivery branch
 /// (`router/local_delivery.rs`).
-pub(super) mod local_delivery {
+pub(in crate::router) mod local_delivery {
     use super::*;
 
-    pub(crate) fn application(
+    pub(in crate::router) fn application(
         received: ReceivedNpdu,
         npdu: Npdu,
         port_network: u16,
@@ -307,7 +353,7 @@ pub(super) mod local_delivery {
 
 /// The startup announcements of `start_dispatch`: an I-Am-Router on each
 /// port listing the networks reachable via the other ports.
-pub(super) fn announce(send_txs: &[mpsc::Sender<SendRequest>], port_networks: &[u16]) {
+pub(in crate::router) fn announce(send_txs: &[mpsc::Sender<SendRequest>], port_networks: &[u16]) {
     // Announce I-Am-Router-To-Network on each port listing networks reachable via other ports.
     for (port_idx, tx) in send_txs.iter().enumerate() {
         let other_networks: Vec<u16> = port_networks

@@ -25,7 +25,7 @@ use crate::layer::count_drop;
 
 /// What becomes of an NPDU for a DADR that is a group on its delivery port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum GroupDadr {
+pub(in crate::router) enum GroupDadr {
     /// The DADR isn't a group there: deliver it as addressed.
     No,
     /// An Unconfirmed-Request for one of the groups the port's local
@@ -38,7 +38,7 @@ pub(super) enum GroupDadr {
 /// Each port's group destinations, by port index, the part of them its
 /// local broadcast stands for, and where a drop is counted.
 #[derive(Debug, Default)]
-pub(super) struct GroupRules {
+pub(in crate::router) struct GroupRules {
     groups: Vec<GroupDestinations>,
     local_broadcasts: Vec<GroupDestinations>,
     drops: Arc<AtomicU64>,
@@ -46,7 +46,7 @@ pub(super) struct GroupRules {
 
 impl GroupRules {
     /// The rules of the ports, by port index, counting drops in `drops`.
-    pub(super) fn new(
+    pub(in crate::router) fn new(
         groups: Vec<GroupDestinations>,
         local_broadcasts: Vec<GroupDestinations>,
         drops: Arc<AtomicU64>,
@@ -62,7 +62,7 @@ impl GroupRules {
     /// `route` names. A DADR that isn't a group there, or a route that
     /// isn't directly connected, is [`GroupDadr::No`]: the next router
     /// judges its own groups.
-    pub(super) fn check(&self, route: &RouteEntry, npdu: &Npdu) -> GroupDadr {
+    pub(in crate::router) fn check(&self, route: &RouteEntry, npdu: &Npdu) -> GroupDadr {
         let Some(dadr) = npdu.destination.as_ref().map(|dest| &dest.mac_address[..]) else {
             return GroupDadr::No;
         };

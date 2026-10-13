@@ -17,7 +17,7 @@ fn build_source(npdu: &Npdu, source_network: u16, source_mac: &[u8]) -> NpduAddr
 }
 
 /// Forward a message to a specific destination via the route entry.
-pub(super) fn forward_unicast(
+pub(in crate::router) fn forward_unicast(
     send_txs: &[mpsc::Sender<SendRequest>],
     route: &super::router_table::RouteEntry,
     source_network: u16,
@@ -109,7 +109,7 @@ pub(super) fn forward_unicast(
 ///
 /// The destination is copied as it arrived. Ingress has already dropped a
 /// DNET 0xFFFF that carries a DADR (#1379), so what goes out is DLEN 0.
-pub(super) fn forward_broadcast(
+pub(in crate::router) fn forward_broadcast(
     send_txs: &[mpsc::Sender<SendRequest>],
     source_port: usize,
     source_network: u16,

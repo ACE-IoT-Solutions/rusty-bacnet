@@ -204,16 +204,16 @@ impl RouterTable {
         self.claim_counters
     }
 
-    pub(crate) fn record_learned(&mut self) {
+    pub(in crate::router) fn record_learned(&mut self) {
         self.claim_counters.learned_ok = self.claim_counters.learned_ok.saturating_add(1);
     }
 
-    pub(crate) fn record_learning_cap(&mut self) {
+    pub(in crate::router) fn record_learning_cap(&mut self) {
         self.claim_counters.learned_cap_ignored =
             self.claim_counters.learned_cap_ignored.saturating_add(1);
     }
 
-    pub(crate) fn record_disconnect_removal_ignored(&mut self) {
+    pub(in crate::router) fn record_disconnect_removal_ignored(&mut self) {
         self.claim_counters.disconnect_removal_ignored = self
             .claim_counters
             .disconnect_removal_ignored
@@ -230,7 +230,7 @@ impl RouterTable {
     /// immediate in both modes. `now` makes the inclusive 60s boundary
     /// testable without sleeping. Standard clears any stale challenger for
     /// the network without counting it; hardened counts starts/applies/expiry.
-    pub(crate) fn apply_learning_claim(
+    pub(in crate::router) fn apply_learning_claim(
         &mut self,
         network: u16,
         port_index: usize,
@@ -308,7 +308,7 @@ impl RouterTable {
     /// Apply only the reject-driven table transition, never its relay.
     /// The caller holds the table lock across this synchronous gate and update.
     /// `now` is supplied so deadline boundaries can be tested without sleeping.
-    pub(crate) fn apply_reject(
+    pub(in crate::router) fn apply_reject(
         &mut self,
         network: u16,
         ingress_port: usize,
@@ -487,7 +487,7 @@ impl RouterTable {
     /// existing direct entry is left untouched and reports `false`. Reserved
     /// networks are skipped. Replacement clears pending/reject records exactly
     /// like fresh learning.
-    pub(crate) fn apply_management_update(
+    pub(in crate::router) fn apply_management_update(
         &mut self,
         network: u16,
         port_index: usize,
@@ -513,7 +513,7 @@ impl RouterTable {
     /// is scoped to learned entries only, for the same direct-safety
     /// reason as [`Self::apply_management_update`]. Returns `true` only when
     /// a learned entry was actually removed.
-    pub(crate) fn apply_management_removal(&mut self, network: u16) -> bool {
+    pub(in crate::router) fn apply_management_removal(&mut self, network: u16) -> bool {
         if network == 0 || network == 0xFFFF {
             return false;
         }

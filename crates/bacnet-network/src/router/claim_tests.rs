@@ -1,6 +1,6 @@
-use super::control_messages::handle_network_message;
+use super::legacy::control_messages::handle_network_message;
+use super::legacy::router_table::{ReachabilityStatus, RoutingClaimSnapshot};
 use super::*;
-use crate::router_table::{ReachabilityStatus, RoutingClaimSnapshot};
 use bacnet_encoding::npdu::decode_npdu;
 
 // Invoke the real handler with in-memory port queues; no sleeps, sockets or

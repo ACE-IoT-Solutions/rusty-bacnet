@@ -7,9 +7,9 @@
 //! Shares [`super::envelope_harness`] with the discovery module.
 
 use super::envelope_harness::*;
-use super::forwarding::forward_unicast;
+use super::legacy::forwarding::forward_unicast;
+use super::legacy::router_table::ReachabilityStatus;
 use super::*;
-use crate::router_table::ReachabilityStatus;
 use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
 use bacnet_types::enums::RejectMessageReason;
 
@@ -425,7 +425,7 @@ async fn proprietary_unicast_forward_preserves_identity() {
     };
 
     // Remote route: destination, identity, and attributes all preserved.
-    let route = crate::router_table::RouteEntry {
+    let route = super::legacy::router_table::RouteEntry {
         port_index: 1,
         directly_connected: false,
         next_hop_mac: MacAddr::from_slice(&[5]),
@@ -473,7 +473,7 @@ async fn proprietary_unicast_forward_preserves_identity() {
         network: 2000,
         mac_address: MacAddr::from_slice(&[9]),
     });
-    let route = crate::router_table::RouteEntry {
+    let route = super::legacy::router_table::RouteEntry {
         port_index: 1,
         directly_connected: true,
         next_hop_mac: MacAddr::new(),

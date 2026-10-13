@@ -39,7 +39,7 @@ use crate::layer::{AdmissionSender, ReceivedApdu};
 use crate::router::control_policy::ControlGate;
 
 /// One port's dispatch task, with what it shares with the rest of the router.
-pub(super) struct PortDispatch {
+pub(in crate::router) struct PortDispatch {
     /// Shared routing table.
     pub table: Arc<Mutex<RouterTable>>,
     /// Bounded unknown-destination discovery (per-DNET coalescing).
@@ -69,13 +69,13 @@ pub(super) struct PortDispatch {
 
 impl PortDispatch {
     /// Dispatch every frame the port receives until its channel closes.
-    pub(super) async fn run(self, mut rx: mpsc::Receiver<ReceivedNpdu>) {
+    pub(in crate::router) async fn run(self, mut rx: mpsc::Receiver<ReceivedNpdu>) {
         while let Some(received) = rx.recv().await {
             self.dispatch(received).await;
         }
     }
 
-    async fn dispatch(&self, received: ReceivedNpdu) {
+    pub(in crate::router) async fn dispatch(&self, received: ReceivedNpdu) {
         if !link_source_fits(&received.source_mac, &self.address_length_drops) {
             return;
         }
@@ -246,7 +246,7 @@ impl PortDispatch {
 /// One whose DADR is a group on a directly connected port is dropped and
 /// counted, never sent ([`LocalControl::group_dadr`]); so is a relayed
 /// reject's.
-pub(super) async fn dispatch_network_message(
+pub(in crate::router) async fn dispatch_network_message(
     table: &Arc<Mutex<RouterTable>>,
     discovery: &Arc<Mutex<DiscoveryTracker>>,
     send_txs: &[mpsc::Sender<SendRequest>],

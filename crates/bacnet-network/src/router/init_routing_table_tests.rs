@@ -7,8 +7,8 @@
 //! octets by hand, never reusing the implementation's parser.
 
 use super::envelope_harness::*;
+use super::legacy::router_table::RoutingClaimSnapshot;
 use super::*;
-use crate::router_table::RoutingClaimSnapshot;
 use bacnet_encoding::npdu::decode_npdu;
 
 /// Independent-peer entry walk: count + `DNET(2) + Port ID(1) + Port Info(N)`

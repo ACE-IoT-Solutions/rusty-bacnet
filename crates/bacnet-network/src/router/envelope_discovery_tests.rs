@@ -7,10 +7,10 @@
 //!
 //! Shares [`super::envelope_harness`] with the control-envelope module.
 
-use super::control_messages::handle_network_message;
 use super::envelope_harness::*;
+use super::legacy::control_messages::handle_network_message;
+use super::legacy::router_table::ReachabilityStatus;
 use super::*;
-use crate::router_table::ReachabilityStatus;
 use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
 use bacnet_types::enums::RejectMessageReason;
 

@@ -57,7 +57,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         match kind {
             code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu),
             code::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
-            code::I_COULD_BE_ROUTER_TO_NETWORK => self.i_could_be_router(at, npdu, host),
+            code::I_COULD_BE_ROUTER_TO_NETWORK => self.i_could_be_router(at, npdu, options, host),
             code::REJECT_MESSAGE_TO_NETWORK => self.received_reject(at, npdu, options, host),
             code::ROUTER_BUSY_TO_NETWORK => self.flow_control(at, npdu, true, options, host),
             code::ROUTER_AVAILABLE_TO_NETWORK => self.flow_control(at, npdu, false, options, host),
@@ -269,11 +269,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// I-Could-Be-Router (Clause 6.4.3): stored as a learned route only
-    /// where the table has none.
+    /// where the table has none, and only while the table is under the
+    /// route cap. One the cap turns away is counted as learning's are
+    /// (#1679: the hosted router once stored these past its cap).
     fn i_could_be_router<'f>(
         &mut self,
         at: &Arrival<'f>,
         npdu: &Npdu<'f>,
+        options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
         let Some(offer) = ICouldBeRouter::parse(npdu.payload) else {
@@ -289,10 +292,20 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         ) {
             return Received::Dropped(DropReason::Denied);
         }
-        let stored = self.table.lookup(offer.network).is_none()
+        let network = offer.network;
+        let new = network != 0 && network != GLOBAL_NETWORK && self.table.lookup(network).is_none();
+        let at_cap = self.table.len() >= usize::from(options.route_cap);
+        if new && at_cap {
+            self.table.record_learning_cap();
+            host.observe(Event::RouteCap {
+                class: ControlClass::ICouldBe,
+            });
+        }
+        let stored = new
+            && !at_cap
             && self
                 .table
-                .add_learned(offer.network, at.port, at.source_mac, at.now);
+                .add_learned(network, at.port, at.source_mac, at.now);
         host.observe(Event::ICouldBe {
             network: offer.network,
             performance_index: offer.performance_index,

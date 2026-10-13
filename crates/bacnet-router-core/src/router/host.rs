@@ -166,7 +166,8 @@ pub enum Event {
         /// Moves within 60 s of the one before, this one included.
         flaps: u8,
     },
-    /// The route cap ended a message's learning or update.
+    /// The route cap ended a message's learning or update, or turned an
+    /// I-Could-Be-Router offer away.
     RouteCap {
         /// The class of the message.
         class: ControlClass,
@@ -213,7 +214,8 @@ pub enum Event {
         network: u16,
         /// The sender's rating of the connection.
         performance_index: u8,
-        /// Whether it was stored: only where the table had no route.
+        /// Whether it was stored: only where the table had no route, and
+        /// was under the route cap.
         stored: bool,
     },
     /// An Establish-Connection arrived; this router opens no connections.

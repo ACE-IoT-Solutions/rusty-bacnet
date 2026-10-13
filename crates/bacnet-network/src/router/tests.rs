@@ -1,5 +1,5 @@
-use super::control_messages::handle_network_message;
-use super::forwarding::{forward_broadcast, forward_unicast};
+use super::legacy::control_messages::handle_network_message;
+use super::legacy::forwarding::{forward_broadcast, forward_unicast};
 use super::*;
 use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
 use bacnet_transport::bip::BipTransport;
@@ -73,10 +73,10 @@ async fn router_forwards_between_networks() {
     let mut buf = BytesMut::new();
     encode_npdu(&mut buf, &npdu).unwrap();
 
-    let table = router.table().lock().await;
+    let table = router.table();
     assert_eq!(table.len(), 2);
-    assert!(table.lookup(1000).unwrap().directly_connected);
-    assert!(table.lookup(2000).unwrap().directly_connected);
+    assert!(table.lookup(1000).unwrap().direct);
+    assert!(table.lookup(2000).unwrap().direct);
     drop(table);
 
     router.stop().await;
@@ -111,11 +111,11 @@ async fn router_table_populated_on_start() {
         .await
         .unwrap();
 
-    let table = router.table().lock().await;
+    let table = router.table();
     assert_eq!(table.len(), 3);
-    assert_eq!(table.lookup(100).unwrap().port_index, 0);
-    assert_eq!(table.lookup(200).unwrap().port_index, 1);
-    assert_eq!(table.lookup(300).unwrap().port_index, 2);
+    assert_eq!(table.lookup(100).unwrap().port.0, 0);
+    assert_eq!(table.lookup(200).unwrap().port.0, 1);
+    assert_eq!(table.lookup(300).unwrap().port.0, 2);
     drop(table);
 
     router.stop().await;
@@ -151,13 +151,13 @@ fn forward_unicast_drops_hop_count_zero() {
     let (tx_b, mut rx_b) = mpsc::channel::<SendRequest>(256);
     let send_txs = vec![tx_a, tx_b];
 
-    let route = crate::router_table::RouteEntry {
+    let route = super::legacy::router_table::RouteEntry {
         port_index: 1,
         directly_connected: true,
         next_hop_mac: MacAddr::new(),
         last_seen: None,
         last_used: None,
-        reachability: crate::router_table::ReachabilityStatus::Reachable,
+        reachability: super::legacy::router_table::ReachabilityStatus::Reachable,
         busy_until: None,
         flap_count: 0,
         last_port_change: None,
@@ -215,13 +215,13 @@ fn forward_unicast_decrements_hop_count() {
     let (tx_b, mut rx_b) = mpsc::channel::<SendRequest>(256);
     let send_txs = vec![tx_a, tx_b];
 
-    let route = crate::router_table::RouteEntry {
+    let route = super::legacy::router_table::RouteEntry {
         port_index: 1,
         directly_connected: true,
         next_hop_mac: MacAddr::new(),
         last_seen: None,
         last_used: None,
-        reachability: crate::router_table::ReachabilityStatus::Reachable,
+        reachability: super::legacy::router_table::ReachabilityStatus::Reachable,
         busy_until: None,
         flap_count: 0,
         last_port_change: None,
@@ -457,13 +457,13 @@ fn forward_unicast_with_hop_count_one_still_forwards() {
     let (tx_b, mut rx_b) = mpsc::channel::<SendRequest>(256);
     let send_txs = vec![tx_a, tx_b];
 
-    let route = crate::router_table::RouteEntry {
+    let route = super::legacy::router_table::RouteEntry {
         port_index: 1,
         directly_connected: true,
         next_hop_mac: MacAddr::new(),
         last_seen: None,
         last_used: None,
-        reachability: crate::router_table::ReachabilityStatus::Reachable,
+        reachability: super::legacy::router_table::ReachabilityStatus::Reachable,
         busy_until: None,
         flap_count: 0,
         last_port_change: None,

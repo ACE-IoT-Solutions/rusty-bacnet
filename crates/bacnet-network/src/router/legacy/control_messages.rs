@@ -104,7 +104,7 @@ const _: () = assert!(
 ///
 /// `local` is the router's own network-control consumer, which hears about
 /// a reject addressed to this router (#1175).
-pub(super) async fn handle_network_message(
+pub(in crate::router) async fn handle_network_message(
     table: &Arc<Mutex<RouterTable>>,
     send_txs: &[mpsc::Sender<SendRequest>],
     ctx: &IngressContext,

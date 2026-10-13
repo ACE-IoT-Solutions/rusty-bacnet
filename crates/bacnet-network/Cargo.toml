@@ -13,12 +13,14 @@ categories = ["network-programming"]
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-transport.workspace = true
+bacnet-router-core.workspace = true
 bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+proptest.workspace = true
 
 [lints]
 workspace = true

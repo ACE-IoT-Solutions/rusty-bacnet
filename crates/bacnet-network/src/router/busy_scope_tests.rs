@@ -17,14 +17,14 @@
 //! congestion signal that auto-clears; Unreachable is a permanent failure
 //! that only Available (or fresh learning) lifts.
 
-use std::time::{Duration, Instant};
+use tokio::time::{Duration, Instant};
 
 use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
 
-use super::control_messages::handle_network_message;
 use super::envelope_harness::*;
+use super::legacy::control_messages::handle_network_message;
+use super::legacy::router_table::ReachabilityStatus;
 use super::*;
-use crate::router_table::ReachabilityStatus;
 
 const BUSY: NetworkMessageType = NetworkMessageType::ROUTER_BUSY_TO_NETWORK;
 const AVAILABLE: NetworkMessageType = NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK;
