@@ -10,7 +10,7 @@ use bacnet_encoding::{
 use bacnet_services::who_is::IAmRequest;
 use bacnet_transport::{
     bbmd::{BdtEntry, ForeignDevicePolicy},
-    bip::{BipTransport, ForeignDeviceConfig, ForeignRegistrationOutcome},
+    bip::{BipMode, BipTransport, ForeignDeviceConfig, ForeignRegistrationOutcome},
     bvll::{decode_bvll, BvlcFunction},
     port::TransportPort,
 };
@@ -69,12 +69,12 @@ async fn bip_foreign_builder_discovers_device_through_bbmd_after_observed_regist
     let mut client = BACnetClient::bip_builder()
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
-        .foreign_device(ForeignDeviceConfig {
+        .mode(BipMode::Foreign(ForeignDeviceConfig {
             bbmd_ip: Ipv4Addr::LOCALHOST,
             bbmd_port,
             ttl: 60,
             renewal_interval: Some(Duration::from_secs(20)),
-        })
+        }))
         .build()
         .await
         .unwrap();

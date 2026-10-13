@@ -38,6 +38,9 @@ and its headers (`libpcap-dev` on Debian and Ubuntu).
 | `-b, --broadcast <IP>` | `255.255.255.255` | Broadcast address for WhoIs |
 | `-t, --timeout <MS>` | `6000` | APDU timeout in milliseconds |
 | `--min-interval-ms <MS>` | `0` | Least time from the latest confirmed request to a device finishing (or being sent, while it is still outstanding) to the next, at most 3600000, so paging or polling leaves a slow device room for others |
+| `--foreign-bbmd <ADDR>` | | Run as a foreign device registered with this BBMD (`ip` or `ip:port`), so broadcasts reach its network; BACnet/IP only. See [Foreign-device mode](#foreign-device-mode) |
+| `--ttl <N>` | `300` | Time-to-live in seconds of a foreign-device registration, for `--foreign-bbmd`, `register` and `discover --bbmd` |
+| `--renewal <SECS>` | half the TTL | Seconds between `--foreign-bbmd` registrations, less than `--ttl` |
 | `--ipv6` | | Use BACnet/IPv6 transport |
 | `--ipv6-interface <IP>` | | IPv6 interface address |
 | `--device-instance <N>` | | Device instance whose VMAC the CLI uses on `--ipv6`; needed where the link has no multicast, such as Linux loopback |
@@ -218,8 +221,8 @@ bacnet discover 1000-2000                # discover devices in instance range
 bacnet discover --wait 5                 # wait 5 seconds for responses (default: 3)
 bacnet discover --target 192.168.1.100   # directed (unicast) WhoIs
 bacnet discover --dnet 2                 # target a specific remote network
-bacnet discover --bbmd 10.0.0.1          # register as foreign device before discovering
-bacnet discover --bbmd 10.0.0.1 --ttl 300  # BBMD registration with TTL (default: 300s)
+bacnet discover --bbmd 10.0.0.1          # register once as a foreign device, then discover
+bacnet --foreign-bbmd 10.0.0.1 discover  # discover through the BBMD as a foreign device
 ```
 
 **Discover flags:**
@@ -229,8 +232,7 @@ bacnet discover --bbmd 10.0.0.1 --ttl 300  # BBMD registration with TTL (default
 | `--wait <N>` | `3` | Seconds to wait for responses |
 | `--target <ADDR>` | | Send directed WhoIs to a specific IP address |
 | `--dnet <N>` | | Target a specific remote network number |
-| `--bbmd <ADDR>` | | Register as foreign device with BBMD before discovering (BIP only) |
-| `--ttl <N>` | `300` | TTL in seconds for BBMD foreign device registration |
+| `--bbmd <ADDR>` | | Register once as a foreign device with this BBMD, for the global `--ttl`, before discovering (BIP only). The Who-Is still goes out as a local broadcast; `--foreign-bbmd` sends it through the BBMD |
 
 ```bash
 bacnet find --name "Zone Temp"           # find objects by name (WhoHas)
@@ -504,6 +506,29 @@ bacnet unregister 192.168.1.1       # unregister from BBMD
 ```
 
 In the interactive shell, `register` also starts a background auto-renewal task that re-registers at 80% of the TTL (e.g., every 240 seconds for a 300-second TTL). The renewal runs silently in the background and prints a dimmed confirmation on each renewal. Use `unregister` or `status` to check registration state.
+
+#### Foreign-device mode
+
+`register` sends one registration from an otherwise normal node, so the
+CLI's own broadcasts stay on the local subnet. With the global
+`--foreign-bbmd ADDR`, the CLI's transport is a foreign device instead: it
+registers with that BBMD when it starts, renews on its own (every `--renewal`
+seconds, half the `--ttl` by default) and sends its broadcasts through the
+BBMD, so `discover` reaches the BBMD's network (#938).
+
+```bash
+bacnet --foreign-bbmd 203.0.113.7 discover                 # Who-Is through the BBMD
+bacnet --foreign-bbmd 203.0.113.7:47808 --ttl 600 --renewal 20 discover 1000-2000
+```
+
+A one-shot command waits for the BBMD to answer the first registration and
+fails if it refuses or doesn't answer. The shell reports the outcome when it
+starts, keeps trying either way, and shows the registration in `status`.
+Behind NAT, keep `--renewal` short so the mapping the BBMD's replies come back
+on stays open; the TTL can stay long. While the transport manages the
+registration, `register` and `unregister` to that BBMD are refused; use
+another BBMD or a normal-mode CLI. With `--foreign-bbmd`, log lines go to
+stderr so they can't corrupt JSON output.
 
 ### Packet Capture
 

@@ -99,6 +99,8 @@ pub struct BACnetServer {
     broadcast_address: String,
     /// See `BipTransport::set_share_port_by_address` (#1538).
     share_port_by_address: bool,
+    /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
+    bip_mode: bacnet_transport::bip::BipMode,
     registered_network_port: Option<u32>,
     // SC config
     sc_hub: Option<String>,
@@ -209,6 +211,7 @@ mod server_methods {
     mod dcc_outcomes;
     mod event_notification_counters;
     mod file_configuration;
+    mod foreign_registration;
     mod life_safety_methods;
     mod lifecycle;
     mod loop_methods;

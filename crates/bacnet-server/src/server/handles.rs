@@ -182,6 +182,23 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     }
 }
 
+impl<T: TransportPort + bacnet_transport::bip::AsBip + 'static> BACnetServer<T> {
+    /// How this server's foreign-device registration is going (#938):
+    /// whether it holds a live lease, the time left on it, and the last
+    /// attempt's result and outcome, a BBMD's refusal included. It reads
+    /// [`BipTransport::bvlc_client_snapshot`] and sends nothing. Fails on a
+    /// transport that isn't B/IP, and once the server has stopped.
+    pub fn foreign_registration(
+        &self,
+    ) -> Result<bacnet_transport::bip::ForeignRegistrationSnapshot, Error> {
+        let transport = self.transport().ok_or_else(broadcaster::stopped)?;
+        Ok(transport
+            .as_bip()?
+            .bvlc_client_snapshot()
+            .foreign_registration)
+    }
+}
+
 #[cfg(test)]
 #[path = "local_encoded_writes_tests.rs"]
 mod local_encoded_writes_tests;

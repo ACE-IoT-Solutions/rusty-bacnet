@@ -14,7 +14,9 @@ use bacnet_bip_core::bbmd::{
 };
 use bacnet_bip_core::{Arrival, LocalSubnet};
 
-use super::{address, BbmdState, Tables};
+#[cfg(test)]
+use super::address;
+use super::{BbmdState, Tables};
 
 /// Foreign devices one forwarded message goes to without a policy.
 const DEFAULT_FDT_FANOUT: usize = 32;
@@ -154,14 +156,14 @@ impl BbmdState {
     }
 
     // -----------------------------------------------------------------------
-    // Forwarding targets
+    // Forwarding targets, for tests: the decisions themselves are
+    // `bacnet_bip_core::bbmd`'s (#1669).
     // -----------------------------------------------------------------------
 
-    /// Get all (ip, port) targets for forwarding a broadcast, excluding the
-    /// source device and the local BBMD itself. BDT entries use directed
-    /// broadcast: `target = entry.ip | !entry.broadcast_mask`.
-    /// Purges expired FDT entries.
-    pub fn forwarding_targets(
+    /// All (ip, port) targets of a broadcast from `(exclude_ip,
+    /// exclude_port)` now, as in [`Self::forwarding_targets_at`].
+    #[cfg(test)]
+    pub(crate) fn forwarding_targets(
         &mut self,
         exclude_ip: [u8; 4],
         exclude_port: u16,
@@ -169,11 +171,13 @@ impl BbmdState {
         self.forwarding_targets_at(exclude_ip, exclude_port, Instant::now())
     }
 
-    /// Get all (ip, port) targets for forwarding a broadcast relative to `now`,
-    /// excluding the source device and the local BBMD itself. BDT entries use directed
-    /// broadcast: `target = entry.ip | !entry.broadcast_mask`.
-    /// Purges expired FDT entries and caps FDT targets to `max_fdt_fanout`.
-    pub fn forwarding_targets_at(
+    /// All (ip, port) targets of a broadcast from `(exclude_ip,
+    /// exclude_port)` at `now`, leaving out that source and this BBMD: BDT
+    /// rows at their directed broadcast address, then foreign devices, at
+    /// most the policy's `max_fdt_fanout` of them. Lapsed registrations are
+    /// purged first, and the fan-out counters count the call.
+    #[cfg(test)]
+    pub(crate) fn forwarding_targets_at(
         &mut self,
         exclude_ip: [u8; 4],
         exclude_port: u16,
@@ -189,10 +193,9 @@ impl BbmdState {
         pairs(fanout.targets)
     }
 
-    /// Get all (ip, port) FDT targets for forwarding, excluding `(exclude_ip, exclude_port)`.
-    /// Purges expired entries, caps results to `max_fdt_fanout`, and increments
-    /// `fanout_budget_reached` if capped.
-    pub fn fdt_forwarding_targets(
+    /// The foreign devices among [`Self::forwarding_targets`], now.
+    #[cfg(test)]
+    pub(crate) fn fdt_forwarding_targets(
         &mut self,
         exclude_ip: [u8; 4],
         exclude_port: u16,
@@ -200,10 +203,9 @@ impl BbmdState {
         self.fdt_forwarding_targets_at(exclude_ip, exclude_port, Instant::now())
     }
 
-    /// Get all (ip, port) FDT targets for forwarding relative to `now`, excluding `(exclude_ip, exclude_port)`.
-    /// Purges expired entries, caps results to `max_fdt_fanout`, and increments
-    /// `fanout_budget_reached` if capped.
-    pub fn fdt_forwarding_targets_at(
+    /// The foreign devices among [`Self::forwarding_targets_at`] at `now`.
+    #[cfg(test)]
+    pub(crate) fn fdt_forwarding_targets_at(
         &mut self,
         exclude_ip: [u8; 4],
         exclude_port: u16,
@@ -221,6 +223,7 @@ impl BbmdState {
 }
 
 /// `targets` as (ip, port) pairs.
+#[cfg(test)]
 fn pairs(targets: &[Target]) -> Vec<([u8; 4], u16)> {
     targets
         .iter()

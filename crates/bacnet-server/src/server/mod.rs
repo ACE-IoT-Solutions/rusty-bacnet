@@ -40,7 +40,7 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
-use bacnet_transport::bip::BipTransport;
+use bacnet_transport::bip::{BipMode, BipTransport};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation,
@@ -284,6 +284,7 @@ pub struct BipServerBuilder {
     config: ServerConfig,
     db: ObjectDatabase,
     configured_device_bindings: Vec<DeviceBinding>,
+    mode: BipMode,
 }
 
 impl BipServerBuilder {
@@ -411,6 +412,7 @@ impl BipServerBuilder {
         let mut transport =
             BipTransport::new(config.interface, config.port, config.broadcast_address);
         transport.set_share_port_by_address(config.share_port_by_address);
+        transport.set_mode(self.mode);
         BACnetServer::start_with_clock_mode_and_bindings(
             self.config,
             self.db,
@@ -516,6 +518,7 @@ impl BACnetServer<BipTransport> {
             config: ServerConfig::default(),
             db: ObjectDatabase::new(),
             configured_device_bindings: Vec::new(),
+            mode: BipMode::Normal,
         }
     }
 }

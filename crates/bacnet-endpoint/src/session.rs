@@ -295,6 +295,8 @@ pub struct EndpointSession<T: TransportPort + 'static> {
     pub(crate) reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
     pub(crate) reinit_password: Option<String>,
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,
+    /// The B/IP transport's own exchanges, when the B/IP builder built it.
+    pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
 }
 
 /// Terminal state of the session dispatch task.
@@ -401,6 +403,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             reinitialize: None,
             reinit_password: None,
             egress: None,
+            bip_status: None,
         })
     }
 
@@ -754,6 +757,20 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         (self.is_running() && self.egress.as_ref().is_some_and(|egress| egress.is_open()))
             .then_some(self.bip_local_address)
             .flatten()
+    }
+
+    /// How the transport's foreign-device registration is going (#938):
+    /// whether it holds a live lease, the time left on it, and the last
+    /// attempt's result and outcome, a BBMD's refusal included. It is there
+    /// for a session [`BipEndpointBuilder`](crate::bip::BipEndpointBuilder)
+    /// built, in any mode and after stop, and `None` for any other: take a
+    /// [`BipTransport::bvlc_client_status`](bacnet_transport::bip::BipTransport::bvlc_client_status)
+    /// before handing a transport to [`Self::new`].
+    pub fn foreign_registration(
+        &self,
+    ) -> Option<bacnet_transport::bip::ForeignRegistrationSnapshot> {
+        let status = self.bip_status.as_ref()?;
+        Some(status.snapshot().foreign_registration)
     }
 
     /// Returns the composed session role (narrow admin).

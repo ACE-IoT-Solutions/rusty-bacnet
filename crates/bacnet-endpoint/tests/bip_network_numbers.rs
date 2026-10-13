@@ -8,7 +8,7 @@ mod port_retry;
 #[path = "bip_network_numbers/support.rs"]
 mod support;
 use bacnet_endpoint::session::SessionRole;
-use bacnet_transport::bip::ForeignDeviceConfig;
+use bacnet_transport::bip::{BipMode, ForeignDeviceConfig};
 use port_retry::rerun_on_lost_port;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use support::*;
@@ -19,12 +19,12 @@ async fn foreign() -> (Endpoint, SocketAddrV4, UdpSocket) {
     let (endpoint, local) = start(
         builder()
             .role(SessionRole::ClientOnly)
-            .register_as_foreign_device(ForeignDeviceConfig {
+            .mode(BipMode::Foreign(ForeignDeviceConfig {
                 bbmd_ip: Ipv4Addr::LOCALHOST,
                 bbmd_port: address(&bbmd).port(),
                 renewal_interval: None,
                 ttl: 60,
-            }),
+            })),
     )
     .await;
     assert!(endpoint.client().is_some());
@@ -162,6 +162,7 @@ async fn endpoint_number_bbmd_server_wire_admission() {
     // The closing release probe can lose the port to another process (#1070).
     rerun_on_lost_port(async || {
         use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
+        use bacnet_transport::bip::BbmdOptions;
         let bdt = udp().await;
         let foreign = udp().await;
         let peer = udp().await;
@@ -169,12 +170,15 @@ async fn endpoint_number_bbmd_server_wire_admission() {
         let (observer, port) = observer();
         let configured = builder_on(port)
             .role(SessionRole::ServerOnly)
-            .enable_bbmd(vec![BdtEntry {
-                ip: Ipv4Addr::LOCALHOST.octets(),
-                port: address(&bdt).port(),
-                broadcast_mask: [255; 4],
-            }])
-            .foreign_device_policy(ForeignDevicePolicy::default());
+            .mode(BipMode::Bbmd(BbmdOptions {
+                bdt: vec![BdtEntry {
+                    ip: Ipv4Addr::LOCALHOST.octets(),
+                    port: address(&bdt).port(),
+                    broadcast_mask: [255; 4],
+                }],
+                foreign_device_policy: Some(ForeignDevicePolicy::default()),
+                ..BbmdOptions::default()
+            }));
         let (server, local) = start(configured).await;
         assert!(server.server().is_some());
         assert!(server.client().is_none());

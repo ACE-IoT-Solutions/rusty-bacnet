@@ -7,6 +7,9 @@ as class attributes; vendor-proprietary values are available via ``from_raw()``.
 from __future__ import annotations
 
 import datetime
+import os
+import pathlib
+from collections.abc import Sequence
 from typing import Any, Awaitable, Literal, NotRequired, Optional, TypedDict, Union
 
 UNSPECIFIED: Literal[255]
@@ -1819,6 +1822,92 @@ def list_serial_ports() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# B/IP modes (#938)
+# ---------------------------------------------------------------------------
+
+class ForeignDevice:
+    """A foreign-device registration, for the ``foreign_device=`` keyword of
+    ``BACnetClient``, ``BACnetServer`` and ``BipEndpoint`` (B/IP only).
+
+    ``bbmd`` is ``"ip"`` or ``"ip:port"`` (port 47808 by default). ``ttl`` is
+    how many seconds the BBMD keeps the entry, 1 to 65535. ``renewal`` is
+    the seconds between registrations, at least 0.1 and less than ``ttl``;
+    ``None`` renews at half the TTL. Behind NAT, renew often so the mapping
+    the BBMD's replies come back on stays open, while the TTL stays long.
+    Invalid values raise ValueError, or OverflowError for an integer out of
+    range.
+
+    The owner registers at start and renews on its own. Its broadcasts go
+    through the BBMD; the first few wait for the first registration to be
+    answered. ``foreign_registration()`` reports how it goes.
+    """
+
+    def __init__(self, bbmd: str, ttl: int = 300, renewal: Optional[float] = None) -> None: ...
+    @property
+    def bbmd(self) -> str: ...
+    @property
+    def ttl(self) -> int: ...
+    @property
+    def renewal(self) -> Optional[float]: ...
+
+class Bbmd:
+    """A BBMD set-up, for the ``bbmd=`` keyword of ``BACnetClient``,
+    ``BACnetServer`` and ``BipEndpoint`` (B/IP only).
+
+    ``bdt`` lists the BBMDs of the other subnets, each ``"ip:port"`` (its
+    broadcasts forwarded by unicast) or ``("ip:port", "mask")``; this BBMD's
+    own row is added when missing. ``accept_foreign_devices`` lets foreign
+    devices register (default False: every registration is refused).
+    ``management_acl`` lists the IPv4 addresses allowed to delete Foreign
+    Device Table entries (default: none). ``bdt_persist_path`` names a file
+    holding a BDT, 10 octets per row, to start with instead of ``bdt`` when
+    it loads. Write-BDT from the network is always refused. Invalid values
+    raise ValueError, or OverflowError for an integer out of range.
+    """
+
+    def __init__(
+        self,
+        bdt: Optional[Sequence[str | tuple[str, str]]] = None,
+        *,
+        accept_foreign_devices: bool = False,
+        management_acl: Optional[Sequence[str]] = None,
+        bdt_persist_path: Optional[str | os.PathLike[str]] = None,
+    ) -> None: ...
+    @property
+    def bdt(self) -> list[tuple[str, str]]: ...
+    @property
+    def accept_foreign_devices(self) -> bool: ...
+    @property
+    def management_acl(self) -> list[str]: ...
+    @property
+    def bdt_persist_path(self) -> Optional[pathlib.Path]: ...
+
+class ForeignRegistrationStatus(TypedDict):
+    """A foreign device's registration, as ``foreign_registration()``
+    reports it. ``registered`` is whether a lease is live; the lease starts
+    at the earliest send a success could answer, so it never outlasts the
+    BBMD's. ``lease_remaining`` and ``next_attempt_in`` are seconds, or None.
+    ``last_bbmd``, ``last_result`` (the BVLC result code, 0x0030 for a
+    refusal) and ``last_outcome`` (``"pending"``, ``"accepted"``,
+    ``"refused"``, ``"timed_out"``, ``"local_error"`` or ``"cancelled"``)
+    describe the latest attempt and clear when the owner stops. The totals
+    survive it: ``lapses`` counts leases that ran out with no newer success,
+    and ``renewal_hints`` the BBMD's Distribute-Broadcast-To-Network NAKs,
+    each of which brings the next attempt forward."""
+    registered: bool
+    lease_remaining: Optional[float]
+    next_attempt_in: Optional[float]
+    last_bbmd: Optional[str]
+    last_result: Optional[int]
+    last_outcome: Optional[str]
+    attempts: int
+    accepted: int
+    refused: int
+    lapses: int
+    renewal_hints: int
+
+
+# ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 
@@ -1915,8 +2004,15 @@ class BACnetClient:
         share_port_by_address: bool = False,
         min_request_interval_ms: int = 0,
         ipv6_device_instance: Optional[int] = None,
+        bbmd: Optional[Bbmd] = None,
+        foreign_device: Optional[ForeignDevice] = None,
     ) -> None:
-        """``ipv6_device_instance`` (B/IPv6 only, default None): the device
+        """``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
+        ValueError): run the client as a BBMD, or register it with a BBMD
+        on another subnet as a foreign device, so its Who-Is reaches that
+        subnet (#938). See ``Bbmd`` and ``ForeignDevice``.
+
+        ``ipv6_device_instance`` (B/IPv6 only, default None): the device
         instance whose VMAC the client uses (Clause H.7.2), 0 to 4194303, so
         peers know it by a stable VMAC such as ``bip6:0x0010E1``. Give a
         client an instance to get a stable VMAC; without one it picks a
@@ -2848,6 +2944,13 @@ class BACnetClient:
 
     # --- Lifecycle ---
 
+    def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
+        """How the foreign-device registration is going (#938), a refusal
+        included. Sends nothing. Outside ``foreign_device=`` only manual
+        registrations show. RuntimeError before start and after stop; a
+        non-B/IP client raises BacnetError."""
+        ...
+
     def stop(self) -> Awaitable[None]:
         """Explicitly stop the client and release resources."""
         ...
@@ -3042,11 +3145,19 @@ class BACnetServer:
         share_port_by_address: bool = False,
         segmentation_supported: Segmentation = Segmentation.NONE,
         apdu_segment_timeout_ms: int = 5000,
+        bbmd: Optional[Bbmd] = None,
+        foreign_device: Optional[ForeignDevice] = None,
     ) -> None:
         """``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so devices on other addresses of this host
         can share the port. Needs an explicit interface and a nonzero port;
         broadcasts and unicast then arrive in no fixed order.
+
+        ``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
+        ValueError): run the device as a BBMD, or register it with a BBMD
+        on another subnet as a foreign device (#938). See ``Bbmd`` and
+        ``ForeignDevice``. A registered Network Port reports the mode in
+        BACnet_IP_Mode (normal 0, foreign 1, BBMD 2).
 
         ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
@@ -3884,6 +3995,11 @@ class BACnetServer:
         """
         ...
 
+    def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
+        """How the foreign-device registration is going (#938), as for
+        ``BACnetClient``. RuntimeError before start and after stop."""
+        ...
+
     # --- Server-side property access ---
     def read_property(
         self,
@@ -4645,8 +4761,12 @@ class BipEndpoint:
         read_work_limit: int = 256,
         share_port_by_address: bool = False,
         min_request_interval_ms: int = 0,
+        bbmd: Optional[Bbmd] = None,
+        foreign_device: Optional[ForeignDevice] = None,
     ) -> None:
-        """``read_work_limit``: result rows one ReadProperty served by the
+        """``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
+        the endpoint as a BBMD, or register it as a foreign device (#938).
+        ``read_work_limit``: result rows one ReadProperty served by the
         server role may expand, a Group's member rows included; a read past it
         is aborted with OUT_OF_RESOURCES. Zero raises ValueError.
         ``share_port_by_address`` (default False): bind the interface address
@@ -4716,6 +4836,11 @@ class BipEndpoint:
 
     def status(self) -> Awaitable[EndpointStatus]:
         """Bounded snapshot (RuntimeError before start/after close)."""
+        ...
+
+    def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
+        """How the foreign-device registration is going (#938), as for
+        ``BACnetClient``. RuntimeError before start and after close."""
         ...
 
     def broadcast_i_am(self) -> Awaitable[None]:

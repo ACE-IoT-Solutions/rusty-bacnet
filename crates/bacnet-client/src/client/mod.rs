@@ -31,7 +31,7 @@ use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
 use bacnet_endpoint_core::coordinator::{CanonicalPeer, OutboundTransactionCoordinator};
 use bacnet_network::layer::NetworkLayer;
 use bacnet_services::cov::COVNotificationRequest;
-use bacnet_transport::bip::{BipTransport, ForeignDeviceConfig};
+use bacnet_transport::bip::{BipMode, BipTransport};
 #[cfg(feature = "ipv6")]
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::port::{TransportPort, TransportProvenance};
@@ -280,35 +280,37 @@ impl<T: TransportPort + 'static> ClientBuilder<T> {
 pub struct BipClientBuilder {
     config: ClientConfig,
     options: ClientOptions,
-    foreign_device: Option<ForeignDeviceConfig>,
+    mode: BipMode,
 }
 
 impl BipClientBuilder {
-    /// Enable automatic foreign-device registration and DBTN broadcasts to
-    /// this BBMD. `build()` starts locally; it does not wait for BBMD acceptance.
-    /// Poll `client.transport().bvlc_client_snapshot()` for matched outcomes.
-    /// Invalid TTL/renewal settings fail before transport I/O.
+    /// Set the B/IP mode: a normal node (the default), a foreign device or
+    /// a BBMD (#938). `build()` starts the client locally; a foreign device
+    /// doesn't wait for its BBMD to accept the registration. Poll
+    /// [`BACnetClient::foreign_registration`] for how it went: `registered`,
+    /// and the last attempt's outcome, a refusal included. Invalid TTL or
+    /// renewal settings fail `build()` before any I/O.
     ///
     /// ```no_run
     /// use bacnet_client::client::BACnetClient;
-    /// use bacnet_transport::bip::ForeignDeviceConfig;
+    /// use bacnet_transport::bip::{BipMode, ForeignDeviceConfig};
     /// use std::{net::Ipv4Addr, time::Duration};
     /// # async fn example() -> Result<(), bacnet_types::error::Error> {
     /// let mut client = BACnetClient::bip_builder()
     ///     .port(0)
-    ///     .foreign_device(ForeignDeviceConfig {
+    ///     .mode(BipMode::Foreign(ForeignDeviceConfig {
     ///         bbmd_ip: Ipv4Addr::new(192, 0, 2, 10), bbmd_port: 47808,
     ///         ttl: 60, renewal_interval: Some(Duration::from_secs(20)),
-    ///     })
+    ///     }))
     ///     .build().await?;
-    /// let observed = client.transport().bvlc_client_snapshot();
     /// // A successful local start alone does not establish registration.
-    /// let last_attempt = observed.foreign_registration.last_outcome;
+    /// let registration = client.foreign_registration()?;
+    /// let (registered, last_attempt) = (registration.registered, registration.last_outcome);
     /// client.stop().await?;
     /// # Ok(()) }
     /// ```
-    pub fn foreign_device(mut self, config: ForeignDeviceConfig) -> Self {
-        self.foreign_device = Some(config);
+    pub fn mode(mut self, mode: BipMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -365,9 +367,7 @@ impl BipClientBuilder {
         let mut transport =
             BipTransport::new(config.interface, config.port, config.broadcast_address);
         transport.set_share_port_by_address(config.share_port_by_address);
-        if let Some(foreign) = self.foreign_device {
-            transport.register_as_foreign_device(foreign);
-        }
+        transport.set_mode(self.mode);
         BACnetClient::start_with_options(self.config, transport, self.options).await
     }
 }
@@ -558,7 +558,7 @@ impl BACnetClient<BipTransport> {
         BipClientBuilder {
             config: ClientConfig::default(),
             options: ClientOptions::default(),
-            foreign_device: None,
+            mode: BipMode::Normal,
         }
     }
 }

@@ -1,11 +1,13 @@
 //! Bounded observations of this transport's outgoing management exchanges.
 
 use std::net::SocketAddrV4;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use bacnet_bip_codec::BvlcResultCode;
 use bacnet_bip_core::node::{AttemptOutcome, ExchangeCounters, NodeCounters, Operation};
+
+use super::node::NodeHandle;
 
 /// One management function's locally observed exchanges, cumulative across
 /// stop/start on the same transport. Counts saturate at `u64::MAX`.
@@ -178,16 +180,42 @@ impl BvlcClientSnapshot {
     }
 }
 
+/// Reads one B/IP transport's [`BvlcClientSnapshot`] wherever the transport
+/// went, for an owner that takes it over, as an endpoint session does
+/// (#938). It reads what
+/// [`BipTransport::bvlc_client_snapshot`](super::BipTransport::bvlc_client_snapshot)
+/// reads, across stop and start; cloning it is cheap.
+///
+/// Unlike the transport's own method, it can run while the transport stops.
+/// A read in the middle of a stop sees `running` still true, with the
+/// registration's lease and countdown already gone: the node stops first,
+/// then the status clears.
+#[derive(Clone, Debug)]
+pub struct BvlcClientStatus(pub(super) Arc<ClientRecord>);
+
+impl BvlcClientStatus {
+    /// The transport's snapshot now.
+    pub fn snapshot(&self) -> BvlcClientSnapshot {
+        self.0.live_snapshot()
+    }
+}
+
 /// This transport's [`BvlcClientSnapshot`], kept across restarts: the
 /// node's counts are added in as it reports them.
 #[derive(Debug, Default)]
 pub(super) struct ClientRecord {
     snapshot: Mutex<BvlcClientSnapshot>,
+    /// The running node, which knows the registration's lease and schedule.
+    node: Mutex<Weak<NodeHandle>>,
 }
 
 impl ClientRecord {
     fn lock(&self) -> MutexGuard<'_, BvlcClientSnapshot> {
         self.snapshot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn node_slot(&self) -> MutexGuard<'_, Weak<NodeHandle>> {
+        self.node.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The transport started: clear the last-attempt status.
@@ -197,8 +225,14 @@ impl ClientRecord {
         snapshot.running = true;
     }
 
+    /// The node the transport started runs the registration.
+    pub(super) fn attach(&self, node: &Arc<NodeHandle>) {
+        *self.node_slot() = Arc::downgrade(node);
+    }
+
     /// The transport stopped: clear the last-attempt status.
     pub(super) fn stop(&self) {
+        *self.node_slot() = Weak::new();
         let mut snapshot = self.lock();
         snapshot.running = false;
         snapshot.reset_status();
@@ -208,6 +242,18 @@ impl ClientRecord {
     /// the lease are the node's to fill in.
     pub(super) fn snapshot(&self) -> BvlcClientSnapshot {
         *self.lock()
+    }
+
+    /// The totals and status so far, with the running node's countdown and
+    /// lease. Neither of this record's locks is held while the node's is
+    /// taken, since the node takes this record's under its own.
+    pub(super) fn live_snapshot(&self) -> BvlcClientSnapshot {
+        let mut snapshot = self.snapshot();
+        let node = self.node_slot().upgrade();
+        if let Some(node) = node {
+            node.fill_registration(&mut snapshot.foreign_registration);
+        }
+        snapshot
     }
 
     /// Add what the node counted since it last reported.
