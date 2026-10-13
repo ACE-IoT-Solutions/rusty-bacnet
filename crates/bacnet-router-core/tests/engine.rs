@@ -211,7 +211,7 @@ fn the_sweep_clears_lapsed_busy_marks() {
     learn_9_via_r7(&mut router, at(0));
     router.table_mut().mark_busy(9, at(30));
     router.on_deadline(at(60), &mut Permissive);
-    assert_eq!(router.table().lookup(9).unwrap().busy_until, None);
+    assert_eq!(router.table().lookup(9).unwrap().busy_until(), None);
 }
 
 /// A route written locally on a port the router doesn't have carries

@@ -78,7 +78,7 @@ fn i_am_router_learns_then_rebroadcasts() {
     assert_eq!(outcome, Outcome::Handled);
     for network in [9, 10] {
         let route = router.table().lookup(network).unwrap();
-        assert_eq!((route.port, route.next_hop.as_slice()), (PortId(1), R7));
+        assert_eq!((route.port(), route.next_hop().as_slice()), (PortId(1), R7));
     }
     let ports: Vec<u8> = sent.iter().map(|sent| sent.port).collect();
     assert_eq!(ports, [0, 2]);
@@ -118,7 +118,7 @@ fn one_message_never_corroborates_itself() {
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
     deliver_broadcast(&mut router, &mut host, 0, NODE_A, &i_am(&[9, 9]), at(1));
-    assert_eq!(router.table().lookup(9).unwrap().port, PortId(1));
+    assert_eq!(router.table().lookup(9).unwrap().port(), PortId(1));
     assert_eq!(router.table().claim_counters().pending_started, 1);
     assert_eq!(router.table().claim_counters().corroborated_applied, 0);
 
@@ -126,7 +126,7 @@ fn one_message_never_corroborates_itself() {
     let mut router = fixture::router();
     learn_9_via_r7(&mut router, at(0));
     deliver_broadcast(&mut router, &mut host, 0, NODE_A, &i_am(&[9, 9]), at(1));
-    assert_eq!(router.table().lookup(9).unwrap().port, PortId(0));
+    assert_eq!(router.table().lookup(9).unwrap().port(), PortId(0));
     assert_eq!(router.table().claim_counters().learned_ok, 2);
 }
 
@@ -145,12 +145,12 @@ fn the_route_cap_ends_learning() {
     }));
     // At the cap, a held network still refreshes, until a new one ends it.
     deliver_broadcast(&mut router, &mut host, 1, R8, &i_am(&[10, 12, 9]), at(2));
-    assert_eq!(router.table().lookup(10).unwrap().next_hop.as_slice(), R8);
-    assert_eq!(router.table().lookup(9).unwrap().next_hop.as_slice(), R7);
+    assert_eq!(router.table().lookup(10).unwrap().next_hop().as_slice(), R8);
+    assert_eq!(router.table().lookup(9).unwrap().next_hop().as_slice(), R7);
     // An Init-ACK at the cap stops at once, even for a held network.
     let ack = message(MessageType::INITIALIZE_ROUTING_TABLE_ACK, &[1, 0, 9, 1, 0]);
     deliver(&mut router, &mut host, 1, R8, &ack, at(3));
-    assert_eq!(router.table().lookup(9).unwrap().next_hop.as_slice(), R7);
+    assert_eq!(router.table().lookup(9).unwrap().next_hop().as_slice(), R7);
     let counters = router.table().claim_counters();
     assert_eq!((counters.learned_ok, counters.learned_cap_ignored), (3, 3));
 }
@@ -272,15 +272,15 @@ fn flow_control_covers_what_the_sender_serves() {
     // R7's list names 9, R8's 4000, and direct 2: only 9 is R7's.
     let (_, sent) = deliver_broadcast(&mut router, &mut host, 1, R7, &busy(&[9, 4000, 2]), at(1));
     assert_eq!(
-        router.table().lookup(9).unwrap().reachability,
+        router.table().lookup(9).unwrap().reachability(),
         Reachability::Busy
     );
     assert_eq!(
-        router.table().lookup(4000).unwrap().reachability,
+        router.table().lookup(4000).unwrap().reachability(),
         Reachability::Reachable
     );
     assert_eq!(
-        router.table().lookup(2).unwrap().reachability,
+        router.table().lookup(2).unwrap().reachability(),
         Reachability::Reachable
     );
     assert_eq!(listed(&sent[0]), [9, 4000, 2]);
@@ -290,7 +290,7 @@ fn flow_control_covers_what_the_sender_serves() {
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!(sent.len(), 1);
     assert_eq!(
-        router.table().lookup(4000).unwrap().reachability,
+        router.table().lookup(4000).unwrap().reachability(),
         Reachability::Reachable
     );
     let last = host.asked.last().unwrap();
@@ -300,13 +300,13 @@ fn flow_control_covers_what_the_sender_serves() {
     router.table_mut().mark_unreachable(4000);
     deliver_broadcast(&mut router, &mut host, 1, R8, &busy(&[]), at(3));
     assert_eq!(
-        router.table().lookup(4000).unwrap().reachability,
+        router.table().lookup(4000).unwrap().reachability(),
         Reachability::Unreachable
     );
     let available = message(MessageType::ROUTER_AVAILABLE_TO_NETWORK, &[]);
     deliver_broadcast(&mut router, &mut host, 1, R8, &available, at(4));
     assert_eq!(
-        router.table().lookup(4000).unwrap().reachability,
+        router.table().lookup(4000).unwrap().reachability(),
         Reachability::Reachable
     );
 
@@ -320,11 +320,15 @@ fn flow_control_covers_what_the_sender_serves() {
     assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
     assert!(sent.is_empty());
     assert_eq!(
-        router.table().lookup(4000).unwrap().reachability,
+        router.table().lookup(4000).unwrap().reachability(),
         Reachability::Reachable
     );
     let marks = router.table().lookup(9).unwrap();
-    assert_eq!(marks.last_seen, Some(at(0)), "marks leave freshness alone");
+    assert_eq!(
+        marks.last_seen(),
+        Some(at(0)),
+        "marks leave freshness alone"
+    );
 }
 
 /// Clauses 6.4.19 and 6.4.20: What-Is and Number-Is are never routed. A
@@ -437,8 +441,8 @@ fn i_could_be_router_fills_only_gaps() {
     };
     deliver(&mut router, &mut host, 1, R8, &could_be(9), at(1));
     deliver(&mut router, &mut host, 1, R8, &could_be(44), at(1));
-    assert_eq!(router.table().lookup(9).unwrap().next_hop.as_slice(), R7);
-    assert_eq!(router.table().lookup(44).unwrap().next_hop.as_slice(), R8);
+    assert_eq!(router.table().lookup(9).unwrap().next_hop().as_slice(), R7);
+    assert_eq!(router.table().lookup(44).unwrap().next_hop().as_slice(), R8);
     assert_eq!(
         host.events,
         [

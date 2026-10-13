@@ -81,8 +81,8 @@ async fn router_forwards_between_networks() {
 
     let table = router.table();
     assert_eq!(table.len(), 2);
-    assert!(table.lookup(1000).unwrap().direct);
-    assert!(table.lookup(2000).unwrap().direct);
+    assert!(table.lookup(1000).unwrap().is_direct());
+    assert!(table.lookup(2000).unwrap().is_direct());
     drop(table);
 
     router.stop().await;
@@ -119,9 +119,9 @@ async fn router_table_populated_on_start() {
 
     let table = router.table();
     assert_eq!(table.len(), 3);
-    assert_eq!(table.lookup(100).unwrap().port.0, 0);
-    assert_eq!(table.lookup(200).unwrap().port.0, 1);
-    assert_eq!(table.lookup(300).unwrap().port.0, 2);
+    assert_eq!(table.lookup(100).unwrap().port().0, 0);
+    assert_eq!(table.lookup(200).unwrap().port().0, 1);
+    assert_eq!(table.lookup(300).unwrap().port().0, 2);
     drop(table);
 
     router.stop().await;
@@ -396,9 +396,9 @@ async fn i_could_be_router_stores_potential_route() {
 
     let tbl = h.table();
     let entry = tbl.lookup(5000).unwrap();
-    assert!(!entry.direct);
-    assert_eq!(entry.port, PortId(0));
-    assert_eq!(entry.next_hop.as_slice(), &[0x0A, 0x0B]);
+    assert!(!entry.is_direct());
+    assert_eq!(entry.port(), PortId(0));
+    assert_eq!(entry.next_hop().as_slice(), &[0x0A, 0x0B]);
 }
 
 #[tokio::test]
@@ -414,8 +414,8 @@ async fn i_could_be_router_does_not_overwrite_existing_route() {
 
     let tbl = h.table();
     let entry = tbl.lookup(5000).unwrap();
-    assert!(entry.direct);
-    assert_eq!(entry.port, PortId(1));
+    assert!(entry.is_direct());
+    assert_eq!(entry.port(), PortId(1));
 }
 
 #[tokio::test]
@@ -457,7 +457,7 @@ async fn disconnect_does_not_remove_direct_route() {
 
     let tbl = h.table();
     assert!(tbl.lookup(1000).is_some());
-    assert!(tbl.lookup(1000).unwrap().direct);
+    assert!(tbl.lookup(1000).unwrap().is_direct());
 }
 
 /// RB-07: the router hands a frame's provenance on by value, to its local

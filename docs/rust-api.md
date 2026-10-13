@@ -2249,7 +2249,9 @@ across an await. `table()` returns a `RouterTableGuard`, which derefs to the
 live `RouterTable`: the core's `Table`, re-exported in
 `bacnet_network::router_table` and sized for `ROUTE_CAP` (256) routes and
 `HOLD_RECORDS` (1,024) reject hold-down records. A lookup returns a `Route`
-by value, with `port: PortId`, `direct` and `next_hop: Mac`. Times in the
+by value, a copy of the table's row read through its getters (`port()`,
+`is_direct()`, `next_hop()`, `reachability()` and the timestamps); a route
+changes only through the table's own calls. Times in the
 table are the router's own, Tokio time since `start`, which `now()` reads, so
 paused-time tests drive the sweep too. Calls on the table are local
 management, which no wire-control policy sees; drop the guard soon, since

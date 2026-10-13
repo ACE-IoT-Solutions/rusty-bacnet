@@ -260,7 +260,7 @@ fn learning_refresh_replacement_removal_and_aging_rearm_all_ingress_keys() {
                 table.add_learned(3000, port(0), Mac::EMPTY, now);
             }
             "age" => {
-                table.lookup_mut(3000).unwrap().last_seen = Some(now - secs(120));
+                table.slot_mut(3000).unwrap().route.last_seen = Some(now - secs(120));
                 assert_eq!(purge(&mut table, now, secs(60)), [3000]);
                 assert_eq!(table.holds().count(), 0);
                 table.add_learned(3000, port(0), Mac::EMPTY, now);
@@ -470,7 +470,7 @@ fn a_full_hold_pool_evicts_its_oldest_record_and_counts_it() {
     assert_eq!(table.held_since(20, port(0)), None);
     assert_eq!(table.held_since(10, port(0)), Some(BASE + secs(4)));
     // Updating a record already kept evicts nothing.
-    table.lookup_mut(30).unwrap().reachability = Reachability::Reachable;
+    table.mark_available(30);
     assert_eq!(
         table.apply_reject(
             30,

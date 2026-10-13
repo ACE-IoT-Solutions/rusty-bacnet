@@ -141,7 +141,7 @@ fn received_rejects_relay_by_their_destination() {
     );
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!(
-        router.table().lookup(9).unwrap().reachability,
+        router.table().lookup(9).unwrap().reachability(),
         Reachability::Unreachable
     );
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
@@ -208,7 +208,7 @@ fn other_reasons_relay_and_keep_the_route() {
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
     assert_eq!(sent[0].parsed().payload, [4, 0, 9]);
     assert_eq!(
-        router.table().lookup(9).map(|route| route.reachability),
+        router.table().lookup(9).map(|route| route.reachability()),
         Some(Reachability::Reachable)
     );
     assert_eq!(
@@ -238,7 +238,7 @@ fn denied_and_malformed_rejects_do_nothing() {
     assert_eq!(outcome, Outcome::Discarded(Discard::Denied));
     assert!(sent.is_empty());
     assert_eq!(
-        router.table().lookup(9).unwrap().reachability,
+        router.table().lookup(9).unwrap().reachability(),
         Reachability::Reachable
     );
     assert_eq!(host.asked[0].targets, [9]);
@@ -273,7 +273,7 @@ fn unusable_routes_draw_their_reasons() {
         RejectReason::NOT_DIRECTLY_CONNECTED
     );
     // The lookup still counts as use, as the hosted lookup touches first.
-    assert_eq!(router.table().lookup(9).unwrap().last_used, Some(at(1)));
+    assert_eq!(router.table().lookup(9).unwrap().last_used(), Some(at(1)));
 
     router.table_mut().mark_available(9);
     router.table_mut().mark_busy(9, at(30));

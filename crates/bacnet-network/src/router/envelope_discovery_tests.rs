@@ -195,9 +195,9 @@ async fn init_update_query_and_garbage_envelopes() {
         SendRequest::Broadcast { .. } => panic!("expected unicast ACK"),
     }
     let route = h.table().lookup(3000).unwrap();
-    assert_eq!(route.port, PortId(0));
-    assert!(!route.direct);
-    assert_eq!(route.next_hop.as_slice(), &[2]);
+    assert_eq!(route.port(), PortId(0));
+    assert!(!route.is_direct());
+    assert_eq!(route.next_hop().as_slice(), &[2]);
 
     // Valid query: one ACK carries the full table — ascending DNETs with
     // stable nonzero wire Port IDs (1000->1, 2000->2, 3000->1).
@@ -354,7 +354,7 @@ async fn directed_control_routed_not_consumed() {
     // The payload network was forwarded, not learned.
     let table = h.table();
     assert!(table.lookup(4000).is_none());
-    assert_eq!(table.lookup(3000).unwrap().port, PortId(1));
+    assert_eq!(table.lookup(3000).unwrap().port(), PortId(1));
 }
 
 #[tokio::test]

@@ -128,7 +128,7 @@ fn counters_saturate_without_affecting_decisions_and_snapshots_are_owned() {
         );
         table.record_learned();
         table.record_learning_cap();
-        let entry = table.lookup_mut(3000).unwrap();
+        let entry = &mut table.slot_mut(3000).unwrap().route;
         entry.flap_count = 2;
         entry.last_port_change = Some(now);
         assert!(table.learn(3000, PortId(1), Mac::EMPTY, now).flapping());

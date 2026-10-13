@@ -101,7 +101,7 @@ async fn directed_unknown_discovered_via_answer_routes_next_packet() {
         }
     }
     assert!(h.table().lookup(3000).is_some());
-    assert_eq!(h.table().lookup(3000).unwrap().port, PortId(1));
+    assert_eq!(h.table().lookup(3000).unwrap().port(), PortId(1));
     // Next packet to the now-known network forwards instead of rejecting.
     let mut npdu = control_npdu(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK, &[0x0b, 0xb8]);
     npdu.destination = Some(NpduAddress {

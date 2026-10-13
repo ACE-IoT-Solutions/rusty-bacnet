@@ -123,7 +123,7 @@ async fn plain_options_start_a_permissive_router_without_a_control_receiver() {
     }
     assert_eq!(router.control_snapshot().i_am.allow_total, 1);
     assert_eq!(
-        router.table().lookup(3000).unwrap().port,
+        router.table().lookup(3000).unwrap().port(),
         crate::router_table::PortId(1)
     );
 

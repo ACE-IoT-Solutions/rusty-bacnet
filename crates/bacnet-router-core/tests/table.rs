@@ -19,9 +19,9 @@ fn add_direct_and_lookup() {
     assert!(table.add_direct(1000, port(0)));
 
     let entry = table.lookup(1000).unwrap();
-    assert!(entry.direct);
-    assert_eq!(entry.port, port(0));
-    assert!(entry.next_hop.is_empty());
+    assert!(entry.is_direct());
+    assert_eq!(entry.port(), port(0));
+    assert!(entry.next_hop().is_empty());
 }
 
 #[test]
@@ -31,9 +31,9 @@ fn add_learned_route() {
     assert!(table.add_learned(2000, port(0), next_hop, BASE));
 
     let entry = table.lookup(2000).unwrap();
-    assert!(!entry.direct);
-    assert_eq!(entry.port, port(0));
-    assert_eq!(entry.next_hop, next_hop);
+    assert!(!entry.is_direct());
+    assert_eq!(entry.port(), port(0));
+    assert_eq!(*entry.next_hop(), next_hop);
 }
 
 #[test]
@@ -84,16 +84,16 @@ fn learned_route_does_not_override_direct() {
     table.add_direct(1000, port(0));
 
     let entry = table.lookup(1000).unwrap();
-    assert!(entry.direct);
-    assert_eq!(entry.port, port(0));
+    assert!(entry.is_direct());
+    assert_eq!(entry.port(), port(0));
 
     // add_learned does not overwrite a direct route.
     assert!(!table.add_learned(1000, port(1), mac(&[10, 0, 1, 1]), BASE));
 
     let entry = table.lookup(1000).unwrap();
-    assert!(entry.direct);
-    assert_eq!(entry.port, port(0));
-    assert!(entry.next_hop.is_empty());
+    assert!(entry.is_direct());
+    assert_eq!(entry.port(), port(0));
+    assert!(entry.next_hop().is_empty());
 }
 
 #[test]
@@ -102,15 +102,15 @@ fn add_learned_overwrites_existing_learned() {
     table.add_learned(3000, port(0), mac(&[10, 0, 1, 1]), BASE);
 
     let entry = table.lookup(3000).unwrap();
-    assert!(!entry.direct);
-    assert_eq!(entry.next_hop.as_slice(), &[10, 0, 1, 1]);
+    assert!(!entry.is_direct());
+    assert_eq!(entry.next_hop().as_slice(), &[10, 0, 1, 1]);
 
     table.add_learned(3000, port(1), mac(&[10, 0, 2, 1]), BASE);
 
     let entry = table.lookup(3000).unwrap();
-    assert!(!entry.direct);
-    assert_eq!(entry.port, port(1));
-    assert_eq!(entry.next_hop.as_slice(), &[10, 0, 2, 1]);
+    assert!(!entry.is_direct());
+    assert_eq!(entry.port(), port(1));
+    assert_eq!(entry.next_hop().as_slice(), &[10, 0, 2, 1]);
 }
 
 #[test]
@@ -151,14 +151,14 @@ fn touch_refreshes_timestamp() {
 fn learned_route_has_last_seen() {
     let mut table = Hosted::new();
     table.add_learned(3000, port(0), mac(&[1, 2, 3]), BASE);
-    assert_eq!(table.lookup(3000).unwrap().last_seen, Some(BASE));
+    assert_eq!(table.lookup(3000).unwrap().last_seen(), Some(BASE));
 }
 
 #[test]
 fn direct_route_has_no_last_seen() {
     let mut table = Hosted::new();
     table.add_direct(1000, port(0));
-    assert!(table.lookup(1000).unwrap().last_seen.is_none());
+    assert!(table.lookup(1000).unwrap().last_seen().is_none());
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn add_learned_flap_inserts_new_route() {
     let mut table = Hosted::new();
     let result = table.learn(3000, port(0), mac(&[10, 0, 1, 1]), BASE);
     assert_eq!(result, Learned::Applied);
-    assert_eq!(table.lookup(3000).unwrap().port, port(0));
+    assert_eq!(table.lookup(3000).unwrap().port(), port(0));
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn add_learned_flap_refreshes_same_port() {
     let result = table.learn(3000, port(0), mac(&[10, 0, 1, 2]), BASE);
     assert_eq!(result, Learned::Applied);
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.next_hop.as_slice(), &[10, 0, 1, 2]);
+    assert_eq!(entry.next_hop().as_slice(), &[10, 0, 1, 2]);
 }
 
 #[test]
@@ -208,8 +208,8 @@ fn add_learned_flap_always_updates_different_port() {
         }
     );
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.port, port(1));
-    assert_eq!(entry.next_hop.as_slice(), &[10, 0, 2, 1]);
+    assert_eq!(entry.port(), port(1));
+    assert_eq!(entry.next_hop().as_slice(), &[10, 0, 2, 1]);
 }
 
 #[test]
@@ -217,9 +217,9 @@ fn add_learned_flap_increments_flap_count() {
     let mut table = Hosted::new();
     table.learn(3000, port(0), mac(&[10, 0, 1, 1]), BASE);
     table.learn(3000, port(1), mac(&[10, 0, 2, 1]), BASE);
-    assert_eq!(table.lookup(3000).unwrap().flap_count, 1);
+    assert_eq!(table.lookup(3000).unwrap().flap_count(), 1);
     let result = table.learn(3000, port(0), mac(&[10, 0, 1, 1]), BASE);
-    assert_eq!(table.lookup(3000).unwrap().flap_count, 2);
+    assert_eq!(table.lookup(3000).unwrap().flap_count(), 2);
     assert!(result.applied() && !result.flapping());
     // The third move within the window is reported.
     assert!(table.learn(3000, port(1), Mac::EMPTY, BASE).flapping());
@@ -232,7 +232,7 @@ fn add_learned_flap_rejects_direct_route() {
     table.add_direct(1000, port(0));
     let result = table.learn(1000, port(1), mac(&[10, 0, 2, 1]), BASE);
     assert_eq!(result, Learned::Refused(LearnRefusal::Direct));
-    assert!(table.lookup(1000).unwrap().direct);
+    assert!(table.lookup(1000).unwrap().is_direct());
 }
 
 #[test]
@@ -261,7 +261,7 @@ fn the_flap_window_is_sixty_seconds_exclusive() {
             flaps: 1
         }
     );
-    assert_eq!(table.lookup(3000).unwrap().flap_count, 1);
+    assert_eq!(table.lookup(3000).unwrap().flap_count(), 1);
 }
 
 #[test]
@@ -271,8 +271,8 @@ fn mark_busy_sets_reachability_and_deadline() {
     let deadline = BASE + secs(30);
     table.mark_busy(3000, deadline);
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.reachability, Reachability::Busy);
-    assert_eq!(entry.busy_until, Some(deadline));
+    assert_eq!(entry.reachability(), Reachability::Busy);
+    assert_eq!(entry.busy_until(), Some(deadline));
 }
 
 #[test]
@@ -282,8 +282,8 @@ fn mark_available_clears_busy() {
     table.mark_busy(3000, BASE + secs(30));
     table.mark_available(3000);
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.reachability, Reachability::Reachable);
-    assert!(entry.busy_until.is_none());
+    assert_eq!(entry.reachability(), Reachability::Reachable);
+    assert!(entry.busy_until().is_none());
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn mark_unreachable_keeps_entry() {
     table.add_learned(3000, port(0), mac(&[1, 2, 3]), BASE);
     table.mark_unreachable(3000);
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.reachability, Reachability::Unreachable);
+    assert_eq!(entry.reachability(), Reachability::Unreachable);
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn mark_unreachable_does_not_affect_direct_routes() {
     table.add_direct(1000, port(0));
     table.mark_unreachable(1000);
     let entry = table.lookup(1000).unwrap();
-    assert_eq!(entry.reachability, Reachability::Reachable);
+    assert_eq!(entry.reachability(), Reachability::Reachable);
 }
 
 #[test]
@@ -311,8 +311,8 @@ fn clear_expired_busy_clears_elapsed_deadlines() {
     table.mark_busy(3000, BASE - secs(1));
     assert_eq!(table.clear_expired_busy(BASE), 1);
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.reachability, Reachability::Reachable);
-    assert!(entry.busy_until.is_none());
+    assert_eq!(entry.reachability(), Reachability::Reachable);
+    assert!(entry.busy_until().is_none());
 }
 
 #[test]
@@ -322,11 +322,14 @@ fn clear_expired_busy_clears_a_deadline_of_exactly_now() {
     table.mark_busy(3000, BASE);
     // Just before the deadline the mark stays; at it, the sweep clears it.
     assert_eq!(table.clear_expired_busy(BASE - NANO), 0);
-    assert_eq!(table.lookup(3000).unwrap().reachability, Reachability::Busy);
+    assert_eq!(
+        table.lookup(3000).unwrap().reachability(),
+        Reachability::Busy
+    );
     assert_eq!(table.clear_expired_busy(BASE), 1);
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.reachability, Reachability::Reachable);
-    assert!(entry.busy_until.is_none());
+    assert_eq!(entry.reachability(), Reachability::Reachable);
+    assert!(entry.busy_until().is_none());
 }
 
 #[test]
@@ -357,13 +360,13 @@ fn effective_reachability_returns_busy_when_deadline_not_elapsed() {
 fn touch_updates_used_only_and_expiry_keys_off_seen() {
     let mut table = Hosted::new();
     table.add_learned(3000, port(0), mac(&[1]), BASE);
-    assert!(table.lookup(3000).unwrap().last_used.is_none());
+    assert!(table.lookup(3000).unwrap().last_used().is_none());
     for i in 1..=100 {
         table.touch(3000, BASE + secs(i));
     }
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.last_seen, Some(BASE));
-    assert_eq!(entry.last_used, Some(BASE + secs(100)));
+    assert_eq!(entry.last_seen(), Some(BASE));
+    assert_eq!(entry.last_used(), Some(BASE + secs(100)));
     // Sustained traffic did not slide expiry: the 300 s rescue still fires.
     assert_eq!(purge(&mut table, BASE + secs(301), secs(300)), [3000]);
     assert!(table.lookup(3000).is_none());
@@ -375,8 +378,8 @@ fn expiry_without_traffic_fires_on_seen_and_directs_never_expire() {
     table.add_learned(3000, port(0), mac(&[1]), BASE);
     table.add_direct(1000, port(0));
     table.touch(1000, BASE + secs(10));
-    assert!(table.lookup(1000).unwrap().last_seen.is_none());
-    assert!(table.lookup(1000).unwrap().last_used.is_none());
+    assert!(table.lookup(1000).unwrap().last_seen().is_none());
+    assert!(table.lookup(1000).unwrap().last_used().is_none());
     // At exactly the age the route stays; past it, it goes.
     assert!(purge(&mut table, BASE + secs(300), secs(300)).is_empty());
     assert_eq!(purge(&mut table, BASE + secs(301), secs(300)), [3000]);
@@ -392,9 +395,9 @@ fn same_port_refresh_updates_seen_preserves_used() {
         .apply_claim(3000, port(0), mac(&[2]), BASE + secs(20), &TIMING)
         .applied());
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.last_seen, Some(BASE + secs(20)));
-    assert_eq!(entry.last_used, Some(BASE + secs(10)));
-    assert_eq!(entry.next_hop.as_slice(), &[2]);
+    assert_eq!(entry.last_seen(), Some(BASE + secs(20)));
+    assert_eq!(entry.last_used(), Some(BASE + secs(10)));
+    assert_eq!(entry.next_hop().as_slice(), &[2]);
 }
 
 #[test]
@@ -404,12 +407,12 @@ fn busy_available_touch_neither_timestamp() {
     table.touch(3000, BASE + secs(5));
     table.mark_busy(3000, BASE + secs(35));
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.last_seen, Some(BASE));
-    assert_eq!(entry.last_used, Some(BASE + secs(5)));
+    assert_eq!(entry.last_seen(), Some(BASE));
+    assert_eq!(entry.last_used(), Some(BASE + secs(5)));
     table.mark_available(3000);
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.last_seen, Some(BASE));
-    assert_eq!(entry.last_used, Some(BASE + secs(5)));
+    assert_eq!(entry.last_seen(), Some(BASE));
+    assert_eq!(entry.last_used(), Some(BASE + secs(5)));
 }
 
 // --- Management and wire Port IDs (init_routing_table_tests.rs) ---
@@ -440,14 +443,14 @@ fn management_updates_never_touch_direct_routes() {
     assert!(table.apply_management_update(3000, port(1), mac(&[2]), BASE + secs(2)));
     assert!(table.apply_management_update(4000, port(1), mac(&[3]), BASE + secs(2)));
     let entry = table.lookup(3000).unwrap();
-    assert_eq!((entry.port, entry.next_hop), (port(1), mac(&[2])));
-    assert_eq!(entry.last_seen, Some(BASE + secs(2)));
-    assert_eq!(entry.last_used, None);
+    assert_eq!((entry.port(), *entry.next_hop()), (port(1), mac(&[2])));
+    assert_eq!(entry.last_seen(), Some(BASE + secs(2)));
+    assert_eq!(entry.last_used(), None);
     // Direct rows and reserved networks are left alone.
     assert!(!table.apply_management_update(1000, port(1), mac(&[2]), BASE));
     assert!(!table.apply_management_update(0, port(1), mac(&[2]), BASE));
     assert!(!table.apply_management_update(0xFFFF, port(1), mac(&[2]), BASE));
-    assert!(table.lookup(1000).unwrap().direct);
+    assert!(table.lookup(1000).unwrap().is_direct());
 
     // Port ID 0 deletes a learned row, never a direct one.
     assert!(table.apply_management_removal(3000));
@@ -625,7 +628,7 @@ proptest! {
             }
             let stored: Vec<(u16, u8, bool)> = table
                 .routes()
-                .map(|(n, route)| (n, route.port.0, route.direct))
+                .map(|(n, route)| (n, route.port().0, route.is_direct()))
                 .collect();
             let expected: Vec<(u16, u8, bool)> =
                 model.iter().map(|(n, (p, direct, _))| (*n, *p, *direct)).collect();

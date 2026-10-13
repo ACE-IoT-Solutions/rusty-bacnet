@@ -69,10 +69,10 @@ fn updates_apply_in_order_and_ack_empty() {
     );
     let route = router.table().lookup(45).unwrap();
     assert_eq!(
-        (route.port, route.next_hop.as_slice(), route.last_seen),
+        (route.port(), route.next_hop().as_slice(), route.last_seen()),
         (PortId(0), R7, Some(at(1)))
     );
-    assert!(router.table().lookup(1).unwrap().direct);
+    assert!(router.table().lookup(1).unwrap().is_direct());
 
     assert_eq!(sent.len(), 1);
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (1, Some(R7)));
@@ -260,7 +260,7 @@ fn ack_entries_are_learned_through_the_arrival_port() {
     assert!(sent.is_empty());
     for network in [44, 45] {
         let route = router.table().lookup(network).unwrap();
-        assert_eq!((route.port, route.next_hop.as_slice()), (PortId(1), R7));
+        assert_eq!((route.port(), route.next_hop().as_slice()), (PortId(1), R7));
     }
     assert_eq!(router.table().len(), 4);
     assert_eq!(host.asked[0].targets, [44, 0, 45]);

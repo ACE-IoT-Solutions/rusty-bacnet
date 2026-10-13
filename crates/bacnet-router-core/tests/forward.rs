@@ -437,5 +437,5 @@ fn sends_carry_the_npdu_priority() {
         let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&request), at(1));
         assert_eq!(sent[0].priority, priority);
     }
-    assert_eq!(router.table().lookup(2).unwrap().port, PortId(1));
+    assert_eq!(router.table().lookup(2).unwrap().port(), PortId(1));
 }

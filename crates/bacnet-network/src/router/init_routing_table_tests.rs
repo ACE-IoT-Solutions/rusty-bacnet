@@ -51,7 +51,7 @@ async fn zero_entry_query_leaves_table_untouched() {
         let tbl = h.table();
         let mut rows: Vec<(u16, usize, bool)> = tbl
             .routes()
-            .map(|(net, entry)| (net, usize::from(entry.port.0), entry.direct))
+            .map(|(net, entry)| (net, usize::from(entry.port().0), entry.is_direct()))
             .collect();
         rows.sort_unstable();
         rows
@@ -75,7 +75,7 @@ async fn zero_entry_query_leaves_table_untouched() {
         let tbl = h.table();
         let mut rows: Vec<(u16, usize, bool)> = tbl
             .routes()
-            .map(|(net, entry)| (net, usize::from(entry.port.0), entry.direct))
+            .map(|(net, entry)| (net, usize::from(entry.port().0), entry.is_direct()))
             .collect();
         rows.sort_unstable();
         rows
@@ -120,12 +120,12 @@ async fn update_installs_learned_route_on_mapped_port() {
     assert!(decoded.payload.is_empty());
     let table = h.table();
     let route = table.lookup(4000).unwrap();
-    assert_eq!(route.port, PortId(1));
-    assert!(!route.direct);
-    assert_eq!(route.next_hop.as_slice(), &[9]);
+    assert_eq!(route.port(), PortId(1));
+    assert!(!route.is_direct());
+    assert_eq!(route.next_hop().as_slice(), &[9]);
     // Configured attachments are untouched.
-    assert!(table.lookup(1000).unwrap().direct);
-    assert!(table.lookup(2000).unwrap().direct);
+    assert!(table.lookup(1000).unwrap().is_direct());
+    assert!(table.lookup(2000).unwrap().is_direct());
     assert_eq!(table.claim_counters(), ClaimCounters::default());
 }
 
@@ -152,8 +152,8 @@ async fn purge_removes_learned_but_preserves_direct() {
     let table = h.table();
     assert!(table.lookup(3000).is_none());
     let direct = table.lookup(1000).unwrap();
-    assert!(direct.direct);
-    assert_eq!(direct.port, PortId(0));
+    assert!(direct.is_direct());
+    assert_eq!(direct.port(), PortId(0));
 }
 
 #[tokio::test]
@@ -176,9 +176,9 @@ async fn replacement_rewrites_learned_mapping_in_one_message() {
     assert_eq!(unicast_payloads(h.drain(0)).len(), 1);
     let table = h.table();
     let route = table.lookup(3000).unwrap();
-    assert_eq!(route.port, PortId(1));
-    assert!(!route.direct);
-    assert_eq!(route.next_hop.as_slice(), &[9]);
+    assert_eq!(route.port(), PortId(1));
+    assert!(!route.is_direct());
+    assert_eq!(route.next_hop().as_slice(), &[9]);
     assert_eq!(table.claim_counters().learned_ok, 0);
 }
 
@@ -202,8 +202,8 @@ async fn intra_message_order_is_last_wins() {
     assert!(table.lookup(4000).is_none());
     // Purged (absent no-op) then added via Port ID 1: learned on port 0.
     let route = table.lookup(5000).unwrap();
-    assert_eq!(route.port, PortId(0));
-    assert!(!route.direct);
+    assert_eq!(route.port(), PortId(0));
+    assert!(!route.is_direct());
 }
 
 #[tokio::test]
@@ -256,7 +256,7 @@ async fn unknown_port_and_reserved_networks_skip_rest_applies() {
     assert!(decode_npdu(replies[0].clone()).unwrap().payload.is_empty());
     let table = h.table();
     assert!(table.lookup(7000).is_none());
-    assert_eq!(table.lookup(7001).unwrap().port, PortId(1));
+    assert_eq!(table.lookup(7001).unwrap().port(), PortId(1));
     assert_eq!(table.len(), 3);
 }
 
@@ -286,9 +286,9 @@ async fn reserved_entry_does_not_consume_cap_or_hide_suffix() {
     let table = h.table();
     assert_eq!(table.len(), 256);
     let route = table.lookup(1).unwrap();
-    assert_eq!(route.port, PortId(1));
-    assert!(!route.direct);
-    assert_eq!(route.next_hop.as_slice(), &[9]);
+    assert_eq!(route.port(), PortId(1));
+    assert!(!route.is_direct());
+    assert_eq!(route.next_hop().as_slice(), &[9]);
     assert_eq!(table.claim_counters(), ClaimCounters::default());
 }
 
@@ -458,9 +458,9 @@ async fn ack_claims_learn_via_ingress_and_never_reconfigure() {
     {
         let table = h.table();
         let direct = table.lookup(1000).unwrap();
-        assert!(direct.direct);
-        assert_eq!(direct.port, PortId(0));
-        assert_eq!(table.lookup(3000).unwrap().port, PortId(0));
+        assert!(direct.is_direct());
+        assert_eq!(direct.port(), PortId(0));
+        assert_eq!(table.lookup(3000).unwrap().port(), PortId(0));
     }
     // Repeat corroborates: 3000 moves via the ingress port (1), never via
     // the sender's Port ID; the direct entry is still intact.
@@ -476,10 +476,10 @@ async fn ack_claims_learn_via_ingress_and_never_reconfigure() {
     h.assert_quiet();
     let table = h.table();
     let moved = table.lookup(3000).unwrap();
-    assert_eq!(moved.port, PortId(1));
-    assert!(!moved.direct);
-    assert_eq!(moved.next_hop.as_slice(), &[2]);
-    assert!(table.lookup(1000).unwrap().direct);
+    assert_eq!(moved.port(), PortId(1));
+    assert!(!moved.is_direct());
+    assert_eq!(moved.next_hop().as_slice(), &[2]);
+    assert!(table.lookup(1000).unwrap().is_direct());
     assert_eq!(
         table.claim_counters(),
         claim_counts(|c| {
@@ -530,8 +530,8 @@ async fn update_ack_round_trip_is_stable() {
     // Learned entries restore as learned on the mapped ports; the direct
     // entries the answer re-states are refused, staying exactly as before.
     let route = table.lookup(3000).unwrap();
-    assert_eq!(route.port, PortId(1));
-    assert!(!route.direct);
-    assert!(table.lookup(1000).unwrap().direct);
-    assert!(table.lookup(2000).unwrap().direct);
+    assert_eq!(route.port(), PortId(1));
+    assert!(!route.is_direct());
+    assert!(table.lookup(1000).unwrap().is_direct());
+    assert!(table.lookup(2000).unwrap().is_direct());
 }

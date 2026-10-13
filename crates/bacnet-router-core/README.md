@@ -75,7 +75,7 @@ let frame = [0x01, 0x20, 0x00, 0x09, 0x01, 0x05, 0xFF, 0x10, 0x08];
 let npdu = Npdu::parse(&frame).unwrap();
 let dnet = npdu.destination.unwrap().network;
 let route = table.lookup(dnet).unwrap();
-assert_eq!(route.port, PortId(1));
+assert_eq!(route.port(), PortId(1));
 assert_eq!(table.effective_reachability(dnet, now), Some(Reachability::Reachable));
 
 // Toward the next router the destination stays, the arrival network and

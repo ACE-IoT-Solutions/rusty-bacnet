@@ -130,8 +130,8 @@ fn a_discovery_learning_and_aging() {
     assert_eq!(sent.len(), 1);
     list_broadcast(&sent[0], 0, Kind::Relay(i_am_type), i_am_type, &[9]);
     let route = router.table().lookup(9).unwrap();
-    assert_eq!((route.port, route.next_hop.as_slice()), (PortId(1), R7));
-    assert_eq!(route.last_seen, Some(at(3)));
+    assert_eq!((route.port(), route.next_hop().as_slice()), (PortId(1), R7));
+    assert_eq!(route.last_seen(), Some(at(3)));
     assert_eq!(
         host.events,
         [Event::Learned {
@@ -147,7 +147,7 @@ fn a_discovery_learning_and_aging() {
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &from_a_to_9(), at(4));
     assert_eq!(sent.len(), 1);
     forwarded_to_r7(&sent[0]);
-    assert_eq!(router.table().lookup(9).unwrap().last_used, Some(at(4)));
+    assert_eq!(router.table().lookup(9).unwrap().last_used(), Some(at(4)));
     assert_eq!(router.counters(), counts(2, 1));
 
     // t = 60 s: the sweep forgets the search for 9 (59 s old, past 30 s),
@@ -184,8 +184,8 @@ fn a_discovery_learning_and_aging() {
     assert_eq!(host.events.len(), before, "no sweep removed anything");
     assert_eq!(router.next_deadline(), Some(at(360)));
     let route = router.table().lookup(9).unwrap();
-    assert_eq!(route.last_seen, Some(at(3)));
-    assert_eq!(route.last_used, Some(at(294)));
+    assert_eq!(route.last_seen(), Some(at(3)));
+    assert_eq!(route.last_used(), Some(at(294)));
 
     // t = 360 s: confirmed last at 3 s, so 357 s old: purged.
     router.on_deadline(at(360), &mut host);
@@ -227,7 +227,7 @@ fn b_flow_control() {
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!(sent.len(), 1);
     list_broadcast(&sent[0], 0, Kind::Relay(busy_type), busy_type, &[9]);
-    assert_eq!(router.table().lookup(9).unwrap().busy_until, Some(at(40)));
+    assert_eq!(router.table().lookup(9).unwrap().busy_until(), Some(at(40)));
     assert_eq!(host.events, [marked(9, true)]);
     assert_eq!(router.counters(), counts(0, 0));
 
@@ -286,7 +286,7 @@ fn b_flow_control() {
     assert_eq!(sent.len(), 1);
     forwarded_to_r7(&sent[0]);
     assert_eq!(
-        router.table().lookup(9).unwrap().reachability,
+        router.table().lookup(9).unwrap().reachability(),
         Reachability::Busy,
         "the stored mark waits for the sweep; the decision didn't"
     );
@@ -304,7 +304,7 @@ fn c_received_rejects() {
     learn_9_via_r7(&mut router, at(0));
     let reject =
         |why: RejectReason| message(MessageType::REJECT_MESSAGE_TO_NETWORK, &reject_data(why, 9));
-    let state = |router: &TestRouter| router.table().lookup(9).map(|r| r.reachability);
+    let state = |router: &TestRouter| router.table().lookup(9).map(|r| r.reachability());
     let mut step = |router: &mut TestRouter, why: RejectReason, second: u64| {
         let frame = reject(why);
         let (outcome, sent) = deliver(router, &mut host, 1, R7, &frame, at(second));
@@ -418,7 +418,7 @@ fn d_hardened_convergence() {
             c.corroborated_applied = corroborated_applied;
         })
     };
-    let route_port = |router: &TestRouter| router.table().lookup(9).unwrap().port;
+    let route_port = |router: &TestRouter| router.table().lookup(9).unwrap().port();
     let from_port_1 = apdu_to(9, &[5], CONFIRMED);
 
     // t = 0: a new network is learned at once.
@@ -449,7 +449,7 @@ fn d_hardened_convergence() {
     // which is inclusive, so 9 moves to port 0 and B.
     claim(&mut router, 0, B, 61);
     let route = router.table().lookup(9).unwrap();
-    assert_eq!((route.port, route.next_hop.as_slice()), (PortId(0), B));
+    assert_eq!((route.port(), route.next_hop().as_slice()), (PortId(0), B));
     assert_eq!(router.table().claim_counters(), claims(2, 1, 1));
     let (_, sent) = deliver(
         &mut router,
@@ -494,7 +494,7 @@ fn d_a_repeat_past_the_window_starts_over() {
     deliver_broadcast(&mut router, &mut host, 0, B, &i_am(&[9]), at(1));
     let late = Instant::from_nanos(at(61).as_nanos() + 1);
     deliver_broadcast(&mut router, &mut host, 0, B, &i_am(&[9]), late);
-    assert_eq!(router.table().lookup(9).unwrap().port, PortId(1));
+    assert_eq!(router.table().lookup(9).unwrap().port(), PortId(1));
     assert_eq!(router.table().pending(9).unwrap().first_seen, late);
     let counters = router.table().claim_counters();
     assert_eq!((counters.pending_started, counters.pending_expired), (2, 1));

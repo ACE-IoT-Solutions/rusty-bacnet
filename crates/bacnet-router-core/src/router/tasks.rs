@@ -160,7 +160,7 @@ fn wire_entries<const R: usize, const H: usize>(
     table
         .routes()
         .filter(move |(network, _)| u32::from(*network) >= from)
-        .filter_map(|(network, route)| Some((network, route.port.wire_id()?)))
+        .filter_map(|(network, route)| Some((network, route.port().wire_id()?)))
 }
 
 /// Every other port's network, in port order.
@@ -219,7 +219,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                     .table
                     .routes()
                     .filter(move |(_, route)| {
-                        route.port != task.port && route.reachability != Reachability::Unreachable
+                        route.port() != task.port
+                            && route.reachability() != Reachability::Unreachable
                     })
                     .map(|(network, _)| network)
                     .peekable();

@@ -124,15 +124,15 @@ async fn i_am_refresh_rearms_rejects_and_corroborated_learning_still_warns() {
         {
             let table = h.table();
             let route = table.lookup(3000).unwrap();
-            assert_eq!(route.port, PortId(port as u8));
-            assert_eq!(route.next_hop.as_slice(), &[index as u8]);
-            assert_eq!(route.reachability, Reachability::Reachable);
+            assert_eq!(route.port(), PortId(port as u8));
+            assert_eq!(route.next_hop().as_slice(), &[index as u8]);
+            assert_eq!(route.reachability(), Reachability::Reachable);
         }
         reject(&mut h, 0, &[1], 1).await;
         assert_eq!(reachability(&h, 3000), Some(Reachability::Unreachable));
     }
     let table = h.table();
-    assert_eq!(table.lookup(3000).unwrap().flap_count, 4);
+    assert_eq!(table.lookup(3000).unwrap().flap_count(), 4);
     assert_eq!(
         table.claim_counters(),
         claim_counts(|c| {
@@ -192,7 +192,7 @@ async fn truncated_tails_change_nothing_and_send_no_ack() {
     .await;
     let table = h.table();
     assert_eq!(table.len(), 2);
-    assert!(table.lookup(1000).unwrap().direct);
+    assert!(table.lookup(1000).unwrap().is_direct());
     assert!(table.lookup(3000).is_none());
     assert!(table.lookup(4000).is_none());
     assert_eq!(table.claim_counters(), ClaimCounters::default());
@@ -229,7 +229,7 @@ async fn each_learning_cap_counts_its_inspected_stop_without_changing_tail_handl
             let table = h.table();
             assert_eq!(table.len(), 256);
             assert!(table.lookup(3000).is_none());
-            assert_eq!(table.lookup(1).unwrap().port, PortId(0));
+            assert_eq!(table.lookup(1).unwrap().port(), PortId(0));
             assert_eq!(
                 table.claim_counters(),
                 claim_counts(|c| c.learned_cap_ignored = 1)
@@ -244,12 +244,12 @@ async fn each_learning_cap_counts_its_inspected_stop_without_changing_tail_handl
         };
         deliver(&mut h, 1, &[2], message_type, existing).await;
         if message_type == NetworkMessageType::I_AM_ROUTER_TO_NETWORK {
-            assert_eq!(h.table().lookup(1).unwrap().port, PortId(0));
+            assert_eq!(h.table().lookup(1).unwrap().port(), PortId(0));
             deliver(&mut h, 1, &[2], message_type, existing).await;
         }
         let table = h.table();
         let refreshed = message_type == NetworkMessageType::I_AM_ROUTER_TO_NETWORK;
-        assert_eq!(table.lookup(1).unwrap().port, PortId(u8::from(refreshed)));
+        assert_eq!(table.lookup(1).unwrap().port(), PortId(u8::from(refreshed)));
         assert_eq!(table.claim_counters().learned_ok, u64::from(refreshed));
         assert_eq!(
             table.claim_counters().learned_cap_ignored,
@@ -299,9 +299,9 @@ async fn init_management_keeps_cap_for_new_entries_and_replaces_existing() {
     .await;
     let table = h.table();
     let route = table.lookup(1).unwrap();
-    assert_eq!(route.port, PortId(1));
-    assert!(!route.direct);
-    assert_eq!(route.next_hop.as_slice(), &[2]);
+    assert_eq!(route.port(), PortId(1));
+    assert!(!route.is_direct());
+    assert_eq!(route.next_hop().as_slice(), &[2]);
     assert_eq!(
         table.claim_counters(),
         claim_counts(|c| c.learned_cap_ignored = 1)
@@ -329,7 +329,7 @@ async fn direct_route_immunity_and_malformed_rejects_under_spam() {
     }
     assert_eq!(reachability(&h, 3000), Some(Reachability::Reachable));
     let table = h.table();
-    assert!(table.lookup(3000).unwrap().direct);
+    assert!(table.lookup(3000).unwrap().is_direct());
     assert_eq!(
         table.claim_counters(),
         claim_counts(|c| {
@@ -370,8 +370,8 @@ async fn init_replace_and_ack_refresh_both_rearm_reject_hold_down() {
     assert_eq!(reachability(&h, 3000), Some(Reachability::Busy));
     let table = h.table();
     let route = table.lookup(3000).unwrap();
-    assert_eq!(route.port, PortId(0));
-    assert_eq!(route.next_hop.as_slice(), &[2]);
+    assert_eq!(route.port(), PortId(0));
+    assert_eq!(route.next_hop().as_slice(), &[2]);
     assert_eq!(
         table.claim_counters(),
         claim_counts(|c| {

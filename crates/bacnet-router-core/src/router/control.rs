@@ -174,7 +174,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             Ok(WhoIsRouter::Network(network)) => network,
         };
         match self.table.lookup(network) {
-            Some(route) if route.port != at.port => {
+            Some(route) if route.port() != at.port => {
                 self.out.push(Task::i_am_answer(at.port, Some(network)));
                 return Received::Handled;
             }
@@ -269,7 +269,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             host.observe(Event::RouteCap { class });
             return false;
         }
-        let moving = route.is_some_and(|route| !route.direct && route.port != at.port);
+        let moving = route.is_some_and(|route| !route.is_direct() && route.port() != at.port);
         if moving && !claimed.insert(network) {
             return true;
         }

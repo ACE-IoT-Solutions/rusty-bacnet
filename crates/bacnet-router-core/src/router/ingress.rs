@@ -243,7 +243,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return Received::Handled;
         };
         let mut delivered = None;
-        if route.port == at.port && route.direct {
+        if route.port() == at.port && route.is_direct() {
             let own = &self.ports[usize::from(at.port.0)].mac;
             if *own == *destination.mac {
                 return Received::Local(local(npdu, false, false));
@@ -269,7 +269,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                     network: destination.network,
                     mac: &[],
                 });
-                if route.port == at.port {
+                if route.port() == at.port {
                     delivered = Some(local(&npdu, true, false));
                 }
             }
@@ -326,8 +326,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// 0 broadcast, and a DADR beyond another router, are [`Group::No`].
     pub(super) fn group_of(&self, route: &Route, npdu: &Npdu<'_>, host: &impl Host) -> Group {
         match npdu.destination {
-            Some(destination) if route.direct && !destination.mac.is_empty() => {
-                host.group(route.port, destination.mac)
+            Some(destination) if route.is_direct() && !destination.mac.is_empty() => {
+                host.group(route.port(), destination.mac)
             }
             _ => Group::No,
         }

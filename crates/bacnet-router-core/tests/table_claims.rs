@@ -28,14 +28,14 @@ fn corroboration_inclusive_deadline_and_expiry_restart() {
     ] {
         let mut table = learned_table();
         let now = BASE;
-        let seen = table.lookup(3000).unwrap().last_seen;
+        let seen = table.lookup(3000).unwrap().last_seen();
         assert_eq!(
             table.apply_claim(3000, port(1), mac(&[2]), now, &TIMING),
             Learned::Held
         );
-        assert_eq!(table.lookup(3000).unwrap().port, port(0));
-        assert_eq!(table.lookup(3000).unwrap().last_seen, seen);
-        assert_eq!(table.lookup(3000).unwrap().next_hop.as_slice(), &[1]);
+        assert_eq!(table.lookup(3000).unwrap().port(), port(0));
+        assert_eq!(table.lookup(3000).unwrap().last_seen(), seen);
+        assert_eq!(table.lookup(3000).unwrap().next_hop().as_slice(), &[1]);
         assert_eq!(
             table.claim_counters(),
             claim_counts(|c| c.pending_started = 1)
@@ -43,7 +43,10 @@ fn corroboration_inclusive_deadline_and_expiry_restart() {
 
         let applies = elapsed <= CORROBORATION_WINDOW;
         assert_eq!(claim(&mut table, 1, now + elapsed), applies);
-        assert_eq!(table.lookup(3000).unwrap().port, PortId(u8::from(applies)));
+        assert_eq!(
+            table.lookup(3000).unwrap().port(),
+            PortId(u8::from(applies))
+        );
         assert_eq!(table.pending_count() == 0, applies);
         assert_eq!(
             table.claim_counters(),
@@ -55,7 +58,7 @@ fn corroboration_inclusive_deadline_and_expiry_restart() {
         );
         if !applies {
             assert_eq!(table.pending(3000).unwrap().first_seen, now + elapsed);
-            assert_eq!(table.lookup(3000).unwrap().last_seen, seen);
+            assert_eq!(table.lookup(3000).unwrap().last_seen(), seen);
             assert!(claim(&mut table, 1, now + elapsed + CORROBORATION_WINDOW));
             assert_eq!(table.pending_count(), 0);
             assert_eq!(table.claim_counters().corroborated_applied, 1);
@@ -68,12 +71,12 @@ fn corroboration_inclusive_deadline_and_expiry_restart() {
 fn spaced_single_claims_never_accumulate_or_refresh_old_route() {
     let mut table = learned_table();
     let now = BASE;
-    let seen = table.lookup(3000).unwrap().last_seen;
+    let seen = table.lookup(3000).unwrap().last_seen();
     for index in 0..10u32 {
         let at = now + (CORROBORATION_WINDOW + NANO).saturating_mul(index);
         assert!(!claim(&mut table, 1, at));
-        assert_eq!(table.lookup(3000).unwrap().port, port(0));
-        assert_eq!(table.lookup(3000).unwrap().last_seen, seen);
+        assert_eq!(table.lookup(3000).unwrap().port(), port(0));
+        assert_eq!(table.lookup(3000).unwrap().last_seen(), seen);
         assert_eq!(table.pending_count(), 1);
         assert_eq!(
             table.claim_counters(),
@@ -93,7 +96,7 @@ fn alternating_challengers_replace_slot_and_reset_first_seen() {
         let challenger = 1 + (second % 2) as u8;
         let time = now + secs(second);
         assert!(!claim(&mut table, challenger, time));
-        assert_eq!(table.lookup(3000).unwrap().port, port(0));
+        assert_eq!(table.lookup(3000).unwrap().port(), port(0));
         assert_eq!(table.pending_count(), 1);
         assert_eq!(table.pending(3000).unwrap().port, port(challenger));
         assert_eq!(table.pending(3000).unwrap().first_seen, time);
@@ -104,7 +107,7 @@ fn alternating_challengers_replace_slot_and_reset_first_seen() {
     );
     // Legitimate convergence resumes when a challenger can repeat uninterrupted.
     assert!(claim(&mut table, 2, now + secs(100)));
-    assert_eq!(table.lookup(3000).unwrap().port, port(2));
+    assert_eq!(table.lookup(3000).unwrap().port(), port(2));
     assert_eq!(table.claim_counters().corroborated_applied, 1);
 }
 
@@ -118,11 +121,11 @@ fn absent_current_port_direct_and_reserved_claims_remain_immediate() {
     table.mark_busy(3000, now + HOLD_DOWN);
     assert!(claim(&mut table, 0, now));
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.port, port(0));
-    assert_eq!(entry.reachability, Reachability::Reachable);
-    assert_eq!(entry.flap_count, 0);
-    assert!(entry.last_port_change.is_none());
-    assert!(entry.busy_until.is_none());
+    assert_eq!(entry.port(), port(0));
+    assert_eq!(entry.reachability(), Reachability::Reachable);
+    assert_eq!(entry.flap_count(), 0);
+    assert!(entry.last_port_change().is_none());
+    assert!(entry.busy_until().is_none());
     assert_eq!(table.pending_count(), 0);
     assert!(!claim(&mut table, 1, now)); // The refresh discarded the earlier vote.
     table.add_direct(3000, port(0));
@@ -139,7 +142,7 @@ fn absent_current_port_direct_and_reserved_claims_remain_immediate() {
         }
     }
     assert_eq!(table.len(), 1);
-    assert!(table.lookup(3000).unwrap().direct);
+    assert!(table.lookup(3000).unwrap().is_direct());
     assert_eq!(table.pending_count(), 0);
     assert_eq!(
         table.claim_counters(),
@@ -154,7 +157,7 @@ fn pending_claim_preserves_busy_and_reject_records_until_apply() {
     table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, now, &TIMING);
     assert!(!claim(&mut table, 1, now));
     assert_eq!(
-        table.lookup(3000).unwrap().busy_until,
+        table.lookup(3000).unwrap().busy_until(),
         Some(now + HOLD_DOWN)
     );
     // The busy mark's hold-down holds off a reason-1 change.
@@ -183,7 +186,7 @@ fn pending_claim_preserves_busy_and_reject_records_until_apply() {
         RejectEffect::Applied
     );
     assert_eq!(
-        table.lookup(3000).unwrap().reachability,
+        table.lookup(3000).unwrap().reachability(),
         Reachability::Reachable
     );
     assert_eq!(table.claim_counters().corroborated_applied, 1);
@@ -191,19 +194,12 @@ fn pending_claim_preserves_busy_and_reject_records_until_apply() {
 
 #[test]
 fn cleanup_never_leaves_pending_without_a_learned_route() {
-    for cleanup in [
-        "remove",
-        "aging",
-        "direct",
-        "manual",
-        "manual_flap",
-        "mutable",
-    ] {
+    for cleanup in ["remove", "aging", "direct", "manual", "manual_flap"] {
         let mut table = learned_table();
         let now = BASE;
-        // Age the route before the claim, so this exercises the purge rather
-        // than the hand-off through lookup_mut.
-        table.lookup_mut(3000).unwrap().last_seen = Some(now - secs(120));
+        // Confirm the route 120 s back before the claim, so "aging" purges
+        // it.
+        assert!(table.add_learned(3000, port(0), mac(&[1]), now - secs(120)));
         assert!(!claim(&mut table, 1, now));
         match cleanup {
             "remove" => {
@@ -219,7 +215,6 @@ fn cleanup_never_leaves_pending_without_a_learned_route() {
             "manual_flap" => {
                 assert!(table.learn(3000, port(2), Mac::EMPTY, now).applied());
             }
-            "mutable" => table.lookup_mut(3000).unwrap().direct = true,
             _ => unreachable!(),
         }
         assert_eq!(table.pending_count(), 0, "{cleanup}");
@@ -246,7 +241,10 @@ fn pending_store_is_bounded_and_networks_are_independent() {
                 .apply_claim(net, port(challenger), Mac::EMPTY, now, &TIMING)
                 .applied());
             assert_eq!(table.pending_count(), usize::from(net));
-            let learned = table.routes().filter(|(_, route)| !route.direct).count();
+            let learned = table
+                .routes()
+                .filter(|(_, route)| !route.is_direct())
+                .count();
             assert!(table.pending_count() <= learned);
         }
     }
@@ -273,14 +271,14 @@ fn flap_warnings_only_count_applied_moves_and_same_port_refresh_resets_history()
         assert!(!claim(&mut table, challenger, now));
         assert_eq!(table.claim_counters().flap_warned, 0);
         assert!(claim(&mut table, challenger, now));
-        assert_eq!(table.lookup(3000).unwrap().flap_count, challenger);
+        assert_eq!(table.lookup(3000).unwrap().flap_count(), challenger);
     }
     assert_eq!(table.claim_counters().flap_warned, 1);
     assert!(claim(&mut table, 3, now));
-    assert_eq!(table.lookup(3000).unwrap().flap_count, 0);
+    assert_eq!(table.lookup(3000).unwrap().flap_count(), 0);
     assert!(!claim(&mut table, 4, now));
     assert!(claim(&mut table, 4, now));
-    assert_eq!(table.lookup(3000).unwrap().flap_count, 1);
+    assert_eq!(table.lookup(3000).unwrap().flap_count(), 1);
     assert_eq!(table.claim_counters().flap_warned, 1);
 }
 
@@ -302,10 +300,10 @@ fn standard_converges_on_single_claim_under_sustained_traffic() {
         }
     );
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.port, port(1));
-    assert_eq!(entry.next_hop.as_slice(), &[2]);
-    assert_eq!(entry.last_seen, Some(BASE + secs(51)));
-    assert!(entry.last_used.is_none());
+    assert_eq!(entry.port(), port(1));
+    assert_eq!(entry.next_hop().as_slice(), &[2]);
+    assert_eq!(entry.last_seen(), Some(BASE + secs(51)));
+    assert!(entry.last_used().is_none());
     assert_eq!(table.pending_count(), 0);
     assert_eq!(table.claim_counters().pending_started, 0);
 }
@@ -317,7 +315,7 @@ fn hardened_holds_then_reaps_then_recovers() {
     assert!(!table
         .apply_claim(3000, port(1), mac(&[2]), BASE, &TIMING)
         .applied());
-    assert_eq!(table.lookup(3000).unwrap().port, port(0));
+    assert_eq!(table.lookup(3000).unwrap().port(), port(0));
     assert_eq!(table.pending_count(), 1);
     // The sweep clears the slot so a single-shot advertiser does not linger:
     // not at the window's end, which still counts, but past it.
@@ -332,7 +330,7 @@ fn hardened_holds_then_reaps_then_recovers() {
     assert!(table
         .apply_claim(3000, port(1), mac(&[2]), BASE + secs(63), &TIMING)
         .applied());
-    assert_eq!(table.lookup(3000).unwrap().port, port(1));
+    assert_eq!(table.lookup(3000).unwrap().port(), port(1));
     assert_eq!(table.claim_counters().corroborated_applied, 1);
 }
 
@@ -352,7 +350,7 @@ fn hardened_alternation_never_converges_robustness_only() {
                 &TIMING
             )
             .applied());
-        assert_eq!(table.lookup(3000).unwrap().port, port(0));
+        assert_eq!(table.lookup(3000).unwrap().port(), port(0));
     }
     assert_eq!(table.pending_count(), 1);
     assert_eq!(table.claim_counters().pending_started, 10);
@@ -389,5 +387,5 @@ fn the_corroboration_window_follows_the_timing_and_the_mode_can_change() {
     assert!(claim(&mut table, 3, BASE + secs(12)));
     assert_eq!(table.pending_count(), 0);
     assert_eq!(table.claim_counters().pending_expired, expired);
-    assert_eq!(table.lookup(3000).unwrap().port, port(3));
+    assert_eq!(table.lookup(3000).unwrap().port(), port(3));
 }

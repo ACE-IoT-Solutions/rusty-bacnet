@@ -316,12 +316,12 @@ async fn disconnect_retains_route_state_and_pending_and_counts_only_complete_req
     {
         let table = fixture.h.table();
         let route = table.lookup(3000).unwrap();
-        assert_eq!(route.last_seen, before.last_seen);
-        assert_eq!(route.busy_until, before.busy_until);
-        assert_eq!(route.flap_count, before.flap_count);
-        assert_eq!(route.last_port_change, before.last_port_change);
-        assert!(table.lookup(4000).unwrap().direct);
-        assert_eq!(table.lookup(4000).unwrap().port, PortId(2));
+        assert_eq!(route.last_seen(), before.last_seen());
+        assert_eq!(route.busy_until(), before.busy_until());
+        assert_eq!(route.flap_count(), before.flap_count());
+        assert_eq!(route.last_port_change(), before.last_port_change());
+        assert!(table.lookup(4000).unwrap().is_direct());
+        assert_eq!(table.lookup(4000).unwrap().port(), PortId(2));
         // The three direct routes and 3000.
         assert_eq!(table.len(), 4);
         assert_eq!(
