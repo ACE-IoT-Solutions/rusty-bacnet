@@ -34,18 +34,21 @@ macro_rules! named_codes {
 
             /// Wrap a raw wire value, named or not.
             #[inline]
+            #[must_use]
             pub const fn from_raw(value: $inner) -> Self {
                 Self(value)
             }
 
             /// The raw wire value.
             #[inline]
+            #[must_use]
             pub const fn to_raw(self) -> $inner {
                 self.0
             }
 
             /// The constant's name, or `None` for a value the standard
             /// doesn't define.
+            #[must_use]
             pub const fn name(self) -> Option<&'static str> {
                 match self.0 {
                     $( $val => Some(stringify!($VARIANT)), )*
@@ -54,6 +57,7 @@ macro_rules! named_codes {
             }
 
             /// Whether the standard defines this value.
+            #[must_use]
             pub const fn is_defined(self) -> bool {
                 self.name().is_some()
             }
@@ -166,6 +170,7 @@ pub enum PayloadShape {
 
 impl PayloadShape {
     /// Whether a payload of `length` octets fits this shape.
+    #[must_use]
     pub const fn admits(self, length: usize) -> bool {
         match self {
             Self::Fixed(fixed) => length == fixed,
@@ -200,6 +205,7 @@ impl BvlcFunction {
     /// );
     /// assert_eq!(BvlcFunction::from_raw(0x0C).payload_shape(), None);
     /// ```
+    #[must_use]
     pub const fn payload_shape(self) -> Option<PayloadShape> {
         Some(match self {
             Self::BVLC_RESULT | Self::REGISTER_FOREIGN_DEVICE => PayloadShape::Fixed(2),
@@ -232,6 +238,7 @@ impl BvlcFunction {
     /// A device that is not a BBMD answers a unicast request of these kinds
     /// with this code (J.2.1), and every device answers
     /// Write-Broadcast-Distribution-Table with it (J.4.4.2).
+    #[must_use]
     pub const fn nak(self) -> Option<BvlcResultCode> {
         Some(match self {
             Self::WRITE_BROADCAST_DISTRIBUTION_TABLE => {

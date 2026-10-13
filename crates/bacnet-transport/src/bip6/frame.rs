@@ -10,7 +10,8 @@ use bytes::BytesMut;
 /// Decode failures become [`Error::Decoding`] at the offset of the field at
 /// fault: 0 for the datagram as a whole, its type octet or a B/IPv6 address,
 /// 1 for the function, 2 for the Length field, 4 for the payload. Encode
-/// failures become [`Error::Encoding`].
+/// failures become [`Error::Encoding`], and so does an error the codec adds
+/// later, until it is placed here.
 pub fn bvll6_error(error: Bvll6Error) -> Error {
     let offset = match error {
         Bvll6Error::TooShort { .. }
@@ -22,6 +23,7 @@ pub fn bvll6_error(error: Bvll6Error) -> Error {
         Bvll6Error::TooLong { .. }
         | Bvll6Error::UndefinedResultCode { .. }
         | Bvll6Error::BufferExhausted { .. } => return Error::Encoding(error.to_string()),
+        _ => return Error::Encoding(error.to_string()),
     };
     Error::decoding(offset, error.to_string())
 }

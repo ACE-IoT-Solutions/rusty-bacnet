@@ -35,6 +35,16 @@
 //! also refuses a message longer than the Length field can state and a
 //! BVLC-Result with a code J.2.1.1 doesn't define.
 //!
+//! # Addresses
+//!
+//! A B/IP address is a plain [`SocketAddrV4`](core::net::SocketAddrV4), and
+//! [`address_to_octets`], [`address_from_octets`] and
+//! [`address_from_slice`] convert it to and from its six wire octets. Every
+//! field of a `SocketAddrV4` travels, so a type of its own would add
+//! nothing. B/IPv6 does get one, [`ipv6::Bip6Address`]: a `SocketAddrV6`
+//! also holds a flow label and a scope ID, which never go on the wire, and
+//! the type keeps only the 18 octets that do.
+//!
 //! # Features
 //!
 //! No feature needs `std`. Each adds a [`BvllSink`] implementation, which
@@ -64,6 +74,7 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
+#![warn(missing_debug_implementations, clippy::must_use_candidate)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

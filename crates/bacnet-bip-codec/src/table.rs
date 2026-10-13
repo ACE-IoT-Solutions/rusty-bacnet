@@ -24,6 +24,7 @@ const _: () = assert!(FDT_ENTRY_LENGTH == ENTRY_LENGTH);
 /// assert_eq!(address_to_octets(address), [192, 168, 1, 10, 0xBA, 0xC0]);
 /// assert_eq!(address_from_octets([192, 168, 1, 10, 0xBA, 0xC0]), address);
 /// ```
+#[must_use]
 pub const fn address_to_octets(address: SocketAddrV4) -> [u8; BIP_ADDRESS_LENGTH] {
     let [a, b, c, d] = address.ip().octets();
     let [high, low] = address.port().to_be_bytes();
@@ -31,6 +32,7 @@ pub const fn address_to_octets(address: SocketAddrV4) -> [u8; BIP_ADDRESS_LENGTH
 }
 
 /// The B/IP address six octets hold (Annex J.1.2).
+#[must_use]
 pub const fn address_from_octets(octets: [u8; BIP_ADDRESS_LENGTH]) -> SocketAddrV4 {
     let [a, b, c, d, high, low] = octets;
     SocketAddrV4::new(Ipv4Addr::new(a, b, c, d), u16::from_be_bytes([high, low]))
@@ -63,11 +65,13 @@ pub struct BdtEntry {
 
 impl BdtEntry {
     /// Construct an entry.
+    #[must_use]
     pub const fn new(address: SocketAddrV4, mask: Ipv4Addr) -> Self {
         Self { address, mask }
     }
 
     /// The entry's ten wire octets: address, then mask.
+    #[must_use]
     pub const fn to_octets(self) -> [u8; ENTRY_LENGTH] {
         let [a, b, c, d, high, low] = address_to_octets(self.address);
         let [m0, m1, m2, m3] = self.mask.octets();
@@ -75,6 +79,7 @@ impl BdtEntry {
     }
 
     /// The entry ten wire octets hold.
+    #[must_use]
     pub const fn from_octets(octets: [u8; ENTRY_LENGTH]) -> Self {
         let [a, b, c, d, high, low, m0, m1, m2, m3] = octets;
         Self {
@@ -100,6 +105,7 @@ pub struct FdtEntry {
 
 impl FdtEntry {
     /// Construct an entry.
+    #[must_use]
     pub const fn new(address: SocketAddrV4, ttl: u16, remaining: u16) -> Self {
         Self {
             address,
@@ -110,6 +116,7 @@ impl FdtEntry {
 
     /// The entry's ten wire octets: address, time-to-live, then remaining
     /// seconds.
+    #[must_use]
     pub const fn to_octets(self) -> [u8; ENTRY_LENGTH] {
         let [a, b, c, d, high, low] = address_to_octets(self.address);
         let [t0, t1] = self.ttl.to_be_bytes();
@@ -118,6 +125,7 @@ impl FdtEntry {
     }
 
     /// The entry ten wire octets hold.
+    #[must_use]
     pub const fn from_octets(octets: [u8; ENTRY_LENGTH]) -> Self {
         let [a, b, c, d, high, low, t0, t1, r0, r1] = octets;
         Self {
@@ -212,6 +220,7 @@ impl<'a, T: TableEntry> Entries<'a, T> {
     }
 
     /// A table of these entries, for encoding.
+    #[must_use]
     pub const fn from_entries(entries: &'a [T]) -> Self {
         Self {
             repr: Repr::Typed(entries),
@@ -219,6 +228,7 @@ impl<'a, T: TableEntry> Entries<'a, T> {
     }
 
     /// Number of entries.
+    #[must_use]
     pub const fn len(&self) -> usize {
         match self.repr {
             Repr::Wire(entries) => entries.len(),
@@ -227,11 +237,13 @@ impl<'a, T: TableEntry> Entries<'a, T> {
     }
 
     /// Whether the table has no entries.
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// The entries, in wire order.
+    #[must_use]
     pub fn iter(&self) -> EntryIter<'a, T> {
         EntryIter {
             repr: match self.repr {

@@ -336,6 +336,7 @@ pub enum Bvll6<'a> {
 
 impl<'a> Bvll6<'a> {
     /// The message's function code.
+    #[must_use]
     pub const fn function(&self) -> Bvlc6Function {
         match self {
             Self::BvlcResult { .. } => Bvlc6Function::BVLC_RESULT,
@@ -364,6 +365,7 @@ impl<'a> Bvll6<'a> {
     /// Forwarded-Address-Resolution), where it is the originating node's.
     /// Distribute-Broadcast-To-Network calls its VMAC the original source,
     /// but the foreign device that sends one is that source.
+    #[must_use]
     pub const fn source_vmac(&self) -> Bip6Vmac {
         match *self {
             Self::BvlcResult { source, .. }
@@ -393,6 +395,7 @@ impl<'a> Bvll6<'a> {
     /// The recipient's VMAC, for the three messages that name one:
     /// Original-Unicast-NPDU and the two ACKs. A node discards those when it
     /// isn't theirs (U.3).
+    #[must_use]
     pub const fn destination_vmac(&self) -> Option<Bip6Vmac> {
         match *self {
             Self::OriginalUnicastNpdu { destination, .. }
@@ -403,6 +406,7 @@ impl<'a> Bvll6<'a> {
     }
 
     /// The NPDU, for the four functions that carry one.
+    #[must_use]
     pub const fn npdu(&self) -> Option<&'a [u8]> {
         match *self {
             Self::OriginalUnicastNpdu { npdu, .. }
@@ -415,6 +419,7 @@ impl<'a> Bvll6<'a> {
 
     /// The originating node's B/IPv6 address, for the two messages a BBMD
     /// relays with one: Forwarded-NPDU and Forwarded-Address-Resolution.
+    #[must_use]
     pub const fn origin(&self) -> Option<Bip6Address> {
         match *self {
             Self::ForwardedNpdu {
