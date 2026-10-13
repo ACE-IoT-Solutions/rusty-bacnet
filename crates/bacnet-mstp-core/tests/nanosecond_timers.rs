@@ -3,7 +3,7 @@
 //! counted microseconds, printed from that build; each must now be exactly
 //! 1000 times as many nanoseconds.
 
-use bacnet_mstp_core::{ConfigError, Duration, MstpCoreConfig, LATE_DEADLINE};
+use bacnet_mstp_core::{ConfigError, Duration, MstpCoreConfig, LATE_DEADLINE, T_NO_TOKEN, T_SLOT};
 
 /// One baud rate's values from the microsecond core, all in microseconds.
 struct Golden {
@@ -56,58 +56,33 @@ fn ns(micros: u64) -> u64 {
     micros * 1_000
 }
 
+/// `config` with `edit` applied: `MstpCoreConfig` is `#[non_exhaustive]`,
+/// so a changed copy is built by field writes.
+fn with(mut config: MstpCoreConfig, edit: impl FnOnce(&mut MstpCoreConfig)) -> MstpCoreConfig {
+    edit(&mut config);
+    config
+}
+
 /// Validation's four bit-time bounds at `baud`, read from the errors it
 /// returns for values just outside them, as the microsecond core's were.
 fn bounds(baud: u32) -> [Duration; 4] {
-    let base = MstpCoreConfig {
-        baud_rate: baud,
-        ..MstpCoreConfig::default()
-    };
-    let abort = match (MstpCoreConfig {
-        t_frame_abort: Duration::ZERO,
-        ..base
-    })
-    .validate()
-    {
+    let base = with(MstpCoreConfig::STANDARD, |c| c.baud_rate = baud);
+    let abort = match with(base, |c| c.t_frame_abort = Duration::ZERO).validate() {
         Err(ConfigError::FrameAbortOutOfRange { minimum, .. }) => minimum,
         other => panic!("{baud}: T_frame_abort {other:?}"),
     };
-    let base = MstpCoreConfig {
-        t_frame_abort: Duration::from_millis(100),
-        ..base
-    };
-    let gap = match (MstpCoreConfig {
-        t_frame_gap: Duration::MAX,
-        ..base
-    })
-    .validate()
-    {
+    let base = with(base, |c| c.t_frame_abort = Duration::from_millis(100));
+    let gap = match with(base, |c| c.t_frame_gap = Duration::MAX).validate() {
         Err(ConfigError::FrameGapTooLong { maximum, .. }) => maximum,
         other => panic!("{baud}: T_frame_gap {other:?}"),
     };
-    let base = MstpCoreConfig {
-        t_frame_gap: Duration::ZERO,
-        ..base
-    };
-    let postdrive = match (MstpCoreConfig {
-        t_postdrive: Duration::MAX,
-        ..base
-    })
-    .validate()
-    {
+    let base = with(base, |c| c.t_frame_gap = Duration::ZERO);
+    let postdrive = match with(base, |c| c.t_postdrive = Duration::MAX).validate() {
         Err(ConfigError::PostdriveTooLong { maximum, .. }) => maximum,
         other => panic!("{baud}: T_postdrive {other:?}"),
     };
-    let base = MstpCoreConfig {
-        t_postdrive: Duration::ZERO,
-        ..base
-    };
-    let turnaround = match (MstpCoreConfig {
-        t_turnaround: Duration::ZERO,
-        ..base
-    })
-    .validate()
-    {
+    let base = with(base, |c| c.t_postdrive = Duration::ZERO);
+    let turnaround = match with(base, |c| c.t_turnaround = Duration::ZERO).validate() {
         Err(ConfigError::TurnaroundTooShort { minimum, .. }) => minimum,
         other => panic!("{baud}: T_turnaround {other:?}"),
     };
@@ -118,10 +93,7 @@ fn bounds(baud: u32) -> [Duration; 4] {
 fn bit_times_are_the_microsecond_values_at_every_rate() {
     for golden in &GOLDEN {
         let baud = golden.baud;
-        let hand = MstpCoreConfig {
-            baud_rate: baud,
-            ..MstpCoreConfig::default()
-        };
+        let hand = with(MstpCoreConfig::STANDARD, |c| c.baud_rate = baud);
         let extended = hand.with_extended_frames();
         assert_eq!(hand.octet_time().as_nanos(), ns(golden.octet), "{baud}");
         assert_eq!(
@@ -182,12 +154,12 @@ fn slow_rates_are_refused_as_before() {
 /// validation holds them to.
 #[test]
 fn fixed_timers_keep_their_values() {
-    let config = MstpCoreConfig::standard();
+    let config = MstpCoreConfig::STANDARD;
     for (name, value, micros) in [
-        ("T_no_token", config.t_no_token, 500_000),
+        ("T_no_token", T_NO_TOKEN, 500_000),
         ("T_reply_delay", config.t_reply_delay, 250_000),
         ("T_reply_timeout", config.t_reply_timeout, 255_000),
-        ("T_slot", config.t_slot, 10_000),
+        ("T_slot", T_SLOT, 10_000),
         ("T_usage_delay", config.t_usage_delay, 15_000),
         ("T_usage_timeout", config.t_usage_timeout, 20_000),
         ("reply margin", config.reply_transmit_margin, 25_000),
@@ -201,43 +173,25 @@ fn fixed_timers_keep_their_values() {
     let check = |config: MstpCoreConfig| config.validate();
     let micros = |value: u64| Duration::from_nanos(ns(value));
     assert!(matches!(
-        check(MstpCoreConfig { t_frame_abort: micros(100_001), ..config }),
+        check(with(config, |c| c.t_frame_abort = micros(100_001))),
         Err(ConfigError::FrameAbortOutOfRange { maximum, .. }) if maximum == micros(100_000)
     ));
     assert!(matches!(
-        check(MstpCoreConfig { t_reply_delay: micros(250_001), ..config }),
+        check(with(config, |c| c.t_reply_delay = micros(250_001))),
         Err(ConfigError::ReplyDelayTooLong { maximum, .. }) if maximum == micros(250_000)
     ));
     assert!(matches!(
-        check(MstpCoreConfig { t_reply_timeout: micros(300_001), ..config }),
+        check(with(config, |c| c.t_reply_timeout = micros(300_001))),
         Err(ConfigError::ReplyTimeoutOutOfRange { minimum, maximum, .. })
             if minimum == micros(255_000) && maximum == micros(300_000)
     ));
     assert!(matches!(
-        check(MstpCoreConfig { t_usage_delay: micros(15_001), t_turnaround: micros(4_167), ..config }),
+        check(with(config, |c| { c.t_usage_delay = micros(15_001); c.t_turnaround = micros(4_167); })),
         Err(ConfigError::UsageDelayTooLong { maximum, .. }) if maximum == micros(15_000)
     ));
     assert!(matches!(
-        check(MstpCoreConfig { t_usage_timeout: micros(35_001), ..config }),
+        check(with(config, |c| c.t_usage_timeout = micros(35_001))),
         Err(ConfigError::UsageTimeoutOutOfRange { minimum, maximum, .. })
             if minimum == micros(20_000) && maximum == micros(35_000)
     ));
-    assert_eq!(
-        check(MstpCoreConfig {
-            t_no_token: micros(500_001),
-            ..config
-        }),
-        Err(ConfigError::InvalidNoToken {
-            value: micros(500_001)
-        })
-    );
-    assert_eq!(
-        check(MstpCoreConfig {
-            t_slot: micros(10_001),
-            ..config
-        }),
-        Err(ConfigError::InvalidSlot {
-            value: micros(10_001)
-        })
-    );
 }

@@ -15,11 +15,10 @@ fn ms(value: u64) -> Instant {
 }
 
 fn config() -> MstpCoreConfig {
-    MstpCoreConfig {
-        station: 1,
-        max_master: 3,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = 1;
+    config.max_master = 3;
+    config
 }
 
 /// Deliver a request from station 7 at 1 ms and return its identifier.

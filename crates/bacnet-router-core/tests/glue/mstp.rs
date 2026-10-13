@@ -27,11 +27,9 @@ pub fn config(extended: bool) -> MstpCoreConfig {
 
 /// The same for `station`.
 pub fn config_at(station: u8, extended: bool) -> MstpCoreConfig {
-    let config = MstpCoreConfig {
-        station,
-        max_master: 2,
-        ..MstpCoreConfig::default()
-    };
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = station;
+    config.max_master = 2;
     if extended {
         config.with_extended_frames()
     } else {

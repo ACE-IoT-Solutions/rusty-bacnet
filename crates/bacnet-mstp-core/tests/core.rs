@@ -19,11 +19,10 @@ fn frame(kind: FrameType, destination: u8, source: u8, data: &[u8]) -> Frame<'_>
 }
 
 fn standard_config(station: u8, max_master: u8) -> bacnet_mstp_core::MstpCoreConfig {
-    bacnet_mstp_core::MstpCoreConfig {
-        station,
-        max_master,
-        ..Default::default()
-    }
+    let mut config = bacnet_mstp_core::MstpCoreConfig::STANDARD;
+    config.station = station;
+    config.max_master = max_master;
+    config
 }
 
 fn take_transmit<Q: bacnet_mstp_core::QueueStorage>(

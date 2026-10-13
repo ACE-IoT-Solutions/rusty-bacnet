@@ -148,7 +148,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         );
         let limit = match origin {
             Origin::Answer(window) => window.give_up,
-            Origin::Holder | Origin::NextPoll | Origin::NoToken => now + self.config.t_no_token,
+            Origin::Holder | Origin::NextPoll | Origin::NoToken => now + T_NO_TOKEN,
             Origin::PassToken => now + self.config.t_usage_timeout,
         };
         self.pending_send = Some(PendingSend {
@@ -187,7 +187,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             return Ok(());
         };
         let evidence = matches!(pending.origin, Origin::PassToken | Origin::NoToken)
-            && self.event_count > u32::from(self.config.n_min_octets);
+            && self.event_count > u32::from(N_MIN_OCTETS);
         if now >= pending.limit || evidence {
             return self.drop_pending(now);
         }

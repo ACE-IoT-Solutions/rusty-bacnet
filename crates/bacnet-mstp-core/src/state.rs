@@ -11,7 +11,8 @@ use crate::actions::{
     carries_npdu, Action, ActionBuffers, ActionQueue, RequestId, TransmitFailure, TransmitId,
 };
 use crate::config::{
-    ConfigError, CoreBuffer, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT,
+    ConfigError, CoreBuffer, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT, N_MIN_OCTETS,
+    N_POLL, N_RETRY_TOKEN, T_NO_TOKEN, T_SLOT,
 };
 use crate::counters::{MstpCounters, QueueCounters};
 use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
@@ -397,7 +398,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             state: MasterState::Idle,
             next_station: config.station,
             poll_station: config.station,
-            token_count: config.n_poll,
+            token_count: N_POLL,
             frame_count: 0,
             retry_token_count: 0,
             event_count: 0,
@@ -408,7 +409,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             active_transmit: None,
             pending_send: None,
             next_transmit_generation: 0,
-            protocol_deadline: Some(now + config.t_no_token),
+            protocol_deadline: Some(now + T_NO_TOKEN),
             last_activity: now,
             last_octet: None,
             parser_partial: false,
@@ -585,13 +586,13 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         match self.state {
             MasterState::NoToken => {
                 self.set_state(MasterState::Idle);
-                self.protocol_deadline = Some(now + self.config.t_no_token);
+                self.protocol_deadline = Some(now + T_NO_TOKEN);
             }
-            MasterState::Idle => self.protocol_deadline = Some(now + self.config.t_no_token),
+            MasterState::Idle => self.protocol_deadline = Some(now + T_NO_TOKEN),
             MasterState::PassToken => {
-                if self.event_count > u32::from(self.config.n_min_octets) {
+                if self.event_count > u32::from(N_MIN_OCTETS) {
                     self.set_state(MasterState::Idle);
-                    self.protocol_deadline = Some(now + self.config.t_no_token);
+                    self.protocol_deadline = Some(now + T_NO_TOKEN);
                 } else {
                     self.protocol_deadline = Some(now + self.config.t_usage_timeout);
                 }
@@ -613,7 +614,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// this station was answering a request.
     fn enter_idle(&mut self, now: Instant) -> Result<(), CoreError> {
         self.set_state(MasterState::Idle);
-        self.protocol_deadline = Some(self.last_activity + self.config.t_no_token);
+        self.protocol_deadline = Some(self.last_activity + T_NO_TOKEN);
         self.take_pending_token(now)
     }
 

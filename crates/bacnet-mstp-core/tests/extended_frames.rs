@@ -27,11 +27,9 @@ const PEER: u8 = 2;
 const OTHER: u8 = 9;
 
 fn config(extended: bool) -> MstpCoreConfig {
-    let config = MstpCoreConfig {
-        station: STATION,
-        max_master: 3,
-        ..MstpCoreConfig::default()
-    };
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 3;
     if extended {
         config.with_extended_frames()
     } else {

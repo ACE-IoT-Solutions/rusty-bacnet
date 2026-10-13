@@ -179,12 +179,12 @@ const PEER: u8 = 2;
 
 /// Station 1 of masters 0-2, at the standard 9600 baud, with extended
 /// frames on.
-const CONFIG: MstpCoreConfig = MstpCoreConfig {
-    station: STATION,
-    max_master: 2,
-    ..MstpCoreConfig::standard()
-}
-.with_extended_frames();
+const CONFIG: MstpCoreConfig = {
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 2;
+    config.with_extended_frames()
+};
 
 /// An NPDU the scenario sends: version 1, a control octet, then octets that
 /// step through a pattern, so it can be checked without a copy.

@@ -157,7 +157,8 @@ pub use actions::{
 pub use bacnet_time::{Duration, Instant};
 pub use config::{
     ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, MstpCoreConfig, MAX_FRAME_ABORT,
-    MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT,
+    MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT, N_MIN_OCTETS,
+    N_POLL, N_RETRY_TOKEN, T_NO_TOKEN, T_SLOT,
 };
 pub use counters::{MstpCounters, QueueCounters};
 #[cfg(feature = "alloc")]

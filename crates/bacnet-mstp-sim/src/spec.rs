@@ -106,11 +106,9 @@ impl MasterSpec {
     /// If the resulting configuration is invalid.
     #[must_use]
     pub fn new(station: u8, max_master: u8, baud: u32) -> Self {
-        let config = MstpCoreConfig {
-            station,
-            max_master,
-            ..MstpCoreConfig::for_baud_rate(baud).expect("a standard baud rate")
-        };
+        let mut config = MstpCoreConfig::for_baud_rate(baud).expect("a standard baud rate");
+        config.station = station;
+        config.max_master = max_master;
         config.validate().expect("a valid master configuration");
         Self {
             config,

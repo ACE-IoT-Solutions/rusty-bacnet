@@ -21,11 +21,10 @@ const ASKED: u8 = 3;
 const OTHER: u8 = 9;
 
 fn config() -> MstpCoreConfig {
-    MstpCoreConfig {
-        station: STATION,
-        max_master: 3,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 3;
+    config
 }
 
 fn encode(frame: Frame<'_>) -> Vec<u8> {

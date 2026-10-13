@@ -195,7 +195,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
         }
         self.set_state(MasterState::Idle);
-        self.protocol_deadline = Some(now + self.config.t_no_token);
+        self.protocol_deadline = Some(now + T_NO_TOKEN);
         self.take_pending_token(now)
     }
 

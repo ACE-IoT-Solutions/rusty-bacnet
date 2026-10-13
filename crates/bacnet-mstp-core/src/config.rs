@@ -7,6 +7,23 @@ use bacnet_mstp_codec::{
 use bacnet_time::Duration;
 
 const DEFAULT_BAUD_RATE: u32 = 9_600;
+/// Npoll (Clause 9.5.3): the token uses between two maintenance Poll For
+/// Master cycles, 50. Fixed by the standard, so not a configuration field.
+pub const N_POLL: u8 = 50;
+/// Nretry_token (Clause 9.5.3): how many times the core sends its Token
+/// again to a successor that shows no sign of using it before it looks for
+/// another, once. Fixed by the standard.
+pub const N_RETRY_TOKEN: u8 = 1;
+/// Nmin_octets (Clause 9.5.3): a station that hears more receive events
+/// (octets and receive errors) than this takes the line to be in use, 4.
+/// Fixed by the standard.
+pub const N_MIN_OCTETS: u8 = 4;
+/// T_no_token (Clause 9.5.3): the silence after which a station takes the
+/// token to be lost, 500 ms. Fixed by the standard.
+pub const T_NO_TOKEN: Duration = Duration::from_millis(500);
+/// T_slot (Clause 9.5.3): the width of each station's turn to generate a
+/// lost token, 10 ms. Fixed by the standard.
+pub const T_SLOT: Duration = Duration::from_millis(10);
 /// The longest T_frame_abort a station may use (Clause 9.5.3): 100 ms.
 /// [`MstpCoreConfig::validate`] refuses a longer one.
 pub const MAX_FRAME_ABORT: Duration = Duration::from_millis(100);
@@ -26,6 +43,10 @@ pub const MIN_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 /// The longest T_usage_timeout a station may use (Clause 9.5.3): 35 ms.
 /// [`MstpCoreConfig::validate`] refuses a longer one.
 pub const MAX_USAGE_TIMEOUT: Duration = Duration::from_millis(35);
+/// The longest T_reply_delay (Clause 9.5.3), the constructors' value.
+const MAX_REPLY_DELAY: Duration = Duration::from_millis(250);
+/// The longest T_usage_delay (Clause 9.5.3), the constructors' value.
+const MAX_USAGE_DELAY: Duration = Duration::from_millis(15);
 /// Default for [`MstpCoreConfig::reply_transmit_margin`], the value the host
 /// MS/TP transport reserves.
 const DEFAULT_REPLY_TRANSMIT_MARGIN: Duration = Duration::from_millis(25);
@@ -44,21 +65,6 @@ pub enum ConfigError {
     ZeroBaudRate,
     /// A derived timing calculation overflowed its arithmetic.
     TimingOverflow,
-    /// Clause 9 fixes Npoll at 50 token uses.
-    InvalidPollCount {
-        /// Supplied poll count.
-        value: u8,
-    },
-    /// Clause 9 fixes Nretry_token at one retry.
-    InvalidTokenRetryCount {
-        /// Supplied token retry count.
-        value: u8,
-    },
-    /// Clause 9 fixes Nmin_octets at four octets.
-    InvalidMinimumOctets {
-        /// Supplied minimum idle-octet count.
-        value: u8,
-    },
     /// Max_Master is a seven-bit station address.
     MaxMasterOutOfRange {
         /// Supplied Max_Master value.
@@ -99,11 +105,6 @@ pub enum ConfigError {
         /// Maximum permitted duration.
         maximum: Duration,
     },
-    /// T_no_token is the fixed 500 ms lost-token deadline.
-    InvalidNoToken {
-        /// Supplied no-token duration.
-        value: Duration,
-    },
     /// T_reply_delay cannot exceed 250 ms.
     ReplyDelayTooLong {
         /// Supplied reply-delay duration.
@@ -127,11 +128,6 @@ pub enum ConfigError {
         minimum: Duration,
         /// Maximum permitted duration.
         maximum: Duration,
-    },
-    /// T_slot is the ten-millisecond maintenance slot.
-    InvalidSlot {
-        /// Supplied maintenance-slot duration.
-        value: Duration,
     },
     /// T_turnaround must cover at least 40 bit times.
     TurnaroundTooShort {
@@ -260,7 +256,28 @@ pub enum LocalLimitField {
 /// clock or baud-rate conversion helper. The bit-time values the constructors
 /// derive from the baud rate, and the bounds [`Self::validate`] checks them
 /// against, are whole microseconds (see [`Self::octet_time`]).
+///
+/// The values Clause 9.5.3 fixes are constants, not fields: [`N_POLL`],
+/// [`N_RETRY_TOKEN`], [`N_MIN_OCTETS`], [`T_NO_TOKEN`] and [`T_SLOT`].
+///
+/// It is `#[non_exhaustive]`, so a new setting isn't a breaking change:
+/// start from [`Self::STANDARD`] or [`Self::for_baud_rate`] and set the
+/// fields to change, then let [`MasterCore::new`](crate::MasterCore::new)
+/// or [`Self::validate`] check the result.
+///
+/// ```
+/// use bacnet_mstp_core::MstpCoreConfig;
+///
+/// const CONFIG: MstpCoreConfig = {
+///     let mut config = MstpCoreConfig::STANDARD;
+///     config.station = 3;
+///     config.max_master = 15;
+///     config
+/// };
+/// assert_eq!(CONFIG.validate(), Ok(()));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MstpCoreConfig {
     /// This station's MAC address.
     pub station: u8,
@@ -271,19 +288,10 @@ pub struct MstpCoreConfig {
     /// Serial baud rate used to validate bit-time-derived limits.
     pub baud_rate: u32,
 
-    /// Npoll: token uses between maintenance polls.
-    pub n_poll: u8,
-    /// Nretry_token: token retries before finding a new successor.
-    pub n_retry_token: u8,
-    /// Nmin_octets: minimum idle octets before a new transmission.
-    pub n_min_octets: u8,
-
     /// T_frame_abort.
     pub t_frame_abort: Duration,
     /// T_frame_gap.
     pub t_frame_gap: Duration,
-    /// T_no_token.
-    pub t_no_token: Duration,
     /// T_postdrive.
     pub t_postdrive: Duration,
     /// T_reply_delay: the longest a reply to a data-expecting-reply frame may
@@ -291,8 +299,6 @@ pub struct MstpCoreConfig {
     pub t_reply_delay: Duration,
     /// T_reply_timeout.
     pub t_reply_timeout: Duration,
-    /// T_slot.
-    pub t_slot: Duration,
     /// T_turnaround.
     pub t_turnaround: Duration,
     /// T_usage_delay.
@@ -359,27 +365,37 @@ pub struct MstpCoreConfig {
     pub extended_frames: bool,
 }
 
+/// [`MstpCoreConfig::STANDARD`].
 impl Default for MstpCoreConfig {
     fn default() -> Self {
-        Self::for_baud_rate_unchecked(DEFAULT_BAUD_RATE)
+        Self::STANDARD
     }
 }
 
 impl MstpCoreConfig {
-    /// Construct standard-safe settings for a baud rate.
-    pub fn for_baud_rate(baud_rate: u32) -> Result<Self, ConfigError> {
+    /// The standard settings at 9600 baud: station 0, Max_Master 127, one
+    /// information frame per token use, the bit-time timers derived from the
+    /// baud rate, the shortest T_reply_timeout and T_usage_timeout Clause
+    /// 9.5.3 allows, the longest T_reply_delay and T_usage_delay, and the
+    /// local defaults below; extended frames off.
+    pub const STANDARD: Self = Self::for_baud_rate_unchecked(DEFAULT_BAUD_RATE);
+
+    /// The standard settings at `baud_rate`, as [`Self::STANDARD`] has them
+    /// at 9600, validated.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::ZeroBaudRate`] for zero, and what [`Self::validate`]
+    /// refuses at a rate too low for Clause 9 timing (below 2667 baud).
+    pub const fn for_baud_rate(baud_rate: u32) -> Result<Self, ConfigError> {
         if baud_rate == 0 {
             return Err(ConfigError::ZeroBaudRate);
         }
         let config = Self::for_baud_rate_unchecked(baud_rate);
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// Return the standard 9600-baud configuration.
-    #[must_use]
-    pub const fn standard() -> Self {
-        Self::for_baud_rate_unchecked(DEFAULT_BAUD_RATE)
+        match config.validate() {
+            Ok(()) => Ok(config),
+            Err(error) => Err(error),
+        }
     }
 
     /// The time one octet takes on the wire: ten bit times, rounded up to a
@@ -396,22 +412,13 @@ impl MstpCoreConfig {
     }
 
     /// Validate all protocol and local bounds.
-    pub fn validate(&self) -> Result<(), ConfigError> {
+    ///
+    /// # Errors
+    ///
+    /// The first bound the configuration breaks, as a [`ConfigError`].
+    pub const fn validate(&self) -> Result<(), ConfigError> {
         if self.baud_rate == 0 {
             return Err(ConfigError::ZeroBaudRate);
-        }
-        if self.n_poll != 50 {
-            return Err(ConfigError::InvalidPollCount { value: self.n_poll });
-        }
-        if self.n_retry_token != 1 {
-            return Err(ConfigError::InvalidTokenRetryCount {
-                value: self.n_retry_token,
-            });
-        }
-        if self.n_min_octets != 4 {
-            return Err(ConfigError::InvalidMinimumOctets {
-                value: self.n_min_octets,
-            });
         }
         if self.max_master > MAX_MASTER {
             return Err(ConfigError::MaxMasterOutOfRange {
@@ -430,93 +437,94 @@ impl MstpCoreConfig {
             });
         }
 
-        let bit_times = |bound: Option<Duration>| bound.ok_or(ConfigError::TimingOverflow);
-        let frame_abort_min = bit_times(ceil_bit_times(self.baud_rate, 60))?;
-        let frame_gap_max = bit_times(floor_bit_times(self.baud_rate, 20))?;
-        let postdrive_max = bit_times(floor_bit_times(self.baud_rate, 15))?;
-        let turnaround_min = bit_times(ceil_bit_times(self.baud_rate, 40))?;
-        if self.t_frame_abort < frame_abort_min || self.t_frame_abort > MAX_FRAME_ABORT {
+        let (Some(frame_abort_min), Some(frame_gap_max), Some(postdrive_max), Some(turnaround_min)) = (
+            ceil_bit_times(self.baud_rate, 60),
+            floor_bit_times(self.baud_rate, 20),
+            floor_bit_times(self.baud_rate, 15),
+            ceil_bit_times(self.baud_rate, 40),
+        ) else {
+            return Err(ConfigError::TimingOverflow);
+        };
+        if shorter(self.t_frame_abort, frame_abort_min)
+            || longer(self.t_frame_abort, MAX_FRAME_ABORT)
+        {
             return Err(ConfigError::FrameAbortOutOfRange {
                 value: self.t_frame_abort,
                 minimum: frame_abort_min,
                 maximum: MAX_FRAME_ABORT,
             });
         }
-        if self.t_frame_gap > frame_gap_max {
+        if longer(self.t_frame_gap, frame_gap_max) {
             return Err(ConfigError::FrameGapTooLong {
                 value: self.t_frame_gap,
                 maximum: frame_gap_max,
             });
         }
-        if self.t_postdrive > postdrive_max {
+        if longer(self.t_postdrive, postdrive_max) {
             return Err(ConfigError::PostdriveTooLong {
                 value: self.t_postdrive,
                 maximum: postdrive_max,
             });
         }
-        if self.t_reply_delay > Duration::from_millis(250) {
+        if longer(self.t_reply_delay, MAX_REPLY_DELAY) {
             return Err(ConfigError::ReplyDelayTooLong {
                 value: self.t_reply_delay,
-                maximum: Duration::from_millis(250),
+                maximum: MAX_REPLY_DELAY,
             });
         }
-        if self.t_no_token != Duration::from_millis(500) {
-            return Err(ConfigError::InvalidNoToken {
-                value: self.t_no_token,
-            });
-        }
-        if self.reply_transmit_margin >= self.t_reply_delay {
+        if !shorter(self.reply_transmit_margin, self.t_reply_delay) {
             return Err(ConfigError::ReplyMarginTooLong {
                 margin: self.reply_transmit_margin,
                 reply_delay: self.t_reply_delay,
             });
         }
-        if self.t_reply_timeout < MIN_REPLY_TIMEOUT || self.t_reply_timeout > MAX_REPLY_TIMEOUT {
+        if shorter(self.t_reply_timeout, MIN_REPLY_TIMEOUT)
+            || longer(self.t_reply_timeout, MAX_REPLY_TIMEOUT)
+        {
             return Err(ConfigError::ReplyTimeoutOutOfRange {
                 value: self.t_reply_timeout,
                 minimum: MIN_REPLY_TIMEOUT,
                 maximum: MAX_REPLY_TIMEOUT,
             });
         }
-        if self.t_slot != Duration::from_millis(10) {
-            return Err(ConfigError::InvalidSlot { value: self.t_slot });
-        }
-        if self.t_turnaround < turnaround_min {
+        if shorter(self.t_turnaround, turnaround_min) {
             return Err(ConfigError::TurnaroundTooShort {
                 value: self.t_turnaround,
                 minimum: turnaround_min,
             });
         }
-        if self.t_turnaround > self.t_usage_delay {
+        if longer(self.t_turnaround, self.t_usage_delay) {
             return Err(ConfigError::TurnaroundExceedsUsageDelay {
                 turnaround: self.t_turnaround,
                 usage_delay: self.t_usage_delay,
             });
         }
-        if self.t_usage_delay > Duration::from_millis(15) {
+        if longer(self.t_usage_delay, MAX_USAGE_DELAY) {
             return Err(ConfigError::UsageDelayTooLong {
                 value: self.t_usage_delay,
-                maximum: Duration::from_millis(15),
+                maximum: MAX_USAGE_DELAY,
             });
         }
-        if self.t_usage_timeout < MIN_USAGE_TIMEOUT || self.t_usage_timeout > MAX_USAGE_TIMEOUT {
+        if shorter(self.t_usage_timeout, MIN_USAGE_TIMEOUT)
+            || longer(self.t_usage_timeout, MAX_USAGE_TIMEOUT)
+        {
             return Err(ConfigError::UsageTimeoutOutOfRange {
                 value: self.t_usage_timeout,
                 minimum: MIN_USAGE_TIMEOUT,
                 maximum: MAX_USAGE_TIMEOUT,
             });
         }
-        if self.queue_max_age == Duration::ZERO {
+        if self.queue_max_age.is_zero() {
             return Err(ConfigError::ZeroLocalDuration {
                 field: LocalDurationField::QueueMaxAge,
             });
         }
-        if self.transmit_watchdog == Duration::ZERO {
+        if self.transmit_watchdog.is_zero() {
             return Err(ConfigError::ZeroLocalDuration {
                 field: LocalDurationField::TransmitWatchdog,
             });
         }
-        if self.transmit_watchdog < self.minimum_transmit_watchdog() {
+        if shorter(self.transmit_watchdog, self.minimum_transmit_watchdog()) {
             return Err(ConfigError::TransmitWatchdogTooShort {
                 value: self.transmit_watchdog,
                 minimum: self.minimum_transmit_watchdog(),
@@ -551,18 +559,13 @@ impl MstpCoreConfig {
             max_master: MAX_MASTER,
             max_info_frames: 1,
             baud_rate,
-            n_poll: 50,
-            n_retry_token: 1,
-            n_min_octets: 4,
             t_frame_abort: or_max(ceil_bit_times(baud_rate, 60)),
             t_frame_gap: or_max(floor_bit_times(baud_rate, 20)),
-            t_no_token: Duration::from_millis(500),
             t_postdrive: or_max(floor_bit_times(baud_rate, 15)),
-            t_reply_delay: Duration::from_millis(250),
+            t_reply_delay: MAX_REPLY_DELAY,
             t_reply_timeout: MIN_REPLY_TIMEOUT,
-            t_slot: Duration::from_millis(10),
             t_turnaround: or_max(ceil_bit_times(baud_rate, 40)),
-            t_usage_delay: Duration::from_millis(15),
+            t_usage_delay: MAX_USAGE_DELAY,
             t_usage_timeout: MIN_USAGE_TIMEOUT,
             reply_transmit_margin: DEFAULT_REPLY_TRANSMIT_MARGIN,
             queue_max_age: Duration::from_secs(5),
@@ -669,6 +672,17 @@ const fn floor_bit_times(baud_rate: u32, bits: u32) -> Option<Duration> {
     }
 }
 
+/// Whether `value` is shorter than `bound`: `<`, which a `const fn` can't
+/// call on [`Duration`].
+const fn shorter(value: Duration, bound: Duration) -> bool {
+    value.as_nanos() < bound.as_nanos()
+}
+
+/// Whether `value` is longer than `bound`.
+const fn longer(value: Duration, bound: Duration) -> bool {
+    value.as_nanos() > bound.as_nanos()
+}
+
 /// A bit-time default for [`MstpCoreConfig::for_baud_rate_unchecked`]: a
 /// zero baud rate gives [`Duration::MAX`], which `validate` then rejects.
 const fn or_max(duration: Option<Duration>) -> Duration {
@@ -686,11 +700,36 @@ mod tests {
     #[test]
     fn defaults_are_standard_safe() {
         let config = MstpCoreConfig::default();
+        assert_eq!(config, MstpCoreConfig::STANDARD);
         assert_eq!(config.baud_rate, 9_600);
-        assert_eq!(config.n_poll, 50);
-        assert_eq!(config.n_retry_token, 1);
-        assert_eq!(config.n_min_octets, 4);
+        assert_eq!(
+            (super::N_POLL, super::N_RETRY_TOKEN, super::N_MIN_OCTETS),
+            (50, 1, 4)
+        );
+        assert_eq!(
+            (super::T_NO_TOKEN, super::T_SLOT),
+            (Duration::from_millis(500), Duration::from_millis(10))
+        );
         assert!(config.validate().is_ok());
+        assert_eq!(MstpCoreConfig::for_baud_rate(9_600), Ok(config));
+    }
+
+    /// `for_baud_rate` and `validate` are `const`: a configuration can be
+    /// built and checked at compile time.
+    #[test]
+    fn a_configuration_checks_at_compile_time() {
+        const FAST: MstpCoreConfig = match MstpCoreConfig::for_baud_rate(115_200) {
+            Ok(config) => config,
+            Err(_) => panic!("115200 baud is valid"),
+        };
+        const TOO_SLOW: Result<MstpCoreConfig, ConfigError> = MstpCoreConfig::for_baud_rate(2_666);
+        const NONE: Result<MstpCoreConfig, ConfigError> = MstpCoreConfig::for_baud_rate(0);
+        assert_eq!(FAST.baud_rate, 115_200);
+        assert!(matches!(
+            TOO_SLOW,
+            Err(ConfigError::TurnaroundExceedsUsageDelay { .. })
+        ));
+        assert_eq!(NONE, Err(ConfigError::ZeroBaudRate));
     }
 
     #[test]
@@ -918,7 +957,7 @@ mod tests {
         assert_eq!(MAX_USAGE_TIMEOUT, Duration::from_millis(35));
         assert_eq!(MIN_REPLY_TIMEOUT, Duration::from_millis(255));
         assert_eq!(MIN_USAGE_TIMEOUT, Duration::from_millis(20));
-        let standard = MstpCoreConfig::standard();
+        let standard = MstpCoreConfig::STANDARD;
         assert_eq!(
             (standard.t_reply_timeout, standard.t_usage_timeout),
             (MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT)

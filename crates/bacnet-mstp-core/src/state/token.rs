@@ -16,25 +16,18 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// closed: the local recovery policy described on [`MasterCore`], counted
     /// in [`MstpCounters::missed_generation_slots`].
     pub(super) fn generate_token_if_in_slot(&mut self, now: Instant) -> Result<(), CoreError> {
-        let cycle = self
-            .config
-            .t_slot
-            .saturating_mul(u32::from(self.config.max_master) + 1);
-        let first = self.last_activity
-            + self.config.t_no_token
-            + self
-                .config
-                .t_slot
-                .saturating_mul(u32::from(self.config.station));
+        let cycle = T_SLOT.saturating_mul(u32::from(self.config.max_master) + 1);
+        let first =
+            self.last_activity + T_NO_TOKEN + T_SLOT.saturating_mul(u32::from(self.config.station));
         let mut start = first;
         // The window that `now` falls in, or the next one: whole cycles after
-        // the first. Validation fixes T_slot at 10 ms and caps Max_Master at
-        // 127, so a cycle is at most 1.28 s; `checked_rem` takes one step per
-        // bit of the cycles passed, with no 64-bit division.
-        if now >= first + self.config.t_slot {
+        // the first. T_slot is 10 ms and validation caps Max_Master at 127, so
+        // a cycle is at most 1.28 s; `checked_rem` takes one step per bit of
+        // the cycles passed, with no 64-bit division.
+        if now >= first + T_SLOT {
             if let Some(offset) = (now - first).checked_rem(cycle) {
                 start = now - offset;
-                if offset >= self.config.t_slot {
+                if offset >= T_SLOT {
                     start += cycle;
                 }
             }
@@ -54,10 +47,10 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     }
 
     pub(super) fn pass_token_timeout(&mut self, now: Instant) -> Result<(), CoreError> {
-        if self.event_count > u32::from(self.config.n_min_octets) {
+        if self.event_count > u32::from(N_MIN_OCTETS) {
             self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
-        } else if self.retry_token_count < self.config.n_retry_token {
+            self.protocol_deadline = Some(now + T_NO_TOKEN);
+        } else if self.retry_token_count < N_RETRY_TOKEN {
             self.retry_token_count = self.retry_token_count.saturating_add(1);
             self.counters.record_token_retry();
             self.queue_token(self.next_station, Origin::PassToken, now)?;
@@ -206,7 +199,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 self.poll_station = next_ts;
                 return self.queue_poll(Origin::Holder, now);
             }
-            if self.token_count < self.config.n_poll {
+            if self.token_count < N_POLL {
                 self.token_count = self.token_count.saturating_add(1);
                 if self.sole_master {
                     self.frame_count = 0;

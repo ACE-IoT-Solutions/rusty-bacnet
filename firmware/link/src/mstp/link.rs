@@ -25,10 +25,11 @@ const STATION: u8 = 1;
 const PEER: u8 = 2;
 
 /// Station 1 of masters 0-2, at the standard 9600 baud.
-const CONFIG: MstpCoreConfig = MstpCoreConfig {
-    station: STATION,
-    max_master: 2,
-    ..MstpCoreConfig::standard()
+const CONFIG: MstpCoreConfig = {
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 2;
+    config
 };
 
 /// The peer's ReadProperty of Device 1's Object_Name; the NPDU control
