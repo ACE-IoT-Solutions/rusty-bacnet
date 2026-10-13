@@ -262,6 +262,11 @@ impl Harness {
         }
     }
 
+    /// The engine's counts so far.
+    pub(super) fn counters(&self) -> bacnet_router_core::router::Counters {
+        self.shared.engine.lock().counters()
+    }
+
     /// The router's time now.
     pub(super) fn now(&self) -> Instant {
         self.shared.engine.now()

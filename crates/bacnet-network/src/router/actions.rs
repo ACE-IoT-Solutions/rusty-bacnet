@@ -55,21 +55,13 @@ pub(super) fn drain(
             },
         };
         let (port, kind) = (usize::from(send.port.0), send.kind);
-        #[cfg(test)]
-        let sent = request_npdu(&request);
         let result = match send_txs.get(port) {
             Some(tx) => tx.try_send(request),
             None => Err(TrySendError::Closed(request)),
         };
-        match result {
-            Ok(()) => {
-                #[cfg(test)]
-                record(sent, kind);
-            }
-            Err(error) => {
-                refused(kind, &error);
-                router.refused(SendRefusal::Full);
-            }
+        if let Err(error) = result {
+            refused(kind, &error);
+            router.refused(SendRefusal::Full);
         }
     }
 }
@@ -93,30 +85,4 @@ fn refused(kind: Kind, error: &TrySendError<SendRequest>) {
         }
         Kind::Relay(_) | Kind::Solicit => {}
     }
-}
-
-#[cfg(test)]
-thread_local! {
-    /// What each send that went into a queue carried, and its kind, for
-    /// the cutover's differential test.
-    static SENT: std::cell::RefCell<Vec<(Bytes, Kind)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-#[cfg(test)]
-fn request_npdu(request: &SendRequest) -> Bytes {
-    match request {
-        SendRequest::Unicast { npdu, .. } | SendRequest::Broadcast { npdu, .. } => npdu.clone(),
-    }
-}
-
-#[cfg(test)]
-fn record(npdu: Bytes, kind: Kind) {
-    SENT.with(|sent| sent.borrow_mut().push((npdu, kind)));
-}
-
-/// The sends recorded on this thread since the last call.
-#[cfg(test)]
-pub(super) fn take_sent() -> Vec<(Bytes, Kind)> {
-    SENT.with(|sent| std::mem::take(&mut *sent.borrow_mut()))
 }

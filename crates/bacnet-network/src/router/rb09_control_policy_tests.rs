@@ -554,6 +554,42 @@ async fn reject_deny_sends_no_success_and_no_loop() {
     assert!(allowed.drain(1).is_empty());
 }
 
+/// A Busy or Available with no list covers every network its sender
+/// serves: the authorizer's context says so, and with a list it doesn't.
+#[tokio::test]
+async fn authorizer_sees_an_omitted_list_as_omitted() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let auth: ControlAuthorizer = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |ctx: &ControlAuthContext| {
+            seen.lock().unwrap().push((
+                ctx.message_type,
+                ctx.target_nets.clone(),
+                ctx.targets_omitted,
+            ));
+            true
+        })
+    };
+    let mut h = Harness::with_gate(TableSeed::new(), hardened_with(auth));
+    for (kind, payload) in [
+        (NetworkMessageType::ROUTER_BUSY_TO_NETWORK, vec![]),
+        (NetworkMessageType::ROUTER_BUSY_TO_NETWORK, vec![0x0b, 0xb8]),
+        (NetworkMessageType::ROUTER_AVAILABLE_TO_NETWORK, vec![]),
+        (NetworkMessageType::I_AM_ROUTER_TO_NETWORK, vec![0x0b, 0xb8]),
+    ] {
+        h.handle(h.ctx(1, &[2], control_npdu(kind, &payload))).await;
+    }
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            (0x04, vec![], true),
+            (0x04, vec![3000], false),
+            (0x05, vec![], true),
+            (0x01, vec![3000], false),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn authorizer_sees_only_protected_and_replaced_peer_differs() {
     let calls = Arc::new(AtomicUsize::new(0));

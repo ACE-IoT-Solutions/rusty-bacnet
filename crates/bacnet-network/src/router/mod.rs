@@ -62,8 +62,6 @@ pub mod control_policy;
 mod dispatch;
 mod engine;
 mod hosted_host;
-#[cfg(test)]
-pub(crate) mod legacy;
 mod local_control;
 mod local_delivery;
 mod options;
@@ -533,10 +531,6 @@ mod claim_tests;
 mod corroboration_tests;
 #[cfg(test)]
 mod cutover_tests;
-#[cfg(test)]
-mod differential_support;
-#[cfg(test)]
-mod differential_tests;
 #[cfg(test)]
 mod envelope_control_tests;
 #[cfg(test)]

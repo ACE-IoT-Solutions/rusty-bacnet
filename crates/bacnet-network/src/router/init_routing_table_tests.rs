@@ -402,6 +402,39 @@ async fn full_queue_drops_acks_without_mutation_or_panic() {
 }
 
 #[tokio::test]
+async fn a_full_queue_ends_a_chunked_answer_at_its_first_refused_ack() {
+    // A full table answers in three Acks. The first fills the one free slot,
+    // the second finds the queue full, and the answer stops there: the
+    // router tries no third Ack, as before the engine.
+    let mut table = TableSeed::new();
+    for net in 10..266u16 {
+        table.add_learned(net, 1, MacAddr::from_slice(&[5]));
+    }
+    let mut h = Harness::with_table(table);
+    for _ in 0..15 {
+        h.txs[0]
+            .try_send(SendRequest::Broadcast {
+                npdu: Bytes::new(),
+                data_attributes: Vec::new(),
+            })
+            .unwrap();
+    }
+    h.handle(h.ctx(
+        0,
+        &[7],
+        control_npdu(NetworkMessageType::INITIALIZE_ROUTING_TABLE, &[0]),
+    ))
+    .await;
+    let acks = unicast_payloads(h.drain(0).split_off(15));
+    assert_eq!(acks.len(), 1);
+    assert_eq!(
+        peer_entries(&decode_npdu(acks[0].clone()).unwrap().payload).len(),
+        124
+    );
+    assert_eq!(h.counters().refused, 1);
+}
+
+#[tokio::test]
 async fn ack_claims_learn_via_ingress_and_never_reconfigure() {
     // The ACK's Port IDs are the sender's local numbering: they must not
     // steer our table, and direct routes must survive ACK traffic.
