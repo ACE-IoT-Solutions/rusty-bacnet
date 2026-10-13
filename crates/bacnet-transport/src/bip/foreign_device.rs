@@ -58,10 +58,7 @@ impl ForeignDeviceConfig {
     /// starts.
     pub(super) fn check_bbmd(&self, broadcast: Ipv4Addr, interface: Ipv4Addr) -> Result<(), Error> {
         // Only the IP test is read, so the broadcast's port doesn't matter.
-        let groups = Groups {
-            broadcast: SocketAddrV4::new(broadcast, 0),
-            interface,
-        };
+        let groups = Groups::new(SocketAddrV4::new(broadcast, 0), interface);
         let refusal = if self.bbmd_port == 0 {
             ConfigError::BbmdPort
         } else if self.bbmd_ip.is_unspecified() || groups.contains_ip(self.bbmd_ip) {
@@ -88,14 +85,12 @@ impl ForeignDeviceConfig {
         // Three seconds, exactly.
         let response_timeout =
             CoreDuration::saturating_from_core(BipTransport::BVLC_RESPONSE_TIMEOUT);
-        Foreign {
-            bbmd: SocketAddrV4::new(self.bbmd_ip, self.bbmd_port),
-            ttl: self.ttl,
-            renewal: interval,
-            response_timeout: interval.min(response_timeout),
-            retry: Retry::Backoff,
-            hold: HELD_BROADCASTS,
-            trust: ForwardedTrust::ConfiguredBbmd,
-        }
+        let mut foreign = Foreign::new(SocketAddrV4::new(self.bbmd_ip, self.bbmd_port), self.ttl);
+        foreign.renewal = interval;
+        foreign.response_timeout = interval.min(response_timeout);
+        foreign.retry = Retry::Backoff;
+        foreign.hold = HELD_BROADCASTS;
+        foreign.trust = ForwardedTrust::ConfiguredBbmd;
+        foreign
     }
 }

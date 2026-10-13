@@ -24,7 +24,7 @@ const EMPTY_ROW: BdtEntry = BdtEntry::new(
 ///
 /// ```
 /// use core::net::{Ipv4Addr, SocketAddrV4};
-/// use bacnet_bip_codec::BdtEntry;
+/// use bacnet_bip_core::codec::BdtEntry;
 /// use bacnet_bip_core::bbmd::distribution_address;
 ///
 /// let peer = SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 1), 47808);
@@ -45,7 +45,8 @@ pub const fn distribution_address(row: BdtEntry) -> SocketAddrV4 {
 /// row from turning forwarded broadcasts into traffic for an address that
 /// isn't one BBMD or one subnet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InvalidEntry {
+#[non_exhaustive]
+pub enum EntryError {
     /// UDP port 0.
     ZeroPort,
     /// The address 0.0.0.0.
@@ -68,7 +69,7 @@ pub enum InvalidEntry {
     LimitedBroadcastTarget,
 }
 
-impl InvalidEntry {
+impl EntryError {
     /// A short description, as the host transport's errors print it.
     #[must_use]
     pub const fn reason(self) -> &'static str {
@@ -86,21 +87,24 @@ impl InvalidEntry {
     }
 }
 
-impl fmt::Display for InvalidEntry {
+impl fmt::Display for EntryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.reason())
     }
 }
 
+impl core::error::Error for EntryError {}
+
 /// Why a BDT was refused. A refused table changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BdtError {
     /// A row broke a rule of [`validate_entry`].
     Invalid {
         /// The row.
         entry: BdtEntry,
         /// The rule it broke.
-        reason: InvalidEntry,
+        reason: EntryError,
     },
     /// Two rows for one B/IP address with different masks.
     ConflictingMasks {
@@ -113,7 +117,7 @@ pub enum BdtError {
         /// Rows the table would hold.
         needed: usize,
         /// Rows the storage holds.
-        capacity: usize,
+        available: usize,
     },
 }
 
@@ -128,8 +132,11 @@ impl fmt::Display for BdtError {
                 "BDT rows for {} with conflicting masks (one is {})",
                 entry.address, entry.mask
             ),
-            Self::Capacity { needed, capacity } => {
-                write!(f, "BDT of {needed} rows exceeds the capacity of {capacity}")
+            Self::Capacity { needed, available } => {
+                write!(
+                    f,
+                    "BDT of {needed} rows exceeds the capacity of {available}"
+                )
             }
         }
     }
@@ -138,9 +145,9 @@ impl fmt::Display for BdtError {
 impl core::error::Error for BdtError {}
 
 /// Check one BDT row against the local security policy (see
-/// [`InvalidEntry`]). Contiguous masks of /8 to /32 pass, with any unicast
+/// [`EntryError`]). Contiguous masks of /8 to /32 pass, with any unicast
 /// address that isn't its subnet's network or broadcast address.
-pub const fn validate_entry(entry: BdtEntry) -> Result<(), InvalidEntry> {
+pub const fn validate_entry(entry: BdtEntry) -> Result<(), EntryError> {
     let ip = entry.address.ip().to_bits();
     let mask = entry.mask.to_bits();
     let host = !mask;
@@ -148,23 +155,23 @@ pub const fn validate_entry(entry: BdtEntry) -> Result<(), InvalidEntry> {
     let prefix = mask.count_ones();
     let first_octet = ip >> 24;
     let reason = if entry.address.port() == 0 {
-        InvalidEntry::ZeroPort
+        EntryError::ZeroPort
     } else if ip == 0 {
-        InvalidEntry::UnspecifiedAddress
+        EntryError::UnspecifiedAddress
     } else if ip == u32::MAX {
-        InvalidEntry::LimitedBroadcastAddress
+        EntryError::LimitedBroadcastAddress
     } else if matches!(first_octet, 224..=239) {
-        InvalidEntry::MulticastAddress
+        EntryError::MulticastAddress
     } else if !contiguous {
-        InvalidEntry::NonContiguousMask
+        EntryError::NonContiguousMask
     } else if prefix < 8 {
-        InvalidEntry::MaskTooWide
+        EntryError::MaskTooWide
     } else if prefix < 32 && ip & host == 0 {
-        InvalidEntry::NetworkAddress
+        EntryError::NetworkAddress
     } else if prefix < 32 && ip | mask == u32::MAX {
-        InvalidEntry::DirectedBroadcastAddress
+        EntryError::DirectedBroadcastAddress
     } else if ip | host == u32::MAX {
-        InvalidEntry::LimitedBroadcastTarget
+        EntryError::LimitedBroadcastTarget
     } else {
         return Ok(());
     };
@@ -241,7 +248,7 @@ pub fn canonicalize(table: BdtEntries<'_>, out: &mut [BdtEntry]) -> Result<usize
     if found.distinct > found.stored {
         return Err(BdtError::Capacity {
             needed: found.distinct,
-            capacity: out.len(),
+            available: out.len(),
         });
     }
     Ok(found.stored)
@@ -353,7 +360,7 @@ impl<const N: usize> Bdt<N> {
         if needed > N {
             return Err(BdtError::Capacity {
                 needed,
-                capacity: N,
+                available: N,
             });
         }
         next.len = found.stored;
@@ -378,7 +385,7 @@ impl<const N: usize> Bdt<N> {
         if needed > N {
             return Err(BdtError::Capacity {
                 needed,
-                capacity: N,
+                available: N,
             });
         }
         if self.own_row_appended {

@@ -34,18 +34,15 @@
 //!
 //! ```
 //! use core::net::{Ipv4Addr, SocketAddrV4};
-//! use bacnet_bip_codec::{BvlcResultCode, Bvll};
+//! use bacnet_bip_core::codec::{BvlcResultCode, Bvll};
 //! use bacnet_bip_core::node::{
-//!     Action, Addressed, Datagram, Foreign, Inbound, Link, Mode, Node, Path, Permissive,
+//!     Action, Addressed, Datagram, Foreign, Inbound, Link, Mode, Node, Permissive,
 //! };
 //! use bacnet_bip_core::{Instant, LocalSubnet};
 //!
 //! let own = SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 47808);
 //! let bbmd = SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 1), 47808);
-//! let subnet = LocalSubnet {
-//!     broadcast: SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 255), 47808),
-//!     mask: None,
-//! };
+//! let subnet = LocalSubnet::new(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 255), 47808));
 //! let link = Link::new(own, subnet, Mode::Foreign(Foreign::new(bbmd, 60)))?;
 //! let start = Instant::from_secs(1);
 //! let mut node: Node = Node::new(link, start)?;
@@ -59,20 +56,14 @@
 //! // The BBMD's success comes back.
 //! let mut wire = [0u8; 6];
 //! Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION).encode_into(&mut wire)?;
-//! let datagram = Datagram {
-//!     payload: &wire,
-//!     source: bbmd,
-//!     to: Some(Addressed { node: true, broadcast: false }),
-//!     path: Path::Primary,
-//!     truncated: false,
-//! };
+//! let datagram = Datagram::new(&wire, bbmd, Some(Addressed { node: true, broadcast: false }));
 //! let now = Instant::from_millis(1_010);
 //! assert!(matches!(
 //!     node.receive(&datagram, now, &mut Permissive),
 //!     Inbound::Matched { settled: true, .. }
 //! ));
 //! assert!(matches!(node.poll_action(), Action::Registration(_)));
-//! assert!(node.registration(now).is_some_and(|view| view.registered));
+//! assert!(node.registration(now).is_some_and(|snapshot| snapshot.registered));
 //! # Ok::<(), Box<dyn core::error::Error>>(())
 //! ```
 //!
@@ -145,5 +136,5 @@ pub use exchange::{ExchangeId, ExchangeRefusal, LocalFailure, Operation};
 pub use receive::{
     Datagram, Delivery, Discard, ForBbmd, Path, Permissive, Policy, Received, Response,
 };
-pub use registration::{Admission, AttemptOutcome, Lease, RegistrationEvent, RegistrationView};
+pub use registration::{Admission, AttemptOutcome, Lease, RegistrationEvent, RegistrationSnapshot};
 pub use send::{Cast, Outgoing, SendRefusal};

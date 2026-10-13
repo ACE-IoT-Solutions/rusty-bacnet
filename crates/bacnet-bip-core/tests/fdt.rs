@@ -6,7 +6,7 @@ mod support;
 use bacnet_bip_codec::{BvlcResultCode, FdtEntry};
 use bacnet_bip_core::bbmd::{
     Fdt, Registered, Registration, RegistrationLimits, RegistrationRefusal, Reservation,
-    StorageFull, GRACE_PERIOD_SECS,
+    StorageFull, GRACE_PERIOD,
 };
 use bacnet_bip_core::{Duration, Instant};
 use support::{addr, secs, OPEN, PORT};
@@ -39,16 +39,8 @@ fn a_registration_is_stored_then_renewed_in_place() {
     assert_eq!(
         fdt.registrations(),
         [
-            Registration {
-                address: a,
-                ttl: 120,
-                registered_at: later
-            },
-            Registration {
-                address: b,
-                ttl: 60,
-                registered_at: T0
-            },
+            Registration::new(a, 120, later),
+            Registration::new(b, 60, T0),
         ]
     );
     assert_eq!(fdt.get(b).map(|entry| entry.ttl), Some(60));
@@ -58,11 +50,9 @@ fn a_registration_is_stored_then_renewed_in_place() {
 #[test]
 fn time_to_live_outside_the_limits_is_refused_without_touching_the_entry() {
     let mut fdt: Fdt<4> = Fdt::new();
-    let limits = RegistrationLimits {
-        min_ttl: 30,
-        max_ttl: 300,
-        ..RegistrationLimits::default()
-    };
+    let mut limits = RegistrationLimits::default();
+    limits.min_ttl = 30;
+    limits.max_ttl = 300;
     let device = addr(10, 0, 0, 1, PORT);
     assert!(fdt
         .register(device, 60, T0, &limits, Reservation::Ordinary, || true)
@@ -86,10 +76,8 @@ fn time_to_live_outside_the_limits_is_refused_without_touching_the_entry() {
     assert_eq!(fdt.registrations()[0].ttl, 60);
     assert_eq!(fdt.registrations()[0].registered_at, T0);
     // Zero is refused even when the limits would allow it.
-    let zero = RegistrationLimits {
-        min_ttl: 0,
-        ..limits
-    };
+    let mut zero = limits;
+    zero.min_ttl = 0;
     assert_eq!(
         fdt.register(device, 0, T0, &zero, Reservation::Ordinary, || true)
             .result,
@@ -163,10 +151,8 @@ fn a_refused_registration_still_purges() {
 #[test]
 fn one_address_may_hold_its_quota_across_ports() {
     let mut fdt: Fdt<8> = Fdt::new();
-    let limits = RegistrationLimits {
-        max_entries_per_source: 2,
-        ..OPEN
-    };
+    let mut limits = OPEN;
+    limits.max_entries_per_source = 2;
     let ip = |port| addr(10, 0, 0, 1, port);
     assert!(fdt
         .register(ip(1), 60, T0, &limits, Reservation::Ordinary, || true)
@@ -231,10 +217,8 @@ fn a_full_table_refuses_new_devices_but_renews_old_ones() {
 #[test]
 fn reserved_capacity_is_kept_for_reserved_sources() {
     let mut fdt: Fdt<4> = Fdt::new();
-    let limits = RegistrationLimits {
-        reserved_capacity: 1,
-        ..OPEN
-    };
+    let mut limits = OPEN;
+    limits.reserved_capacity = 1;
     for host in 1..=3 {
         let outcome = fdt.register(
             addr(10, 0, 0, host, PORT),
@@ -275,10 +259,8 @@ fn reserved_capacity_is_kept_for_reserved_sources() {
     assert_eq!(over.result, Err(RegistrationRefusal::TableFull));
     // Reserving more than the table holds leaves ordinary sources nothing.
     let mut small: Fdt<2> = Fdt::new();
-    let greedy = RegistrationLimits {
-        reserved_capacity: 5,
-        ..OPEN
-    };
+    let mut greedy = OPEN;
+    greedy.reserved_capacity = 5;
     let outcome = small.register(
         addr(10, 0, 0, 1, PORT),
         60,
@@ -292,12 +274,8 @@ fn reserved_capacity_is_kept_for_reserved_sources() {
 
 #[test]
 fn a_registration_lapses_just_after_its_ttl_plus_the_grace_period() {
-    let entry = Registration {
-        address: addr(10, 0, 0, 5, PORT),
-        ttl: 60,
-        registered_at: T0,
-    };
-    assert_eq!(GRACE_PERIOD_SECS, 30);
+    let entry = Registration::new(addr(10, 0, 0, 5, PORT), 60, T0);
+    assert_eq!(GRACE_PERIOD, secs(30));
     assert_eq!(entry.lifetime(), secs(90));
     let deadline = T0 + secs(90);
     assert!(!entry.is_expired_at(T0));
@@ -323,11 +301,7 @@ fn a_registration_lapses_just_after_its_ttl_plus_the_grace_period() {
 
 #[test]
 fn seconds_remaining_count_down_from_ttl_plus_grace() {
-    let entry = Registration {
-        address: addr(10, 0, 0, 5, PORT),
-        ttl: 60,
-        registered_at: T0,
-    };
+    let entry = Registration::new(addr(10, 0, 0, 5, PORT), 60, T0);
     let half = Duration::from_millis(500);
     for (elapsed, left) in [
         (Duration::ZERO, 90),
@@ -357,11 +331,7 @@ fn seconds_remaining_count_down_from_ttl_plus_grace() {
 
 #[test]
 fn seconds_remaining_cap_at_the_field_maximum() {
-    let entry = Registration {
-        address: addr(10, 0, 0, 5, PORT),
-        ttl: u16::MAX,
-        registered_at: T0,
-    };
+    let entry = Registration::new(addr(10, 0, 0, 5, PORT), u16::MAX, T0);
     assert_eq!(entry.seconds_remaining_at(T0), u16::MAX);
     assert_eq!(entry.seconds_remaining_at(T0 + secs(30)), u16::MAX);
     assert_eq!(entry.seconds_remaining_at(T0 + secs(31)), u16::MAX - 1);
@@ -402,30 +372,20 @@ fn a_lapsed_registration_can_be_deleted_before_it_is_purged() {
 #[test]
 fn restore_replaces_or_appends_without_checks() {
     let mut fdt: Fdt<2> = Fdt::new();
-    let a = Registration {
-        address: addr(10, 0, 0, 1, PORT),
-        ttl: 0,
-        registered_at: T0,
-    };
-    let b = Registration {
-        address: addr(10, 0, 0, 2, PORT),
-        ttl: 5,
-        registered_at: T0,
-    };
+    let a = Registration::new(addr(10, 0, 0, 1, PORT), 0, T0);
+    let b = Registration::new(addr(10, 0, 0, 2, PORT), 5, T0);
     fdt.restore(a).unwrap();
     fdt.restore(b).unwrap();
-    let moved = Registration {
-        registered_at: T0 + secs(3),
-        ..a
-    };
+    let moved = Registration::new(a.address, a.ttl, T0 + secs(3));
     fdt.restore(moved).unwrap();
     assert_eq!(fdt.registrations(), [moved, b]);
-    let c = Registration {
-        address: addr(10, 0, 0, 3, PORT),
-        ..b
+    let c = Registration::new(addr(10, 0, 0, 3, PORT), b.ttl, b.registered_at);
+    let full = StorageFull {
+        needed: 3,
+        available: 2,
     };
-    assert_eq!(fdt.restore(c), Err(StorageFull));
-    assert!(!StorageFull.to_string().is_empty());
+    assert_eq!(fdt.restore(c), Err(full));
+    assert!(!full.to_string().is_empty());
 }
 
 #[test]
@@ -445,7 +405,39 @@ fn wire_entries_report_the_live_registrations() {
     let table = fdt.wire_entries(T0 + secs(40), &mut out).unwrap();
     assert_eq!(table.len(), 1);
     let mut none: [FdtEntry; 0] = [];
-    assert_eq!(fdt.wire_entries(now, &mut none), Err(StorageFull));
+    let full = StorageFull {
+        needed: 2,
+        available: 0,
+    };
+    assert_eq!(fdt.wire_entries(now, &mut none), Err(full));
+    // Room for one of the two: it says how many there are.
+    let mut one = [FdtEntry::new(addr(0, 0, 0, 0, 0), 0, 0); 1];
+    let full = StorageFull {
+        needed: 2,
+        available: 1,
+    };
+    assert_eq!(fdt.wire_entries(now, &mut one), Err(full));
+}
+
+/// What storage too small for the rows needed counts only the live
+/// registrations, not the lapsed ones still stored on either side of where
+/// it ran out.
+#[test]
+fn storage_too_small_counts_only_live_registrations() {
+    let mut fdt: Fdt<4> = Fdt::new();
+    // Live, lapsed, live, lapsed, in table order, 40 s on.
+    for (host, ttl) in [(1, 60), (2, 1), (3, 60), (4, 1)] {
+        register(&mut fdt, addr(10, 0, 0, host, PORT), ttl, T0).unwrap();
+    }
+    let now = T0 + secs(40);
+    assert_eq!(fdt.len(), 4);
+    assert_eq!(fdt.live_at(now).count(), 2);
+    let mut one = [FdtEntry::new(addr(0, 0, 0, 0, 0), 0, 0); 1];
+    let full = StorageFull {
+        needed: 2,
+        available: 1,
+    };
+    assert_eq!(fdt.wire_entries(now, &mut one), Err(full));
 }
 
 #[test]

@@ -76,11 +76,11 @@ impl FdtEntry {
     /// the registration time, and that clock.
     fn registration(&self) -> (core_bbmd::Registration, CoreClock) {
         let clock = CoreClock::new(self.registered_at);
-        let registration = core_bbmd::Registration {
-            address: address(self.ip, self.port),
-            ttl: self.ttl,
-            registered_at: clock.to_core(self.registered_at),
-        };
+        let registration = core_bbmd::Registration::new(
+            address(self.ip, self.port),
+            self.ttl,
+            clock.to_core(self.registered_at),
+        );
         (registration, clock)
     }
 
@@ -142,7 +142,7 @@ fn bdt_error(error: BdtError) -> Error {
             // A mask under /8 can direct a broadcast to 255.255.255.255,
             // which this error has always named, and the tests check.
             let reason = match reason {
-                core_bbmd::InvalidEntry::MaskTooWide => {
+                core_bbmd::EntryError::MaskTooWide => {
                     "mask prefix too wide (< /8) or limited-broadcast target"
                 }
                 other => other.reason(),
@@ -152,9 +152,10 @@ fn bdt_error(error: BdtError) -> Error {
         BdtError::ConflictingMasks { entry } => {
             format!("BDT conflicting masks: {:?}", BdtEntry::from(entry))
         }
-        BdtError::Capacity { needed, capacity } => {
-            format!("BDT size {needed} exceeds maximum of {capacity} after self-entry insertion")
+        BdtError::Capacity { needed, available } => {
+            format!("BDT size {needed} exceeds maximum of {available} after self-entry insertion")
         }
+        other => format!("BDT refused: {other}"),
     })
 }
 
@@ -392,12 +393,11 @@ impl BbmdState {
             self.counters.registrations_rejected += 1;
             return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
         };
-        let limits = core_bbmd::RegistrationLimits {
-            min_ttl: policy.min_ttl,
-            max_ttl: policy.max_ttl,
-            max_entries_per_source: policy.max_entries_per_source,
-            reserved_capacity: policy.reserved_capacity,
-        };
+        let mut limits = core_bbmd::RegistrationLimits::DEFAULT;
+        limits.min_ttl = policy.min_ttl;
+        limits.max_ttl = policy.max_ttl;
+        limits.max_entries_per_source = policy.max_entries_per_source;
+        limits.reserved_capacity = policy.reserved_capacity;
         let reservation = if policy.reserved_sources.contains(&ip) {
             Reservation::Reserved
         } else {
@@ -585,11 +585,11 @@ impl BbmdState {
     /// once pushed onto the old table's `Vec` did.
     #[cfg(test)]
     pub(crate) fn insert_fdt_entry_for_test(&mut self, entry: FdtEntry) {
-        let registration = core_bbmd::Registration {
-            address: address(entry.ip, entry.port),
-            ttl: entry.ttl,
-            registered_at: self.clock.to_core(entry.registered_at),
-        };
+        let registration = core_bbmd::Registration::new(
+            address(entry.ip, entry.port),
+            entry.ttl,
+            self.clock.to_core(entry.registered_at),
+        );
         self.tables.fdt.restore(registration).expect("FDT has room");
     }
 

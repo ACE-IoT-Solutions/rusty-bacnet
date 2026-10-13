@@ -12,6 +12,7 @@ use super::config::{Link, Mode, MAX_NPDU};
 /// ([`Bvll::encode_into`](bacnet_bip_codec::Bvll::encode_into)) and sends
 /// it from the node's own socket to `to`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Outgoing<'n> {
     /// The destination B/IP address.
     pub to: SocketAddrV4,

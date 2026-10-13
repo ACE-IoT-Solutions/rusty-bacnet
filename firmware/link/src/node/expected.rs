@@ -4,12 +4,12 @@
 
 use bacnet_bip_codec::BvlcResultCode;
 use bacnet_bip_core::node::{
-    Admission, AttemptOutcome, Discard, ExchangeCounters, Lease, NodeCounters, RegisterAttempt,
-    RegistrationEvent, RegistrationView, SendRefusal,
+    Admission, AttemptOutcome, Discard, ExchangeCounters, NodeCounters, RegistrationEvent,
+    SendRefusal,
 };
 use bacnet_bip_core::{Duration, Instant};
 
-use super::{Summary, BBMD, ORIGIN, PEER, TTL};
+use super::{Attempt, Expected, Registration, Summary, BBMD, ORIGIN, PEER, TTL};
 use crate::tally::Sent;
 
 /// The hash over every datagram the node sends and where it goes. It was
@@ -26,10 +26,35 @@ const fn at(millis: u64) -> Instant {
 const SUCCESS: BvlcResultCode = BvlcResultCode::SUCCESSFUL_COMPLETION;
 const DBTN_NAK: BvlcResultCode = BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK;
 
+/// What the node counts in a good run, but the newest attempt
+/// ([`Expected::last_attempt`]). The counters are `#[non_exhaustive]`, so
+/// they are built from their default.
+fn counters() -> NodeCounters {
+    // Eight attempts sent, five answered with success, three timed out.
+    let mut register = ExchangeCounters::default();
+    register.sent = 8;
+    register.results = 5;
+    register.last_result = Some(SUCCESS);
+    register.timeouts = 3;
+    let mut counters = NodeCounters::default();
+    counters.register_foreign_device = register;
+    counters.registration_attempts = 8;
+    counters.registrations_accepted = 5;
+    // The DBTN NAK, taken as the hint.
+    counters.unmatched_responses = 1;
+    counters.last_unmatched_result = Some(DBTN_NAK);
+    counters.renewal_hints = 1;
+    counters.lapses = 1;
+    counters.broadcasts_held = 2;
+    counters.broadcasts_released = 2;
+    counters.broadcasts_hold_full = 1;
+    counters
+}
+
 /// The summary [`run`](super::run) returns in a good run.
 #[must_use]
-pub fn expected() -> Summary {
-    Summary {
+pub fn expected() -> Expected {
+    let summary = Summary {
         // A 4-octet header for a unicast; for a broadcast, 6 octets more, the
         // originating address a BBMD adds when it forwards it. The budget of
         // 1507 octets leaves room for 1497 either way.
@@ -98,50 +123,9 @@ pub fn expected() -> Summary {
             Some(RegistrationEvent::Renewed { until: at(160_000) }),
             None,
         ],
-        // At 100.02 s: the last renewal's lease, from the 100 s attempt, and
-        // the next renewal one interval into it.
-        registration: Some(RegistrationView {
-            lease: Some(Lease {
-                since: at(100_000),
-                until: at(160_000),
-            }),
-            registered: true,
-            lease_remaining: Some(Duration::from_millis(59_980)),
-            attempt_in_flight: false,
-            next_attempt: Some(at(130_000)),
-            last_outcome: Some(AttemptOutcome::Accepted),
-            consecutive_failures: 0,
-            first_resolved: true,
-            held: 0,
-        }),
-        counters: NodeCounters {
-            // Eight attempts sent, five answered with success, three timed
-            // out.
-            register_foreign_device: ExchangeCounters {
-                sent: 8,
-                results: 5,
-                last_result: Some(SUCCESS),
-                timeouts: 3,
-                ..ExchangeCounters::default()
-            },
-            registration_attempts: 8,
-            registrations_accepted: 5,
-            last_registration_attempt: Some(RegisterAttempt {
-                bbmd: BBMD,
-                ttl: TTL,
-                outcome: AttemptOutcome::Accepted,
-                result: Some(SUCCESS),
-            }),
-            // The DBTN NAK, taken as the hint.
-            unmatched_responses: 1,
-            last_unmatched_result: Some(DBTN_NAK),
-            renewal_hints: 1,
-            lapses: 1,
-            broadcasts_held: 2,
-            broadcasts_released: 2,
-            broadcasts_hold_full: 1,
-            ..NodeCounters::default()
-        },
+        // In `Expected::registration`.
+        registration: None,
+        counters: counters(),
         // Six NAKs and eight registrations of 6 octets, and three
         // Distribute-Broadcast-To-Network messages of 12.
         sent: Sent {
@@ -150,5 +134,27 @@ pub fn expected() -> Summary {
             fnv: SENT_FNV,
         },
         errors: 0,
+    };
+    Expected {
+        summary,
+        // At 100.02 s: the last renewal's lease, from the 100 s attempt, and
+        // the next renewal one interval into it.
+        registration: Registration {
+            lease: Some((at(100_000), at(160_000))),
+            registered: true,
+            lease_remaining: Some(Duration::from_millis(59_980)),
+            attempt_in_flight: false,
+            next_attempt: Some(at(130_000)),
+            last_outcome: Some(AttemptOutcome::Accepted),
+            consecutive_failures: 0,
+            first_resolved: true,
+            held: 0,
+        },
+        last_attempt: Attempt {
+            bbmd: BBMD,
+            ttl: TTL,
+            outcome: AttemptOutcome::Accepted,
+            result: Some(SUCCESS),
+        },
     }
 }

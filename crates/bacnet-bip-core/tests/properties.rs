@@ -13,7 +13,7 @@ use bacnet_bip_core::bbmd::{
 };
 use bacnet_bip_core::{Arrival, Instant, LocalSubnet};
 use proptest::prelude::*;
-use support::OPEN;
+use support::{target, OPEN};
 
 type Site = Tables<16, 16>;
 
@@ -153,7 +153,7 @@ proptest! {
     ) {
         let Some(site) = build(own, &rows, &regs) else { return Ok(()) };
         let now = Instant::from_secs(now);
-        let cx = Context { now, fdt_fanout: fanout };
+        let cx = Context::new(now, fanout);
         let mut out = [Target::UNUSED; Site::MAX_TARGETS];
         let got = site.broadcast_targets(&cx, exclude, &mut out);
         let (expected, dedup, capped) = model_targets(&site, now, exclude, fanout);
@@ -179,8 +179,8 @@ proptest! {
         let Some(site) = build(own, &rows, &regs) else { return Ok(()) };
         let now = Instant::from_secs(now);
         let local = SocketAddrV4::new(Ipv4Addr::new(10, 0, 9, 255), 0xBAC0);
-        let cx = Context { now, fdt_fanout: 16 };
-        let subnet = LocalSubnet { broadcast: local, mask: None };
+        let cx = Context::new(now, 16);
+        let subnet = LocalSubnet::new(local);
         let mut out = [Target::UNUSED; Site::MAX_TARGETS];
         let arrival = if broadcast { Arrival::Broadcast } else { Arrival::Unicast };
         match site.forwarded_npdu(&cx, &subnet, sender, arrival, origin, &mut out) {
@@ -202,7 +202,7 @@ proptest! {
         match site.distribute_broadcast(&cx, &subnet, sender, &[1], &mut out) {
             Ok(sent) => {
                 prop_assert!(site.fdt.is_registered_at(sender, now));
-                prop_assert_eq!(sent.fanout.targets[0], Target { destination: local, via: Via::LocalBroadcast });
+                prop_assert_eq!(sent.fanout.targets[0], target(local, Via::LocalBroadcast));
                 prop_assert!(sent.fanout.targets[1..].iter().all(|t| t.destination != sender || t.via == Via::Peer));
             }
             Err(_) => prop_assert!(!site.fdt.is_registered_at(sender, now)),

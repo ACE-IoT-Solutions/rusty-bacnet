@@ -38,13 +38,11 @@ pub(crate) struct Forward {
 impl BbmdState {
     /// The core's context for a decision at `now`.
     fn decision_context(&self, now: Instant) -> Context {
-        Context {
-            now: self.clock.to_core(now),
-            fdt_fanout: self
-                .foreign_device_policy
-                .as_ref()
-                .map_or(DEFAULT_FDT_FANOUT, |policy| policy.max_fdt_fanout),
-        }
+        let fdt_fanout = self
+            .foreign_device_policy
+            .as_ref()
+            .map_or(DEFAULT_FDT_FANOUT, |policy| policy.max_fdt_fanout);
+        Context::new(self.clock.to_core(now), fdt_fanout)
     }
 
     /// Count what the core reports about one list of destinations.
@@ -58,10 +56,9 @@ impl BbmdState {
 
     /// This BBMD's subnet, with `broadcast` as its broadcast address.
     fn local_subnet(&self, broadcast: SocketAddrV4) -> LocalSubnet {
-        LocalSubnet {
-            broadcast,
-            mask: self.subnet_mask,
-        }
+        let mut subnet = LocalSubnet::new(broadcast);
+        subnet.mask = self.subnet_mask;
+        subnet
     }
 
     /// Count `sent` and copy it out.

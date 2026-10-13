@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use bacnet_bip_codec::BvlcFunction;
 use bacnet_bip_core::node::{
-    Addressed, Datagram, Discard, Link, LocalAddresses, Mode, Path, Permissive, Received,
+    Addressed, Datagram, Discard, Link, LocalAddresses, Mode, Permissive, Received,
 };
 use bacnet_bip_core::{Instant as CoreInstant, LocalSubnet};
 use tokio::sync::mpsc;
@@ -43,13 +43,8 @@ pub(super) async fn handle_bvll_message(
         node: delivery == Delivery::Unicast,
         broadcast: delivery == Delivery::Broadcast,
     };
-    let datagram = Datagram {
-        payload: &wire,
-        source: SocketAddrV4::new(Ipv4Addr::from(sender.0), sender.1),
-        to: Some(to),
-        path: Path::Primary,
-        truncated: false,
-    };
+    let source = SocketAddrV4::new(Ipv4Addr::from(sender.0), sender.1);
+    let datagram = Datagram::new(&wire, source, Some(to));
     io::receive(&datagram, ctx).await;
 }
 
@@ -69,24 +64,19 @@ pub(super) fn admitted_delivery(
     let IpAddr::V4(destination) = destination else {
         return None;
     };
-    let local = LocalAddresses {
-        own: local_ip,
-        broadcast: configured_broadcast,
-        wildcard: wildcard_bind.then_some(local_unicast_ips),
-    };
+    let mut local = LocalAddresses::new(local_ip, configured_broadcast);
+    local.wildcard = wildcard_bind.then_some(local_unicast_ips);
     let link = test_link(
         SocketAddrV4::new(local_ip, 0xBAC0),
         SocketAddrV4::new(configured_broadcast, 0xBAC0),
         Mode::Normal,
     );
     let frame = raw_frame(function, &[]);
-    let datagram = Datagram {
-        payload: &frame,
-        source: SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 7), 0xBAC0),
-        to: Some(Addressed::classify(destination, os_group_delivery, &local)),
-        path: Path::Primary,
-        truncated: false,
-    };
+    let datagram = Datagram::new(
+        &frame,
+        SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 7), 0xBAC0),
+        Some(Addressed::classify(destination, os_group_delivery, &local)),
+    );
     let received = link.receive(&datagram, CoreInstant::ZERO, &mut Permissive);
     (received != Received::Discarded(Discard::DestinationMismatch)).then_some(())
 }
@@ -94,15 +84,9 @@ pub(super) fn admitted_delivery(
 /// A link at `own`, whose local broadcasts go to `broadcast`, in `mode`,
 /// sending NPDUs up to 1497 octets, as the transport runs it.
 pub(super) fn test_link(own: SocketAddrV4, broadcast: SocketAddrV4, mode: Mode) -> Link {
-    Link {
-        address: own,
-        subnet: LocalSubnet {
-            broadcast,
-            mask: None,
-        },
-        mode,
-        budget: Some(super::DATAGRAM_BUDGET),
-    }
+    let mut link = Link::new(own, LocalSubnet::new(broadcast), mode).expect("a valid test link");
+    link.budget = Some(super::DATAGRAM_BUDGET);
+    link
 }
 
 impl RecvContext {

@@ -394,7 +394,8 @@ impl<'h, const X: usize> BipPort<'h, X> {
                     self.held_len = 0;
                 }
                 Action::DiscardHeld => self.held_len = 0,
-                // The node keeps both in its registration view and counters.
+                // The node keeps both in its registration snapshot and
+                // counters.
                 Action::ExchangeEnded { .. } | Action::Registration(_) => {}
             }
         }
@@ -515,7 +516,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         now: Instant,
         out: &mut impl Datagrams,
     ) -> Ingress<'d> {
-        let cx = Context { now, fdt_fanout: F };
+        let cx = Context::new(now, F);
         let port = self.port;
         let (source, npdu) = match share {
             ForBbmd::OriginalBroadcast(delivery) => {
@@ -596,7 +597,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
             Dest::Broadcast => {
                 let (outgoing, _) = link.broadcast(send.npdu).map_err(refusal)?;
                 out.send(outgoing.to, &outgoing.message)?;
-                let cx = Context { now, fdt_fanout: F };
+                let cx = Context::new(now, F);
                 let sent = self.tables.own_broadcast(&cx, send.npdu, self.targets);
                 add(&mut self.refused, fan_out(out, sent.transmissions()));
                 Ok(())

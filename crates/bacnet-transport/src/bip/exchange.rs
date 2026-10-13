@@ -237,11 +237,8 @@ fn refusal_error(refusal: ExchangeRefusal) -> Error {
         ExchangeRefusal::SameExchange | ExchangeRefusal::ResultClass => Error::Encoding(format!(
             "BVLC management request already in flight: {refusal}"
         )),
-        ExchangeRefusal::Full
-        | ExchangeRefusal::ManagedRegistration
-        | ExchangeRefusal::NotARequest => {
-            Error::Encoding(format!("BVLC management request refused: {refusal}"))
-        }
+        // Full, ManagedRegistration, NotARequest, and any later refusal.
+        _ => Error::Encoding(format!("BVLC management request refused: {refusal}")),
     }
 }
 

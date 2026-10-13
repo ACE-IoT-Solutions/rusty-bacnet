@@ -16,7 +16,7 @@ use super::exchange::{
 use super::receive::{Datagram, Delivery, Discard, ForBbmd, Policy, Received, Response};
 use super::registration::{
     Admission, AttemptOutcome, BroadcastDecision, HeldVerdict, Lifecycle, RegistrationEvent,
-    RegistrationView,
+    RegistrationSnapshot,
 };
 use super::send::{Outgoing, SendRefusal};
 
@@ -611,13 +611,15 @@ impl<const X: usize> Node<X> {
     /// A foreign device's registration as of `now`; `None` in the other
     /// modes.
     #[must_use]
-    pub fn registration(&self, now: Instant) -> Option<RegistrationView> {
+    pub fn registration(&self, now: Instant) -> Option<RegistrationSnapshot> {
         self.lifecycle
             .as_ref()
-            .map(|lifecycle| lifecycle.view(now.max(self.now)))
+            .map(|lifecycle| lifecycle.snapshot(now.max(self.now)))
     }
 
-    /// The counts since the last call, which start again from zero.
+    /// The counts since the last call, which start again from zero: add
+    /// them to the host's own totals, as wide as it needs. Each count is a
+    /// `u32` that saturates between calls.
     pub fn take_counters(&mut self) -> NodeCounters {
         core::mem::take(&mut self.counters)
     }

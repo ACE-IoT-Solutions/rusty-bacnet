@@ -16,10 +16,10 @@ use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{
-    BdtError, Context, ForwardRefusal, InvalidEntry, Reservation, Tables, Target, Via, TWO_HOP_MASK,
+    BdtError, Context, EntryError, ForwardRefusal, Reservation, Tables, Target, Via, TWO_HOP_MASK,
 };
 use bacnet_bip_core::{Arrival, Instant, LocalSubnet};
-use support::{addr, destinations};
+use support::{addr, destinations, target};
 
 const NAT_PORT: u16 = 47809;
 const NAT_A: SocketAddrV4 = addr(201, 1, 1, 1, NAT_PORT);
@@ -52,18 +52,12 @@ fn site(own: SocketAddrV4) -> Site {
 }
 
 fn cx() -> Context {
-    Context {
-        now: NOW,
-        fdt_fanout: 4,
-    }
+    Context::new(NOW, 4)
 }
 
 /// The private side, its mask unknown: a NAT-supporting BBMD's own address
 /// is the public one, so the private mask says nothing about it.
-const PRIVATE_SIDE: LocalSubnet = LocalSubnet {
-    broadcast: PRIVATE_BROADCAST,
-    mask: None,
-};
+const PRIVATE_SIDE: LocalSubnet = LocalSubnet::new(PRIVATE_BROADCAST);
 
 #[test]
 fn with_its_public_address_as_its_own_each_bbmd_sends_only_to_the_other_site() {
@@ -76,13 +70,7 @@ fn with_its_public_address_as_its_own_each_bbmd_sends_only_to_the_other_site() {
     let mut out = [Target::UNUSED; Site::MAX_TARGETS];
     let sent = bbmd1.original_broadcast(&cx(), BEHIND_A, NPDU, &mut out);
     // Two-hop: the peer's public address itself, which NAT B forwards.
-    assert_eq!(
-        sent.fanout.targets,
-        [Target {
-            destination: NAT_B,
-            via: Via::Peer
-        }]
-    );
+    assert_eq!(sent.fanout.targets, [target(NAT_B, Via::Peer)]);
 
     let bbmd2 = site(NAT_B);
     let sent = bbmd2.own_broadcast(&cx(), NPDU, &mut out);
@@ -119,14 +107,8 @@ fn a_peer_sites_forward_arrives_from_its_nat_and_is_rebroadcast_behind_this_one(
     assert_eq!(
         sent.targets,
         [
-            Target {
-                destination: PRIVATE_BROADCAST,
-                via: Via::LocalBroadcast
-            },
-            Target {
-                destination: ROAMING,
-                via: Via::ForeignDevice
-            },
+            target(PRIVATE_BROADCAST, Via::LocalBroadcast),
+            target(ROAMING, Via::ForeignDevice),
         ]
     );
     // The private address the peer has behind its own NAT is no peer here.
@@ -188,7 +170,7 @@ fn the_examples_second_public_address_is_multicast() {
         tables.bdt.set(BdtEntries::from_entries(&[BDT[0], printed])),
         Err(BdtError::Invalid {
             entry: printed,
-            reason: InvalidEntry::MulticastAddress
+            reason: EntryError::MulticastAddress
         })
     );
 }

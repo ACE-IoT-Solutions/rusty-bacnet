@@ -12,6 +12,12 @@ use crate::Arrival;
 /// builds it with [`Addressed::classify`]. Both can hold at once, as where
 /// a loopback test's broadcast address is its own; neither, for a
 /// destination that is neither (another host's unicast, a multicast group).
+///
+/// It is a plain record, and closed on purpose: the receive rules ask a
+/// destination two questions, whether it was this node alone and whether
+/// it reached every node on the subnet (Annex J.2.11, J.2.12, J.4.1). Any
+/// other kind of destination answers the same two, B/IP multicast (#941)
+/// included, whose group address would stand in for the broadcast one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Addressed {
     /// Sent to this node's own unicast address.
@@ -21,7 +27,13 @@ pub struct Addressed {
 }
 
 /// The addresses a destination is judged against.
+///
+/// It is `#[non_exhaustive]`, since B/IP multicast (#941) would add the
+/// group address: outside this crate, build it with
+/// [`LocalAddresses::new`] and set [`wildcard`](Self::wildcard) for a
+/// socket bound to the wildcard address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LocalAddresses<'a> {
     /// The IP address of the node's own B/IP address.
     pub own: Ipv4Addr,
@@ -31,6 +43,19 @@ pub struct LocalAddresses<'a> {
     /// addresses: unicast to any of them is the node's. `None` for a socket
     /// bound to `own`.
     pub wildcard: Option<&'a [Ipv4Addr]>,
+}
+
+impl LocalAddresses<'_> {
+    /// The addresses of a socket bound to `own`, on the subnet whose
+    /// broadcast IP is `broadcast`.
+    #[must_use]
+    pub const fn new(own: Ipv4Addr, broadcast: Ipv4Addr) -> Self {
+        Self {
+            own,
+            broadcast,
+            wildcard: None,
+        }
+    }
 }
 
 impl Addressed {
@@ -80,7 +105,13 @@ impl Addressed {
 /// node. No node sends from one, so a datagram from one, or a
 /// Forwarded-NPDU naming one as its origin, is dropped: answering it would
 /// reach the whole group.
+///
+/// It is `#[non_exhaustive]`, so a link that comes to have another group
+/// destination of its own (a second broadcast address, say) isn't a
+/// breaking change: outside this crate, take it from [`Link::groups`] or
+/// build it with [`Groups::new`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Groups {
     /// The link's broadcast address: its broadcast IP at the network's port.
     pub broadcast: SocketAddrV4,
@@ -91,6 +122,16 @@ pub struct Groups {
 }
 
 impl Groups {
+    /// The group destinations of a link whose broadcast address is
+    /// `broadcast`, on the interface whose IP is `interface`.
+    #[must_use]
+    pub const fn new(broadcast: SocketAddrV4, interface: Ipv4Addr) -> Self {
+        Self {
+            broadcast,
+            interface,
+        }
+    }
+
     /// Whether `address` is a group destination: the link's broadcast
     /// address, or any address whose IP is a group IP ([`Groups::contains_ip`]).
     #[must_use]

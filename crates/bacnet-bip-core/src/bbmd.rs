@@ -29,7 +29,7 @@
 //!
 //! ```
 //! use core::net::{Ipv4Addr, SocketAddrV4};
-//! use bacnet_bip_codec::{BdtEntries, BdtEntry};
+//! use bacnet_bip_core::codec::{BdtEntries, BdtEntry};
 //! use bacnet_bip_core::bbmd::{Context, RegistrationLimits, Reservation, Tables, Target, Via};
 //! use bacnet_bip_core::Instant;
 //!
@@ -47,16 +47,17 @@
 //! let outcome = tables.fdt.register(device, 60, now, &limits, Reservation::Ordinary, || true);
 //! assert!(outcome.result.is_ok());
 //!
-//! let cx = Context { now, fdt_fanout: 4 };
+//! let cx = Context::new(now, 4);
 //! let source = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 20), 47808);
 //! let mut out = [Target::UNUSED; Tables::<4, 4>::MAX_TARGETS];
 //! let sent = tables.original_broadcast(&cx, source, &[0x01, 0x00], &mut out);
 //! assert_eq!(sent.origin, source);
+//! let targets: Vec<_> = sent.fanout.targets.iter().map(|t| (t.destination, t.via)).collect();
 //! assert_eq!(
-//!     sent.fanout.targets,
+//!     targets,
 //!     [
-//!         Target { destination: SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 255), 47808), via: Via::Peer },
-//!         Target { destination: device, via: Via::ForeignDevice },
+//!         (SocketAddrV4::new(Ipv4Addr::new(10, 0, 2, 255), 47808), Via::Peer),
+//!         (device, Via::ForeignDevice),
 //!     ]
 //! );
 //! # Ok::<(), bacnet_bip_core::bbmd::BdtError>(())
@@ -67,11 +68,11 @@ mod fdt;
 mod forward;
 
 pub use bdt::{
-    canonicalize, distribution_address, validate_entry, Bdt, BdtError, InvalidEntry, TWO_HOP_MASK,
+    canonicalize, distribution_address, validate_entry, Bdt, BdtError, EntryError, TWO_HOP_MASK,
 };
 pub use fdt::{
     Fdt, RegisterOutcome, Registered, Registration, RegistrationLimits, RegistrationRefusal,
-    Reservation, StorageFull, GRACE_PERIOD_SECS,
+    Reservation, StorageFull, GRACE_PERIOD,
 };
 pub use forward::{
     Context, DistributeRefusal, Distribution, Fanout, ForwardRefusal, Tables, Target, Via,

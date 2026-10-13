@@ -62,12 +62,18 @@ pub(super) async fn handle(share: ForBbmd<'_>, ctx: &RecvContext) {
             let forward = match decision {
                 Ok(forward) => forward,
                 Err(refusal) => {
-                    // The node's own-echo rule makes OwnEcho unreachable.
-                    ctx.drops.count(match refusal {
-                        ForwardRefusal::OwnEcho => DropReason::OwnEcho,
-                        ForwardRefusal::NotFromPeer => DropReason::ForwardedNotFromPeer,
-                    });
-                    debug!(%sender, "Rejecting FORWARDED_NPDU from non-BDT sender");
+                    // The node's own-echo rule makes OwnEcho unreachable. A
+                    // refusal the core adds later has no counter here yet,
+                    // so it is logged, not counted under a reason it isn't.
+                    let counted = match refusal {
+                        ForwardRefusal::OwnEcho => Some(DropReason::OwnEcho),
+                        ForwardRefusal::NotFromPeer => Some(DropReason::ForwardedNotFromPeer),
+                        _ => None,
+                    };
+                    if let Some(reason) = counted {
+                        ctx.drops.count(reason);
+                    }
+                    debug!(%sender, ?refusal, "Rejecting FORWARDED_NPDU");
                     return;
                 }
             };

@@ -11,7 +11,12 @@ use super::config::{ForwardedTrust, Link, Mode};
 use crate::Arrival;
 
 /// One received datagram, as the host's socket reported it.
+///
+/// It is `#[non_exhaustive]`, so a new field isn't a breaking change:
+/// outside this crate, build it with [`Datagram::new`] and set the fields
+/// that differ from its defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Datagram<'d> {
     /// The UDP payload.
     pub payload: &'d [u8],
@@ -30,8 +35,27 @@ pub struct Datagram<'d> {
     pub truncated: bool,
 }
 
-/// Which socket read a datagram.
+impl<'d> Datagram<'d> {
+    /// `payload` from `source`, sent to what `to` says, read whole by the
+    /// [`Primary`](Path::Primary) socket. A host with a broadcast listener
+    /// sets [`path`](Self::path), and one whose read was cut short sets
+    /// [`truncated`](Self::truncated).
+    #[must_use]
+    pub const fn new(payload: &'d [u8], source: SocketAddrV4, to: Option<Addressed>) -> Self {
+        Self {
+            payload,
+            source,
+            to,
+            path: Path::Primary,
+            truncated: false,
+        }
+    }
+}
+
+/// Which socket read a datagram. The host builds it, and the node matches
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Path {
     /// The socket every send leaves from.
     Primary,
@@ -102,6 +126,7 @@ pub enum Received<'d> {
 
 /// An NPDU to hand up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Delivery<'d> {
     /// The NPDU.
     pub npdu: &'d [u8],
@@ -114,8 +139,10 @@ pub struct Delivery<'d> {
 }
 
 /// A response to one of this node's management requests, before it is
-/// matched.
+/// matched. [`Link::receive`] builds it, and
+/// [`Node::resolve`](super::Node::resolve) takes it back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Response<'d> {
     /// Who sent it.
     pub peer: SocketAddrV4,
@@ -130,6 +157,7 @@ pub struct Response<'d> {
 /// Why a datagram was dropped: each is counted once, under the first rule
 /// it fails, in this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Discard {
     /// The OS or the buffer cut it short.
     Truncated,

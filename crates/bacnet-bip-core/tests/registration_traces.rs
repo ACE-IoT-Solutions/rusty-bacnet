@@ -230,10 +230,7 @@ fn register_renew_lose_expire_and_register_again() {
 
 #[test]
 fn at_renewal_keeps_todays_schedule_under_the_same_loss() {
-    let foreign = Foreign {
-        retry: Retry::AtRenewal,
-        ..foreign()
-    };
+    let foreign = with(foreign(), |foreign| foreign.retry = Retry::AtRenewal);
     let log = Trace::new(foreign, &LOSSY).run(300_010);
     assert_eq!(
         log,
@@ -271,10 +268,7 @@ fn at_renewal_keeps_todays_schedule_under_the_same_loss() {
 
 #[test]
 fn a_refusal_at_the_first_attempt_discards_what_was_held() {
-    let holding = Foreign {
-        hold: 2,
-        ..foreign()
-    };
+    let holding = with(foreign(), |foreign| foreign.hold = 2);
     let fates = [Fate::Answer(NAK, &[50])];
     let log = Trace::new(holding, &fates)
         .broadcast_at(1, None)

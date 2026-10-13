@@ -7,8 +7,8 @@ use core::net::Ipv4Addr;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode, Bvll, FdtEntries};
 use bacnet_bip_core::node::{
-    Addressed, Datagram, Delivery, Discard, ForBbmd, Foreign, ForwardedTrust, Inbound, Link,
-    LocalAddresses, Mode, Node, Path, Permissive, Received, Response,
+    Addressed, Delivery, Discard, ForBbmd, ForwardedTrust, Inbound, Link, LocalAddresses, Mode,
+    Node, Path, Permissive, Received, Response,
 };
 use bacnet_bip_core::{Arrival, Instant, LocalSubnet};
 use node_support::*;
@@ -19,12 +19,29 @@ fn normal() -> Link {
     link(Mode::Normal)
 }
 
-fn delivered(source: core::net::SocketAddrV4, group: bool) -> Received<'static> {
-    Received::Deliver(Delivery {
-        npdu: NPDU,
-        source,
-        group,
-    })
+/// A delivery of [`NPDU`] a test expects. [`Delivery`] is
+/// `#[non_exhaustive]`, so a test outside the crate can't build one to
+/// compare with: a `Delivery` or a `Received` compares with this instead.
+#[derive(Debug)]
+struct Delivered {
+    source: core::net::SocketAddrV4,
+    group: bool,
+}
+
+impl PartialEq<Delivered> for Delivery<'_> {
+    fn eq(&self, expected: &Delivered) -> bool {
+        self.npdu == NPDU && self.source == expected.source && self.group == expected.group
+    }
+}
+
+impl PartialEq<Delivered> for Received<'_> {
+    fn eq(&self, expected: &Delivered) -> bool {
+        matches!(self, Received::Deliver(delivery) if delivery == expected)
+    }
+}
+
+fn delivered(source: core::net::SocketAddrV4, group: bool) -> Delivered {
+    Delivered { source, group }
 }
 
 #[test]
@@ -191,10 +208,7 @@ fn group_sources_and_origins_are_dropped() {
     }
     // A loopback broadcast IP, as loopback tests set up, is a group only at
     // the network's port.
-    let loopback = LocalSubnet {
-        broadcast: addr(127, 0, 0, 1, PORT),
-        mask: None,
-    };
+    let loopback = LocalSubnet::new(addr(127, 0, 0, 1, PORT));
     let link = Link::new(addr(127, 0, 0, 1, 47_809), loopback, Mode::Normal).unwrap();
     let peer = addr(127, 0, 0, 1, 47_810);
     assert_eq!(
@@ -245,10 +259,9 @@ fn own_echoes_are_dropped() {
 }
 
 fn on_listener(link: &Link, payload: &[u8], to: Addressed, other_interface: bool) -> Discard {
-    let datagram = Datagram {
-        path: Path::Listener { other_interface },
-        ..datagram(payload, PEER, to)
-    };
+    let datagram = with(datagram(payload, PEER, to), |datagram| {
+        datagram.path = Path::Listener { other_interface };
+    });
     match receive_datagram(link, &datagram) {
         Received::Discarded(reason) => reason,
         Received::Deliver(_) => Discard::Truncated,
@@ -277,27 +290,22 @@ fn listeners_keep_only_this_links_broadcasts() {
         broadcast: true,
     };
     assert_eq!(on_listener(&link, &unicast, both, false), mismatch(false));
-    let kept = Datagram {
-        path: Path::Listener {
+    let kept = with(datagram(&broadcast, PEER, TO_BROADCAST), |datagram| {
+        datagram.path = Path::Listener {
             other_interface: false,
-        },
-        ..datagram(&broadcast, PEER, TO_BROADCAST)
-    };
+        };
+    });
     assert_eq!(receive_datagram(&link, &kept), delivered(PEER, true));
 }
 
 #[test]
 fn wildcard_binds_take_unicast_only_at_own_addresses() {
     let own_ips = [Ipv4Addr::new(10, 0, 0, 5), Ipv4Addr::new(192, 168, 1, 10)];
-    let wildcard = LocalAddresses {
-        own: Ipv4Addr::new(192, 168, 1, 10),
-        broadcast: Ipv4Addr::new(192, 168, 1, 255),
-        wildcard: Some(&own_ips),
-    };
-    let bound = LocalAddresses {
-        wildcard: None,
-        ..wildcard
-    };
+    let bound = LocalAddresses::new(
+        Ipv4Addr::new(192, 168, 1, 10),
+        Ipv4Addr::new(192, 168, 1, 255),
+    );
+    let wildcard = with(bound, |local| local.wildcard = Some(&own_ips));
     let classify = |ip: [u8; 4], os, local: &LocalAddresses<'_>| {
         let addressed = Addressed::classify(Ipv4Addr::from(ip), os, local);
         (addressed.node, addressed.broadcast)
@@ -327,18 +335,11 @@ fn wildcard_binds_take_unicast_only_at_own_addresses() {
     // A wildcard bind never counts the broadcast address as its own, even
     // when the host lists it.
     let odd = [Ipv4Addr::new(192, 168, 1, 255)];
-    let listed = LocalAddresses {
-        wildcard: Some(&odd),
-        ..wildcard
-    };
+    let listed = with(wildcard, |local| local.wildcard = Some(&odd));
     assert_eq!(classify([192, 168, 1, 255], None, &listed), (false, true));
     // A bound socket whose broadcast address is its own, as in loopback
     // tests, has both.
-    let loopback = LocalAddresses {
-        own: Ipv4Addr::LOCALHOST,
-        broadcast: Ipv4Addr::LOCALHOST,
-        wildcard: None,
-    };
+    let loopback = LocalAddresses::new(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
     assert_eq!(classify([127, 0, 0, 1], None, &loopback), (true, true));
 }
 
@@ -406,14 +407,24 @@ fn the_policy_sees_covered_requests_before_their_payload() {
 #[test]
 fn responses_go_on_to_be_matched_malformed_or_not() {
     let link = normal();
+    let success = result(SUCCESS);
+    let received = receive(&link, &success, BBMD, UNICAST);
+    let Received::Response(response) = received else {
+        panic!("{received:?}");
+    };
     assert_eq!(
-        receive(&link, &result(SUCCESS), BBMD, UNICAST),
-        Received::Response(Response {
-            peer: BBMD,
-            function: BvlcFunction::BVLC_RESULT,
-            message: Ok(Bvll::BvlcResult(SUCCESS)),
-            accepted: true,
-        })
+        (
+            response.peer,
+            response.function,
+            response.message,
+            response.accepted
+        ),
+        (
+            BBMD,
+            BvlcFunction::BVLC_RESULT,
+            Ok(Bvll::BvlcResult(SUCCESS)),
+            true
+        )
     );
     for frame in [
         raw(0x00, &[0x00]),
@@ -439,26 +450,19 @@ fn responses_go_on_to_be_matched_malformed_or_not() {
 #[test]
 fn truncation_is_checked_first() {
     let link = normal();
-    let truncated = Datagram {
-        truncated: true,
-        path: Path::Listener {
+    let source = addr(255, 255, 255, 255, PORT);
+    let truncated = with(datagram(&[0x00], source, Addressed::default()), |d| {
+        d.truncated = true;
+        d.path = Path::Listener {
             other_interface: true,
-        },
-        ..datagram(
-            &[0x00],
-            addr(255, 255, 255, 255, PORT),
-            Addressed::default(),
-        )
-    };
+        };
+    });
     assert_eq!(
         receive_datagram(&link, &truncated),
         Received::Discarded(Discard::Truncated)
     );
     // Then the group source, before the listener.
-    let grouped = Datagram {
-        truncated: false,
-        ..truncated
-    };
+    let grouped = with(truncated, |d| d.truncated = false);
     assert_eq!(
         receive_datagram(&link, &grouped),
         Received::Discarded(Discard::GroupSource)
@@ -493,10 +497,7 @@ fn ingress_fails_closed_for_destination_mismatch_missing_metadata_and_truncation
     let modes = [
         Mode::Normal,
         Mode::Bbmd,
-        Mode::Foreign(Foreign {
-            trust: ForwardedTrust::AnySender,
-            ..foreign()
-        }),
+        Mode::Foreign(with(foreign(), |f| f.trust = ForwardedTrust::AnySender)),
     ];
     let paths = [
         Path::Primary,
@@ -508,11 +509,10 @@ fn ingress_fails_closed_for_destination_mismatch_missing_metadata_and_truncation
         let link = link(mode);
         for payload in [&unicast, &broadcast, &forwarded, &register, &vec![0x81]] {
             for (path, source) in paths.into_iter().zip([PEER, BBMD]) {
-                let unknown = Datagram {
-                    to: None,
-                    path,
-                    ..datagram(payload, source, UNICAST)
-                };
+                let unknown = with(datagram(payload, source, UNICAST), |d| {
+                    d.to = None;
+                    d.path = path;
+                });
                 assert_eq!(
                     receive_datagram(&link, &unknown),
                     dropped(Discard::UnknownDestination),
@@ -523,10 +523,7 @@ fn ingress_fails_closed_for_destination_mismatch_missing_metadata_and_truncation
     }
     // The node engine delivers nothing from one, and has nothing to do.
     let mut node: Node = Node::new(normal(), Instant::ZERO).unwrap();
-    let unknown = Datagram {
-        to: None,
-        ..datagram(&unicast, PEER, UNICAST)
-    };
+    let unknown = with(datagram(&unicast, PEER, UNICAST), |d| d.to = None);
     assert_eq!(
         node.receive(&unknown, Instant::ZERO, &mut Permissive),
         Inbound::Discarded(Discard::UnknownDestination)
@@ -535,18 +532,12 @@ fn ingress_fails_closed_for_destination_mismatch_missing_metadata_and_truncation
 
     // A cut-short datagram is dropped as that, even with no destination;
     // a group source comes next.
-    let truncated = Datagram {
-        truncated: true,
-        ..unknown
-    };
+    let truncated = with(unknown, |d| d.truncated = true);
     assert_eq!(
         receive_datagram(&normal(), &truncated),
         dropped(Discard::Truncated)
     );
-    let grouped = Datagram {
-        source: BROADCAST,
-        ..unknown
-    };
+    let grouped = with(unknown, |d| d.source = BROADCAST);
     assert_eq!(
         receive_datagram(&normal(), &grouped),
         dropped(Discard::GroupSource)
@@ -595,14 +586,11 @@ fn foreign_trust_takes_forwards_only_from_the_bbmd_by_unicast() {
 fn bbmd_mode_hands_over_its_share() {
     let link = link(Mode::Bbmd);
     let broadcast = wire(Bvll::OriginalBroadcastNpdu(NPDU));
-    assert_eq!(
-        receive(&link, &broadcast, PEER, TO_BROADCAST),
-        Received::Bbmd(ForBbmd::OriginalBroadcast(Delivery {
-            npdu: NPDU,
-            source: PEER,
-            group: true
-        }))
-    );
+    let received = receive(&link, &broadcast, PEER, TO_BROADCAST);
+    let Received::Bbmd(ForBbmd::OriginalBroadcast(delivery)) = received else {
+        panic!("{received:?}");
+    };
+    assert_eq!(delivery, delivered(PEER, true));
     let forwarded = wire(Bvll::ForwardedNpdu {
         origin: REMOTE,
         npdu: NPDU,

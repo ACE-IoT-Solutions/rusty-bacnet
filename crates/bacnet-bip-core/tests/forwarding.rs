@@ -7,10 +7,10 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::Bvll;
 use bacnet_bip_core::bbmd::{Context, DistributeRefusal, ForwardRefusal, Tables, Target, Via};
-use bacnet_bip_core::{Arrival, Instant, LocalSubnet};
+use bacnet_bip_core::{Arrival, Instant};
 use support::{
-    addr, context, destinations, register_all, row, secs, storage, tables, Small, LOCAL_BROADCAST,
-    MASK_24, MASK_32, OWN, PORT, SUBNET,
+    addr, context, destinations, register_all, row, secs, storage, tables, target, Small,
+    LOCAL_BROADCAST, MASK_24, MASK_32, OWN, PORT, SUBNET,
 };
 
 const NPDU: &[u8] = &[0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
@@ -24,10 +24,6 @@ const ONE_HOP: SocketAddrV4 = addr(192, 168, 2, 1, PORT);
 /// Two foreign devices.
 const FD1: SocketAddrV4 = addr(172, 16, 0, 5, PORT);
 const FD2: SocketAddrV4 = addr(172, 16, 0, 6, 47809);
-
-fn target(destination: SocketAddrV4, via: Via) -> Target {
-    Target { destination, via }
-}
 
 /// The BBMD with both peers and both foreign devices.
 fn site() -> Small {
@@ -143,10 +139,7 @@ fn the_fanout_budget_caps_foreign_devices_but_not_peers() {
     let mut tables = tables(&[row(TWO_HOP, MASK_32)]);
     let devices: Vec<_> = (1..=6).map(|host| addr(172, 16, 0, host, PORT)).collect();
     register_all(&mut tables, &devices, 60, T0);
-    let cx = Context {
-        fdt_fanout: 2,
-        ..context(T0)
-    };
+    let cx = Context::new(T0, 2);
     let mut out = storage();
     let sent = tables.original_broadcast(&cx, LOCAL_DEVICE, NPDU, &mut out);
     assert_eq!(
@@ -161,17 +154,11 @@ fn the_fanout_budget_caps_foreign_devices_but_not_peers() {
         [TWO_HOP, devices[1], devices[2]]
     );
     // A budget that fits every device isn't reported as reached.
-    let cx = Context {
-        fdt_fanout: 6,
-        ..cx
-    };
+    let cx = Context::new(cx.now, 6);
     let sent = tables.original_broadcast(&cx, LOCAL_DEVICE, NPDU, &mut out);
     assert_eq!(sent.fanout.targets.len(), 7);
     assert!(!sent.fanout.fanout_capped);
-    let none = Context {
-        fdt_fanout: 0,
-        ..cx
-    };
+    let none = Context::new(cx.now, 0);
     let sent = tables.original_broadcast(&none, LOCAL_DEVICE, NPDU, &mut out);
     assert_eq!(destinations(sent.fanout.targets), [TWO_HOP]);
     assert!(sent.fanout.fanout_capped);
@@ -292,10 +279,8 @@ fn a_forward_from_a_sender_on_the_own_subnet_is_not_rebroadcast() {
     let neighbour = addr(192, 168, 1, 2, PORT);
     let mut tables = tables(&[row(neighbour, MASK_32), row(TWO_HOP, MASK_32)]);
     register_all(&mut tables, &[FD1], 60, T0);
-    let known = LocalSubnet {
-        mask: Some(MASK_24),
-        ..SUBNET
-    };
+    let mut known = SUBNET;
+    known.mask = Some(MASK_24);
     let mut out = storage();
     let sent = tables
         .forwarded_npdu(
@@ -401,10 +386,7 @@ fn a_forwarded_npdu_skips_its_origin_and_the_peers() {
             target(FD1, Via::ForeignDevice)
         ]
     );
-    let cx = Context {
-        fdt_fanout: 1,
-        ..context(T0)
-    };
+    let cx = Context::new(T0, 1);
     let sent = tables
         .forwarded_npdu(
             &cx,
@@ -575,10 +557,7 @@ fn larger_tables_work_the_same() {
         assert!(outcome.result.is_ok());
     }
     let mut out = [Target::UNUSED; Tables::<128, 128>::MAX_TARGETS];
-    let cx = Context {
-        fdt_fanout: 128,
-        ..context(T0)
-    };
+    let cx = Context::new(T0, 128);
     let sent = tables.original_broadcast(&cx, LOCAL_DEVICE, NPDU, &mut out);
     assert_eq!(sent.fanout.targets.len(), 200);
     assert_eq!(

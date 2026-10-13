@@ -39,6 +39,7 @@ use super::config::{Foreign, Retry};
 /// Distribute-Broadcast-To-Network NAK that follows is taken as a hint to
 /// register again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Lease {
     /// The earliest send the proving success could answer.
     pub since: Instant,
@@ -56,6 +57,7 @@ impl Lease {
 
 /// What the newest registration attempt came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AttemptOutcome {
     /// Admitted, and not answered yet.
     Pending,
@@ -73,6 +75,7 @@ pub enum AttemptOutcome {
 
 /// A change in a foreign device's registration, reported once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegistrationEvent {
     /// A success while no lease was live: registered from `since` until
     /// `until`.
@@ -101,7 +104,8 @@ pub enum RegistrationEvent {
 
 /// A foreign device's registration as the node sees it at one instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RegistrationView {
+#[non_exhaustive]
+pub struct RegistrationSnapshot {
     /// The newest proven lease, live or not.
     pub lease: Option<Lease>,
     /// Whether that lease is live.
@@ -417,9 +421,9 @@ impl Lifecycle {
         (count > 0).then_some(HeldVerdict { release, count })
     }
 
-    pub(crate) fn view(&self, now: Instant) -> RegistrationView {
+    pub(crate) fn snapshot(&self, now: Instant) -> RegistrationSnapshot {
         let registered = self.lease.is_some_and(|lease| lease.is_live_at(now));
-        RegistrationView {
+        RegistrationSnapshot {
             lease: self.lease,
             registered,
             lease_remaining: self

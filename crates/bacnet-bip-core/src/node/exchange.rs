@@ -144,6 +144,7 @@ impl ExchangeId {
 
 /// Why an exchange wasn't admitted. Nothing was sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExchangeRefusal {
     /// The same operation to the same peer is live.
     SameExchange,
@@ -182,6 +183,7 @@ impl core::error::Error for ExchangeRefusal {}
 
 /// Why the caller ended an exchange itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LocalFailure {
     /// Encoding or sending the request failed.
     SendFailed,

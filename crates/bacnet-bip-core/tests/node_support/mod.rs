@@ -6,7 +6,8 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll, BvllFrame};
 use bacnet_bip_core::node::{
-    Action, Addressed, Datagram, Foreign, Link, Mode, Node, Path, Permissive, Policy, Received,
+    Action, Addressed, Datagram, Foreign, Lease, Link, Mode, Node, Outgoing, Permissive, Policy,
+    Received,
 };
 use bacnet_bip_core::{Duration, Instant, LocalSubnet};
 
@@ -23,10 +24,7 @@ pub const OWN: SocketAddrV4 = addr(192, 168, 1, 10, PORT);
 /// Its subnet's broadcast address.
 pub const BROADCAST: SocketAddrV4 = addr(192, 168, 1, 255, PORT);
 /// Its subnet.
-pub const SUBNET: LocalSubnet = LocalSubnet {
-    broadcast: BROADCAST,
-    mask: None,
-};
+pub const SUBNET: LocalSubnet = LocalSubnet::new(BROADCAST);
 /// A peer on the subnet.
 pub const PEER: SocketAddrV4 = addr(192, 168, 1, 20, PORT);
 /// A foreign device's BBMD, on another subnet.
@@ -80,13 +78,26 @@ pub fn raw(function: u8, payload: &[u8]) -> Vec<u8> {
 
 /// A datagram on the primary socket, sent as `to` says.
 pub fn datagram(payload: &[u8], source: SocketAddrV4, to: Addressed) -> Datagram<'_> {
-    Datagram {
-        payload,
-        source,
-        to: Some(to),
-        path: Path::Primary,
-        truncated: false,
-    }
+    Datagram::new(payload, source, Some(to))
+}
+
+/// Where an [`Outgoing`] goes and what it carries. `Outgoing` is
+/// `#[non_exhaustive]`, so a test outside the crate compares this pair.
+pub fn sent(outgoing: Outgoing<'_>) -> (SocketAddrV4, Bvll<'_>) {
+    (outgoing.to, outgoing.message)
+}
+
+/// A [`Lease`]'s start and end, for the same reason as [`sent`].
+pub fn span(lease: Lease) -> (Instant, Instant) {
+    (lease.since, lease.until)
+}
+
+/// `value` with `edit` applied: how a test changes a field of a
+/// `#[non_exhaustive]` struct, such as [`Foreign`] or [`Link`], which it
+/// can't build with a struct expression.
+pub fn with<T>(mut value: T, edit: impl FnOnce(&mut T)) -> T {
+    edit(&mut value);
+    value
 }
 
 /// What `link` makes of `payload` from `source`, sent as `to`, on the

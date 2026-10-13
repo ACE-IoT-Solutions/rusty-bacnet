@@ -7,7 +7,7 @@ use core::net::Ipv4Addr;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry};
 use bacnet_bip_core::bbmd::{
-    canonicalize, distribution_address, validate_entry, Bdt, BdtError, InvalidEntry, TWO_HOP_MASK,
+    canonicalize, distribution_address, validate_entry, Bdt, BdtError, EntryError, TWO_HOP_MASK,
 };
 use support::{addr, row, MASK_24, MASK_32, OWN, PORT};
 
@@ -106,7 +106,7 @@ fn capacity_counts_the_own_row_and_refuses_without_change() {
         set(&mut bdt, &peers),
         Err(BdtError::Capacity {
             needed: 4,
-            capacity: 3
+            available: 3
         })
     );
     assert_eq!(bdt.rows(), before);
@@ -142,7 +142,7 @@ fn a_bad_row_past_the_capacity_is_reported_before_the_capacity() {
         set(&mut bdt, &[rows[0], rows[1], rows[2], bad]),
         Err(BdtError::Invalid {
             entry: bad,
-            reason: InvalidEntry::MulticastAddress
+            reason: EntryError::MulticastAddress
         })
     );
     // Duplicates of rows that found no room still collapse.
@@ -150,7 +150,7 @@ fn a_bad_row_past_the_capacity_is_reported_before_the_capacity() {
         set(&mut bdt, &[rows[0], rows[1], rows[2], rows[2], rows[1]]),
         Err(BdtError::Capacity {
             needed: 4,
-            capacity: 2
+            available: 2
         })
     );
 }
@@ -172,7 +172,7 @@ fn every_distinct_row_past_the_storage_is_counted() {
         set(&mut bdt, &rows),
         Err(BdtError::Capacity {
             needed: 6,
-            capacity: 2
+            available: 2
         })
     );
     let mut out = [row(addr(0, 0, 0, 0, 0), MASK_32); 2];
@@ -180,7 +180,7 @@ fn every_distinct_row_past_the_storage_is_counted() {
         canonicalize(BdtEntries::from_entries(&rows), &mut out),
         Err(BdtError::Capacity {
             needed: 5,
-            capacity: 2
+            available: 2
         })
     );
 }
@@ -197,7 +197,7 @@ fn canonicalize_writes_distinct_rows_without_an_own_row() {
         canonicalize(BdtEntries::from_entries(&[a, b, a]), &mut small),
         Err(BdtError::Capacity {
             needed: 2,
-            capacity: 1
+            available: 1
         })
     );
     let wire = [10, 0, 0, 1, 0xBA, 0xC0, 255, 255, 255, 255];
@@ -208,46 +208,46 @@ fn canonicalize_writes_distinct_rows_without_an_own_row() {
 #[test]
 fn each_validation_rule_refuses_its_row() {
     let cases = [
-        (row(addr(10, 0, 0, 6, 0), MASK_32), InvalidEntry::ZeroPort),
+        (row(addr(10, 0, 0, 6, 0), MASK_32), EntryError::ZeroPort),
         (
             row(addr(0, 0, 0, 0, PORT), MASK_32),
-            InvalidEntry::UnspecifiedAddress,
+            EntryError::UnspecifiedAddress,
         ),
         (
             row(addr(255, 255, 255, 255, PORT), MASK_32),
-            InvalidEntry::LimitedBroadcastAddress,
+            EntryError::LimitedBroadcastAddress,
         ),
         (
             row(addr(224, 0, 0, 1, PORT), MASK_32),
-            InvalidEntry::MulticastAddress,
+            EntryError::MulticastAddress,
         ),
         (
             row(addr(239, 255, 255, 250, PORT), MASK_32),
-            InvalidEntry::MulticastAddress,
+            EntryError::MulticastAddress,
         ),
         (
             row(addr(10, 0, 0, 5, PORT), Ipv4Addr::new(255, 0, 255, 0)),
-            InvalidEntry::NonContiguousMask,
+            EntryError::NonContiguousMask,
         ),
         (
             row(addr(10, 0, 0, 5, PORT), Ipv4Addr::new(254, 0, 0, 0)),
-            InvalidEntry::MaskTooWide,
+            EntryError::MaskTooWide,
         ),
         (
             row(addr(10, 0, 0, 5, PORT), Ipv4Addr::UNSPECIFIED),
-            InvalidEntry::MaskTooWide,
+            EntryError::MaskTooWide,
         ),
         (
             row(addr(192, 168, 1, 0, PORT), MASK_24),
-            InvalidEntry::NetworkAddress,
+            EntryError::NetworkAddress,
         ),
         (
             row(addr(192, 168, 1, 255, PORT), MASK_24),
-            InvalidEntry::DirectedBroadcastAddress,
+            EntryError::DirectedBroadcastAddress,
         ),
         (
             row(addr(255, 0, 0, 1, PORT), Ipv4Addr::new(255, 0, 0, 0)),
-            InvalidEntry::LimitedBroadcastTarget,
+            EntryError::LimitedBroadcastTarget,
         ),
     ];
     for (entry, reason) in cases {
@@ -283,7 +283,7 @@ fn errors_display_what_went_wrong() {
     let entry = row(addr(10, 0, 0, 6, 0), MASK_32);
     let invalid = BdtError::Invalid {
         entry,
-        reason: InvalidEntry::ZeroPort,
+        reason: EntryError::ZeroPort,
     };
     assert!(invalid.to_string().contains("10.0.0.6:0"));
     assert!(invalid.to_string().contains("invalid port 0"));
@@ -292,7 +292,7 @@ fn errors_display_what_went_wrong() {
         .contains("conflicting masks"));
     assert!(BdtError::Capacity {
         needed: 5,
-        capacity: 4
+        available: 4
     }
     .to_string()
     .contains('5'));
@@ -359,7 +359,7 @@ fn moving_the_own_address_refuses_to_overflow() {
         bdt.set_own_address(addr(192, 168, 1, 2, PORT)),
         Err(BdtError::Capacity {
             needed: 3,
-            capacity: 2
+            available: 2
         })
     );
     assert_eq!(bdt.own_address(), OWN);

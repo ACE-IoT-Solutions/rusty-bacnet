@@ -276,7 +276,7 @@ impl ClientRecord {
             foreign.last_bbmd = Some(attempt.bbmd);
             foreign.last_ttl = Some(attempt.ttl);
             foreign.last_result = attempt.result;
-            foreign.last_outcome = Some(outcome(attempt.outcome));
+            foreign.last_outcome = outcome(attempt.outcome);
         }
         add(&mut foreign.lapses, counters.lapses);
         add(&mut foreign.renewal_hints, counters.renewal_hints);
@@ -324,15 +324,25 @@ fn add_exchange(total: &mut BvlcRequestCounters, delta: &ExchangeCounters) {
     add(&mut total.malformed_responses, delta.malformed_responses);
 }
 
-fn outcome(outcome: AttemptOutcome) -> ForeignRegistrationOutcome {
-    match outcome {
+/// The transport's name for an attempt's outcome; `None` for one the core
+/// has and this transport doesn't name yet. The snapshot then shows no
+/// outcome, which reads like a cleared one, so it is logged.
+fn outcome(outcome: AttemptOutcome) -> Option<ForeignRegistrationOutcome> {
+    Some(match outcome {
         AttemptOutcome::Pending => ForeignRegistrationOutcome::Pending,
         AttemptOutcome::Accepted => ForeignRegistrationOutcome::Accepted,
         AttemptOutcome::Refused => ForeignRegistrationOutcome::Refused,
         AttemptOutcome::TimedOut => ForeignRegistrationOutcome::TimedOut,
         AttemptOutcome::LocalError => ForeignRegistrationOutcome::LocalError,
         AttemptOutcome::Cancelled => ForeignRegistrationOutcome::Cancelled,
-    }
+        other => {
+            tracing::debug!(
+                ?other,
+                "Foreign registration outcome this transport doesn't name; reported as none"
+            );
+            return None;
+        }
+    })
 }
 
 /// Add a count the node reported, saturating.

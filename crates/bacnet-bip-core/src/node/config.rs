@@ -45,6 +45,7 @@ pub enum Mode {
 
 /// When the next automatic registration attempt goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Retry {
     /// One renewal interval after the attempt before started, whatever
     /// came of it. A Distribute-Broadcast-To-Network NAK from the BBMD
@@ -62,6 +63,7 @@ pub enum Retry {
 
 /// Which Forwarded-NPDUs a foreign device takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ForwardedTrust {
     /// Any sender's, by unicast or broadcast.
     AnySender,
@@ -72,7 +74,12 @@ pub enum ForwardedTrust {
 }
 
 /// A foreign device's registration with its BBMD (Annex J.5.2).
+///
+/// It is `#[non_exhaustive]`, so a new setting isn't a breaking change:
+/// outside this crate, start from [`Foreign::new`] and set the fields to
+/// change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Foreign {
     /// The BBMD, at its B/IP address. Replies are matched against this
     /// address and port.
@@ -143,7 +150,13 @@ impl Foreign {
 /// A B/IP node's link: everything its receive and send decisions read.
 /// They are pure, so a host can share one copy among threads and decide
 /// without a lock.
+///
+/// It is `#[non_exhaustive]`, so a new setting isn't a breaking change:
+/// outside this crate, start from [`Link::new`] and set the fields to
+/// change. [`Node::new`](super::Node::new) checks the result with
+/// [`Link::validate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Link {
     /// This node's own B/IP address, the MAC address its peers know it by.
     pub address: SocketAddrV4,
@@ -214,6 +227,7 @@ impl Link {
 
 /// Why a [`Link`] can't run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// The node's own UDP port is 0.
     OwnPort,

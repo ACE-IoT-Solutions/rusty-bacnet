@@ -7,8 +7,8 @@ mod node_support;
 
 use bacnet_bip_codec::{BdtEntries, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{
-    Action, Admission, AttemptOutcome, ExchangeId, ExchangeRefusal, Foreign, Inbound, Lease,
-    LocalFailure, Mode, Node, Permissive, Received, RegistrationEvent, Retry, SendRefusal,
+    Action, Admission, AttemptOutcome, ExchangeId, ExchangeRefusal, Foreign, Inbound, LocalFailure,
+    Mode, Node, Permissive, Received, RegistrationEvent, Retry, SendRefusal,
 };
 use bacnet_bip_core::{Duration, Instant};
 use node_support::*;
@@ -78,13 +78,7 @@ fn success_registers() {
     bbmd_says(&mut node, SUCCESS, at(10));
     assert_eq!(act(&mut node, at(10)), (None, vec![registered(0, 60_000)]));
     let view = node.registration(at(10)).unwrap();
-    assert_eq!(
-        view.lease,
-        Some(Lease {
-            since: at(0),
-            until: at(60_000)
-        })
-    );
+    assert_eq!(view.lease.map(span), Some((at(0), at(60_000))));
     assert!(view.registered);
     assert_eq!(view.lease_remaining, Some(ms(59_990)));
     assert_eq!(view.next_attempt, Some(at(30_000)));
@@ -186,10 +180,7 @@ fn distribute_nak_pulls_the_renewal_forward() {
 #[test]
 fn at_renewal_takes_no_hint_from_a_distribute_nak() {
     // Today's schedule, as the hosted transport keeps it until it backs off.
-    let mut node = start(Foreign {
-        retry: Retry::AtRenewal,
-        ..foreign()
-    });
+    let mut node = start(with(foreign(), |f| f.retry = Retry::AtRenewal));
     act(&mut node, at(0));
     bbmd_says(&mut node, SUCCESS, at(10));
     act(&mut node, at(10));
@@ -214,10 +205,9 @@ fn at_renewal_takes_no_hint_from_a_distribute_nak() {
 fn renewal_is_independent_of_ttl() {
     // A NAT router may forget a mapping in 30 s or less, whatever the
     // time-to-live the BBMD keeps.
-    let foreign = Foreign {
-        renewal: Duration::from_secs(20),
-        ..Foreign::new(BBMD, 3600)
-    };
+    let foreign = with(Foreign::new(BBMD, 3600), |f| {
+        f.renewal = Duration::from_secs(20);
+    });
     let mut node = start(foreign);
     let mut starts = Vec::new();
     for second in 0..=60 {
@@ -239,10 +229,7 @@ fn renewal_is_independent_of_ttl() {
 
 #[test]
 fn broadcasts_are_held_until_the_first_attempt_resolves() {
-    let holding = Foreign {
-        hold: 2,
-        ..foreign()
-    };
+    let holding = with(foreign(), |f| f.hold = 2);
     // Released on success.
     let mut node = start(holding);
     act(&mut node, at(0));
@@ -313,7 +300,7 @@ fn broadcasts_are_held_until_the_first_attempt_resolves() {
 
 /// Attempt start times over `until` ms when every attempt is lost.
 fn starts_when_all_lost(retry: Retry, until: u64) -> Vec<u64> {
-    let mut node = start(Foreign { retry, ..foreign() });
+    let mut node = start(with(foreign(), |f| f.retry = retry));
     let mut starts = Vec::new();
     let mut now = 0;
     while now <= until {
@@ -527,13 +514,7 @@ fn a_short_ttl_renews_once_per_interval() {
     let starts = answered_starts(&mut node, ms(10), at(10_010), 40);
     assert_eq!(starts, every_second);
     let lease = node.registration(at(10_010)).unwrap().lease.unwrap();
-    assert_eq!(
-        lease,
-        Lease {
-            since: at(10_000),
-            until: at(12_000)
-        }
-    );
+    assert_eq!(span(lease), (at(10_000), at(12_000)));
 }
 
 #[test]

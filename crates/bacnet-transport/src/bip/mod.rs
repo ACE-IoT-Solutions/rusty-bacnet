@@ -670,23 +670,22 @@ impl TransportPort for BipTransport {
             (None, Some(_)) => Mode::Bbmd,
             (None, None) => Mode::Normal,
         };
-        let link = Link {
-            address: SocketAddrV4::new(local_ip, local_port),
-            subnet: LocalSubnet {
-                broadcast: SocketAddrV4::new(self.broadcast_address, local_port),
-                mask: None,
-            },
-            mode,
-            // NPDUs up to the 1497 octets B/IP carries (Table 6-1, #1622).
-            budget: Some(DATAGRAM_BUDGET),
-        };
+        let subnet = LocalSubnet::new(SocketAddrV4::new(self.broadcast_address, local_port));
+        let link =
+            Link::new(SocketAddrV4::new(local_ip, local_port), subnet, mode).map(|mut link| {
+                // NPDUs up to the 1497 octets B/IP carries (Table 6-1, #1622).
+                link.budget = Some(DATAGRAM_BUDGET);
+                link
+            });
         self.client_record.start();
-        let node = match NodeHandle::new(
-            link,
-            Arc::clone(&socket),
-            Arc::clone(&self.client_record),
-            Arc::clone(&self.send_refusals),
-        ) {
+        let node = match link.map_err(node::config_error).and_then(|link| {
+            NodeHandle::new(
+                link,
+                Arc::clone(&socket),
+                Arc::clone(&self.client_record),
+                Arc::clone(&self.send_refusals),
+            )
+        }) {
             Ok(node) => Arc::new(node),
             Err(error) => {
                 self.client_record.stop();

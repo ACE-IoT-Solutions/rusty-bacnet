@@ -297,10 +297,9 @@ fn strict_bip_failure_precedes_router_or_queue_mutation() {
     let good = encode(&Bvll::OriginalUnicastNpdu(&npdu));
     let mut long = good.clone();
     long[3] += 1;
-    let unknown = bacnet_bip_core::node::Datagram {
-        to: None,
-        ..datagram(&good, PEER, UNICAST)
-    };
+    let unknown = with(datagram(&good, PEER, UNICAST), |datagram| {
+        datagram.to = None
+    });
     // What the port made of a datagram, with any NPDU handed to the router
     // and every send carried out.
     let mut drive = |datagram: &bacnet_bip_core::node::Datagram<'_>,
@@ -424,10 +423,7 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
 #[test]
 fn real_bip_success_and_admission_failures_are_observed_once() {
     let now = Instant::from_millis(1);
-    let small = Link {
-        budget: Some(512),
-        ..link(Mode::Normal)
-    };
+    let small = with(link(Mode::Normal), |link| link.budget = Some(512));
     let mut bip = bip_port(small);
     // The router believes the port carries 1,497 octets.
     let mut router = router(&bip_port(link(Mode::Normal)), None, Options::HOSTED);

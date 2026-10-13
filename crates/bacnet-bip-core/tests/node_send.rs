@@ -3,26 +3,32 @@
 
 mod node_support;
 
+use core::net::SocketAddrV4;
+
 use bacnet_bip_codec::Bvll;
 use bacnet_bip_core::node::{
-    Cast, ConfigError, Foreign, ForwardedTrust, Link, Mode, Outgoing, Retry, SendRefusal,
-    MAX_DATAGRAM, MAX_NPDU, MIN_RENEWAL,
+    Cast, ConfigError, Foreign, ForwardedTrust, Link, Mode, Retry, SendRefusal, MAX_DATAGRAM,
+    MAX_NPDU, MIN_RENEWAL,
 };
 use bacnet_bip_core::{Duration, LocalSubnet};
 use node_support::*;
 
 const NPDU: &[u8] = &[0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
 
+/// What `link` sends to broadcast [`NPDU`], with [`sent`]'s pair for the
+/// message, and whether to forward it too.
+fn broadcast(link: &Link) -> Result<((SocketAddrV4, Bvll<'static>), bool), SendRefusal> {
+    link.broadcast(NPDU)
+        .map(|(outgoing, forward)| (sent(outgoing), forward))
+}
+
 #[test]
 fn unicast_is_original_unicast() {
     for mode in [Mode::Normal, Mode::Foreign(foreign()), Mode::Bbmd] {
         let peer = addr(192, 168, 1, 20, 50_000);
         assert_eq!(
-            link(mode).unicast(peer, NPDU),
-            Ok(Outgoing {
-                to: peer,
-                message: Bvll::OriginalUnicastNpdu(NPDU)
-            })
+            link(mode).unicast(peer, NPDU).map(sent),
+            Ok((peer, Bvll::OriginalUnicastNpdu(NPDU)))
         );
     }
 }
@@ -73,21 +79,12 @@ fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
 #[test]
 fn normal_broadcast_is_original_broadcast_at_the_network_port() {
     assert_eq!(
-        link(Mode::Normal).broadcast(NPDU),
-        Ok((
-            Outgoing {
-                to: BROADCAST,
-                message: Bvll::OriginalBroadcastNpdu(NPDU)
-            },
-            false
-        ))
+        broadcast(&link(Mode::Normal)),
+        Ok(((BROADCAST, Bvll::OriginalBroadcastNpdu(NPDU)), false))
     );
     // The configured broadcast address, port and all, even for a node on
     // an ephemeral port.
-    let other = LocalSubnet {
-        broadcast: addr(10, 1, 255, 255, 47_809),
-        mask: None,
-    };
+    let other = LocalSubnet::new(addr(10, 1, 255, 255, 47_809));
     let link = Link::new(addr(10, 1, 0, 3, 54_321), other, Mode::Normal).unwrap();
     let (outgoing, _) = link.broadcast(NPDU).unwrap();
     assert_eq!(outgoing.to, other.broadcast);
@@ -98,28 +95,16 @@ fn foreign_broadcast_is_always_dbtn_to_the_bbmd() {
     let bbmd = addr(10, 0, 0, 1, 47_809);
     let link = foreign_link(Foreign::new(bbmd, 60));
     assert_eq!(
-        link.broadcast(NPDU),
-        Ok((
-            Outgoing {
-                to: bbmd,
-                message: Bvll::DistributeBroadcastToNetwork(NPDU)
-            },
-            false
-        ))
+        broadcast(&link),
+        Ok(((bbmd, Bvll::DistributeBroadcastToNetwork(NPDU)), false))
     );
 }
 
 #[test]
 fn a_bbmd_broadcasts_locally_and_forwards_its_own() {
     assert_eq!(
-        link(Mode::Bbmd).broadcast(NPDU),
-        Ok((
-            Outgoing {
-                to: BROADCAST,
-                message: Bvll::OriginalBroadcastNpdu(NPDU)
-            },
-            true
-        ))
+        broadcast(&link(Mode::Bbmd)),
+        Ok(((BROADCAST, Bvll::OriginalBroadcastNpdu(NPDU)), true))
     );
 }
 
@@ -141,10 +126,7 @@ fn the_budget_caps_each_cast() {
 
     // A 1500-octet MTU less the IP and UDP headers: a BBMD's forward of a
     // broadcast, 6 octets longer, must fit too.
-    let mtu = Link {
-        budget: Some(1472),
-        ..default
-    };
+    let mtu = with(default, |link| link.budget = Some(1472));
     assert_eq!(mtu.max_npdu(Cast::Unicast), 1468);
     assert_eq!(mtu.max_npdu(Cast::Broadcast), 1462);
     assert!(mtu.unicast(PEER, &largest[..1468]).is_ok());
@@ -157,20 +139,14 @@ fn the_budget_caps_each_cast() {
         mtu.broadcast(&largest[..1463]).map(|_| ()),
         Err(SendRefusal::TooLong { max: 1462 })
     );
-    let foreign = Link {
-        budget: Some(1472),
-        ..foreign_link(foreign())
-    };
+    let foreign = with(foreign_link(foreign()), |link| link.budget = Some(1472));
     assert_eq!(
         foreign.broadcast(&largest[..1463]).map(|_| ()),
         Err(SendRefusal::TooLong { max: 1462 })
     );
 
     // Without a budget, nothing is refused here.
-    let unchecked = Link {
-        budget: None,
-        ..default
-    };
+    let unchecked = with(default, |link| link.budget = None);
     let huge = vec![0x01; 60_000];
     assert!(unchecked.unicast(PEER, &huge).is_ok());
     assert!(unchecked.broadcast(&huge).is_ok());
@@ -194,17 +170,15 @@ fn foreign_defaults_follow_the_time_to_live() {
     assert_eq!(short.renewal, ms(500));
     assert_eq!(short.response_timeout, ms(500));
     // The floor applies after the checks.
-    let fast = Foreign {
-        renewal: ms(50),
-        response_timeout: ms(40),
-        ..short
-    };
+    let fast = with(short, |foreign| {
+        foreign.renewal = ms(50);
+        foreign.response_timeout = ms(40);
+    });
     assert_eq!(fast.effective_renewal(), MIN_RENEWAL);
     assert_eq!(fast.effective_response_timeout(), ms(40));
-    let slow_answer = Foreign {
-        response_timeout: Duration::from_secs(5),
-        ..Foreign::new(BBMD, 4)
-    };
+    let slow_answer = with(Foreign::new(BBMD, 4), |foreign| {
+        foreign.response_timeout = Duration::from_secs(5);
+    });
     assert_eq!(
         slow_answer.effective_response_timeout(),
         Duration::from_secs(2)
@@ -214,13 +188,13 @@ fn foreign_defaults_follow_the_time_to_live() {
 #[test]
 fn a_link_is_checked_before_it_runs() {
     let mode = |foreign: Foreign| Mode::Foreign(foreign);
+    // A valid link with the fields under test set on it, unchecked.
     let check = |own, mode, budget| {
-        let link = Link {
-            address: own,
-            subnet: SUBNET,
-            mode,
-            budget,
-        };
+        let link = with(link(Mode::Normal), |link| {
+            link.address = own;
+            link.mode = mode;
+            link.budget = budget;
+        });
         link.validate()
     };
     let budget = Some(MAX_DATAGRAM as u16);
@@ -235,57 +209,38 @@ fn a_link_is_checked_before_it_runs() {
     let base = foreign();
     assert_eq!(check(OWN, mode(base), budget), Ok(()));
     let cases = [
-        (Foreign { ttl: 0, ..base }, ConfigError::Renewal),
+        (with(base, |f| f.ttl = 0), ConfigError::Renewal),
         (
-            Foreign {
-                renewal: Duration::ZERO,
-                ..base
-            },
+            with(base, |f| f.renewal = Duration::ZERO),
             ConfigError::Renewal,
         ),
         (
-            Foreign {
-                renewal: Duration::from_secs(60),
-                ..base
-            },
+            with(base, |f| f.renewal = Duration::from_secs(60)),
             ConfigError::Renewal,
         ),
         (
-            Foreign {
-                response_timeout: Duration::ZERO,
-                ..base
-            },
+            with(base, |f| f.response_timeout = Duration::ZERO),
             ConfigError::ResponseTimeout,
         ),
         (
-            Foreign {
-                bbmd: addr(10, 0, 0, 1, 0),
-                ..base
-            },
+            with(base, |f| f.bbmd = addr(10, 0, 0, 1, 0)),
             ConfigError::BbmdPort,
         ),
-        (Foreign { bbmd: OWN, ..base }, ConfigError::BbmdIsSelf),
+        (with(base, |f| f.bbmd = OWN), ConfigError::BbmdIsSelf),
     ];
     for (foreign, error) in cases {
         assert_eq!(check(OWN, mode(foreign), budget), Err(error), "{foreign:?}");
         assert_eq!(Link::new(OWN, SUBNET, mode(foreign)), Err(error));
     }
     // Just under the time-to-live, and the floor raising a tiny renewal.
-    let tight = Foreign {
-        renewal: Duration::from_secs(60) - Duration::from_nanos(1),
-        ..base
-    };
+    let tight = with(base, |f| {
+        f.renewal = Duration::from_secs(60) - Duration::from_nanos(1);
+    });
     assert_eq!(check(OWN, mode(tight), budget), Ok(()));
-    let tiny = Foreign {
-        renewal: ms(1),
-        ..Foreign::new(BBMD, 1)
-    };
+    let tiny = with(Foreign::new(BBMD, 1), |f| f.renewal = ms(1));
     assert_eq!(check(OWN, mode(tiny), budget), Ok(()));
     // The BBMD at the node's IP but another port is another node.
-    let beside = Foreign {
-        bbmd: addr(192, 168, 1, 10, 47_809),
-        ..base
-    };
+    let beside = with(base, |f| f.bbmd = addr(192, 168, 1, 10, 47_809));
     assert_eq!(check(OWN, mode(beside), budget), Ok(()));
     assert!(!ConfigError::Renewal.to_string().is_empty());
 }
@@ -294,12 +249,10 @@ fn a_link_is_checked_before_it_runs() {
 fn a_bbmd_at_no_single_address_is_refused() {
     let base = foreign();
     let check = |bbmd| {
-        let link = Link {
-            address: OWN,
-            subnet: SUBNET,
-            mode: Mode::Foreign(Foreign { bbmd, ..base }),
-            budget: None,
-        };
+        let link = with(link(Mode::Normal), |link| {
+            link.mode = Mode::Foreign(with(base, |f| f.bbmd = bbmd));
+            link.budget = None;
+        });
         link.validate()
     };
     for bbmd in [
@@ -315,10 +268,7 @@ fn a_bbmd_at_no_single_address_is_refused() {
     }
     assert_eq!(check(BBMD), Ok(()));
     // A loopback test's broadcast address is a group only at its port.
-    let loopback = LocalSubnet {
-        broadcast: addr(127, 0, 0, 1, PORT),
-        mask: None,
-    };
+    let loopback = LocalSubnet::new(addr(127, 0, 0, 1, PORT));
     let own = addr(127, 0, 0, 1, 47_809);
     let on_loopback = |bbmd| Link::new(own, loopback, Mode::Foreign(Foreign::new(bbmd, 60)));
     assert!(on_loopback(addr(127, 0, 0, 1, 47_810)).is_ok());

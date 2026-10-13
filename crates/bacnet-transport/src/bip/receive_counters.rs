@@ -175,6 +175,9 @@ impl DropReason {
             Discard::UnanswerableSource => Self::UnanswerableRequest,
             Discard::ForwardedUntrusted => Self::ForwardedUntrusted,
             Discard::GroupSource | Discard::GroupOrigin => return None,
+            // A reason the core has and this transport has no counter for
+            // yet: counted with the payloads it couldn't use.
+            _ => Self::MalformedPayload,
         })
     }
 }
