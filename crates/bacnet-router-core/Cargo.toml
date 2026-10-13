@@ -12,22 +12,37 @@ categories = ["embedded", "network-programming", "no-std"]
 
 # The table, discovery and the engine's scratch live in caller-sized arrays
 # (const generics), and NPDUs are borrowed or written into caller storage,
-# so the crate needs neither std nor an allocator, and has no features.
+# so the crate needs neither std nor an allocator. Each feature adds the
+# glue for one portable link core, and needs neither either.
+[features]
+default = []
+# B/IP ports over bacnet-bip-core's node engine, a BBMD's included.
+bip = ["dep:bacnet-bip-core", "dep:bacnet-bip-codec"]
+# MS/TP ports over bacnet-mstp-core's master core.
+mstp = ["dep:bacnet-mstp-core"]
+
 [dependencies]
 bacnet-time = { workspace = true }
+bacnet-bip-codec = { workspace = true, optional = true }
+bacnet-bip-core = { workspace = true, optional = true }
+bacnet-mstp-core = { workspace = true, optional = true }
 
 # bacnet-encoding's decoder is the reference the NPDU view is held equal to,
-# and bacnet-types holds the constants the message codes must match. Tests
-# only: the crate itself never links either.
+# and bacnet-types holds the constants the message codes must match; the
+# MS/TP glue tests decode the frames the master core sends. Tests only: the
+# crate itself never links any of them.
 [dev-dependencies]
 bacnet-encoding = { workspace = true, features = ["std"] }
+bacnet-mstp-codec = { workspace = true }
 bacnet-types = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
 proptest.workspace = true
 
 [package.metadata.docs.rs]
-# Built for a bare-metal target too, so the docs show the crate without std.
+# Built for a bare-metal target too, so the docs show the crate without std,
+# and with both glue features.
 targets = ["x86_64-unknown-linux-gnu", "thumbv7em-none-eabihf"]
+features = ["bip", "mstp"]
 
 [lints]
 workspace = true

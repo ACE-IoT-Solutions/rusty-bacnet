@@ -1317,9 +1317,10 @@ Clippy runs six ways:
   of `bacnet-types`, `bacnet-encoding` and `bacnet-services`
   (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
   how docs.rs builds, a rustdoc-only run of `bacnet-cli` without the TUI,
-  and rustdoc-only runs of `bacnet-mstp-core` with `alloc`, and of
+  and rustdoc-only runs of `bacnet-mstp-core` with `alloc`, of
   `bacnet-mstp-codec` and `bacnet-bip-codec` with `alloc` alone and
-  `heapless` alone (#1681).
+  `heapless` alone (#1681), and of `bacnet-router-core` with `bip` alone
+  and `mstp` alone (#1679).
 
 The last catches code that compiles only when another crate's feature unifies
 in. With no arguments it checks the host; given target triples, it checks
@@ -1338,8 +1339,8 @@ every-feature run replaces the public-only run rather than adding a second
 one. Every module of the PyO3 crate is private, so without the flag rustdoc
 would check none of its docs. The per-crate default-features run and the
 feature-off rustdoc runs of `check-default-features.sh` (the `no_std` crates
-with `alloc`, the MS/TP and B/IP crates with one storage feature, `bacnet-cli`
-without `tui`) pass the flag too (#1192), so private items
+with `alloc`, the MS/TP and B/IP crates with one storage feature, the
+router core with one glue feature, `bacnet-cli` without `tui`) pass the flag too (#1192), so private items
 that exist only in one feature configuration are covered; the run takes about
 2 s longer on the host.
 
