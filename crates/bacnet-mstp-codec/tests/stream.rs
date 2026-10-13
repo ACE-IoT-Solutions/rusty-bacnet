@@ -2,7 +2,7 @@
 
 use bacnet_mstp_codec::{
     crc16, crc8, DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase,
-    MAX_STANDARD_FRAME_LENGTH, PREAMBLE,
+    MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH, PREAMBLE,
 };
 use proptest::prelude::*;
 
@@ -209,6 +209,87 @@ fn storage_of_exactly_one_frame_decodes_it() {
         decoder.push_slice(&wire),
         DecodeEvent::Frame { consumed, .. } if consumed == wire.len()
     ));
+}
+
+/// Frames behind others in one push are checked and decoded where they
+/// lie, past the octets already dropped: a standard and an extended data
+/// frame, then one with a bad data CRC, whose destination is still read
+/// from its own header.
+#[test]
+fn frames_behind_others_in_one_push_decode_where_they_lie() {
+    let standard = [7u8; 10];
+    // Zeros among the data, so COBS has blocks to undo.
+    let extended: Vec<u8> = (0..600u16).map(|index| (index % 7) as u8).collect();
+    let mut stream = vec![0x00];
+    for frame in [
+        Frame::new(FrameType::BACnetDataNotExpectingReply, 1, 2, &standard),
+        Frame::new(
+            FrameType::BACnetExtendedDataNotExpectingReply,
+            3,
+            2,
+            &extended,
+        ),
+    ] {
+        let mut wire = vec![0u8; MAX_EXTENDED_FRAME_LENGTH];
+        let used = frame.encode_into(&mut wire).unwrap();
+        stream.extend_from_slice(&wire[..used]);
+    }
+    let mut bad = encode(Frame::new(
+        FrameType::BACnetDataNotExpectingReply,
+        5,
+        2,
+        &[1, 2, 3],
+    ));
+    let last = bad.len() - 1;
+    bad[last] ^= 0x80;
+    stream.extend_from_slice(&bad);
+
+    let mut storage = vec![0u8; stream.len()];
+    let mut decoder = StreamDecoder::new(&mut storage);
+    assert_eq!(
+        decoder.push_slice(&stream),
+        DecodeEvent::Invalid { discard: 1 }
+    );
+    match decoder.push_slice(&[]) {
+        DecodeEvent::Frame { frame, .. } => {
+            assert_eq!((frame.header.destination, frame.data), (1, &standard[..]));
+        }
+        other => panic!("expected the standard frame, got {other:?}"),
+    }
+    match decoder.push_slice(&[]) {
+        DecodeEvent::Frame { frame, .. } => {
+            assert_eq!(frame.header.destination, 3);
+            assert_eq!(frame.data, &extended[..]);
+        }
+        other => panic!("expected the extended frame, got {other:?}"),
+    }
+    assert_eq!(
+        decoder.push_slice(&[]),
+        DecodeEvent::Malformed {
+            discard: bad.len(),
+            error: FrameError::DataCrcMismatch { length: 3 },
+            destination: Some(5),
+        }
+    );
+    assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
+    assert_eq!(decoder.buffered_len(), 0);
+}
+
+/// The phase reads the octets still buffered, wherever dropped noise left
+/// them in the storage.
+#[test]
+fn the_phase_reads_the_octets_behind_dropped_noise() {
+    let mut storage = [0u8; 16];
+    let mut decoder = StreamDecoder::new(&mut storage);
+    assert_eq!(
+        decoder.push_slice(&[0x00, PREAMBLE[0]]),
+        DecodeEvent::Invalid { discard: 1 }
+    );
+    assert_eq!(decoder.push_slice(&[]), DecodeEvent::NeedMore);
+    assert_eq!(decoder.phase(), StreamPhase::Preamble);
+    assert_eq!(decoder.push(PREAMBLE[1]), DecodeEvent::NeedMore);
+    assert_eq!(decoder.phase(), StreamPhase::Header);
+    assert_eq!(decoder.buffered_len(), 2);
 }
 
 /// Octets dropped from the front leave the rest where they are, so a frame
