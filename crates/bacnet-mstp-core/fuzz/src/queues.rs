@@ -156,13 +156,13 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
             item.map(|item| {
                 self.lent.clear();
                 self.lent.extend_from_slice(item.npdu);
-                DequeuedNpdu {
-                    destination: item.destination,
-                    kind: item.kind,
-                    priority: item.priority,
-                    sequence: item.sequence,
-                    npdu: &[],
-                }
+                DequeuedNpdu::new(
+                    item.destination,
+                    item.kind,
+                    item.priority,
+                    item.sequence,
+                    &[],
+                )
             })
         });
         if let Ok(Some(item)) = result {
@@ -185,9 +185,14 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         }
         self.check_depths("a dequeue");
         result.map(|item| {
-            item.map(|item| DequeuedNpdu {
-                npdu: &self.lent,
-                ..item
+            item.map(|item| {
+                DequeuedNpdu::new(
+                    item.destination,
+                    item.kind,
+                    item.priority,
+                    item.sequence,
+                    &self.lent,
+                )
             })
         })
     }

@@ -58,6 +58,7 @@ pub enum MasterState {
 
 /// UART receive failures that count as bus activity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReceiveError {
     /// Character framing failure.
     Framing,
@@ -84,6 +85,7 @@ pub enum ReplyDecision<'a> {
 
 /// A core event was rejected without performing the requested operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CoreError {
     /// Invalid core configuration.
     Config(ConfigError),
@@ -155,6 +157,7 @@ impl From<FrameError> for CoreError {
 
 /// Copyable state for diagnostics without exposing mutable internals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MasterSnapshot {
     /// Current Clause 9.5.6 state.
     pub state: MasterState,

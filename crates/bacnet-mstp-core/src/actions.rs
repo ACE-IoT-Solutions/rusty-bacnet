@@ -84,6 +84,7 @@ impl TransmitId {
 /// small, allocation-free reasons let the driver report the protocol-relevant
 /// distinction without coupling the core to an operating-system error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TransmitFailure {
     /// The driver stopped the transfer before the final stop bit was sent.
     Aborted,

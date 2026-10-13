@@ -189,11 +189,9 @@ impl Counters {
     pub(super) fn publish(&self, mac: MstpCounters, queues: &SharedQueues) {
         let mut published = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
         let (unicast, broadcast) = queues.stats();
-        *published = MstpCounters {
-            unicast,
-            broadcast,
-            ..mac
-        };
+        *published = mac;
+        published.unicast = unicast;
+        published.broadcast = broadcast;
     }
 
     /// Publish the queues' counters after a send changed them.
@@ -247,10 +245,8 @@ fn published_core_counters_appear_in_snapshots() {
 
     let handle = MstpDiagnostics::new();
     let queues = SharedQueues::new(false);
-    let mac = MstpCounters {
-        frames_received: 3,
-        ..MstpCounters::default()
-    };
+    let mut mac = MstpCounters::default();
+    mac.frames_received = 3;
     handle.counters.publish(mac, &queues);
     let age = Duration::from_secs(1);
     queues.enqueue(5, &[1, 0], Instant::ZERO, age).unwrap();

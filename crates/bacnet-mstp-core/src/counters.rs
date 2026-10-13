@@ -8,6 +8,7 @@ use bacnet_time::Duration;
 
 /// Counters for one bounded transmit queue.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct QueueCounters {
     /// Current number of queued entries.
     pub depth: u32,
@@ -71,6 +72,7 @@ impl QueueCounters {
 
 /// Observable MS/TP master-core counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MstpCounters {
     /// Number of state-machine transitions.
     pub state_transitions: u32,

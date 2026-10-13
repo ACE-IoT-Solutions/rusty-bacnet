@@ -164,7 +164,7 @@ impl MstpPort {
             .map_err(|why| match why {
                 QueueRejectReason::Full => SendRefusal::Full,
                 QueueRejectReason::Oversize => SendRefusal::TooLong,
-                QueueRejectReason::Expired | QueueRejectReason::Starved => SendRefusal::Other,
+                _ => SendRefusal::Other,
             })
     }
 }

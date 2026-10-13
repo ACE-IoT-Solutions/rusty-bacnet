@@ -77,6 +77,7 @@ impl NetworkPriority {
 
 /// The reason an NPDU was rejected by a queue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum QueueRejectReason {
     /// The destination queue has no free slot.
     Full,
@@ -101,7 +102,11 @@ pub enum QueueRejectReason {
 /// octets stay where they were queued until the queue is next used
 /// mutably, so the caller reads or sends them from there instead of copying
 /// them out.
+///
+/// It is `#[non_exhaustive]`: a [`QueueStorage`] of your own builds one with
+/// [`Self::new`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct DequeuedNpdu<'a> {
     /// Destination MAC address.
     pub destination: u8,
@@ -115,8 +120,34 @@ pub struct DequeuedNpdu<'a> {
     pub npdu: &'a [u8],
 }
 
+impl<'a> DequeuedNpdu<'a> {
+    /// An item for `destination` from the `kind` queue, at `priority`, with
+    /// the `sequence` it was accepted under, lending `npdu`.
+    #[must_use]
+    pub const fn new(
+        destination: u8,
+        kind: QueueKind,
+        priority: NetworkPriority,
+        sequence: u64,
+        npdu: &'a [u8],
+    ) -> Self {
+        Self {
+            destination,
+            kind,
+            priority,
+            sequence,
+            npdu,
+        }
+    }
+}
+
 /// A non-mutating view of the next item selected by queue policy.
+///
+/// It is `#[non_exhaustive]`: a [`QueueStorage`] of your own builds one with
+/// [`Self::new`], then sets [`Self::expires_at`] and [`Self::service_wait`]
+/// when they are not `None` and zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct QueueItemInfo {
     /// Destination MAC address.
     pub destination: u8,
@@ -134,6 +165,32 @@ pub struct QueueItemInfo {
     pub sequence: u64,
     /// Number of service opportunities this item has waited.
     pub service_wait: u8,
+}
+
+impl QueueItemInfo {
+    /// An item of `len` octets for `destination` in the `kind` queue, at
+    /// `priority`, queued at `enqueued_at` under `sequence`; it never
+    /// expires and has waited no service opportunity.
+    #[must_use]
+    pub const fn new(
+        destination: u8,
+        kind: QueueKind,
+        priority: NetworkPriority,
+        len: usize,
+        enqueued_at: Instant,
+        sequence: u64,
+    ) -> Self {
+        Self {
+            destination,
+            kind,
+            priority,
+            len,
+            enqueued_at,
+            expires_at: None,
+            sequence,
+            service_wait: 0,
+        }
+    }
 }
 
 /// A bounded storage backend for queued NPDUs.

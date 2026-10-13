@@ -185,9 +185,14 @@ impl<const L: usize> QueueStorage for Overstating<L> {
         max_len: usize,
     ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
         let item = self.0.dequeue_kind(kind, now, max_len)?;
-        Ok(item.map(|item| DequeuedNpdu {
-            npdu: &self.1,
-            ..item
+        Ok(item.map(|item| {
+            DequeuedNpdu::new(
+                item.destination,
+                item.kind,
+                item.priority,
+                item.sequence,
+                &self.1,
+            )
         }))
     }
 

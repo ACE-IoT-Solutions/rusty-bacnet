@@ -208,13 +208,13 @@ impl QueueStorage for CoreQueues {
         let (destination, kind, priority, sequence) =
             (item.destination, item.kind, item.priority, item.sequence);
         drop(shared);
-        Ok(Some(DequeuedNpdu {
+        Ok(Some(DequeuedNpdu::new(
             destination,
             kind,
             priority,
             sequence,
-            npdu: &self.lent[..len],
-        }))
+            &self.lent[..len],
+        )))
     }
 
     fn depth(&self, kind: QueueKind) -> usize {

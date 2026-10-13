@@ -38,6 +38,7 @@ const WATCHDOG_COMPLETION_MARGIN: Duration = Duration::from_millis(1);
 
 /// A configuration value that violates a protocol or local safety bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// A baud rate of zero cannot be used to derive bit-time limits.
     ZeroBaudRate,
@@ -209,6 +210,7 @@ pub enum ConfigError {
 
 /// The buffers [`ConfigError::ExtendedStorageTooSmall`] names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CoreBuffer {
     /// The receive storage, which must hold [`MAX_EXTENDED_FRAME_LENGTH`]
     /// octets.
@@ -229,6 +231,7 @@ pub enum CoreBuffer {
 
 /// Names of local duration settings used by [`ConfigError::ZeroLocalDuration`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LocalDurationField {
     /// [`MstpCoreConfig::queue_max_age`].
     QueueMaxAge,
@@ -238,6 +241,7 @@ pub enum LocalDurationField {
 
 /// Names of local count/ratio settings used by [`ConfigError::ZeroLocalLimit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LocalLimitField {
     /// [`MstpCoreConfig::broadcast_unicast_ratio`].
     BroadcastUnicastRatio,
