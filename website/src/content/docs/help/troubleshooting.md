@@ -6,7 +6,7 @@ description: "Start with the layer that failed, not with a larger scan or a long
 Capture the exact program version, command or API call, transport, host platform, and failure symptom. Keep a sanitized record of the local address/port, target address, object/property, and whether a smaller operation works.
 
 :::caution[Check the version before applying a fix]
-These guides describe **v0.13.0**. Commands and APIs from earlier releases differ in places, notably BACnet/SC trust and identity. If you are moving an existing setup, read the [upgrade guide](/rusty-bacnet/project/upgrading/) rather than combining commands from different versions.
+These guides describe **v0.13.0**. Commands and APIs from earlier releases differ in places, notably BACnet/IPv6 addressing (VMACs) and MS/TP timing. If you are moving an existing setup, read the [upgrade guide](/rusty-bacnet/project/upgrading/) rather than combining commands from different versions.
 :::
 
 ## The executable or module does not start

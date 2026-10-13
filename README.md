@@ -271,8 +271,8 @@ includes BACnet/IPv6, BACnet/SC and MS/TP, but not Ethernet.
 The [BACnet/SC guide](https://jscott3201.github.io/rusty-bacnet/guides/bacnet-sc/)
 covers CLI trust and identity. Before 0.12.0, BACnet/IPv6 could fall back to `::1`
 when it found no address, and the CLI loaded SC trust from the system roots; the
-[upgrade guide](https://jscott3201.github.io/rusty-bacnet/project/upgrading/)
-lists what to change.
+migration notes in the [0.12.0 changelog](CHANGELOG.md#0120---2026-10-05) list
+what to change.
 
 How to configure each one:
 - [Transport configuration](docs/rust-api.md#transport-configuration-examples) (Rust)
@@ -286,12 +286,12 @@ How to configure each one:
 | [`bacnet-types`](https://crates.io/crates/bacnet-types) | Enums, primitives, bit strings and errors (`no_std` with `alloc`) |
 | [`bacnet-encoding`](https://crates.io/crates/bacnet-encoding) | ASN.1 tags, APDU/NPDU codecs, segmentation (`no_std` with `alloc`) |
 | [`bacnet-services`](https://crates.io/crates/bacnet-services) | Service request and response types (`no_std` with `alloc`) |
-| [`bacnet-time`](crates/bacnet-time) | The monotonic `Instant` and `Duration`, in nanoseconds, that the portable cores share, so firmware feeds them one clock (`no_std`; no allocator, no dependencies) |
-| [`bacnet-mstp-codec`](crates/bacnet-mstp-codec) | MS/TP frame codec: CRCs, encode, decode and a stream decoder, for standard and extended (COBS-encoded) frames (`no_std`; no allocator or dependencies by default) |
-| [`bacnet-mstp-core`](crates/bacnet-mstp-core) | MS/TP master state machine driven by caller-supplied time and events (`no_std`; no allocator by default) |
-| [`bacnet-bip-codec`](crates/bacnet-bip-codec) | BACnet/IP and BACnet/IPv6 BVLL codec: every Annex J and Annex U message, B/IP and B/IPv6 addresses, VMACs and BDT/FDT tables (`no_std`; no allocator or dependencies by default) |
-| [`bacnet-bip-core`](crates/bacnet-bip-core) | Portable BACnet/IP behaviour: a node engine for normal, foreign-device and BBMD modes, a BBMD's BDT and FDT in caller-sized arrays, foreign-device registration and broadcast forwarding, on caller-supplied time (`no_std`; no allocator) |
-| [`bacnet-router-core`](crates/bacnet-router-core) | Portable router behaviour (Clause 6): a sans-IO routing engine with its routing table and route discovery, on caller-supplied time, which `bacnet-network`'s router runs on, and B/IP and MS/TP port glue behind features (`no_std`; no allocator) |
+| [`bacnet-time`](https://crates.io/crates/bacnet-time) | The monotonic `Instant` and `Duration`, in nanoseconds, that the portable cores share, so firmware feeds them one clock (`no_std`; no allocator, no dependencies) |
+| [`bacnet-mstp-codec`](https://crates.io/crates/bacnet-mstp-codec) | MS/TP frame codec: CRCs, encode, decode and a stream decoder, for standard and extended (COBS-encoded) frames (`no_std`; no allocator or dependencies by default) |
+| [`bacnet-mstp-core`](https://crates.io/crates/bacnet-mstp-core) | MS/TP master state machine driven by caller-supplied time and events (`no_std`; no allocator by default) |
+| [`bacnet-bip-codec`](https://crates.io/crates/bacnet-bip-codec) | BACnet/IP and BACnet/IPv6 BVLL codec: every Annex J and Annex U message, B/IP and B/IPv6 addresses, VMACs and BDT/FDT tables (`no_std`; no allocator or dependencies by default) |
+| [`bacnet-bip-core`](https://crates.io/crates/bacnet-bip-core) | Portable BACnet/IP behaviour: a node engine for normal, foreign-device and BBMD modes, a BBMD's BDT and FDT in caller-sized arrays, foreign-device registration and broadcast forwarding, on caller-supplied time (`no_std`; no allocator) |
+| [`bacnet-router-core`](https://crates.io/crates/bacnet-router-core) | Portable router behaviour (Clause 6): a sans-IO routing engine with its routing table and route discovery, on caller-supplied time, which `bacnet-network`'s router runs on, and B/IP and MS/TP port glue behind features (`no_std`; no allocator) |
 | [`bacnet-transport`](https://crates.io/crates/bacnet-transport) | BACnet/IP, BACnet/IPv6, BACnet/SC, MS/TP and Ethernet data links |
 | [`bacnet-network`](https://crates.io/crates/bacnet-network) | Network layer and routing |
 | [`bacnet-client`](https://crates.io/crates/bacnet-client) | Async client |

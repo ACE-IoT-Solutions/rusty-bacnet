@@ -5,7 +5,7 @@ description: "Connect an SC node with explicit trust, operational credentials an
 
 [Build and integrate](/rusty-bacnet/development/overview/) / BACnet/SC setup
 
-This page configures BACnet/SC for the CLI, Python and Rust. The [BACnet/SC guide](/rusty-bacnet/guides/bacnet-sc/) explains the trust roles. Every surface requires explicit trust and identity; the [upgrade guide](/rusty-bacnet/project/upgrading/) lists what changed from the previous release.
+This page configures BACnet/SC for the CLI, Python and Rust. The [BACnet/SC guide](/rusty-bacnet/guides/bacnet-sc/) explains the trust roles. Every surface requires explicit trust and identity. The [upgrade guide's BACnet/SC section](/rusty-bacnet/project/upgrading/#bacnetsc) lists what changed for SC in this release.
 
 ## Prepare identities and credentials before connecting
 

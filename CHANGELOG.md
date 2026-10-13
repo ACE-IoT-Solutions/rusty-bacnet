@@ -22,12 +22,12 @@ which groups what changes by area; the migration notes below give the exact
 replacements. Conformance remains partial, and this release is not a
 full-conformance or BTL certification claim.
 
-- Six crates publish for the first time, all `no_std` with no allocator and
-  run on time the caller supplies: `bacnet-time`, `bacnet-mstp-codec`,
-  `bacnet-bip-codec`, `bacnet-mstp-core`, `bacnet-bip-core` and
-  `bacnet-router-core`. The Tokio MS/TP and B/IP transports and
-  `BACnetRouter` now run on them, and CI links bare-metal images built on
-  them for Cortex-M and RISC-V within flash and RAM budgets.
+- Six crates publish for the first time, all `no_std` with no allocator:
+  `bacnet-time`, `bacnet-mstp-codec`, `bacnet-bip-codec`,
+  `bacnet-mstp-core`, `bacnet-bip-core` and `bacnet-router-core`; the three
+  cores run on time the caller supplies. The Tokio MS/TP and B/IP transports
+  and `BACnetRouter` now run on them, and CI links bare-metal images built
+  on them for Cortex-M and RISC-V within flash and RAM budgets.
   `bacnet-types`, `bacnet-encoding` and `bacnet-services` build as `no_std`
   with an allocator through a new `alloc` feature.
 - Before that first publish, an API pass gave the six crates common rules:
@@ -36,19 +36,21 @@ full-conformance or BTL certification claim.
   a README and docs.rs page for each.
 - `BACnetRouter` runs on the router core and follows Clause 6 more closely:
   each port sends Network-Number-Is at startup, an NPDU too long for the port
-  it would leave by draws reject reason 4, one that arrives with a hop count
-  of 1 isn't relayed, an APDU for the router's own MAC on any of its networks
-  is delivered locally, and a reject for a reason other than 1 or 2 no
-  longer removes a learned route.
+  it would leave by draws reject reason 4, an NPDU for another router or a
+  global broadcast that arrives with a hop count of 1 isn't passed on, an
+  APDU for the router's own MAC on any of its networks is delivered locally,
+  and a reject for a reason other than 1 or 2 no longer removes a learned
+  route.
 - MS/TP runs on the master core. Extended frames carry NPDUs of up to 1497
-  octets, turned on for every port a router routes, and host timing suits
-  USB adapters: the longest usage and reply waits Clause 9 allows by
+  octets, turned on for every MS/TP port a router routes, and host timing
+  suits USB adapters: the longest usage and reply waits Clause 9 allows by
   default, a transmit pad for ports that can't drain, and echo handling.
 - B/IP runs on the node engine. One `BipMode` picks normal, foreign-device
-  or BBMD mode on every Rust builder, with matching options in Python and
-  the CLI; a foreign device manages its own registration, a BBMD's tables
-  and forwarding live in the core with its two-hop rebroadcast rule
-  corrected, and a registered Network Port reports the mode.
+  or BBMD mode on every Rust builder, Python's B/IP owners take `bbmd=` and
+  `foreign_device=`, and the CLI can run as a foreign device; a foreign
+  device manages its own registration, a BBMD's tables and forwarding live
+  in the core with its two-hop rebroadcast rule corrected, and a registered
+  Network Port reports the mode.
 - BACnet/IPv6 names a peer by its 3-octet VMAC instead of its address, in
   Rust, Python and the CLI, so stored addresses need rewriting and a router
   must be upgraded together with the nodes it serves.
