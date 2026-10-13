@@ -9,9 +9,6 @@ repository.workspace = true
 readme = "README.md"
 keywords = ["bacnet", "router", "npdu", "embedded", "no-std"]
 categories = ["embedded", "network-programming", "no-std"]
-# Unpublished until the hosted cutover and the firmware router image land
-# (#1679).
-publish = false
 
 # The table, discovery and the engine's scratch live in caller-sized arrays
 # (const generics), and NPDUs are borrowed or written into caller storage,

@@ -3,7 +3,12 @@
 /// Counts of what the router dropped, sent and was refused. They saturate,
 /// never change a decision, and name no peer. The table's own counts are
 /// [`Table::claim_counters`](crate::table::Table::claim_counters).
+///
+/// It is `#[non_exhaustive]`, so a new count isn't a breaking change.
+/// Outside this crate, build one from `Counters::default()` and set its
+/// fields.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Counters {
     /// Frames refused because the link source, the DLEN or the SLEN was
     /// past [`MAX_MAC_LEN`](crate::MAX_MAC_LEN) (#1141, #1198).

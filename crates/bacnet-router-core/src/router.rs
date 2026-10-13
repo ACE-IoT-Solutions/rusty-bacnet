@@ -301,6 +301,11 @@ where
 
     /// When [`on_deadline`](Self::on_deadline) next has work: the next
     /// sweep.
+    ///
+    /// Only `on_deadline` moves it, so a host may sleep until it without
+    /// any other call waking that sleep (the hosted router's sweep task
+    /// does). A change that lets another call move it must say so here,
+    /// since such a host would then need a wake after that call.
     pub fn next_deadline(&self) -> Option<Instant> {
         Some(self.next_sweep)
     }

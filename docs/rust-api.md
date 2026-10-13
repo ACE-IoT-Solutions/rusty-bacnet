@@ -2074,6 +2074,49 @@ let StartedRouter { router, apdus, network_control } =
     BACnetRouter::start(ports, RouterOptions::new().track_admission()).await?;
 ```
 
+Every routing decision is `bacnet-router-core`'s engine (#1679), which the
+router keeps behind one lock: each port's dispatch task takes it for one
+frame at a time, as the aging sweep and `table()` do, and nothing holds it
+across an await. `table()` returns a `RouterTableGuard`, which derefs to the
+live `RouterTable`: the core's `Table`, re-exported in
+`bacnet_network::router_table` and sized for `ROUTE_CAP` (256) routes and
+`HOLD_RECORDS` (1,024) reject hold-down records. A lookup returns a `Route`
+by value, with `port: PortId`, `direct` and `next_hop: Mac`. Times in the
+table are the router's own, Tokio time since `start`, which `now()` reads, so
+paused-time tests drive the sweep too. Calls on the table are local
+management, which no wire-control policy sees; drop the guard soon, since
+every port waits for it. The lock isn't reentrant: calling `table()` again
+while a guard lives on the same thread, or from the control authorizer,
+never returns. `counters()`, the four drop counts, `now()` and
+`control_snapshot()` take no lock, so they are safe to call meanwhile; the
+counts are copied out of the engine before each lock is let go.
+
+```rust
+use bacnet_network::router_table::{Convergence, Reachability};
+
+let now = router.now();
+let mut table = router.table();
+table.set_convergence(Convergence::Hardened);
+let busy = table.effective_reachability(3000, now) == Some(Reachability::Busy);
+drop(table);
+```
+
+The control authorizer runs under the same lock, one call at a time, so it
+must not block or call into the router. A router has 1 to 255 ports, each
+with a MAC of at most `NpduAddress::MAX_MAC_LEN` octets, and `start` refuses
+anything else. The table stops at its route cap, direct routes included, for
+learning, Initialize-Routing-Table updates and I-Could-Be-Router offers
+alike, counting each refusal in its claim counters' `learned_cap_ignored`.
+Two more bounds come with the engine. A rewritten NPDU longer than the
+engine's 65,556-octet scratch isn't routed: it is dropped, logged and
+counted in `BACnetRouter::counters().write_failures`. The scratch is the
+largest BVLC message, 65,535 octets, plus the SNET, SLEN and longest SADR a
+router adds, so any BACnet/SC NPDU (at most 61,327 octets, Table 6-1) fits
+with its added source address.
+And the table keeps at most `HOLD_RECORDS` (1,024) reject hold-down records,
+one per network and arrival port; a full pool gives up its oldest record,
+counted in its claim counters' `hold_evicted`.
+
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it
 and counts it in `address_length_drops()`; a non-router has no reject message

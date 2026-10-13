@@ -64,7 +64,11 @@ pub struct Local<'f> {
 
 /// Why a frame was dropped. Each has its count in
 /// [`Counters`](super::Counters).
+///
+/// It is `#[non_exhaustive]`, so a new reason isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DropReason {
     /// It came on a port the router doesn't have, or its route names one
     /// (a route written through [`Router::table_mut`](super::Router::table_mut)).

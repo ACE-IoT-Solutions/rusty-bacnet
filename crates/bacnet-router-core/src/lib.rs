@@ -94,8 +94,8 @@
 //! route cap; a discovery cooldown, cap and expiry; no reject for a global
 //! broadcast, and none to the router itself.
 //!
-//! Where the hosted router departs from the clause, the engine does too,
-//! for now, so the hosted router can move onto it without changing
+//! Where the hosted router departed from the clause, the engine does too,
+//! for now, so `bacnet-network`'s router moved onto it without changing
 //! behaviour; #1679 lists the fixes. A received reject with a reason other
 //! than 1 or 2 removes the learned route, where Clause 6.6.3.5 changes the
 //! table for those two reasons only (R2). The engine's [`router::Fixes`]
