@@ -135,15 +135,16 @@ fn busy_duplicates_do_not_renew_deadline_and_expired_busy_can_be_rejected_again(
 
 /// Clause 6.6.3.5 changes the table for reasons 1 and 2 only (fix R2 in
 /// #1679): any other reason leaves a learned route as it was, starts no
-/// hold-down, and counts as changing nothing, even within a hold-down.
+/// hold-down, and counts as kept, apart from the dampened rejects, even
+/// within a hold-down.
 #[test]
-fn every_other_reason_changes_nothing() {
+fn every_other_reason_keeps_a_learned_route() {
     for reason in (0..=u8::MAX).filter(|reason| ![1, 2].contains(reason)) {
         let mut table = learned_table();
         let before = table.lookup(3000).unwrap();
         assert_eq!(
             table.apply_reject(3000, port(0), reason, BASE, &TIMING),
-            RejectEffect::SameState
+            RejectEffect::Kept
         );
         assert_eq!(table.lookup(3000), Some(before));
         assert_eq!(table.holds().count(), 0);
@@ -152,7 +153,7 @@ fn every_other_reason_changes_nothing() {
         let busy = table.lookup(3000).unwrap();
         assert_eq!(
             table.apply_reject(3000, port(0), reason, BASE + secs(1), &TIMING),
-            RejectEffect::SameState
+            RejectEffect::Kept
         );
         assert_eq!(table.lookup(3000), Some(busy));
         assert_eq!(table.held_since(3000, port(0)), Some(BASE));
@@ -160,8 +161,7 @@ fn every_other_reason_changes_nothing() {
             table.claim_counters(),
             ClaimCounters {
                 reject_applied: 1,
-                reject_dampened: 2,
-                reject_dampened_same_state: 2,
+                reject_kept: 2,
                 ..Default::default()
             }
         );

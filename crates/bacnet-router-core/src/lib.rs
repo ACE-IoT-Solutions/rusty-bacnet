@@ -61,11 +61,11 @@
 //! | Obligation | Clause | Test |
 //! | --- | --- | --- |
 //! | An address length no link uses draws reason 6 when the NPDU names a network, and nothing when it is a global broadcast | 6.2.2.2, 6.4.4 | `tests/ingress.rs`: `over_long_addresses_reject_with_reason_6` |
-//! | A message for the router's own address on any of its networks goes to its own application, not on a wire (R7) | 6.1, Figure 6-12 | `tests/ingress.rs`: `own_address_on_any_port_is_local` |
+//! | A message for the router's own address on any of its networks goes to its own application, not on a wire (R7) | 6.1, Figure 6-12 | `tests/ingress.rs`: `own_address_on_any_port_is_local`, `own_mac_on_a_remote_network_is_routed_on` |
 //! | Only an Unconfirmed-Request may use a broadcast network address | 6.3 | `tests/ingress.rs`: `broadcast_addresses_carry_only_unconfirmed` |
 //! | Missing SNET and SADR are filled in from the arrival network and the link sender; present ones travel unchanged | 6.5.4 | `tests/forward.rs`: `source_is_added_once_and_kept_after` |
 //! | Onto an attached network the destination fields and hop count are dropped, and the frame goes to the DADR, or to every node for DLEN 0 | 6.5.4 | `tests/forward.rs`: `direct_delivery_strips_destination` |
-//! | Toward another router the destination fields stay and the hop count falls by one; a count that would reach zero goes no further (R6) | 6.2.3, 6.5.4 | `tests/forward.rs`: `next_router_keeps_destination_and_counts_down`, `hop_count_reaching_zero_is_not_relayed` |
+//! | Toward another router the destination fields stay and the hop count falls by one; a count that would reach zero goes no further (R6) | 6.2.3, 6.5.4 | `tests/forward.rs`: `next_router_keeps_destination_and_counts_down`, `hop_count_reaching_zero_is_not_relayed`, `hop_count_reaching_zero_stops_routed_network_messages` |
 //! | A global broadcast reaches every attached network but the one it came from, still global, and the router's own application too; one whose count would reach zero is only delivered (R6) | 6.3.2, 6.5.4 | `tests/forward.rs`: `global_broadcast_fans_out_and_delivers` |
 //! | A network message for another network is routed like an APDU, a proprietary one included, vendor ID and all | 6.2.5, 6.5.4 | `tests/forward.rs`: `proprietary_messages_route_opaquely` |
 //! | Lacking a route, the router searches for one and refuses the message with reason 1 | 6.6.3.1 | `tests/traces.rs`: `a_discovery_learning_and_aging` |
@@ -81,14 +81,16 @@
 //! | The network-number messages stay on their link | 6.4.19, 6.4.20 | `tests/control.rs`: `network_number_messages_stay_local` |
 //! | At start each port hears its own number (R3), then which networks lie beyond the others | 6.4.20, 6.6.2, 6.6.3.3 | `tests/traces.rs`: `a_discovery_learning_and_aging`, `startup_without_r3`, `a_one_port_router_announces_only_its_number` |
 //! | With no point-to-point links, connection messages change nothing | 6.6.3.10, 6.6.3.11 | `tests/control.rs`: `ptp_messages_change_nothing` |
-//! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out (R1) | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4` |
+//! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out (R1) | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4`, `a_fan_out_goes_by_the_broadcast_limit` |
 //!
 //! Rules of this stack beyond the clause, each tested in the same files:
 //! the 18-octet address bound (#1141, #1198); a DADR beside DNET 0xFFFF
 //! (#1379); group DADRs, where only an Unconfirmed-Request for a group of
 //! the delivery port's own goes on, as that port's broadcast (#1504,
 //! #1677); the relay back out the arrival port of a
-//! message for the arrival network; the RB-09 gate for each protected
+//! message for the arrival network (with R1, a DLEN 0 broadcast at the
+//! port's limit is delivered and also draws reason 4, as the relay gains
+//! source fields); the RB-09 gate for each protected
 //! message, silent when it refuses; direct routes that no learning, reject
 //! or management write changes; a 30-second hold-down per network and
 //! arrival port on reject-driven changes; hardened convergence, which

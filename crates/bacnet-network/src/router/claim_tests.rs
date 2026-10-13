@@ -59,12 +59,16 @@ async fn first_rejects_apply_once_and_other_reasons_never() {
             _ => (Reachability::Reachable, 0),
         };
         assert_eq!(reachability(&h, 3000), Some(state));
+        // Reasons 1 and 2 apply once, then change nothing; the others are
+        // kept every time.
+        let (dampened, kept) = if applied == 1 { (11, 0) } else { (0, 12) };
         assert_eq!(
             h.table().claim_counters(),
             claim_counts(|c| {
                 c.reject_applied = applied;
-                c.reject_dampened = 12 - applied;
-                c.reject_dampened_same_state = 12 - applied;
+                c.reject_dampened = dampened;
+                c.reject_dampened_same_state = dampened;
+                c.reject_kept = kept;
             })
         );
     }

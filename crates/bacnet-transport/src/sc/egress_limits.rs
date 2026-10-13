@@ -20,7 +20,7 @@ fn effective_max_npdu_length(conn: &ScConnection) -> u16 {
     let bvlc_npdu_budget = conn
         .hub_max_bvlc_length
         .saturating_sub(SC_ENCAPSULATED_NPDU_BASE_HEADER_LEN);
-    conn.hub_max_apdu_length.min(bvlc_npdu_budget)
+    conn.hub_max_npdu_length.min(bvlc_npdu_budget)
 }
 
 /// Store the APDU limit of `conn`'s hub: its NPDU limit less the 2-octet

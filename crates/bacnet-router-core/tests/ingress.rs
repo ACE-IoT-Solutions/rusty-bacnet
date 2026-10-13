@@ -7,8 +7,9 @@ use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::{AddressField, Malformed, Npdu};
 use bacnet_router_core::router::{DropReason, Kind, Options};
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, deliver_broadcast, options, port_on, router, router_counts,
-    router_with, sent_reject, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1, R7, UNCONFIRMED,
+    addr, apdu_to, at, bytes, deliver, deliver_broadcast, learn_9_via_r7, options, port_on, router,
+    router_counts, router_with, sent_reject, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1,
+    R7, UNCONFIRMED,
 };
 
 /// An NPDU with a DLEN or SLEN of 19, one past the bound, for DNET `dnet`
@@ -412,6 +413,25 @@ fn own_address_on_any_port_is_local() {
         } if mac == &[3]
     ));
     assert!(sent.is_empty());
+}
+
+/// R7 matches the router's address as a whole, network and MAC: a DADR
+/// that equals one of its own MACs on a network behind another router
+/// names some other node, so it is routed on. That is the usual MS/TP case,
+/// where the router is station 1 on its link and another station 1 sits on
+/// network 9, behind R7.
+#[test]
+fn own_mac_on_a_remote_network_is_routed_on() {
+    let mut router = router();
+    let mut host = Recorder::default();
+    learn_9_via_r7(&mut router, at(0));
+    for mac in [OWN_1, OWN_0] {
+        let frame = apdu_to(9, mac, CONFIRMED);
+        let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(1));
+        assert_eq!(outcome, Outcome::Handled);
+        assert_eq!((sent.len(), sent[0].to.as_deref()), (1, Some(R7)));
+        assert_eq!(sent[0].parsed().destination, Some(addr(9, mac)));
+    }
 }
 
 /// Before R7 the hosted router compared a DADR with its own MAC on the

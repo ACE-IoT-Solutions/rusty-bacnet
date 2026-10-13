@@ -249,7 +249,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
             // A DLEN 0 broadcast on the arrival network is delivered, and
             // also sent back out the arrival port below, as the hosted
-            // router does (group_dadr_tests.rs:96 pins that relay).
+            // router does (group_dadr_tests.rs:96 pins that relay). With R1,
+            // one at the port's limit is delivered and also draws reason 4,
+            // since the relay gains SNET and SADR.
             if destination.mac.is_empty() {
                 delivered = Some(local(npdu, true, false));
             }

@@ -314,14 +314,14 @@ fn b_flow_control() {
 /// Trace C: rejects from R7 about network 9, each addressed to the router.
 ///
 /// With fix R2 a reason-4 reject changes no route (Clause 6.6.3.5): at 31
-/// s and again at 60 s the route stays, as each changes nothing.
+/// s and again at 60 s the route stays, and each counts as kept.
 /// `c_without_r2` runs the trace as the hosted router did before the fix.
 #[test]
 fn c_received_rejects() {
     let effects = c_trace(router());
     assert_eq!(
         effects,
-        [RejectEffect::SameState, RejectEffect::SameState],
+        [RejectEffect::Kept, RejectEffect::Kept],
         "R2: the route stays"
     );
 }
@@ -359,15 +359,18 @@ fn c_trace(mut router: TestRouter) -> [RejectEffect; 2] {
             other => panic!("expected a reject event, got {other:?}"),
         }
     };
-    // The claim counts after each step: applied, same state, held down.
-    let rejects = |applied, same, held| {
+    // The claim counts after each step: applied, same state, held down,
+    // and kept (R2).
+    let rejects_kept = |applied, same, held, kept| {
         claim_counts(|c| {
             c.reject_applied = applied;
             c.reject_dampened = same + held;
             c.reject_dampened_same_state = same;
             c.reject_dampened_hold_down = held;
+            c.reject_kept = kept;
         })
     };
+    let rejects = |applied, same, held| rejects_kept(applied, same, held, 0);
 
     // t = 0: reason 1 makes 9 unreachable.
     assert_eq!(step(&mut router, 1, 0), RejectEffect::Applied);
@@ -401,13 +404,13 @@ fn c_trace(mut router: TestRouter) -> [RejectEffect; 2] {
     assert_eq!(step(&mut router, 1, 30), RejectEffect::Applied);
     assert_eq!(state(&router), Some(Reachability::Unreachable));
     assert_eq!(router.table().claim_counters(), rejects(2, 1, 1));
-    // t = 31 s: reason 4. With R2 it changes nothing; without, it would
-    // remove the route, but comes within the hold-down from 30 s. The route
-    // stays either way.
+    // t = 31 s: reason 4. With R2 it is kept, changing nothing; without,
+    // it would remove the route, but comes within the hold-down from 30 s.
+    // The route stays either way.
     let at_31 = step(&mut router, reason::MESSAGE_TOO_LONG, 31);
     assert_eq!(state(&router), Some(Reachability::Unreachable));
     let after_31 = if keeps {
-        rejects(2, 2, 1)
+        rejects_kept(2, 1, 1, 1)
     } else {
         rejects(2, 1, 2)
     };
@@ -417,7 +420,7 @@ fn c_trace(mut router: TestRouter) -> [RejectEffect; 2] {
     let at_60 = step(&mut router, reason::MESSAGE_TOO_LONG, 60);
     if keeps {
         assert_eq!(state(&router), Some(Reachability::Unreachable));
-        assert_eq!(router.table().claim_counters(), rejects(2, 3, 1));
+        assert_eq!(router.table().claim_counters(), rejects_kept(2, 1, 1, 2));
     } else {
         assert_eq!(state(&router), None);
         assert_eq!(router.table().claim_counters(), rejects(3, 1, 2));

@@ -209,7 +209,7 @@ fn other_reasons_relay_and_keep_the_route() {
                 route.map(|route| route.reachability),
                 Some(Reachability::Reachable)
             );
-            RejectEffect::SameState
+            RejectEffect::Kept
         } else {
             assert!(route.is_none(), "removed before R2");
             RejectEffect::Applied

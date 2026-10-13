@@ -110,7 +110,9 @@ pub struct Fixes {
     /// port's network with the router's MAC on that port, is delivered to
     /// the router's own application (Clause 6.1, Figure 6-12). Off, only
     /// its address on the arrival network is, and one for its address on
-    /// another network goes out on that network's wire, to itself.
+    /// another network goes out on that network's wire, to itself. A host's
+    /// reply leaves from the router's address on the arrival port, with no
+    /// SNET, not from the address the request named.
     pub own_address: bool,
 }
 

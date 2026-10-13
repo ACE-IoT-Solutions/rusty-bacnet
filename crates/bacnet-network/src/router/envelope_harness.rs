@@ -211,6 +211,7 @@ impl Harness {
             gate: Arc::clone(&gate),
             groups: vec![PortGroups::default(); networks.len()],
             networks: networks.to_vec(),
+            warnings: Default::default(),
         });
         let (txs, rxs) = capacities.iter().map(|&n| mpsc::channel(n)).unzip();
         let (local_tx, apdus, counters) = AdmissionReceiver::channel(true);

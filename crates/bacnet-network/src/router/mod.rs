@@ -444,6 +444,7 @@ impl BACnetRouter {
             gate: control,
             groups,
             networks,
+            warnings: Default::default(),
         });
 
         // Startup: each port hears its own network number, in a

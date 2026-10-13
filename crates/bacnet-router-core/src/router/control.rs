@@ -9,7 +9,7 @@ use super::config::Options;
 use super::counters::bump;
 use super::host::{Claim, ControlClass, Event, Group, Host, Targets};
 use super::ingress::{Arrival, DropReason, Received};
-use super::output::{Kind, Target};
+use super::output::Kind;
 use super::tasks::Task;
 use super::Storage;
 use crate::message::{
@@ -55,7 +55,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return self.forward(at, npdu, &route, options, host);
         }
         match kind {
-            code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, options),
+            code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, options, host),
             code::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
             code::I_COULD_BE_ROUTER_TO_NETWORK => self.i_could_be_router(at, npdu, options, host),
             code::REJECT_MESSAGE_TO_NETWORK => self.received_reject(at, npdu, options, host),
@@ -156,6 +156,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         at: &Arrival<'f>,
         npdu: &Npdu<'f>,
         options: &Options,
+        host: &mut impl Host,
     ) -> Received<'f> {
         let network = match WhoIsRouter::parse(npdu.payload) {
             None | Some(WhoIsRouter::Network(0)) => return self.bad_message(),
@@ -183,7 +184,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             ..*npdu
         };
         let kind = Kind::Relay(code::WHO_IS_ROUTER_TO_NETWORK);
-        if self.write_now(&relay, kind, Target::AllBut(at.port)) {
+        if self.write_fan_out(&relay, kind, at.port, options, host) {
             Received::Handled
         } else {
             Received::Dropped(DropReason::Unwritable)
@@ -192,9 +193,16 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 
     /// Pass a network message's data on, verbatim, as a fresh message of
     /// its type to every port but the arrival one.
-    fn rebroadcast<'f>(&mut self, at: &Arrival<'f>, npdu: &Npdu<'f>, kind: u8) -> Received<'f> {
+    fn rebroadcast<'f>(
+        &mut self,
+        at: &Arrival<'f>,
+        npdu: &Npdu<'f>,
+        kind: u8,
+        options: &Options,
+        host: &mut impl Host,
+    ) -> Received<'f> {
         let relay = Npdu::message(kind, npdu.payload);
-        if self.write_now(&relay, Kind::Relay(kind), Target::AllBut(at.port)) {
+        if self.write_fan_out(&relay, Kind::Relay(kind), at.port, options, host) {
             Received::Handled
         } else {
             Received::Dropped(DropReason::Unwritable)
@@ -223,7 +231,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 break;
             }
         }
-        self.rebroadcast(at, npdu, code::I_AM_ROUTER_TO_NETWORK)
+        self.rebroadcast(at, npdu, code::I_AM_ROUTER_TO_NETWORK, options, host)
     }
 
     /// One learning claim of an I-Am-Router or an Init-ACK. `false` when the
@@ -418,7 +426,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
         }
         let kind = npdu.message_type.unwrap_or(0);
-        self.rebroadcast(at, npdu, kind)
+        self.rebroadcast(at, npdu, kind, options, host)
     }
 
     /// Network-Number-Is (Clause 6.4.20): heard only as a link broadcast

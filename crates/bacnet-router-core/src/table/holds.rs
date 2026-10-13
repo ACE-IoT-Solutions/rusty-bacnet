@@ -16,12 +16,15 @@ pub enum RejectEffect {
     /// It changed a learned route's state, or, as the router did before
     /// fix R2, removed the route.
     Applied,
-    /// Nothing to change: no route, a direct one, the state already in
-    /// effect, or a reason other than 1 and 2.
+    /// Nothing to change: no route, a direct one, or the state already in
+    /// effect.
     SameState,
     /// It would change the route, but came within the hold-down of the last
     /// change from the same arrival port.
     HeldDown,
+    /// For a learned route, with a reason other than 1 or 2, which changes
+    /// no route (Clause 6.6.3.5): the router before fix R2 removed it.
+    Kept,
 }
 
 /// When a reject from one arrival port last changed one network's route.
@@ -132,7 +135,9 @@ impl<const R: usize, const H: usize> Table<R, H> {
     ///
     /// Reason 1 marks a learned route unreachable. Reason 2 marks it busy
     /// for [`Timing::busy_for`], unless it is unreachable or still busy: a
-    /// repeat never extends the deadline. Any other reason changes nothing,
+    /// repeat never extends the deadline. Any other reason leaves a learned
+    /// route as it is ([`RejectEffect::Kept`], counted in
+    /// [`ClaimCounters::reject_kept`](super::ClaimCounters::reject_kept)),
     /// since the clause changes the table for those two only. A reject that
     /// would change nothing, or one within [`Timing::hold_down`] of the last
     /// change applied from the same port, is ignored and counted, and moves
@@ -174,6 +179,13 @@ impl<const R: usize, const H: usize> Table<R, H> {
         timing: &Timing,
         removing: bool,
     ) -> RejectEffect {
+        let learned = self.lookup(network).is_some_and(|route| !route.direct);
+        let other = !matches!(reason, reason::NOT_DIRECTLY_CONNECTED | reason::ROUTER_BUSY);
+        if learned && other && !removing {
+            let kept = &mut self.counters.reject_kept;
+            *kept = kept.saturating_add(1);
+            return RejectEffect::Kept;
+        }
         let changes = self.lookup(network).is_some_and(|route| {
             // The effective state counts: a busy deadline may have passed
             // before the sweep cleared it.

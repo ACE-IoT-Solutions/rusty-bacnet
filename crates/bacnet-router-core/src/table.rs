@@ -22,9 +22,9 @@
 //!   only, and aging keys off it; forwarding sets `last_used`, which never
 //!   extends a route's life. Busy and Available marks touch neither.
 //! - **Rejects** ([`Table::apply_reject`]): reason 1 marks a learned route
-//!   unreachable and reason 2 busy for 30 s; any other reason changes
-//!   nothing (Clause 6.6.3.5). The router with fix R2 off removes the route
-//!   for one, as the hosted router once did.
+//!   unreachable and reason 2 busy for 30 s; any other reason leaves it as
+//!   it is, and is counted apart (Clause 6.6.3.5). The router with fix R2
+//!   off removes the route for one, as the hosted router once did.
 //!   Each change starts a 30 s hold-down for its network and arrival port,
 //!   during which further reject-driven changes from that port are ignored.
 //!   Hold-down records live in their own pool of `H`; a full pool evicts the
@@ -169,12 +169,14 @@ pub struct ClaimCounters {
     pub reject_applied: u64,
     /// Rejects ignored, for either reason below; each counts once here.
     pub reject_dampened: u64,
-    /// Rejects that would change nothing: no route, a direct one, the state
-    /// already in effect, or a reason other than 1 and 2. A repeat Busy
-    /// never extends its deadline.
+    /// Rejects that would change nothing: no route, a direct one, or the
+    /// state already in effect. A repeat Busy never extends its deadline.
     pub reject_dampened_same_state: u64,
     /// State-changing rejects ignored within the hold-down.
     pub reject_dampened_hold_down: u64,
+    /// Rejects for a learned route with a reason other than 1 or 2, which
+    /// leave it as it is (fix R2); the router before it removed the route.
+    pub reject_kept: u64,
     /// Learning claims that added or refreshed a learned route.
     pub learned_ok: u64,
     /// Learning claims that met the router's route cap and ended the
@@ -298,6 +300,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
                 reject_dampened: 0,
                 reject_dampened_same_state: 0,
                 reject_dampened_hold_down: 0,
+                reject_kept: 0,
                 learned_ok: 0,
                 learned_cap_ignored: 0,
                 flap_warned: 0,

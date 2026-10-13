@@ -129,6 +129,35 @@ fn hop_count_reaching_zero_is_not_relayed() {
     assert_eq!(router.counters().hop_count_drops, 2);
 }
 
+/// R6 holds for network messages too: one routed toward the next router
+/// (an I-Am-Router for network 9, and a reject passed on toward a node
+/// behind R7) that arrives with a hop count of 1 goes nowhere, counted, as
+/// an APDU does. Each still does what it does at the router: the reject
+/// marks 9 unreachable before it is passed on.
+#[test]
+fn hop_count_reaching_zero_stops_routed_network_messages() {
+    let mut router = router_with(&two_ports(), options(|o| o.fixes = Fixes::ALL));
+    let mut host = Recorder::default();
+    learn_9_via_r7(&mut router, at(0));
+    let mut i_am = Npdu::message(code::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
+    i_am.destination = Some(addr(9, &[5]));
+    let data = [reason::NOT_DIRECTLY_CONNECTED, 0, 9];
+    let mut reject = Npdu::message(code::REJECT_MESSAGE_TO_NETWORK, &data);
+    reject.destination = Some(addr(9, &[5]));
+    for mut message in [i_am, reject] {
+        message.hop_count = 1;
+        let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&message), at(1));
+        assert_eq!(outcome, Outcome::Dropped(DropReason::HopCount));
+        assert!(sent.is_empty());
+        message.hop_count = 2;
+        let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&message), at(1));
+        assert_eq!((sent.len(), sent[0].to.as_deref()), (1, Some(R7)));
+        assert_eq!(sent[0].parsed().hop_count, 1);
+    }
+    assert_eq!(router.counters().hop_count_drops, 2);
+    assert!(router.table().lookup(44).is_none(), "routed, not learned");
+}
+
 /// Before R6, the hosted router let one that arrived with 1 leave with 0
 /// (router/forwarding.rs:28-31, 51), for the next router to drop.
 #[test]
@@ -354,6 +383,59 @@ fn too_long_for_the_egress_port_draws_reason_4() {
     assert_eq!(ports, [2]);
     assert_eq!(router.counters().egress_too_long, 4);
     assert_eq!(router.counters().rejects, 3);
+}
+
+/// A fan-out goes by each port's broadcast limit, not its unicast one: a
+/// global broadcast of 520 octets once rewritten skips port 1, which takes
+/// 600 to one node but 501 to all, and reaches port 2, with no reject. A
+/// unicast of the same length onto network 2 goes. The host hears of the
+/// skip and of a reject alike.
+#[test]
+fn a_fan_out_goes_by_the_broadcast_limit() {
+    let mut ports = [port_on(1, OWN_0), port_on(2, OWN_1), port_on(3, &[0x33])];
+    ports[1].max_npdu = Limits {
+        unicast: 600,
+        broadcast: 501,
+    };
+    let mut router = router_with(&ports, options(|o| o.fixes = Fixes::ALL));
+    let mut host = Recorder::default();
+    // 511 octets in, plus SNET, SLEN and A's 6-octet SADR: 520.
+    let mut global = Npdu::apdu(&[0x10; 505]);
+    global.destination = Some(addr(0xFFFF, &[]));
+    assert_eq!(bytes(&global).len(), 511);
+    let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&global), at(1));
+    assert!(matches!(outcome, Outcome::Local { global: true, .. }));
+    let egress: Vec<(u8, usize)> = sent.iter().map(|s| (s.port, s.npdu.len())).collect();
+    assert_eq!(egress, [(2, 520)]);
+    let skipped = Event::TooLong {
+        port: PortId(1),
+        octets: 520,
+        limit: 501,
+        rejected: None,
+    };
+    assert_eq!(host.events, [skipped]);
+    assert_eq!(router.counters().egress_too_long, 1);
+    assert_eq!(router.counters().rejects, 0);
+
+    // 516 octets in grow by 4 to 520, within the unicast limit; 597 grow
+    // to 601, past it, and draw reason 4.
+    let to_2 = |len: usize| {
+        let mut npdu = Npdu::apdu(&[0u8; 1497][..len - 7]);
+        npdu.destination = Some(addr(2, &[5]));
+        bytes(&npdu)
+    };
+    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &to_2(516), at(1));
+    assert_eq!((sent[0].port, sent[0].npdu.len()), (1, 520));
+    host.events.clear();
+    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &to_2(597), at(1));
+    assert_eq!(sent_reject(&sent[0]), (reason::MESSAGE_TOO_LONG, 2, None));
+    let refused = Event::TooLong {
+        port: PortId(1),
+        octets: 601,
+        limit: 600,
+        rejected: Some(2),
+    };
+    assert_eq!(host.events, [refused]);
 }
 
 /// Before R1, the scratch was the only bound: with it off, a rewrite past

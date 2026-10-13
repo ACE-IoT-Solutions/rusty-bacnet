@@ -170,8 +170,12 @@ async fn r2_a_reason_4_reject_is_passed_on_and_keeps_the_route() {
     assert_eq!(h.table().lookup(3000), before);
     let counters = h.table().claim_counters();
     assert_eq!(
-        (counters.reject_applied, counters.reject_dampened_same_state),
-        (0, 1)
+        (
+            counters.reject_applied,
+            counters.reject_dampened,
+            counters.reject_kept
+        ),
+        (0, 0, 1)
     );
 }
 
@@ -302,4 +306,28 @@ async fn r7_an_apdu_for_the_routers_address_on_another_port_is_local() {
     assert_eq!(delivered.source_mac.as_slice(), SENDER);
     assert!(delivered.source_network.is_none());
     assert!(!delivered.is_group && !delivered.global_broadcast);
+}
+
+/// R7 matches network and MAC together: a request for network 3000, behind
+/// the router at [9] on port 1, whose DADR happens to equal one of the
+/// router's own MACs ([1] or [2]) names another node there, so it is routed
+/// on to [9] with its DADR, and nothing is delivered here.
+#[tokio::test]
+async fn r7_the_routers_mac_on_a_remote_network_is_routed_on() {
+    use super::envelope_harness::PORT_MACS;
+    let mut h = Harness::two_port();
+    h.learned(3000, 1, &[9]);
+    for mac in PORT_MACS {
+        h.dispatch(h.ctx(0, &SENDER, npdu_of(20, 3000, &[mac])))
+            .await;
+        let sent = h.drain(1);
+        let [SendRequest::Unicast { npdu, mac: to, .. }] = &sent[..] else {
+            panic!("expected the request routed on port 1, got {sent:?}");
+        };
+        assert_eq!(to.as_slice(), [9]);
+        let npdu = decode_npdu(npdu.clone()).unwrap();
+        assert_eq!(npdu.destination, Some(address(3000, &[mac])));
+        h.assert_quiet();
+        assert!(h.apdus.try_recv().is_err(), "not delivered here");
+    }
 }

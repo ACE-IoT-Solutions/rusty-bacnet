@@ -95,12 +95,19 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         };
         if options.fixes.egress_limits {
             let limit = limits.get(to.is_empty());
-            if rewritten.encoded_len() > limit {
+            let octets = rewritten.encoded_len();
+            if octets > limit {
                 bump(&mut self.counters.egress_too_long);
                 // A route is found by DNET, so there is one to name.
                 let dnet = npdu
                     .destination
                     .map_or(0, |destination| destination.network);
+                host.observe(Event::TooLong {
+                    port: route.port,
+                    octets,
+                    limit,
+                    rejected: Some(dnet),
+                });
                 self.reject(at, npdu.source, dnet, reason::MESSAGE_TOO_LONG, host);
                 return Received::Handled;
             }
@@ -135,6 +142,6 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             hop_count: npdu.hop_count - 1,
             ..*npdu
         };
-        self.write_now(&rewritten, Kind::Global, Target::AllBut(at.port));
+        self.write_fan_out(&rewritten, Kind::Global, at.port, options, host);
     }
 }
