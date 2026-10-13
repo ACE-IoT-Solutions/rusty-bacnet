@@ -48,8 +48,6 @@ checks=(
   "bacnet-mstp-codec crc32k-table"
   "bacnet-mstp-core -"
   "bacnet-mstp-core alloc"
-  "bacnet-mstp-core heapless"
-  "bacnet-mstp-core alloc,heapless"
   "bacnet-bip-codec -"
   "bacnet-bip-codec alloc"
   "bacnet-bip-codec heapless"

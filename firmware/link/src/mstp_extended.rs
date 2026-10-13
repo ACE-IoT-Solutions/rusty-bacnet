@@ -24,10 +24,11 @@
 //! [`Memory`] holds only what the core borrows, so the image's `.bss` is
 //! the core's storage. The scenario's own buffers, for the NPDUs and the
 //! frames it builds or checks, live on the stack of functions kept out of
-//! line, and only while those run: none is live under the core's deepest
-//! call, the send that copies a queued NPDU out, so the stack peak is the
-//! core's. On the 16 KiB boards of the emulation check, what RAM the
-//! storage leaves is the stack's.
+//! line, and only while those run. The core sends a queued NPDU from the
+//! queue's slot, with nothing NPDU-sized on its stack (#1691), so the stack
+//! peaks while the core takes in the peer's reply, with the scenario's
+//! buffers for it live. On the 16 KiB boards of the emulation check, what
+//! RAM the storage leaves is the stack's.
 //!
 //! `tests/mstp_extended.rs` runs it natively and compares the whole summary
 //! with [`EXPECTED`]; the `mstp-extended` image

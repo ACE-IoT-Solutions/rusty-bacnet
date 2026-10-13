@@ -2,8 +2,6 @@
 //! run out of room, a transmit is polled before it starts, and only
 //! deliveries can be dropped, counted, when the adapter falls behind.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};

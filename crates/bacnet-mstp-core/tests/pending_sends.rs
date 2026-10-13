@@ -2,8 +2,6 @@
 //! of the table in the core's `pending` module. Line activity only delays
 //! it; the evidence its sending state watches for, or its limit, drops it.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};

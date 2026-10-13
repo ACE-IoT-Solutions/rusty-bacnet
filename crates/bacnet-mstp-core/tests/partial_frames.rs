@@ -5,8 +5,6 @@
 //! core drops it then, counted as a frame abort. Its T_frame_abort must not
 //! fire later, during or after the station's own frame, as an invalid frame.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::FrameType;

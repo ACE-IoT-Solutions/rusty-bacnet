@@ -124,16 +124,28 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         origin: Origin,
         now: Instant,
     ) -> Result<(), CoreError> {
-        debug_assert!(
-            self.pending_send.is_none() && self.active_transmit.is_none(),
-            "a second frame of this station's"
-        );
         self.actions.encode_frame(Frame::new(
             frame_type,
             destination,
             self.config.station,
             data,
         ))?;
+        self.send_encoded(post, origin, now)
+    }
+
+    /// Send the frame just encoded into the action buffers' frame buffer, as
+    /// [`Self::queue_frame`] does. A queued NPDU is encoded where the queue
+    /// lends it, so its frame comes here directly.
+    pub(super) fn send_encoded(
+        &mut self,
+        post: PostTransmit,
+        origin: Origin,
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        debug_assert!(
+            self.pending_send.is_none() && self.active_transmit.is_none(),
+            "a second frame of this station's"
+        );
         let limit = match origin {
             Origin::Answer(window) => window.give_up,
             Origin::Holder | Origin::NextPoll | Origin::NoToken => now + self.config.t_no_token,

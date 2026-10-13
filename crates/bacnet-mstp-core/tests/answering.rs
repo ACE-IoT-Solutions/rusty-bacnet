@@ -1,8 +1,6 @@
 //! Frames that arrive while this station answers a request (Clauses 9.5.6.2
 //! and 9.5.6.9), and the reply window under steady line activity.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState, MstpCoreConfig,

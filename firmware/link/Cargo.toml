@@ -99,13 +99,13 @@ board-netduinoplus2 = ["emulate"]
 # QEMU's SiFive E board, an E31 core (RV32IMAC): riscv32imc-unknown-none-elf.
 board-sifive-e = ["emulate"]
 
-# Default features, so no allocator, plus each crate's heapless storage: the
-# MS/TP core's queues and the BVLL codec's sink. bacnet-bip-core has no
-# features. The alloc stack is `no_std` with `alloc`, as the libraries
+# Default features, so no allocator, plus the BVLL codec's heapless sink.
+# The MS/TP core's HeaplessQueues need no feature, and bacnet-bip-core has
+# none. The alloc stack is `no_std` with `alloc`, as the libraries
 # document.
 [dependencies]
 bacnet-mstp-codec = { workspace = true }
-bacnet-mstp-core = { workspace = true, features = ["heapless"] }
+bacnet-mstp-core = { workspace = true }
 bacnet-bip-codec = { workspace = true, features = ["heapless"] }
 bacnet-bip-core = { workspace = true }
 heapless = { workspace = true }

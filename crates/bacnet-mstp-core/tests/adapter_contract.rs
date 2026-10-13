@@ -1,8 +1,6 @@
 //! The adapter's side of the transmit contract, and the receive storage the
 //! core needs.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{Frame, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, HeaplessQueues, Instant, MasterCore, MasterState, MstpCoreConfig,

@@ -4,8 +4,6 @@
 //! 9.3.9, 9.3.10, 9.5.4.9, 9.5.6). The flag-off path is the rest of the
 //! suite, unchanged.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{
     crc8, decode_frame_in_place, Frame, FrameType, BROADCAST_MAC, MAX_COBS_FRAME_LENGTH,
     MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH,
@@ -306,13 +304,13 @@ impl QueueStorage for Unsized {
         self.0.peek_kind(kind, now)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
         now: Instant,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        self.0.dequeue_kind_into(kind, now, scratch)
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+        self.0.dequeue_kind(kind, now, max_len)
     }
 
     fn depth(&self, kind: QueueKind) -> usize {
