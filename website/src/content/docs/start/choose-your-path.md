@@ -27,7 +27,7 @@ Choose Python for scripts, data collection, integration prototypes, or a small t
 
 ## Embed with Rust
 
-Choose Rust when BACnet belongs inside your application. The workspace has separate crates for clients, servers, types, encoding, services, transports, networking, and objects. You do not need every crate for a property read.
+Choose Rust when BACnet belongs inside your application. The workspace has separate crates for clients, servers, types, encoding, services, transports, networking, objects and shared endpoints, plus `no_std` codecs and cores (MS/TP, BACnet/IP and a router) for firmware. You do not need every crate for a property read.
 
 [Start with the Rust client](/rusty-bacnet/start/rust/). The reviewed release declares Rust 1.93 as its minimum; this documentation project does not raise the library's minimum Rust version.
 
