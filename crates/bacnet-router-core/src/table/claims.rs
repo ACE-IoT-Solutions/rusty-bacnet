@@ -215,21 +215,21 @@ impl<const R: usize, const H: usize> Table<R, H> {
         }
     }
 
-    // PR 2: the router engine records these three itself; once its API is
-    // in, they may narrow to the crate.
+    // The router engine counts these three itself. They are the crate's
+    // own, so a caller with `Router::table_mut` can't skew the counts.
 
     /// Count a learning claim the router applied.
-    pub fn record_learned(&mut self) {
+    pub(crate) fn record_learned(&mut self) {
         self.counters.learned_ok = self.counters.learned_ok.saturating_add(1);
     }
 
     /// Count a learning claim that met the router's route cap.
-    pub fn record_learning_cap(&mut self) {
+    pub(crate) fn record_learning_cap(&mut self) {
         self.counters.learned_cap_ignored = self.counters.learned_cap_ignored.saturating_add(1);
     }
 
     /// Count a Disconnect-Connection removal the router ignored.
-    pub fn record_disconnect_removal_ignored(&mut self) {
+    pub(crate) fn record_disconnect_removal_ignored(&mut self) {
         self.counters.disconnect_removal_ignored =
             self.counters.disconnect_removal_ignored.saturating_add(1);
     }

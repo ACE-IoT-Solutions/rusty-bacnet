@@ -60,19 +60,6 @@ pub fn learned_hardened() -> Hosted {
     table
 }
 
-/// How many hold-down records the table keeps for `network`.
-pub fn holds_for(table: &Hosted, network: u16) -> usize {
-    table.holds().filter(|hold| hold.network == network).count()
-}
-
-/// How many networks have hold-down records.
-pub fn held_networks(table: &Hosted) -> usize {
-    let mut networks: Vec<u16> = table.holds().map(|hold| hold.network).collect();
-    networks.sort_unstable();
-    networks.dedup();
-    networks.len()
-}
-
 /// Every network [`Table::purge_stale`] removes, in its order.
 pub fn purge(table: &mut Hosted, now: Instant, max_age: Duration) -> Vec<u16> {
     let mut purged = Vec::new();

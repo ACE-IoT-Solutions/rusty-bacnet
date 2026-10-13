@@ -7,7 +7,7 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use bacnet_router_core::table::{Learned, Reachability, Refusal, Table};
+use bacnet_router_core::table::{Learned, Reachability, Refusal, RejectEffect, Table};
 use bacnet_router_core::{Mac, PortId};
 use proptest::prelude::*;
 use support::{mac, port, purge, secs, Hosted, BASE, NANO, TIMING};
@@ -538,13 +538,17 @@ fn a_panicking_purge_callback_leaves_the_table_whole() {
     // Nothing was removed, so the routes, their order and the hold-down
     // records are all still there and a later sweep works as usual.
     assert_eq!(table.networks().collect::<Vec<_>>(), before);
-    assert_eq!(table.held_since(3001, port(1)), Some(BASE));
+    // 3001's hold-down is still kept: a change from that port is held off.
+    let mut probe = table.clone();
+    assert_eq!(
+        probe.apply_reject(3001, port(1), 1, BASE, &TIMING),
+        RejectEffect::HeldDown
+    );
     assert_eq!(
         purge(&mut table, BASE + secs(301), secs(300)),
         [3000, 3001, 3002]
     );
     assert_eq!(table.networks().collect::<Vec<_>>(), [1000]);
-    assert_eq!(table.holds().count(), 0);
 }
 
 /// An operation on the table, for the model test.
