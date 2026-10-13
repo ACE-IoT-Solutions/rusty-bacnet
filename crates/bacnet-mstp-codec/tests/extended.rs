@@ -15,8 +15,8 @@ use proptest::prelude::*;
 /// 9.6.3). The register is the complement of what `crc32k` returns.
 const CRC32K_RESIDUAL: u32 = 0x0843_323B;
 
-const EXPECTING: FrameType = FrameType::BACnetExtendedDataExpectingReply;
-const NOT_EXPECTING: FrameType = FrameType::BACnetExtendedDataNotExpectingReply;
+const EXPECTING: FrameType = FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY;
+const NOT_EXPECTING: FrameType = FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY;
 
 fn encode(frame: Frame<'_>) -> Vec<u8> {
     let mut wire = vec![0u8; MAX_COBS_FRAME_LENGTH];

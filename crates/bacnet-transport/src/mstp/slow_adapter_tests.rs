@@ -125,9 +125,9 @@ fn the_timeouts_are_held_to_clause_9_5_3() {
 async fn a_successor_heard_late_through_the_adapter_still_has_the_token() {
     let mut bus = Bus::start(config(3, 4)).await;
     let token = bus.join(4).await;
-    let heard = late(&bus, &token, T_USAGE_DELAY, FrameType::Token, 4, &[]).await;
+    let heard = late(&bus, &token, T_USAGE_DELAY, FrameType::TOKEN, 4, &[]).await;
     let next = bus.next().await;
-    assert_eq!((next.frame_type, next.destination), (FrameType::Token, 4));
+    assert_eq!((next.frame_type, next.destination), (FrameType::TOKEN, 4));
     assert!(
         next.start >= heard + bus.turnaround,
         "sent before it heard the successor: {next:?}"
@@ -139,9 +139,9 @@ async fn a_successor_heard_late_through_the_adapter_still_has_the_token() {
 
     let mut bus = Bus::start(shortest(config(3, 4))).await;
     let token = bus.join(4).await;
-    let heard = late(&bus, &token, T_USAGE_DELAY, FrameType::Token, 4, &[]).await;
+    let heard = late(&bus, &token, T_USAGE_DELAY, FrameType::TOKEN, 4, &[]).await;
     let retry = bus.next().await;
-    assert_eq!((retry.frame_type, retry.destination), (FrameType::Token, 4));
+    assert_eq!((retry.frame_type, retry.destination), (FrameType::TOKEN, 4));
     assert!(
         retry.start >= token.end + SHORTEST_USAGE_TIMEOUT,
         "{retry:?}"
@@ -163,17 +163,17 @@ async fn a_poll_answered_late_through_the_adapter_finds_the_successor() {
             config = shortest(config);
         }
         let mut bus = Bus::start(config).await;
-        bus.send(FrameType::Token, 3, 6, &[]);
+        bus.send(FrameType::TOKEN, 3, 6, &[]);
         let poll = bus.next().await;
         assert_eq!(
             (poll.frame_type, poll.destination),
-            (FrameType::PollForMaster, 4)
+            (FrameType::POLL_FOR_MASTER, 4)
         );
         let heard = late(
             &bus,
             &poll,
             T_USAGE_DELAY,
-            FrameType::ReplyToPollForMaster,
+            FrameType::REPLY_TO_POLL_FOR_MASTER,
             4,
             &[],
         )
@@ -182,7 +182,7 @@ async fn a_poll_answered_late_through_the_adapter_finds_the_successor() {
         if shortest_timeouts {
             assert_eq!(
                 (next.frame_type, next.destination),
-                (FrameType::PollForMaster, 5),
+                (FrameType::POLL_FOR_MASTER, 5),
                 "{next:?}"
             );
             assert!(next.start >= poll.end + SHORTEST_USAGE_TIMEOUT, "{next:?}");
@@ -190,7 +190,7 @@ async fn a_poll_answered_late_through_the_adapter_finds_the_successor() {
         } else {
             assert_eq!(
                 (next.frame_type, next.destination),
-                (FrameType::Token, 4),
+                (FrameType::TOKEN, 4),
                 "{next:?}"
             );
             assert!(next.start >= heard + bus.turnaround, "{next:?}");
@@ -220,19 +220,19 @@ async fn a_reply_heard_late_through_the_adapter_is_taken() {
             .unwrap();
         bus.return_token(&token, 4).await;
         let request = bus.next().await;
-        assert_eq!(request.frame_type, FrameType::BACnetDataExpectingReply);
+        assert_eq!(request.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
         let answer = [1, 0, 0x22];
         let heard = late(
             &bus,
             &request,
             T_REPLY_DELAY,
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             4,
             &answer,
         )
         .await;
         let pass = bus.next().await;
-        assert_eq!((pass.frame_type, pass.destination), (FrameType::Token, 4));
+        assert_eq!((pass.frame_type, pass.destination), (FrameType::TOKEN, 4));
         let counts = bus.transport.diagnostics().snapshot();
         if shortest_timeouts {
             assert!(

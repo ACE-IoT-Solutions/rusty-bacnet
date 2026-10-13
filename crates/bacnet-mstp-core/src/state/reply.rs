@@ -88,11 +88,11 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 });
             }
             ReplyDecision::Data(data) if data.len() > MAX_STANDARD_MPDU_DATA => {
-                (FrameType::BACnetExtendedDataNotExpectingReply, data)
+                (FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY, data)
             }
-            ReplyDecision::Data(data) => (FrameType::BACnetDataNotExpectingReply, data),
+            ReplyDecision::Data(data) => (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, data),
             ReplyDecision::Postponed | ReplyDecision::Cancelled => {
-                (FrameType::ReplyPostponed, &[][..])
+                (FrameType::REPLY_POSTPONED, &[][..])
             }
             ReplyDecision::Abandoned => {
                 self.pending_request = None;

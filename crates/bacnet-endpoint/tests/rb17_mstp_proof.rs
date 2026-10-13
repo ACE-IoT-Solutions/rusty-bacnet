@@ -122,10 +122,10 @@ async fn prompt_reply_impl(mode: MstpExecutionMode, frames: Frames) {
     let mut saw_postponed = false;
     let reply = h
         .wait_for("prompt ComplexAck", |f| {
-            if f.frame_type == FrameType::ReplyPostponed {
+            if f.frame_type == FrameType::REPLY_POSTPONED {
                 saw_postponed = true;
             }
-            f.frame_type == FrameType::BACnetDataNotExpectingReply && f.destination == PEER_MAC
+            f.frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY && f.destination == PEER_MAC
         })
         .await;
     assert!(
@@ -168,7 +168,7 @@ async fn bidirectional_impl(mode: MstpExecutionMode, frames: Frames) {
     h.peer_send(&data_expecting(1, 21)).await;
     let inbound_reply = h
         .wait_for("inbound ComplexAck", |f| {
-            f.frame_type == FrameType::BACnetDataNotExpectingReply && f.destination == PEER_MAC
+            f.frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY && f.destination == PEER_MAC
         })
         .await;
     expect_present_value(&inbound_reply, 21, 11.0);
@@ -188,7 +188,7 @@ async fn bidirectional_impl(mode: MstpExecutionMode, frames: Frames) {
     });
     let request = h
         .drive_token_until_data("outbound DataExpectingReply", |f| {
-            f.frame_type == FrameType::BACnetDataExpectingReply && f.destination == PEER_MAC
+            f.frame_type == FrameType::BACNET_DATA_EXPECTING_REPLY && f.destination == PEER_MAC
         })
         .await;
     // Wire asserts: NPDU expects a reply; the client advertises the composed
@@ -209,7 +209,7 @@ async fn bidirectional_impl(mode: MstpExecutionMode, frames: Frames) {
     };
     // Peer answers with the echoed invoke ID; the client future completes.
     h.peer_send(&MstpFrame {
-        frame_type: FrameType::BACnetDataNotExpectingReply,
+        frame_type: FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         destination: SESSION_MAC,
         source: PEER_MAC,
         data: complex_ack_npdu(outbound_iid, 22.0),
@@ -256,7 +256,7 @@ async fn deferred_impl(mode: MstpExecutionMode, frames: Frames) {
     // The MAC releases ReplyPostponed once dispatch drops the prompt sender.
     let postponed = h
         .wait_for("ReplyPostponed", |f| {
-            f.frame_type == FrameType::ReplyPostponed && f.destination == PEER_MAC
+            f.frame_type == FrameType::REPLY_POSTPONED && f.destination == PEER_MAC
         })
         .await;
     assert_eq!(postponed.destination, PEER_MAC);
@@ -264,7 +264,7 @@ async fn deferred_impl(mode: MstpExecutionMode, frames: Frames) {
     // postponed identity (same destination + invoke ID + value).
     let late = h
         .drive_token_until_data("deferred ComplexAck", |f| {
-            f.frame_type == FrameType::BACnetDataNotExpectingReply && f.destination == PEER_MAC
+            f.frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY && f.destination == PEER_MAC
         })
         .await;
     expect_present_value(&late, 33, 11.0);

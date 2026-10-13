@@ -29,7 +29,7 @@ pub struct Hold {
 pub fn token_passes(frames: &[WireFrame]) -> Vec<(Instant, u8, u8)> {
     frames
         .iter()
-        .filter(|frame| frame.is_clean() && frame.frame_type() == Some(FrameType::Token))
+        .filter(|frame| frame.is_clean() && frame.frame_type() == Some(FrameType::TOKEN))
         .filter_map(|frame| Some((frame.start, frame.source()?, frame.destination()?)))
         .collect()
 }
@@ -42,7 +42,7 @@ pub fn token_users(frames: &[WireFrame], since: Instant) -> BTreeSet<u8> {
     frames
         .windows(2)
         .filter(|pair| pair[0].start >= since && pair[0].is_clean())
-        .filter(|pair| pair[0].frame_type() == Some(FrameType::Token))
+        .filter(|pair| pair[0].frame_type() == Some(FrameType::TOKEN))
         .filter_map(|pair| {
             let to = pair[0].destination()?;
             (pair[1].driver == Driver::Station(to)).then_some(to)
@@ -61,7 +61,7 @@ pub fn holds(frames: &[WireFrame], station: u8) -> Vec<Hold> {
             continue;
         };
         let ours = frame.driver == Driver::Station(station);
-        if header.frame_type == FrameType::Token && header.destination == station {
+        if header.frame_type == FrameType::TOKEN && header.destination == station {
             if let Some(open) = current.take() {
                 holds.push(open);
             }
@@ -89,20 +89,17 @@ pub fn holds(frames: &[WireFrame], station: u8) -> Vec<Hold> {
             continue;
         };
         match header.frame_type {
-            FrameType::Token => {
+            FrameType::TOKEN => {
                 hold.passed_to = Some(header.destination);
                 holds.extend(current.take());
             }
-            FrameType::PollForMaster => hold.polls += 1,
-            FrameType::BACnetDataExpectingReply
-            | FrameType::BACnetDataNotExpectingReply
-            | FrameType::BACnetExtendedDataExpectingReply
-            | FrameType::BACnetExtendedDataNotExpectingReply
-            | FrameType::TestRequest
-            | FrameType::Unknown(_) => hold.info_frames += 1,
-            FrameType::ReplyToPollForMaster
-            | FrameType::TestResponse
-            | FrameType::ReplyPostponed => {}
+            FrameType::POLL_FOR_MASTER => hold.polls += 1,
+            FrameType::REPLY_TO_POLL_FOR_MASTER
+            | FrameType::TEST_RESPONSE
+            | FrameType::REPLY_POSTPONED => {}
+            // The data types, Test_Request, and every type no constant
+            // names: reserved and proprietary.
+            _ => hold.info_frames += 1,
         }
     }
     holds.extend(current);

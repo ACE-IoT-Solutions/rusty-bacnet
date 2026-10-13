@@ -128,7 +128,7 @@ pub fn is(header: FrameHeader, kind: FrameType, destination: u8) -> bool {
 /// successor, so it polls station 2; returns with that poll waiting out its
 /// turnaround.
 pub fn poll_waiting(core: &mut Core<'_>) {
-    validated(core, FrameType::Token, STATION, PEER, &[], ms(10));
+    validated(core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert_eq!(core.next_deadline(), Some(ms(10) + turnaround(core)));
 }
@@ -139,11 +139,11 @@ pub fn poll_waiting(core: &mut Core<'_>) {
 pub fn pass_waiting(core: &mut Core<'_>) -> Instant {
     poll_waiting(core);
     let (_, header) = send_next(core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     let answered = core.next_deadline().unwrap() - Duration::from_millis(15);
     validated(
         core,
-        FrameType::ReplyToPollForMaster,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
         STATION,
         PEER,
         &[],
@@ -159,11 +159,11 @@ pub fn pass_waiting(core: &mut Core<'_>) -> Instant {
 pub fn retry_handed_over(core: &mut Core<'_>) -> (Instant, TransmitId) {
     pass_waiting(core);
     let (_, header) = send_next(core);
-    assert!(is(header, FrameType::Token, PEER));
+    assert!(is(header, FrameType::TOKEN, PEER));
     let timeout = core.next_deadline().unwrap();
     core.on_deadline(timeout).unwrap();
     let (id, header) = handed_over(core);
-    assert!(is(header, FrameType::Token, PEER));
+    assert!(is(header, FrameType::TOKEN, PEER));
     assert_eq!(core.counters().token_retries, 1);
     (timeout, id)
 }
@@ -175,7 +175,7 @@ pub fn generation_handed_over(core: &mut Core<'_>) -> TransmitId {
     assert_eq!(core.state(), MasterState::NoToken);
     core.on_deadline(ms(510)).unwrap();
     let (id, header) = handed_over(core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     assert_eq!(core.counters().token_regenerations, 1);
     id
 }
@@ -196,11 +196,11 @@ pub fn maintenance_poll_sent(core: &mut Core<'_>) {
     let timeout = core.next_deadline().unwrap();
     core.on_deadline(timeout).unwrap();
     let header = send(core, timeout);
-    assert!(is(header, FrameType::PollForMaster, 3));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, 3));
     let answered = timeout + Duration::from_millis(5);
     validated(
         core,
-        FrameType::ReplyToPollForMaster,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
         STATION,
         3,
         &[],
@@ -208,22 +208,22 @@ pub fn maintenance_poll_sent(core: &mut Core<'_>) {
     );
     for _ in 0..=50 {
         let (passed, header) = send_next(core);
-        assert!(is(header, FrameType::Token, 3));
+        assert!(is(header, FrameType::TOKEN, 3));
         // Station 3 uses the token, then passes it back.
         let used = passed + Duration::from_millis(3);
         validated(
             core,
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             0,
             3,
             &[1, 0, 7],
             used,
         );
         let back = used + Duration::from_millis(2);
-        validated(core, FrameType::Token, STATION, 3, &[], back);
+        validated(core, FrameType::TOKEN, STATION, 3, &[], back);
         if core.state() == MasterState::PollForMaster {
             let (_, header) = send_next(core);
-            assert!(is(header, FrameType::PollForMaster, PEER));
+            assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
             return;
         }
     }
@@ -235,9 +235,9 @@ pub fn maintenance_poll_sent(core: &mut Core<'_>) {
 /// waiting for the reply.
 pub fn waiting_for_reply(core: &mut Core<'_>) -> Instant {
     enqueue(core, true, ms(0));
-    validated(core, FrameType::Token, STATION, PEER, &[], ms(10));
+    validated(core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
     let (due, header) = send_next(core);
-    assert!(is(header, FrameType::BACnetDataExpectingReply, PEER));
+    assert!(is(header, FrameType::BACNET_DATA_EXPECTING_REPLY, PEER));
     assert_eq!(core.state(), MasterState::WaitForReply);
     due + Duration::from_millis(1)
 }
@@ -245,7 +245,7 @@ pub fn waiting_for_reply(core: &mut Core<'_>) -> Instant {
 /// The eight octets of a header whose CRC is wrong. A station's own
 /// decoder counts it invalid at the last one, wherever it was going.
 pub fn bad_header() -> Vec<u8> {
-    let mut wire = encode(FrameType::BACnetDataNotExpectingReply, 3, PEER, &[1, 2]);
+    let mut wire = encode(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 3, PEER, &[1, 2]);
     wire.truncate(8);
     wire[7] ^= 0x01;
     wire

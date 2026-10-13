@@ -232,13 +232,17 @@ impl Peer {
         self.serial.write(&wire).await
     }
     pub async fn control(&self, destination: u8, data: &[u8]) {
-        bounded(self.frame(FrameType::BACnetDataNotExpectingReply, destination, data))
-            .await
-            .unwrap();
+        bounded(self.frame(
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+            destination,
+            data,
+        ))
+        .await
+        .unwrap();
     }
     pub async fn number(&mut self, number: u16) {
         let frame = self.data().await;
-        assert_eq!(frame.frame_type, FrameType::BACnetDataNotExpectingReply);
+        assert_eq!(frame.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
         assert_eq!(frame.destination, BROADCAST);
         assert_eq!(
             frame.data.as_ref(),
@@ -252,22 +256,22 @@ impl Peer {
     /// be an unexpected frame there (Clause 9.5.6.8) and cost the token.
     pub async fn data(&mut self) -> MstpFrame {
         bounded(async {
-            self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+            self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
             loop {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::BACnetDataNotExpectingReply
-                    | FrameType::BACnetDataExpectingReply => return frame,
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                    | FrameType::BACNET_DATA_EXPECTING_REPLY => return frame,
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::TOKEN if frame.destination == PEER => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
-                    FrameType::PollForMaster | FrameType::ReplyPostponed => {}
+                    FrameType::POLL_FOR_MASTER | FrameType::REPLY_POSTPONED => {}
                     other => panic!("unexpected frame {other:?}"),
                 }
             }
@@ -283,12 +287,12 @@ impl Peer {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => return,
+                    FrameType::TOKEN if frame.destination == PEER => return,
                     _ => {}
                 }
             }
@@ -305,17 +309,17 @@ impl Peer {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::BACnetDataNotExpectingReply => return frame,
-                    FrameType::ReplyPostponed => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY => return frame,
+                    FrameType::REPLY_POSTPONED => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::TOKEN if frame.destination == PEER => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
                     _ => {}
                 }
@@ -330,7 +334,7 @@ impl Peer {
             .unwrap()
             .forget();
         assert!(
-            bounded(self.frame(FrameType::Token, NODE, &[]))
+            bounded(self.frame(FrameType::TOKEN, NODE, &[]))
                 .await
                 .is_err(),
             "no receive owner after stop/drop"

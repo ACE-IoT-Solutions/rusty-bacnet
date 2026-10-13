@@ -155,9 +155,9 @@ fn is_answer(octets: &[u8]) -> bool {
     decode_whole(octets).is_some_and(|(header, _)| {
         matches!(
             header.frame_type,
-            FrameType::BACnetDataNotExpectingReply
-                | FrameType::BACnetExtendedDataNotExpectingReply
-                | FrameType::ReplyPostponed
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
+                | FrameType::REPLY_POSTPONED
         )
     })
 }

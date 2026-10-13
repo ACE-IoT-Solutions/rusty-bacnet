@@ -16,7 +16,7 @@ const REQUEST: &[u8] = &[1, 0x04, 0x10];
 
 /// Station 7 asks station 3 for a reply.
 async fn requested(bus: &mut Bus) -> (Instant, tokio::sync::oneshot::Sender<Bytes>) {
-    let at = bus.send(FrameType::BACnetDataExpectingReply, 3, 7, REQUEST);
+    let at = bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 7, REQUEST);
     let npdu = bus.npdus.recv().await.unwrap();
     assert_eq!(npdu.npdu.as_ref(), REQUEST);
     assert!(!npdu.link_layer_group);
@@ -42,10 +42,10 @@ async fn a_ready_answer_or_a_dropped_channel_goes_out_after_turnaround() {
         let sent = bus.next().await;
         assert_eq!(sent.destination, 7);
         if ready {
-            assert_eq!(sent.frame_type, FrameType::BACnetDataNotExpectingReply);
+            assert_eq!(sent.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
             assert_eq!(sent.data, [1, 0, 0x30]);
         } else {
-            assert_eq!(sent.frame_type, FrameType::ReplyPostponed);
+            assert_eq!(sent.frame_type, FrameType::REPLY_POSTPONED);
         }
         assert!(sent.start >= at + bus.turnaround);
         assert!(sent.start <= at + bus.turnaround + TICK);
@@ -62,7 +62,7 @@ async fn a_later_answer_is_not_held_for_another_turnaround() {
     let ready = Instant::now();
     reply.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
     let sent = bus.next().await;
-    assert_eq!(sent.frame_type, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(sent.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
     assert!(sent.start <= ready + TICK);
     bus.until(sent.end + TICK).await;
     let counts = bus.transport.diagnostics().snapshot();
@@ -80,7 +80,7 @@ async fn no_answer_gets_reply_postponed_before_the_reply_delay() {
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
     assert!(sent.start >= at + DECISION);
     assert!(sent.start <= at + DECISION + TICK);
@@ -98,11 +98,11 @@ async fn a_second_request_does_not_extend_the_first_ones_deadline() {
     let mut bus = Bus::start(config(3, 127)).await;
     let (at, _reply) = requested(&mut bus).await;
     bus.until(at + Duration::from_millis(100)).await;
-    bus.send(FrameType::BACnetDataExpectingReply, 3, 8, &[1, 4, 0x20]);
+    bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 8, &[1, 4, 0x20]);
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
     assert!(sent.start <= at + DECISION + TICK);
     assert!(bus.npdus.try_recv().is_err(), "the second request went up");
@@ -118,10 +118,15 @@ async fn later_traffic_moves_the_answers_turnaround() {
     let mut bus = Bus::start(config(3, 127)).await;
     let (at, reply) = requested(&mut bus).await;
     bus.until(at + Duration::from_millis(40)).await;
-    let heard = bus.send(FrameType::BACnetDataNotExpectingReply, 9, 8, &[1, 0, 0x20]);
+    let heard = bus.send(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        9,
+        8,
+        &[1, 0, 0x20],
+    );
     reply.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
     let sent = bus.next().await;
-    assert_eq!(sent.frame_type, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(sent.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
     assert!(sent.start >= heard + bus.turnaround);
     assert!(sent.start <= heard + bus.turnaround + TICK);
     bus.stop().await;
@@ -139,7 +144,7 @@ async fn an_oversized_answer_is_postponed_and_counted() {
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
     let counts = bus.transport.diagnostics().snapshot();
     assert_eq!(counts.outbound_oversize, 1);
@@ -158,7 +163,7 @@ async fn an_answer_around_the_deadline_is_never_lost() {
         let mut bus = Bus::start(config(3, 4)).await;
         let token = bus.join(4).await;
         bus.until(token.end + bus.turnaround).await;
-        let at = bus.send(FrameType::BACnetDataExpectingReply, 3, 4, REQUEST);
+        let at = bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 4, REQUEST);
         let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
         let when = if offset < 0 {
             at + DECISION - TICK
@@ -172,15 +177,15 @@ async fn an_answer_around_the_deadline_is_never_lost() {
         let first = bus.next().await;
         assert_eq!(first.destination, 4);
         let direct = match first.frame_type {
-            FrameType::BACnetDataNotExpectingReply => {
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY => {
                 assert_eq!(first.data, [1, 0, 0x31]);
                 true
             }
-            FrameType::ReplyPostponed => {
+            FrameType::REPLY_POSTPONED => {
                 bus.until(first.end + bus.turnaround).await;
-                bus.send(FrameType::Token, 3, 4, &[]);
+                bus.send(FrameType::TOKEN, 3, 4, &[]);
                 let late = bus.next().await;
-                assert_eq!(late.frame_type, FrameType::BACnetDataNotExpectingReply);
+                assert_eq!(late.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
                 assert_eq!(late.data, [1, 0, 0x31]);
                 bus.until(late.end + TICK).await;
                 false
@@ -249,7 +254,8 @@ async fn an_always_readable_port_cannot_hold_back_a_deadline() {
         }
     }
 
-    let request = super::test_support::encode(FrameType::BACnetDataExpectingReply, 3, 7, REQUEST);
+    let request =
+        super::test_support::encode(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 7, REQUEST);
     let babbling = Babbling {
         request: std::sync::Mutex::new(Some(request)),
     };

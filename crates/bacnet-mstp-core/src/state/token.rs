@@ -153,19 +153,19 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             let extended = data.len() > MAX_STANDARD_MPDU_DATA;
             let (frame_type, post) = match (expecting, extended) {
                 (true, false) => (
-                    FrameType::BACnetDataExpectingReply,
+                    FrameType::BACNET_DATA_EXPECTING_REPLY,
                     PostTransmit::WaitForReply,
                 ),
                 (true, true) => (
-                    FrameType::BACnetExtendedDataExpectingReply,
+                    FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                     PostTransmit::WaitForReply,
                 ),
                 (false, false) => (
-                    FrameType::BACnetDataNotExpectingReply,
+                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
                     PostTransmit::ContinueToken,
                 ),
                 (false, true) => (
-                    FrameType::BACnetExtendedDataNotExpectingReply,
+                    FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
                     PostTransmit::ContinueToken,
                 ),
             };
@@ -254,7 +254,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             return self.queue_poll(origin, now);
         }
         self.queue_frame(
-            FrameType::Token,
+            FrameType::TOKEN,
             destination,
             &[],
             PostTransmit::PassToken,
@@ -269,7 +269,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Poll `poll_station` for a master and enter POLL_FOR_MASTER.
     fn queue_poll(&mut self, origin: Origin, now: Instant) -> Result<(), CoreError> {
         self.queue_frame(
-            FrameType::PollForMaster,
+            FrameType::POLL_FOR_MASTER,
             self.poll_station,
             &[],
             PostTransmit::PollForMaster,

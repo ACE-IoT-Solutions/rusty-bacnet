@@ -65,15 +65,15 @@ fn empty(frame_type: FrameType, destination: u8, source: u8) -> MstpFrame {
 
 /// A Token from `source` to `destination`.
 pub fn token_frame(destination: u8, source: u8) -> MstpFrame {
-    empty(FrameType::Token, destination, source)
+    empty(FrameType::TOKEN, destination, source)
 }
 
 /// A `PollForMaster` frame from `source` to `destination`.
 pub fn pfm_frame(destination: u8, source: u8) -> MstpFrame {
-    empty(FrameType::PollForMaster, destination, source)
+    empty(FrameType::POLL_FOR_MASTER, destination, source)
 }
 
 /// Builds the `ReplyToPollForMaster` that `source` sends to `destination`.
 pub fn reply_to_poll(destination: u8, source: u8) -> MstpFrame {
-    empty(FrameType::ReplyToPollForMaster, destination, source)
+    empty(FrameType::REPLY_TO_POLL_FOR_MASTER, destination, source)
 }

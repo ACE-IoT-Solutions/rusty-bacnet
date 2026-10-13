@@ -173,7 +173,8 @@ impl Seen {
     pub fn expects_reply(&self) -> bool {
         matches!(
             self.frame_type,
-            FrameType::BACnetDataExpectingReply | FrameType::BACnetExtendedDataExpectingReply
+            FrameType::BACNET_DATA_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY
         )
     }
 }
@@ -182,10 +183,10 @@ impl Seen {
 pub fn is_data(frame_type: FrameType) -> bool {
     matches!(
         frame_type,
-        FrameType::BACnetDataExpectingReply
-            | FrameType::BACnetDataNotExpectingReply
-            | FrameType::BACnetExtendedDataExpectingReply
-            | FrameType::BACnetExtendedDataNotExpectingReply
+        FrameType::BACNET_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
     )
 }
 
@@ -230,17 +231,19 @@ impl Builder {
             1 + length % 16
         };
         let (frame_type, length) = match spec.kind {
-            Kind::Token => (FrameType::Token, 0),
-            Kind::PollForMaster => (FrameType::PollForMaster, 0),
-            Kind::ReplyToPollForMaster => (FrameType::ReplyToPollForMaster, 0),
-            Kind::ReplyPostponed => (FrameType::ReplyPostponed, 0),
-            Kind::TestRequest => (FrameType::TestRequest, standard(8)),
-            Kind::TestResponse => (FrameType::TestResponse, standard(8)),
-            Kind::DataExpectingReply => (FrameType::BACnetDataExpectingReply, standard(8)),
-            Kind::DataNotExpectingReply => (FrameType::BACnetDataNotExpectingReply, standard(8)),
-            Kind::ExtendedExpectingReply => (FrameType::BACnetExtendedDataExpectingReply, cobs),
+            Kind::Token => (FrameType::TOKEN, 0),
+            Kind::PollForMaster => (FrameType::POLL_FOR_MASTER, 0),
+            Kind::ReplyToPollForMaster => (FrameType::REPLY_TO_POLL_FOR_MASTER, 0),
+            Kind::ReplyPostponed => (FrameType::REPLY_POSTPONED, 0),
+            Kind::TestRequest => (FrameType::TEST_REQUEST, standard(8)),
+            Kind::TestResponse => (FrameType::TEST_RESPONSE, standard(8)),
+            Kind::DataExpectingReply => (FrameType::BACNET_DATA_EXPECTING_REPLY, standard(8)),
+            Kind::DataNotExpectingReply => {
+                (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, standard(8))
+            }
+            Kind::ExtendedExpectingReply => (FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY, cobs),
             Kind::ExtendedNotExpectingReply => {
-                (FrameType::BACnetExtendedDataNotExpectingReply, cobs)
+                (FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY, cobs)
             }
             Kind::Reserved(raw) => (FrameType::from_raw(8 + raw % 24), standard(8)),
             Kind::ReservedCobs(raw) => (FrameType::from_raw(34 + raw % 94), cobs),
@@ -266,7 +269,7 @@ impl Builder {
 pub fn encode(frame: &Seen) -> Vec<u8> {
     let reserved = frame.frame_type.is_cobs() && !frame.frame_type.is_extended_data();
     let as_sent = if reserved {
-        FrameType::BACnetExtendedDataNotExpectingReply
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
     } else {
         frame.frame_type
     };

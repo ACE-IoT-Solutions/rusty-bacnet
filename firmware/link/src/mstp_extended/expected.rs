@@ -22,9 +22,9 @@ pub const EXPECTED: Summary = Summary {
     // and one of COBS overhead, and the encoded CRC-32K); then a poll for
     // the next master, which is the peer, and the token to it.
     sent: [
-        Some((FrameType::BACnetExtendedDataExpectingReply, PEER, 526)),
-        Some((FrameType::PollForMaster, PEER, 8)),
-        Some((FrameType::Token, PEER, 8)),
+        Some((FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY, PEER, 526)),
+        Some((FrameType::POLL_FOR_MASTER, PEER, 8)),
+        Some((FrameType::TOKEN, PEER, 8)),
         None,
     ],
     request_intact: true,

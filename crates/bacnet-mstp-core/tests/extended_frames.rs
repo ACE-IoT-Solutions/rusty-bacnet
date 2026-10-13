@@ -77,7 +77,7 @@ fn encode(frame: Frame<'_>) -> Vec<u8> {
 /// same for every COBS type.
 fn reserved(raw: u8, destination: u8, data: &[u8]) -> Vec<u8> {
     let mut wire = encode(Frame::new(
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
         destination,
         PEER,
         data,
@@ -163,7 +163,7 @@ fn take_token_and_send(core: &mut Core<'_>, queued: &[u8]) -> (Instant, Vec<u8>)
     core.enqueue_npdu(PEER, queued, NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
     core.on_validated_frame(
-        Frame::new(FrameType::Token, STATION, PEER, &[]),
+        Frame::new(FrameType::TOKEN, STATION, PEER, &[]),
         Instant::from_micros(10_000),
     )
     .unwrap();
@@ -362,7 +362,11 @@ fn long_npdus_go_out_in_extended_frames() {
     let (_, octets) = take_token_and_send(&mut core, &request);
     assert_eq!(
         decoded(&octets),
-        (FrameType::BACnetExtendedDataExpectingReply, PEER, request)
+        (
+            FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
+            PEER,
+            request
+        )
     );
     assert_eq!(core.state(), MasterState::WaitForReply);
     assert_eq!(
@@ -382,7 +386,11 @@ fn long_npdus_go_out_in_extended_frames() {
     let (_, octets) = take_token_and_send(&mut core, &data);
     assert_eq!(
         decoded(&octets),
-        (FrameType::BACnetExtendedDataNotExpectingReply, PEER, data)
+        (
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
+            PEER,
+            data
+        )
     );
     // The token use goes on: no reply is awaited.
     assert_ne!(core.state(), MasterState::WaitForReply);
@@ -394,7 +402,7 @@ fn long_npdus_go_out_in_extended_frames() {
     let (_, octets) = take_token_and_send(&mut core, &data);
     assert_eq!(
         decoded(&octets),
-        (FrameType::BACnetDataExpectingReply, PEER, data)
+        (FrameType::BACNET_DATA_EXPECTING_REPLY, PEER, data)
     );
 
     let mut storage = Storage::new();
@@ -420,17 +428,17 @@ fn idle_takes_extended_data_that_needs_no_reply() {
     let asking = npdu(700, true);
     let frames = [
         (
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             STATION,
             &long,
         ),
         (
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             BROADCAST_MAC,
             &long,
         ),
         (
-            FrameType::BACnetExtendedDataExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
             BROADCAST_MAC,
             &asking,
         ),
@@ -466,8 +474,8 @@ fn idle_takes_extended_data_that_needs_no_reply() {
 #[test]
 fn a_type_32_request_is_answered() {
     for (answer_length, answer_type) in [
-        (1200, FrameType::BACnetExtendedDataNotExpectingReply),
-        (40, FrameType::BACnetDataNotExpectingReply),
+        (1200, FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY),
+        (40, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY),
     ] {
         let mut storage = Storage::new();
         let mut core = storage.core(true);
@@ -475,7 +483,7 @@ fn a_type_32_request_is_answered() {
         let last = feed(
             &mut core,
             &encode(Frame::new(
-                FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                 STATION,
                 PEER,
                 &request,
@@ -519,7 +527,7 @@ fn a_postponed_type_32_request_is_answered_with_the_token() {
     let last = feed(
         &mut core,
         &encode(Frame::new(
-            FrameType::BACnetExtendedDataExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
             STATION,
             PEER,
             &npdu(800, true),
@@ -533,20 +541,24 @@ fn a_postponed_type_32_request_is_answered_with_the_token() {
     let (sent, octets) = send_handed_over(&mut core, decided);
     assert_eq!(
         decoded(&octets),
-        (FrameType::ReplyPostponed, PEER, Vec::new())
+        (FrameType::REPLY_POSTPONED, PEER, Vec::new())
     );
     let answer = npdu(1300, false);
     core.enqueue_npdu(PEER, &answer, NetworkPriority::Normal, sent)
         .unwrap();
     core.on_validated_frame(
-        Frame::new(FrameType::Token, STATION, PEER, &[]),
+        Frame::new(FrameType::TOKEN, STATION, PEER, &[]),
         sent + Duration::from_millis(30),
     )
     .unwrap();
     let (_, octets) = send_next(&mut core);
     assert_eq!(
         decoded(&octets),
-        (FrameType::BACnetExtendedDataNotExpectingReply, PEER, answer)
+        (
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
+            PEER,
+            answer
+        )
     );
 }
 
@@ -564,7 +576,7 @@ fn a_type_32_for_a_station_answering_a_request_is_discarded() {
         let last = feed(
             &mut core,
             &encode(Frame::new(
-                FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                 STATION,
                 PEER,
                 &first,
@@ -577,17 +589,17 @@ fn a_type_32_for_a_station_answering_a_request_is_discarded() {
         let more = npdu(600, false);
         let frames = [
             (
-                FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                 STATION,
                 &second,
             ),
             (
-                FrameType::BACnetExtendedDataNotExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
                 STATION,
                 &more,
             ),
             (
-                FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                 BROADCAST_MAC,
                 &second,
             ),
@@ -621,17 +633,17 @@ fn a_type_32_for_a_station_answering_a_request_is_discarded() {
 fn wait_for_reply_takes_a_type_33() {
     for (frame_type, source, ends_as) in [
         (
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             PEER,
             MasterState::PollForMaster,
         ),
         (
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             OTHER,
             MasterState::PollForMaster,
         ),
         (
-            FrameType::BACnetExtendedDataExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
             PEER,
             MasterState::Idle,
         ),
@@ -700,7 +712,7 @@ fn reserved_cobs_types_are_checked_with_the_flag() {
     let mut storage = Storage::new();
     let mut core = storage.core(true);
     let (sent, _) = take_token_and_send(&mut core, &npdu(10, true));
-    let frame = Frame::new(FrameType::Unknown(0x40), STATION, PEER, &data);
+    let frame = Frame::new(FrameType::from_raw(0x40), STATION, PEER, &data);
     core.on_validated_frame(frame, sent + Duration::from_millis(5))
         .unwrap();
     assert_eq!(core.state(), MasterState::Idle);
@@ -715,7 +727,7 @@ fn validated_extended_frames_follow_the_flag() {
     let mut storage = Storage::new();
     let mut core = storage.core(false);
     let frame = Frame::new(
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
         STATION,
         PEER,
         &long[..600],
@@ -723,7 +735,7 @@ fn validated_extended_frames_follow_the_flag() {
     assert!(core
         .on_validated_frame(frame, Instant::from_micros(1))
         .is_err());
-    let small = Frame::new(FrameType::Unknown(0x22), STATION, PEER, &long[..10]);
+    let small = Frame::new(FrameType::from_raw(0x22), STATION, PEER, &long[..10]);
     assert!(core
         .on_validated_frame(small, Instant::from_micros(1))
         .is_err());
@@ -732,7 +744,7 @@ fn validated_extended_frames_follow_the_flag() {
     let mut storage = Storage::new();
     let mut core = storage.core(true);
     let frame = Frame::new(
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
         STATION,
         PEER,
         &long,

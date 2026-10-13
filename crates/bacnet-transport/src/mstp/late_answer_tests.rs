@@ -18,12 +18,12 @@ const ANSWER: &[u8] = &[1, 0x00, 0x30];
 /// the station's Reply Postponed and the channel.
 async fn postponed(bus: &mut Bus, after: Instant, source: u8) -> (Sent, oneshot::Sender<Bytes>) {
     bus.until(after + bus.turnaround).await;
-    bus.send(FrameType::BACnetDataExpectingReply, 3, source, REQUEST);
+    bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, source, REQUEST);
     let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.destination),
-        (FrameType::ReplyPostponed, source)
+        (FrameType::REPLY_POSTPONED, source)
     );
     (sent, reply)
 }
@@ -40,7 +40,7 @@ async fn an_answer_after_reply_postponed_goes_out_with_the_token() {
         .send(Bytes::from_static(ANSWER))
         .expect("the channel is kept after Reply Postponed");
     bus.until(sent.end + Duration::from_millis(5)).await;
-    bus.send(FrameType::Token, 3, 4, &[]);
+    bus.send(FrameType::TOKEN, 3, 4, &[]);
     let answer = bus.next().await;
     assert_eq!(
         (
@@ -48,7 +48,7 @@ async fn an_answer_after_reply_postponed_goes_out_with_the_token() {
             answer.destination,
             answer.data.as_slice()
         ),
-        (FrameType::BACnetDataNotExpectingReply, 4, ANSWER)
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 4, ANSWER)
     );
     let counts = bus.transport.diagnostics().snapshot();
     assert_eq!(counts.late_answers_queued, 1);
@@ -93,15 +93,15 @@ async fn a_channel_expires_on_time_on_a_quiet_line() {
     let mut bus = Bus::start(config(3, 4)).await;
     let token = bus.join(4).await;
     bus.until(token.end + bus.turnaround).await;
-    let arrived = bus.send(FrameType::BACnetDataExpectingReply, 3, 4, REQUEST);
+    let arrived = bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 4, REQUEST);
     let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
     let sent = bus.next().await;
-    assert_eq!(sent.frame_type, FrameType::ReplyPostponed);
+    assert_eq!(sent.frame_type, FrameType::REPLY_POSTPONED);
     let expires = arrived + Duration::from_secs(5);
     let mut at = sent.end + Duration::from_millis(300);
     while at + Duration::from_millis(100) <= expires {
         bus.until(at).await;
-        bus.send(FrameType::BACnetDataNotExpectingReply, 9, 4, &[1, 0, 1]);
+        bus.send(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 9, 4, &[1, 0, 1]);
         at += Duration::from_millis(300);
     }
     bus.until(expires - TICK).await;
@@ -173,10 +173,10 @@ async fn a_late_answer_expires_with_its_request() {
     let mut bus = Bus::start(config(3, 4)).await;
     let token = bus.join(4).await;
     bus.until(token.end + bus.turnaround).await;
-    let arrived = bus.send(FrameType::BACnetDataExpectingReply, 3, 4, REQUEST);
+    let arrived = bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 4, REQUEST);
     let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
     let sent = bus.next().await;
-    assert_eq!(sent.frame_type, FrameType::ReplyPostponed);
+    assert_eq!(sent.frame_type, FrameType::REPLY_POSTPONED);
     // Traffic between other stations keeps this one in IDLE, without the
     // token, until the answer has expired.
     let age = Duration::from_secs(5);
@@ -184,17 +184,17 @@ async fn a_late_answer_expires_with_its_request() {
     let mut at = sent.end + Duration::from_millis(300);
     while at < answer_at {
         bus.until(at).await;
-        bus.send(FrameType::BACnetDataNotExpectingReply, 9, 4, &[1, 0, 1]);
+        bus.send(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 9, 4, &[1, 0, 1]);
         at += Duration::from_millis(300);
     }
     bus.until(answer_at).await;
     reply.send(Bytes::from_static(ANSWER)).unwrap();
     bus.until(arrived + age + Duration::from_millis(10)).await;
-    bus.send(FrameType::Token, 3, 4, &[]);
+    bus.send(FrameType::TOKEN, 3, 4, &[]);
     let next = bus.next().await;
     assert_eq!(
         (next.frame_type, next.destination),
-        (FrameType::Token, 4),
+        (FrameType::TOKEN, 4),
         "the expired answer went out"
     );
     let counts = bus.transport.diagnostics().snapshot();

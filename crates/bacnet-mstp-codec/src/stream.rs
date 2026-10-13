@@ -143,8 +143,8 @@ pub enum StreamPhase {
 /// use bacnet_mstp_codec::{DecodeEvent, Frame, FrameType, StreamDecoder};
 ///
 /// let mut wire = [0u8; 16];
-/// Frame::new(FrameType::Token, 1, 0, &[]).encode_into(&mut wire[..8])?;
-/// Frame::new(FrameType::Token, 2, 1, &[]).encode_into(&mut wire[8..])?;
+/// Frame::new(FrameType::TOKEN, 1, 0, &[]).encode_into(&mut wire[..8])?;
+/// Frame::new(FrameType::TOKEN, 2, 1, &[]).encode_into(&mut wire[8..])?;
 ///
 /// let mut storage = [0u8; 64];
 /// let mut decoder = StreamDecoder::new(&mut storage);
@@ -242,9 +242,10 @@ impl<'a> StreamDecoder<'a> {
     /// treat as unexpected. So a reserved type whose header passes is
     /// buffered like an extended frame: when it fits the storage and its
     /// encoded fields check out, it comes out as a [`DecodeEvent::Frame`]
-    /// with its [`FrameType::Unknown`](crate::FrameType::Unknown) type and
-    /// its decoded data, and otherwise it is dropped and skipped by count,
-    /// with [`FrameError::DataCrcMismatch`] or [`FrameError::FrameTooLong`].
+    /// with its type, which no [`FrameType`](crate::FrameType) constant
+    /// names, and its decoded data, and otherwise it is dropped and skipped
+    /// by count, with [`FrameError::DataCrcMismatch`] or
+    /// [`FrameError::FrameTooLong`].
     /// [`FrameError::UnsupportedCobsFrame`] never comes out.
     ///
     /// A decoder from [`Self::new`] skips them by count as soon as their

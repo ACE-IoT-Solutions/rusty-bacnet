@@ -385,7 +385,7 @@ impl<'s> Driver<'s> {
     fn token_frame(&self) -> Frame<'static> {
         let params = self.params();
         Frame::new(
-            FrameType::Token,
+            FrameType::TOKEN,
             params.station,
             params.next(params.station),
             &[],

@@ -63,11 +63,11 @@ fn feed(decoder: &mut StreamDecoder<'_>, wire: &[u8]) -> Vec<Seen> {
 }
 
 fn token(destination: u8, source: u8) -> Vec<u8> {
-    encode(Frame::new(FrameType::Token, destination, source, &[]))
+    encode(Frame::new(FrameType::TOKEN, destination, source, &[]))
 }
 
 fn token_seen(destination: u8, source: u8) -> Seen {
-    Seen::Frame(FrameType::Token, destination, source, Vec::new())
+    Seen::Frame(FrameType::TOKEN, destination, source, Vec::new())
 }
 
 /// A run of noise goes in one event, up to the next 0x55, which might start
@@ -106,7 +106,7 @@ fn no_frame_comes_out_of_a_frame_too_long_for_the_storage() {
     let mut data = vec![0x01, 0x00];
     data.extend_from_slice(&inner);
     let outer = encode(Frame::new(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         9,
         5,
         &data,
@@ -137,7 +137,7 @@ fn no_frame_comes_out_of_a_frame_too_long_for_the_storage() {
 #[test]
 fn no_frame_comes_out_of_a_dropped_body() {
     let inner = token(4, 3);
-    let mut bad_crc = encode(Frame::new(FrameType::TestRequest, 9, 5, &inner));
+    let mut bad_crc = encode(Frame::new(FrameType::TEST_REQUEST, 9, 5, &inner));
     let last = bad_crc.len() - 1;
     bad_crc[last] ^= 0x01;
     // A reserved COBS type whose Length covers a Token's octets and two more.
@@ -199,7 +199,7 @@ fn a_bad_header_is_not_skipped_by_its_length() {
 /// skipped octets, and a reset ends the skip.
 #[test]
 fn skipping_needs_no_room_and_a_reset_ends_it() {
-    let long = encode(Frame::new(FrameType::TestRequest, 9, 5, &[0x11; 20]));
+    let long = encode(Frame::new(FrameType::TEST_REQUEST, 9, 5, &[0x11; 20]));
     assert_eq!(long.len(), 30);
     let mut storage = [0u8; 16];
     let mut decoder = StreamDecoder::new(&mut storage);
@@ -244,7 +244,7 @@ fn skipping_needs_no_room_and_a_reset_ends_it() {
 #[test]
 fn extended_frames_by_storage_size() {
     let npdu: Vec<u8> = (0..1200u32).map(|index| (index % 251) as u8).collect();
-    let frame = Frame::new(FrameType::BACnetExtendedDataExpectingReply, 9, 5, &npdu);
+    let frame = Frame::new(FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY, 9, 5, &npdu);
     let extended = encode(frame);
     let mut wire = extended.clone();
     wire.extend(token(1, 2));
@@ -271,7 +271,7 @@ fn extended_frames_by_storage_size() {
     assert_eq!(
         feed(&mut decoder, &wire),
         [
-            Seen::Frame(FrameType::BACnetExtendedDataExpectingReply, 9, 5, npdu),
+            Seen::Frame(FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY, 9, 5, npdu),
             token_seen(1, 2),
         ]
     );
@@ -285,7 +285,7 @@ proptest! {
         npdu in prop::collection::vec(prop_oneof![Just(0u8), Just(0x55), any::<u8>()], 1..1497),
         cuts in prop::collection::vec(any::<prop::sample::Index>(), 0..8),
     ) {
-        let frame = Frame::new(FrameType::BACnetExtendedDataNotExpectingReply, 0xFF, 200, &npdu);
+        let frame = Frame::new(FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY, 0xFF, 200, &npdu);
         let mut wire = encode(frame);
         wire.extend(token(1, 2));
         let mut cuts: Vec<usize> = cuts.iter().map(|cut| cut.index(wire.len())).collect();
@@ -312,8 +312,8 @@ proptest! {
         prop_assert_eq!(
             seen,
             vec![
-                (FrameType::BACnetExtendedDataNotExpectingReply, npdu.clone()),
-                (FrameType::Token, Vec::new()),
+                (FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY, npdu.clone()),
+                (FrameType::TOKEN, Vec::new()),
             ]
         );
     }
@@ -329,9 +329,9 @@ proptest! {
         noise in prop::collection::vec(0u8..=0x54, 0..32),
     ) {
         let frame_type = if extended {
-            FrameType::BACnetExtendedDataNotExpectingReply
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
         } else {
-            FrameType::BACnetDataNotExpectingReply
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
         };
         let data = if extended { &data[..] } else { &data[..data.len().min(501)] };
         let mut wire = encode(Frame::new(frame_type, 3, 4, data));

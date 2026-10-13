@@ -244,10 +244,10 @@ impl Harness {
                 return frame;
             }
             match frame.frame_type {
-                FrameType::PollForMaster if frame.destination == PEER_MAC => {
+                FrameType::POLL_FOR_MASTER if frame.destination == PEER_MAC => {
                     self.peer_send(&reply_to_poll(SESSION_MAC, PEER_MAC)).await;
                 }
-                FrameType::Token if frame.destination == PEER_MAC => {
+                FrameType::TOKEN if frame.destination == PEER_MAC => {
                     self.peer_send(&token_frame(SESSION_MAC, PEER_MAC)).await;
                 }
                 _ => {}
@@ -325,7 +325,7 @@ pub fn read_request_npdu(invoke_id: u8, instance: u32) -> Bytes {
 
 pub fn data_expecting(instance: u32, invoke_id: u8) -> MstpFrame {
     MstpFrame {
-        frame_type: FrameType::BACnetDataExpectingReply,
+        frame_type: FrameType::BACNET_DATA_EXPECTING_REPLY,
         destination: SESSION_MAC,
         source: PEER_MAC,
         data: read_request_npdu(invoke_id, instance),

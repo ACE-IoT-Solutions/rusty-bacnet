@@ -24,85 +24,150 @@ pub(crate) const fn wire_length(length: usize) -> usize {
     }
 }
 
-/// MS/TP frame type octet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum FrameType {
-    /// Token frame.
-    Token = 0x00,
-    /// Poll For Master frame.
-    PollForMaster = 0x01,
-    /// Reply To Poll For Master frame.
-    ReplyToPollForMaster = 0x02,
-    /// Test Request frame.
-    TestRequest = 0x03,
-    /// Test Response frame.
-    TestResponse = 0x04,
-    /// BACnet data expecting a reply.
-    BACnetDataExpectingReply = 0x05,
-    /// BACnet data not expecting a reply.
-    BACnetDataNotExpectingReply = 0x06,
-    /// Reply postponed frame.
-    ReplyPostponed = 0x07,
-    /// BACnet extended data expecting a reply: an NPDU too long for a
-    /// standard frame, COBS-encoded (Clause 9.3.9).
-    BACnetExtendedDataExpectingReply = 0x20,
-    /// BACnet extended data not expecting a reply: an NPDU too long for a
-    /// standard frame, COBS-encoded (Clause 9.3.10).
-    BACnetExtendedDataNotExpectingReply = 0x21,
-    /// Any other type octet: reserved (8-31), reserved and COBS-encoded
-    /// (34-127), or proprietary (128-255).
+/// An open set of wire codes with named constants, the shape
+/// `bacnet-bip-codec` gives `BvlcFunction` and `bacnet-types` its
+/// enumerations: any raw value converts, and the names cover the values
+/// the standard defines.
+macro_rules! named_codes {
+    (
+        $(#[$meta:meta])*
+        pub struct $Name:ident($inner:ty);
+        $(
+            $(#[$vmeta:meta])*
+            const $VARIANT:ident = $val:expr;
+        )*
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        pub struct $Name($inner);
+
+        impl $Name {
+            $(
+                $(#[$vmeta])*
+                #[doc = ""]
+                #[doc = concat!("Wire value `", stringify!($val), "`.")]
+                pub const $VARIANT: Self = Self($val);
+            )*
+
+            /// Every named constant, with its name, in wire-value order.
+            pub const ALL_NAMED: &[(&str, Self)] = &[
+                $( (stringify!($VARIANT), Self($val)), )*
+            ];
+
+            /// Wrap a raw wire value, named or not.
+            #[inline]
+            #[must_use]
+            pub const fn from_raw(value: $inner) -> Self {
+                Self(value)
+            }
+
+            /// The raw wire value.
+            #[inline]
+            #[must_use]
+            pub const fn to_raw(self) -> $inner {
+                self.0
+            }
+
+            /// The constant's name, or `None` for a value the standard
+            /// doesn't define.
+            #[must_use]
+            pub const fn name(self) -> Option<&'static str> {
+                match self.0 {
+                    $( $val => Some(stringify!($VARIANT)), )*
+                    _ => None,
+                }
+            }
+
+            /// Whether the standard defines this value.
+            #[must_use]
+            pub const fn is_defined(self) -> bool {
+                self.name().is_some()
+            }
+        }
+
+        /// `Name::CONSTANT` for a named value, `Name(raw)` otherwise.
+        impl core::fmt::Debug for $Name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self.name() {
+                    Some(name) => write!(f, "{}::{}", stringify!($Name), name),
+                    None => write!(f, "{}({})", stringify!($Name), self.0),
+                }
+            }
+        }
+
+        /// The constant's name, or the raw value in decimal.
+        impl core::fmt::Display for $Name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self.name() {
+                    Some(name) => f.write_str(name),
+                    None => write!(f, "{}", self.0),
+                }
+            }
+        }
+    };
+}
+
+named_codes! {
+    /// An MS/TP frame type: the first octet of the header after the
+    /// preamble, which says what the frame is (Clause 9.3).
     ///
-    /// [`FrameType::from_raw`] never returns it for a named type. If one is
-    /// built by hand, the codec's checks still treat it as the named type,
-    /// because they look at the raw value; `==` does not, since equality is
-    /// structural (`Unknown(0) != Token`).
-    Unknown(u8),
+    /// The set is open, so a decoder hands on every octet as it arrived and
+    /// a dispatcher matches the constants with a `_` arm for the rest. The
+    /// constants are the ten types Clause 9.3 defines. Any other octet is
+    /// reserved (8-31), reserved and COBS-encoded (34-127), or proprietary
+    /// (128-255); [`FrameType::from_raw`] wraps it all the same, and two
+    /// frame types are equal when their octets are.
+    ///
+    /// ```
+    /// use bacnet_mstp_codec::FrameType;
+    ///
+    /// assert_eq!(FrameType::from_raw(0), FrameType::TOKEN);
+    /// assert_eq!(FrameType::TOKEN.name(), Some("TOKEN"));
+    ///
+    /// // A proprietary type has no name, but keeps its octet.
+    /// let proprietary = FrameType::from_raw(0x80);
+    /// assert!(proprietary.is_proprietary() && !proprietary.is_defined());
+    /// assert_eq!(proprietary.to_raw(), 0x80);
+    /// assert_eq!(format!("{proprietary:?}"), "FrameType(128)");
+    /// assert_eq!(format!("{:?}", FrameType::TOKEN), "FrameType::TOKEN");
+    /// ```
+    pub struct FrameType(u8);
+
+    /// Token: passes the right to send to the next master (Clause 9.3.1).
+    const TOKEN = 0x00;
+    /// Poll For Master: looks for a master at an address (Clause 9.3.2).
+    const POLL_FOR_MASTER = 0x01;
+    /// Reply To Poll For Master: a master answering a poll (Clause 9.3.3).
+    const REPLY_TO_POLL_FOR_MASTER = 0x02;
+    /// Test_Request: asks the receiver to send its data back (Clause
+    /// 9.3.4).
+    const TEST_REQUEST = 0x03;
+    /// Test_Response: the answer to a Test_Request (Clause 9.3.5).
+    const TEST_RESPONSE = 0x04;
+    /// BACnet Data Expecting Reply: an NPDU whose sender waits for an
+    /// answer (Clause 9.3.6).
+    const BACNET_DATA_EXPECTING_REPLY = 0x05;
+    /// BACnet Data Not Expecting Reply: an NPDU that wants no answer (Clause
+    /// 9.3.7).
+    const BACNET_DATA_NOT_EXPECTING_REPLY = 0x06;
+    /// Reply Postponed: puts off the answer to a BACnet Data Expecting Reply
+    /// (Clause 9.3.8).
+    const REPLY_POSTPONED = 0x07;
+    /// BACnet Extended Data Expecting Reply: an NPDU too long for a
+    /// standard frame, COBS-encoded (Clause 9.3.9).
+    const BACNET_EXTENDED_DATA_EXPECTING_REPLY = 0x20;
+    /// BACnet Extended Data Not Expecting Reply: an NPDU too long for a
+    /// standard frame, COBS-encoded (Clause 9.3.10).
+    const BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY = 0x21;
 }
 
 impl FrameType {
-    /// Convert a raw frame type octet to its typed representation.
-    #[must_use]
-    pub const fn from_raw(raw: u8) -> Self {
-        match raw {
-            0 => Self::Token,
-            1 => Self::PollForMaster,
-            2 => Self::ReplyToPollForMaster,
-            3 => Self::TestRequest,
-            4 => Self::TestResponse,
-            5 => Self::BACnetDataExpectingReply,
-            6 => Self::BACnetDataNotExpectingReply,
-            7 => Self::ReplyPostponed,
-            0x20 => Self::BACnetExtendedDataExpectingReply,
-            0x21 => Self::BACnetExtendedDataNotExpectingReply,
-            value => Self::Unknown(value),
-        }
-    }
-
-    /// Return this frame type's wire value.
-    #[must_use]
-    pub const fn to_raw(self) -> u8 {
-        match self {
-            Self::Token => 0,
-            Self::PollForMaster => 1,
-            Self::ReplyToPollForMaster => 2,
-            Self::TestRequest => 3,
-            Self::TestResponse => 4,
-            Self::BACnetDataExpectingReply => 5,
-            Self::BACnetDataNotExpectingReply => 6,
-            Self::ReplyPostponed => 7,
-            Self::BACnetExtendedDataExpectingReply => 0x20,
-            Self::BACnetExtendedDataNotExpectingReply => 0x21,
-            Self::Unknown(value) => value,
-        }
-    }
-
     /// Whether a frame of this type may carry a data field.
     ///
-    /// False only for the four types defined without data: [`Token`](Self::Token),
-    /// [`PollForMaster`](Self::PollForMaster),
-    /// [`ReplyToPollForMaster`](Self::ReplyToPollForMaster) and
-    /// [`ReplyPostponed`](Self::ReplyPostponed) (Clauses 9.3.1-9.3.3, 9.3.8).
+    /// False only for the four types defined without data:
+    /// [`TOKEN`](Self::TOKEN), [`POLL_FOR_MASTER`](Self::POLL_FOR_MASTER),
+    /// [`REPLY_TO_POLL_FOR_MASTER`](Self::REPLY_TO_POLL_FOR_MASTER) and
+    /// [`REPLY_POSTPONED`](Self::REPLY_POSTPONED) (Clauses 9.3.1-9.3.3, 9.3.8).
     /// Every other type may, including the reserved types 8-31, which the
     /// codec passes through without policing their content.
     #[must_use]
@@ -228,12 +293,12 @@ impl<'a> Frame<'a> {
     /// use bacnet_mstp_codec::{Frame, FrameError, FrameType};
     ///
     /// let mut wire = [0u8; 8];
-    /// let length = Frame::new(FrameType::Token, 0x10, 0x05, &[]).encode_into(&mut wire)?;
+    /// let length = Frame::new(FrameType::TOKEN, 0x10, 0x05, &[]).encode_into(&mut wire)?;
     /// assert_eq!(wire[..length], [0x55, 0xFF, 0x00, 0x10, 0x05, 0x00, 0x00, 0x8C]);
     ///
     /// // A Token never carries data.
     /// assert_eq!(
-    ///     Frame::new(FrameType::Token, 0x10, 0x05, &[1]).encode_into(&mut wire),
+    ///     Frame::new(FrameType::TOKEN, 0x10, 0x05, &[1]).encode_into(&mut wire),
     ///     Err(FrameError::UnexpectedData { raw_type: 0, length: 1 }),
     /// );
     /// # Ok::<(), FrameError>(())

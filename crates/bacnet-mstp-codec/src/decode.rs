@@ -115,7 +115,7 @@ pub(crate) fn decode_extended_in_place(input: &mut [u8], valid: &ValidFrame) {
 /// // Data Not Expecting Reply from slave 200 to station 1, data 01 00.
 /// let wire = [0x55, 0xFF, 0x06, 0x01, 0xC8, 0x00, 0x02, 0xEF, 0x01, 0x00, 0x9F, 0x16];
 /// let (frame, consumed) = decode_frame(&wire)?;
-/// assert_eq!(frame.header.frame_type, FrameType::BACnetDataNotExpectingReply);
+/// assert_eq!(frame.header.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
 /// assert_eq!((frame.header.destination, frame.header.source), (1, 200));
 /// assert_eq!(frame.data, [0x01, 0x00]);
 /// assert_eq!(consumed, wire.len());
@@ -153,7 +153,7 @@ pub fn decode_frame(input: &[u8]) -> Result<(Frame<'_>, usize), FrameError> {
 /// use bacnet_mstp_codec::{decode_frame, decode_frame_in_place, Frame, FrameError, FrameType};
 ///
 /// let npdu = [0x01, 0x00, 0x10, 0x08];
-/// let frame = Frame::new(FrameType::BACnetExtendedDataNotExpectingReply, 0xFF, 0x02, &npdu);
+/// let frame = Frame::new(FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY, 0xFF, 0x02, &npdu);
 /// let mut wire = [0u8; 32];
 /// let length = frame.encode_into(&mut wire)?;
 ///

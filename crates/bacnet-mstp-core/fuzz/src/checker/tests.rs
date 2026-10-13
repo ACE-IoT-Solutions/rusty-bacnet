@@ -13,7 +13,7 @@ use crate::queues::QueueLog;
 
 fn poll_from(source: u8) -> Seen {
     Seen {
-        frame_type: FrameType::PollForMaster,
+        frame_type: FrameType::POLL_FOR_MASTER,
         destination: 1,
         source,
         data: Vec::new(),
@@ -38,7 +38,7 @@ fn a_deferred_answer_dropped_at_its_limit_frees_the_station() {
 
     checker.heard(vec![Heard::Frame(poll_from(11))], 10_000);
     let answer = Seen {
-        frame_type: FrameType::ReplyToPollForMaster,
+        frame_type: FrameType::REPLY_TO_POLL_FOR_MASTER,
         destination: 11,
         source: 1,
         data: Vec::new(),

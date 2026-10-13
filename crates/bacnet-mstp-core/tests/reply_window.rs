@@ -32,7 +32,7 @@ fn config() -> MstpCoreConfig {
 /// Deliver a request from station 7 and return its identifier.
 fn receive_request(core: &mut MasterCore<'_, Queues>) -> RequestId {
     core.on_validated_frame(
-        Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[1, 0x04]),
+        Frame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[1, 0x04]),
         REQUEST_AT,
     )
     .unwrap();
@@ -56,7 +56,7 @@ fn take_postponed(core: &mut MasterCore<'_, Queues>) -> TransmitId {
             let header = decode_frame(frame).unwrap().0.header;
             assert_eq!(
                 (header.frame_type, header.destination),
-                (FrameType::ReplyPostponed, 7)
+                (FrameType::REPLY_POSTPONED, 7)
             );
             id
         }
@@ -286,7 +286,7 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
             reply.header.destination,
             reply.data
         ),
-        (FrameType::BACnetDataNotExpectingReply, 7, &[9][..])
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 7, &[9][..])
     );
     assert_eq!(core.counters().cancelled_sends, 0);
 
@@ -309,7 +309,7 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
         REQUEST_AT + Duration::from_micros(500),
     )
     .unwrap();
-    core.on_validated_frame(Frame::new(FrameType::PollForMaster, 1, 5, &[]), noise)
+    core.on_validated_frame(Frame::new(FrameType::POLL_FOR_MASTER, 1, 5, &[]), noise)
         .unwrap();
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
@@ -323,6 +323,6 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
     let reply = decode_frame(frame).unwrap().0.header;
     assert_eq!(
         (reply.frame_type, reply.destination),
-        (FrameType::BACnetDataNotExpectingReply, 7)
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 7)
     );
 }

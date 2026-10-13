@@ -86,10 +86,10 @@ fn public_events_reach_all_clause_states_and_counters_are_observable() {
     // A received token enters UseToken while queued work is available.
     core.enqueue_npdu(2, &[0, 0x00], NetworkPriority::Normal, at(532))
         .unwrap();
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), at(533))
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(533))
         .unwrap();
     assert_eq!(core.state(), MasterState::Idle);
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), at(534))
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(534))
         .unwrap();
     let state_after_token = core.state();
     assert!(
@@ -283,7 +283,7 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
     )
     .unwrap();
     core.on_validated_frame(
-        frame(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 0x01]),
+        frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[0, 0x01]),
         at(1),
     )
     .unwrap();
@@ -333,7 +333,7 @@ fn abandoned_request_returns_idle_without_wire_actions() {
     )
     .unwrap();
     core.on_validated_frame(
-        frame(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 0x01]),
+        frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[0, 0x01]),
         at(1),
     )
     .unwrap();
@@ -370,7 +370,7 @@ fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
         Instant::ZERO,
     )
     .unwrap();
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), Instant::ZERO)
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
         .unwrap();
     core.on_deadline(at(5)).unwrap();
     let id = take_transmit(&mut core, at(5));
@@ -403,7 +403,7 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
     )
     .unwrap();
     core.on_validated_frame(
-        frame(FrameType::BACnetDataExpectingReply, 0xff, 2, &[1, 2]),
+        frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 0xff, 2, &[1, 2]),
         at(1),
     )
     .unwrap();
@@ -429,7 +429,7 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
     .unwrap();
     core.enqueue_npdu(2, &[0, 0x04], NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), Instant::ZERO)
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
         .unwrap();
     core.on_deadline(at(5)).unwrap();
     let tx = take_transmit(&mut core, at(5));
@@ -466,13 +466,18 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
     .unwrap();
     for source in 2..=9 {
         core.on_validated_frame(
-            frame(FrameType::BACnetDataNotExpectingReply, 1, source, &[source]),
+            frame(
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+                1,
+                source,
+                &[source],
+            ),
             at(u64::from(source)),
         )
         .unwrap();
     }
     assert_eq!(core.counters().npdus_delivered, 8);
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), at(10))
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(10))
         .unwrap();
     core.on_deadline(at(15)).unwrap();
     assert!(matches!(
@@ -481,7 +486,7 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
     ));
 
     let mut encoded = [0; 512];
-    let len = frame(FrameType::BACnetDataNotExpectingReply, 1, 2, &[9, 8])
+    let len = frame(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 1, 2, &[9, 8])
         .encode_into(&mut encoded)
         .unwrap();
     let mut rx = [0; 1024];
@@ -579,7 +584,7 @@ mod allocation_test {
         THREAD_ALLOCATIONS.with(|count| count.set(0));
         core.enqueue_npdu(2, &[1, 2], NetworkPriority::Normal, at(0))
             .unwrap();
-        core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), at(2))
+        core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(2))
             .unwrap();
         core.on_deadline(at(7)).unwrap();
         assert_eq!(

@@ -213,7 +213,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             return Ok(false);
         };
         let header = frame.header;
-        let late_poll_reply = header.frame_type == FrameType::ReplyToPollForMaster
+        let late_poll_reply = header.frame_type == FrameType::REPLY_TO_POLL_FOR_MASTER
             && header.destination == self.config.station;
         match pending.origin {
             Origin::Answer(_) => self.frame_while_busy(frame, true),

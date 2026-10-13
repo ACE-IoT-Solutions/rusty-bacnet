@@ -34,12 +34,17 @@ fn header(raw_type: u8, destination: u8, source: u8, length: u16) -> Vec<u8> {
 
 #[test]
 fn literal_frames_encode_to_their_known_octets() {
-    let token = Frame::new(FrameType::Token, 0, 7, &[]);
+    let token = Frame::new(FrameType::TOKEN, 0, 7, &[]);
     assert_eq!(
         encode(token),
         [0x55, 0xFF, 0x00, 0x00, 0x07, 0x00, 0x00, 0x37]
     );
-    let data = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &[0x01, 0x00]);
+    let data = Frame::new(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        0,
+        7,
+        &[0x01, 0x00],
+    );
     let wire = encode(data);
     assert_eq!(
         wire,
@@ -52,7 +57,7 @@ fn literal_frames_encode_to_their_known_octets() {
             decoded.header.destination,
             decoded.header.source
         ),
-        (FrameType::BACnetDataNotExpectingReply, 0, 7)
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0, 7)
     );
     assert_eq!((decoded.data, consumed), (&[0x01, 0x00][..], 12));
 }
@@ -75,7 +80,12 @@ fn a_one_bit_header_or_data_error_fails_its_crc() {
 
 #[test]
 fn a_broadcast_destination_round_trips() {
-    let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0xFF, 0x10, &[1, 0]);
+    let frame = Frame::new(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        0xFF,
+        0x10,
+        &[1, 0],
+    );
     let wire = encode(frame);
     assert_eq!(decode_frame(&wire).unwrap(), (frame, wire.len()));
 }
@@ -104,7 +114,7 @@ fn the_preamble_search_finds_offset_zero_and_needs_adjacent_octets() {
 fn the_largest_standard_frame_decodes_and_one_more_octet_does_not() {
     let data = [0xAA; MAX_STANDARD_MPDU_DATA];
     let wire = encode(Frame::new(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         0xFF,
         0,
         &data,
@@ -130,7 +140,7 @@ fn the_largest_standard_frame_decodes_and_one_more_octet_does_not() {
 fn the_stream_decoder_takes_the_largest_frame_and_drops_a_longer_header() {
     let data = [0xAA; MAX_STANDARD_MPDU_DATA];
     let wire = encode(Frame::new(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         0xFF,
         0,
         &data,

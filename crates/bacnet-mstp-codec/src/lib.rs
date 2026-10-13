@@ -14,8 +14,8 @@
 //!
 //! # Extended frames
 //!
-//! Types 32 and 33 ([`FrameType::BACnetExtendedDataExpectingReply`] and
-//! [`FrameType::BACnetExtendedDataNotExpectingReply`]) carry NPDUs too long
+//! Types 32 and 33 ([`FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY`] and
+//! [`FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY`]) carry NPDUs too long
 //! for a standard frame (Clauses 9.3.9, 9.3.10).
 //! On the wire their data is COBS-encoded with a CRC-32K, so no preamble can
 //! appear inside them (Clause 9.10), and the header's Length counts the two
@@ -91,7 +91,7 @@
 //! ```
 //! use bacnet_mstp_codec::{decode_frame, Frame, FrameType, MAX_STANDARD_FRAME_LENGTH};
 //!
-//! let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0x10, 0x05, &[0x01, 0x00]);
+//! let frame = Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0x10, 0x05, &[0x01, 0x00]);
 //! let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
 //! let length = frame.encode_into(&mut wire)?;
 //!

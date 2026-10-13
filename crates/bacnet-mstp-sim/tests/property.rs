@@ -234,7 +234,7 @@ fn settle_after_a_clean_rotation(sim: &mut Sim, limit: Instant, seed: u64) {
         for frame in &sim.frames()[seen..] {
             if !frame.is_clean() {
                 lap = None;
-            } else if frame.frame_type() == Some(FrameType::Token) {
+            } else if frame.frame_type() == Some(FrameType::TOKEN) {
                 match lap {
                     None => lap = frame.source(),
                     Some(first) if frame.destination() == Some(first) => closed = true,
