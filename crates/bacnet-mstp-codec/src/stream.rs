@@ -1,11 +1,14 @@
 //! Incremental decoding over caller-owned storage.
 
+use core::fmt;
+
 use crate::decode::{check_frame, decode_extended_in_place};
 use crate::frame::{wire_length, DATA_OFFSET};
 use crate::{Frame, FrameError, FrameHeader, PREAMBLE};
 
 /// The outcome of one [`StreamDecoder::push_slice`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "the event may be a frame, which the next push drops"]
 pub enum DecodeEvent<'a> {
     /// Nothing complete and nothing to discard: push more octets.
     NeedMore,
@@ -58,7 +61,7 @@ pub enum DecodeEvent<'a> {
 }
 
 /// Receive phase represented by the decoder's retained bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamPhase {
     /// Searching for the first preamble octet; retained bytes are only noise.
     Sync,
@@ -179,6 +182,20 @@ pub struct StreamDecoder<'a> {
     reserved_cobs: bool,
 }
 
+/// The decoder's counts, phase and mode; the storage's contents are left out.
+impl fmt::Debug for StreamDecoder<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamDecoder")
+            .field("capacity", &self.capacity())
+            .field("buffered", &self.length)
+            .field("pending", &self.pending)
+            .field("skip", &self.skip)
+            .field("phase", &self.phase())
+            .field("reserved_cobs", &self.reserved_cobs)
+            .finish()
+    }
+}
+
 /// Offset of the destination octet: after the preamble and the type octet.
 const DESTINATION_INDEX: usize = PREAMBLE.len() + 1;
 /// Offset of the Length field's two octets, most significant first.
@@ -204,6 +221,7 @@ enum InternalEvent {
 
 impl<'a> StreamDecoder<'a> {
     /// Create an empty decoder over `storage`.
+    #[must_use]
     pub const fn new(storage: &'a mut [u8]) -> Self {
         Self {
             storage,
@@ -240,22 +258,26 @@ impl<'a> StreamDecoder<'a> {
 
     /// Whether the decoder checks reserved COBS types; see
     /// [`Self::with_reserved_cobs`].
+    #[must_use]
     pub const fn checks_reserved_cobs(&self) -> bool {
         self.reserved_cobs
     }
 
     /// Number of buffered octets, including a frame awaiting the next push.
     /// Octets of a frame being skipped by count are never buffered.
+    #[must_use]
     pub const fn buffered_len(&self) -> usize {
         self.length
     }
 
     /// Capacity of the caller-owned receive buffer.
+    #[must_use]
     pub const fn capacity(&self) -> usize {
         self.storage.len()
     }
 
     /// Return the semantic receive phase, excluding retained resync noise.
+    #[must_use]
     pub fn phase(&self) -> StreamPhase {
         if self.skip != 0 {
             return StreamPhase::Data;

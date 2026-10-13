@@ -1,11 +1,18 @@
 //! Integration tests for one-shot MS/TP frame encode and decode, CRCs and sinks.
 
+use bacnet_mstp_codec::crc::{crc16, crc16_valid, crc8, crc8_valid};
 use bacnet_mstp_codec::{
-    crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid, decode_frame,
-    find_preamble, Frame, FrameError, FrameHeader, FrameSink, FrameType, DATA_CRC_RESIDUAL,
-    HEADER_CRC_RESIDUAL, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    decode_frame, find_preamble, Frame, FrameError, FrameHeader, FrameSink, FrameType, SinkFull,
+    MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 use proptest::prelude::*;
+
+/// The receiver's header CRC register after a good header and its CRC
+/// octet. The register is the complement of what `crc8` returns.
+const HEADER_CRC_RESIDUAL: u8 = 0x55;
+/// The receiver's data CRC register after good data and its two CRC octets,
+/// the complement of what `crc16` returns.
+const DATA_CRC_RESIDUAL: u16 = 0xF0B8;
 
 /// Build a frame by hand, with valid CRCs, bypassing the encoder's checks.
 fn raw_frame(raw_type: u8, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
@@ -44,15 +51,12 @@ fn golden_crc_vectors() {
         let mut bytes = header.to_vec();
         bytes.push(expected);
         assert!(crc8_valid(&bytes));
-        assert_eq!(crc8_accumulate_all(&bytes), HEADER_CRC_RESIDUAL);
+        assert_eq!(!crc8(&bytes), HEADER_CRC_RESIDUAL);
     }
     // Computed here, not taken from the standard; the frames below use it.
     assert_eq!(crc16(&[0x01, 0x00]), 0x169F);
     assert!(crc16_valid(&[0x01, 0x00, 0x9F, 0x16]));
-    assert_eq!(
-        crc16_accumulate_all(&[0x01, 0x00, 0x9F, 0x16]),
-        DATA_CRC_RESIDUAL
-    );
+    assert_eq!(!crc16(&[0x01, 0x00, 0x9F, 0x16]), DATA_CRC_RESIDUAL);
     assert!(crc8_valid(&[crc8(&[])]));
 }
 
@@ -64,11 +68,11 @@ fn annex_g_token_example() {
     // The CRC register after each header octet, before the final complement.
     let registers = [0x55, 0xC2, 0xBC, 0x95, 0x73];
     for (count, register) in registers.into_iter().enumerate() {
-        assert_eq!(crc8_accumulate_all(&fields[..=count]), register);
+        assert_eq!(!crc8(&fields[..=count]), register);
     }
     assert_eq!(crc8(&fields), 0x8C);
     assert_eq!(
-        crc8_accumulate_all(&[0x00, 0x10, 0x05, 0x00, 0x00, 0x8C]),
+        !crc8(&[0x00, 0x10, 0x05, 0x00, 0x00, 0x8C]),
         HEADER_CRC_RESIDUAL
     );
 
@@ -87,13 +91,13 @@ fn annex_g_data_crc_example() {
     // The CRC register after each data octet, before the final complement.
     let registers = [0x1E0E, 0xEB70, 0x42EF];
     for (count, register) in registers.into_iter().enumerate() {
-        assert_eq!(crc16_accumulate_all(&data[..=count]), register);
+        assert_eq!(!crc16(&data[..=count]), register);
     }
     assert_eq!(crc16(&data), 0xBD10);
     // Sent least significant octet first; the receiver's register after each.
     let received = [0x01, 0x22, 0x30, 0x10, 0xBD];
-    assert_eq!(crc16_accumulate_all(&received[..4]), 0x0F3A);
-    assert_eq!(crc16_accumulate_all(&received), DATA_CRC_RESIDUAL);
+    assert_eq!(!crc16(&received[..4]), 0x0F3A);
+    assert_eq!(!crc16(&received), DATA_CRC_RESIDUAL);
     assert!(crc16_valid(&received));
 
     let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0x10, 0x05, &data);
@@ -462,9 +466,9 @@ impl FrameSink for FailingSink {
         None
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         if self.writes_left == 0 {
-            return Err(FrameError::BufferExhausted {
+            return Err(SinkFull {
                 needed: bytes.len(),
                 available: 0,
             });

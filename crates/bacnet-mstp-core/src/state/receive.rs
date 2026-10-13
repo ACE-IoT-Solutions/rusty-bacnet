@@ -121,6 +121,8 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             | FrameError::MissingVendorId { .. }
             | FrameError::Truncated { .. }
             | FrameError::BufferExhausted { .. } => true,
+            // An error the codec adds later counts too, until it is placed.
+            _ => true,
         }
     }
 

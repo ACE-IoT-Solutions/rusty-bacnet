@@ -1,9 +1,10 @@
 //! Which received frames end WAIT_FOR_REPLY, and which dropped candidates
 //! count as invalid frames for this station (Clauses 9.5.4, 9.5.6.4, 9.5.8).
 
+use bacnet_mstp_codec::crc::crc8;
 use bacnet_mstp_codec::{
-    crc8, Frame, FrameError, FrameType, BROADCAST_MAC, MAX_COBS_FRAME_LENGTH,
-    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, PREAMBLE,
+    Frame, FrameError, FrameType, BROADCAST_MAC, MAX_COBS_FRAME_LENGTH, MAX_EXTENDED_FRAME_LENGTH,
+    MAX_EXTENDED_MPDU_DATA, PREAMBLE,
 };
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,

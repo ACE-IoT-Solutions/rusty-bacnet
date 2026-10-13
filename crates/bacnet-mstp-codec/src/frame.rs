@@ -1,9 +1,10 @@
 //! Frame types, headers, and encoding.
 
 use crate::cobs;
+use crate::crc::{crc16, crc8};
 use crate::{
-    crc16, crc8, FrameError, FrameSink, BROADCAST_MAC, HEADER_LENGTH, MAX_COBS_LENGTH,
-    MAX_STANDARD_MPDU_DATA, MIN_COBS_LENGTH, PREAMBLE,
+    FrameError, FrameSink, BROADCAST_MAC, HEADER_LENGTH, MAX_COBS_LENGTH, MAX_STANDARD_MPDU_DATA,
+    MIN_COBS_LENGTH, PREAMBLE,
 };
 
 /// Octets before the data field: the preamble and the header with its CRC.
@@ -24,7 +25,7 @@ pub(crate) const fn wire_length(length: usize) -> usize {
 }
 
 /// MS/TP frame type octet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum FrameType {
     /// Token frame.
@@ -61,6 +62,7 @@ pub enum FrameType {
 
 impl FrameType {
     /// Convert a raw frame type octet to its typed representation.
+    #[must_use]
     pub const fn from_raw(raw: u8) -> Self {
         match raw {
             0 => Self::Token,
@@ -78,6 +80,7 @@ impl FrameType {
     }
 
     /// Return this frame type's wire value.
+    #[must_use]
     pub const fn to_raw(self) -> u8 {
         match self {
             Self::Token => 0,
@@ -102,6 +105,7 @@ impl FrameType {
     /// [`ReplyPostponed`](Self::ReplyPostponed) (Clauses 9.3.1-9.3.3, 9.3.8).
     /// Every other type may, including the reserved types 8-31, which the
     /// codec passes through without policing their content.
+    #[must_use]
     pub const fn allows_data(self) -> bool {
         !matches!(self.to_raw(), 0 | 1 | 2 | 7)
     }
@@ -109,6 +113,7 @@ impl FrameType {
     /// Whether this type is in the COBS-encoded range, 32-127 (Clause 9.3).
     /// Its Length must fall within
     /// [`MIN_COBS_LENGTH`]..=[`MAX_COBS_LENGTH`] (Clause 9.5.8).
+    #[must_use]
     pub const fn is_cobs(self) -> bool {
         let raw = self.to_raw();
         raw >= 0x20 && raw <= 0x7F
@@ -119,12 +124,14 @@ impl FrameType {
     /// NPDUs of 502 to [`MAX_EXTENDED_MPDU_DATA`](crate::MAX_EXTENDED_MPDU_DATA)
     /// octets (Clauses 9.3.9, 9.3.10). The rest of the COBS range, 34-127,
     /// is reserved.
+    #[must_use]
     pub const fn is_extended_data(self) -> bool {
         matches!(self.to_raw(), 0x20 | 0x21)
     }
 
     /// Whether this type is in the vendor-proprietary range, 128-255. Such a
     /// frame's data opens with a 2-octet vendor identifier (Clause 9.3.11).
+    #[must_use]
     pub const fn is_proprietary(self) -> bool {
         self.to_raw() >= 0x80
     }
@@ -134,7 +141,7 @@ impl FrameType {
 ///
 /// The length field is not stored: it follows from the data that goes with
 /// the header, [`Frame::data`], and the frame type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FrameHeader {
     /// Frame type.
     pub frame_type: FrameType,
@@ -146,6 +153,7 @@ pub struct FrameHeader {
 
 impl FrameHeader {
     /// Construct a header.
+    #[must_use]
     pub const fn new(frame_type: FrameType, destination: u8, source: u8) -> Self {
         Self {
             frame_type,
@@ -186,7 +194,7 @@ pub(crate) fn check_header_fields(
 }
 
 /// A frame whose data borrows from the caller or from decoder storage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Frame<'a> {
     /// Header fields.
     pub header: FrameHeader,
@@ -198,6 +206,7 @@ pub struct Frame<'a> {
 
 impl<'a> Frame<'a> {
     /// Construct a frame.
+    #[must_use]
     pub const fn new(frame_type: FrameType, destination: u8, source: u8, data: &'a [u8]) -> Self {
         Self {
             header: FrameHeader::new(frame_type, destination, source),

@@ -3,11 +3,18 @@
 //! already pin: literal encodings, deterministic length boundaries in both
 //! decoders, a bad preamble, and the preamble search at its edges.
 
+use bacnet_mstp_codec::crc::{crc16, crc16_valid, crc8, crc8_valid};
 use bacnet_mstp_codec::{
-    crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid, decode_frame,
-    find_preamble, DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, DATA_CRC_RESIDUAL,
-    HEADER_CRC_RESIDUAL, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    decode_frame, find_preamble, DecodeEvent, Frame, FrameError, FrameType, StreamDecoder,
+    MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
+
+/// The receiver's header CRC register after a good header and its CRC
+/// octet. The register is the complement of what `crc8` returns.
+const HEADER_CRC_RESIDUAL: u8 = 0x55;
+/// The receiver's data CRC register after good data and its two CRC octets,
+/// the complement of what `crc16` returns.
+const DATA_CRC_RESIDUAL: u16 = 0xF0B8;
 
 fn encode(frame: Frame<'_>) -> Vec<u8> {
     let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
@@ -55,11 +62,11 @@ fn a_one_bit_header_or_data_error_fails_its_crc() {
     // The Token 0 from 7 header with its type octet's low bit set.
     let header = [0x01, 0x00, 0x07, 0x00, 0x00, 0x37];
     assert!(!crc8_valid(&header));
-    assert_ne!(crc8_accumulate_all(&header), HEADER_CRC_RESIDUAL);
+    assert_ne!(!crc8(&header), HEADER_CRC_RESIDUAL);
     // Data 01 00 with its first octet's low bit cleared.
     let data = [0x00, 0x00, 0x9F, 0x16];
     assert!(!crc16_valid(&data));
-    assert_ne!(crc16_accumulate_all(&data), DATA_CRC_RESIDUAL);
+    assert_ne!(!crc16(&data), DATA_CRC_RESIDUAL);
     // And the good ones, for contrast.
     assert!(crc8_valid(&[0x00, 0x00, 0x07, 0x00, 0x00, 0x37]));
     assert!(crc16_valid(&[0x01, 0x00, 0x9F, 0x16]));

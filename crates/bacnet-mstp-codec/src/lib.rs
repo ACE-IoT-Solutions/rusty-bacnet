@@ -84,7 +84,7 @@
 //! - `heapless`: for `heapless::Vec<u8, N>`.
 //! - `crc32k-table`: works out the CRC-32K with a 256-entry table, about
 //!   1 KiB more flash than the default 16-entry one and half the lookups (see
-//!   [`crc32k`]).
+//!   [`crc::crc32k`]).
 //!
 //! # Example
 //!
@@ -103,26 +103,23 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
+#![warn(missing_debug_implementations, clippy::must_use_candidate)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
 mod cobs;
-mod crc;
+pub mod crc;
 mod decode;
 mod error;
 mod frame;
 mod sink;
 mod stream;
 
-pub use crc::{
-    crc16, crc16_accumulate_all, crc16_valid, crc32k, crc32k_accumulate_all, crc8,
-    crc8_accumulate_all, crc8_valid,
-};
 pub use decode::{decode_frame, decode_frame_in_place, find_preamble};
 pub use error::FrameError;
 pub use frame::{Frame, FrameHeader, FrameType};
-pub use sink::FrameSink;
+pub use sink::{FrameSink, SinkFull};
 pub use stream::{DecodeEvent, StreamDecoder, StreamPhase};
 
 /// The two preamble octets that start every frame.
@@ -136,13 +133,6 @@ pub const MAX_STANDARD_MPDU_DATA: usize = 501;
 pub const MAX_MASTER: u8 = 127;
 /// The broadcast address. It is valid only as a destination.
 pub const BROADCAST_MAC: u8 = 0xFF;
-/// What the receiver's header CRC register holds after a good header.
-pub const HEADER_CRC_RESIDUAL: u8 = 0x55;
-/// What the receiver's data CRC register holds after good data.
-pub const DATA_CRC_RESIDUAL: u16 = 0xF0B8;
-/// What the receiver's CRC-32K register holds after a good extended frame's
-/// Encoded Data and its decoded CRC-32K octets (Clause 9.6.3).
-pub const CRC32K_RESIDUAL: u32 = 0x0843_323B;
 /// Longest standard frame on the wire: preamble, header, the largest data
 /// field and its CRC.
 pub const MAX_STANDARD_FRAME_LENGTH: usize =

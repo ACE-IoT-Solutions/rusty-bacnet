@@ -1,9 +1,10 @@
 //! The stream decoder's counted skip and noise runs (#1609), and extended
 //! frames through it (#1611).
 
+use bacnet_mstp_codec::crc::crc8;
 use bacnet_mstp_codec::{
-    crc8, DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase,
-    MAX_COBS_FRAME_LENGTH, MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH, PREAMBLE,
+    DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase, MAX_COBS_FRAME_LENGTH,
+    MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH, PREAMBLE,
 };
 use proptest::prelude::*;
 

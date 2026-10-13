@@ -1,7 +1,8 @@
 //! Integration tests for the incremental MS/TP stream decoder.
 
+use bacnet_mstp_codec::crc::{crc16, crc8};
 use bacnet_mstp_codec::{
-    crc16, crc8, DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase,
+    DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase,
     MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH, PREAMBLE,
 };
 use proptest::prelude::*;

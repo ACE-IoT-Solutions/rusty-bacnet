@@ -2,11 +2,15 @@
 
 use core::fmt;
 
+use crate::SinkFull;
+
 /// A frame could not be encoded or decoded.
 ///
 /// Encode and decode share the variants that mean the same thing in both
-/// directions; the caller knows which one it asked for.
+/// directions; the caller knows which one it asked for. Later releases may
+/// add variants, so a match outside this crate needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FrameError {
     /// Decode: the input ended before the header was complete.
     TooShort {
@@ -164,3 +168,12 @@ impl fmt::Display for FrameError {
 }
 
 impl core::error::Error for FrameError {}
+
+impl From<SinkFull> for FrameError {
+    fn from(full: SinkFull) -> Self {
+        Self::BufferExhausted {
+            needed: full.needed,
+            available: full.available,
+        }
+    }
+}

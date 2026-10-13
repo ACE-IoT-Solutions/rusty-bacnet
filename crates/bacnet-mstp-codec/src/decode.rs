@@ -1,8 +1,9 @@
 //! One-shot decoding, and the checks the stream decoder shares with it.
 
 use crate::cobs;
+use crate::crc::{crc16_valid, crc8_valid};
 use crate::frame::{check_header_fields, wire_length, DATA_OFFSET};
-use crate::{crc16_valid, crc8_valid, Frame, FrameError, FrameHeader, FrameType, PREAMBLE};
+use crate::{Frame, FrameError, FrameHeader, FrameType, PREAMBLE};
 
 /// The header of a candidate that passed the header CRC and the header
 /// checks of Clause 9.5.8, with a type the codec decodes.
@@ -172,6 +173,7 @@ pub fn decode_frame_in_place(input: &mut [u8]) -> Result<(Frame<'_>, usize), Fra
 }
 
 /// Return the offset of the first preamble in `data`, if it holds one.
+#[must_use]
 pub fn find_preamble(data: &[u8]) -> Option<usize> {
     data.windows(2).position(|pair| pair == PREAMBLE)
 }

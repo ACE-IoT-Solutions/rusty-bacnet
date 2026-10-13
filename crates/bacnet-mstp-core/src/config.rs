@@ -1,12 +1,11 @@
 //! Configuration and Clause 9 timing validation for the MS/TP master core.
 
 use bacnet_mstp_codec::{
-    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH,
+    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_MASTER, MAX_STANDARD_FRAME_LENGTH,
     MAX_STANDARD_MPDU_DATA,
 };
 use bacnet_time::Duration;
 
-const MAX_MASTER_ADDRESS: u8 = 127;
 const DEFAULT_BAUD_RATE: u32 = 9_600;
 /// The longest T_frame_abort a station may use (Clause 9.5.3): 100 ms.
 /// [`MstpCoreConfig::validate`] refuses a longer one.
@@ -410,7 +409,7 @@ impl MstpCoreConfig {
                 value: self.n_min_octets,
             });
         }
-        if self.max_master > MAX_MASTER_ADDRESS {
+        if self.max_master > MAX_MASTER {
             return Err(ConfigError::MaxMasterOutOfRange {
                 value: self.max_master,
             });
@@ -545,7 +544,7 @@ impl MstpCoreConfig {
     const fn for_baud_rate_unchecked(baud_rate: u32) -> Self {
         let config = Self {
             station: 0,
-            max_master: MAX_MASTER_ADDRESS,
+            max_master: MAX_MASTER,
             max_info_frames: 1,
             baud_rate,
             n_poll: 50,

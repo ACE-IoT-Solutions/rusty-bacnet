@@ -3,8 +3,9 @@
 //! and takes a good one as a valid frame of a type it doesn't know (Clause
 //! 9.5.4.9). Without the mode the decoder skips them by count, as before.
 
+use bacnet_mstp_codec::crc::crc8;
 use bacnet_mstp_codec::{
-    crc8, DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, MAX_COBS_FRAME_LENGTH,
+    DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, MAX_COBS_FRAME_LENGTH,
     MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH,
 };
 use proptest::prelude::*;

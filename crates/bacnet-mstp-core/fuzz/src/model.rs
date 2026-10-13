@@ -2,8 +2,9 @@
 //! and the standard rather than asked of the core, and the frames on the
 //! line.
 
+use bacnet_mstp_codec::crc::crc8;
 use bacnet_mstp_codec::{
-    crc8, decode_frame_in_place, Frame, FrameType, BROADCAST_MAC, MAX_EXTENDED_MPDU_DATA,
+    decode_frame_in_place, Frame, FrameType, BROADCAST_MAC, MAX_EXTENDED_MPDU_DATA,
     MAX_STANDARD_MPDU_DATA,
 };
 use bacnet_mstp_core::{Duration, MstpCoreConfig};

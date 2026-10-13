@@ -4,8 +4,9 @@
 //! 9.3.9, 9.3.10, 9.5.4.9, 9.5.6). The flag-off path is the rest of the
 //! suite, unchanged.
 
+use bacnet_mstp_codec::crc::crc8;
 use bacnet_mstp_codec::{
-    crc8, decode_frame_in_place, Frame, FrameType, BROADCAST_MAC, MAX_COBS_FRAME_LENGTH,
+    decode_frame_in_place, Frame, FrameType, BROADCAST_MAC, MAX_COBS_FRAME_LENGTH,
     MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH,
     MAX_STANDARD_MPDU_DATA,
 };
