@@ -142,8 +142,7 @@ fn one_message_never_corroborates_itself() {
 }
 
 /// The route cap: an I-Am-Router stops learning new networks there but
-/// still refreshes ones the table holds; an Init-ACK learns nothing more,
-/// as today (control_messages.rs:247 against :762). Direct routes count.
+/// still refreshes ones the table holds. Direct routes count.
 #[test]
 fn the_route_cap_ends_learning() {
     let options = options(|o| o.route_cap = 4);
@@ -158,12 +157,34 @@ fn the_route_cap_ends_learning() {
     deliver_broadcast(&mut router, &mut host, 1, R8, &i_am(&[10, 12, 9]), at(2));
     assert_eq!(router.table().lookup(10).unwrap().next_hop().as_slice(), R8);
     assert_eq!(router.table().lookup(9).unwrap().next_hop().as_slice(), R7);
-    // An Init-ACK at the cap stops at once, even for a held network.
-    let ack = message(MessageType::INITIALIZE_ROUTING_TABLE_ACK, &[1, 0, 9, 1, 0]);
-    deliver(&mut router, &mut host, 1, R8, &ack, at(3));
-    assert_eq!(router.table().lookup(9).unwrap().next_hop().as_slice(), R7);
     let counters = router.table().claim_counters();
-    assert_eq!((counters.learned_ok, counters.learned_cap_ignored), (3, 3));
+    assert_eq!((counters.learned_ok, counters.learned_cap_ignored), (3, 2));
+}
+
+/// An Init-ACK at the route cap does what an I-Am-Router does there
+/// (#1698): a network the table holds is refreshed, and a new one is
+/// refused, counted, and ends the message's learning.
+#[test]
+fn an_init_ack_at_the_cap_refreshes_held_networks() {
+    let options = options(|o| o.route_cap = 4);
+    let mut router = router_with(&fixture::two_ports(), options);
+    let mut host = Recorder::default();
+    deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9, 10]), at(1));
+    assert_eq!(router.table().networks().collect::<Vec<_>>(), [1, 2, 9, 10]);
+    host.events.clear();
+    // Network 9, held; 12, new; then 10, held, which 12 keeps unread.
+    let entries = [3, 0, 9, 1, 0, 0, 12, 1, 0, 0, 10, 1, 0];
+    let ack = message(MessageType::INITIALIZE_ROUTING_TABLE_ACK, &entries);
+    deliver(&mut router, &mut host, 1, R8, &ack, at(2));
+    let table = router.table();
+    assert_eq!(table.lookup(9).unwrap().next_hop().as_slice(), R8);
+    assert!(table.lookup(12).is_none());
+    assert_eq!(table.lookup(10).unwrap().next_hop().as_slice(), R7);
+    assert!(host.events.contains(&Event::RouteCap {
+        class: ControlClass::InitAck
+    }));
+    let counters = table.claim_counters();
+    assert_eq!((counters.learned_ok, counters.learned_cap_ignored), (3, 1));
 }
 
 /// Clause 6.6.3.2, scoped: answered with the network when it lies beyond

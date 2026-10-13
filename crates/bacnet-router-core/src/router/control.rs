@@ -245,9 +245,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// One learning claim of an I-Am-Router or an Init-ACK. `false` when the
-    /// route cap ends the message's learning. At the cap, an I-Am-Router
-    /// still refreshes networks the table holds; an Init-ACK learns nothing
-    /// more, as today (control_messages.rs:247 against :762).
+    /// route cap ends the message's learning: at the cap, both still
+    /// refresh networks the table holds, and the first network it doesn't
+    /// hold is refused, counted, and ends the message there (#1698).
     ///
     /// A network listed again in one message is no second claim: once a
     /// claim in it was for a route on another port, a repeat that still
@@ -264,8 +264,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         host: &mut impl Host,
     ) -> bool {
         let route = self.table.lookup(network);
-        let refresh_at_cap = class == ControlClass::IAm && route.is_some();
-        if self.table.len() >= usize::from(options.route_cap) && !refresh_at_cap {
+        if self.table.len() >= usize::from(options.route_cap) && route.is_none() {
             self.table.record_learning_cap();
             host.observe(Event::RouteCap { class });
             return false;

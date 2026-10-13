@@ -2276,7 +2276,10 @@ must not block or call into the router. A router has 1 to 255 ports, each
 with a MAC of at most `NpduAddress::MAX_MAC_LEN` octets, and `start` refuses
 anything else. The table stops at its route cap, direct routes included, for
 learning, Initialize-Routing-Table updates and I-Could-Be-Router offers
-alike, counting each refusal in its claim counters' `learned_cap_ignored`.
+alike, counting each refusal in its claim counters' `learned_cap_ignored`. At
+the cap, an I-Am-Router-To-Network or an Initialize-Routing-Table-Ack still
+refreshes the networks the table holds, and the first network it doesn't
+hold ends that message's learning (#1698).
 Two more bounds come with the engine. A rewritten NPDU longer than the
 engine's 65,556-octet scratch isn't routed: it is dropped, logged and
 counted in `BACnetRouter::counters().write_failures`. The scratch is the
