@@ -7,6 +7,7 @@ mod support;
 
 use std::collections::BTreeMap;
 
+use bacnet_router_core::message::RejectReason;
 use bacnet_router_core::table::{LearnRefusal, Learned, Reachability, RejectEffect, Table};
 use bacnet_router_core::{Mac, PortId};
 use proptest::prelude::*;
@@ -507,7 +508,7 @@ fn debug_shows_the_stored_routes_only() {
         "an empty table prints no slots"
     );
     table.add_learned(3000, port(1), mac(&[7]), BASE);
-    table.apply_reject(3000, port(1), 2, BASE, &TIMING);
+    table.apply_reject(3000, port(1), RejectReason::ROUTER_BUSY, BASE, &TIMING);
     let text = format!("{table:?}");
     assert_eq!(text.matches("Slot").count(), 1, "{text}");
     assert_eq!(text.matches("Hold").count(), 1, "{text}");
@@ -523,7 +524,7 @@ fn a_panicking_purge_callback_leaves_the_table_whole() {
     for network in [3000, 3001, 3002] {
         table.add_learned(network, port(1), mac(&[7]), BASE);
     }
-    table.apply_reject(3001, port(1), 2, BASE, &TIMING);
+    table.apply_reject(3001, port(1), RejectReason::ROUTER_BUSY, BASE, &TIMING);
     let before: Vec<u16> = table.networks().collect();
     let mut calls = 0;
     let unwound = catch_unwind(AssertUnwindSafe(|| {
@@ -541,7 +542,13 @@ fn a_panicking_purge_callback_leaves_the_table_whole() {
     // 3001's hold-down is still kept: a change from that port is held off.
     let mut probe = table.clone();
     assert_eq!(
-        probe.apply_reject(3001, port(1), 1, BASE, &TIMING),
+        probe.apply_reject(
+            3001,
+            port(1),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            BASE,
+            &TIMING
+        ),
         RejectEffect::HeldDown
     );
     assert_eq!(

@@ -13,8 +13,8 @@ use super::output::Kind;
 use super::tasks::Task;
 use super::Storage;
 use crate::message::{
-    code, reason, DisconnectConnection, EstablishConnection, ICouldBeRouter, NetworkNumberIs,
-    Networks, Reject, WhoIsRouter,
+    DisconnectConnection, EstablishConnection, ICouldBeRouter, MessageType, NetworkNumberIs,
+    Networks, Reject, RejectReason, WhoIsRouter,
 };
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
 use crate::table::Learned;
@@ -31,15 +31,15 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         &mut self,
         at: &Arrival<'f>,
         npdu: &Npdu<'f>,
+        kind: MessageType,
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        let kind = npdu.message_type.unwrap_or(0);
         let always_here = matches!(
             kind,
-            code::WHAT_IS_NETWORK_NUMBER
-                | code::NETWORK_NUMBER_IS
-                | code::REJECT_MESSAGE_TO_NETWORK
+            MessageType::WHAT_IS_NETWORK_NUMBER
+                | MessageType::NETWORK_NUMBER_IS
+                | MessageType::REJECT_MESSAGE_TO_NETWORK
         );
         let elsewhere = npdu.destination.filter(|destination| {
             destination.network != GLOBAL_NETWORK && destination.network != at.network
@@ -55,17 +55,23 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return self.forward(at, npdu, &route, host);
         }
         match kind {
-            code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, host),
-            code::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
-            code::I_COULD_BE_ROUTER_TO_NETWORK => self.i_could_be_router(at, npdu, options, host),
-            code::REJECT_MESSAGE_TO_NETWORK => self.received_reject(at, npdu, options, host),
-            code::ROUTER_BUSY_TO_NETWORK => self.flow_control(at, npdu, true, options, host),
-            code::ROUTER_AVAILABLE_TO_NETWORK => self.flow_control(at, npdu, false, options, host),
-            code::INITIALIZE_ROUTING_TABLE => {
+            MessageType::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, host),
+            MessageType::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
+            MessageType::I_COULD_BE_ROUTER_TO_NETWORK => {
+                self.i_could_be_router(at, npdu, options, host)
+            }
+            MessageType::REJECT_MESSAGE_TO_NETWORK => self.received_reject(at, npdu, options, host),
+            MessageType::ROUTER_BUSY_TO_NETWORK => self.flow_control(at, npdu, true, options, host),
+            MessageType::ROUTER_AVAILABLE_TO_NETWORK => {
+                self.flow_control(at, npdu, false, options, host)
+            }
+            MessageType::INITIALIZE_ROUTING_TABLE => {
                 self.initialize_routing_table(at, npdu, options, host)
             }
-            code::INITIALIZE_ROUTING_TABLE_ACK => self.routing_table_ack(at, npdu, options, host),
-            code::ESTABLISH_CONNECTION_TO_NETWORK => {
+            MessageType::INITIALIZE_ROUTING_TABLE_ACK => {
+                self.routing_table_ack(at, npdu, options, host)
+            }
+            MessageType::ESTABLISH_CONNECTION_TO_NETWORK => {
                 let Ok(request) = EstablishConnection::parse(npdu.payload) else {
                     return self.bad_message();
                 };
@@ -75,7 +81,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 });
                 Received::Handled
             }
-            code::DISCONNECT_CONNECTION_TO_NETWORK => {
+            MessageType::DISCONNECT_CONNECTION_TO_NETWORK => {
                 let Ok(request) = DisconnectConnection::parse(npdu.payload) else {
                     return self.bad_message();
                 };
@@ -85,7 +91,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 self.table.record_disconnect_removal_ignored();
                 Received::Handled
             }
-            code::WHAT_IS_NETWORK_NUMBER => {
+            MessageType::WHAT_IS_NETWORK_NUMBER => {
                 // Never routed, and with no data (Clause 6.4.19).
                 if npdu.source.is_some() || npdu.destination.is_some() || !npdu.payload.is_empty() {
                     return self.bad_message();
@@ -93,8 +99,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 self.out.push(Task::number_is(at.port));
                 Received::Handled
             }
-            code::NETWORK_NUMBER_IS => self.network_number_is(at, npdu, host),
-            code::SECURITY_FIRST..=code::SECURITY_LAST => {
+            MessageType::NETWORK_NUMBER_IS => self.network_number_is(at, npdu, host),
+            _ if kind.is_removed_security() => {
                 host.observe(Event::SecurityMessage { message_type: kind });
                 Received::Handled
             }
@@ -102,7 +108,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 // A reserved type, or a proprietary one without a DNET to
                 // route it by (Clause 6.6.3.5).
                 host.observe(Event::UnknownMessage { message_type: kind });
-                self.reject(at, npdu.source, 0, reason::UNKNOWN_MESSAGE_TYPE, host);
+                self.reject(at, npdu.source, 0, RejectReason::UNKNOWN_MESSAGE_TYPE, host);
                 Received::Handled
             }
         }
@@ -130,7 +136,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             port: at.port,
             port_network: at.network,
             source: at.source,
-            message_type: npdu.message_type.unwrap_or(0xFF),
+            // Only a network message is protected, and it has a type.
+            message_type: npdu.message_type.unwrap_or(MessageType::from_raw(u8::MAX)),
             vendor_id: npdu.vendor_id,
             snet: npdu.source.map(|source| source.network),
             dnet: npdu.destination.map(|destination| destination.network),
@@ -183,7 +190,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             vendor_id: None,
             ..*npdu
         };
-        let kind = Kind::Relay(code::WHO_IS_ROUTER_TO_NETWORK);
+        let kind = Kind::Relay(MessageType::WHO_IS_ROUTER_TO_NETWORK);
         if self.write_fan_out(&relay, kind, at.port, host) {
             Received::Handled
         } else {
@@ -197,7 +204,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         &mut self,
         at: &Arrival<'f>,
         npdu: &Npdu<'f>,
-        kind: u8,
+        kind: MessageType,
         host: &mut impl Host,
     ) -> Received<'f> {
         let relay = Npdu::message(kind, npdu.payload);
@@ -233,7 +240,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 break;
             }
         }
-        self.rebroadcast(at, npdu, code::I_AM_ROUTER_TO_NETWORK, host)
+        self.rebroadcast(at, npdu, MessageType::I_AM_ROUTER_TO_NETWORK, host)
     }
 
     /// One learning claim of an I-Am-Router or an Init-ACK. `false` when the
@@ -426,7 +433,11 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 }
             }
         }
-        let kind = npdu.message_type.unwrap_or(0);
+        let kind = if busy {
+            MessageType::ROUTER_BUSY_TO_NETWORK
+        } else {
+            MessageType::ROUTER_AVAILABLE_TO_NETWORK
+        };
         self.rebroadcast(at, npdu, kind, host)
     }
 

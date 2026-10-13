@@ -3,7 +3,7 @@
 
 mod fixture;
 
-use bacnet_router_core::message::code;
+use bacnet_router_core::message::MessageType;
 use bacnet_router_core::router::{
     Action, ConfigError, Discard, Event, Frame, Limits, Options, Permissive, Received, SendRefusal,
 };
@@ -275,7 +275,7 @@ fn discovery_is_bounded() {
             &mut Permissive,
         );
         while let Action::Send(send) = router.poll_action() {
-            if send.npdu[2] == code::WHO_IS_ROUTER_TO_NETWORK {
+            if send.npdu[2] == MessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw() {
                 solicited += 1;
             }
         }

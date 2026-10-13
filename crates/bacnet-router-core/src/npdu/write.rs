@@ -3,8 +3,8 @@
 use core::fmt;
 
 use super::{
-    Address, Npdu, DESTINATION, EXPECTING_REPLY, GLOBAL_NETWORK, NETWORK_MESSAGE, PRIORITY,
-    PROPRIETARY_FIRST, SOURCE, VERSION,
+    Address, Npdu, DESTINATION, EXPECTING_REPLY, GLOBAL_NETWORK, NETWORK_MESSAGE, PRIORITY, SOURCE,
+    VERSION,
 };
 use crate::MAX_MAC_LEN;
 
@@ -51,7 +51,7 @@ impl Npdu<'_> {
     pub fn encoded_len(&self) -> usize {
         let address = |address: Option<Address<'_>>| address.map_or(0, |a| 3 + a.mac.len());
         let message = match self.message_type {
-            Some(kind) if kind >= PROPRIETARY_FIRST => 3,
+            Some(kind) if kind.is_proprietary() => 3,
             Some(_) => 1,
             None => 0,
         };
@@ -120,8 +120,8 @@ impl Npdu<'_> {
             cursor.put(&[self.hop_count]);
         }
         if let Some(kind) = self.message_type {
-            cursor.put(&[kind]);
-            if kind >= PROPRIETARY_FIRST {
+            cursor.put(&[kind.to_raw()]);
+            if kind.is_proprietary() {
                 cursor.put(&self.vendor_id.unwrap_or(0).to_be_bytes());
             }
         }

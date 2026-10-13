@@ -4,6 +4,7 @@
 
 mod support;
 
+use bacnet_router_core::message::RejectReason;
 use bacnet_router_core::table::{Convergence, Learned, Reachability, RejectEffect};
 use bacnet_router_core::table::{LearnRefusal, Timing};
 use bacnet_router_core::{Instant, Mac, PortId};
@@ -150,7 +151,7 @@ fn absent_current_port_direct_and_reserved_claims_remain_immediate() {
 fn pending_claim_preserves_busy_and_reject_records_until_apply() {
     let mut table = learned_table();
     let now = BASE;
-    table.apply_reject(3000, port(0), 2, now, &TIMING);
+    table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, now, &TIMING);
     assert!(!claim(&mut table, 1, now));
     assert_eq!(
         table.lookup(3000).unwrap().busy_until,
@@ -158,7 +159,13 @@ fn pending_claim_preserves_busy_and_reject_records_until_apply() {
     );
     // The busy mark's hold-down holds off a reason-1 change.
     assert_eq!(
-        table.apply_reject(3000, port(0), 1, now, &TIMING),
+        table.apply_reject(
+            3000,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            now,
+            &TIMING
+        ),
         RejectEffect::HeldDown
     );
     assert_eq!(table.claim_counters().reject_dampened_hold_down, 1);
@@ -166,7 +173,13 @@ fn pending_claim_preserves_busy_and_reject_records_until_apply() {
     // The move cleared the hold-down: the same reject now applies.
     let mut probe = table.clone();
     assert_eq!(
-        probe.apply_reject(3000, port(0), 1, now, &TIMING),
+        probe.apply_reject(
+            3000,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            now,
+            &TIMING
+        ),
         RejectEffect::Applied
     );
     assert_eq!(

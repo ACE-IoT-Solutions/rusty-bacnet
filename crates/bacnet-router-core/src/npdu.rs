@@ -23,6 +23,7 @@ use core::fmt;
 pub use mac::{Mac, MacTooLong};
 pub use write::WriteError;
 
+use crate::message::MessageType;
 use crate::MAX_MAC_LEN;
 
 /// The protocol version every NPDU starts with.
@@ -30,9 +31,6 @@ pub const VERSION: u8 = 1;
 
 /// The DNET of a global broadcast.
 pub const GLOBAL_NETWORK: u16 = 0xFFFF;
-
-/// The first message type that carries a vendor ID.
-pub const PROPRIETARY_FIRST: u8 = 0x80;
 
 /// Control octet: a network-layer message, not an APDU.
 const NETWORK_MESSAGE: u8 = 0x80;
@@ -77,9 +75,9 @@ pub struct Npdu<'a> {
     /// it this is 255, as in `bacnet-encoding`.
     pub hop_count: u8,
     /// The network-layer message type, or `None` for an APDU.
-    pub message_type: Option<u8>,
+    pub message_type: Option<MessageType>,
     /// The vendor ID of a proprietary message type
-    /// ([`PROPRIETARY_FIRST`] and up).
+    /// ([`MessageType::is_proprietary`]).
     pub vendor_id: Option<u16>,
     /// The APDU, or the message's data, behind the NPCI.
     pub payload: &'a [u8],
@@ -196,7 +194,7 @@ impl<'a> Npdu<'a> {
 
     /// A network-layer message of a standard type for the local network: no
     /// addresses, normal priority, no vendor ID.
-    pub const fn message(message_type: u8, payload: &'a [u8]) -> Self {
+    pub const fn message(message_type: MessageType, payload: &'a [u8]) -> Self {
         let mut npdu = Self::apdu(payload);
         npdu.message_type = Some(message_type);
         npdu
@@ -283,9 +281,9 @@ impl<'a> Npdu<'a> {
         let mut message_type = None;
         let mut vendor_id = None;
         if control & NETWORK_MESSAGE != 0 {
-            let kind = *frame.get(at).ok_or(Malformed::Truncated)?;
+            let kind = MessageType::from_raw(*frame.get(at).ok_or(Malformed::Truncated)?);
             at += 1;
-            if kind >= PROPRIETARY_FIRST {
+            if kind.is_proprietary() {
                 let vendor = octets(frame, at, 2)?;
                 vendor_id = Some(u16::from_be_bytes([vendor[0], vendor[1]]));
                 at += 2;

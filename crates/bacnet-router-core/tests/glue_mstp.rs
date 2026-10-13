@@ -470,7 +470,7 @@ fn saturated_queue_backpressures_network_control() {
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(true);
     let query = message(
-        bacnet_router_core::message::code::INITIALIZE_ROUTING_TABLE,
+        bacnet_router_core::message::MessageType::INITIALIZE_ROUTING_TABLE,
         &[0],
     );
     let arrived = MSTP_PORT.arrived(7, STATION, &query);

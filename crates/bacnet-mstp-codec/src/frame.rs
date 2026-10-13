@@ -49,7 +49,7 @@ macro_rules! named_codes {
                 pub const $VARIANT: Self = Self($val);
             )*
 
-            /// Every named constant, with its name, in wire-value order.
+            /// Every named constant, with its name, in the order declared.
             pub const ALL_NAMED: &[(&str, Self)] = &[
                 $( (stringify!($VARIANT), Self($val)), )*
             ];

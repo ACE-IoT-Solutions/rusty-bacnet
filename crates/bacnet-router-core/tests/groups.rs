@@ -6,7 +6,7 @@
 
 mod fixture;
 
-use bacnet_router_core::message::{code, reason};
+use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::npdu::Npdu;
 use bacnet_router_core::router::{Discard, Group, Kind};
 use bacnet_router_core::PortId;
@@ -211,10 +211,10 @@ fn network_messages_for_a_group_are_dropped() {
     let mut host = host();
     let mut drops = 0;
     for group in [OWN_GROUP, OTHER_GROUP] {
-        let mut proprietary = Npdu::message(0x80, UNCONFIRMED);
+        let mut proprietary = Npdu::message(MessageType::from_raw(0x80), UNCONFIRMED);
         proprietary.vendor_id = Some(260);
         proprietary.destination = Some(addr(1, group));
-        let mut i_am = Npdu::message(code::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
+        let mut i_am = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
         i_am.destination = Some(addr(1, group));
         for frame in [bytes(&proprietary), bytes(&i_am)] {
             let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &frame, at(1));
@@ -233,8 +233,8 @@ fn a_reject_passing_on_to_a_group_is_dropped() {
     let mut host = host();
     learn_9_via_r7(&mut router, at(0));
     for (group, drops) in [(OWN_GROUP, 1), (OTHER_GROUP, 2)] {
-        let data = reject_data(reason::NOT_DIRECTLY_CONNECTED, 9);
-        let mut reject = Npdu::message(code::REJECT_MESSAGE_TO_NETWORK, &data);
+        let data = reject_data(RejectReason::NOT_DIRECTLY_CONNECTED, 9);
+        let mut reject = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
         reject.destination = Some(addr(1, group));
         let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &bytes(&reject), at(1));
         dropped(&router, &outcome, &sent, drops);

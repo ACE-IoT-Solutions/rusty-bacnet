@@ -3,7 +3,7 @@
 
 mod fixture;
 
-use bacnet_router_core::message::{code, reason};
+use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::npdu::{AddressField, Malformed, Npdu};
 use bacnet_router_core::router::{Discard, Kind, Options};
 use fixture::{
@@ -69,8 +69,11 @@ fn over_long_addresses_reject_with_reason_6() {
     assert_eq!(outcome, dropped(AddressField::Destination, 19));
     assert_eq!(sent.len(), 1);
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
-    assert_eq!(sent[0].kind, Kind::Reject(reason::ADDRESSING_ERROR));
-    assert_eq!(sent_reject(&sent[0]), (reason::ADDRESSING_ERROR, 9, None));
+    assert_eq!(sent[0].kind, Kind::Reject(RejectReason::ADDRESSING_ERROR));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::ADDRESSING_ERROR, 9, None)
+    );
 
     // A long DADR with a remote origin behind it: the reject goes to the
     // origin, through the router that relayed the NPDU.
@@ -79,7 +82,7 @@ fn over_long_addresses_reject_with_reason_6() {
     assert_eq!(sent[0].to.as_deref(), Some(NODE_A));
     assert_eq!(
         sent_reject(&sent[0]),
-        (reason::ADDRESSING_ERROR, 9, Some((7, vec![1, 2, 3])))
+        (RejectReason::ADDRESSING_ERROR, 9, Some((7, vec![1, 2, 3])))
     );
 
     // A long SADR: the origin can't be named, so the link sender hears.
@@ -92,7 +95,10 @@ fn over_long_addresses_reject_with_reason_6() {
         at(1),
     );
     assert_eq!(outcome, dropped(AddressField::Source, 19));
-    assert_eq!(sent_reject(&sent[0]), (reason::ADDRESSING_ERROR, 9, None));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::ADDRESSING_ERROR, 9, None)
+    );
 
     // A global broadcast, and an NPDU with no DNET: dropped, unanswered.
     let (outcome, sent) = deliver(
@@ -201,7 +207,7 @@ fn a_global_broadcast_with_a_dadr_goes_nowhere() {
     let mut router = router();
     let mut host = Recorder::default();
     for frame in [apdu_to(0xFFFF, &[5], UNCONFIRMED), {
-        let mut npdu = Npdu::message(code::I_AM_ROUTER_TO_NETWORK, &[0, 9]);
+        let mut npdu = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 9]);
         npdu.destination = Some(addr(0xFFFF, &[5]));
         bytes(&npdu)
     }] {
@@ -243,7 +249,7 @@ fn broadcast_addresses_carry_only_unconfirmed() {
     );
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!(sent.len(), 1);
-    let mut who_is = Npdu::message(code::WHO_IS_ROUTER_TO_NETWORK, &[]);
+    let mut who_is = Npdu::message(MessageType::WHO_IS_ROUTER_TO_NETWORK, &[]);
     who_is.destination = Some(addr(0xFFFF, &[]));
     let (outcome, _) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&who_is), at(1));
     assert_eq!(outcome, Outcome::Handled);

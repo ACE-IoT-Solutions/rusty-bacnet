@@ -1,81 +1,22 @@
 //! The network-layer messages a router reads and sends (Clause 6.4).
 //!
-//! [`code`] has their message types and [`reason`] the reject reasons, the
-//! values `bacnet-types` gives them. The views below read a message's data,
-//! the payload of an [`Npdu`](crate::npdu::Npdu) whose message type names
-//! it, in place: each parses the whole payload or refuses it with a
-//! [`DataError`], so a router never acts on part of a malformed message.
-//! The writers fill the caller's buffer and return the length, or a
-//! [`DataError`] with nothing written.
+//! [`MessageType`] names their types and [`RejectReason`] the reasons a
+//! reject gives, as open sets of wire codes: the values `bacnet-types`
+//! gives them, with room for any other octet. The views below read a
+//! message's data, the payload of an [`Npdu`](crate::npdu::Npdu) whose
+//! message type names it, in place: each parses the whole payload or
+//! refuses it with a [`DataError`], so a router never acts on part of a
+//! malformed message. The writers fill the caller's buffer and return the
+//! length, or a [`DataError`] with nothing written.
 //!
 //! The views check layout only. Policy, such as which network numbers a
 //! router may learn, stays with the router.
 
+mod codes;
+
 use core::fmt;
 
-/// Message types (Clause 6.2.4), grouped by what a router does with them,
-/// and by name within a group.
-pub mod code {
-    // Routing discovery: finding the router that reaches a network, and
-    // the refusal a router sends when it can't route a message.
-    /// A router's list of what it reaches; this router learns from it.
-    pub const I_AM_ROUTER_TO_NETWORK: u8 = 0x01;
-    /// A route on offer; kept only where the table has none.
-    pub const I_COULD_BE_ROUTER_TO_NETWORK: u8 = 0x02;
-    /// A refusal with its reason, carried back to whoever sent the message.
-    pub const REJECT_MESSAGE_TO_NETWORK: u8 = 0x03;
-    /// A route query, answered here or searched for beyond.
-    pub const WHO_IS_ROUTER_TO_NETWORK: u8 = 0x00;
-
-    // Busy and available: flow control between routers.
-    /// Lifts a hold on traffic.
-    pub const ROUTER_AVAILABLE_TO_NETWORK: u8 = 0x05;
-    /// Puts a hold on traffic, which lapses on its own.
-    pub const ROUTER_BUSY_TO_NETWORK: u8 = 0x04;
-
-    // The routing table: updates, queries and their answers.
-    /// A table update, or a query with a count of 0.
-    pub const INITIALIZE_ROUTING_TABLE: u8 = 0x06;
-    /// What comes back for one.
-    pub const INITIALIZE_ROUTING_TABLE_ACK: u8 = 0x07;
-
-    // Connections over point-to-point links, which this stack doesn't open.
-    /// Counted and otherwise ignored here.
-    pub const DISCONNECT_CONNECTION_TO_NETWORK: u8 = 0x09;
-    /// Logged and otherwise ignored here.
-    pub const ESTABLISH_CONNECTION_TO_NETWORK: u8 = 0x08;
-
-    // The network number of the local network.
-    /// The number, and whether it was configured.
-    pub const NETWORK_NUMBER_IS: u8 = 0x13;
-    /// The question that number answers.
-    pub const WHAT_IS_NETWORK_NUMBER: u8 = 0x12;
-
-    // Vendor and reserved ranges.
-    /// The first vendor-proprietary type; these carry a vendor ID.
-    pub const PROPRIETARY_FIRST: u8 = crate::npdu::PROPRIETARY_FIRST;
-    /// The first of the security types that are no longer defined;
-    /// [`SECURITY_LAST`] is the last.
-    pub const SECURITY_FIRST: u8 = 0x0A;
-    /// The last of those security types.
-    pub const SECURITY_LAST: u8 = 0x11;
-}
-
-/// Reject reasons (Clause 6.4.4).
-pub mod reason {
-    /// Some other error.
-    pub const OTHER: u8 = 0;
-    /// No route to the network, after looking for one.
-    pub const NOT_DIRECTLY_CONNECTED: u8 = 1;
-    /// The router is busy for that network for now.
-    pub const ROUTER_BUSY: u8 = 2;
-    /// A message type the router doesn't know.
-    pub const UNKNOWN_MESSAGE_TYPE: u8 = 3;
-    /// Too long to route to that network.
-    pub const MESSAGE_TOO_LONG: u8 = 4;
-    /// A DLEN or SLEN no data link uses.
-    pub const ADDRESSING_ERROR: u8 = 6;
-}
+pub use codes::{MessageType, RejectReason};
 
 /// Why a view refused a message's data, or a writer wrote nothing.
 ///
@@ -229,8 +170,8 @@ impl WhoIsRouter {
 /// A Reject-Message-To-Network's data: a reason and a network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reject {
-    /// The reason, one of [`reason`]'s.
-    pub reason: u8,
+    /// The reason.
+    pub reason: RejectReason,
     /// The network the refused message was for.
     pub network: u16,
 }
@@ -240,7 +181,7 @@ impl Reject {
     pub const fn parse(payload: &[u8]) -> Result<Self, DataError> {
         match *payload {
             [reason, high, low] => Ok(Self {
-                reason,
+                reason: RejectReason::from_raw(reason),
                 network: u16::from_be_bytes([high, low]),
             }),
             _ => Err(bad_length(payload)),
@@ -250,7 +191,7 @@ impl Reject {
     /// The data, as sent.
     pub const fn to_bytes(self) -> [u8; 3] {
         let [high, low] = self.network.to_be_bytes();
-        [self.reason, high, low]
+        [self.reason.to_raw(), high, low]
     }
 }
 

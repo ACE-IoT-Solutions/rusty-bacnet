@@ -11,7 +11,7 @@ mod glue;
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::Permissive;
 use bacnet_router_core::bip::{BipPort, HeldBroadcast, Ingress};
-use bacnet_router_core::message::code;
+use bacnet_router_core::message::MessageType;
 use bacnet_router_core::router::{Options, SendRefusal};
 use bacnet_router_core::Instant;
 
@@ -55,7 +55,7 @@ fn started_foreign_port<'h>(
 fn trace_e(released: Instant) -> [(Instant, Out); 3] {
     let dbtn = BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK;
     let ttl = 60u16.to_be_bytes();
-    let number_is = message(code::NETWORK_NUMBER_IS, &[0, 1, 1]);
+    let number_is = message(MessageType::NETWORK_NUMBER_IS, &[0, 1, 1]);
     [
         (
             Instant::ZERO,
@@ -171,7 +171,10 @@ fn held_broadcasts_leave_before_a_later_one() {
         [0x80, 0x80, 0x28],
         "the Number-Is, the I-Am-Router, then the Who-Is"
     );
-    assert_eq!(sent[0].npdu, message(code::NETWORK_NUMBER_IS, &[0, 1, 1]));
+    assert_eq!(
+        sent[0].npdu,
+        message(MessageType::NETWORK_NUMBER_IS, &[0, 1, 1])
+    );
     assert_eq!(sent[1].npdu, i_am(&[2]));
 }
 

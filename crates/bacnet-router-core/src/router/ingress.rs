@@ -5,7 +5,7 @@ use super::counters::bump;
 use super::host::{Group, Host};
 use super::tasks::Task;
 use super::Storage;
-use crate::message::reason;
+use crate::message::RejectReason;
 use crate::npdu::{Address, AddressField, Malformed, Npdu, ParseError, GLOBAL_NETWORK};
 use crate::table::{Reachability, Route};
 use crate::{Instant, Mac, PortId};
@@ -191,7 +191,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 // A global broadcast draws no reject, and an NPDU without a
                 // DNET has no network to name.
                 if let Some(dnet) = dnet.filter(|&dnet| dnet != GLOBAL_NETWORK) {
-                    self.reject(&at, source, dnet, reason::ADDRESSING_ERROR, host);
+                    self.reject(&at, source, dnet, RejectReason::ADDRESSING_ERROR, host);
                 }
                 return Received::Discarded(Discard::AddressTooLong { field, length });
             }
@@ -212,8 +212,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 return Received::Discarded(Discard::BroadcastNotUnconfirmed);
             }
         }
-        if npdu.is_network_message() {
-            return self.network_message(&at, &npdu, options, host);
+        if let Some(kind) = npdu.message_type {
+            return self.network_message(&at, &npdu, kind, options, host);
         }
         self.route_apdu(&at, &npdu, options, host)
     }
@@ -302,13 +302,19 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 bump(&mut self.counters.solicitations);
                 self.out.push(Task::solicit(at.port, dnet));
             }
-            self.reject(at, npdu.source, dnet, reason::NOT_DIRECTLY_CONNECTED, host);
+            self.reject(
+                at,
+                npdu.source,
+                dnet,
+                RejectReason::NOT_DIRECTLY_CONNECTED,
+                host,
+            );
             return None;
         };
         self.table.touch(dnet, at.now);
         let refusal = match reachability {
-            Some(Reachability::Busy) => reason::ROUTER_BUSY,
-            Some(Reachability::Unreachable) => reason::NOT_DIRECTLY_CONNECTED,
+            Some(Reachability::Busy) => RejectReason::ROUTER_BUSY,
+            Some(Reachability::Unreachable) => RejectReason::NOT_DIRECTLY_CONNECTED,
             _ => return Some(route),
         };
         self.reject(at, npdu.source, dnet, refusal, host);

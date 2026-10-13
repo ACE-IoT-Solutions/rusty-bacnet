@@ -5,6 +5,7 @@ use super::host::{Event, Group, Host};
 use super::ingress::{Arrival, Discard, Received};
 use super::tasks::Task;
 use super::Storage;
+use crate::message::RejectReason;
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
 use crate::PortId;
 
@@ -38,7 +39,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         at: &Arrival<'_>,
         origin: Option<Address<'_>>,
         network: u16,
-        reason: u8,
+        reason: RejectReason,
         host: &mut impl Host,
     ) {
         let task = match origin {

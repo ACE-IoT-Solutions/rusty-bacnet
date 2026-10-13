@@ -6,6 +6,7 @@
 mod rejects;
 
 use super::{ClaimCounters, Convergence, Reachability, Table};
+use crate::message::RejectReason;
 use crate::{Duration, Instant, Mac, PortId};
 
 use support::{Hosted, BASE, TIMING};
@@ -106,9 +107,21 @@ fn counters_saturate_without_affecting_decisions_and_snapshots_are_owned() {
     let now = BASE;
     for _ in 0..2 {
         table.add_learned(3000, PortId(0), Mac::EMPTY, now);
-        table.apply_reject(3000, PortId(0), 1, now, &TIMING);
-        table.apply_reject(3000, PortId(0), 1, now, &TIMING);
-        table.apply_reject(3000, PortId(0), 2, now, &TIMING);
+        table.apply_reject(
+            3000,
+            PortId(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            now,
+            &TIMING,
+        );
+        table.apply_reject(
+            3000,
+            PortId(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            now,
+            &TIMING,
+        );
+        table.apply_reject(3000, PortId(0), RejectReason::ROUTER_BUSY, now, &TIMING);
         assert_eq!(
             table.lookup(3000).unwrap().reachability,
             Reachability::Unreachable
@@ -190,7 +203,13 @@ fn the_eviction_count_saturates() {
     table.counters.hold_evicted = MAX - 1;
     for network in [10, 20] {
         table.add_learned(network, PortId(0), Mac::EMPTY, BASE);
-        table.apply_reject(network, PortId(0), 1, BASE, &TIMING);
+        table.apply_reject(
+            network,
+            PortId(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            BASE,
+            &TIMING,
+        );
     }
     assert_eq!(table.claim_counters().hold_evicted, MAX);
     assert_eq!(table.claim_counters().reject_applied, 2);

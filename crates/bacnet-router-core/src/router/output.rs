@@ -13,6 +13,7 @@ use super::counters::bump;
 use super::host::{Event, Host};
 use super::tasks::{Task, TaskKind};
 use super::Storage;
+use crate::message::{MessageType, RejectReason};
 use crate::npdu::Npdu;
 use crate::{Mac, PortId};
 
@@ -75,14 +76,14 @@ pub enum Kind {
     /// A network message of this type passed on: an I-Am-Router, a
     /// Router-Busy or Router-Available, or a Who-Is-Router searching
     /// further.
-    Relay(u8),
+    Relay(MessageType),
     /// A reject this router sends, with this reason.
-    Reject(u8),
+    Reject(RejectReason),
     /// An answer of this type: I-Am-Router, Initialize-Routing-Table-Ack
     /// or Network-Number-Is.
-    Answer(u8),
+    Answer(MessageType),
     /// A startup announcement of this type.
-    Announce(u8),
+    Announce(MessageType),
     /// A Who-Is-Router for a network the router has no route to.
     Solicit,
 }
@@ -144,6 +145,7 @@ pub(super) struct Current {
     active: bool,
     len: usize,
     tag: Tag,
+    /// The [`Kind`]'s octet, its message type or reject reason.
     code: u8,
     /// [`Cause::Local`]; zero is [`Cause::Ingress`].
     local: bool,
@@ -187,10 +189,10 @@ impl Current {
         let (tag, code) = match kind {
             Kind::Forward => (Tag::Forward, 0),
             Kind::Global => (Tag::Global, 0),
-            Kind::Relay(code) => (Tag::Relay, code),
-            Kind::Reject(code) => (Tag::Reject, code),
-            Kind::Answer(code) => (Tag::Answer, code),
-            Kind::Announce(code) => (Tag::Announce, code),
+            Kind::Relay(code) => (Tag::Relay, code.to_raw()),
+            Kind::Reject(reason) => (Tag::Reject, reason.to_raw()),
+            Kind::Answer(code) => (Tag::Answer, code.to_raw()),
+            Kind::Announce(code) => (Tag::Announce, code.to_raw()),
             Kind::Solicit => (Tag::Solicit, 0),
         };
         let mut current = Self {
@@ -238,10 +240,10 @@ impl Current {
         match self.tag {
             Tag::Forward => Kind::Forward,
             Tag::Global => Kind::Global,
-            Tag::Relay => Kind::Relay(self.code),
-            Tag::Reject => Kind::Reject(self.code),
-            Tag::Answer => Kind::Answer(self.code),
-            Tag::Announce => Kind::Announce(self.code),
+            Tag::Relay => Kind::Relay(MessageType::from_raw(self.code)),
+            Tag::Reject => Kind::Reject(RejectReason::from_raw(self.code)),
+            Tag::Answer => Kind::Answer(MessageType::from_raw(self.code)),
+            Tag::Announce => Kind::Announce(MessageType::from_raw(self.code)),
             Tag::Solicit => Kind::Solicit,
         }
     }

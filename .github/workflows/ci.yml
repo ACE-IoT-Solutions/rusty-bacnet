@@ -159,7 +159,7 @@ jobs:
         run: python3 scripts/ci/test-check-msrv.py
       - name: Firmware size script regressions
         run: python3 scripts/ci/test-firmware-size.py
-      # The codecs' two private copies of named_codes! (docs/ci.md, "Local checks").
+      # The three private copies of named_codes! (docs/ci.md, "Local checks").
       - name: named_codes! copies match
         run: python3 scripts/ci/check-named-codes.py
       - name: Release script tests

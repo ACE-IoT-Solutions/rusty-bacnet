@@ -110,7 +110,7 @@ impl Host for HostedHost<'_> {
             source_mac: MacAddr::from_slice(claim.source),
             provenance: self.provenance,
             trust: ControlTrust::from_provenance(self.provenance),
-            message_type: claim.message_type,
+            message_type: claim.message_type.to_raw(),
             vendor_id: claim.vendor_id,
             source_net: claim.snet,
             dest_net: claim.dnet,
@@ -196,7 +196,11 @@ fn log(event: Event) {
         },
         Event::RejectReceived {
             network, reason, ..
-        } => warn!(network, reason, "Received Reject-Message-To-Network"),
+        } => warn!(
+            network,
+            reason = reason.to_raw(),
+            "Received Reject-Message-To-Network"
+        ),
         Event::Marked {
             network,
             busy: true,
@@ -249,11 +253,11 @@ fn log(event: Event) {
             "Received Disconnect-Connection-To-Network (PTP not implemented; route removal ignored)"
         ),
         Event::SecurityMessage { message_type } => debug!(
-            message_type,
+            message_type = message_type.to_raw(),
             "Router received security network message (not implemented)"
         ),
         Event::UnknownMessage { message_type } => debug!(
-            message_type,
+            message_type = message_type.to_raw(),
             "Router rejecting unknown network message type"
         ),
         Event::NumberConflict {

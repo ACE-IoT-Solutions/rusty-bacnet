@@ -8,6 +8,7 @@
 use bacnet_encoding::npdu::{
     decode_npdu, encode_npdu, Npdu as Decoded, NpduAddress, NpduAddressField, NpduDecodeError,
 };
+use bacnet_router_core::message::MessageType;
 use bacnet_router_core::npdu::{Address, AddressField, Malformed, Npdu, ParseError, WriteError};
 use bacnet_router_core::MAX_MAC_LEN;
 use bacnet_types::enums::NetworkPriority;
@@ -41,7 +42,10 @@ fn agree(frame: &[u8]) -> Result<(), TestCaseError> {
             prop_assert!(same_address(view.destination, decoded.destination.as_ref()));
             prop_assert!(same_address(view.source, decoded.source.as_ref()));
             prop_assert_eq!(view.hop_count, decoded.hop_count);
-            prop_assert_eq!(view.message_type, decoded.message_type);
+            prop_assert_eq!(
+                view.message_type.map(MessageType::to_raw),
+                decoded.message_type
+            );
             prop_assert_eq!(view.vendor_id, decoded.vendor_id);
             prop_assert_eq!(view.payload, &decoded.payload[..]);
             prop_assert_eq!(view.payload_offset + view.payload.len(), frame.len());
@@ -172,7 +176,7 @@ impl Fields {
             } else {
                 255
             },
-            message_type: self.message.map(|(kind, _)| kind),
+            message_type: self.message.map(|(kind, _)| MessageType::from_raw(kind)),
             vendor_id: self
                 .message
                 .and_then(|(kind, vendor)| (kind >= 0x80).then_some(vendor)),
@@ -194,7 +198,7 @@ impl Fields {
             destination: view.destination.map(address),
             source: view.source.map(address),
             hop_count: view.hop_count,
-            message_type: view.message_type,
+            message_type: view.message_type.map(MessageType::to_raw),
             vendor_id: view.vendor_id,
             payload: Bytes::copy_from_slice(view.payload),
         }
@@ -492,7 +496,7 @@ fn constructors_build_local_npdus() {
     assert_eq!(&out[..len], &[0x01, 0x00, 0x10, 0x08]);
     assert!(!apdu.is_network_message() && !apdu.is_global());
 
-    let message = Npdu::message(0x12, &[]);
+    let message = Npdu::message(MessageType::from_raw(0x12), &[]);
     let len = message.write(&mut out).unwrap();
     assert_eq!(&out[..len], &[0x01, 0x80, 0x12]);
     assert!(message.is_network_message());

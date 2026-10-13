@@ -3,7 +3,7 @@
 use core::fmt;
 
 use super::{Reachability, Table, Timing};
-use crate::message::reason;
+use crate::message::RejectReason;
 use crate::{Instant, PortId};
 
 /// What [`Table::apply_reject`] did.
@@ -145,12 +145,15 @@ impl<const R: usize, const H: usize> Table<R, H> {
         &mut self,
         network: u16,
         port: PortId,
-        reason: u8,
+        reason: RejectReason,
         now: Instant,
         timing: &Timing,
     ) -> RejectEffect {
         let learned = self.lookup(network).is_some_and(|route| !route.direct);
-        let other = !matches!(reason, reason::NOT_DIRECTLY_CONNECTED | reason::ROUTER_BUSY);
+        let other = !matches!(
+            reason,
+            RejectReason::NOT_DIRECTLY_CONNECTED | RejectReason::ROUTER_BUSY
+        );
         if learned && other {
             let kept = &mut self.counters.reject_kept;
             *kept = kept.saturating_add(1);
@@ -162,10 +165,10 @@ impl<const R: usize, const H: usize> Table<R, H> {
             let lapsed = route.busy_until.is_some_and(|deadline| now >= deadline);
             !route.direct
                 && match reason {
-                    reason::NOT_DIRECTLY_CONNECTED => {
+                    RejectReason::NOT_DIRECTLY_CONNECTED => {
                         route.reachability != Reachability::Unreachable
                     }
-                    reason::ROUTER_BUSY => {
+                    RejectReason::ROUTER_BUSY => {
                         route.reachability != Reachability::Unreachable
                             && (route.reachability != Reachability::Busy || lapsed)
                     }
@@ -190,7 +193,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
             };
         }
         counters.reject_applied = counters.reject_applied.saturating_add(1);
-        if reason == reason::NOT_DIRECTLY_CONNECTED {
+        if reason == RejectReason::NOT_DIRECTLY_CONNECTED {
             self.mark_unreachable(network);
         } else {
             // Only reasons 1 and 2 change a route.

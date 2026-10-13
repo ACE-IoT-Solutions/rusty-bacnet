@@ -3,7 +3,7 @@
 
 mod fixture;
 
-use bacnet_router_core::message::{code, reason};
+use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::npdu::Npdu;
 use bacnet_router_core::router::{Cause, Discard, Event, Kind, Limits, Options};
 use bacnet_router_core::PortId;
@@ -139,10 +139,10 @@ fn hop_count_reaching_zero_stops_routed_network_messages() {
     let mut router = router();
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
-    let mut i_am = Npdu::message(code::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
+    let mut i_am = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
     i_am.destination = Some(addr(9, &[5]));
-    let data = [reason::NOT_DIRECTLY_CONNECTED, 0, 9];
-    let mut reject = Npdu::message(code::REJECT_MESSAGE_TO_NETWORK, &data);
+    let data = fixture::reject_data(RejectReason::NOT_DIRECTLY_CONNECTED, 9);
+    let mut reject = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
     reject.destination = Some(addr(9, &[5]));
     for mut message in [i_am, reject] {
         message.hop_count = 1;
@@ -217,7 +217,7 @@ fn proprietary_messages_route_opaquely() {
     let mut router = router();
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
-    let mut message = Npdu::message(0x80, &[0xDE, 0xAD]);
+    let mut message = Npdu::message(MessageType::from_raw(0x80), &[0xDE, 0xAD]);
     message.vendor_id = Some(260);
     message.destination = Some(addr(9, &[5]));
     let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&message), at(1));
@@ -226,12 +226,12 @@ fn proprietary_messages_route_opaquely() {
     let parsed = sent[0].parsed();
     assert_eq!(
         (parsed.message_type, parsed.vendor_id),
-        (Some(0x80), Some(260))
+        (Some(MessageType::from_raw(0x80)), Some(260))
     );
     assert_eq!(parsed.payload, [0xDE, 0xAD]);
 
     // An I-Am-Router for another network is routed too, not learned from.
-    let mut i_am = Npdu::message(code::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
+    let mut i_am = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
     i_am.destination = Some(addr(9, &[5]));
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&i_am), at(1));
     assert_eq!((sent.len(), sent[0].kind), (1, Kind::Forward));
@@ -310,8 +310,11 @@ fn too_long_for_the_egress_port_draws_reason_4() {
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!(sent.len(), 1);
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
-    assert_eq!(sent[0].kind, Kind::Reject(reason::MESSAGE_TOO_LONG));
-    assert_eq!(sent_reject(&sent[0]), (reason::MESSAGE_TOO_LONG, 2, None));
+    assert_eq!(sent[0].kind, Kind::Reject(RejectReason::MESSAGE_TOO_LONG));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::MESSAGE_TOO_LONG, 2, None)
+    );
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &to_2(596), at(1));
     assert_eq!(sent.len(), 1);
     assert_eq!((sent[0].port, sent[0].npdu.len()), (1, 600));
@@ -328,7 +331,10 @@ fn too_long_for_the_egress_port_draws_reason_4() {
     let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &remote(497), at(1));
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent_reject(&sent[0]), (reason::MESSAGE_TOO_LONG, 2, None));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::MESSAGE_TOO_LONG, 2, None)
+    );
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &remote(496), at(1));
     assert_eq!((sent[0].port, sent[0].is_broadcast()), (1, true));
     assert_eq!(sent[0].npdu.len(), 501);
@@ -344,7 +350,10 @@ fn too_long_for_the_egress_port_draws_reason_4() {
     assert_eq!((sent[0].to.as_deref(), sent[0].npdu.len()), (Some(R7), 600));
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &to_9(592), at(1));
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent_reject(&sent[0]), (reason::MESSAGE_TOO_LONG, 9, None));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::MESSAGE_TOO_LONG, 9, None)
+    );
     assert_eq!(router.counters().rejects, 3);
     assert_eq!(router.counters().egress_too_long, 3);
 
@@ -403,7 +412,10 @@ fn a_fan_out_goes_by_the_broadcast_limit() {
     assert_eq!((sent[0].port, sent[0].npdu.len()), (1, 520));
     host.events.clear();
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &to_2(597), at(1));
-    assert_eq!(sent_reject(&sent[0]), (reason::MESSAGE_TOO_LONG, 2, None));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::MESSAGE_TOO_LONG, 2, None)
+    );
     let refused = Event::TooLong {
         port: PortId(1),
         octets: 601,

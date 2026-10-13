@@ -6,7 +6,7 @@ use super::ingress::{Arrival, Discard, Received};
 use super::output::{Kind, Target};
 use super::Storage;
 use super::MIN_LIMIT;
-use crate::message::reason;
+use crate::message::RejectReason;
 use crate::npdu::{Address, Npdu};
 use crate::table::Route;
 use crate::MAX_MAC_LEN;
@@ -106,7 +106,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 limit,
                 rejected: Some(dnet),
             });
-            self.reject(at, npdu.source, dnet, reason::MESSAGE_TOO_LONG, host);
+            self.reject(at, npdu.source, dnet, RejectReason::MESSAGE_TOO_LONG, host);
             return Received::Handled;
         }
         if self.write_now(&rewritten, Kind::Forward, Target::Toward(route.port, to)) {
