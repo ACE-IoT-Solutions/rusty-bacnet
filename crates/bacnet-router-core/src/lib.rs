@@ -118,6 +118,8 @@ mod arrived;
 pub mod bip;
 pub mod discovery;
 pub mod message;
+#[cfg(feature = "mstp")]
+pub mod mstp;
 pub mod npdu;
 pub mod router;
 pub mod table;

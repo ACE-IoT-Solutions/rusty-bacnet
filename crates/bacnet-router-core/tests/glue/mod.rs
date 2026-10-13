@@ -2,7 +2,7 @@
 //! B/IP addresses for the `bip` glue, and an MS/TP master core over boxed
 //! storage for the `mstp` glue.
 
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 use core::borrow::BorrowMut;
 
@@ -11,6 +11,11 @@ use bacnet_router_core::{Router, Storage};
 
 #[cfg(feature = "bip")]
 pub use self::bip::*;
+#[cfg(feature = "mstp")]
+pub use self::mstp::*;
+
+#[cfg(feature = "mstp")]
+mod mstp;
 
 /// Poll `router` until idle, handing each send to `each` and telling the
 /// router of each refusal, as a firmware loop does. Returns each send's
