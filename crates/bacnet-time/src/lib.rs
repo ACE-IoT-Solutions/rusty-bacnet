@@ -62,6 +62,7 @@
 //! ```
 
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations, clippy::must_use_candidate)]
 

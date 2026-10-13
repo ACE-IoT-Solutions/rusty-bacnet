@@ -102,6 +102,7 @@
 //! ```
 
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations, clippy::must_use_candidate)]
 
@@ -158,3 +159,8 @@ pub const MAX_EXTENDED_FRAME_LENGTH: usize = PREAMBLE.len()
 /// the largest Length.
 pub const MAX_COBS_FRAME_LENGTH: usize =
     PREAMBLE.len() + HEADER_LENGTH + MAX_COBS_LENGTH + cobs::LENGTH_ADJUSTMENT;
+
+/// The README's example, compiled and run as a doctest.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;

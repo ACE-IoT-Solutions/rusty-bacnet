@@ -73,6 +73,7 @@
 //! ```
 
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations, clippy::must_use_candidate)]
 
@@ -114,3 +115,8 @@ pub const FDT_ENTRY_LENGTH: usize = 10;
 /// The default UDP port, 47808 (0xBAC0), for B/IP and B/IPv6 alike (Annex
 /// J.1.2, U.1.1.2).
 pub const DEFAULT_PORT: u16 = 0xBAC0;
+
+/// The README's example, compiled and run as a doctest.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
