@@ -94,22 +94,27 @@ pub struct MstpCounters {
     pub frames_transmitted: u64,
     /// Deliveries dropped because every delivery slot was full.
     pub delivery_drops: u64,
-    /// Framing errors, outside this station's own transmissions.
+    /// Framing errors, outside this station's own transmissions. This
+    /// transport reports no receive errors to the core (a host serial API
+    /// gives none per octet), so this and the three below stay zero.
     pub framing_errors: u64,
-    /// Overruns, the same way.
+    /// Overruns, the same way; zero here.
     pub overrun_errors: u64,
-    /// Parity errors, the same way.
+    /// Parity errors, the same way; zero here.
     pub parity_errors: u64,
-    /// Breaks, the same way.
+    /// Breaks, the same way; zero here.
     pub break_errors: u64,
-    /// Transmits aborted as `Aborted`.
+    /// Transmits aborted as `Aborted`. This transport never aborts with that
+    /// reason, so it stays zero.
     pub transmit_aborts: u64,
-    /// Transmits aborted as `Timeout`, by the transport or the core's
-    /// transmit watchdog.
+    /// Transmits aborted as `Timeout`: here only by the core's own transmit
+    /// watchdog, since the transport never reports a timeout itself.
     pub transmit_timeouts: u64,
-    /// Transmits aborted as `Io`: a serial write or drain failed.
+    /// Transmits aborted as `Io`: a serial write or drain failed, the only
+    /// reason this transport reports.
     pub transmit_io_errors: u64,
-    /// Transmits aborted as `Rejected`.
+    /// Transmits aborted as `Rejected`. This transport never aborts with
+    /// that reason, so it stays zero.
     pub transmit_rejections: u64,
     /// Time spent with driver-enable asserted.
     pub de_assertion: Duration,
@@ -189,6 +194,60 @@ mod tests {
             fields(&format!("{:#?}", CoreQueueCounters::default())),
             fields(&format!("{:#?}", QueueCounters::default()))
         );
+    }
+
+    /// One take, every field of it a different value, adds each field to
+    /// the total of the same name and no other: the totals then read as
+    /// the take, field by field (a `u32` and a `u64` print alike).
+    #[test]
+    fn each_count_goes_to_its_own_total() {
+        let mut taken = CoreCounters::default();
+        let counts = [
+            &mut taken.state_transitions,
+            &mut taken.deadline_misses,
+            &mut taken.token_rotations,
+            &mut taken.token_regenerations,
+            &mut taken.missed_generation_slots,
+            &mut taken.token_retries,
+            &mut taken.parser_errors,
+            &mut taken.late_replies,
+            &mut taken.expired_requests,
+            &mut taken.cancelled_sends,
+            &mut taken.deferred_starts,
+            &mut taken.adapter_errors,
+            &mut taken.discarded_while_busy,
+            &mut taken.frame_aborts,
+            &mut taken.frames_received,
+            &mut taken.own_address_frames,
+            &mut taken.npdus_delivered,
+            &mut taken.frames_delivered,
+            &mut taken.frames_transmitted,
+            &mut taken.delivery_drops,
+            &mut taken.framing_errors,
+            &mut taken.overrun_errors,
+            &mut taken.parity_errors,
+            &mut taken.break_errors,
+            &mut taken.transmit_aborts,
+            &mut taken.transmit_timeouts,
+            &mut taken.transmit_io_errors,
+            &mut taken.transmit_rejections,
+        ];
+        for (value, count) in (1..).zip(counts) {
+            *count = value;
+        }
+        taken.de_assertion = Duration::from_nanos(1_234_567);
+        for (base, queue) in [(100, &mut taken.unicast), (200, &mut taken.broadcast)] {
+            queue.depth = base + 1;
+            queue.high_water = base + 2;
+            queue.enqueued = base + 3;
+            queue.dequeued = base + 4;
+            queue.drops_full = base + 5;
+            queue.drops_oversize = base + 6;
+            queue.drops_expired = base + 7;
+        }
+        let mut totals = MstpCounters::default();
+        totals.add(taken);
+        assert_eq!(format!("{totals:#?}"), format!("{taken:#?}"));
     }
 
     /// Each take adds every count, past `u32::MAX`; the depth is the

@@ -387,7 +387,7 @@ impl Driver<'_> {
         while taken.contains(&Some(id)) {
             id = TransmitId::new(id.generation().wrapping_add(1));
         }
-        let before = core.snapshot();
+        let before = (core.snapshot(), core.counters());
         let at = self.at();
         let result = match event {
             TransmitEvent::Start => core.on_transmit_started(id, at),
@@ -395,8 +395,10 @@ impl Driver<'_> {
             TransmitEvent::Abort => core.on_transmit_aborted(id, TransmitFailure::Io, at),
         };
         self.stamp = self.now;
-        if result != Err(CoreError::StaleTransmit) || core.snapshot() != before {
-            self.fail(&format!("{event:?} for an id nobody holds got {result:?}"));
+        if result != Err(CoreError::StaleTransmit) || (core.snapshot(), core.counters()) != before {
+            self.fail(&format!(
+                "{event:?} for an id nobody holds got {result:?}, or changed the core"
+            ));
         }
     }
 

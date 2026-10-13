@@ -620,38 +620,42 @@ fn taking_the_counters_drains_the_core_and_its_queues() {
     .unwrap();
     core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, at(0))
         .unwrap();
-    // Too long for a standard frame: the core refuses it itself.
+    for _ in 0..2 {
+        core.enqueue_npdu(0xFF, &[1, 0], NetworkPriority::Normal, at(0))
+            .unwrap();
+    }
+    // Too long for a standard frame: the core refuses it itself, once for
+    // each queue.
     let long = [0; MAX_STANDARD_MPDU_DATA + 1];
-    assert_eq!(
-        core.enqueue_npdu(2, &long, NetworkPriority::Normal, at(0)),
-        Err(bacnet_mstp_core::QueueRefusal::Oversize)
-    );
+    for destination in [2, 0xFF] {
+        assert_eq!(
+            core.enqueue_npdu(destination, &long, NetworkPriority::Normal, at(0)),
+            Err(bacnet_mstp_core::QueueRefusal::Oversize)
+        );
+    }
     core.on_receive_error(ReceiveError::Parity, at(1)).unwrap();
 
     let looked = core.counters();
     let taken = core.take_counters();
     assert_eq!(looked, taken);
     assert_eq!(taken.parity_errors, 1);
-    assert_eq!(
+    // Enqueued, refused as too long, and the depth, for each queue.
+    let queue = |counters: bacnet_mstp_core::QueueCounters| {
         (
-            taken.unicast.enqueued,
-            taken.unicast.drops_oversize,
-            taken.unicast.depth
-        ),
-        (1, 1, 1)
-    );
+            counters.enqueued,
+            counters.drops_oversize,
+            counters.depth,
+            counters.high_water,
+        )
+    };
+    assert_eq!(queue(taken.unicast), (1, 1, 1, 1));
+    assert_eq!(queue(taken.broadcast), (2, 1, 2, 2));
 
+    // Both queues' counts start again; their depths stay.
     let after = core.counters();
     assert_eq!((after.parity_errors, after.state_transitions), (0, 0));
-    assert_eq!(
-        (
-            after.unicast.enqueued,
-            after.unicast.drops_oversize,
-            after.unicast.depth,
-            after.unicast.high_water
-        ),
-        (0, 0, 1, 1)
-    );
+    assert_eq!(queue(after.unicast), (0, 0, 1, 1));
+    assert_eq!(queue(after.broadcast), (0, 0, 2, 2));
     assert_eq!(core.take_counters(), after);
 }
 

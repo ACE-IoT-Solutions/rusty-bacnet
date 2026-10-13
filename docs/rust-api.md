@@ -1919,7 +1919,8 @@ Renamed or removed in 0.13.0:
 - `HeaplessQueues::with_starvation_limit` and
   `AllocQueues::with_starvation_limit` are gone: the limit is
   `MstpCoreConfig::starvation_limit`, which `MasterCore::new` hands to the
-  queues.
+  queues. Queues used without a core start at that field's default, 8,
+  where they started at 16.
 - `CoreError::ClockRegression` is gone, under the clock rule above.
 
 `ConfigError`, `CoreError`, `QueueRefusal` and `PriorityError` implement
