@@ -6,16 +6,22 @@
 //! call asks to send, and none of them holds it across an await. The
 //! engine's hooks (group rules, the control gate and its authorizer, the
 //! logs) run under it too, so none of them may block or call back into the
-//! router. A panic can't leave the engine half-changed between calls, so a
-//! poisoned lock is taken as it is.
+//! router. If a hook panics, the lock is poisoned and is still taken as it
+//! is: whatever that call left unsent is dropped, and counted as
+//! `undrained`, by the engine's next frame.
+//!
+//! The engine's counts are copied out to atomics before each lock is let
+//! go ([`EngineGuard`]), so reading them never takes the lock.
 //!
 //! The engine runs on Tokio time from one origin, taken when the router
 //! starts ([`RouterClock`]), so paused-time tests drive its timers as they
 //! drive the transports'.
 
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use bacnet_router_core::router::{ConfigError, Limits, Options, PortConfig};
+use bacnet_router_core::router::{ConfigError, Counters, Limits, Options, PortConfig};
 use bacnet_router_core::{Duration, Instant, Router, Storage};
 
 use crate::router_table::{HOLD_RECORDS, ROUTE_CAP};
@@ -26,9 +32,11 @@ pub(super) const PORTS: usize = 255;
 /// The unknown networks the router looks for at once (Clause 6.6.3.1).
 pub(super) const SEARCHES: usize = 256;
 
-/// The output scratch: the longest NPDU a port carries (BACnet/SC carries
-/// up to 65,535 octets between hosts, Clause 6.6), plus the SNET, SLEN and
-/// longest SADR a rewrite adds.
+/// The output scratch: 65,535 octets, the largest BVLC message, plus the
+/// SNET, SLEN and longest SADR a rewrite adds. A BACnet/SC NPDU is shorter
+/// than that BVLC bound (Table 6-1 puts it at 61,327 octets, and Clause 6.6
+/// lets two BACnet/SC ports route NPDUs that long), so any of them fits
+/// with its added source address.
 pub(super) const SCRATCH: usize = 65_535 + 2 + 1 + bacnet_router_core::MAX_MAC_LEN;
 
 /// What a hosted router's engine keeps, boxed: about 115 KB.
@@ -41,6 +49,13 @@ pub(super) type HostedRouter =
 /// The hosted router's options: today's policy values and timers, the
 /// 256-route cap, and none of the Clause 6 fixes yet.
 const OPTIONS: Options = Options::HOSTED;
+
+// The engine's route cap is the table's size, which the crate publishes as
+// `ROUTE_CAP`: the two can't drift apart.
+const _: () = assert!(
+    OPTIONS.route_cap as usize == ROUTE_CAP,
+    "the hosted route cap is ROUTE_CAP"
+);
 
 /// Each port's NPDU limits. With no fixes on, the engine checks none, and
 /// the scratch is the only bound.
@@ -77,10 +92,11 @@ impl RouterClock {
     }
 }
 
-/// The engine of one router, with its clock.
+/// The engine of one router, with its clock and its published counts.
 pub(super) struct Engine {
     router: Mutex<HostedRouter>,
     clock: RouterClock,
+    published: Published,
 }
 
 impl Engine {
@@ -93,6 +109,7 @@ impl Engine {
         Ok(Self {
             router: Mutex::new(router),
             clock,
+            published: Published::default(),
         })
     }
 
@@ -106,9 +123,22 @@ impl Engine {
     }
 
     /// The engine, locked. Hold the guard for one call and its drain, never
-    /// across an await.
-    pub(super) fn lock(&self) -> MutexGuard<'_, HostedRouter> {
-        self.router.lock().unwrap_or_else(PoisonError::into_inner)
+    /// across an await. The lock isn't reentrant: a thread that holds the
+    /// guard and asks for it again waits for itself forever.
+    pub(super) fn lock(&self) -> EngineGuard<'_> {
+        let router = self.router.lock().unwrap_or_else(PoisonError::into_inner);
+        EngineGuard {
+            before: router.counters(),
+            router,
+            published: &self.published,
+        }
+    }
+
+    /// The engine's counts as of the last lock to be let go. Reading them
+    /// takes no lock, so a thread that holds the guard, or a hook running
+    /// under it, may read them too.
+    pub(super) fn counters(&self) -> Counters {
+        self.published.load()
     }
 
     /// Whether someone holds the engine's lock now.
@@ -130,6 +160,96 @@ impl Engine {
         self.clock.now()
     }
 }
+
+/// The engine, locked. Dropping it publishes the engine's counts, when the
+/// call under it changed them, and then lets the lock go.
+pub(super) struct EngineGuard<'a> {
+    router: MutexGuard<'a, HostedRouter>,
+    published: &'a Published,
+    /// The counts when the lock was taken.
+    before: Counters,
+}
+
+impl Deref for EngineGuard<'_> {
+    type Target = HostedRouter;
+
+    fn deref(&self) -> &HostedRouter {
+        &self.router
+    }
+}
+
+impl DerefMut for EngineGuard<'_> {
+    fn deref_mut(&mut self) -> &mut HostedRouter {
+        &mut self.router
+    }
+}
+
+impl Drop for EngineGuard<'_> {
+    fn drop(&mut self) {
+        // Still under the lock, so publications come in the engine's order
+        // and a count never goes back.
+        let counters = self.router.counters();
+        if counters != self.before {
+            self.published.store(&counters);
+        }
+    }
+}
+
+/// Declares [`Published`]: one atomic for each named field of [`Counters`],
+/// and the copies each way.
+macro_rules! published {
+    ($($field:ident),+ $(,)?) => {
+        /// The engine's counts, one atomic each. They are stored under the
+        /// engine's lock after its sends are queued (release) and read with
+        /// no lock (acquire), so a reader who sees a count also sees the
+        /// sends of the call that made it.
+        #[derive(Debug, Default)]
+        struct Published {
+            $($field: AtomicU64,)+
+        }
+
+        impl Published {
+            /// How many counts it keeps.
+            const FIELDS: usize = [$(stringify!($field)),+].len();
+
+            fn store(&self, counters: &Counters) {
+                $(self.$field.store(counters.$field, Ordering::Release);)+
+            }
+
+            fn load(&self) -> Counters {
+                let mut counters = Counters::default();
+                $(counters.$field = self.$field.load(Ordering::Acquire);)+
+                counters
+            }
+        }
+    };
+}
+
+published!(
+    address_length_drops,
+    global_broadcast_dadr_drops,
+    broadcast_pdu_type_drops,
+    group_dadr_drops,
+    malformed,
+    bad_messages,
+    unknown_port,
+    hop_count_drops,
+    denied,
+    unroutable_rejects,
+    rejects,
+    solicitations,
+    write_failures,
+    egress_too_long,
+    refused,
+    undrained,
+);
+
+// `Counters` holds only `u64` counts, so its size says how many there are:
+// a count the engine adds fails this until it is published too.
+const _: () = assert!(
+    std::mem::size_of::<Counters>() == Published::FIELDS * std::mem::size_of::<u64>(),
+    "publish every count in the engine's Counters"
+);
 
 /// Zeroed storage on the heap. Built here, outside any async function, so
 /// the 115 KB never sit in a future's state.

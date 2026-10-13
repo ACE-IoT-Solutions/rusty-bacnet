@@ -148,7 +148,11 @@ pub struct Claim<'c> {
 
 /// What [`Host::observe`] hears about: what the hosted router logs today
 /// that the call's result and actions don't show.
+///
+/// It is `#[non_exhaustive]`, so a new event isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
     /// A learning claim installed or refreshed a route.
     Learned {

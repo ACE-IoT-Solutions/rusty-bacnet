@@ -60,7 +60,12 @@ impl PortConfig {
 /// behind a switch. [`Fixes::NONE`], the default, behaves as the hosted
 /// router does today; #1679 turns them on there once the hosted router runs
 /// on this core. The rest of that list (R2, R4 to R7) comes with them.
+///
+/// It is `#[non_exhaustive]`, since each fix still to come adds a switch:
+/// outside this crate, start from [`Fixes::NONE`] or [`Fixes::ALL`] and
+/// set the switches to change.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Fixes {
     /// R1 (#1665): check every NPDU against its egress port's
     /// [`Limits`]. One routed toward a network draws reject reason 4
@@ -87,7 +92,12 @@ impl Fixes {
 }
 
 /// A router's policy values and timers.
+///
+/// It is `#[non_exhaustive]`, so a new option isn't a breaking change:
+/// outside this crate, start from [`Options::HOSTED`] and set the fields
+/// to change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Options {
     /// How a claim that moves a route to another port is taken.
     pub convergence: Convergence,
@@ -133,7 +143,11 @@ impl Default for Options {
 }
 
 /// Why [`Router::new`](super::Router::new) refused its configuration.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// No port at all.
     NoPorts,

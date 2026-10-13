@@ -8,6 +8,7 @@
 //! no case depends on bypassing it. The port queues hold 16 requests, so
 //! the full-queue cases still fill.
 
+use std::cell::Cell;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ use super::hosted_host::PortGroups;
 use super::local_control::LocalControl;
 use super::{RouterTableGuard, SendRequest};
 use crate::layer::{AdmissionReceiver, ReceivedApdu, ReceivedNetworkControl};
-use crate::router_table::{Convergence, Mac, PortId};
+use crate::router_table::{ClaimCounters, Convergence, Mac, PortId};
 
 pub(super) fn control_npdu(message_type: NetworkMessageType, payload: &[u8]) -> Npdu {
     Npdu {
@@ -35,6 +36,14 @@ pub(super) fn control_npdu(message_type: NetworkMessageType, payload: &[u8]) -> 
         payload: Bytes::copy_from_slice(payload),
         ..Npdu::default()
     }
+}
+
+/// The table's claim counts: zero but for what `set` changes.
+/// `ClaimCounters` is `#[non_exhaustive]`, so a test can't spell it out.
+pub(super) fn claim_counts(set: impl FnOnce(&mut ClaimCounters)) -> ClaimCounters {
+    let mut counts = ClaimCounters::default();
+    set(&mut counts);
+    counts
 }
 
 pub(super) fn attributes() -> Vec<DataAttribute> {
@@ -73,6 +82,8 @@ pub(super) struct Harness {
     /// The router's local APDU queue.
     pub(super) apdus: AdmissionReceiver<ReceivedApdu>,
     local_tx: crate::layer::AdmissionSender<ReceivedApdu>,
+    /// The write failures the test has taken note of.
+    write_failures_seen: Cell<u64>,
 }
 
 /// The harness router's own MAC on each port: [1] on 1000, [2] on 2000.
@@ -191,6 +202,7 @@ impl Harness {
             gate,
             apdus: AdmissionReceiver::from_apdu_parts(apdus, counters),
             local_tx,
+            write_failures_seen: Cell::new(0),
         };
         harness.connect(None);
         harness
@@ -262,9 +274,17 @@ impl Harness {
         }
     }
 
-    /// The engine's counts so far.
+    /// The engine's counts so far, as the router publishes them.
     pub(super) fn counters(&self) -> bacnet_router_core::router::Counters {
-        self.shared.engine.lock().counters()
+        self.shared.engine.counters()
+    }
+
+    /// The rewrites the engine couldn't write so far, noted as expected:
+    /// the harness checks, when it is dropped, that there were no others.
+    pub(super) fn take_write_failures(&self) -> u64 {
+        let failures = self.counters().write_failures;
+        self.write_failures_seen.set(failures);
+        failures
     }
 
     /// The router's time now.
@@ -328,6 +348,30 @@ impl Harness {
                 "expected no output on port {port}"
             );
         }
+    }
+}
+
+/// With the differential test gone (#1679), every suite on the harness
+/// checks what it used to: each call's sends were all polled, no rewrite
+/// failed unless the test took note of it, and the hold-down pool never
+/// overflowed.
+impl Drop for Harness {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let counters = self.counters();
+        assert_eq!(counters.undrained, 0, "every send was polled");
+        assert_eq!(
+            counters.write_failures,
+            self.write_failures_seen.get(),
+            "no rewrite failed unless the test expected it"
+        );
+        assert_eq!(
+            self.table().claim_counters().hold_evicted,
+            0,
+            "no hold-down record was evicted"
+        );
     }
 }
 

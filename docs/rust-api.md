@@ -2013,7 +2013,11 @@ by value, with `port: PortId`, `direct` and `next_hop: Mac`. Times in the
 table are the router's own, Tokio time since `start`, which `now()` reads, so
 paused-time tests drive the sweep too. Calls on the table are local
 management, which no wire-control policy sees; drop the guard soon, since
-every port waits for it.
+every port waits for it. The lock isn't reentrant: calling `table()` again
+while a guard lives on the same thread, or from the control authorizer,
+never returns. `counters()`, the four drop counts, `now()` and
+`control_snapshot()` take no lock, so they are safe to call meanwhile; the
+counts are copied out of the engine before each lock is let go.
 
 ```rust
 use bacnet_network::router_table::{Convergence, Reachability};
@@ -2032,9 +2036,11 @@ anything else. The table stops at its route cap, direct routes included, for
 learning, Initialize-Routing-Table updates and I-Could-Be-Router offers
 alike, counting each refusal in its claim counters' `learned_cap_ignored`.
 Two more bounds come with the engine. A rewritten NPDU longer than the
-engine's 65,556-octet scratch (the largest BACnet/SC NPDU, 65,535 octets,
-plus the SNET, SLEN and longest SADR a router adds) isn't routed: it is
-dropped, logged and counted in `BACnetRouter::counters().write_failures`.
+engine's 65,556-octet scratch isn't routed: it is dropped, logged and
+counted in `BACnetRouter::counters().write_failures`. The scratch is the
+largest BVLC message, 65,535 octets, plus the SNET, SLEN and longest SADR a
+router adds, so any BACnet/SC NPDU (at most 61,327 octets, Table 6-1) fits
+with its added source address.
 And the table keeps at most `HOLD_RECORDS` (1,024) reject hold-down records,
 one per network and arrival port; a full pool gives up its oldest record,
 counted in its claim counters' `hold_evicted`.

@@ -482,12 +482,11 @@ async fn ack_claims_learn_via_ingress_and_never_reconfigure() {
     assert!(table.lookup(1000).unwrap().direct);
     assert_eq!(
         table.claim_counters(),
-        ClaimCounters {
-            learned_ok: 1,
-            pending_started: 1,
-            corroborated_applied: 1,
-            ..Default::default()
-        }
+        claim_counts(|c| {
+            c.learned_ok = 1;
+            c.pending_started = 1;
+            c.corroborated_applied = 1;
+        })
     );
 }
 

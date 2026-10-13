@@ -69,7 +69,7 @@ mod send_warning;
 
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 
 /// The engine's counts, as [`BACnetRouter::counters`] reads them.
 pub use bacnet_router_core::router::Counters;
@@ -88,7 +88,7 @@ pub use control_policy::{ControlAuthContext, ControlAuthorizer, ControlClass};
 pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
 pub use control_policy::{ControlServiceCounters, ControlTrust};
 use dispatch::{Outputs, PortDispatch, Shared};
-use engine::{Engine, HostedRouter, RouterClock, PORTS};
+use engine::{Engine, EngineGuard, RouterClock, PORTS};
 use hosted_host::PortGroups;
 pub use options::{LocalApduReceiver, NetworkControlReceiver, RouterOptions, StartedRouter};
 
@@ -162,8 +162,16 @@ pub struct BACnetRouter {
 /// While it lives, every port's dispatch and the sweep wait for it: read or
 /// change what you need, then drop it. It can't be held across an await in
 /// a spawned task.
+///
+/// The lock behind it isn't reentrant. Don't call [`BACnetRouter::table`]
+/// again while holding one, nor from a [`ControlAuthorizer`], which runs
+/// while that lock is held: the call waits for the lock already held, and
+/// on the same thread that is forever. The router's other `&self` methods
+/// take no lock, so they are safe to call meanwhile: the counts
+/// ([`BACnetRouter::counters`] and the four drop counts),
+/// [`BACnetRouter::now`] and [`BACnetRouter::control_snapshot`].
 pub struct RouterTableGuard<'a> {
-    router: MutexGuard<'a, HostedRouter>,
+    router: EngineGuard<'a>,
 }
 
 impl Deref for RouterTableGuard<'_> {
@@ -239,8 +247,13 @@ impl BACnetRouter {
     /// 65,556-octet scratch, or with a field no NPDU may carry). They
     /// saturate and name no peer. The table's own counts are
     /// [`claim_counters`](crate::router_table::Table::claim_counters).
+    ///
+    /// They are the counts as of the last frame, sweep or table change the
+    /// engine finished, copied out before its lock was let go, so reading
+    /// them takes no lock: it is safe while a [`RouterTableGuard`] lives,
+    /// and so are the four drop counts below, which read them.
     pub fn counters(&self) -> Counters {
-        self.shared.engine.lock().counters()
+        self.shared.engine.counters()
     }
 
     /// NPDUs refused on any port since start because an address in them was
@@ -448,6 +461,12 @@ impl BACnetRouter {
         // Run the engine's sweep at each of its deadlines: it purges stale
         // learned routes, lapsed busy marks, hardened pending slots and
         // discovery entries. `last_used` never extends `last_seen` expiry.
+        //
+        // The task sleeps until the deadline it last read, and nothing
+        // wakes it early. That holds because only the sweep itself
+        // (`on_deadline`) moves the engine's `next_deadline`; if the core
+        // ever lets another call move it, that call's site must wake this
+        // task (a `Notify`, say), or the sweep runs late.
         let aging = Arc::clone(&shared);
         let aging_task = tokio::spawn(async move {
             let clock = aging.engine.clock();
@@ -480,6 +499,12 @@ impl BACnetRouter {
     /// Every port's dispatch waits while the guard lives, so drop it soon,
     /// and never hold it across an await. Times in it are the router's own
     /// ([`Self::now`]).
+    ///
+    /// Don't call it again while a guard lives on the same thread, or from
+    /// a [`ControlAuthorizer`]: the lock isn't reentrant, so that call
+    /// never returns. The counts, [`Self::now`] and
+    /// [`Self::control_snapshot`] take no lock and are safe to call while
+    /// the guard lives.
     pub fn table(&self) -> RouterTableGuard<'_> {
         RouterTableGuard {
             router: self.shared.engine.lock(),

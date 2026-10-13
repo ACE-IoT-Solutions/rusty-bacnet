@@ -5,11 +5,11 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{Cause, DropReason, Event, Fixes, Kind, Limits, Options};
+use bacnet_router_core::router::{Cause, DropReason, Event, Kind, Limits, Options};
 use bacnet_router_core::PortId;
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, port_on, router, router_with, sent_reject,
-    two_ports, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1, R7, UNCONFIRMED,
+    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, options, port_on, router, router_with,
+    sent_reject, two_ports, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1, R7, UNCONFIRMED,
 };
 
 /// Clause 6.5.4: SNET and SADR are added from the arrival network and the
@@ -247,13 +247,7 @@ fn unwritable_rewrites_are_dropped_and_counted() {
 /// counted, with no reject (decision D21 on #1679).
 #[test]
 fn egress_limits_with_r1_on() {
-    let options = Options {
-        fixes: Fixes {
-            egress_limits: true,
-            ..Fixes::NONE
-        },
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.fixes.egress_limits = true);
     let mut ports = [port_on(1, OWN_0), port_on(2, OWN_1), port_on(3, &[0x33])];
     ports[1].max_npdu = Limits::both(501);
     let mut router = router_with(&ports, options);

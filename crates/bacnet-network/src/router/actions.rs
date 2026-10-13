@@ -84,5 +84,7 @@ fn refused(kind: Kind, error: &TrySendError<SendRequest>) {
             warn!(%error, "Router dropped I-Am-Router announcement: output channel full")
         }
         Kind::Relay(_) | Kind::Solicit => {}
+        // A kind a later engine adds.
+        _ => warn!(%error, "Router dropped a message: output channel full"),
     }
 }

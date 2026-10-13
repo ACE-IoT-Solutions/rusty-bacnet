@@ -57,12 +57,11 @@ async fn first_rejects_keep_legacy_effects_and_repeated_claims_count_once() {
         }
         assert_eq!(
             h.table().claim_counters(),
-            ClaimCounters {
-                reject_applied: 1,
-                reject_dampened: 11,
-                reject_dampened_same_state: 11,
-                ..Default::default()
-            }
+            claim_counts(|c| {
+                c.reject_applied = 1;
+                c.reject_dampened = 11;
+                c.reject_dampened_same_state = 11;
+            })
         );
     }
 }
@@ -80,12 +79,11 @@ async fn spoofing_mac_does_not_bypass_hold_down_but_another_ingress_is_independe
     assert_eq!(reachability(&h, 3000), Some(Reachability::Unreachable));
     assert_eq!(
         h.table().claim_counters(),
-        ClaimCounters {
-            reject_applied: 2,
-            reject_dampened: 10,
-            reject_dampened_hold_down: 10,
-            ..Default::default()
-        }
+        claim_counts(|c| {
+            c.reject_applied = 2;
+            c.reject_dampened = 10;
+            c.reject_dampened_hold_down = 10;
+        })
     );
 }
 
@@ -129,14 +127,13 @@ async fn i_am_refresh_rearms_rejects_and_corroborated_learning_still_warns() {
     assert_eq!(table.lookup(3000).unwrap().flap_count, 4);
     assert_eq!(
         table.claim_counters(),
-        ClaimCounters {
-            learned_ok: 6,
-            reject_applied: 6,
-            flap_warned: 2,
-            pending_started: 4,
-            corroborated_applied: 4,
-            ..Default::default()
-        }
+        claim_counts(|c| {
+            c.learned_ok = 6;
+            c.reject_applied = 6;
+            c.flap_warned = 2;
+            c.pending_started = 4;
+            c.corroborated_applied = 4;
+        })
     );
 }
 
@@ -227,10 +224,7 @@ async fn each_learning_cap_counts_its_inspected_stop_without_changing_tail_handl
             assert_eq!(table.lookup(1).unwrap().port, PortId(0));
             assert_eq!(
                 table.claim_counters(),
-                ClaimCounters {
-                    learned_cap_ignored: 1,
-                    ..Default::default()
-                }
+                claim_counts(|c| c.learned_cap_ignored = 1)
             );
         }
         // Existing per-message cap behavior is preserved, including ACK's cap
@@ -281,10 +275,7 @@ async fn init_management_keeps_cap_for_new_entries_and_replaces_existing() {
         assert!(table.lookup(3001).is_none());
         assert_eq!(
             table.claim_counters(),
-            ClaimCounters {
-                learned_cap_ignored: 1,
-                ..Default::default()
-            }
+            claim_counts(|c| c.learned_cap_ignored = 1)
         );
     }
     // Replacement of an existing learned entry bypasses the cap and rewrites
@@ -305,10 +296,7 @@ async fn init_management_keeps_cap_for_new_entries_and_replaces_existing() {
     assert_eq!(route.next_hop.as_slice(), &[2]);
     assert_eq!(
         table.claim_counters(),
-        ClaimCounters {
-            learned_cap_ignored: 1,
-            ..Default::default()
-        }
+        claim_counts(|c| c.learned_cap_ignored = 1)
     );
 }
 
@@ -336,11 +324,10 @@ async fn direct_route_immunity_and_malformed_rejects_under_spam() {
     assert!(table.lookup(3000).unwrap().direct);
     assert_eq!(
         table.claim_counters(),
-        ClaimCounters {
-            reject_dampened: 30,
-            reject_dampened_same_state: 30,
-            ..Default::default()
-        }
+        claim_counts(|c| {
+            c.reject_dampened = 30;
+            c.reject_dampened_same_state = 30;
+        })
     );
 }
 
@@ -379,11 +366,10 @@ async fn init_replace_and_ack_refresh_both_rearm_reject_hold_down() {
     assert_eq!(route.next_hop.as_slice(), &[2]);
     assert_eq!(
         table.claim_counters(),
-        ClaimCounters {
-            learned_ok: 1,
-            reject_applied: 3,
-            ..Default::default()
-        }
+        claim_counts(|c| {
+            c.learned_ok = 1;
+            c.reject_applied = 3;
+        })
     );
 }
 
@@ -430,14 +416,13 @@ async fn dampened_table_transition_still_relays_every_reject() {
     }
     assert_eq!(
         h.table().claim_counters(),
-        ClaimCounters {
-            reject_applied: 1,
-            reject_dampened: 2,
+        claim_counts(|c| {
+            c.reject_applied = 1;
+            c.reject_dampened = 2;
             // The trailing Busy claim on a permanently Unreachable route is
             // a same-state no-op (it can never resurrect via auto-clear), not
             // a held-down change — while every reject still relays above.
-            reject_dampened_same_state: 2,
-            ..Default::default()
-        }
+            c.reject_dampened_same_state = 2;
+        })
     );
 }

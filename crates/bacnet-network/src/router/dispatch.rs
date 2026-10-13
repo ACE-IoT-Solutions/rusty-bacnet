@@ -18,7 +18,7 @@ use bacnet_router_core::router::{DropReason, Frame, Received};
 use bacnet_router_core::PortId;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::actions::drain;
 use super::control_policy::ControlGate;
@@ -203,5 +203,7 @@ fn log_drop(reason: DropReason, port: u8, source_len: usize) {
         | DropReason::Denied
         | DropReason::BadMessage
         | DropReason::Unroutable => {}
+        // A reason a later engine adds.
+        _ => debug!(port, ?reason, "Router dropped a frame"),
     }
 }

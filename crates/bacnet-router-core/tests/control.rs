@@ -10,7 +10,8 @@ use bacnet_router_core::table::{Convergence, Reachability};
 use bacnet_router_core::{Mac, PortId};
 use fixture::{
     addr, at, bytes, deliver, deliver_broadcast, i_am, learn_9_via_r7, listed, message, networks,
-    port_on, router, router_with, sent_reject, Outcome, Recorder, NODE_A, OWN_0, OWN_1, R7,
+    options, port_on, router, router_with, sent_reject, Outcome, Recorder, NODE_A, OWN_0, OWN_1,
+    R7,
 };
 
 /// Another router on port 1.
@@ -102,10 +103,7 @@ fn i_am_router_learns_then_rebroadcasts() {
 /// (control_messages.rs:253-261).
 #[test]
 fn one_message_never_corroborates_itself() {
-    let options = Options {
-        convergence: Convergence::Hardened,
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.convergence = Convergence::Hardened);
     let mut router = router_with(&fixture::two_ports(), options);
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
@@ -127,10 +125,7 @@ fn one_message_never_corroborates_itself() {
 /// as today (control_messages.rs:247 against :762). Direct routes count.
 #[test]
 fn the_route_cap_ends_learning() {
-    let options = Options {
-        route_cap: 4,
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.route_cap = 4);
     let mut router = router_with(&fixture::two_ports(), options);
     let mut host = Recorder::default();
     deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9, 10, 11]), at(1));
@@ -432,10 +427,7 @@ fn i_could_be_router_fills_only_gaps() {
 /// router stored these past its cap before #1679.
 #[test]
 fn the_route_cap_turns_i_could_be_router_away() {
-    let options = Options {
-        route_cap: 3,
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.route_cap = 3);
     let mut router = router_with(&fixture::two_ports(), options);
     let mut host = Recorder::default();
     let could_be = |network: u16| {

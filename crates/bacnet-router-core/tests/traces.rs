@@ -10,15 +10,13 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{
-    Cause, ControlClass, Counters, Event, Fixes, Kind, Options, Permissive,
-};
-use bacnet_router_core::table::{ClaimCounters, Convergence, Reachability, RejectEffect};
+use bacnet_router_core::router::{Cause, ControlClass, Counters, Event, Kind, Options, Permissive};
+use bacnet_router_core::table::{Convergence, Reachability, RejectEffect};
 use bacnet_router_core::{Instant, PortId};
 use fixture::{
-    addr, apdu_to, at, at_ms, bytes, deliver, deliver_broadcast, drain, i_am, learn_9_via_r7,
-    message, networks, reject_data, router, router_with, sent_reject, two_ports, Outcome, Recorder,
-    Sent, TestRouter, CONFIRMED, NODE_A, OWN_0, R7,
+    addr, apdu_to, at, at_ms, bytes, claim_counts, deliver, deliver_broadcast, drain, i_am,
+    learn_9_via_r7, message, networks, options, reject_data, router, router_counts, router_with,
+    sent_reject, two_ports, Outcome, Recorder, Sent, TestRouter, CONFIRMED, NODE_A, OWN_0, R7,
 };
 
 /// A confirmed request from A for node 5 on network 9.
@@ -29,11 +27,10 @@ fn from_a_to_9() -> Vec<u8> {
 /// The router's counts: `rejects` sent and `solicitations` made, nothing
 /// else.
 fn counts(rejects: u64, solicitations: u64) -> Counters {
-    Counters {
-        rejects,
-        solicitations,
-        ..Counters::default()
-    }
+    router_counts(|c| {
+        c.rejects = rejects;
+        c.solicitations = solicitations;
+    })
 }
 
 /// The reject the router sends A for that request, with `reason`.
@@ -82,10 +79,7 @@ fn a_discovery_learning_and_aging() {
     let mut router = router();
     let mut host = Recorder::default();
     let i_am_type = code::I_AM_ROUTER_TO_NETWORK;
-    let learned = |learned_ok| ClaimCounters {
-        learned_ok,
-        ..ClaimCounters::default()
-    };
+    let learned = |learned_ok| claim_counts(|c| c.learned_ok = learned_ok);
 
     // t = 0: each port announces the other port's network, port by port.
     router.start();
@@ -207,13 +201,7 @@ fn a_discovery_learning_and_aging() {
 /// I-Am-Router.
 #[test]
 fn startup_with_r3() {
-    let options = Options {
-        fixes: Fixes {
-            announce_numbers: true,
-            ..Fixes::NONE
-        },
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.fixes.announce_numbers = true);
     let mut router = router_with(&two_ports(), options);
     router.start();
     let sent = drain(&mut router);
@@ -351,12 +339,13 @@ fn c_received_rejects() {
         }
     };
     // The claim counts after each step: applied, same state, held down.
-    let rejects = |applied, same, held| ClaimCounters {
-        reject_applied: applied,
-        reject_dampened: same + held,
-        reject_dampened_same_state: same,
-        reject_dampened_hold_down: held,
-        ..ClaimCounters::default()
+    let rejects = |applied, same, held| {
+        claim_counts(|c| {
+            c.reject_applied = applied;
+            c.reject_dampened = same + held;
+            c.reject_dampened_same_state = same;
+            c.reject_dampened_hold_down = held;
+        })
     };
 
     // t = 0: reason 1 makes 9 unreachable.
@@ -411,10 +400,7 @@ fn c_received_rejects() {
 #[test]
 fn d_hardened_convergence() {
     const B: &[u8] = &[10, 0, 0, 7, 0xBA, 0xC0];
-    let options = Options {
-        convergence: Convergence::Hardened,
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.convergence = Convergence::Hardened);
     let mut router = router_with(&two_ports(), options);
     let mut host = Permissive;
     let claim = |router: &mut TestRouter, port: u8, from: &[u8], second: u64| {
@@ -431,11 +417,12 @@ fn d_hardened_convergence() {
         assert_eq!(router.counters(), Counters::default());
     };
     // The claim counts: learned, pending started, corroborated, expired.
-    let claims = |learned_ok, pending_started, corroborated_applied| ClaimCounters {
-        learned_ok,
-        pending_started,
-        corroborated_applied,
-        ..ClaimCounters::default()
+    let claims = |learned_ok, pending_started, corroborated_applied| {
+        claim_counts(|c| {
+            c.learned_ok = learned_ok;
+            c.pending_started = pending_started;
+            c.corroborated_applied = corroborated_applied;
+        })
     };
     let route_port = |router: &TestRouter| router.table().lookup(9).unwrap().port;
     let from_port_1 = apdu_to(9, &[5], CONFIRMED);
@@ -506,10 +493,7 @@ fn d_hardened_convergence() {
 #[test]
 fn d_a_repeat_past_the_window_starts_over() {
     const B: &[u8] = &[10, 0, 0, 7, 0xBA, 0xC0];
-    let options = Options {
-        convergence: Convergence::Hardened,
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.convergence = Convergence::Hardened);
     let mut router = router_with(&two_ports(), options);
     let mut host = Recorder::default();
     deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9]), at(0));

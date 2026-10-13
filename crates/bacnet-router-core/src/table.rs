@@ -158,7 +158,12 @@ pub struct Pending {
 /// Learning counts cover I-Am-Router and Initialize-Routing-Table-Ack
 /// entries the router inspects, not management writes or calls on the
 /// table itself. The router records some of them itself.
+///
+/// It is `#[non_exhaustive]`, so a new count isn't a breaking change.
+/// Outside this crate, build one from `ClaimCounters::default()` and set
+/// its fields.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ClaimCounters {
     /// Rejects that changed a learned route's state or removed it.
     pub reject_applied: u64,

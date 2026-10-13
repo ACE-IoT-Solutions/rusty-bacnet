@@ -166,23 +166,16 @@ async fn both_claim_paths_keep_forwarding_old_route_until_repeat() {
                 let mut fixture = Fixture::learned();
                 fixture.claim(1, &[2], first).await;
                 fixture.assert_forwarded(0, &[1]).await;
-                assert_eq!(
-                    fixture.claims(),
-                    ClaimCounters {
-                        pending_started: 1,
-                        ..Default::default()
-                    }
-                );
+                assert_eq!(fixture.claims(), claim_counts(|c| c.pending_started = 1));
                 fixture.claim(1, repeat_mac, second).await;
                 fixture.assert_forwarded(1, repeat_mac).await;
                 assert_eq!(
                     fixture.claims(),
-                    ClaimCounters {
-                        learned_ok: 1,
-                        pending_started: 1,
-                        corroborated_applied: 1,
-                        ..Default::default()
-                    }
+                    claim_counts(|c| {
+                        c.learned_ok = 1;
+                        c.pending_started = 1;
+                        c.corroborated_applied = 1;
+                    })
                 );
                 // Same-port MAC updates still apply on the very next claim.
                 fixture.claim(1, &[4], second).await;
@@ -204,13 +197,7 @@ async fn duplicate_entries_in_one_message_cannot_corroborate_a_replacement() {
         let mut fixture = Fixture::learned();
         fixture.deliver(1, &[2], kind, payload).await;
         fixture.assert_forwarded(0, &[1]).await;
-        assert_eq!(
-            fixture.claims(),
-            ClaimCounters {
-                pending_started: 1,
-                ..Default::default()
-            }
-        );
+        assert_eq!(fixture.claims(), claim_counts(|c| c.pending_started = 1));
         fixture.claim(1, &[2], kind).await;
         fixture.assert_forwarded(1, &[2]).await;
         assert_eq!(fixture.claims().corroborated_applied, 1);
@@ -222,13 +209,7 @@ async fn duplicate_entries_in_one_message_cannot_corroborate_a_replacement() {
         fixture.assert_forwarded(1, &[2]).await;
         fixture.deliver(1, &[3], kind, payload).await;
         fixture.assert_forwarded(1, &[3]).await;
-        assert_eq!(
-            fixture.claims(),
-            ClaimCounters {
-                learned_ok: 4,
-                ..Default::default()
-            }
-        );
+        assert_eq!(fixture.claims(), claim_counts(|c| c.learned_ok = 4));
     }
 }
 
@@ -240,13 +221,7 @@ async fn alternating_ports_in_both_handlers_never_replace_forwarding_route() {
             fixture.claim(1 + index % 2, &[2], kind).await;
             fixture.assert_forwarded(0, &[1]).await;
         }
-        assert_eq!(
-            fixture.claims(),
-            ClaimCounters {
-                pending_started: 20,
-                ..Default::default()
-            }
-        );
+        assert_eq!(fixture.claims(), claim_counts(|c| c.pending_started = 20));
     }
 }
 
@@ -283,12 +258,11 @@ async fn unrelated_management_and_absent_only_messages_preserve_pending() {
             fixture.assert_forwarded(1, &[2]).await;
             assert_eq!(
                 fixture.claims(),
-                ClaimCounters {
-                    learned_ok: 1,
-                    pending_started: 1,
-                    corroborated_applied: 1,
-                    ..Default::default()
-                }
+                claim_counts(|c| {
+                    c.learned_ok = 1;
+                    c.pending_started = 1;
+                    c.corroborated_applied = 1;
+                })
             );
         }
     }
@@ -318,10 +292,7 @@ async fn all_absent_learning_paths_apply_on_first_message() {
         fixture.assert_forwarded(1, &[2]).await;
         assert_eq!(
             fixture.claims(),
-            ClaimCounters {
-                learned_ok: u64::from(kind == I_AM || kind == ACK),
-                ..Default::default()
-            }
+            claim_counts(|c| c.learned_ok = u64::from(kind == I_AM || kind == ACK))
         );
     }
 }
@@ -355,11 +326,10 @@ async fn disconnect_retains_route_state_and_pending_and_counts_only_complete_req
         assert_eq!(table.len(), 4);
         assert_eq!(
             table.claim_counters(),
-            ClaimCounters {
-                pending_started: 1,
-                disconnect_removal_ignored: 6,
-                ..Default::default()
-            }
+            claim_counts(|c| {
+                c.pending_started = 1;
+                c.disconnect_removal_ignored = 6;
+            })
         );
     }
     // One DEBUG event per ignored removal; malformed requests log nothing.

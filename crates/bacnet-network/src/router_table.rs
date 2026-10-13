@@ -21,7 +21,9 @@ pub use bacnet_router_core::{Duration, Instant, Mac, MacTooLong, PortId};
 
 /// The most routes a hosted router's table holds, direct ones included:
 /// its route cap. Learning, Initialize-Routing-Table updates and stored
-/// I-Could-Be-Router offers stop at it.
+/// I-Could-Be-Router offers stop at it. It is the route cap of the
+/// engine's `Options::HOSTED`, and a compile-time check keeps the two the
+/// same.
 pub const ROUTE_CAP: usize = 256;
 
 /// The reject hold-down records a hosted router's table keeps, one per

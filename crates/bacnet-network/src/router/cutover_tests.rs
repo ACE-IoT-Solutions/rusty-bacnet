@@ -3,7 +3,8 @@
 //!
 //! - router time is Tokio time from the router's start, and the sweep runs
 //!   at the engine's deadlines (R8);
-//! - the control authorizer runs under the engine's lock;
+//! - the control authorizer runs under the engine's lock, and the counts
+//!   take no lock, so they return while the table's guard lives;
 //! - an I-Could-Be-Router for a new network stops at the route cap;
 //! - `start` refuses what the engine can't run: no port, more than 255,
 //!   or a router MAC longer than 18 octets;
@@ -117,6 +118,54 @@ async fn the_authorizer_runs_under_the_engine_lock() {
     assert_eq!(npdu.as_ref(), [1, 0x80, 0x01, 0x0b, 0xb8]);
     assert_eq!(*locked.lock().unwrap(), [true]);
     assert!(!router.shared.engine.is_locked());
+    router.stop().await;
+}
+
+/// The counts take no lock: on a thread that holds the table's guard,
+/// `counters` and the four drop counts return, with what the engine
+/// counted before the guard was taken. Had they taken the engine's lock,
+/// that thread would wait for itself forever, so it reports back through a
+/// channel with a timeout.
+#[tokio::test]
+async fn the_counts_return_while_the_table_guard_lives() {
+    let (ports, mut peers) = fixture(2);
+    let (router, _apdus) = launch(ports, RouterOptions::new()).await;
+    drain_announcements(&mut peers).await;
+    // A global broadcast that also names a DADR is dropped and counted; the
+    // reject the barrier draws comes after it on the same port.
+    peers[0]
+        .tx
+        .send(incoming(Some(address(0xFFFF, &[5])), 1))
+        .await
+        .unwrap();
+    barrier(&mut peers[0]).await;
+
+    let router = Arc::new(router);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = Arc::clone(&router);
+    let thread = std::thread::spawn(move || {
+        let table = reader.table();
+        let counts = (
+            reader.counters(),
+            reader.address_length_drops(),
+            reader.global_broadcast_dadr_drops(),
+            reader.broadcast_pdu_type_drops(),
+            reader.group_dadr_drops(),
+        );
+        drop(table);
+        let _ = tx.send(counts);
+    });
+    let (counters, address_length, global_dadr, pdu_type, group_dadr) = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the counts returned while the guard lived");
+    thread.join().unwrap();
+    assert_eq!((address_length, pdu_type, group_dadr), (0, 0, 0));
+    assert_eq!(global_dadr, 1);
+    assert_eq!(counters.global_broadcast_dadr_drops, 1);
+    assert_eq!(counters.rejects, 1, "the barrier's reject");
+    let Ok(mut router) = Arc::try_unwrap(router) else {
+        panic!("the reader let the router go");
+    };
     router.stop().await;
 }
 
@@ -235,11 +284,7 @@ async fn a_rewrite_past_the_scratch_is_dropped_and_counted() {
         } else {
             assert!(sent.is_empty(), "{apdu_len}");
         }
-        assert_eq!(
-            h.counters().write_failures,
-            u64::from(!routed),
-            "{apdu_len}"
-        );
+        assert_eq!(h.take_write_failures(), u64::from(!routed), "{apdu_len}");
         h.assert_quiet();
     }
 }

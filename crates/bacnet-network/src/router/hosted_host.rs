@@ -234,5 +234,7 @@ fn log(event: Event) {
         Event::DiscoveryExpired { network } => {
             debug!(network, "Expired discovery solicitation")
         }
+        // An event a later engine adds.
+        _ => debug!(?event, "Router engine event"),
     }
 }

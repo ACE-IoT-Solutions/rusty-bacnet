@@ -5,10 +5,10 @@ mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::{AddressField, Malformed, Npdu};
-use bacnet_router_core::router::{Counters, DropReason, Kind, Options};
+use bacnet_router_core::router::{DropReason, Kind, Options};
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, deliver_broadcast, port_on, router, router_with,
-    sent_reject, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1, R7, UNCONFIRMED,
+    addr, apdu_to, at, bytes, deliver, deliver_broadcast, port_on, router, router_counts,
+    router_with, sent_reject, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1, R7, UNCONFIRMED,
 };
 
 /// An NPDU with a DLEN or SLEN of 19, one past the bound, for DNET `dnet`
@@ -185,11 +185,10 @@ fn malformed_frames_and_unknown_ports_are_dropped_and_counted() {
     assert_eq!(outcome, Outcome::Dropped(DropReason::UnknownPort));
     assert_eq!(
         router.counters(),
-        Counters {
-            malformed: 2,
-            unknown_port: 1,
-            ..Counters::default()
-        }
+        router_counts(|c| {
+            c.malformed = 2;
+            c.unknown_port = 1;
+        })
     );
 }
 

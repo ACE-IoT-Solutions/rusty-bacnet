@@ -12,9 +12,10 @@
 use bacnet_router_core::message::code;
 use bacnet_router_core::npdu::{Address, Npdu};
 use bacnet_router_core::router::{
-    Action, Cause, Claim, ControlClass, Dest, DropReason, Event, Frame, Group, Host, Kind, Limits,
-    Options, PortConfig, Received, SendRefusal,
+    Action, Cause, Claim, ControlClass, Counters, Dest, DropReason, Event, Frame, Group, Host,
+    Kind, Limits, Options, PortConfig, Received, SendRefusal,
 };
+use bacnet_router_core::table::ClaimCounters;
 use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
 
 /// Up to 4 ports, with the hosted router's table and discovery sizes: 256
@@ -45,6 +46,28 @@ pub const fn at_ms(millis: u64) -> Instant {
 /// `n` seconds.
 pub const fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
+}
+
+/// The hosted options with what `set` changes: `Options` is
+/// `#[non_exhaustive]`, so a test can't spell it out.
+pub fn options(set: impl FnOnce(&mut Options)) -> Options {
+    let mut options = Options::HOSTED;
+    set(&mut options);
+    options
+}
+
+/// The router's counts: zero but for what `set` changes.
+pub fn router_counts(set: impl FnOnce(&mut Counters)) -> Counters {
+    let mut counts = Counters::default();
+    set(&mut counts);
+    counts
+}
+
+/// The table's claim counts: zero but for what `set` changes.
+pub fn claim_counts(set: impl FnOnce(&mut ClaimCounters)) -> ClaimCounters {
+    let mut counts = ClaimCounters::default();
+    set(&mut counts);
+    counts
 }
 
 /// A port on `network` at `mac`, carrying 1,497 octets each way.
