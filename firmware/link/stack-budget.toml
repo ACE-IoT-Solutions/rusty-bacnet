@@ -1,7 +1,8 @@
 # Stack budget for the firmware link test's images under emulation (#1660,
-# #1664, #1667, #1679), in octets: one table per board, `[<board>]`, named by its
-# QEMU machine, with a key per image. scripts/emu/emulate-firmware.sh, the
-# manual emulation check, runs each image on each board; the image reports
+# #1664, #1667, #1679), in octets: one table per board, `[<board>]`, named
+# by its QEMU machine, with a key per image. scripts/emu/emulate-firmware.sh,
+# the manual emulation check, runs each image on each board it fits (the
+# router doesn't fit the two 16 KiB boards; see below); the image reports
 # how deep its stack went, and scripts/ci/firmware_size.py --stack fails the
 # run when a peak is over its budget, or when an image the table lists has
 # no peak or a peak has no budget; a run of every board also fails on a

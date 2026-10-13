@@ -32,7 +32,8 @@
 //!    priority kept.
 //! 4. **MS/TP to B/IP:** station 2's request for the node on network 1,
 //!    which expects a reply, goes out as an Original-Unicast, and the MS/TP
-//!    side answers Reply Postponed.
+//!    side answers Reply Postponed as soon as the line allows: one
+//!    T_turnaround after the request, not at the core's own deadline.
 //! 5. **An unknown network:** the node's message for network 9 starts a
 //!    search, a Who-Is-Router on MS/TP, and draws reject reason 1 back on
 //!    B/IP. A second one within the search's cooldown draws only the
