@@ -127,6 +127,18 @@ pub enum QueueRefusal {
     Expired,
 }
 
+impl fmt::Display for QueueRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Full => "the queue is full",
+            Self::Oversize => "the NPDU is too long to queue or send",
+            Self::Expired => "the NPDU expired",
+        })
+    }
+}
+
+impl core::error::Error for QueueRefusal {}
+
 /// An NPDU taken off its queue, with its octets lent by the queue.
 ///
 /// The item has left the queue, but [`Self::npdu`] borrows the queue: the

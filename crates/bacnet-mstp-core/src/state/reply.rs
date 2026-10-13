@@ -68,7 +68,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         decision: ReplyDecision<'_>,
         now: Instant,
     ) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         let request = self.pending_request.ok_or(CoreError::NoPendingRequest)?;
         if request.id != id {
             return Err(CoreError::StaleRequest);

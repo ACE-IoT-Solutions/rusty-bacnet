@@ -1,5 +1,7 @@
 //! Clause 9.5.6 master state machine.
 
+use core::fmt;
+
 use bacnet_mstp_codec::{
     DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase, BROADCAST_MAC,
     HEADER_LENGTH, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA,
@@ -88,13 +90,6 @@ pub enum ReplyDecision<'a> {
 pub enum CoreError {
     /// Invalid core configuration.
     Config(ConfigError),
-    /// The caller supplied a timestamp older than the previous event.
-    ClockRegression {
-        /// Timestamp accepted for the preceding event.
-        previous: Instant,
-        /// Regressing timestamp supplied by the caller.
-        supplied: Instant,
-    },
     /// A frame could not be encoded, or a frame handed to
     /// [`MasterCore::on_validated_frame`] is not a standard frame.
     Frame(FrameError),
@@ -141,6 +136,37 @@ pub enum CoreError {
         minimum: usize,
     },
 }
+
+impl fmt::Display for CoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(error) => write!(f, "invalid configuration: {error}"),
+            Self::Frame(error) => write!(f, "frame refused: {error}"),
+            Self::NoPendingRequest => f.write_str("no request is waiting for an answer"),
+            Self::StaleRequest => f.write_str("the request id is not the waiting request's"),
+            Self::RequestExpired => f.write_str("too late to answer the request"),
+            Self::ReplyOversize { length, maximum } => {
+                write!(
+                    f,
+                    "a reply of {length} octets is over the {maximum} this station sends"
+                )
+            }
+            Self::StaleTransmit => f.write_str("the transmit id is not the active transmit's"),
+            Self::TransmitDeferred => {
+                f.write_str("the line was active within T_turnaround; the frame waits again")
+            }
+            Self::TransmitAlreadyStarted => f.write_str("the transmit was already started"),
+            Self::TransmitNotPolled => f.write_str("the transmit has not been polled yet"),
+            Self::TransmitNotStarted => f.write_str("the transmit was never started"),
+            Self::ReceiveStorageTooSmall { length, minimum } => write!(
+                f,
+                "receive storage of {length} octets is under the {minimum} of the shortest frame"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for CoreError {}
 
 impl From<ConfigError> for CoreError {
     fn from(error: ConfigError) -> Self {
@@ -468,6 +494,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             self.queues.counters(QueueKind::Broadcast),
         )
     }
+
     /// Queue an NPDU with an absolute expiry derived from configuration.
     ///
     /// An NPDU longer than this station sends
@@ -476,6 +503,10 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// and counted in its queue's `drops_oversize`, whatever the queue
     /// storage could hold. With extended frames on, one of 502 octets or
     /// more goes out in an extended frame.
+    ///
+    /// A `now` earlier than the latest time the core was given is taken as
+    /// that time, as every call takes it (see the crate docs, "Time"); a
+    /// later one doesn't move the core's clock.
     pub fn enqueue_npdu(
         &mut self,
         destination: u8,
@@ -483,9 +514,8 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         priority: NetworkPriority,
         now: Instant,
     ) -> Result<(), QueueRefusal> {
-        if now < self.last_now {
-            return Err(QueueRefusal::Expired);
-        }
+        // Taken as every call takes its time, but without moving the clock.
+        let now = now.max(self.last_now);
         if npdu.len() > self.config.max_npdu() {
             self.record_oversize_npdu(QueueKind::from_destination(destination));
             return Err(QueueRefusal::Oversize);
@@ -497,7 +527,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
 
     /// Service the current absolute deadline. Early/stale callbacks are no-ops.
     pub fn on_deadline(&mut self, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         if self.abort_partial_if_late(now) {
             self.invalid_frame_event(now)?;
         }
@@ -568,15 +598,11 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         deadline
     }
 
-    fn observe_time(&mut self, now: Instant) -> Result<(), CoreError> {
-        if now < self.last_now {
-            return Err(CoreError::ClockRegression {
-                previous: self.last_now,
-                supplied: now,
-            });
-        }
-        self.last_now = now;
-        Ok(())
+    /// The time a call is taken at: `now`, or the latest time passed in
+    /// when `now` is earlier (see the crate docs, "Time").
+    fn observe_time(&mut self, now: Instant) -> Instant {
+        self.last_now = self.last_now.max(now);
+        self.last_now
     }
 
     /// Line activity that is not this station's own echo, worth `events`

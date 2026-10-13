@@ -125,8 +125,9 @@ impl MstpPort {
     /// unless the router's own application answered it already, the core
     /// answers Reply Postponed (Clauses 6.5.4, 9.5.6.9). `None`, a delivery
     /// with no request, does nothing; so does a request already answered.
-    /// The core's other refusals, such as a clock that ran backwards, come
-    /// back as they are.
+    /// The core's other refusals, such as a release after the requester may
+    /// have stopped waiting ([`CoreError::RequestExpired`]), come back as
+    /// they are.
     pub fn release<Q: QueueStorage, const NPDU: usize>(
         core: &mut MasterCore<'_, Q, NPDU>,
         request: Option<RequestId>,

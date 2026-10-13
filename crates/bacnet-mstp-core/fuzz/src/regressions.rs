@@ -109,3 +109,69 @@ fn an_abandoned_request_asked_twice_owes_nothing() {
     };
     run(&input);
 }
+
+/// Every kind of call the target makes, stamped before the core's last
+/// one, at three points: with a request waiting for its answer, with the
+/// answer handed over, and once it is on the wire. The core takes each as
+/// if stamped at its last time (#1684), and the checker holds it to that.
+#[test]
+fn calls_stamped_in_the_past_are_taken_at_the_latest_time() {
+    for event in 0..10 {
+        for lazy in [false, true] {
+            let regress = Step::Regress { back: 700, event };
+            let input = Input {
+                setup: Setup {
+                    station: 0,
+                    max_master: 1,
+                    max_info_frames: 0,
+                    baud: 0,
+                    extended: false,
+                    layout: 1,
+                    unicast_slots: 2,
+                    broadcast_slots: 1,
+                    short_rx: None,
+                    lazy,
+                    timing: Timing {
+                        reply_timeout: 0,
+                        usage_timeout: 0,
+                        frame_abort: 0,
+                        turnaround: 0,
+                        usage_delay: 0,
+                        reply_delay: 0,
+                        margin: 0,
+                    },
+                    policy: Policy {
+                        multiple_frame_ratio: 128,
+                        broadcast_unicast_ratio: 0,
+                        starvation_limit: 0,
+                        queue_max_age: 1_000,
+                    },
+                },
+                steps: vec![
+                    Step::Frame {
+                        frame: request(),
+                        path: Via::Validated { with_octets: false },
+                    },
+                    Step::Wait(2_000),
+                    Step::Regress { back: 700, event },
+                    Step::Decide {
+                        pick: 0,
+                        decision: Decision::Data {
+                            length: 3,
+                            pattern: 9,
+                        },
+                        after: 10,
+                    },
+                    Step::Drain,
+                    Step::Wait(500),
+                    Step::Regress { back: 300, event },
+                    Step::Start { after: 0 },
+                    Step::Wait(100),
+                    regress,
+                    Step::Run { rounds: 12 },
+                ],
+            };
+            run(&input);
+        }
+    }
+}

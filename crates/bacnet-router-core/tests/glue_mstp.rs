@@ -171,12 +171,22 @@ fn relayed_requests_are_postponed() {
             reply.to_vec()
         )
     );
-    // A clock that ran backwards is the core's to report.
+    // A release stamped before the core's clock is taken at the core's
+    // time (the core's clock rule); a stale request is still nothing to
+    // answer.
     let stale = RequestId::new(99);
-    assert!(matches!(
-        MstpPort::release(&mut core, Some(stale), Instant::ZERO),
-        Err(CoreError::ClockRegression { .. })
-    ));
+    MstpPort::release(&mut core, Some(stale), Instant::ZERO).unwrap();
+    // The core's other refusals come back as they are: a request released
+    // once its requester may have stopped waiting.
+    let late = later + bacnet_router_core::Duration::from_millis(10);
+    let frame = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &local);
+    core.on_validated_frame(frame, late).unwrap();
+    let (.., id, _) = delivered(&mut core);
+    let gone = late + bacnet_router_core::Duration::from_millis(300);
+    assert_eq!(
+        MstpPort::release(&mut core, id, gone),
+        Err(CoreError::RequestExpired)
+    );
 }
 
 /// The release of a request the application answered, made once the next

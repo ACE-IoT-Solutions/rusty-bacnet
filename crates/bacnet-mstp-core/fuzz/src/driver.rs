@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use bacnet_mstp_codec::{
-    Frame, FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
+    FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
     MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA,
 };
 use bacnet_mstp_core::{
@@ -92,6 +92,7 @@ fn drive<Q: QueueStorage, const NPDU: usize, const SLOTS: usize, const FRAME: us
         requests: Vec::new(),
         now: 0,
         stamp: 0,
+        skew: 0,
         slots: SLOTS,
         npdu: NPDU,
         frame: FRAME,
@@ -143,6 +144,9 @@ struct Driver<'s> {
     now: u64,
     /// The time of the last call the core took a time from.
     stamp: u64,
+    /// How much earlier than `now` the core is told a call happens: zero,
+    /// except for a regressed call (see `Step::Regress`).
+    skew: u64,
     slots: usize,
     npdu: usize,
     frame: usize,
@@ -160,8 +164,9 @@ impl<'s> Driver<'s> {
         self.checker.fail(what)
     }
 
+    /// The time the core is told: `now`, less the skew of a regressed call.
     fn at(&self) -> Instant {
-        Instant::from_micros(self.now)
+        Instant::from_micros(self.now - self.skew)
     }
 
     fn params(&self) -> Params {
@@ -382,13 +387,13 @@ impl<'s> Driver<'s> {
     }
 
     /// A Token for this station from the next station, for a regressed call.
-    fn token_frame(&self) -> Frame<'static> {
+    fn token_frame(&self) -> Seen {
         let params = self.params();
-        Frame::new(
-            FrameType::TOKEN,
-            params.station,
-            params.next(params.station),
-            &[],
-        )
+        Seen {
+            frame_type: FrameType::TOKEN,
+            destination: params.station,
+            source: params.next(params.station),
+            data: Vec::new(),
+        }
     }
 }
