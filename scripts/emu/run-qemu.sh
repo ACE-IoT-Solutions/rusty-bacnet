@@ -82,7 +82,7 @@ for job in "$@"; do
   esac
   [ "$status" -eq 0 ] || failed=1
   echo "--> $result"
-  results+=("$(printf '%-5s %-14s %-28s %s' "$image" "$machine" "$target" "$result")")
+  results+=("$(printf '%-13s %-14s %-28s %s' "$image" "$machine" "$target" "$result")")
 done
 
 echo

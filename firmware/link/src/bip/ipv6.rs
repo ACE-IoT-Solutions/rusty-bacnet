@@ -23,7 +23,8 @@ use bacnet_bip_codec::ipv6::{
 };
 use bacnet_bip_codec::PayloadShape;
 
-use super::{fnv1a, Sink, FNV_OFFSET, NPDU, WIRE_LENGTH};
+use super::{Sink, NPDU, WIRE_LENGTH};
+use crate::tally::{fnv1a, FNV_OFFSET};
 
 /// This node's VMAC: device instance 1234.
 pub const SOURCE: Bip6Vmac = Bip6Vmac::new([0x00, 0x04, 0xD2]);

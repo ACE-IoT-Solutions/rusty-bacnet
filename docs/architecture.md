@@ -50,9 +50,10 @@ builds: the CLI pulls in heavier application dependencies, and the Python
 extension needs its native Python build context. They remain workspace
 members and can be selected explicitly. So does the unpublished firmware link
 test, `firmware/link`, which links the MS/TP stack (`bacnet-mstp-codec`,
-`bacnet-mstp-core`) and the B/IP and B/IPv6 codec (`bacnet-bip-codec`) into
-bare-metal images without an allocator and checks their size
-([CI](ci.md#firmware-link-test)).
+`bacnet-mstp-core`, with and without extended frames), the B/IP and B/IPv6
+codec (`bacnet-bip-codec`) and the B/IP node and BBMD (`bacnet-bip-core`)
+into bare-metal images without an allocator, and the APDU stack into one
+with an allocator, and checks their size ([CI](ci.md#firmware-link-test)).
 
 ## Packet Flow
 
