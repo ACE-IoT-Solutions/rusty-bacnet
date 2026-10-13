@@ -88,6 +88,11 @@ pub struct Fixes {
     /// port numbered 0 or 0xFFFF has no number to announce. Off, a port
     /// hears only the I-Am-Router.
     pub announce_numbers: bool,
+    /// R4: the answer to a Who-Is-Router that names no network leaves
+    /// out the networks marked unreachable, keeping busy ones (Clause
+    /// 6.6.3.2). Off, it lists them too. The list is in ascending order
+    /// either way, as the table keeps it.
+    pub answer_reachable: bool,
 }
 
 impl Fixes {
@@ -96,6 +101,7 @@ impl Fixes {
         egress_limits: false,
         rejects_keep_routes: false,
         announce_numbers: false,
+        answer_reachable: false,
     };
 
     /// Every switch on: the recommended setting.
@@ -103,6 +109,7 @@ impl Fixes {
         egress_limits: true,
         rejects_keep_routes: true,
         announce_numbers: true,
+        answer_reachable: true,
     };
 }
 
@@ -146,7 +153,7 @@ impl Options {
     /// The hosted router's values: standard convergence, 256 routes, 300 s
     /// learned age, a 60 s sweep, [`Timing::DEFAULT`], a 5 s discovery
     /// cooldown and 30 s age, and the fixes it has turned on so far: R1 to
-    /// R3.
+    /// R4.
     pub const HOSTED: Self = Self {
         convergence: Convergence::Standard,
         route_cap: 256,
@@ -159,6 +166,7 @@ impl Options {
             egress_limits: true,
             rejects_keep_routes: true,
             announce_numbers: true,
+            answer_reachable: true,
             ..Fixes::NONE
         },
     };

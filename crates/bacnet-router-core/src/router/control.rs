@@ -143,8 +143,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// Who-Is-Router (Clause 6.6.3.2). Unscoped, it is answered with every
-    /// network the table reaches through another port, Unreachable ones
-    /// too, as today. Scoped to a network reached through another port, it
+    /// network the table reaches through another port, ascending; with R4
+    /// on, but those marked unreachable. Scoped to a network reached
+    /// through another port, it
     /// is answered with that network, whatever its state. Scoped to one the
     /// table lacks, or reaches through the arrival port, it is passed on to
     /// every other port with SNET and SADR, and no DNET. Network 0 is

@@ -174,3 +174,41 @@ async fn r2_a_reason_4_reject_is_passed_on_and_keeps_the_route() {
         (0, 1)
     );
 }
+
+// --- R4: the unscoped I-Am-Router answer leaves out unreachable networks ---
+
+/// R4 (Clause 6.6.3.2): an unscoped Who-Is-Router from network 1000 is
+/// answered with every network reached through another port, ascending,
+/// whatever order the table learned them in: 2000 (direct), 2500 (busy,
+/// still listed) and 3000. 3001, marked unreachable, is left out, where the
+/// router before the fix listed it; 4000, behind the arrival port, never
+/// was.
+#[tokio::test]
+async fn r4_the_unscoped_answer_leaves_out_unreachable_networks() {
+    let mut h = Harness::two_port();
+    h.learned(3001, 1, &[9]);
+    h.learned(2500, 1, &[9]);
+    h.learned(3000, 1, &[8]);
+    h.learned(4000, 0, &[7]);
+    let busy_until = h.now() + bacnet_router_core::Duration::from_secs(30);
+    {
+        let mut table = h.table();
+        table.mark_unreachable(3001);
+        table.mark_busy(2500, busy_until);
+    }
+    let who_is_all = Npdu {
+        is_network_message: true,
+        message_type: Some(0x00),
+        ..Npdu::default()
+    };
+    h.dispatch(h.ctx(0, &SENDER, who_is_all)).await;
+    let sent = h.drain(0);
+    let [SendRequest::Broadcast { npdu, .. }] = &sent[..] else {
+        panic!("expected one I-Am-Router broadcast on port 0, got {sent:?}");
+    };
+    assert_eq!(
+        npdu.as_ref(),
+        [0x01, 0x80, 0x01, 0x07, 0xD0, 0x09, 0xC4, 0x0B, 0xB8]
+    );
+    h.assert_quiet();
+}

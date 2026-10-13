@@ -73,7 +73,7 @@
 //! | A message type the router doesn't know, sent to it, draws reason 3 | 6.6.3.5 | `tests/control.rs`: `unknown_types_draw_reason_3` |
 //! | Route announcements teach the table and go on to the other ports | 6.6.3.2, 6.6.3.3 | `tests/control.rs`: `i_am_router_learns_then_rebroadcasts`; `tests/traces.rs`: `d_hardened_convergence` |
 //! | A route question about one network is answered when the network lies beyond another port, and searched further otherwise, with the asker as origin | 6.6.3.2 | `tests/control.rs`: `scoped_who_is_router_cases` |
-//! | A route question about every network is answered with those beyond the other ports | 6.6.3.2 | `tests/control.rs`: `unscoped_answer_lists_networks_beyond_other_ports` |
+//! | A route question about every network is answered with those beyond the other ports, ascending, but for those failed for good (R4) | 6.6.3.2 | `tests/control.rs`: `unscoped_answer_lists_reachable_networks` |
 //! | Flow control covers what its sender serves, named or not, and goes on to the other ports | 6.6.3.6, 6.6.3.7 | `tests/control.rs`: `flow_control_covers_what_the_sender_serves` |
 //! | A table update applies entry by entry and gets an empty answer; a query gets the whole table, over several answers when needed, and changes nothing | 6.4.7, 6.6.3.8, 6.6.3.9 | `tests/init.rs` |
 //! | The network-number messages stay on their link | 6.4.19, 6.4.20 | `tests/control.rs`: `network_number_messages_stay_local` |

@@ -2158,6 +2158,10 @@ them):
   6.4.20), then its I-Am-Router; a one-port router sends only the first, and
   a port numbered 0 or 0xFFFF has no number to send. Before, each port heard
   only the I-Am-Router.
+- **Reachable networks only (R4).** A Who-Is-Router that names no network is
+  answered with the networks reached through the other ports, in ascending
+  order, leaving out any marked unreachable; busy ones stay (Clause 6.6.3.2).
+  Before, unreachable networks were listed too, in no set order.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it
