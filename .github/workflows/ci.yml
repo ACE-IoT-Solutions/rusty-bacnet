@@ -254,7 +254,8 @@ jobs:
       # Clippy doesn't link, so this builds the stacks into bare-metal images
       # (firmware/link), one per stack, for each target, and checks their
       # sizes against the budget: MS/TP (extended frames off and on), the
-      # B/IP codec, node and BBMD with no allocator (#1664, #1667), and
+      # B/IP codec, node and BBMD, and a router between B/IP and MS/TP with
+      # no allocator (#1664, #1667, #1679), and
       # bacnet-encoding and bacnet-services with one, its critical section
       # and, without compare-and-swap, portable-atomic (#1635). It links with
       # the rust-lld that rustc ships, so the targets' core libraries are all

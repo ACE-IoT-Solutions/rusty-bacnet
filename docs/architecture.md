@@ -52,9 +52,11 @@ extension needs its native Python build context. They remain workspace
 members and can be selected explicitly. So does the unpublished firmware link
 test, `firmware/link`, which links the MS/TP stack (`bacnet-mstp-codec`,
 `bacnet-mstp-core`, with and without extended frames), the B/IP and B/IPv6
-codec (`bacnet-bip-codec`) and the B/IP node and BBMD (`bacnet-bip-core`)
-into bare-metal images without an allocator, and the APDU stack into one
-with an allocator, and checks their size ([CI](ci.md#firmware-link-test)).
+codec (`bacnet-bip-codec`), the B/IP node and BBMD (`bacnet-bip-core`) and
+a router between a BBMD's B/IP port and an MS/TP port
+(`bacnet-router-core`) into bare-metal images without an allocator, and the
+APDU stack into one with an allocator, and checks their size
+([CI](ci.md#firmware-link-test)).
 
 ## Packet Flow
 

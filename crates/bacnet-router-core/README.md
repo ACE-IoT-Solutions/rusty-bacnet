@@ -16,8 +16,11 @@ and is meant to join their ports in firmware, and to run under the hosted
   is `bacnet-time`'s, in nanoseconds, re-exported here, the same type the
   MS/TP and B/IP cores take, so firmware feeds all three one clock.
 
-`bacnet-network`'s hosted `BACnetRouter` runs on it. A firmware router
-image is planned
+`bacnet-network`'s hosted `BACnetRouter` runs on it. The repository's
+firmware link test builds a router with it, between a BBMD's B/IP port
+and an MS/TP port with extended frames, into a bare-metal image with no
+allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
+5.6 KB of stack
 ([#1679](https://github.com/jscott3201/rusty-bacnet/issues/1679)).
 
 ## What it has

@@ -200,10 +200,10 @@ cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-defa
 ### Firmware link test
 
 `check-no-std.sh` runs clippy on the `no_std` crates, and clippy never links.
-The firmware link test (#1626, #1635, #1664, #1667) does. `firmware/link`
-(the `firmware-link` crate, `publish = false`) builds six `#![no_main]`
-bare-metal images, one per stack, because code can't be credited to a crate
-reliably within one LTO image:
+The firmware link test (#1626, #1635, #1664, #1667, #1679) does.
+`firmware/link` (the `firmware-link` crate, `publish = false`) builds seven
+`#![no_main]` bare-metal images, one per stack, because code can't be
+credited to a crate reliably within one LTO image:
 
 - `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
   features, with the core's `HeaplessQueues`) and through the core
@@ -219,6 +219,14 @@ reliably within one LTO image:
   no global allocator;
 - `bbmd` links `bacnet-bip-core`'s BBMD tables (`Tables<4, 4>`) and the
   receive rules of a `Link` in BBMD mode, with no global allocator;
+- `router` links `bacnet-router-core` with its `bip` and `mstp` glue: a
+  `Router` over `Storage<2, 8, 8, 4>` between a B/IP port where the router
+  is also the BBMD (`BbmdPort`, `Tables<2, 2>`) and an MS/TP port with
+  extended frames, which Clause 9.3 asks of a router, and through them the
+  node engine, the MS/TP core and both codecs, with no global allocator. It
+  routes and nothing more: a product router also needs a Device object,
+  since Clause 6.6 holds a router to the device requirements of Clause
+  22.1.5, and the image has no application layer to host one;
 - `apdu` links `bacnet-encoding` and `bacnet-services` (and through them
   `bacnet-types`) without default features and with `alloc`, the way a
   firmware uses them, with a global allocator over a fixed arena.
@@ -286,6 +294,29 @@ targets, so a crate that needs one builds only with a backend such as
     Distribute-Broadcast-To-Network goes to the subnet and both peers, and
     an unregistered sender's draws the NAK; a Read-BDT returns the three
     rows. Its datagrams are hashed as the node's are.
+  - `router::run` routes between network 1, B/IP, where the router is the
+    BBMD with one two-hop peer, and network 2, MS/TP, where it is station
+    1 and station 2 passes it the token. On one clock for all three cores,
+    with every send carried out and MS/TP fed octet by octet, it runs eight
+    steps. At start, each port gets a Network-Number-Is and an I-Am-Router,
+    which the BBMD also forwards to its peer. A B/IP node's message for
+    station 5 leaves on the next token with SNET 1 and the node's address
+    as SADR; the peer's Forwarded-NPDU at life-safety priority leaves with
+    its origin as SADR and its priority kept (#1678). Station 2's request
+    for the node goes out as an Original-Unicast, and the MS/TP side
+    answers Reply Postponed one T_turnaround later. A message for unknown
+    network 9 draws a Who-Is-Router on MS/TP and reject reason 1 on B/IP,
+    and a second within the cooldown the reject alone. A 1494-octet NPDU,
+    1498 once rewritten for MS/TP, draws reason 4 (#1665), and a 1493-octet
+    one leaves at exactly 1497 in a Type 33 frame. A Who-Is-Router naming
+    no network is answered with network 1, and a routing-table query with
+    one Ack. A global broadcast from MS/TP goes out on B/IP, and the BBMD
+    forwards it. The summary keeps what the router made of each frame,
+    every send it asked for, its events and counters, and every datagram
+    and frame, with a hash over each port's octets, worked out apart from
+    the codecs from the Annex J.2, Clause 6.2 and Clause 9.3 layouts with
+    the MS/TP CRCs and COBS (Clause 9.6, 9.10, Annexes G and T); that code
+    reproduces Annex T.3's whole example frame.
   - `apdu::run` follows a client that finds a device behind a router and
     reads its analog input: a Who-Is, the device's I-Am as the router
     passes it on, a ReadProperty request for Present_Value and the
@@ -303,7 +334,8 @@ targets, so a crate that needs one builds only with a backend such as
     no Reject would be sent for them.
 
   The host tests in `firmware/link/tests/` (`mstp.rs`, `mstp_extended.rs`,
-  `bip.rs`, `node.rs`, `bbmd.rs` and `apdu.rs`) run them and compare each
+  `bip.rs`, `node.rs`, `bbmd.rs`, `router.rs` and `apdu.rs`) run them and
+  compare each
   whole summary, so the behaviour is checked natively, in every
   `--workspace` test run on Linux, macOS and Windows. Each image's reset
   entry calls its scenario, passing the inputs and the summary through
@@ -430,8 +462,8 @@ targets, so a crate that needs one builds only with a backend such as
   `__aeabi_memmove4` and `__aeabi_memmove8` entry points to it, 0.8 to
   1.4 KB in all. A copy of a whole value that the compiler can't prove
   doesn't overlap its source, or a slice rotation, calls it. The bip,
-  node, bbmd, mstp and mstp-extended images link none, and their limit of
-  0 keeps it out. The apdu image links it (2); its limit is that count,
+  node, bbmd, mstp, mstp-extended and router images link none, and their
+  limit of 0 keeps it out. The apdu image links it (2); its limit is that count,
   with no headroom.
   `scripts/ci/test-firmware-size.py` tests the helper on small ELF files
   it builds itself, in the Lint job. CI runs the check in the Clippy job,
@@ -463,7 +495,11 @@ targets, so a crate that needs one builds only with a backend such as
   compiler-builtins. The mstp-extended image's 15.5 KB is about 5.5 KB of
   `bacnet-mstp-core`, 5.6 KB of the scenario with the core code it
   inlines and 2.9 KB of the codec: smaller than the mstp image, whose
-  scenario also drives the codec's stream decoder on its own.
+  scenario also drives the codec's stream decoder on its own. The router
+  image's 42.8 KB is about 10.6 KB of `bacnet-router-core`, 6.0 KB of
+  `bacnet-mstp-core`, 2.7 KB of `bacnet-bip-core`, 2.6 KB of
+  `bacnet-mstp-codec`, and 17.1 KB of the scenario and its reset entry,
+  which inline much of the engine, both glue modules and the BBMD tables.
   `bacnet-bip-core` avoids the two patterns that link `memmove` (#1667):
   it copies a 6-octet B/IP address's IP and port apart into a BDT's own
   row and the FDT rows of a Read-FDT-Ack, which copied whole linked it on
@@ -472,7 +508,13 @@ targets, so a crate that needs one builds only with a backend such as
   them too (#1691): the codec's stream decoder drops octets by moving a
   start offset and moves what it holds to the front only in pieces that
   don't overlap, and the core's queues keep each item in its slot until
-  it leaves, so no removal shifts the others.
+  it leaves, so no removal shifts the others. `bacnet-router-core` avoids
+  them as well (#1679): its sorted table and searches, its hold-down
+  records, the networks one message claims and its output queue move
+  elements by swapping two distinct ones, never with `copy_within` or a
+  copy between elements, which linked it on every target (1.1-1.4 KB of
+  text on Cortex-M, 0.8 KB on RISC-V); `slice::swap` links it too for an
+  element as large as a route, since it has to allow equal indices.
 - **RAM.** Most scenarios keep their buffers in statics, so `.bss`
   measures them; the mstp-extended image's scenario is the exception,
   below. The MS/TP image keeps everything large the core borrows in its
@@ -490,8 +532,28 @@ targets, so a crate that needs one builds only with a backend such as
   64-octet datagram buffer, and the bbmd image's its two datagram buffers
   and what the tables write a decision's destinations and a Read-FDT-Ack's
   rows into, 240 octets; the node, 752 octets on these targets, and the
-  tables are built on the stack. `cargo nextest run -p firmware-link`
-  prints the host sizes from the `ram_sizes` tests. The apdu image's
+  tables are built on the stack. The router image's static is 15,504
+  octets on these targets:
+  - the router's `Storage<2, 8, 8, 4>`, 3,216: a 1,497-octet output
+    scratch, a table of 8 routes (120 octets each) and 8 hold-down
+    records, 4 searches, the output queue and the counters;
+  - the MS/TP core's receive storage (1,516), `HeaplessQueues<1, 2, 1497>`
+    (4,688) and `ExtendedActionBuffers<1>` (3,028). Two broadcast slots,
+    since the router queues its startup Network-Number-Is and I-Am-Router
+    together; one unicast slot, since each step's sends leave on the next
+    token;
+  - the B/IP socket's two datagram buffers, 1,507 octets each: the one
+    received, which the router reads in place, and the one sent, which
+    the port's `Datagrams` encodes into;
+  - where the BBMD writes one decision's destinations, 40.
+
+  The router (88 octets), the MS/TP core (528), the BBMD port with its
+  node (712) and the BBMD's tables (72) are built on the stack. A BBMD
+  port holds no broadcasts, so the image has no `HeldBroadcast` slots; a
+  foreign-device port would need its `hold` of them, each as long as
+  `Link::max_npdu(Cast::Broadcast)`, 1,497 octets at the default budget.
+  `cargo nextest run -p firmware-link` prints the host sizes from the
+  `ram_sizes` tests. The apdu image's
   `.bss` is its 1 KiB arena and the allocator's 32-octet state: what its
   scenario builds lives in the arena or on the stack, and
   `heap_fits_the_arena` measures the arena's use.
@@ -522,12 +584,14 @@ schedule runs it, and no required check depends on it.
 
 - **What runs.** The `emulate` feature of `firmware-link`, with one board
   feature, builds an emulation build of each image (mstp, mstp-extended,
-  bip, node, bbmd and apdu). Its reset entry runs the same scenario as the
-  link test's image, with its input still behind `black_box`, then checks
-  the summary against the one the host test asserts:
+  bip, node, bbmd, router and apdu). Its reset entry runs the same scenario
+  as the link test's image, with its input still behind `black_box`, then
+  checks the summary against the one the host test asserts:
   `firmware_link::mstp::EXPECTED`, `mstp_extended::EXPECTED`,
-  `bip::EXPECTED`, `node::expected()`, `bbmd::EXPECTED` and
-  `apdu::expected()`, shared by both so they can't drift. It prints the
+  `bip::EXPECTED`, `node::expected()`, `bbmd::EXPECTED`,
+  `router::expected()` and `apdu::expected()`, shared by both so they
+  can't drift. The router image is built for every board but runs only on
+  the two with more than 16 KiB of RAM (see Stack, below). It prints the
   summary and a verdict through semihosting and exits with a status QEMU
   passes on (below). The build uses the `emulate` profile, the `firmware`
   profile under its own name, so the link test's images in
@@ -580,17 +644,17 @@ schedule runs it, and no required check depends on it.
   uncounted, and it covers the emulation build, which runs the same
   scenario code with the same profile as the link test's image. The peaks,
   measured with Rust 1.99.0 and QEMU 10.0.13 when the mstp-extended, node
-  and bbmd images joined (#1664, #1667), and the two MS/TP images' again
-  when the core stopped copying a queued NPDU onto its stack (#1691), in
-  octets, and on the two 16 KiB boards the stack's room, all of RAM above
-  the statics:
+  and bbmd images joined (#1664, #1667), the two MS/TP images' again
+  when the core stopped copying a queued NPDU onto its stack (#1691), and
+  the router's when it joined (#1679), in octets, and on the two 16 KiB
+  boards the stack's room, all of RAM above the statics:
 
-  | Target (board) | mstp | mstp-extended | bip | node | bbmd | apdu |
-  | --- | --- | --- | --- | --- | --- | --- |
-  | `thumbv6m-none-eabi` (`microbit`) | 2,040 (10,840) | 3,020 (8,672) | 2,220 (16,252) | 4,716 (16,320) | 2,300 (16,144) | 2,768 (15,328) |
-  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 1,824 | 2,868 | 2,100 | 4,188 | 2,228 | 2,536 |
-  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 1,832 | 2,868 | 2,100 | 4,188 | 2,228 | 2,536 |
-  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 1,712 (10,840) | 2,732 (8,672) | 2,020 (16,252) | 4,008 (16,320) | 2,132 (16,144) | 2,464 (15,328) |
+  | Target (board) | mstp | mstp-extended | bip | node | bbmd | router | apdu |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `thumbv6m-none-eabi` (`microbit`) | 2,040 (10,840) | 3,020 (8,672) | 2,220 (16,252) | 4,716 (16,320) | 2,300 (16,144) | not run (880) | 2,768 (15,328) |
+  | `thumbv7m-none-eabi` (`lm3s6965evb`) | 1,824 | 2,868 | 2,100 | 4,188 | 2,228 | 5,648 | 2,536 |
+  | `thumbv7em-none-eabihf` (`netduinoplus2`) | 1,832 | 2,868 | 2,100 | 4,188 | 2,228 | 5,640 | 2,536 |
+  | `riscv32imc-unknown-none-elf` (`sifive_e`) | 1,712 (10,840) | 2,732 (8,672) | 2,020 (16,252) | 4,008 (16,320) | 2,132 (16,144) | not run (880) | 2,464 (15,328) |
 
   So on ARMv6-M the MS/TP image needs about 7.6 KB of RAM: 5,544 octets of
   statics and 2.0 KB of stack. With extended frames on it needs about
@@ -605,9 +669,20 @@ schedule runs it, and no required check depends on it.
   is 2.8 KB, holding the 800-octet summary, the 752-octet node and the
   result `Node::new` builds it in, and the reset entry keeps the 0.8 KB
   summary it gets back; the engine's calls go about 1.1 KB deeper.
+  The router image needs about 21 KB: 15,504 octets of statics and 5.6 KB
+  of stack. Its scenario's frame is 3.8 KB on ARMv7-M, holding the
+  704-octet summary, the MS/TP core (528), the BBMD port with its node
+  (712), the router (88) and the BBMD's tables (72); the router's receive
+  and the B/IP port's send go about 1.8 KB deeper. On the 16 KiB boards
+  the statics leave 880 octets, so `emulate-firmware.sh` builds the image
+  for them and doesn't run it; run anyway, it faults on both as its stack
+  reaches the statics. The extended frames Clause 9.3 asks of a router's
+  MS/TP port are most of those statics, so no standard-frame router image
+  is offered for those boards.
 - **Stack budgets.** `firmware/link/stack-budget.toml` (#1660) holds a
-  budget for each board and image, in a `[<board>]` table with a key per
-  image: the peak measured when it was set plus 25%, rounded up to 16
+  budget for each board and image that runs there (the micro:bit and
+  SiFive E tables have no router key), in a `[<board>]` table with a key
+  per image: the peak measured when it was set plus 25%, rounded up to 16
   octets as the size budgets are. That is more headroom than their 12%,
   since one more buffer on the stack, or a change in what the compiler
   inlines, can move a peak by a whole frame. After the runs, the script
@@ -663,7 +738,7 @@ bash scripts/emu/emulate-firmware.sh --suggest           # stack budgets as the 
   for either.
 - **Cost.** On an Apple M5 with Docker Desktop, a run of every board takes
   about 30 s from a cold target directory, clippy and the builds included,
-  and about 15 s warm, the twenty-four QEMU runs under a second each.
+  and about 15 s warm, the twenty-six QEMU runs under a second each.
   Building the Docker image the first time adds about 30 s.
 
 ### Runner
