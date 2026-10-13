@@ -312,7 +312,7 @@ struct ActiveTransmit {
 /// [`MstpCounters::missed_generation_slots`]. It departs from the clause only
 /// when the deadline is serviced after the slot has closed; on time, the
 /// first slot is used.
-pub struct MasterCore<'rx, Q: QueueStorage, const NPDU: usize = MAX_STANDARD_MPDU_DATA> {
+pub struct MasterCore<'rx, Q, const NPDU: usize = MAX_STANDARD_MPDU_DATA> {
     config: MstpCoreConfig,
     queues: Q,
     decoder: StreamDecoder<'rx>,
@@ -340,6 +340,37 @@ pub struct MasterCore<'rx, Q: QueueStorage, const NPDU: usize = MAX_STANDARD_MPD
     last_now: Instant,
     consecutive_broadcast: u8,
     counters: MstpCounters,
+}
+
+/// The core's state, not its buffers: its configuration, the Clause 9.5.6
+/// state and variables, what it waits for and until when, the actions and
+/// queued NPDUs waiting, and the counters since they were last taken.
+impl<Q: QueueStorage, const NPDU: usize> fmt::Debug for MasterCore<'_, Q, NPDU> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MasterCore")
+            .field("config", &self.config)
+            .field("state", &self.state)
+            .field("next_station", &self.next_station)
+            .field("poll_station", &self.poll_station)
+            .field("token_count", &self.token_count)
+            .field("frame_count", &self.frame_count)
+            .field("retry_token_count", &self.retry_token_count)
+            .field("event_count", &self.event_count)
+            .field("sole_master", &self.sole_master)
+            .field("pending_token", &self.pending_token)
+            .field("pending_request", &self.pending_request)
+            .field("active_transmit", &self.active_transmit)
+            .field("pending_send", &self.pending_send)
+            .field("next_deadline", &self.next_deadline())
+            .field("last_activity", &self.last_activity)
+            .field("last_now", &self.last_now)
+            .field("decoder", &self.decoder)
+            .field("actions", &self.actions)
+            .field("unicast_queued", &self.queues.depth(QueueKind::Unicast))
+            .field("broadcast_queued", &self.queues.depth(QueueKind::Broadcast))
+            .field("counters", &self.counters())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
@@ -444,16 +475,19 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     }
 
     /// Return the current state.
+    #[must_use]
     pub const fn state(&self) -> MasterState {
         self.state
     }
 
     /// Return the validated configuration.
+    #[must_use]
     pub const fn config(&self) -> &MstpCoreConfig {
         &self.config
     }
 
     /// Return a copyable diagnostic snapshot.
+    #[must_use]
     pub fn snapshot(&self) -> MasterSnapshot {
         MasterSnapshot {
             state: self.state,
@@ -576,6 +610,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     }
 
     /// Return the earliest parser, protocol, or transmit-watchdog deadline.
+    #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         let mut deadline = self.protocol_deadline;
         if self.parser_partial {

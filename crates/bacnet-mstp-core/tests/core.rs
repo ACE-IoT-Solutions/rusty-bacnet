@@ -732,3 +732,30 @@ fn errors_and_refusals_read_as_messages() {
         "the receive storage holds 511 octets; extended frames need 1516"
     );
 }
+
+/// `Debug` shows the core's state and the buffers' sizes, never the octets
+/// the buffers hold.
+#[test]
+fn debug_shows_state_not_buffers() {
+    let mut rx = [0xA5; 1024];
+    let mut actions = Actions::new();
+    assert_eq!(
+        format!("{actions:?}"),
+        "ActionBuffers { deliveries: 8, npdu: 501, frame: 511 }"
+    );
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        at(0),
+    )
+    .unwrap();
+    core.enqueue_npdu(2, &[0xA5; 40], NetworkPriority::Normal, at(0))
+        .unwrap();
+    let shown = format!("{core:?}");
+    assert!(shown.starts_with("MasterCore {"), "{shown}");
+    assert!(shown.contains("state: Idle"), "{shown}");
+    assert!(shown.contains("unicast_queued: 1"), "{shown}");
+    assert!(!shown.contains("165, 165"), "{shown}");
+}

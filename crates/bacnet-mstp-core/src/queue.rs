@@ -23,7 +23,7 @@ pub enum QueueKind {
     /// A frame addressed to one MAC address.
     Unicast,
     /// A frame addressed to the MS/TP broadcast MAC
-    /// ([`BROADCAST_MAC`](bacnet_mstp_codec::BROADCAST_MAC), 255).
+    /// ([`BROADCAST_MAC`], 255).
     Broadcast,
 }
 

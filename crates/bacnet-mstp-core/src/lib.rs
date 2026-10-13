@@ -8,7 +8,38 @@
 //! with a [`Duration`] for lengths: `bacnet-time`'s types, re-exported here.
 //! `bacnet-bip-core` and `bacnet-router-core` take the same ones, so firmware
 //! that runs several of them feeds them one clock. A microsecond tick becomes
-//! an instant with [`Instant::from_micros`].
+//! an instant with [`Instant::from_micros`]. The frame codec,
+//! `bacnet-mstp-codec`, is re-exported as [`codec`], since the API speaks
+//! its types ([`FrameType`](codec::FrameType), [`Frame`](codec::Frame),
+//! [`FrameError`](codec::FrameError)).
+//!
+//! The types that may grow are `#[non_exhaustive]`. Start a
+//! [`MstpCoreConfig`] from [`MstpCoreConfig::STANDARD`] or
+//! [`MstpCoreConfig::for_baud_rate`] and set the fields to change; a
+//! [`QueueStorage`] of your own builds its items with
+//! [`DequeuedNpdu::new`] and [`QueueItemInfo::new`]; and give a `match` on
+//! an error, a refusal, a [`ReceiveError`] or a [`TransmitFailure`] a
+//! wildcard arm. The enums an adapter acts on case by case,
+//! [`Action`], [`ReplyDecision`] and [`Direction`], stay exhaustive, as do
+//! the closed sets [`MasterState`], [`NetworkPriority`] and [`QueueKind`].
+//!
+//! # Time
+//!
+//! A `now` earlier than the latest one passed in is taken as that latest
+//! one: time never runs backwards, so a clock that steps back holds the
+//! timers still instead of failing. [`MasterCore::enqueue_npdu`] takes its
+//! `now` the same way, though a later one it is given doesn't move the
+//! core's clock: only the line, deadline, transmit and request calls do.
+//!
+//! # Counters
+//!
+//! [`MasterCore::take_counters`] returns what the core counted since the
+//! last take, its queues' counts with it, and starts the counts again from
+//! zero. Each is a `u32` that saturates between takes; add each take to
+//! totals of your own, as wide as you need. The core keeps no totals, so a
+//! firmware image carries no wider integers than it uses; the Tokio MS/TP
+//! transport in `bacnet-transport` keeps `u64`s. [`MasterCore::counters`]
+//! shows the same counts without taking them.
 //!
 //! # The adapter's side
 //!
@@ -69,7 +100,7 @@
 //!
 //! ```
 //! # mod example {
-//! use bacnet_mstp_codec::MAX_STANDARD_FRAME_LENGTH;
+//! use bacnet_mstp_core::codec::MAX_STANDARD_FRAME_LENGTH;
 //! use bacnet_mstp_core::{ActionBuffers, HeaplessQueues, Instant, MasterCore, MstpCoreConfig};
 //!
 //! /// Everything large, zeroed. On firmware it lives in a static, borrowed
@@ -111,9 +142,9 @@
 //! one built before it existed. With it on, every buffer must hold an
 //! extended frame:
 //! receive storage of
-//! [`MAX_EXTENDED_FRAME_LENGTH`](bacnet_mstp_codec::MAX_EXTENDED_FRAME_LENGTH),
+//! [`MAX_EXTENDED_FRAME_LENGTH`](codec::MAX_EXTENDED_FRAME_LENGTH),
 //! [`ExtendedActionBuffers`], queues whose slots hold
-//! [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA)
+//! [`MAX_EXTENDED_MPDU_DATA`](codec::MAX_EXTENDED_MPDU_DATA)
 //! octets (such as `HeaplessQueues<U, B, MAX_EXTENDED_MPDU_DATA>`), and so a
 //! `MasterCore<'_, Q, MAX_EXTENDED_MPDU_DATA>`. [`MasterCore::new`] refuses
 //! smaller ones, naming the buffer. The sizes are const generics with
@@ -138,6 +169,8 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_debug_implementations, clippy::must_use_candidate)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -154,6 +187,7 @@ pub use actions::{
     Action, ActionBuffers, Direction, ExtendedActionBuffers, RequestId, TransmitFailure,
     TransmitId, DEFAULT_DELIVERY_SLOTS,
 };
+pub use bacnet_mstp_codec as codec;
 pub use bacnet_time::{Duration, Instant};
 pub use config::{
     ConfigError, CoreBuffer, LocalDurationField, LocalLimitField, MstpCoreConfig, MAX_FRAME_ABORT,
@@ -171,3 +205,9 @@ pub use state::{
     CoreError, MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision, LATE_DEADLINE,
     MIN_RX_STORAGE,
 };
+
+/// The README's example, compiled and run as a doctest.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+#[derive(Debug)]
+pub struct ReadmeDoctests;

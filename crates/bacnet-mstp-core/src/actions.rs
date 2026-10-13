@@ -11,6 +11,8 @@
 //!   [`ActionBuffers`], first in, first out. Their payloads are copied in when
 //!   they are queued, because the stream decoder reuses its receive buffer.
 
+use core::fmt;
+
 use bacnet_mstp_codec::{
     Frame, FrameError, FrameHeader, FrameType, HEADER_LENGTH, MAX_EXTENDED_FRAME_LENGTH,
     MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
@@ -42,11 +44,13 @@ pub struct RequestId(u32);
 
 impl RequestId {
     /// Construct an identifier from a generation value.
+    #[must_use]
     pub const fn new(generation: u32) -> Self {
         Self(generation)
     }
 
     /// Return the generation represented by this identifier.
+    #[must_use]
     pub const fn generation(self) -> u32 {
         self.0
     }
@@ -58,11 +62,13 @@ pub struct TransmitId(u32);
 
 impl TransmitId {
     /// Construct an identifier from a generation value.
+    #[must_use]
     pub const fn new(generation: u32) -> Self {
         Self(generation)
     }
 
     /// Return the generation represented by this identifier.
+    #[must_use]
     pub const fn generation(self) -> u32 {
         self.0
     }
@@ -92,6 +98,7 @@ pub enum TransmitFailure {
 /// mutably. A platform should copy a transmit frame into its UART/DMA storage
 /// before polling the next action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "an action the adapter doesn't carry out is lost: a frame unsent, an NPDU undelivered"]
 pub enum Action<'a> {
     /// Change the serial transceiver direction.
     SetDirection(Direction),
@@ -244,6 +251,20 @@ impl<const DELIVERIES: usize, const NPDU: usize, const FRAME: usize> Default
     }
 }
 
+/// The sizes, not the octets: the core overwrites the buffers before it
+/// reads them.
+impl<const DELIVERIES: usize, const NPDU: usize, const FRAME: usize> fmt::Debug
+    for ActionBuffers<DELIVERIES, NPDU, FRAME>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActionBuffers")
+            .field("deliveries", &DELIVERIES)
+            .field("npdu", &NPDU)
+            .field("frame", &FRAME)
+            .finish()
+    }
+}
+
 /// The longest frame a core with `npdu`-octet delivery slots may send: any
 /// standard frame (a reply or a Test_Response carries up to 501 octets),
 /// and an extended frame carrying `npdu` octets when that is more: its
@@ -326,6 +347,18 @@ pub(crate) struct ActionQueue<'b, const NPDU: usize> {
     head: usize,
     /// How many deliveries wait.
     waiting: usize,
+}
+
+/// What waits to be polled, not the octets.
+impl<const NPDU: usize> fmt::Debug for ActionQueue<'_, NPDU> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActionQueue")
+            .field("receive", &self.receive)
+            .field("transmit", &self.transmit)
+            .field("frame_length", &self.frame_length)
+            .field("deliveries", &self.waiting)
+            .finish()
+    }
 }
 
 impl<'b, const NPDU: usize> ActionQueue<'b, NPDU> {
@@ -576,7 +609,7 @@ mod tests {
 
         // A polled frame is no longer queued.
         queue_frame(&mut actions, 5, 0x77);
-        actions.poll();
+        assert_eq!(actions.poll(), Action::SetDirection(Direction::Transmit));
         assert_eq!(polled_frame(&mut actions), (TransmitId::new(5), 0x77));
         assert!(!actions.transmit_queued(TransmitId::new(5)));
     }

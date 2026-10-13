@@ -1603,10 +1603,12 @@ retaining serial ownership. Counts start at zero and have no reset. The
 transport-boundary counts (frames sent by kind, reply timeouts, queue and
 ingress drops, serial errors, echo mismatches, late answers) saturate at
 `u64::MAX`; `mac`
-carries the core's own `MstpCounters` (frames received and delivered, invalid
+carries the core's own counters (frames received and delivered, invalid
 frames, frame aborts, token rotations and retries, deferred starts, late and
-expired replies, deadline misses and the queue counters), which saturate at
-`u32::MAX`. Loads are not a globally coherent snapshot. These are redacted
+expired replies, deadline misses, receive errors and transmit aborts by
+kind, and the queue counters) as `mstp::MstpCounters`: the transport takes
+them from the core after each event and adds them up, so they too saturate
+at `u64::MAX`. Loads are not a globally coherent snapshot. These are redacted
 host events, not wire timestamps or proof of peer delivery.
 See the [qualification method](mstp-qualification.md) and
 [unrun result template](mstp-qualification-result.json) for before/after deltas,
@@ -1853,6 +1855,75 @@ never "nothing yet". After three `Ok(0)` reads in a row the transport ends as
 it does at a read error: counted in `serial_read_errors`, logged, its NPDU
 channel closed and later sends refused. The loopback backend completes writes
 in memory and drains immediately, and its reads always return octets.
+
+### bacnet-mstp-core (firmware)
+
+The MS/TP transport above runs on `bacnet-mstp-core`, which firmware can use
+on its own: `no_std`, no allocator, buffers the caller owns, and time as a
+`bacnet-time` `Instant` passed to each call (see
+[the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)).
+It re-exports the frame codec as `bacnet_mstp_core::codec`. A `now` earlier
+than the latest one passed in is taken as that latest one, so a clock that
+steps back holds the core's timers still instead of failing;
+`enqueue_npdu` takes its `now` the same way without moving the clock.
+
+Since 0.13.0 the types that may grow are `#[non_exhaustive]` (#1684), so code
+outside the crate builds them like this:
+
+- `MstpCoreConfig::STANDARD` (also its `Default`) or
+  `MstpCoreConfig::for_baud_rate(baud)`, then set the fields to change.
+  Both `for_baud_rate` and `validate` are `const fn`s, so a configuration
+  can be built and checked at compile time.
+- `DequeuedNpdu::new(destination, kind, priority, sequence, npdu)` and
+  `QueueItemInfo::new(destination, kind, priority, len, enqueued_at,
+  sequence)`, for a `QueueStorage` of your own; set `expires_at` and
+  `service_wait` when they are not `None` and zero.
+
+`QueueStorage` is an extension point, and its methods are part of the
+crate's semver. The core builds the rest, which a caller reads but can't
+build, or match without `..`: `MstpCounters`, `QueueCounters` and
+`MasterSnapshot`. A `match` on these enums needs a wildcard arm:
+`ConfigError`, `CoreError`, `QueueRefusal`, `CoreBuffer`,
+`LocalDurationField`, `LocalLimitField`, `TransmitFailure` and
+`ReceiveError`. The enums an adapter acts on case by case, and the closed
+sets, stay exhaustive: `Action`, `ReplyDecision`, `Direction`,
+`MasterState`, `NetworkPriority` and `QueueKind`.
+
+Counters drain: `MasterCore::take_counters()` returns the counts since the
+last take, the queues' with them, and starts them again; each is a `u32`
+that saturates between takes, and the caller keeps the totals.
+`MasterCore::counters()` shows them without taking them. A queue's `depth`
+is a level, not a count, and its `high_water` the deepest since the last
+take. `QueueStorage::stats` is `counters` (a look) and `take_counters` (a
+take). Receive errors and transmit aborts count by kind (`framing_errors`,
+`transmit_timeouts` and the rest).
+
+Renamed or removed in 0.13.0:
+
+- `QueueRejectReason` is `QueueRefusal`; its reserved `Starved` and
+  `QueueCounters::drops_starved` are gone.
+- `max_npdu_length()` is `max_npdu()`, on `MstpCoreConfig` and
+  `QueueStorage`.
+- `MstpCoreConfig::standard()` is `MstpCoreConfig::STANDARD`.
+- `MstpCoreConfig`'s `n_poll`, `n_retry_token`, `n_min_octets`,
+  `t_no_token` and `t_slot`, which could hold only one value, are the
+  constants `N_POLL`, `N_RETRY_TOKEN`, `N_MIN_OCTETS`, `T_NO_TOKEN` and
+  `T_SLOT`, and their `ConfigError` variants are gone.
+- `NetworkPriority::from_u8` and `as_u8` are `NetworkPriority::try_from`
+  (refusing with `PriorityError`) and `u8::from`.
+- `ReplyDecision::Cancelled`, which sent Reply Postponed, is gone: use
+  `Postponed`.
+- `RequestId::raw` and `TransmitId::raw` are gone: use `generation`.
+- `QueueKind::BROADCAST_DESTINATION` is gone: use the codec's
+  `BROADCAST_MAC`.
+- `HeaplessQueues::with_starvation_limit` and
+  `AllocQueues::with_starvation_limit` are gone: the limit is
+  `MstpCoreConfig::starvation_limit`, which `MasterCore::new` hands to the
+  queues.
+- `CoreError::ClockRegression` is gone, under the clock rule above.
+
+`ConfigError`, `CoreError`, `QueueRefusal` and `PriorityError` implement
+`core::error::Error`.
 
 ### Loopback Transport
 
