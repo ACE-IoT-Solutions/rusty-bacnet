@@ -1,7 +1,8 @@
 ---
 section: Added
 ---
-- New `bacnet-router-core` crate, published with 0.13.0: a portable
-  `no_std` router core (Clause 6) with no allocator, with an NPDU view and
-  writer, network-layer messages, the routing table and route discovery
+- New `bacnet-router-core` crate: a `no_std` BACnet router (Clause 6) with
+  no allocator, a sans-IO engine on injected time and caller storage with
+  NPDU views and writers, network-layer messages, a routing table and route
+  discovery; its `bip` and `mstp` features add ports over the other cores
   (#1679).

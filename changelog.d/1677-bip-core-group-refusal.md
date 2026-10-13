@@ -1,6 +1,0 @@
----
-section: Changed
----
-- **Breaking (Rust API):** `bacnet_bip_core::node::SendRefusal` is
-  `#[non_exhaustive]` and gains `GroupDestination`, which `Link::unicast`
-  returns for a group address of the link (#1677).

@@ -24,12 +24,14 @@ This summary describes v0.12.0; its [release notes](https://github.com/jscott320
 **Transports.** BACnet/IP is always built; the others are Cargo features of `bacnet-transport`:
 
 - BACnet/IP: BBMD and foreign-device registration. NAT traversal and B/IP multicast are not implemented.
-- BACnet/IPv6 (`ipv6`): selects one concrete local interface and address and keeps traffic on that link; the socket itself binds the wildcard address.
+- BACnet/IPv6 (`ipv6`): selects one concrete local interface and address and keeps traffic on that link; the socket itself binds the wildcard address. Peers are named by their 3-octet VMAC, found by address resolution, and a server's VMAC is its device instance.
 - BACnet/SC (`sc-tls`): nodes, direct connections and a hub over TLS 1.3. Each device needs a site CA, its own certificate and key, and a provisioned device UUID.
 - MS/TP (`serial`): standard frames, and extended (COBS-encoded) frames for NPDUs up to 1497 octets with `MstpConfig::extended_frames`, which a router turns on for its MS/TP ports. RS-485 kernel options and GPIO direction control (`serial-gpio`) are Linux-only, and on-wire timing is not qualified on any adapter.
 - Ethernet (`ethernet`): Linux only, through `AF_PACKET`, with `CAP_NET_RAW` or root.
 
 `bacnet-network` routes between networks and transports, and `bacnet-endpoint` lets one transport serve both client and server roles.
+
+**Embedded (`no_std`).** `bacnet-time`, `bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core` and `bacnet-router-core` build without the standard library or an allocator and take their time from the caller, so firmware can run MS/TP, BACnet/IP (BBMD included) and a router between them. The MS/TP and BACnet/IP transports and `BACnetRouter` run on these cores. `bacnet-types`, `bacnet-encoding` and `bacnet-services` build without the standard library when given an allocator.
 
 **Python.** The `rusty-bacnet` package (CPython 3.11 or later) wraps the client as `BACnetClient`, the full server as `BACnetServer`, the SC hub as `ScHub` and the shared endpoints as `BipEndpoint`, `ScEndpoint` and `MstpEndpoint`, with asyncio methods. It includes BACnet/IP, BACnet/IPv6, BACnet/SC and MS/TP, but not Ethernet, and it does not wrap every Rust API.
 

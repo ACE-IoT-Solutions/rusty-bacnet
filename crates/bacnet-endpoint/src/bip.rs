@@ -153,8 +153,9 @@ impl BipEndpointBuilder {
         self
     }
 
-    /// Explicitly associate the selected concrete built-in port with this NORMAL
-    /// B/IP transport. Declaring an identity entry alone does not register it.
+    /// Explicitly associate the selected concrete built-in port with this B/IP
+    /// transport, in whichever single mode it runs (normal, foreign device or
+    /// BBMD). Declaring an identity entry alone does not register it.
     pub fn registered_network_port(mut self, oid: ObjectIdentifier) -> Self {
         self.registered_network_port = Some(oid);
         self

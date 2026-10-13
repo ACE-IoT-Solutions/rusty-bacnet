@@ -12,11 +12,14 @@ Use the [result template](mstp-qualification-result.json) for each campaign.
   writes, FEC writes, reboot/DCC, configuration/table writes, or production load
   generation. **Do not use DNET 2000 in the reporter's lab.** Obtain an explicit
   unused, isolated test network assignment; this document supplies no default.
-- Current transport scope remains standard frames, at most 501 NPDU octets and
-  480 advertised APDU octets. A routed ReadProperty experiment is diagnostic
-  evidence, **not a conformant MS/TP router claim**. Extended/COBS routing (RB-25),
-  endpoint composition (RB-17+) and Linux RT/affinity controls (RB-24/#501) are not
-  implemented or changed here. No timers, queue sizes or direction policies change.
+- A device's port uses standard frames by default, at most 501 NPDU octets and
+  480 advertised APDU octets. `MstpConfig::extended_frames` (Python
+  `mstp_extended_frames`) raises those to 1497 and 1476, and `BACnetRouter` turns
+  it on for every MS/TP port it routes, so record the setting for each cell. A
+  routed ReadProperty experiment is diagnostic evidence, **not a conformant MS/TP
+  router claim**. Linux RT/affinity controls (RB-24/#501) are not implemented. The
+  host's timer defaults are under **Host timeouts and USB latency** below; this
+  method changes no timers, queue sizes or direction policies.
 - Neither dedicated-thread execution nor PREEMPT_RT promises on-wire timing.
   A USB result says nothing about native UART, another adapter with the same chip,
   or another driver/kernel/USB topology. No issue-closure claim before evidence.
@@ -51,8 +54,8 @@ assert_eq!(before, after);
 ```
 
 Each transport starts at zero. Clones retain counters only, not the serial owner
-or runtime. Transport-boundary counters saturate at `u64::MAX` and the core's
-(`mac`) at `u32::MAX`; there is no reset. Snapshot fields use individually atomic
+or runtime. Every counter, `mac`'s totals of the core's counts included,
+saturates at `u64::MAX`; there is no reset. Snapshot fields use individually atomic
 Relaxed loads plus the core's counters as last published by the MAC task,
 **not a globally coherent transaction**. Poll at
 coarse intervals outside the MAC loop; do not add per-frame logging. For controlled

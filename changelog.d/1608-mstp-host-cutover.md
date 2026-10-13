@@ -1,7 +1,8 @@
 ---
 section: Fixed
 ---
-- **Wire:** The MS/TP transport now runs the portable Clause 9 master core:
-  maintenance polls after 50 token passes, a 20 ms poll wait, the waiting
-  states' handling of unexpected and invalid frames, turnaround before every
-  frame, per-station generation slots, and broadcast requests delivered (#1608).
+- **Wire:** The MS/TP transport runs the Clause 9 master core: maintenance
+  polls every 50 token passes, the wait states' handling of unexpected
+  and invalid frames, turnaround before each frame, per-station generation
+  slots, delivered broadcast requests, and dropped frames skipped whole
+  (#1608, #1609).

@@ -321,7 +321,7 @@ jobs:
       - name: bacnet-cli tests (default features)
         run: cargo nextest run -p bacnet-cli --locked --profile ci
       # And with no default features at all. Until `tui` is on by default again
-      # (0.13.0, #975) this matches the run above; both keep `bacnet tui`'s
+      # (0.14.0, #975) this matches the run above; both keep `bacnet tui`'s
       # rebuild advice tested.
       - name: bacnet-cli tests (no default features)
         if: ${{ !cancelled() }}
