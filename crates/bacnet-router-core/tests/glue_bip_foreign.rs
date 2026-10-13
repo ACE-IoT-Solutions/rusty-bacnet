@@ -24,7 +24,7 @@ fn sent_at(out: &mut Wire, now: Instant, trace: &mut Vec<(Instant, Out)>) {
 }
 
 /// A foreign-device port holding two broadcasts, on a router with the
-/// default options (fix R3 on among them), started at `t0`: its first
+/// default options, started at `t0`: its first
 /// registration sent, and the router's startup announcements carried out.
 fn started_foreign_port<'h>(
     held: &'h mut [HeldBroadcast],
@@ -68,7 +68,7 @@ fn trace_e(released: Instant) -> [(Instant, Out); 3] {
 
 /// Trace E (design 5.2): a router port that is a foreign device, holding
 /// two broadcasts. At start it registers, and holds its two startup
-/// announcements, the Network-Number-Is and the I-Am-Router (fix R3);
+/// announcements, the Network-Number-Is and the I-Am-Router;
 /// the BBMD's success 10 ms later releases them, in order (Annex J.7.4;
 /// decision D17).
 #[test]

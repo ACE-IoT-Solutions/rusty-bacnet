@@ -31,9 +31,7 @@
 //! - [`router`]: the sans-IO engine that joins them: a [`Router`] over a
 //!   [`Storage`] takes each frame a port receives, says what it means for
 //!   the router's own application, and asks for the sends it calls for,
-//!   which the caller polls. It takes the time with every call. Where the
-//!   hosted router once departed from the clause, a switch picks the
-//!   clause's way, the default, or the old one.
+//!   which the caller polls. It takes the time with every call.
 //!
 //! A port is identified by its index, a [`PortId`]; its MAC is a [`Mac`] of
 //! up to [`MAX_MAC_LEN`] octets. To the engine a port is data, so any link
@@ -62,58 +60,52 @@
 //! | Each network-layer message's payload is read whole or not at all, and written in the layout the clause gives it | 6.4 | `tests/message.rs` |
 //! | The table records, for each network it can reach, the port, the next router (none for a directly attached network), and a state that separates a lasting failure from congestion | 6.6.1 | `tests/table.rs` |
 //! | A later claim of the route to a network supersedes the earlier one | 6.6.3.2 | `tests/table_claims.rs` |
-//! | A reject with reason 1 marks a learned route unreachable, and one with reason 2 marks it busy for a while; no other reason changes the table (R2) | 6.6.3.5 | `src/table/tests/rejects.rs` (unit tests, as the hold-down records they read are the crate's own) |
+//! | A reject with reason 1 marks a learned route unreachable, and one with reason 2 marks it busy for a while; no other reason changes the table | 6.6.3.5 | `src/table/tests/rejects.rs` (unit tests, as the hold-down records they read are the crate's own) |
 //! | Flow control holds traffic for the networks named, or for every network the sending router serves when none are named, and lets it go again | 6.6.3.6, 6.6.3.7 | `tests/table_busy.rs` |
 //! | A routing-table update replaces or adds a network's row, and Port ID 0 deletes it | 6.4.7, 6.6.3.8 | `tests/table.rs`: `management_updates_never_touch_direct_routes` |
 //! | A router with no route to a network looks for one before it refuses the message | 6.6.3.1 | `tests/discovery.rs` |
 //!
-//! Then the engine, with the hosted router's options, every fix on; where a row
-//! names a fix, its test pins the router before the fix too:
+//! Then the engine, with the hosted router's options:
 //!
 //! | Obligation | Clause | Test |
 //! | --- | --- | --- |
 //! | An address length no link uses draws reason 6 when the NPDU names a network, and nothing when it is a global broadcast | 6.2.2.2, 6.4.4 | `tests/ingress.rs`: `over_long_addresses_reject_with_reason_6` |
-//! | A message for the router's own address on any of its networks goes to its own application, not on a wire (R7) | 6.1, Figure 6-12 | `tests/ingress.rs`: `own_address_on_any_port_is_local`, `own_mac_on_a_remote_network_is_routed_on` |
+//! | A message for the router's own address on any of its networks goes to its own application, not on a wire | 6.1, Figure 6-12 | `tests/ingress.rs`: `own_address_on_any_port_is_local`, `own_mac_on_a_remote_network_is_routed_on` |
 //! | Only an Unconfirmed-Request may use a broadcast network address | 6.3 | `tests/ingress.rs`: `broadcast_addresses_carry_only_unconfirmed` |
 //! | Missing SNET and SADR are filled in from the arrival network and the link sender; present ones travel unchanged | 6.5.4 | `tests/forward.rs`: `source_is_added_once_and_kept_after` |
 //! | Onto an attached network the destination fields and hop count are dropped, and the frame goes to the DADR, or to every node for DLEN 0 | 6.5.4 | `tests/forward.rs`: `direct_delivery_strips_destination` |
-//! | Toward another router the destination fields stay and the hop count falls by one; a count that would reach zero goes no further (R6) | 6.2.3, 6.5.4 | `tests/forward.rs`: `next_router_keeps_destination_and_counts_down`, `hop_count_reaching_zero_is_not_relayed`, `hop_count_reaching_zero_stops_routed_network_messages` |
-//! | A global broadcast reaches every attached network but the one it came from, still global, and the router's own application too; one whose count would reach zero is only delivered (R6) | 6.3.2, 6.5.4 | `tests/forward.rs`: `global_broadcast_fans_out_and_delivers` |
+//! | Toward another router the destination fields stay and the hop count falls by one; a count that would reach zero goes no further | 6.2.3, 6.5.4 | `tests/forward.rs`: `next_router_keeps_destination_and_counts_down`, `hop_count_reaching_zero_is_not_relayed`, `hop_count_reaching_zero_stops_routed_network_messages` |
+//! | A global broadcast reaches every attached network but the one it came from, still global, and the router's own application too; one whose count would reach zero is only delivered | 6.3.2, 6.5.4 | `tests/forward.rs`: `global_broadcast_fans_out_and_delivers` |
 //! | A network message for another network is routed like an APDU, a proprietary one included, vendor ID and all | 6.2.5, 6.5.4 | `tests/forward.rs`: `proprietary_messages_route_opaquely` |
 //! | Lacking a route, the router searches for one and refuses the message with reason 1 | 6.6.3.1 | `tests/traces.rs`: `a_discovery_learning_and_aging` |
 //! | A refusal goes to whoever first sent the refused message, as its source fields say | 6.4.4, 6.5.4 | `tests/reject.rs`: `reject_path_follows_the_origin` |
-//! | A reject that arrives updates the table, for reasons 1 and 2 only (R2), then travels on toward the node it names, whatever its reason | 6.6.3.5 | `tests/reject.rs`: `received_rejects_relay_by_their_destination`, `other_reasons_relay_and_keep_the_route`; `tests/traces.rs`: `c_received_rejects` |
+//! | A reject that arrives updates the table, for reasons 1 and 2 only, then travels on toward the node it names, whatever its reason | 6.6.3.5 | `tests/reject.rs`: `received_rejects_relay_by_their_destination`, `other_reasons_relay_and_keep_the_route`; `tests/traces.rs`: `c_received_rejects` |
 //! | Traffic for a network on hold draws reason 2 until the hold lapses or is lifted | 6.6.3.6 | `tests/traces.rs`: `b_flow_control` |
 //! | A message type the router doesn't know, sent to it, draws reason 3 | 6.6.3.5 | `tests/control.rs`: `unknown_types_draw_reason_3` |
 //! | Route announcements teach the table and go on to the other ports | 6.6.3.2, 6.6.3.3 | `tests/control.rs`: `i_am_router_learns_then_rebroadcasts`; `tests/traces.rs`: `d_hardened_convergence` |
-//! | A route question about one network is answered when the network lies beyond another port, searched further, with the asker as origin, when the table lacks it, and left alone when it lies beyond the arrival port (R5) | 6.6.3.2 | `tests/control.rs`: `scoped_who_is_router_cases` |
-//! | A route question about every network is answered with those beyond the other ports, ascending, but for those failed for good (R4) | 6.6.3.2 | `tests/control.rs`: `unscoped_answer_lists_reachable_networks` |
+//! | A route question about one network is answered when the network lies beyond another port, searched further, with the asker as origin, when the table lacks it, and left alone when it lies beyond the arrival port | 6.6.3.2 | `tests/control.rs`: `scoped_who_is_router_cases` |
+//! | A route question about every network is answered with those beyond the other ports, ascending, but for those failed for good | 6.6.3.2 | `tests/control.rs`: `unscoped_answer_lists_reachable_networks` |
 //! | Flow control covers what its sender serves, named or not, and goes on to the other ports | 6.6.3.6, 6.6.3.7 | `tests/control.rs`: `flow_control_covers_what_the_sender_serves` |
 //! | A table update applies entry by entry and gets an empty answer; a query gets the whole table, over several answers when needed, and changes nothing | 6.4.7, 6.6.3.8, 6.6.3.9 | `tests/init.rs` |
 //! | The network-number messages stay on their link | 6.4.19, 6.4.20 | `tests/control.rs`: `network_number_messages_stay_local` |
-//! | At start each port hears its own number (R3), then which networks lie beyond the others | 6.4.20, 6.6.2, 6.6.3.3 | `tests/traces.rs`: `a_discovery_learning_and_aging`, `startup_without_r3`, `a_one_port_router_announces_only_its_number` |
+//! | At start each port hears its own number, then which networks lie beyond the others | 6.4.20, 6.6.2, 6.6.3.3 | `tests/traces.rs`: `a_discovery_learning_and_aging`, `a_one_port_router_announces_only_its_number` |
 //! | With no point-to-point links, connection messages change nothing | 6.6.3.10, 6.6.3.11 | `tests/control.rs`: `ptp_messages_change_nothing` |
-//! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out (R1) | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4`, `a_fan_out_goes_by_the_broadcast_limit` |
+//! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4`, `a_fan_out_goes_by_the_broadcast_limit` |
 //!
 //! Rules of this stack beyond the clause, each tested in the same files:
 //! the 18-octet address bound (#1141, #1198); a DADR beside DNET 0xFFFF
 //! (#1379); group DADRs, where only an Unconfirmed-Request for a group of
 //! the delivery port's own goes on, as that port's broadcast (#1504,
 //! #1677); the relay back out the arrival port of a
-//! message for the arrival network (with R1, a DLEN 0 broadcast at the
-//! port's limit is delivered and also draws reason 4, as the relay gains
-//! source fields); the RB-09 gate for each protected
+//! message for the arrival network (a DLEN 0 broadcast at the port's limit
+//! is delivered and also draws reason 4, as the relay gains source
+//! fields); the RB-09 gate for each protected
 //! message, silent when it refuses; direct routes that no learning, reject
 //! or management write changes; a 30-second hold-down per network and
 //! arrival port on reject-driven changes; hardened convergence, which
 //! waits for a second claim before moving a route to another port; the
 //! route cap; a discovery cooldown, cap and expiry; no reject for a global
 //! broadcast, and none to the router itself.
-//!
-//! Where the hosted router departed from the clause, `bacnet-network`'s
-//! router first moved onto the engine unchanged, then took the fixes #1679
-//! lists. Each is a switch in [`router::Fixes`], on by default, and the
-//! tests pin the old way with it off.
 //!
 //! # Features
 //!

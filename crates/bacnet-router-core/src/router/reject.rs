@@ -1,6 +1,5 @@
 //! The rejects this router sends, and the ones it passes on.
 
-use super::config::Options;
 use super::counters::bump;
 use super::host::{Event, Group, Host};
 use super::ingress::{Arrival, DropReason, Received};
@@ -74,7 +73,6 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         &mut self,
         at: &Arrival<'f>,
         npdu: &Npdu<'f>,
-        options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
         let destination = match npdu.destination {
@@ -89,7 +87,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         match route {
             // Never as a broadcast (decisions L23 and L24 on #1677).
             Some(route) if self.group_of(&route, npdu, host) != Group::No => self.group_drop(),
-            Some(route) => self.forward(at, npdu, &route, options, host),
+            Some(route) => self.forward(at, npdu, &route, host),
             None => {
                 bump(&mut self.counters.unroutable_rejects);
                 Received::Dropped(DropReason::Unroutable)

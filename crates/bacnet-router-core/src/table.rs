@@ -23,8 +23,7 @@
 //!   extends a route's life. Busy and Available marks touch neither.
 //! - **Rejects** ([`Table::apply_reject`]): reason 1 marks a learned route
 //!   unreachable and reason 2 busy for 30 s; any other reason leaves it as
-//!   it is, and is counted apart (Clause 6.6.3.5). The router with fix R2
-//!   off removes the route for one, as the hosted router once did.
+//!   it is, and is counted apart (Clause 6.6.3.5).
 //!   Each change starts a 30 s hold-down for its network and arrival port,
 //!   during which further reject-driven changes from that port are ignored.
 //!   Hold-down records live in their own pool of `H`; a full pool evicts the
@@ -164,8 +163,7 @@ pub struct Pending {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ClaimCounters {
-    /// Rejects that changed a learned route's state, or, with fix R2 off,
-    /// removed it.
+    /// Rejects that changed a learned route's state.
     pub reject_applied: u64,
     /// Rejects ignored, for either reason below; each counts once here.
     pub reject_dampened: u64,
@@ -175,7 +173,7 @@ pub struct ClaimCounters {
     /// State-changing rejects ignored within the hold-down.
     pub reject_dampened_hold_down: u64,
     /// Rejects for a learned route with a reason other than 1 or 2, which
-    /// leave it as it is (fix R2); the router before it removed the route.
+    /// leave it as it is (Clause 6.6.3.5).
     pub reject_kept: u64,
     /// Learning claims that added or refreshed a learned route.
     pub learned_ok: u64,

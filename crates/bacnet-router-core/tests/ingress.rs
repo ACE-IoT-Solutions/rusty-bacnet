@@ -7,7 +7,7 @@ use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::{AddressField, Malformed, Npdu};
 use bacnet_router_core::router::{DropReason, Kind, Options};
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, deliver_broadcast, learn_9_via_r7, options, port_on, router,
+    addr, apdu_to, at, bytes, deliver, deliver_broadcast, learn_9_via_r7, port_on, router,
     router_counts, router_with, sent_reject, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1,
     R7, UNCONFIRMED,
 };
@@ -371,9 +371,9 @@ fn the_arrival_network_as_dnet_goes_back_out_the_arrival_port() {
     assert_eq!(router.counters().hop_count_drops, 1);
 }
 
-/// R7 (Clause 6.1, Figure 6-12): an APDU for the router's own address on
-/// any of its networks is the router's own application's, as one for its
-/// address on the arrival network always was. It is delivered with its
+/// Clause 6.1, Figure 6-12: an APDU for the router's own address on any of
+/// its networks is the router's own application's, as one for its address
+/// on the arrival network is. It is delivered with its
 /// origin, as a routed APDU, and nothing goes on any wire.
 #[test]
 fn own_address_on_any_port_is_local() {
@@ -415,7 +415,7 @@ fn own_address_on_any_port_is_local() {
     assert!(sent.is_empty());
 }
 
-/// R7 matches the router's address as a whole, network and MAC: a DADR
+/// The router's own address is matched whole, network and MAC: a DADR
 /// that equals one of its own MACs on a network behind another router
 /// names some other node, so it is routed on. That is the usual MS/TP case,
 /// where the router is station 1 on its link and another station 1 sits on
@@ -434,28 +434,16 @@ fn own_mac_on_a_remote_network_is_routed_on() {
     }
 }
 
-/// Before R7 the hosted router compared a DADR with its own MAC on the
-/// arrival port only (router/dispatch.rs:178-187): an APDU for its MAC on
-/// another of its networks went out on that network's wire, to the router
-/// itself. A DLEN 0 broadcast is never the router's own address, fix or no
-/// fix: it goes out as a broadcast.
+/// A DLEN 0 broadcast is never the router's own address, even on a port
+/// whose own MAC is empty, which a DLEN 0 would match: it goes out as a
+/// broadcast.
 #[test]
-fn without_r7_own_address_on_another_port_goes_to_the_wire() {
-    let mut before = router_with(
-        &fixture::two_ports(),
-        options(|o| o.fixes.own_address = false),
-    );
-    let mut host = Recorder::default();
-    let frame = apdu_to(2, OWN_1, CONFIRMED);
-    let (outcome, sent) = deliver(&mut before, &mut host, 0, NODE_A, &frame, at(1));
-    assert_eq!(outcome, Outcome::Handled);
-    assert_eq!((sent[0].port, sent[0].to.as_deref()), (1, Some(OWN_1)));
-
-    // Even on a port whose own MAC is empty, which a DLEN 0 would match.
+fn a_dlen_0_broadcast_is_never_the_routers_own_address() {
     let ports = [port_on(1, OWN_0), port_on(2, &[])];
-    let mut fixed = router_with(&ports, options(|o| o.fixes.own_address = true));
+    let mut router = router_with(&ports, Options::HOSTED);
+    let mut host = Recorder::default();
     let frame = apdu_to(2, &[], UNCONFIRMED);
-    let (outcome, sent) = deliver(&mut fixed, &mut host, 0, NODE_A, &frame, at(1));
+    let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(1));
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!((sent[0].port, sent[0].is_broadcast()), (1, true));
 }

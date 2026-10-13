@@ -147,7 +147,7 @@ fn the_route_cap_ends_learning() {
 
 /// Clause 6.6.3.2, scoped: answered with the network when it lies beyond
 /// another port, whatever its state; searched for further, with SNET and
-/// SADR and no DNET, when the table lacks it; and, with R5, left to the
+/// SADR and no DNET, when the table lacks it; and left to the
 /// router on the arrival network when the table reaches it through the
 /// arrival port. Network 0, and data of the wrong length, are refused.
 #[test]
@@ -184,23 +184,12 @@ fn scoped_who_is_router_cases() {
     assert_eq!(sent[0].port, 0);
     assert_eq!(sent[0].parsed().source, Some(addr(7, &[1])));
 
-    // R5: reached through the arrival port, as 9 is behind R7 and 2 is port
+    // Reached through the arrival port, as 9 is behind R7 and 2 is port
     // 1's own network, so the router there answers: nothing from this one.
     for network in [9, 2] {
         let (outcome, sent) = deliver(&mut router, &mut host, 1, R8, &who_is(network), at(1));
         assert_eq!(outcome, Outcome::Handled);
         assert!(sent.is_empty(), "{network}");
-    }
-    // Before R5 both were searched for on the other ports.
-    let options = options(|o| o.fixes.search_unknown_only = false);
-    let mut before = router_with(&fixture::two_ports(), options);
-    learn_9_via_r7(&mut before, at(0));
-    for network in [9, 2] {
-        let (_, sent) = deliver(&mut before, &mut host, 1, R8, &who_is(network), at(1));
-        assert_eq!(sent.len(), 1);
-        assert_eq!((sent[0].port, sent[0].is_broadcast()), (0, true));
-        assert_eq!(sent[0].kind, Kind::Relay(code::WHO_IS_ROUTER_TO_NETWORK));
-        assert_eq!(sent[0].parsed().source, Some(addr(2, R8)));
     }
 
     for bad in [
@@ -214,35 +203,27 @@ fn scoped_who_is_router_cases() {
     assert!(host.asked.is_empty(), "discovery is never gated");
 }
 
-/// Clause 6.6.3.2, unscoped, with R4: every network the table reaches
+/// Clause 6.6.3.2, unscoped: every network the table reaches
 /// through another port, ascending, except one marked unreachable; a busy
 /// one stays. A router with nothing to list sends nothing.
 #[test]
 fn unscoped_answer_lists_reachable_networks() {
     let ports = [port_on(1, OWN_0), port_on(2, OWN_1), port_on(3, &[0x33])];
     let who_is_all = message(code::WHO_IS_ROUTER_TO_NETWORK, &[]);
-    for answer_reachable in [true, false] {
-        let options = options(|o| o.fixes.answer_reachable = answer_reachable);
-        let mut router = router_with(&ports, options);
-        let mut host = Recorder::default();
-        let r8 = Mac::from_slice(R8).unwrap();
-        router.table_mut().add_learned(10, PortId(1), r8, at(0));
-        learn_9_via_r7(&mut router, at(0));
-        router.table_mut().mark_unreachable(9);
-        router.table_mut().mark_busy(10, at(30));
-        let mac = Mac::from_slice(NODE_A).unwrap();
-        router.table_mut().add_learned(5, PortId(0), mac, at(0));
-        let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &who_is_all, at(1));
-        assert_eq!(sent.len(), 1);
-        assert_eq!((sent[0].port, sent[0].is_broadcast()), (0, true));
-        assert_eq!(sent[0].kind, Kind::Answer(code::I_AM_ROUTER_TO_NETWORK));
-        if answer_reachable {
-            assert_eq!(listed(&sent[0]), [2, 3, 10]);
-        } else {
-            // Before R4, the unreachable network was listed too.
-            assert_eq!(listed(&sent[0]), [2, 3, 9, 10]);
-        }
-    }
+    let mut router = router_with(&ports, Options::HOSTED);
+    let mut host = Recorder::default();
+    let r8 = Mac::from_slice(R8).unwrap();
+    router.table_mut().add_learned(10, PortId(1), r8, at(0));
+    learn_9_via_r7(&mut router, at(0));
+    router.table_mut().mark_unreachable(9);
+    router.table_mut().mark_busy(10, at(30));
+    let mac = Mac::from_slice(NODE_A).unwrap();
+    router.table_mut().add_learned(5, PortId(0), mac, at(0));
+    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &who_is_all, at(1));
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].port, sent[0].is_broadcast()), (0, true));
+    assert_eq!(sent[0].kind, Kind::Answer(code::I_AM_ROUTER_TO_NETWORK));
+    assert_eq!(listed(&sent[0]), [2, 3, 10]);
 
     let mut lonely = router_with(&[port_on(1, OWN_0)], Options::HOSTED);
     let mut host = Recorder::default();

@@ -396,7 +396,7 @@ fn extended_profile_admits_the_first_extended_boundary() {
 
 /// A router's MS/TP port has no standard-frame profile: a core
 /// configuration without extended frames is refused (Clause 9.3). Where a
-/// port is held to 501 octets anyway, fix R1 keeps a 502-octet NPDU from it
+/// port is held to 501 octets anyway, the router keeps a 502-octet NPDU from it
 /// with reject reason 4 to its sender (#1665), and a core without extended
 /// frames refuses one itself; either way nothing is queued.
 ///
@@ -416,7 +416,6 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
         max_npdu: Limits::both(501),
         ..MstpPort::config(&config(true), 2).unwrap()
     };
-    // Fix R1 is on by default.
     let mut router = router_with(&[port_on(1, OWN_0), held_to_501], Options::HOSTED);
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(true);

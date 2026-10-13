@@ -1,15 +1,15 @@
 //! Rewriting for the next hop (Clause 6.5.4; router/forwarding.rs), the
-//! global fan-out, and R1's egress limits.
+//! global fan-out, and the egress limits (#1665).
 
 mod fixture;
 
 use bacnet_router_core::message::{code, reason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{Cause, DropReason, Event, Fixes, Kind, Limits, Options};
+use bacnet_router_core::router::{Cause, DropReason, Event, Kind, Limits, Options};
 use bacnet_router_core::PortId;
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, options, port_on, router, router_with,
-    sent_reject, two_ports, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1, R7, UNCONFIRMED,
+    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, port_on, router, router_with, sent_reject,
+    two_ports, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1, R7, UNCONFIRMED,
 };
 
 /// Clause 6.5.4: SNET and SADR are added from the arrival network and the
@@ -91,14 +91,14 @@ fn next_router_keeps_destination_and_counts_down() {
     assert_eq!(parsed.hop_count, 16);
 }
 
-/// R6 (Clauses 6.2.3 and 6.5.4): the hop count comes down before the
+/// Clauses 6.2.3 and 6.5.4: the hop count comes down before the
 /// router decides, so toward the next router one that arrives with 0 or 1
 /// goes nowhere, counted and reported, with no reject; 2 leaves with 1.
 /// Onto an attached network the NPDU carries no hop count, so one that
 /// arrives with 1 is still delivered there.
 #[test]
 fn hop_count_reaching_zero_is_not_relayed() {
-    let mut router = router_with(&two_ports(), options(|o| o.fixes = Fixes::ALL));
+    let mut router = router();
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
     let hops = |network: u16, count: u8| {
@@ -129,14 +129,14 @@ fn hop_count_reaching_zero_is_not_relayed() {
     assert_eq!(router.counters().hop_count_drops, 2);
 }
 
-/// R6 holds for network messages too: one routed toward the next router
+/// The same holds for network messages: one routed toward the next router
 /// (an I-Am-Router for network 9, and a reject passed on toward a node
 /// behind R7) that arrives with a hop count of 1 goes nowhere, counted, as
 /// an APDU does. Each still does what it does at the router: the reject
 /// marks 9 unreachable before it is passed on.
 #[test]
 fn hop_count_reaching_zero_stops_routed_network_messages() {
-    let mut router = router_with(&two_ports(), options(|o| o.fixes = Fixes::ALL));
+    let mut router = router();
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
     let mut i_am = Npdu::message(code::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
@@ -158,26 +158,10 @@ fn hop_count_reaching_zero_stops_routed_network_messages() {
     assert!(router.table().lookup(44).is_none(), "routed, not learned");
 }
 
-/// Before R6, the hosted router let one that arrived with 1 leave with 0
-/// (router/forwarding.rs:28-31, 51), for the next router to drop.
-#[test]
-fn without_r6_a_hop_count_of_one_leaves_with_zero() {
-    let mut router = router_with(&two_ports(), options(|o| o.fixes = Fixes::NONE));
-    let mut host = Recorder::default();
-    learn_9_via_r7(&mut router, at(0));
-    let mut request = Npdu::apdu(CONFIRMED);
-    request.destination = Some(addr(9, &[5]));
-    request.hop_count = 1;
-    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&request), at(1));
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].parsed().hop_count, 0);
-    assert_eq!(router.counters().hop_count_drops, 0);
-}
-
 /// Clauses 6.3.2 and 6.5.4: a global broadcast goes to every attached
 /// network but the one it came from, keeping DNET 0xFFFF and DLEN 0, and is
 /// delivered locally too. With its hop count spent it is only delivered:
-/// with R6, one that arrives with 1 as well as 0.
+/// one that arrives with 1 as well as 0.
 #[test]
 fn global_broadcast_fans_out_and_delivers() {
     let ports = [port_on(1, OWN_0), port_on(2, OWN_1), port_on(3, &[0x33])];
@@ -223,15 +207,6 @@ fn global_broadcast_fans_out_and_delivers() {
     assert_eq!(router.counters().hop_count_drops, 2);
     let spent = Event::HopCountSpent { network: 0xFFFF };
     assert_eq!(host.events, [spent, spent]);
-
-    // Before R6 one with 1 left still went on, with 0.
-    let options = options(|o| o.fixes.hop_count = false);
-    let mut before = router_with(&ports, options);
-    last.hop_count = 1;
-    let (outcome, sent) = deliver(&mut before, &mut host, 1, &[0x20], &bytes(&last), at(1));
-    assert!(matches!(outcome, Outcome::Local { global: true, .. }));
-    assert_eq!(sent.len(), 2);
-    assert!(sent.iter().all(|sent| sent.parsed().hop_count == 0));
 }
 
 /// Clauses 6.2.5 and 6.5.4: a network message for another network, a
@@ -266,8 +241,9 @@ fn proprietary_messages_route_opaquely() {
 
 /// What the writer can't write goes nowhere and is counted, as an encode
 /// failure is logged and dropped today: an SNET of 0 from a port numbered
-/// 0, an empty SADR from an empty link source, and, with R1 off, a rewrite
-/// longer than the scratch.
+/// 0, an empty SADR from an empty link source, and a global broadcast whose
+/// rewrite outgrows the scratch. A port's limit is at most the scratch, so
+/// anything routed toward one network meets that limit first.
 #[test]
 fn unwritable_rewrites_are_dropped_and_counted() {
     let ports = [port_on(0, OWN_0), port_on(2, OWN_1)];
@@ -284,8 +260,7 @@ fn unwritable_rewrites_are_dropped_and_counted() {
     );
     assert_eq!(outcome, unwritable);
 
-    // With R1 on, the port's limit would refuse the long rewrite first.
-    let mut router = router_with(&two_ports(), options(|o| o.fixes = Fixes::NONE));
+    let mut router = router_with(&two_ports(), Options::HOSTED);
     let (outcome, _) = deliver(
         &mut router,
         &mut host,
@@ -295,19 +270,19 @@ fn unwritable_rewrites_are_dropped_and_counted() {
         at(1),
     );
     assert_eq!(outcome, unwritable);
-    // 1,497 octets in, 1,501 out: the source fields (3 + 6 octets) come
-    // in, the destination fields (3 + 1) and the hop count go.
-    let mut long = Npdu::apdu(&[0u8; 1497 - 7]);
-    long.destination = Some(addr(2, &[5]));
+    // 1,497 octets in, 1,506 out: the source fields (3 + 6 octets) come
+    // in, past the scratch. The router still takes its own copy.
+    let mut long = Npdu::apdu(&[0x10; 1497 - 6]);
+    long.destination = Some(addr(0xFFFF, &[]));
     let frame = bytes(&long);
     assert_eq!(frame.len(), 1497);
     let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(1));
-    assert_eq!(outcome, unwritable);
+    assert!(matches!(outcome, Outcome::Local { global: true, .. }));
     assert!(sent.is_empty());
     assert_eq!(router.counters().write_failures, 2);
 }
 
-/// R1 (#1665; Clauses 6.4.4 and 6.6.3.5, Table 6-1): an NPDU too long for
+/// #1665 (Clauses 6.4.4 and 6.6.3.5, Table 6-1): an NPDU too long for
 /// its egress port, as rewritten for it, draws reason 4 naming its DNET and
 /// goes nowhere. That holds onto an attached network, toward the next
 /// router, and for a remote broadcast, each by the limit for its kind of
@@ -320,7 +295,7 @@ fn too_long_for_the_egress_port_draws_reason_4() {
         unicast: 600,
         broadcast: 501,
     };
-    let mut router = router_with(&ports, options(|o| o.fixes = Fixes::ALL));
+    let mut router = router_with(&ports, Options::HOSTED);
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
 
@@ -397,7 +372,7 @@ fn a_fan_out_goes_by_the_broadcast_limit() {
         unicast: 600,
         broadcast: 501,
     };
-    let mut router = router_with(&ports, options(|o| o.fixes = Fixes::ALL));
+    let mut router = router_with(&ports, Options::HOSTED);
     let mut host = Recorder::default();
     // 511 octets in, plus SNET, SLEN and A's 6-octet SADR: 520.
     let mut global = Npdu::apdu(&[0x10; 505]);
@@ -436,22 +411,6 @@ fn a_fan_out_goes_by_the_broadcast_limit() {
         rejected: Some(2),
     };
     assert_eq!(host.events, [refused]);
-}
-
-/// Before R1, the scratch was the only bound: with it off, a rewrite past
-/// the port's limit goes out, and the port's own send refuses it.
-#[test]
-fn without_r1_a_rewrite_past_the_limit_goes_out() {
-    let mut ports = two_ports();
-    ports[1].max_npdu = Limits::both(501);
-    let mut router = router_with(&ports, options(|o| o.fixes = Fixes::NONE));
-    let mut host = Recorder::default();
-    let mut long = Npdu::apdu(&[0u8; 498 - 7]);
-    long.destination = Some(addr(2, &[5]));
-    let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&long), at(1));
-    assert_eq!(outcome, Outcome::Handled);
-    assert_eq!((sent[0].port, sent[0].npdu.len()), (1, 502));
-    assert_eq!(router.counters().egress_too_long, 0);
 }
 
 /// The NPDU priority reaches every send, for a port that queues by it.

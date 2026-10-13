@@ -13,8 +13,7 @@ use crate::{Instant, PortId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RejectEffect {
-    /// It changed a learned route's state, or, as the router did before
-    /// fix R2, removed the route.
+    /// It changed a learned route's state.
     Applied,
     /// Nothing to change: no route, a direct one, or the state already in
     /// effect.
@@ -23,7 +22,7 @@ pub enum RejectEffect {
     /// change from the same arrival port.
     HeldDown,
     /// For a learned route, with a reason other than 1 or 2, which changes
-    /// no route (Clause 6.6.3.5): the router before fix R2 removed it.
+    /// no route (Clause 6.6.3.5).
     Kept,
 }
 
@@ -150,38 +149,9 @@ impl<const R: usize, const H: usize> Table<R, H> {
         now: Instant,
         timing: &Timing,
     ) -> RejectEffect {
-        self.reject(network, port, reason, now, timing, false)
-    }
-
-    /// [`apply_reject`](Self::apply_reject) as the router did before fix R2
-    /// in #1679, which the router's [`Fixes`](crate::router::Fixes) keeps
-    /// with that switch off: a reason other than 1 or 2 removes a learned
-    /// route, as a change like the others, under the same hold-down.
-    pub(crate) fn apply_reject_removing(
-        &mut self,
-        network: u16,
-        port: PortId,
-        reason: u8,
-        now: Instant,
-        timing: &Timing,
-    ) -> RejectEffect {
-        self.reject(network, port, reason, now, timing, true)
-    }
-
-    /// A received reject, under the rule `removing` picks for a reason
-    /// other than 1 or 2.
-    fn reject(
-        &mut self,
-        network: u16,
-        port: PortId,
-        reason: u8,
-        now: Instant,
-        timing: &Timing,
-        removing: bool,
-    ) -> RejectEffect {
         let learned = self.lookup(network).is_some_and(|route| !route.direct);
         let other = !matches!(reason, reason::NOT_DIRECTLY_CONNECTED | reason::ROUTER_BUSY);
-        if learned && other && !removing {
+        if learned && other {
             let kept = &mut self.counters.reject_kept;
             *kept = kept.saturating_add(1);
             return RejectEffect::Kept;
@@ -199,7 +169,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
                         route.reachability != Reachability::Unreachable
                             && (route.reachability != Reachability::Busy || lapsed)
                     }
-                    _ => removing,
+                    _ => false,
                 }
         });
         let held_down = self
@@ -220,15 +190,11 @@ impl<const R: usize, const H: usize> Table<R, H> {
             };
         }
         counters.reject_applied = counters.reject_applied.saturating_add(1);
-        match reason {
-            reason::NOT_DIRECTLY_CONNECTED => self.mark_unreachable(network),
-            reason::ROUTER_BUSY => self.mark_busy(network, now + timing.busy_for),
-            // Only when `removing`. Removal drops every port's record for
-            // the network too.
-            _ => {
-                self.remove(network);
-                return RejectEffect::Applied;
-            }
+        if reason == reason::NOT_DIRECTLY_CONNECTED {
+            self.mark_unreachable(network);
+        } else {
+            // Only reasons 1 and 2 change a route.
+            self.mark_busy(network, now + timing.busy_for);
         }
         if self.holds.record(network, port, now) {
             self.counters.hold_evicted = self.counters.hold_evicted.saturating_add(1);

@@ -2288,9 +2288,7 @@ one per network and arrival port; a full pool gives up its oldest record,
 counted in its claim counters' `hold_evicted`.
 
 Where the router departed from Clause 6 before it moved onto the engine, it
-now follows the clause, each fix a switch in the core's `Fixes` (all on in
-the hosted router, and the core's default; `Fixes::NONE` is the router before
-them):
+now follows the clause, with no switch to turn back (#1679):
 
 - **Egress limits (R1, #1665).** Each port carries the NPDUs its transport's
   `max_npdu()` reports, read when the router starts it (a report under 64

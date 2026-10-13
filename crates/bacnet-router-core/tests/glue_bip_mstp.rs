@@ -154,8 +154,9 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
     assert_eq!(wired.data[11..], npdu[7..]);
 }
 
-/// Fix R1 keeps an NPDU one octet too long for a port held to 501 octets
-/// off it, with reject reason 4 back to its sender (#1665); a burst then
+/// The router's egress check keeps an NPDU one octet too long for a port
+/// held to 501 octets off it, with reject reason 4 back to its sender
+/// (#1665); a burst then
 /// fills the MS/TP queue's one slot, and the refusal is counted once.
 ///
 /// Ported from ACE IoT's
@@ -168,7 +169,6 @@ fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
         max_npdu: Limits::both(501),
         ..MstpPort::config(&config(true), MSTP_NET).unwrap()
     };
-    // Fix R1 is on by default.
     let mut router = router(&bip, Some(held_to_501), Options::HOSTED);
     let mut host = Groups {
         link: *bip.node().link(),

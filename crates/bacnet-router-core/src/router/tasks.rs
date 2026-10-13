@@ -1,6 +1,6 @@
 //! Outputs that wait in the queue, and how each is written when polled.
 
-use super::config::{Options, PortConfig};
+use super::config::PortConfig;
 use super::counters::bump;
 use super::output::{Cause, Current, Kind, Target};
 use super::Storage;
@@ -19,8 +19,7 @@ pub(super) enum TaskKind {
     /// with `origin` as its DNET and DADR when `origin_network` isn't 0.
     Reject,
     /// An I-Am-Router on `port`: for `network`, or for 0 every network the
-    /// table reaches through another port, with R4 on but those marked
-    /// unreachable.
+    /// table reaches through another port but those marked unreachable.
     IAmAnswer,
     /// An Initialize-Routing-Table-Ack with no data, to `to` on `port`.
     UpdateAck,
@@ -176,7 +175,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 {
     /// Write the front task's next output into the scratch as the current
     /// one. `false` when no task is left.
-    pub(super) fn write_task(&mut self, options: &Options) -> bool {
+    pub(super) fn write_task(&mut self) -> bool {
         let Some(task) = self.out.front() else {
             return false;
         };
@@ -214,14 +213,11 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 Some((len, Kind::Reject(task.reason), Cause::Ingress, target))
             }
             TaskKind::IAmAnswer => {
-                let skip_unreachable = options.fixes.answer_reachable;
                 let mut others = self
                     .table
                     .routes()
                     .filter(move |(_, route)| {
-                        route.port != task.port
-                            && !(skip_unreachable
-                                && route.reachability == Reachability::Unreachable)
+                        route.port != task.port && route.reachability != Reachability::Unreachable
                     })
                     .map(|(network, _)| network)
                     .peekable();
@@ -278,18 +274,17 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 Some((len, kind, Cause::Ingress, Target::Broadcast(task.port)))
             }
             TaskKind::Announce => {
-                self.next_announcement(task.cursor, options)
-                    .map(|(at, len)| {
-                        next = Some(at + 1).filter(|&cursor| cursor < self.announce_end());
-                        let kind = if at & 1 == 0 {
-                            Kind::Announce(code::NETWORK_NUMBER_IS)
-                        } else {
-                            Kind::Announce(code::I_AM_ROUTER_TO_NETWORK)
-                        };
-                        // At most 255 ports, so the index fits in a u8.
-                        let port = PortId((at >> 1) as u8);
-                        (len, kind, Cause::Local, Target::Broadcast(port))
-                    })
+                self.next_announcement(task.cursor).map(|(at, len)| {
+                    next = Some(at + 1).filter(|&cursor| cursor < self.announce_end());
+                    let kind = if at & 1 == 0 {
+                        Kind::Announce(code::NETWORK_NUMBER_IS)
+                    } else {
+                        Kind::Announce(code::I_AM_ROUTER_TO_NETWORK)
+                    };
+                    // At most 255 ports, so the index fits in a u8.
+                    let port = PortId((at >> 1) as u8);
+                    (len, kind, Cause::Local, Target::Broadcast(port))
+                })
             }
         };
         if let Some((len, kind, cause, target)) = output {
@@ -328,20 +323,16 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// Write the next startup announcement from `cursor` (port index × 2 +
-    /// step): with R3 on, a Network-Number-Is for a port with a usable
-    /// number; then an I-Am-Router listing every other port's network, in
+    /// step): a Network-Number-Is for a port with a usable number (Clause
+    /// 6.4.20); then an I-Am-Router listing every other port's network, in
     /// port order, when there is another port. Returns its cursor and its
     /// length (`None`: the writer refused it), or `None` when none is left.
-    fn next_announcement(
-        &mut self,
-        cursor: u32,
-        options: &Options,
-    ) -> Option<(u32, Option<usize>)> {
+    fn next_announcement(&mut self, cursor: u32) -> Option<(u32, Option<usize>)> {
         for at in cursor..self.announce_end() {
             let port = PortId((at >> 1) as u8);
             if at & 1 == 0 {
                 let network = self.ports[usize::from(port.0)].network;
-                if options.fixes.announce_numbers && network != 0 && network != GLOBAL_NETWORK {
+                if network != 0 && network != GLOBAL_NETWORK {
                     return Some((at, self.write_number_is(port)));
                 }
             } else if self.port_count > 1 {

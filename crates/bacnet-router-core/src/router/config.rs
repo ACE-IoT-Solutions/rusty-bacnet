@@ -60,93 +60,6 @@ impl PortConfig {
     };
 }
 
-/// Where the router departs from what it did before #1679 to do what
-/// Clause 6 asks, each behind a switch. [`Fixes::ALL`], the default, is
-/// the recommended setting; [`Fixes::NONE`] is the router before these
-/// fixes, kept so tests can pin what changed.
-///
-/// It is `#[non_exhaustive]`, since a later fix adds a switch: outside
-/// this crate, start from [`Fixes::ALL`] or [`Fixes::NONE`] and set the
-/// switches to change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct Fixes {
-    /// R1 (#1665): check every NPDU against its egress port's [`Limits`],
-    /// as rewritten for that port. One routed toward a network, a remote
-    /// broadcast included, draws reject reason 4 naming that network
-    /// (Clauses 6.4.4, 6.6.3.5); a port of a fan-out that can't carry it,
-    /// such as a global broadcast's, is left out and counted, with no
-    /// reject (decision D21). Off, the scratch is the only bound, and the
-    /// port's own send refuses what it can't carry.
-    pub egress_limits: bool,
-    /// R2: a received reject with a reason other than 1 or 2 leaves the
-    /// route alone (Clause 6.6.3.5); it is still passed on. Off, it removes
-    /// a learned route.
-    pub rejects_keep_routes: bool,
-    /// R3: at start, announce each port's network number, as configured,
-    /// with a Network-Number-Is before its I-Am-Router (Clause 6.4.20). A
-    /// port numbered 0 or 0xFFFF has no number to announce. Off, a port
-    /// hears only the I-Am-Router.
-    pub announce_numbers: bool,
-    /// R4: the answer to a Who-Is-Router that names no network leaves
-    /// out the networks marked unreachable, keeping busy ones (Clause
-    /// 6.6.3.2). Off, it lists them too. The list is in ascending order
-    /// either way, as the table keeps it.
-    pub answer_reachable: bool,
-    /// R5: a Who-Is-Router that names a network the table reaches through
-    /// the arrival port is neither answered nor searched for further: the
-    /// router that serves it sits on the arrival network (Clause 6.6.3.2
-    /// searches only for a network the table lacks). Off, it is passed on
-    /// to the other ports as for an unknown network.
-    pub search_unknown_only: bool,
-    /// R6: the hop count comes down before the router decides (Clauses
-    /// 6.2.3, 6.3.2), so a relay toward the next router never leaves with
-    /// 0, and a global broadcast that arrives with 1 is delivered here and
-    /// passed on nowhere; each is counted as spent. Delivery onto an
-    /// attached network carries no hop count, and is unchanged. Off, one
-    /// that arrives with 1 leaves with 0.
-    pub hop_count: bool,
-    /// R7: an APDU for the router's own address on any of its networks, a
-    /// port's network with the router's MAC on that port, is delivered to
-    /// the router's own application (Clause 6.1, Figure 6-12). Off, only
-    /// its address on the arrival network is, and one for its address on
-    /// another network goes out on that network's wire, to itself. A host's
-    /// reply leaves from the router's address on the arrival port, with no
-    /// SNET, not from the address the request named.
-    pub own_address: bool,
-}
-
-impl Fixes {
-    /// Every switch off: the router before these fixes.
-    pub const NONE: Self = Self {
-        egress_limits: false,
-        rejects_keep_routes: false,
-        announce_numbers: false,
-        answer_reachable: false,
-        search_unknown_only: false,
-        hop_count: false,
-        own_address: false,
-    };
-
-    /// Every switch on: the recommended setting.
-    pub const ALL: Self = Self {
-        egress_limits: true,
-        rejects_keep_routes: true,
-        announce_numbers: true,
-        answer_reachable: true,
-        search_unknown_only: true,
-        hop_count: true,
-        own_address: true,
-    };
-}
-
-/// [`Fixes::ALL`].
-impl Default for Fixes {
-    fn default() -> Self {
-        Self::ALL
-    }
-}
-
 /// A router's policy values and timers.
 ///
 /// It is `#[non_exhaustive]`, so a new option isn't a breaking change:
@@ -172,14 +85,12 @@ pub struct Options {
     pub discovery_cooldown: Duration,
     /// How long a search is remembered.
     pub discovery_age: Duration,
-    /// Which fixes are on.
-    pub fixes: Fixes,
 }
 
 impl Options {
     /// The hosted router's values: standard convergence, 256 routes, 300 s
-    /// learned age, a 60 s sweep, [`Timing::DEFAULT`], a 5 s discovery
-    /// cooldown and 30 s age, and every fix ([`Fixes::ALL`]).
+    /// learned age, a 60 s sweep, [`Timing::DEFAULT`], and a 5 s discovery
+    /// cooldown and 30 s age.
     pub const HOSTED: Self = Self {
         convergence: Convergence::Standard,
         route_cap: 256,
@@ -188,7 +99,6 @@ impl Options {
         timing: Timing::DEFAULT,
         discovery_cooldown: Duration::from_secs(5),
         discovery_age: Duration::from_secs(30),
-        fixes: Fixes::ALL,
     };
 }
 

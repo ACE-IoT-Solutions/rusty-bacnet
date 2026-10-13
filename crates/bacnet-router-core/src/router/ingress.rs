@@ -229,13 +229,13 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return Received::Local(local(npdu, at.link_group, false));
         };
         if destination.network == GLOBAL_NETWORK {
-            self.forward_global(at, npdu, options, host);
+            self.forward_global(at, npdu, host);
             return Received::Local(local(npdu, true, true));
         }
-        // R7: the router's own address on any of its networks is its own
-        // application's, before any route is looked up. A DLEN 0 broadcast
-        // names no one node, so it is never that.
-        if options.fixes.own_address && !destination.mac.is_empty() && self.is_own(destination) {
+        // The router's own address on any of its networks is its own
+        // application's, before any route is looked up (Clause 6.1, Figure
+        // 6-12). A DLEN 0 broadcast names no one node, so it is never that.
+        if !destination.mac.is_empty() && self.is_own(destination) {
             return Received::Local(local(npdu, false, false));
         }
         let Some(route) = self.find_route(at, npdu, destination.network, options, host) else {
@@ -249,9 +249,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
             // A DLEN 0 broadcast on the arrival network is delivered, and
             // also sent back out the arrival port below, as the hosted
-            // router does (group_dadr_tests.rs:96 pins that relay). With R1,
-            // one at the port's limit is delivered and also draws reason 4,
-            // since the relay gains SNET and SADR.
+            // router does (group_dadr_tests.rs:96 pins that relay). One at
+            // the port's limit is delivered and also draws reason 4, since
+            // the relay gains SNET and SADR.
             if destination.mac.is_empty() {
                 delivered = Some(local(npdu, true, false));
             }
@@ -274,7 +274,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
             Group::Broadcast | Group::Refuse => return self.group_drop(),
         }
-        let forwarded = self.forward(at, &npdu, &route, options, host);
+        let forwarded = self.forward(at, &npdu, &route, host);
         delivered.map_or(forwarded, Received::Local)
     }
 

@@ -1,8 +1,7 @@
 //! The Clause 6 fixes the hosted router took after it moved onto the
 //! engine (#1679), each on the hosted engine through
 //! [`envelope_harness`](super::envelope_harness). `bacnet-router-core`'s
-//! tests hold each one against the clause, and pin the router before it
-//! with the fix's switch off.
+//! tests hold each one against the clause.
 
 use bacnet_encoding::npdu::{decode_npdu, Npdu, NpduAddress};
 use bacnet_transport::port::NpduLimits;

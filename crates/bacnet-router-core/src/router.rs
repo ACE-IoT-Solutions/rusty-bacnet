@@ -29,23 +29,20 @@
 //!    passed on to every other port and delivered. Any other DNET is
 //!    looked up: no route starts a search and draws reason 1, a busy route
 //!    reason 2 and an unreachable one reason 1. A DADR that is the
-//!    router's own MAC is delivered: on any of its networks with fix R7,
-//!    on the arrival network only without. On the arrival network, a DLEN
-//!    0 broadcast is delivered and also sent back out the same port.
-//! 5. The NPDU is rewritten (Clause 6.5.4) and sent: SNET and SADR added
-//!    when missing; onto a directly attached network without its DNET,
-//!    DADR and hop count, to the DADR or as a broadcast; toward the next
-//!    router with its hop count one lower. One that arrives with a hop
-//!    count of 0 goes nowhere, and with fix R6 one whose count would leave
-//!    at 0 doesn't go either.
+//!    router's own address, a port's network with the router's MAC on that
+//!    port, is delivered locally before any route is looked up. On the
+//!    arrival network, a DLEN 0 broadcast is delivered and also sent back
+//!    out the same port.
+//! 5. The NPDU is rewritten (Clause 6.5.4) and checked against its egress
+//!    port's limit, then sent: SNET and SADR added when missing; onto a
+//!    directly attached network without its DNET, DADR and hop count, to
+//!    the DADR or as a broadcast; toward the next router with its hop count
+//!    one lower. One that arrives with a hop count of 0 goes nowhere, and
+//!    toward the next router neither does one that arrives with 1.
 //!
 //! The [`Host`] answers what the router can't know itself: which MACs are
 //! group addresses on a port ([`Group`]), and whether to act on a
 //! protected network message.
-//!
-//! [`Fixes`] holds where the engine departs from what the router did before
-//! #1679, to do what Clause 6 asks, each behind a switch: all on by
-//! default, all off for the router before them.
 
 mod config;
 mod control;
@@ -61,7 +58,7 @@ mod tasks;
 use core::borrow::BorrowMut;
 use core::fmt;
 
-pub use config::{ConfigError, Fixes, Limits, Options, PortConfig};
+pub use config::{ConfigError, Limits, Options, PortConfig};
 pub use counters::Counters;
 pub use host::{Claim, ControlClass, Event, Group, Host, Permissive, Targets};
 pub use ingress::{DropReason, Frame, Local, Received};
@@ -262,9 +259,10 @@ where
         self.storage.borrow_mut()
     }
 
-    /// Queue the startup announcements, port by port: with R3 on, a
-    /// Network-Number-Is; then an I-Am-Router listing every other port's
-    /// network (none on a one-port router). They carry no ingress data.
+    /// Queue the startup announcements, port by port: a Network-Number-Is
+    /// for a port with a usable number, then an I-Am-Router listing every
+    /// other port's network (none on a one-port router). They carry no
+    /// ingress data.
     pub fn start(&mut self) {
         let store = self.store();
         store.drop_undrained();
@@ -287,8 +285,7 @@ where
     /// The next thing to do. Its NPDU stays in the router's scratch until
     /// the next poll.
     pub fn poll_action(&mut self) -> Action<'_> {
-        let options = self.options;
-        self.store().poll(&options)
+        self.store().poll()
     }
 
     /// Say that the port refused the send just polled. It is counted, and
