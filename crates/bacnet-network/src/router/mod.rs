@@ -544,11 +544,11 @@ impl BACnetRouter {
 
     /// Stop the router.
     ///
-    /// Aborts and awaits dispatch, sender, aging and limit tasks without waiting for
-    /// the local application consumer, even with a full queue. Queued local
-    /// APDUs remain drainable, retaining their reply senders until consumed or
-    /// the receiver is dropped. Stop is not an admission drop and does not clear
-    /// depth/high-water/drop totals. See the
+    /// Aborts and awaits dispatch, sender, aging and limit tasks without
+    /// waiting for the local application consumer, even with a full queue.
+    /// Queued local APDUs remain drainable, retaining their reply senders
+    /// until consumed or the receiver is dropped. Stop is not an admission
+    /// drop and does not clear depth/high-water/drop totals. See the
     /// [receive-queue contract](crate::layer#receive-queue-admission).
     pub async fn stop(&mut self) {
         for task in self.dispatch_tasks.drain(..) {
