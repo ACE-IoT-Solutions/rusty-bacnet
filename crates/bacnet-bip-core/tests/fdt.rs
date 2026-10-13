@@ -58,11 +58,9 @@ fn a_registration_is_stored_then_renewed_in_place() {
 #[test]
 fn time_to_live_outside_the_limits_is_refused_without_touching_the_entry() {
     let mut fdt: Fdt<4> = Fdt::new();
-    let limits = RegistrationLimits {
-        min_ttl: 30,
-        max_ttl: 300,
-        ..RegistrationLimits::default()
-    };
+    let mut limits = RegistrationLimits::default();
+    limits.min_ttl = 30;
+    limits.max_ttl = 300;
     let device = addr(10, 0, 0, 1, PORT);
     assert!(fdt
         .register(device, 60, T0, &limits, Reservation::Ordinary, || true)
@@ -86,10 +84,8 @@ fn time_to_live_outside_the_limits_is_refused_without_touching_the_entry() {
     assert_eq!(fdt.registrations()[0].ttl, 60);
     assert_eq!(fdt.registrations()[0].registered_at, T0);
     // Zero is refused even when the limits would allow it.
-    let zero = RegistrationLimits {
-        min_ttl: 0,
-        ..limits
-    };
+    let mut zero = limits;
+    zero.min_ttl = 0;
     assert_eq!(
         fdt.register(device, 0, T0, &zero, Reservation::Ordinary, || true)
             .result,
@@ -163,10 +159,8 @@ fn a_refused_registration_still_purges() {
 #[test]
 fn one_address_may_hold_its_quota_across_ports() {
     let mut fdt: Fdt<8> = Fdt::new();
-    let limits = RegistrationLimits {
-        max_entries_per_source: 2,
-        ..OPEN
-    };
+    let mut limits = OPEN;
+    limits.max_entries_per_source = 2;
     let ip = |port| addr(10, 0, 0, 1, port);
     assert!(fdt
         .register(ip(1), 60, T0, &limits, Reservation::Ordinary, || true)
@@ -231,10 +225,8 @@ fn a_full_table_refuses_new_devices_but_renews_old_ones() {
 #[test]
 fn reserved_capacity_is_kept_for_reserved_sources() {
     let mut fdt: Fdt<4> = Fdt::new();
-    let limits = RegistrationLimits {
-        reserved_capacity: 1,
-        ..OPEN
-    };
+    let mut limits = OPEN;
+    limits.reserved_capacity = 1;
     for host in 1..=3 {
         let outcome = fdt.register(
             addr(10, 0, 0, host, PORT),
@@ -275,10 +267,8 @@ fn reserved_capacity_is_kept_for_reserved_sources() {
     assert_eq!(over.result, Err(RegistrationRefusal::TableFull));
     // Reserving more than the table holds leaves ordinary sources nothing.
     let mut small: Fdt<2> = Fdt::new();
-    let greedy = RegistrationLimits {
-        reserved_capacity: 5,
-        ..OPEN
-    };
+    let mut greedy = OPEN;
+    greedy.reserved_capacity = 5;
     let outcome = small.register(
         addr(10, 0, 0, 1, PORT),
         60,

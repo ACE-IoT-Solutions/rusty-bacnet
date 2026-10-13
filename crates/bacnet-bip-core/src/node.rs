@@ -36,7 +36,7 @@
 //! use core::net::{Ipv4Addr, SocketAddrV4};
 //! use bacnet_bip_codec::{BvlcResultCode, Bvll};
 //! use bacnet_bip_core::node::{
-//!     Action, Addressed, Datagram, Foreign, Inbound, Link, Mode, Node, Path, Permissive,
+//!     Action, Addressed, Datagram, Foreign, Inbound, Link, Mode, Node, Permissive,
 //! };
 //! use bacnet_bip_core::{Instant, LocalSubnet};
 //!
@@ -59,13 +59,7 @@
 //! // The BBMD's success comes back.
 //! let mut wire = [0u8; 6];
 //! Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION).encode_into(&mut wire)?;
-//! let datagram = Datagram {
-//!     payload: &wire,
-//!     source: bbmd,
-//!     to: Some(Addressed { node: true, broadcast: false }),
-//!     path: Path::Primary,
-//!     truncated: false,
-//! };
+//! let datagram = Datagram::new(&wire, bbmd, Some(Addressed { node: true, broadcast: false }));
 //! let now = Instant::from_millis(1_010);
 //! assert!(matches!(
 //!     node.receive(&datagram, now, &mut Permissive),

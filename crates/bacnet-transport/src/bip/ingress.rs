@@ -266,21 +266,12 @@ pub(super) async fn handle_datagram(
             other_interface: arrived_elsewhere(local.listener_interface, received.arrival_index),
         },
     };
-    let datagram = Datagram {
-        payload: data,
-        source,
-        // Every read reports its destination, so the node never sees an
-        // unknown one.
-        to: Some(addressed(
-            received.destination,
-            received.os_group_delivery,
-            local,
-            ctx,
-        )),
-        path,
-        // A datagram the buffer cut short fails the read (`receive_failed`).
-        truncated: false,
-    };
+    // Every read reports its destination, so the node never sees an unknown
+    // one. A datagram the buffer cut short fails the read
+    // (`receive_failed`), so none here is truncated.
+    let to = addressed(received.destination, received.os_group_delivery, local, ctx);
+    let mut datagram = Datagram::new(data, source, Some(to));
+    datagram.path = path;
     if let Some(Discard::ListenerMismatch { other_interface }) = receive(&datagram, ctx).await {
         log_listener_mismatch(other_interface, received, local);
     }

@@ -47,7 +47,7 @@
 //! let outcome = tables.fdt.register(device, 60, now, &limits, Reservation::Ordinary, || true);
 //! assert!(outcome.result.is_ok());
 //!
-//! let cx = Context { now, fdt_fanout: 4 };
+//! let cx = Context::new(now, 4);
 //! let source = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 20), 47808);
 //! let mut out = [Target::UNUSED; Tables::<4, 4>::MAX_TARGETS];
 //! let sent = tables.original_broadcast(&cx, source, &[0x01, 0x00], &mut out);

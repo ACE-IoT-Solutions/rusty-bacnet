@@ -67,7 +67,12 @@ impl Registration {
 
 /// The admission rules a BBMD applies to a Register-Foreign-Device besides
 /// its table's size (Annex J.5.2.2 leaves them to the BBMD).
+///
+/// It is `#[non_exhaustive]`, so a new limit isn't a breaking change:
+/// outside this crate, start from [`RegistrationLimits::DEFAULT`] and set
+/// the fields to change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RegistrationLimits {
     /// The shortest time-to-live accepted, in seconds. A time-to-live of 0
     /// is always refused.
@@ -81,16 +86,21 @@ pub struct RegistrationLimits {
     pub reserved_capacity: usize,
 }
 
-impl Default for RegistrationLimits {
+impl RegistrationLimits {
     /// Time-to-live 1 to 3600 s, 8 registrations per address, nothing
     /// reserved.
+    pub const DEFAULT: Self = Self {
+        min_ttl: 1,
+        max_ttl: 3600,
+        max_entries_per_source: 8,
+        reserved_capacity: 0,
+    };
+}
+
+/// [`RegistrationLimits::DEFAULT`].
+impl Default for RegistrationLimits {
     fn default() -> Self {
-        Self {
-            min_ttl: 1,
-            max_ttl: 3600,
-            max_entries_per_source: 8,
-            reserved_capacity: 0,
-        }
+        Self::DEFAULT
     }
 }
 
@@ -116,6 +126,7 @@ pub enum Registered {
 /// Why a registration was refused. The table is unchanged apart from the
 /// purge that comes first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegistrationRefusal {
     /// The time-to-live is 0 or outside the limits.
     TimeToLive,
@@ -150,6 +161,7 @@ impl fmt::Display for RegistrationRefusal {
 /// What [`Fdt::register`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
+#[non_exhaustive]
 pub struct RegisterOutcome {
     /// The registration's fate.
     pub result: Result<Registered, RegistrationRefusal>,

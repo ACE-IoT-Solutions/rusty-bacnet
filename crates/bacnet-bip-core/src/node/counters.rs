@@ -12,6 +12,7 @@ use super::registration::AttemptOutcome;
 /// One operation's exchanges since the counters were last taken, manual
 /// and automatic alike. Counts saturate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ExchangeCounters {
     /// Requests the caller reported sent.
     pub sent: u32,
@@ -34,6 +35,7 @@ pub struct ExchangeCounters {
 
 /// A Register-Foreign-Device attempt, manual or automatic, as it stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RegisterAttempt {
     /// The BBMD it went to.
     pub bbmd: SocketAddrV4,
@@ -48,6 +50,7 @@ pub struct RegisterAttempt {
 /// Everything a node counts, since the counters were last taken. Counts
 /// saturate; the `last_` fields hold the newest value seen since, if any.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NodeCounters {
     /// Read-Broadcast-Distribution-Table exchanges.
     pub read_bdt: ExchangeCounters,

@@ -24,6 +24,14 @@ pub const BIP_PORT: PortId = PortId(0);
 /// A global-broadcast Who-Is.
 pub const GLOBAL_WHO_IS: [u8; 8] = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
 
+/// `value` with `edit` applied: how a suite changes a field of a
+/// `#[non_exhaustive]` struct from a core crate, such as a B/IP `Link` or
+/// `Datagram`, which it can't build with a struct expression.
+pub fn with<T>(mut value: T, edit: impl FnOnce(&mut T)) -> T {
+    edit(&mut value);
+    value
+}
+
 /// What port `port` received from `source`.
 pub fn frame<'f>(port: u8, source: &'f [u8], link_group: bool, npdu: &'f [u8]) -> Frame<'f> {
     Frame {
@@ -63,7 +71,7 @@ mod bip {
     use core::net::{Ipv4Addr, SocketAddrV4};
 
     use bacnet_bip_codec::{address_to_octets, BvlcFunction, Bvll, BvllFrame};
-    use bacnet_bip_core::node::{Addressed, Datagram, Foreign, Link, Mode, Node, Path};
+    use bacnet_bip_core::node::{Addressed, Datagram, Foreign, Link, Mode, Node};
     use bacnet_bip_core::LocalSubnet;
     use bacnet_router_core::bip::Datagrams;
     use bacnet_router_core::router::SendRefusal;
@@ -110,10 +118,9 @@ mod bip {
     /// A foreign device's registration with [`BBMD`] for 60 s, holding
     /// `hold` broadcasts.
     pub fn foreign(hold: u16) -> Mode {
-        Mode::Foreign(Foreign {
-            hold,
-            ..Foreign::new(BBMD, 60)
-        })
+        Mode::Foreign(super::with(Foreign::new(BBMD, 60), |foreign| {
+            foreign.hold = hold;
+        }))
     }
 
     /// Sent to the node's own address.
@@ -137,13 +144,7 @@ mod bip {
     /// `payload` from `source`, sent as `to` says, read by the primary
     /// socket.
     pub fn datagram(payload: &[u8], source: SocketAddrV4, to: Addressed) -> Datagram<'_> {
-        Datagram {
-            payload,
-            source,
-            to: Some(to),
-            path: Path::Primary,
-            truncated: false,
-        }
+        Datagram::new(payload, source, Some(to))
     }
 
     /// A [`Datagrams`] sink that records what it sends, and refuses with

@@ -52,9 +52,9 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{
-    Action, Addressed, Admission, Cast, Datagram, Discard, Foreign, ForwardedTrust, Inbound, Link,
-    Mode, Node, NodeCounters, Path, Permissive, RegistrationEvent, RegistrationView, Retry,
-    SendRefusal, MAX_DATAGRAM,
+    Action, Addressed, Admission, AttemptOutcome, Cast, Datagram, Discard, Foreign, ForwardedTrust,
+    Inbound, Lease, Link, Mode, Node, NodeCounters, Permissive, RegisterAttempt, RegistrationEvent,
+    RegistrationView, Retry, SendRefusal, MAX_DATAGRAM,
 };
 use bacnet_bip_core::{Duration, Instant, LocalSubnet};
 
@@ -93,23 +93,25 @@ pub const ORIGIN: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 77), 
 /// The registration, as the hosted transport sets one up (#1622): renewed
 /// every half time-to-live, a 3-second response timeout, retries that back
 /// off, broadcasts held, and Forwarded-NPDUs only from the BBMD.
-pub const FOREIGN: Foreign = Foreign {
-    bbmd: BBMD,
-    ttl: TTL,
-    renewal: Duration::from_secs(30),
-    response_timeout: Duration::from_secs(3),
-    retry: Retry::Backoff,
-    hold: HOLD,
-    trust: ForwardedTrust::ConfiguredBbmd,
+pub const FOREIGN: Foreign = {
+    let mut foreign = Foreign::new(BBMD, TTL);
+    foreign.renewal = Duration::from_secs(30);
+    foreign.response_timeout = Duration::from_secs(3);
+    foreign.retry = Retry::Backoff;
+    foreign.hold = HOLD;
+    foreign.trust = ForwardedTrust::ConfiguredBbmd;
+    foreign
 };
 
 /// The node's link, with B/IP's largest datagram as its send budget, so
-/// NPDUs of up to 1497 octets go out, unicast or broadcast.
-pub const LINK: Link = Link {
-    address: OWN,
-    subnet: SUBNET,
-    mode: Mode::Foreign(FOREIGN),
-    budget: Some(MAX_DATAGRAM as u16),
+/// NPDUs of up to 1497 octets go out, unicast or broadcast. It is checked
+/// when the image is built.
+pub const LINK: Link = {
+    let Ok(mut link) = Link::new(OWN, SUBNET, Mode::Foreign(FOREIGN)) else {
+        panic!("the scenario's link is invalid");
+    };
+    link.budget = Some(MAX_DATAGRAM as u16);
+    link
 };
 
 /// A global-broadcast Who-Is in an NPDU: what the node broadcasts, and what
@@ -192,9 +194,13 @@ pub struct Summary {
     /// Each registration event, in order.
     pub events: [Option<RegistrationEvent>; EVENTS],
     /// The registration at the end.
-    pub registration: Option<RegistrationView>,
-    /// Everything the node counted, taken once, at the end.
+    pub registration: Option<Registration>,
+    /// Everything the node counted, taken once, at the end, but the newest
+    /// registration attempt, which [`last_attempt`](Self::last_attempt)
+    /// holds.
     pub counters: NodeCounters,
+    /// The newest registration attempt the counters held.
+    pub last_attempt: Option<Attempt>,
     /// Every datagram the node sent.
     pub sent: Sent,
     /// Calls that failed or answered otherwise than the scenario expects.
@@ -216,6 +222,7 @@ impl Summary {
             events: [None; EVENTS],
             registration: None,
             counters: NodeCounters::default(),
+            last_attempt: None,
             sent: Sent::new(),
             errors: 0,
         }
@@ -224,6 +231,72 @@ impl Summary {
     /// Count a call that failed, or answered otherwise than expected.
     fn error(&mut self) {
         self.errors = self.errors.saturating_add(1);
+    }
+}
+
+/// The node's [`RegistrationView`] at the end, field by field. The view is
+/// `#[non_exhaustive]`, so [`expected()`] couldn't build one to compare
+/// with; it builds this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Registration {
+    /// The newest proven lease.
+    pub lease: Option<Lease>,
+    /// Whether that lease is live.
+    pub registered: bool,
+    /// Its time left, while live.
+    pub lease_remaining: Option<Duration>,
+    /// Whether an automatic attempt is waiting for its answer.
+    pub attempt_in_flight: bool,
+    /// When the next automatic attempt is due.
+    pub next_attempt: Option<Instant>,
+    /// What the newest automatic attempt came to.
+    pub last_outcome: Option<AttemptOutcome>,
+    /// Automatic attempts in a row that failed.
+    pub consecutive_failures: u32,
+    /// Whether the first automatic attempt has ended.
+    pub first_resolved: bool,
+    /// Broadcasts held for the first attempt.
+    pub held: u16,
+}
+
+impl Registration {
+    fn of(view: RegistrationView) -> Self {
+        Self {
+            lease: view.lease,
+            registered: view.registered,
+            lease_remaining: view.lease_remaining,
+            attempt_in_flight: view.attempt_in_flight,
+            next_attempt: view.next_attempt,
+            last_outcome: view.last_outcome,
+            consecutive_failures: view.consecutive_failures,
+            first_resolved: view.first_resolved,
+            held: view.held,
+        }
+    }
+}
+
+/// The node's newest [`RegisterAttempt`], field by field, for the same
+/// reason as [`Registration`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attempt {
+    /// The BBMD it went to.
+    pub bbmd: SocketAddrV4,
+    /// The time-to-live it asked for.
+    pub ttl: u16,
+    /// What it came to.
+    pub outcome: AttemptOutcome,
+    /// The result code that answered it.
+    pub result: Option<BvlcResultCode>,
+}
+
+impl Attempt {
+    fn of(attempt: RegisterAttempt) -> Self {
+        Self {
+            bbmd: attempt.bbmd,
+            ttl: attempt.ttl,
+            outcome: attempt.outcome,
+            result: attempt.result,
+        }
     }
 }
 
@@ -373,8 +446,10 @@ impl Device<'_> {
         self.answer(SUCCESS);
         self.answer(SUCCESS);
 
-        self.summary.registration = self.node.registration(self.now);
-        self.summary.counters = self.node.take_counters();
+        self.summary.registration = self.node.registration(self.now).map(Registration::of);
+        let mut counters = self.node.take_counters();
+        self.summary.last_attempt = counters.last_registration_attempt.take().map(Attempt::of);
+        self.summary.counters = counters;
     }
 
     /// The BBMD answers with `code` one round trip later, settling the
@@ -403,16 +478,11 @@ impl Device<'_> {
             self.summary.error();
             return Seen::Other;
         };
-        let datagram = Datagram {
-            payload,
-            source,
-            to: Some(Addressed {
-                node: true,
-                broadcast: false,
-            }),
-            path: Path::Primary,
-            truncated: false,
+        let to = Addressed {
+            node: true,
+            broadcast: false,
         };
+        let datagram = Datagram::new(payload, source, Some(to));
         let seen = match self.node.receive(&datagram, self.now, &mut Permissive) {
             Inbound::Nak {
                 to,

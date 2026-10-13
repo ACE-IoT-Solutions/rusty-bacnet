@@ -155,6 +155,7 @@ fn bdt_error(error: BdtError) -> Error {
         BdtError::Capacity { needed, capacity } => {
             format!("BDT size {needed} exceeds maximum of {capacity} after self-entry insertion")
         }
+        other => format!("BDT refused: {other}"),
     })
 }
 
@@ -392,12 +393,11 @@ impl BbmdState {
             self.counters.registrations_rejected += 1;
             return BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
         };
-        let limits = core_bbmd::RegistrationLimits {
-            min_ttl: policy.min_ttl,
-            max_ttl: policy.max_ttl,
-            max_entries_per_source: policy.max_entries_per_source,
-            reserved_capacity: policy.reserved_capacity,
-        };
+        let mut limits = core_bbmd::RegistrationLimits::DEFAULT;
+        limits.min_ttl = policy.min_ttl;
+        limits.max_ttl = policy.max_ttl;
+        limits.max_entries_per_source = policy.max_entries_per_source;
+        limits.reserved_capacity = policy.reserved_capacity;
         let reservation = if policy.reserved_sources.contains(&ip) {
             Reservation::Reserved
         } else {

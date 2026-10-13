@@ -45,7 +45,11 @@ impl Target {
 }
 
 /// What every forwarding decision needs besides the tables and the message.
+///
+/// It is `#[non_exhaustive]`, so a new input isn't a breaking change:
+/// outside this crate, build it with [`Context::new`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Context {
     /// The caller's current time; registrations lapsed by then are skipped.
     pub now: Instant,
@@ -54,8 +58,18 @@ pub struct Context {
     pub fdt_fanout: usize,
 }
 
+impl Context {
+    /// The decisions at `now`, sending to at most `fdt_fanout` foreign
+    /// devices.
+    #[must_use]
+    pub const fn new(now: Instant, fdt_fanout: usize) -> Self {
+        Self { now, fdt_fanout }
+    }
+}
+
 /// Destinations written to the caller's storage, and how the list was cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Fanout<'o> {
     /// The destinations, in order: the local broadcast if any, then BDT
     /// peers in table order, then foreign devices in table order.
@@ -72,6 +86,7 @@ pub struct Fanout<'o> {
 
 /// A Forwarded-NPDU to send, and where (Annex J.2.5, J.4.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Distribution<'n, 'o> {
     /// The message's originating B/IP address.
     pub origin: SocketAddrV4,
@@ -105,6 +120,7 @@ impl<'n, 'o> Distribution<'n, 'o> {
 
 /// Why a BBMD neither delivers nor forwards a Forwarded-NPDU (Annex J.4.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ForwardRefusal {
     /// The sender has no BDT row: only peers' are acted on.
     NotFromPeer,
@@ -138,6 +154,7 @@ impl core::error::Error for ForwardRefusal {}
 /// Why a BBMD neither delivers nor distributes a
 /// Distribute-Broadcast-To-Network (Annex J.4.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DistributeRefusal {
     /// The sender holds no registration live at [`Context::now`].
     NotRegistered,

@@ -31,11 +31,13 @@ fn part(window: Duration, share: u64) -> Duration {
     Duration::from_nanos(window.as_nanos() / 1_000 * share)
 }
 
-const LIMITS: RegistrationLimits = RegistrationLimits {
-    min_ttl: 1,
-    max_ttl: u16::MAX,
-    max_entries_per_source: 4,
-    reserved_capacity: 0,
+const LIMITS: RegistrationLimits = {
+    let mut limits = RegistrationLimits::DEFAULT;
+    limits.min_ttl = 1;
+    limits.max_ttl = u16::MAX;
+    limits.max_entries_per_source = 4;
+    limits.reserved_capacity = 0;
+    limits
 };
 
 /// What the network and the BBMD do with one attempt.
@@ -95,10 +97,8 @@ struct World {
 
 impl World {
     fn new(ttl: u16, retry: Retry, plans: Vec<Plan>) -> Self {
-        let foreign = Foreign {
-            retry,
-            ..Foreign::new(BBMD, ttl)
-        };
+        let mut foreign = Foreign::new(BBMD, ttl);
+        foreign.retry = retry;
         let mut world = Self {
             node: Node::new(foreign_link(foreign), Instant::ZERO).unwrap(),
             fdt: Fdt::new(),

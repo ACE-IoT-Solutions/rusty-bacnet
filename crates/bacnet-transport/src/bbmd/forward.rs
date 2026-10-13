@@ -38,13 +38,11 @@ pub(crate) struct Forward {
 impl BbmdState {
     /// The core's context for a decision at `now`.
     fn decision_context(&self, now: Instant) -> Context {
-        Context {
-            now: self.clock.to_core(now),
-            fdt_fanout: self
-                .foreign_device_policy
-                .as_ref()
-                .map_or(DEFAULT_FDT_FANOUT, |policy| policy.max_fdt_fanout),
-        }
+        let fdt_fanout = self
+            .foreign_device_policy
+            .as_ref()
+            .map_or(DEFAULT_FDT_FANOUT, |policy| policy.max_fdt_fanout);
+        Context::new(self.clock.to_core(now), fdt_fanout)
     }
 
     /// Count what the core reports about one list of destinations.

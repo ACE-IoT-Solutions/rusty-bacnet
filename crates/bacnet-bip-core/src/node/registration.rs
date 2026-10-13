@@ -56,6 +56,7 @@ impl Lease {
 
 /// What the newest registration attempt came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AttemptOutcome {
     /// Admitted, and not answered yet.
     Pending,
@@ -73,6 +74,7 @@ pub enum AttemptOutcome {
 
 /// A change in a foreign device's registration, reported once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegistrationEvent {
     /// A success while no lease was live: registered from `since` until
     /// `until`.
@@ -101,6 +103,7 @@ pub enum RegistrationEvent {
 
 /// A foreign device's registration as the node sees it at one instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RegistrationView {
     /// The newest proven lease, live or not.
     pub lease: Option<Lease>,

@@ -248,6 +248,7 @@ impl NodeState {
             RegistrationEvent::Unanswered => {
                 debug!("Foreign registration attempt did not return a matched result");
             }
+            other => debug!(?other, "Foreign registration event"),
         }
     }
 }
@@ -399,10 +400,9 @@ impl NodeHandle {
                 Admission::Send if waiting => {
                     if state.queued.len() >= usize::from(HELD_BROADCASTS) {
                         if !state.stopped {
-                            self.record.absorb(&NodeCounters {
-                                broadcasts_hold_full: 1,
-                                ..NodeCounters::default()
-                            });
+                            let mut counters = NodeCounters::default();
+                            counters.broadcasts_hold_full = 1;
+                            self.record.absorb(&counters);
                         }
                         return Err(self.refuse_send(SendRefusal::HoldFull));
                     }
@@ -458,10 +458,9 @@ impl NodeHandle {
         let kept = state.held.len() + state.queued.len();
         let discarded = u32::try_from(kept).unwrap_or(u32::MAX);
         if discarded > 0 && !state.stopped {
-            self.record.absorb(&NodeCounters {
-                broadcasts_discarded: discarded,
-                ..NodeCounters::default()
-            });
+            let mut counters = NodeCounters::default();
+            counters.broadcasts_discarded = discarded;
+            self.record.absorb(&counters);
         }
         state.stopped = true;
         state.waiters.clear();
@@ -593,7 +592,7 @@ fn refused(decode: Option<BvllError>, policy: Option<Error>) -> Error {
     }
 }
 
-fn config_error(error: ConfigError) -> Error {
+pub(super) fn config_error(error: ConfigError) -> Error {
     Error::Encoding(error.to_string())
 }
 

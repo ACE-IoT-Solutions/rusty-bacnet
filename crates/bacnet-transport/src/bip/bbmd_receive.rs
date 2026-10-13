@@ -65,7 +65,9 @@ pub(super) async fn handle(share: ForBbmd<'_>, ctx: &RecvContext) {
                     // The node's own-echo rule makes OwnEcho unreachable.
                     ctx.drops.count(match refusal {
                         ForwardRefusal::OwnEcho => DropReason::OwnEcho,
-                        ForwardRefusal::NotFromPeer => DropReason::ForwardedNotFromPeer,
+                        // NotFromPeer, and any later refusal: not a peer's
+                        // forward to take.
+                        _ => DropReason::ForwardedNotFromPeer,
                     });
                     debug!(%sender, "Rejecting FORWARDED_NPDU from non-BDT sender");
                     return;

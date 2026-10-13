@@ -45,6 +45,7 @@ pub const fn distribution_address(row: BdtEntry) -> SocketAddrV4 {
 /// row from turning forwarded broadcasts into traffic for an address that
 /// isn't one BBMD or one subnet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InvalidEntry {
     /// UDP port 0.
     ZeroPort,
@@ -94,6 +95,7 @@ impl fmt::Display for InvalidEntry {
 
 /// Why a BDT was refused. A refused table changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BdtError {
     /// A row broke a rule of [`validate_entry`].
     Invalid {

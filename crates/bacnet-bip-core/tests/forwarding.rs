@@ -143,10 +143,7 @@ fn the_fanout_budget_caps_foreign_devices_but_not_peers() {
     let mut tables = tables(&[row(TWO_HOP, MASK_32)]);
     let devices: Vec<_> = (1..=6).map(|host| addr(172, 16, 0, host, PORT)).collect();
     register_all(&mut tables, &devices, 60, T0);
-    let cx = Context {
-        fdt_fanout: 2,
-        ..context(T0)
-    };
+    let cx = Context::new(T0, 2);
     let mut out = storage();
     let sent = tables.original_broadcast(&cx, LOCAL_DEVICE, NPDU, &mut out);
     assert_eq!(
@@ -161,17 +158,11 @@ fn the_fanout_budget_caps_foreign_devices_but_not_peers() {
         [TWO_HOP, devices[1], devices[2]]
     );
     // A budget that fits every device isn't reported as reached.
-    let cx = Context {
-        fdt_fanout: 6,
-        ..cx
-    };
+    let cx = Context::new(cx.now, 6);
     let sent = tables.original_broadcast(&cx, LOCAL_DEVICE, NPDU, &mut out);
     assert_eq!(sent.fanout.targets.len(), 7);
     assert!(!sent.fanout.fanout_capped);
-    let none = Context {
-        fdt_fanout: 0,
-        ..cx
-    };
+    let none = Context::new(cx.now, 0);
     let sent = tables.original_broadcast(&none, LOCAL_DEVICE, NPDU, &mut out);
     assert_eq!(destinations(sent.fanout.targets), [TWO_HOP]);
     assert!(sent.fanout.fanout_capped);
@@ -401,10 +392,7 @@ fn a_forwarded_npdu_skips_its_origin_and_the_peers() {
             target(FD1, Via::ForeignDevice)
         ]
     );
-    let cx = Context {
-        fdt_fanout: 1,
-        ..context(T0)
-    };
+    let cx = Context::new(T0, 1);
     let sent = tables
         .forwarded_npdu(
             &cx,
@@ -575,10 +563,7 @@ fn larger_tables_work_the_same() {
         assert!(outcome.result.is_ok());
     }
     let mut out = [Target::UNUSED; Tables::<128, 128>::MAX_TARGETS];
-    let cx = Context {
-        fdt_fanout: 128,
-        ..context(T0)
-    };
+    let cx = Context::new(T0, 128);
     let sent = tables.original_broadcast(&cx, LOCAL_DEVICE, NPDU, &mut out);
     assert_eq!(sent.fanout.targets.len(), 200);
     assert_eq!(

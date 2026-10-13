@@ -52,12 +52,24 @@ pub fn tables(bdt: &[BdtEntry]) -> Small {
 }
 
 /// Limits that admit anything with a nonzero time-to-live.
-pub const OPEN: RegistrationLimits = RegistrationLimits {
-    min_ttl: 1,
-    max_ttl: u16::MAX,
-    max_entries_per_source: usize::MAX,
-    reserved_capacity: 0,
-};
+pub const OPEN: RegistrationLimits = limits(1, u16::MAX, usize::MAX, 0);
+
+/// Limits of a time-to-live from `min_ttl` to `max_ttl` seconds,
+/// `max_entries_per_source` registrations per IPv4 address and
+/// `reserved_capacity` slots reserved.
+pub const fn limits(
+    min_ttl: u16,
+    max_ttl: u16,
+    max_entries_per_source: usize,
+    reserved_capacity: usize,
+) -> RegistrationLimits {
+    let mut limits = RegistrationLimits::DEFAULT;
+    limits.min_ttl = min_ttl;
+    limits.max_ttl = max_ttl;
+    limits.max_entries_per_source = max_entries_per_source;
+    limits.reserved_capacity = reserved_capacity;
+    limits
+}
 
 /// Register each of `devices` for `ttl` seconds at `now`, which must succeed.
 pub fn register_all(tables: &mut Small, devices: &[SocketAddrV4], ttl: u16, now: Instant) {
@@ -71,10 +83,7 @@ pub fn register_all(tables: &mut Small, devices: &[SocketAddrV4], ttl: u16, now:
 
 /// A decision context at `now` with the default fan-out budget.
 pub fn context(now: Instant) -> Context {
-    Context {
-        now,
-        fdt_fanout: 32,
-    }
+    Context::new(now, 32)
 }
 
 /// `secs` seconds.

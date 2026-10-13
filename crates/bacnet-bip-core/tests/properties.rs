@@ -153,7 +153,7 @@ proptest! {
     ) {
         let Some(site) = build(own, &rows, &regs) else { return Ok(()) };
         let now = Instant::from_secs(now);
-        let cx = Context { now, fdt_fanout: fanout };
+        let cx = Context::new(now, fanout);
         let mut out = [Target::UNUSED; Site::MAX_TARGETS];
         let got = site.broadcast_targets(&cx, exclude, &mut out);
         let (expected, dedup, capped) = model_targets(&site, now, exclude, fanout);
@@ -179,7 +179,7 @@ proptest! {
         let Some(site) = build(own, &rows, &regs) else { return Ok(()) };
         let now = Instant::from_secs(now);
         let local = SocketAddrV4::new(Ipv4Addr::new(10, 0, 9, 255), 0xBAC0);
-        let cx = Context { now, fdt_fanout: 16 };
+        let cx = Context::new(now, 16);
         let subnet = LocalSubnet { broadcast: local, mask: None };
         let mut out = [Target::UNUSED; Site::MAX_TARGETS];
         let arrival = if broadcast { Arrival::Broadcast } else { Arrival::Unicast };

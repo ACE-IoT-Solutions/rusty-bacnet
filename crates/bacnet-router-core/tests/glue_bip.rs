@@ -8,7 +8,7 @@ mod glue;
 
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::bbmd::{ForwardRefusal, RegistrationLimits, Reservation, Tables, Target};
-use bacnet_bip_core::node::{Datagram, Discard, ForBbmd, Link, Mode, Permissive};
+use bacnet_bip_core::node::{Discard, ForBbmd, Mode, Permissive};
 use bacnet_router_core::bip::{
     group, port_config, BbmdPort, BipPort, HeldBroadcast, Ingress, PortError,
 };
@@ -36,10 +36,7 @@ fn port_config_reads_the_link() {
     assert_eq!(config.max_npdu, Limits::both(1497));
     // A smaller budget: a unicast's datagram adds the 4-octet header, a
     // broadcast's also the origin a BBMD forwards it with.
-    let small = Link {
-        budget: Some(510),
-        ..link
-    };
+    let small = with(link, |link| link.budget = Some(510));
     assert_eq!(
         port_config(&small, 1).max_npdu,
         Limits {
@@ -48,10 +45,7 @@ fn port_config_reads_the_link() {
         }
     );
     // No budget: B/IP's largest NPDU all the same (Table 6-1).
-    let unbounded = Link {
-        budget: None,
-        ..link
-    };
+    let unbounded = with(link, |link| link.budget = None);
     assert_eq!(port_config(&unbounded, 1).max_npdu, Limits::both(1497));
 }
 
@@ -87,10 +81,7 @@ fn ports_refuse_storage_that_doesnt_fit_the_node() {
     assert_eq!(refused(foreign(1), &mut one), None);
     assert_eq!(refused(Mode::Normal, &mut none), None);
     // Without a send budget a held broadcast could outgrow its slot.
-    let unbounded = Link {
-        budget: None,
-        ..link(foreign(1))
-    };
+    let unbounded = with(link(foreign(1)), |link| link.budget = None);
     let node = bacnet_bip_core::node::Node::<4>::new(unbounded, now).unwrap();
     assert_eq!(
         BipPort::new(BIP_PORT, node, &mut one).err(),
@@ -212,10 +203,7 @@ fn refusals_map_to_the_routers() {
     let now = Instant::ZERO;
     let mut host = Recorder::default();
     // A 64-octet budget: the router believes the port carries 1,497.
-    let small = Link {
-        budget: Some(64),
-        ..link(Mode::Normal)
-    };
+    let small = with(link(Mode::Normal), |link| link.budget = Some(64));
     let mut bip = BipPort::<4>::new(
         BIP_PORT,
         bacnet_bip_core::node::Node::new(small, now).unwrap(),
@@ -451,14 +439,12 @@ fn ingress_fails_closed_before_the_router() {
     let payload = encode(&Bvll::OriginalUnicastNpdu(&npdu));
     let mut long = payload.clone();
     long[3] += 1;
-    let unknown = Datagram {
-        to: None,
-        ..datagram(&payload, PEER, UNICAST)
-    };
-    let truncated = Datagram {
-        truncated: true,
-        ..datagram(&payload, PEER, UNICAST)
-    };
+    let unknown = with(datagram(&payload, PEER, UNICAST), |datagram| {
+        datagram.to = None;
+    });
+    let truncated = with(datagram(&payload, PEER, UNICAST), |datagram| {
+        datagram.truncated = true;
+    });
     for (datagram, reason) in [
         (unknown, Discard::UnknownDestination),
         (truncated, Discard::Truncated),

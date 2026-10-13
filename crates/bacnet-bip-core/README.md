@@ -62,10 +62,7 @@ tables
     .set(BdtEntries::from_entries(&[BdtEntry::new(peer, Ipv4Addr::BROADCAST)]))
     .unwrap();
 
-let cx = Context {
-    now: Instant::from_millis(1_000),
-    fdt_fanout: 16,
-};
+let cx = Context::new(Instant::from_millis(1_000), 16);
 let source = SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, 20), 47808);
 let mut out = [Target::UNUSED; Tables::<8, 16>::MAX_TARGETS];
 let sent = tables.original_broadcast(&cx, source, &[0x01, 0x00], &mut out);

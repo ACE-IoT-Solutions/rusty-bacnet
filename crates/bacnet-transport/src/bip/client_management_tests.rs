@@ -658,13 +658,25 @@ async fn a_call_racing_stop_leaves_the_status_clear() {
         transport.between_stops = Some(Box::new(move || match race {
             Race::GiveUp => drop(exchange),
             Race::Answer => {
+                use bacnet_bip_core::node::{Addressed, Datagram, Permissive, Received};
+                // The BBMD's success, as the node's link reads it from the
+                // peer by unicast.
                 let frame = [0x81, 0x00, 0x00, 0x06, 0x00, 0x00];
-                let response = bacnet_bip_core::node::Response {
-                    peer,
-                    function: BvlcFunction::BVLC_RESULT,
-                    message: Ok(Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION)),
-                    accepted: true,
+                let to = Addressed {
+                    node: true,
+                    broadcast: false,
                 };
+                let datagram = Datagram::new(&frame, peer, Some(to));
+                let received =
+                    node.link()
+                        .receive(&datagram, bacnet_bip_core::Instant::ZERO, &mut Permissive);
+                let Received::Response(response) = received else {
+                    panic!("{received:?}");
+                };
+                assert_eq!(
+                    response.message,
+                    Ok(Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION))
+                );
                 node.resolve(response, &frame, None);
             }
         }));

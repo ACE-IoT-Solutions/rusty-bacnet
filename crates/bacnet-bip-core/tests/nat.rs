@@ -52,10 +52,7 @@ fn site(own: SocketAddrV4) -> Site {
 }
 
 fn cx() -> Context {
-    Context {
-        now: NOW,
-        fdt_fanout: 4,
-    }
+    Context::new(NOW, 4)
 }
 
 /// The private side, its mask unknown: a NAT-supporting BBMD's own address

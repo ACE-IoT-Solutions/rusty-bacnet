@@ -40,7 +40,7 @@ use bacnet_bip_core::bbmd::{
     Context, Fanout, ForwardRefusal, Registered, RegistrationLimits, RegistrationRefusal,
     Reservation, Tables, Target, TWO_HOP_MASK,
 };
-use bacnet_bip_core::node::{Addressed, Datagram, ForBbmd, Link, Mode, Path, Permissive, Received};
+use bacnet_bip_core::node::{Addressed, Datagram, ForBbmd, Link, Mode, Permissive, Received};
 use bacnet_bip_core::{Instant, LocalSubnet};
 
 use crate::tally::Sent;
@@ -281,16 +281,11 @@ pub fn run(memory: &mut Memory) -> Summary {
             bbmd.summary.error();
             continue;
         };
-        let datagram = Datagram {
-            payload,
-            source: step.source,
-            to: Some(Addressed {
-                node: !step.broadcast,
-                broadcast: step.broadcast,
-            }),
-            path: Path::Primary,
-            truncated: false,
+        let to = Addressed {
+            node: !step.broadcast,
+            broadcast: step.broadcast,
         };
+        let datagram = Datagram::new(payload, step.source, Some(to));
         match link.receive(&datagram, step.at, &mut Permissive) {
             Received::Bbmd(share) => bbmd.serve(share, step.at),
             _ => bbmd.summary.error(),
@@ -319,10 +314,7 @@ impl Bbmd<'_> {
             rows,
             summary,
         } = self;
-        let cx = Context {
-            now,
-            fdt_fanout: FDT_FANOUT,
-        };
+        let cx = Context::new(now, FDT_FANOUT);
         match share {
             ForBbmd::Register { sender, ttl } => {
                 let limits = RegistrationLimits::default();

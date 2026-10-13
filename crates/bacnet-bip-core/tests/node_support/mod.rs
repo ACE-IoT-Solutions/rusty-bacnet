@@ -6,7 +6,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll, BvllFrame};
 use bacnet_bip_core::node::{
-    Action, Addressed, Datagram, Foreign, Link, Mode, Node, Path, Permissive, Policy, Received,
+    Action, Addressed, Datagram, Foreign, Link, Mode, Node, Permissive, Policy, Received,
 };
 use bacnet_bip_core::{Duration, Instant, LocalSubnet};
 
@@ -80,13 +80,15 @@ pub fn raw(function: u8, payload: &[u8]) -> Vec<u8> {
 
 /// A datagram on the primary socket, sent as `to` says.
 pub fn datagram(payload: &[u8], source: SocketAddrV4, to: Addressed) -> Datagram<'_> {
-    Datagram {
-        payload,
-        source,
-        to: Some(to),
-        path: Path::Primary,
-        truncated: false,
-    }
+    Datagram::new(payload, source, Some(to))
+}
+
+/// `value` with `edit` applied: how a test changes a field of a
+/// `#[non_exhaustive]` struct, such as [`Foreign`] or [`Link`], which it
+/// can't build with a struct expression.
+pub fn with<T>(mut value: T, edit: impl FnOnce(&mut T)) -> T {
+    edit(&mut value);
+    value
 }
 
 /// What `link` makes of `payload` from `source`, sent as `to`, on the
