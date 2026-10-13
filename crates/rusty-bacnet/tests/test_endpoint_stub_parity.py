@@ -109,7 +109,8 @@ class EndpointStubParityTests(unittest.TestCase):
                             "mstp_max_info_frames", "max_apdu", "segmentation",
                             "services", "device_uuid", "queue_capacity",
                             "apdu_timeout_ms", "apdu_retries", "read_work_limit",
-                            "min_request_interval_ms"]),
+                            "min_request_interval_ms", "mstp_extended_frames",
+                            "mstp_echo", "mstp_echo_grace_ms"]),
         ]
         for cls, expected in cases:
             with self.subTest(cls=cls.__name__):

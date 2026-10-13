@@ -51,8 +51,8 @@ pub(crate) fn validate_mstp_config(
     Ok(path)
 }
 
-const ECHO_GRACE_WITHOUT_ECHO_ERROR: &str = "mstp_echo_grace_ms needs mstp_echo=True";
-const ZERO_ECHO_GRACE_ERROR: &str = "mstp_echo_grace_ms must be at least 1";
+pub(crate) const ECHO_GRACE_WITHOUT_ECHO_ERROR: &str = "mstp_echo_grace_ms needs mstp_echo=True";
+pub(crate) const ZERO_ECHO_GRACE_ERROR: &str = "mstp_echo_grace_ms must be at least 1";
 
 /// The MS/TP keywords of `BACnetClient` and `BACnetServer`, kept as given:
 /// they are checked when the transport is built, before the port opens.
@@ -74,24 +74,29 @@ pub(crate) struct MstpOptions {
     pub(crate) echo_grace_ms: Option<u32>,
 }
 
+/// What the port's receiver hears while it transmits, as the `mstp_echo`
+/// and `mstp_echo_grace_ms` keywords declare it (#1653). A grace needs the
+/// echo on, and must not be zero, which [`Echo::validate`] refuses too.
+pub(crate) fn port_echo(echo: bool, echo_grace_ms: Option<u32>) -> PyResult<Echo> {
+    let echo = match (echo, echo_grace_ms) {
+        (false, None) => Echo::None,
+        (false, Some(_)) => {
+            return Err(PyValueError::new_err(ECHO_GRACE_WITHOUT_ECHO_ERROR));
+        }
+        (true, None) => Echo::full(),
+        (true, Some(grace)) => Echo::Full {
+            grace: Duration::from_millis(u64::from(grace)),
+        },
+    };
+    echo.validate()
+        .map_err(|_| PyValueError::new_err(ZERO_ECHO_GRACE_ERROR))?;
+    Ok(echo)
+}
+
 impl MstpOptions {
-    /// What the port's receiver hears while it transmits, as the echo
-    /// keywords declare it. A grace needs the echo on, and must not be zero,
-    /// which [`Echo::validate`] refuses too.
+    /// The echo the keywords declare; see [`port_echo`].
     fn port_echo(&self) -> PyResult<Echo> {
-        let echo = match (self.echo, self.echo_grace_ms) {
-            (false, None) => Echo::None,
-            (false, Some(_)) => {
-                return Err(PyValueError::new_err(ECHO_GRACE_WITHOUT_ECHO_ERROR));
-            }
-            (true, None) => Echo::full(),
-            (true, Some(grace)) => Echo::Full {
-                grace: Duration::from_millis(u64::from(grace)),
-            },
-        };
-        echo.validate()
-            .map_err(|_| PyValueError::new_err(ZERO_ECHO_GRACE_ERROR))?;
-        Ok(echo)
+        port_echo(self.echo, self.echo_grace_ms)
     }
 
     fn config(&self) -> MstpConfig {

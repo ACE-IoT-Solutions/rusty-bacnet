@@ -658,15 +658,19 @@ Rust side.
 `mstp_mac` (default 1), `mstp_max_master` (default 127),
 `mstp_max_info_frames` (default 1), `mstp_extended_frames` (default False),
 `mstp_echo` (default False) and `mstp_echo_grace_ms` (default None).
-`BACnetServer` takes the same options, and `MstpEndpoint` its own
-`serial_port` and all of them but `mstp_extended_frames` and the two echo
-options.
+`BACnetServer` and `MstpEndpoint` take the same options; `MstpEndpoint` takes
+`serial_port` through `mstp_max_info_frames` by position or keyword, and the
+other three by keyword only.
 `mstp_extended_frames=True` turns on extended frames (Types 32 and 33), which
 carry NPDUs of up to 1497 octets, so the link carries APDUs of up to 1476
 instead of 480; without it, an extended frame the link hears counts as an
 invalid frame. Routers need them (Clause 9.3); for a device they are
-optional. The link runs the same Clause 9 master
-core as the Rust transport.
+optional, and every node on the link must take them. `MstpEndpoint` checks
+its `max_apdu` against the link: up to 480 by default, up to 1476 with
+`mstp_extended_frames=True`, and a `ValueError` beyond. The memory cost is in
+the transmit queues each port reserves: 768 KiB of slots with extended frames
+against 272 KiB without, committed as the queues fill. The link runs the same
+Clause 9 master core as the Rust transport.
 
 The port is taken not to hear its own frames (transceiver receiver off while
 transmitting). `mstp_echo=True` declares an adapter that returns every octet
@@ -676,8 +680,9 @@ traffic, as `TokioSerialPort::with_echo` does from Rust (see
 [Echo](rust-api.md#echo)). `mstp_echo_grace_ms` is how long after a frame its
 echo may still be arriving, 40 ms when not given, enough for a USB adapter's
 receive latency. A grace of 0, or one given without `mstp_echo=True`, raises
-`ValueError` at start, before the port opens; a negative grace, or one above
-4294967295, raises `OverflowError` when the client or server is built.
+`ValueError` at start, before the port opens (`MstpEndpoint` raises it when
+it is built); a negative grace, or one above 4294967295, raises
+`OverflowError` when the client, server or endpoint is built.
 
 ```python
 from rusty_bacnet import BACnetClient
@@ -689,6 +694,19 @@ client = BACnetClient(
     mstp_mac=3,
     mstp_echo=True,          # this adapter echoes what it sends
     mstp_echo_grace_ms=60,   # its echo can lag a frame by up to 60 ms
+)
+```
+
+```python
+from rusty_bacnet import MstpEndpoint
+
+endpoint = MstpEndpoint(
+    device_instance=3001,
+    serial_port="/dev/ttyUSB0",
+    mstp_mac=3,
+    max_apdu=1476,               # needs extended frames on the link
+    mstp_extended_frames=True,
+    mstp_echo=True,
 )
 ```
 

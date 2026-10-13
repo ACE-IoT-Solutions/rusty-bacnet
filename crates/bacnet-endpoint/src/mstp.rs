@@ -23,11 +23,12 @@
 //! # Bounds and evidence level
 //!
 //! - `SessionConfig` keeps its 480 APDU default, which fits the 501
-//!   frame-data cap; a composed identity advertising more than the
-//!   transport's 480 APDU bound is rejected at build time.
-//! - Standard frames only (no extended/COBS, no router capability — RB-25
-//!   owns routing); non-routing endpoint behavior (the network layer
-//!   discards DNET-addressed traffic).
+//!   frame-data cap. A composed identity may advertise no more than the
+//!   transport carries: 480 with standard frames, the default, and 1476
+//!   with [`MstpEndpointBuilder::extended_frames`]; a larger one is
+//!   rejected at build time.
+//! - No router capability (RB-25 owns routing): non-routing endpoint
+//!   behavior, the network layer discarding DNET-addressed traffic.
 //! - **Simulator evidence only**: proofs run over [`LoopbackSerial`] with a
 //!   raw-frame peer harness (ownership + frame sequencing). This is NOT a
 //!   physical-bench or on-wire conformance claim; timing qualification is
@@ -42,13 +43,6 @@ use bacnet_types::error::Error;
 
 use crate::session::{EndpointSession, SessionConfig, SessionRole};
 
-/// MS/TP transport APDU bound enforced at endpoint composition.
-///
-/// [`MstpTransport::local_receive_apdu_capacity`](bacnet_transport::port::TransportPort::local_receive_apdu_capacity)
-/// advertises 480; an identity advertising more would invite oversized
-/// responses that the standard-frame MAC must reject at `queue_npdu`.
-const MSTP_MAX_APDU: u16 = 480;
-
 /// Concrete MS/TP endpoint builder over one serial owner.
 ///
 /// The builder holds the serial port by value (`Option<S>`, taken once at
@@ -59,12 +53,31 @@ const MSTP_MAX_APDU: u16 = 480;
 /// Simulator evidence only (see module docs): no bench or conformance claim,
 /// RB-26 owns timing.
 ///
+/// # Echo
+///
+/// Whether the port hears its own frames is the port's to declare, as for
+/// an [`MstpTransport`] built by hand: build it with
+/// `with_echo(Echo::full())` (`TokioSerialPort`, [`LoopbackSerial`]) and
+/// the transport strips the echo. Echo stripping is off unless the port
+/// declares it, and [`validate_only`](Self::validate_only) refuses a zero
+/// grace. [`Echo`] carries the grace inside its `Full` variant, so a grace
+/// without an echo can't be expressed.
+///
+/// [`Echo`]: bacnet_transport::mstp::Echo
+/// [`LoopbackSerial`]: bacnet_transport::mstp::LoopbackSerial
+///
 /// ```
 /// use bacnet_endpoint::mstp::MstpEndpointBuilder;
-/// use bacnet_transport::mstp::LoopbackSerial;
+/// use bacnet_transport::mstp::{Echo, LoopbackSerial};
 ///
 /// let (session_end, _peer_end) = LoopbackSerial::pair();
 /// let builder = MstpEndpointBuilder::new(session_end, 3);
+/// assert!(builder.validate_only().is_ok());
+///
+/// // An adapter that hears its own frames, on a link with extended frames.
+/// let (session_end, _peer_end) = LoopbackSerial::pair();
+/// let builder = MstpEndpointBuilder::new(session_end.with_echo(Echo::full()), 3)
+///     .extended_frames(true);
 /// assert!(builder.validate_only().is_ok());
 /// ```
 pub struct MstpEndpointBuilder<S: SerialPort> {
@@ -73,6 +86,7 @@ pub struct MstpEndpointBuilder<S: SerialPort> {
     max_master: u8,
     max_info_frames: u8,
     baud_rate: u32,
+    extended_frames: bool,
     execution_mode: MstpExecutionMode,
     role: SessionRole,
     session: SessionConfig,
@@ -85,7 +99,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     ///
     /// Addressing defaults mirror [`MstpConfig::default`] except the station,
     /// which has no meaningful default: `max_master` 127, `max_info_frames`
-    /// 1, `baud_rate` 9600. Execution defaults to Tokio.
+    /// 1, `baud_rate` 9600, standard frames only. The host timeouts and the
+    /// transmit-latency pad are [`MstpConfig::default`]'s. Execution
+    /// defaults to Tokio.
     pub fn new(serial: S, this_station: u8) -> Self {
         Self {
             serial: Some(serial),
@@ -93,6 +109,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             max_master: 127,
             max_info_frames: 1,
             baud_rate: 9600,
+            extended_frames: false,
             execution_mode: MstpExecutionMode::default(),
             role: SessionRole::Both,
             session: SessionConfig::default(),
@@ -116,6 +133,25 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// Sets the baud rate used for MAC timing derivation.
     pub fn baud_rate(mut self, baud_rate: u32) -> Self {
         self.baud_rate = baud_rate;
+        self
+    }
+
+    /// Takes and sends extended frames, Types 32 and 33, which carry NPDUs
+    /// of up to 1497 octets (default: off, standard frames of up to 501).
+    ///
+    /// Clause 9.3 leaves them optional for a device. With them on, the
+    /// transport carries APDUs of 1476 octets instead of 480, so the
+    /// composed identity may advertise a Max_APDU_Length_Accepted of up to
+    /// 1476 ([`build_session`](Self::build_session) checks it), and the
+    /// link's other nodes must take extended frames too: one without them
+    /// counts a frame of over 501 octets as invalid. See
+    /// [`MstpConfig::extended_frames`].
+    ///
+    /// Memory: the port's transmit queues reserve 512 slots, 768 KiB of
+    /// 1536-octet slots with extended frames against 272 KiB of 544-octet
+    /// ones without; pages a queue never fills are usually not committed.
+    pub fn extended_frames(mut self, extended_frames: bool) -> Self {
+        self.extended_frames = extended_frames;
         self
     }
 
@@ -180,8 +216,10 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     ///
     /// Truth direction (mirror [`BipEndpointBuilder`](crate::bip::BipEndpointBuilder)):
     /// the database should already be built from the same identity; this
-    /// only wires I-Am + role limits. The identity max-APDU must fit the
-    /// MS/TP 480 transport bound (checked at [`build_session`](Self::build_session)).
+    /// only wires I-Am + role limits. The identity max-APDU must fit what
+    /// the transport carries, 480, or 1476 with
+    /// [`extended_frames`](Self::extended_frames) (checked at
+    /// [`build_session`](Self::build_session)).
     pub fn identity(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.identity = Some(identity);
         self
@@ -209,9 +247,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             max_master: self.max_master,
             max_info_frames: self.max_info_frames,
             baud_rate: self.baud_rate,
-            // A device, not a router: standard frames, as MSTP_MAX_APDU
-            // assumes (Clause 9.3 requires extended frames of routers only).
-            extended_frames: false,
+            // A device, not a router: standard frames unless asked for
+            // (Clause 9.3 requires extended frames of routers only).
+            extended_frames: self.extended_frames,
             ..MstpConfig::default()
         }
     }
@@ -235,16 +273,24 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// One-link proof: this builds exactly one [`MstpTransport`] (one serial
     /// owner after `start()`); no second serial owner or duplicated MAC state
     /// machine is created here or in [`EndpointSession`]. The composed
-    /// identity must fit the 480 APDU bound; the standalone
+    /// identity must fit the transport's APDU bound, 480, or 1476 with
+    /// [`extended_frames`](Self::extended_frames); the standalone
     /// [`SessionConfig`] 480 default is kept untouched otherwise.
     pub fn build_session(mut self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
         self.validate_only()?;
         if let Some(identity) = self.identity.as_ref() {
-            // Respect the transport's advertised standard-frame/APDU bounds:
-            // never compose an identity that invites oversized responses.
-            if identity.max_apdu_length() > MSTP_MAX_APDU {
+            // Respect the APDU bound the transport declares
+            // (`local_receive_apdu_capacity`): never compose an identity that
+            // invites responses the link can't carry.
+            let bound = self.config().max_apdu_length();
+            if identity.max_apdu_length() > bound {
+                let frames = if self.extended_frames {
+                    "extended"
+                } else {
+                    "standard"
+                };
                 return Err(Error::Encoding(format!(
-                    "MS/TP endpoint: identity max-APDU {} exceeds MS/TP transport bound {MSTP_MAX_APDU}",
+                    "MS/TP endpoint: identity max-APDU {} exceeds MS/TP transport bound {bound} ({frames} frames)",
                     identity.max_apdu_length()
                 )));
             }

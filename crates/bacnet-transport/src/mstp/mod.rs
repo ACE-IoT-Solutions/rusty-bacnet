@@ -310,10 +310,11 @@ pub struct MstpConfig {
     /// ([`MstpCoreConfig::with_extended_frames`]). See
     /// [`MstpCoreConfig::extended_frames`] for what the core does with it.
     ///
-    /// Memory per port: the queues reserve 512 slots, about 770 KiB with the
-    /// flag on (1497-octet slots) against about 270 KiB without; pages a
-    /// queue never fills are usually not committed. The core's action
-    /// buffers, about 13 KiB, are sized for extended frames either way.
+    /// Memory per port: the queues reserve 512 slots, 768 KiB with the flag
+    /// on (1536-octet slots, for 1497-octet NPDUs) against 272 KiB without
+    /// (544-octet slots); pages a queue never fills are usually not
+    /// committed. The core's action buffers, about 13 KiB, are sized for
+    /// extended frames either way.
     pub extended_frames: bool,
     /// T_usage_timeout: how long after passing the token, or after a poll,
     /// this station waits to hear the successor or the polled station.

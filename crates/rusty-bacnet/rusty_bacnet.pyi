@@ -4980,9 +4980,25 @@ class MstpEndpoint:
         *,
         read_work_limit: int = 256,
         min_request_interval_ms: int = 0,
+        mstp_extended_frames: bool = False,
+        mstp_echo: bool = False,
+        mstp_echo_grace_ms: Optional[int] = None,
     ) -> None:
         """``read_work_limit`` and ``min_request_interval_ms`` are as for
-        ``BipEndpoint``."""
+        ``BipEndpoint``.
+
+        ``max_apdu`` must fit the link: 480 by default, or 1476 with
+        ``mstp_extended_frames=True``, which turns on extended frames (Types
+        32 and 33, NPDUs of up to 1497 octets) as for ``BACnetClient``.
+        Every node on the link must then take extended frames; each port's
+        transmit queues reserve 768 KiB instead of 272 KiB.
+
+        ``mstp_echo=True`` declares an adapter that returns every octet the
+        station sends, and ``mstp_echo_grace_ms`` how long after a frame its
+        echo may still arrive (None: 40 ms), as for ``BACnetClient``. A grace
+        of 0, or one given without ``mstp_echo=True``, raises ValueError here;
+        a negative grace, or one above 4294967295, raises OverflowError.
+        """
         ...
 
     def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0) -> None: ...
