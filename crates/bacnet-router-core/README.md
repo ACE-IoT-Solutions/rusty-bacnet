@@ -8,14 +8,15 @@ and is meant to join their ports in firmware, and to run under the hosted
 
 - `#![no_std]`, no allocator, no dependencies besides `bacnet-time`.
 - NPDUs are read in place from your frame and written into your buffer.
-- The routing table and the discovery state live in arrays whose size you
-  pick with const generics.
+- The routing table, the discovery state and the router's output scratch
+  live in arrays whose size you pick with const generics, all zero bits
+  until used, so firmware keeps them in `.bss`.
 - Time is an `Instant` you pass to each call; the crate reads no clock. It
   is `bacnet-time`'s, in nanoseconds, re-exported here, the same type the
   MS/TP and B/IP cores take, so firmware feeds all three one clock.
 
-Not published yet: the router engine, the hosted router's move onto it and
-a firmware router image come first (#1679).
+Not published yet: the hosted router's move onto the engine and a firmware
+router image come first (#1679).
 
 ## What it has
 
@@ -33,6 +34,13 @@ a firmware router image come first (#1679).
   confirmation, never traffic.
 - `discovery`: when to look for a route to an unknown network, at most once
   per cooldown each, in bounded storage.
+- `router`: the sans-IO engine. A `Router` takes each frame a port
+  receives, with the time, and returns what it means for the router's own
+  application; the sends it calls for are polled after, one at a time,
+  from its scratch. A port is data to it (a network number, the router's
+  MAC there, and the longest NPDU the port carries), so B/IP, MS/TP and the
+  hosted transports all plug in the same way. It behaves as the hosted
+  router does today, with the clause's fixes behind switches.
 
 ## Example
 

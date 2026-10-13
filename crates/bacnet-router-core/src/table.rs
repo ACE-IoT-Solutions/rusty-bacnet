@@ -51,7 +51,7 @@ use core::fmt;
 use crate::{Duration, Instant, Mac, PortId};
 
 pub use claims::{Learned, Refusal};
-pub use holds::{Hold, RejectEffect};
+pub use holds::RejectEffect;
 
 /// How far a route can be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +302,16 @@ impl<const R: usize, const H: usize> Table<R, H> {
             },
             convergence: Convergence::Standard,
         }
+    }
+
+    /// Forget every route, hold-down record and count, keeping the
+    /// convergence mode: what [`new`](Self::new) gives, without building a
+    /// second table.
+    pub(crate) fn clear(&mut self) {
+        self.slots[..self.len].fill(VACANT);
+        self.len = 0;
+        self.holds.clear();
+        self.counters = ClaimCounters::default();
     }
 
     /// An empty table with hardened convergence.

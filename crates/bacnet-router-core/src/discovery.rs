@@ -135,6 +135,13 @@ impl<const D: usize> Discovery<D> {
         removed
     }
 
+    /// Forget every search and look again: what [`new`](Self::new) gives.
+    pub(crate) fn clear(&mut self) {
+        self.entries[..self.len].fill(NO_ENTRY);
+        self.len = 0;
+        self.cancelled = false;
+    }
+
     /// Forget every search and look for nothing more: the router stopped.
     pub fn cancel(&mut self) {
         self.cancelled = true;
