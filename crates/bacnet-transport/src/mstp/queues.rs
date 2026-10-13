@@ -114,12 +114,13 @@ impl SharedQueues {
         }
     }
 
-    /// The unicast and broadcast queue counters.
-    pub(super) fn stats(&self) -> (QueueCounters, QueueCounters) {
-        let shared = self.lock();
+    /// Take the unicast and broadcast queue counters, which then start
+    /// again (see [`QueueStorage::take_counters`]).
+    pub(super) fn take_counters(&self) -> (QueueCounters, QueueCounters) {
+        let mut shared = self.lock();
         (
-            shared.queues.stats(QueueKind::Unicast),
-            shared.queues.stats(QueueKind::Broadcast),
+            shared.queues.take_counters(QueueKind::Unicast),
+            shared.queues.take_counters(QueueKind::Broadcast),
         )
     }
 }
@@ -221,8 +222,12 @@ impl QueueStorage for CoreQueues {
         self.lock().queues.depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        self.lock().queues.stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.lock().queues.counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.lock().queues.take_counters(kind)
     }
 }
 
@@ -290,7 +295,7 @@ mod tests {
             queues.enqueue(5, &[1, 0], now, age),
             Err(EnqueueError::Closed)
         );
-        assert_eq!(queues.stats().0.enqueued, 1);
+        assert_eq!(queues.take_counters().0.enqueued, 1);
     }
 
     #[test]
@@ -316,7 +321,7 @@ mod tests {
         // Longer than the core takes: dropped and counted.
         assert_eq!(core.dequeue(now, 1), Err(QueueRefusal::Oversize));
         assert_eq!(core.dequeue(now, MAX_EXTENDED_MPDU_DATA), Ok(None));
-        let (unicast, _) = queues.stats();
+        let (unicast, _) = queues.take_counters();
         assert_eq!(
             (unicast.depth, unicast.dequeued, unicast.drops_oversize),
             (0, 3, 1)

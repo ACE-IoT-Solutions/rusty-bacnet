@@ -358,7 +358,7 @@ fn same_views<Q: Backend>(
     for kind in KINDS {
         prop_assert_eq!(queue.depth(kind), model.lanes[lane(kind)].len());
         prop_assert_eq!(
-            queue.stats(kind),
+            queue.counters(kind),
             model.counters[lane(kind)],
             "counters after step {}",
             step

@@ -406,7 +406,7 @@ async fn the_probe_ends_at_its_deadline() {
         let counts = bus.transport.diagnostics().snapshot();
         assert_eq!(
             counts.mac.own_address_frames,
-            u32::from(fed),
+            u64::from(fed),
             "after the probe: {after_probe}"
         );
         bus.stop().await;
@@ -440,7 +440,7 @@ async fn the_probe_is_over_at_exactly_its_deadline() {
         assert_eq!(counts.echo_missing, 1);
         assert_eq!(
             counts.mac.own_address_frames,
-            u32::from(fed),
+            u64::from(fed),
             "{before_the_end:?} before the probe's end"
         );
         bus.stop().await;

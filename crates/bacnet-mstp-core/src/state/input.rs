@@ -184,15 +184,14 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     ///
     /// It is taken for the station's own echo exactly when
     /// [`Self::on_octet`] would be: once a transmit's start is confirmed.
-    pub fn on_receive_error(
-        &mut self,
-        _error: ReceiveError,
-        now: Instant,
-    ) -> Result<(), CoreError> {
+    /// Otherwise it counts under its kind, in
+    /// [`MstpCounters::framing_errors`] and the three beside it.
+    pub fn on_receive_error(&mut self, error: ReceiveError, now: Instant) -> Result<(), CoreError> {
         self.observe_time(now)?;
         if self.transmitting() {
             return Ok(());
         }
+        self.counters.record_receive_error(error);
         self.note_bus_activity(now, 1)?;
         let invalid_candidate = matches!(
             self.decoder.phase(),

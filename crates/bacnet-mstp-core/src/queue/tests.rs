@@ -44,7 +44,7 @@ fn drop_items_longer_than_the_caller_takes<Q: QueueStorage>(mut queue: Q) {
         .enqueue_npdu(1, &[4], NetworkPriority::Normal, Instant::ZERO, None)
         .unwrap();
     assert_eq!(queue.dequeue(Instant::ZERO, 2), Err(QueueRefusal::Oversize));
-    let stats = queue.stats(QueueKind::Unicast);
+    let stats = queue.counters(QueueKind::Unicast);
     assert_eq!((stats.depth, stats.drops_oversize), (1, 1));
     let next = queue.dequeue(Instant::ZERO, 2).unwrap().unwrap();
     assert_eq!(next.npdu, [4]);
@@ -229,7 +229,7 @@ fn freed_slots_keep_the_order<Q: QueueStorage>(mut queue: Q) {
     );
     assert_eq!(queue.depth(QueueKind::Unicast), 4);
     assert_eq!(drain_first_octets(&mut queue, now), [1, 3, 4, 5]);
-    let stats = queue.stats(QueueKind::Unicast);
+    let stats = queue.counters(QueueKind::Unicast);
     assert_eq!(
         (
             stats.depth,
@@ -260,7 +260,7 @@ fn freed_slots_keep_the_order<Q: QueueStorage>(mut queue: Q) {
         .enqueue_npdu(1, &[11], NetworkPriority::Normal, at(5), None)
         .unwrap();
     assert_eq!(drain_first_octets(&mut queue, at(5)), [7, 9, 10, 11]);
-    let stats = queue.stats(QueueKind::Unicast);
+    let stats = queue.counters(QueueKind::Unicast);
     assert_eq!((stats.depth, stats.drops_expired), (0, 1));
 }
 
@@ -353,7 +353,7 @@ fn npdus_longer_than_a_slot_are_refused<Q: QueueStorage>(mut queue: Q) {
         );
     }
     for kind in [QueueKind::Unicast, QueueKind::Broadcast] {
-        let stats = queue.stats(kind);
+        let stats = queue.counters(kind);
         assert_eq!(
             (stats.depth, stats.enqueued, stats.drops_oversize),
             (0, 0, 1)
@@ -396,4 +396,53 @@ fn debug_leaves_out_freed_slots() {
     debug_shows_only_waiting_items(HeaplessQueues::<2, 1>::new());
     #[cfg(feature = "alloc")]
     debug_shows_only_waiting_items(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(2, 1));
+}
+
+/// Taking a queue's counters returns its counts and starts them again from
+/// zero, one class at a time; the depth stays, and the high-water mark
+/// starts again from it. A look leaves them as they are.
+fn a_take_starts_the_counts_again<Q: QueueStorage>(mut queue: Q) {
+    let now = Instant::ZERO;
+    for octet in 0..3 {
+        queue
+            .enqueue_npdu(1, &[octet], NetworkPriority::Normal, now, None)
+            .unwrap();
+    }
+    queue
+        .enqueue_npdu(1, &[9], NetworkPriority::Normal, now, None)
+        .unwrap_err();
+    queue
+        .enqueue_npdu(BROADCAST_MAC, &[7], NetworkPriority::Normal, now, None)
+        .unwrap();
+    queue.dequeue_kind(QueueKind::Unicast, now, 4).unwrap();
+    let looked = queue.counters(QueueKind::Unicast);
+    let taken = queue.take_counters(QueueKind::Unicast);
+    assert_eq!(looked, taken);
+    assert_eq!(
+        (
+            taken.depth,
+            taken.high_water,
+            taken.enqueued,
+            taken.dequeued
+        ),
+        (2, 3, 3, 1)
+    );
+    assert_eq!(taken.drops_full, 1);
+    let after = queue.counters(QueueKind::Unicast);
+    assert_eq!((after.depth, after.high_water), (2, 2));
+    assert_eq!(
+        (after.enqueued, after.dequeued, after.drops_full),
+        (0, 0, 0)
+    );
+    // The other class is untouched until it is taken.
+    assert_eq!(queue.counters(QueueKind::Broadcast).enqueued, 1);
+    assert_eq!(queue.take_counters(QueueKind::Broadcast).enqueued, 1);
+    assert_eq!(queue.counters(QueueKind::Broadcast).enqueued, 0);
+}
+
+#[test]
+fn taking_the_counters_starts_them_again() {
+    a_take_starts_the_counts_again(HeaplessQueues::<3, 1>::new());
+    #[cfg(feature = "alloc")]
+    a_take_starts_the_counts_again(AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(3, 1));
 }

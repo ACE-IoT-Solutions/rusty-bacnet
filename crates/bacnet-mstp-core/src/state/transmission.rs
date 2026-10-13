@@ -172,11 +172,12 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// driver-on time and is counted as given up: in
     /// [`MstpCounters::expired_requests`] for an answer, which leaves its
     /// request unanswered, and in [`MstpCounters::cancelled_sends`] for any
-    /// other frame.
+    /// other frame. Every abort counts under its `reason`, in
+    /// [`MstpCounters::transmit_aborts`] and the three beside it.
     pub fn on_transmit_aborted(
         &mut self,
         id: TransmitId,
-        _reason: TransmitFailure,
+        reason: TransmitFailure,
         now: Instant,
     ) -> Result<(), CoreError> {
         self.observe_time(now)?;
@@ -184,6 +185,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             .active_transmit
             .filter(|tx| tx.id == id)
             .ok_or(CoreError::StaleTransmit)?;
+        self.counters.record_transmit_failure(reason);
         self.withdraw_transmit(id);
         self.forget_pending();
         if tx.started {

@@ -441,25 +441,33 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         }
     }
 
-    /// Return the counters snapshot, including current queue statistics.
+    /// The counts since the counters were last taken, which then start
+    /// again from zero ([`MstpCounters`]): add them to your own totals, as
+    /// wide as you need. Each count is a `u32` that saturates between takes.
     ///
-    /// The queue counters come from the queue storage, plus the NPDUs the
-    /// core itself refused or dropped as too long to send
-    /// ([`MstpCoreConfig::max_npdu`]).
-    pub fn counters(&self) -> MstpCounters {
-        let merge = |queue: QueueCounters, core: QueueCounters| QueueCounters {
-            drops_oversize: queue.drops_oversize.saturating_add(core.drops_oversize),
-            ..queue
-        };
-        let mut counters = self.counters;
-        counters.unicast = merge(self.queues.stats(QueueKind::Unicast), self.counters.unicast);
-        counters.broadcast = merge(
-            self.queues.stats(QueueKind::Broadcast),
-            self.counters.broadcast,
-        );
-        counters
+    /// The queue counters are the queue storage's, taken with these
+    /// ([`QueueStorage::take_counters`]), plus the NPDUs the core itself
+    /// refused or dropped as too long to send ([`MstpCoreConfig::max_npdu`]).
+    #[must_use = "the counts are gone once taken; add them to your totals"]
+    pub fn take_counters(&mut self) -> MstpCounters {
+        let core = core::mem::take(&mut self.counters);
+        let unicast = self.queues.take_counters(QueueKind::Unicast);
+        let broadcast = self.queues.take_counters(QueueKind::Broadcast);
+        merge_queues(core, unicast, broadcast)
     }
 
+    /// The counts since the counters were last taken, as
+    /// [`Self::take_counters`] would return them, without taking them: for
+    /// a look between takes. A core whose counters are never taken counts
+    /// from its start.
+    #[must_use]
+    pub fn counters(&self) -> MstpCounters {
+        merge_queues(
+            self.counters,
+            self.queues.counters(QueueKind::Unicast),
+            self.queues.counters(QueueKind::Broadcast),
+        )
+    }
     /// Queue an NPDU with an absolute expiry derived from configuration.
     ///
     /// An NPDU longer than this station sends
@@ -656,6 +664,24 @@ fn next_addr(current: u8, max_master: u8) -> u8 {
             ((u32::from(current) + 1) % (u32::from(max_master) + 1)) as u8
         }
     }
+}
+
+/// The core's own counters with the queues' in place of its queue counters,
+/// which hold only the NPDUs the core refused or dropped as too long, added
+/// to the queues' own.
+fn merge_queues(
+    core: MstpCounters,
+    unicast: QueueCounters,
+    broadcast: QueueCounters,
+) -> MstpCounters {
+    let merge = |mut queue: QueueCounters, own: QueueCounters| {
+        queue.drops_oversize = queue.drops_oversize.saturating_add(own.drops_oversize);
+        queue
+    };
+    let mut counters = core;
+    counters.unicast = merge(unicast, core.unicast);
+    counters.broadcast = merge(broadcast, core.broadcast);
+    counters
 }
 
 fn minimum(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {

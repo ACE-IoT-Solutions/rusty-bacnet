@@ -119,7 +119,7 @@ fn the_queue_counts_an_npdu_longer_than_the_core_takes() {
         assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
         assert_eq!(core.counters().unicast.drops_oversize, 1);
     }
-    let stats = queues.stats(QueueKind::Unicast);
+    let stats = queues.counters(QueueKind::Unicast);
     assert_eq!(
         (stats.depth, stats.dequeued, stats.drops_oversize),
         (0, 1, 1)
@@ -199,8 +199,12 @@ impl<const L: usize> QueueStorage for Overstating<L> {
         self.0.depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        self.0.stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.0.counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.0.take_counters(kind)
     }
 }
 

@@ -602,3 +602,55 @@ mod allocation_test {
         assert!(core.counters().unicast.enqueued >= 1);
     }
 }
+
+/// `take_counters` returns what `counters` shows and starts the counts
+/// again, the core's own and its queues' alike, the core's oversize
+/// refusals included; the queue depth stays.
+#[test]
+fn taking_the_counters_drains_the_core_and_its_queues() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        at(0),
+    )
+    .unwrap();
+    core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, at(0))
+        .unwrap();
+    // Too long for a standard frame: the core refuses it itself.
+    let long = [0; MAX_STANDARD_MPDU_DATA + 1];
+    assert_eq!(
+        core.enqueue_npdu(2, &long, NetworkPriority::Normal, at(0)),
+        Err(bacnet_mstp_core::QueueRefusal::Oversize)
+    );
+    core.on_receive_error(ReceiveError::Parity, at(1)).unwrap();
+
+    let looked = core.counters();
+    let taken = core.take_counters();
+    assert_eq!(looked, taken);
+    assert_eq!(taken.parity_errors, 1);
+    assert_eq!(
+        (
+            taken.unicast.enqueued,
+            taken.unicast.drops_oversize,
+            taken.unicast.depth
+        ),
+        (1, 1, 1)
+    );
+
+    let after = core.counters();
+    assert_eq!((after.parity_errors, after.state_transitions), (0, 0));
+    assert_eq!(
+        (
+            after.unicast.enqueued,
+            after.unicast.drops_oversize,
+            after.unicast.depth,
+            after.unicast.high_water
+        ),
+        (0, 0, 1, 1)
+    );
+    assert_eq!(core.take_counters(), after);
+}

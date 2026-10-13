@@ -201,7 +201,11 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         self.inner.depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        self.inner.stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.inner.counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.inner.take_counters(kind)
     }
 }

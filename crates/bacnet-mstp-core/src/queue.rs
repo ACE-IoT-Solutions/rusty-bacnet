@@ -224,7 +224,18 @@ impl QueueItemInfo {
     }
 }
 
-/// A bounded storage backend for queued NPDUs.
+/// A bounded storage backend for queued NPDUs: the core's transmit queues.
+///
+/// [`HeaplessQueues`] implements it, and `AllocQueues` with the `alloc`
+/// feature; so may storage of your own, such as queues another task fills
+/// too (the Tokio MS/TP transport keeps `AllocQueues` behind a lock that
+/// way). It carries the queue policy as well as the items: which item goes
+/// next, starvation, expiry and the oversize rule, so a backend of your own
+/// carries them out as those two do.
+///
+/// It is an extension point, and its methods are part of this crate's
+/// semver: changing one, or adding one without a default, is a breaking
+/// change.
 pub trait QueueStorage {
     /// Apply the core's service-opportunity starvation limit.
     fn set_starvation_limit(&mut self, limit: u8);
@@ -299,8 +310,15 @@ pub trait QueueStorage {
     /// Current depth for one destination class.
     fn depth(&self, kind: QueueKind) -> usize;
 
-    /// Maximum depth and drop counters for one destination class.
-    fn stats(&self, kind: QueueKind) -> QueueCounters;
+    /// One destination class's counters since they were last taken,
+    /// without taking them.
+    fn counters(&self, kind: QueueKind) -> QueueCounters;
+
+    /// One destination class's counters since they were last taken, which
+    /// then start again (see [`QueueCounters`]).
+    /// [`MasterCore::take_counters`](crate::MasterCore::take_counters) takes
+    /// them with its own.
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters;
 
     /// The total number of queued NPDUs.
     fn total_depth(&self) -> usize {
@@ -363,8 +381,12 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         (**self).depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        (**self).stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        (**self).counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        (**self).take_counters(kind)
     }
 
     fn total_depth(&self) -> usize {

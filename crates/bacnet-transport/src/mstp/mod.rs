@@ -15,22 +15,22 @@
 //!   deliver). The `adapter` module documents the details.
 //! - [`MstpConfig`], mapped onto [`MstpCoreConfig`] and validated by the
 //!   core's rules.
-//! - [`MstpDiagnostics`], the core's counters plus counts kept at the
-//!   transport boundary.
+//! - [`MstpDiagnostics`], the core's counters added up ([`MstpCounters`])
+//!   plus counts kept at the transport boundary.
 
 use bacnet_mstp_core::{ConfigError, Duration as CoreDuration, MstpCoreConfig};
 use bacnet_types::error::Error;
 use tokio::sync::oneshot;
 
 pub use bacnet_mstp_codec as codec;
-pub use bacnet_mstp_core::{MstpCounters, QueueCounters};
-
 mod adapter;
 mod diagnostics;
 mod echo;
 mod queues;
 mod replies;
+mod totals;
 pub use diagnostics::{MstpDiagnostics, MstpDiagnosticsSnapshot};
+pub use totals::{MstpCounters, QueueCounters};
 
 // ---------------------------------------------------------------------------
 // Serial port abstraction

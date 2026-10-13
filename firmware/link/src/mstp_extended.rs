@@ -275,13 +275,14 @@ pub fn run(memory: &mut Memory) -> Summary {
         return summary;
     };
     line.exchange(&mut core);
-    record_counters(&core, &mut summary);
+    record_counters(&mut core, &mut summary);
     summary
 }
 
-/// Copy the core counters the summary keeps.
-fn record_counters(core: &Core<'_>, summary: &mut Summary) {
-    let counters = core.counters();
+/// Take the core's counters, as firmware drains them, and copy the ones
+/// the summary keeps: the scenario takes them once, so they are its totals.
+fn record_counters(core: &mut Core<'_>, summary: &mut Summary) {
+    let counters = core.take_counters();
     summary.frames_received = counters.frames_received;
     summary.frames_transmitted = counters.frames_transmitted;
     summary.token_rotations = counters.token_rotations;

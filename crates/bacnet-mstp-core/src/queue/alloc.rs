@@ -240,7 +240,11 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         self.lane(kind).depth
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
         self.lane(kind).counters
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.lane_mut(kind).counters.take()
     }
 }

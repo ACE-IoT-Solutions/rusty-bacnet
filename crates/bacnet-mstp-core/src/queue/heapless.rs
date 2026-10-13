@@ -239,10 +239,14 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         }
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
         match kind {
             QueueKind::Unicast => self.unicast.counters,
             QueueKind::Broadcast => self.broadcast.counters,
         }
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.counters_mut(kind).take()
     }
 }
