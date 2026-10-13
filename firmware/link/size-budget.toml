@@ -158,14 +158,37 @@
 #   thumbv6m mstp-extended     16440 / 17616
 #   riscv32imc mstp-extended   17716 / 18962
 #   thumbv7em mstp-extended    15104 / 17112
+#
+# The mstp and mstp-extended rows were measured again on 2026-10-13, same
+# toolchain, after the MS/TP core's API pass (#1684): the images take their
+# counters with take_counters, which also starts them again; the core counts
+# receive errors and transmit aborts by kind; each call holds a clock that
+# steps back at the latest time; and the queues' counters lost
+# drops_starved. .text changed by, on thumbv7m / thumbv6m / riscv32imc /
+# thumbv7em:
+#
+#   mstp             +92 /  -72 /  +60 /  +72
+#   mstp-extended     +4 /  -44 / -112 /  +16
+#
+# .rodata and .bss are 16 octets smaller on every target. The budgets are
+# these sizes plus 12%, as text / rodata / bss / flash:
+#
+#   thumbv7m mstp              16344 / 1044 / 5528 / 18412
+#   thumbv6m mstp              17576 / 1044 / 5528 / 18812
+#   riscv32imc mstp            18756 / 1308 / 5528 / 20086
+#   thumbv7em mstp             16260 / 1044 / 5528 / 18328
+#   thumbv7m mstp-extended     15108 /  968 / 7696 / 17100
+#   thumbv6m mstp-extended     16396 /  968 / 7696 / 17556
+#   riscv32imc mstp-extended   17604 / 1208 / 7696 / 18834
+#   thumbv7em mstp-extended    15120 /  968 / 7696 / 17112
 
 [thumbv7m-none-eabi.mstp]
-text = 18208
-rodata = 1200
+text = 18320
+rodata = 1184
 data = 64
-bss = 6224
-flash = 20544
-ram = 6224
+bss = 6192
+flash = 20624
+ram = 6192
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -194,11 +217,11 @@ memmove_functions = 2
 
 [thumbv7m-none-eabi.mstp-extended]
 text = 16928
-rodata = 1104
+rodata = 1088
 data = 64
-bss = 8640
-flash = 19168
-ram = 8640
+bss = 8624
+flash = 19152
+ram = 8624
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -226,12 +249,12 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.mstp]
-text = 19776
-rodata = 1200
+text = 19696
+rodata = 1184
 data = 64
-bss = 6224
-flash = 21168
-ram = 6224
+bss = 6192
+flash = 21072
+ram = 6192
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -259,12 +282,12 @@ div64_functions = 3
 memmove_functions = 2
 
 [thumbv6m-none-eabi.mstp-extended]
-text = 18416
-rodata = 1104
+text = 18368
+rodata = 1088
 data = 64
-bss = 8640
-flash = 19744
-ram = 8640
+bss = 8624
+flash = 19664
+ram = 8624
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -292,12 +315,12 @@ div64_functions = 0
 memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.mstp]
-text = 20944
-rodata = 1520
+text = 21008
+rodata = 1472
 data = 64
-bss = 6224
-flash = 22448
-ram = 6224
+bss = 6192
+flash = 22496
+ram = 6192
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -325,12 +348,12 @@ div64_functions = 0
 memmove_functions = 2
 
 [riscv32imc-unknown-none-elf.mstp-extended]
-text = 19856
-rodata = 1376
+text = 19728
+rodata = 1360
 data = 64
-bss = 8640
-flash = 21248
-ram = 8640
+bss = 8624
+flash = 21104
+ram = 8624
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -358,12 +381,12 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.mstp]
-text = 18144
-rodata = 1200
+text = 18224
+rodata = 1184
 data = 64
-bss = 6224
-flash = 20464
-ram = 6224
+bss = 6192
+flash = 20528
+ram = 6192
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -391,12 +414,12 @@ div64_functions = 0
 memmove_functions = 2
 
 [thumbv7em-none-eabihf.mstp-extended]
-text = 16928
-rodata = 1104
+text = 16944
+rodata = 1088
 data = 64
-bss = 8640
+bss = 8624
 flash = 19168
-ram = 8640
+ram = 8624
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
