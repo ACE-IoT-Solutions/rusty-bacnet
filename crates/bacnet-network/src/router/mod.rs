@@ -443,8 +443,9 @@ impl BACnetRouter {
             networks,
         });
 
-        // Startup: each port hears, in an I-Am-Router, which networks lie
-        // beyond the other ports.
+        // Startup: each port hears its own network number, in a
+        // Network-Number-Is (R3, Clause 6.4.20), then, in an I-Am-Router,
+        // which networks lie beyond the other ports.
         shared.announce(&send_txs);
 
         let outputs = Arc::new(Outputs {

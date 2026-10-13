@@ -187,9 +187,19 @@ async fn forward_unicast_decrements_hop_count() {
     }
 }
 
-/// The I-Am-Router announcements of each port, as `start` sends them: the
-/// networks beyond the other ports, in port order.
-fn announcements(networks: &[u16]) -> Vec<Vec<Vec<u16>>> {
+/// A startup announcement, decoded.
+#[derive(Debug, PartialEq, Eq)]
+enum Announced {
+    /// Network-Number-Is: the number, and whether it is configured.
+    Number(u16, bool),
+    /// I-Am-Router: the networks it lists.
+    IAm(Vec<u16>),
+}
+
+/// The announcements of each port, in order, as `start` sends them: with
+/// R3, the port's network number (Clause 6.4.20); then the networks beyond
+/// the other ports, in port order (Clause 6.6.2).
+fn announcements(networks: &[u16]) -> Vec<Vec<Announced>> {
     let mut h = Harness::with_networks(networks);
     h.announce();
     (0..networks.len())
@@ -204,15 +214,23 @@ fn announcements(networks: &[u16]) -> Vec<Vec<Vec<u16>>> {
                         assert!(data_attributes.is_empty());
                         let decoded = decode_npdu(data).unwrap();
                         assert!(decoded.is_network_message);
-                        assert_eq!(
-                            decoded.message_type,
-                            Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw())
-                        );
-                        decoded
-                            .payload
-                            .chunks(2)
-                            .map(|net| u16::from_be_bytes([net[0], net[1]]))
-                            .collect()
+                        assert!(decoded.destination.is_none() && decoded.source.is_none());
+                        let payload = &decoded.payload;
+                        match decoded.message_type.map(NetworkMessageType::from_raw) {
+                            Some(NetworkMessageType::NETWORK_NUMBER_IS) => {
+                                let [high, low, flag] = payload[..] else {
+                                    panic!("three octets");
+                                };
+                                Announced::Number(u16::from_be_bytes([high, low]), flag == 1)
+                            }
+                            Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK) => Announced::IAm(
+                                payload
+                                    .chunks(2)
+                                    .map(|net| u16::from_be_bytes([net[0], net[1]]))
+                                    .collect(),
+                            ),
+                            other => panic!("unexpected announcement {other:?}"),
+                        }
                     }
                     SendRequest::Unicast { .. } => panic!("expected broadcast announcement"),
                 })
@@ -221,21 +239,34 @@ fn announcements(networks: &[u16]) -> Vec<Vec<Vec<u16>>> {
         .collect()
 }
 
+/// A one-port router announces its number, and no I-Am-Router.
 #[test]
-fn single_port_router_no_i_am_router_announcement() {
-    assert_eq!(announcements(&[1000]), [Vec::<Vec<u16>>::new()]);
+fn single_port_router_announces_only_its_number() {
+    assert_eq!(announcements(&[1000]), [[Announced::Number(1000, true)]]);
 }
 
 #[test]
-fn two_port_router_sends_i_am_router_announcement() {
-    assert_eq!(announcements(&[1000, 2000]), [[[2000]], [[1000]]]);
+fn two_port_router_announces_its_number_then_i_am_router() {
+    use Announced::{IAm, Number};
+    assert_eq!(
+        announcements(&[1000, 2000]),
+        [
+            [Number(1000, true), IAm(vec![2000])],
+            [Number(2000, true), IAm(vec![1000])]
+        ]
+    );
 }
 
 #[test]
 fn three_port_router_announces_multiple_networks() {
+    use Announced::{IAm, Number};
     assert_eq!(
         announcements(&[100, 200, 300]),
-        [[[200, 300]], [[100, 300]], [[100, 200]]]
+        [
+            [Number(100, true), IAm(vec![200, 300])],
+            [Number(200, true), IAm(vec![100, 300])],
+            [Number(300, true), IAm(vec![100, 200])]
+        ]
     );
 }
 

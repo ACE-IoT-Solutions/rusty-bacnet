@@ -2153,6 +2153,11 @@ them):
   other reason, such as R1's reason 4, leaves the route as it is and counts
   in the claim counters' `reject_dampened_same_state`, where it used to remove
   a learned route. Every reject is still passed on toward its destination.
+- **Network numbers at startup (R3).** Each port first broadcasts a
+  Network-Number-Is with its network number, flagged as configured (Clause
+  6.4.20), then its I-Am-Router; a one-port router sends only the first, and
+  a port numbered 0 or 0xFFFF has no number to send. Before, each port heard
+  only the I-Am-Router.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

@@ -80,6 +80,9 @@ fn refused(kind: Kind, error: &TrySendError<SendRequest>) {
             warn!(%error, "Router dropped Init-Routing-Table-ACK: output channel full")
         }
         Kind::Answer(_) => warn!(%error, "Router dropped Network-Number-Is: output channel full"),
+        Kind::Announce(code::NETWORK_NUMBER_IS) => {
+            warn!(%error, "Router dropped Network-Number-Is announcement: output channel full")
+        }
         Kind::Announce(_) => {
             warn!(%error, "Router dropped I-Am-Router announcement: output channel full")
         }

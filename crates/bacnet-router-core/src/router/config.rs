@@ -83,8 +83,10 @@ pub struct Fixes {
     /// route alone (Clause 6.6.3.5); it is still passed on. Off, it removes
     /// a learned route.
     pub rejects_keep_routes: bool,
-    /// R3: at start, announce each port's network number with a
-    /// Network-Number-Is before its I-Am-Router.
+    /// R3: at start, announce each port's network number, as configured,
+    /// with a Network-Number-Is before its I-Am-Router (Clause 6.4.20). A
+    /// port numbered 0 or 0xFFFF has no number to announce. Off, a port
+    /// hears only the I-Am-Router.
     pub announce_numbers: bool,
 }
 
@@ -143,8 +145,8 @@ pub struct Options {
 impl Options {
     /// The hosted router's values: standard convergence, 256 routes, 300 s
     /// learned age, a 60 s sweep, [`Timing::DEFAULT`], a 5 s discovery
-    /// cooldown and 30 s age, and the fixes it has turned on so far: R1
-    /// and R2.
+    /// cooldown and 30 s age, and the fixes it has turned on so far: R1 to
+    /// R3.
     pub const HOSTED: Self = Self {
         convergence: Convergence::Standard,
         route_cap: 256,
@@ -156,6 +158,7 @@ impl Options {
         fixes: Fixes {
             egress_limits: true,
             rejects_keep_routes: true,
+            announce_numbers: true,
             ..Fixes::NONE
         },
     };
