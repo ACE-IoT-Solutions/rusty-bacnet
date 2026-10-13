@@ -2278,12 +2278,12 @@ on a network from 1 to 65534 and with a MAC of at most
 network numbers before it starts any transport. Network 0 is no network, and
 0xFFFF, the global broadcast DNET, can't be the SNET the router puts in what
 it relays from the port (Clause 6.2.2.1); the core's `Router::new` refuses
-both too, with `ConfigError::ReservedNetwork` (#1698). The table stops at its route cap, direct routes included, for
-learning, Initialize-Routing-Table updates and I-Could-Be-Router offers
-alike, counting each refusal in its claim counters' `learned_cap_ignored`. At
-the cap, an I-Am-Router-To-Network or an Initialize-Routing-Table-Ack still
-refreshes the networks the table holds, and the first network it doesn't
-hold ends that message's learning (#1698).
+both too, with `ConfigError::ReservedNetwork` (#1698). The table stops at its
+route cap, direct routes included, for learning, Initialize-Routing-Table
+updates and I-Could-Be-Router offers alike, counting each refusal in its claim
+counters' `learned_cap_ignored`. At the cap, an I-Am-Router-To-Network or an
+Initialize-Routing-Table-Ack still refreshes the networks the table holds, and
+the first network it doesn't hold ends that message's learning (#1698).
 Two more bounds come with the engine. A rewritten NPDU longer than the
 engine's 65,556-octet scratch isn't routed: it is dropped, logged and
 counted in `BACnetRouter::counters().write_failures`. The scratch is the
