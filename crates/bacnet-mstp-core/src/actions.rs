@@ -17,7 +17,7 @@ use bacnet_mstp_codec::{
 };
 
 /// The physical direction requested for the serial transceiver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     /// Receive bytes from the bus: the line driver is off.
     Receive,
@@ -50,11 +50,6 @@ impl RequestId {
     pub const fn generation(self) -> u32 {
         self.0
     }
-
-    /// Return the raw generation value.
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
 }
 
 /// A generation-bound identifier for a transmit operation.
@@ -69,11 +64,6 @@ impl TransmitId {
 
     /// Return the generation represented by this identifier.
     pub const fn generation(self) -> u32 {
-        self.0
-    }
-
-    /// Return the raw generation value.
-    pub const fn raw(self) -> u32 {
         self.0
     }
 }

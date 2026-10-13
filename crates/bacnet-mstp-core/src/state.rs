@@ -15,7 +15,7 @@ use crate::config::{
     N_POLL, N_RETRY_TOKEN, T_NO_TOKEN, T_SLOT,
 };
 use crate::counters::{MstpCounters, QueueCounters};
-use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
+use crate::queue::{NetworkPriority, QueueKind, QueueRefusal, QueueStorage};
 
 mod input;
 mod pending;
@@ -36,7 +36,7 @@ pub const MIN_RX_STORAGE: usize = PREAMBLE.len() + HEADER_LENGTH;
 pub const LATE_DEADLINE: Duration = Duration::from_millis(1);
 
 /// Token-passing master state names from Clause 9.5.6.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MasterState {
     /// Waiting for a frame or token-loss timeout.
     Idle,
@@ -78,8 +78,6 @@ pub enum ReplyDecision<'a> {
     Data(&'a [u8]),
     /// Tell the requester that the response will be sent later with a token.
     Postponed,
-    /// The application abandoned or cancelled the bound request.
-    Cancelled,
     /// Abandon the bound request without emitting a wire response.
     Abandoned,
 }
@@ -341,7 +339,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// With [`MstpCoreConfig::extended_frames`] on, every buffer must hold
     /// what an extended frame needs: the receive storage and the action
     /// buffers' frame [`MAX_EXTENDED_FRAME_LENGTH`] octets, and a delivery
-    /// slot and a queue slot ([`QueueStorage::max_npdu_length`])
+    /// slot and a queue slot ([`QueueStorage::max_npdu`])
     /// [`MAX_EXTENDED_MPDU_DATA`]. A smaller one is refused with
     /// [`ConfigError::ExtendedStorageTooSmall`], naming it.
     pub fn new<const DELIVERIES: usize, const FRAME: usize>(
@@ -369,7 +367,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 (CoreBuffer::DeliverySlot, NPDU, MAX_EXTENDED_MPDU_DATA),
                 (
                     CoreBuffer::QueueSlot,
-                    queues.max_npdu_length(),
+                    queues.max_npdu(),
                     MAX_EXTENDED_MPDU_DATA,
                 ),
             ] {
@@ -447,7 +445,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     ///
     /// The queue counters come from the queue storage, plus the NPDUs the
     /// core itself refused or dropped as too long to send
-    /// ([`MstpCoreConfig::max_npdu_length`]).
+    /// ([`MstpCoreConfig::max_npdu`]).
     pub fn counters(&self) -> MstpCounters {
         let merge = |queue: QueueCounters, core: QueueCounters| QueueCounters {
             drops_oversize: queue.drops_oversize.saturating_add(core.drops_oversize),
@@ -465,8 +463,8 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Queue an NPDU with an absolute expiry derived from configuration.
     ///
     /// An NPDU longer than this station sends
-    /// ([`MstpCoreConfig::max_npdu_length`]: 501 octets, or 1497 with
-    /// extended frames on) is refused with [`QueueRejectReason::Oversize`]
+    /// ([`MstpCoreConfig::max_npdu`]: 501 octets, or 1497 with
+    /// extended frames on) is refused with [`QueueRefusal::Oversize`]
     /// and counted in its queue's `drops_oversize`, whatever the queue
     /// storage could hold. With extended frames on, one of 502 octets or
     /// more goes out in an extended frame.
@@ -476,13 +474,13 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         npdu: &[u8],
         priority: NetworkPriority,
         now: Instant,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         if now < self.last_now {
-            return Err(QueueRejectReason::Expired);
+            return Err(QueueRefusal::Expired);
         }
-        if npdu.len() > self.config.max_npdu_length() {
+        if npdu.len() > self.config.max_npdu() {
             self.record_oversize_npdu(QueueKind::from_destination(destination));
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         }
         let expires = now.saturating_add(self.config.queue_max_age);
         self.queues

@@ -27,8 +27,6 @@ pub struct QueueCounters {
     pub drops_oversize: u32,
     /// Entries removed after exceeding their configured age.
     pub drops_expired: u32,
-    /// Entries rejected or removed by starvation policy.
-    pub drops_starved: u32,
 }
 
 // Only the queue backends record queue counters.

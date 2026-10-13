@@ -293,9 +293,9 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
         } => id,
         other => panic!("expected request delivery, got {other:?}"),
     };
-    let stale = RequestId::new(id.raw().wrapping_add(1));
+    let stale = RequestId::new(id.generation().wrapping_add(1));
     assert_eq!(
-        core.complete_request(stale, ReplyDecision::Cancelled, at(2)),
+        core.complete_request(stale, ReplyDecision::Postponed, at(2)),
         Err(CoreError::StaleRequest)
     );
     assert_eq!(
@@ -309,11 +309,11 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
             maximum: MAX_STANDARD_MPDU_DATA,
         })
     );
-    core.complete_request(id, ReplyDecision::Cancelled, at(2))
+    core.complete_request(id, ReplyDecision::Postponed, at(2))
         .unwrap();
     assert_eq!(core.snapshot().request_id, None);
     assert_eq!(
-        core.complete_request(id, ReplyDecision::Cancelled, at(3)),
+        core.complete_request(id, ReplyDecision::Postponed, at(3)),
         Err(CoreError::NoPendingRequest)
     );
     assert!(core.counters().npdus_delivered >= 1);
@@ -378,7 +378,7 @@ fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
         Err(CoreError::TransmitAlreadyStarted)
     );
     assert_eq!(
-        core.on_transmit_complete(TransmitId::new(id.raw().wrapping_add(1)), at(7)),
+        core.on_transmit_complete(TransmitId::new(id.generation().wrapping_add(1)), at(7)),
         Err(CoreError::StaleTransmit)
     );
     let watchdog = at(6) + core.config().transmit_watchdog;

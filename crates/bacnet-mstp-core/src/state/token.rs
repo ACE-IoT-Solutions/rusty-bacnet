@@ -129,7 +129,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 Err(_) => continue,
             };
             let data = item.npdu;
-            if data.len() > NPDU || data.len() > self.config.max_npdu_length() {
+            if data.len() > NPDU || data.len() > self.config.max_npdu() {
                 // The queue lent more octets than it was asked for, or holds
                 // an NPDU this station doesn't send, which a queue fed only
                 // through `enqueue_npdu` never does.

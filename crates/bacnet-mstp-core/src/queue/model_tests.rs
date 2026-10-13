@@ -7,10 +7,11 @@
 
 use std::vec::Vec;
 
+use bacnet_mstp_codec::BROADCAST_MAC;
 use bacnet_time::{Duration, Instant};
 use proptest::prelude::*;
 
-use super::{HeaplessQueues, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason};
+use super::{HeaplessQueues, NetworkPriority, QueueItemInfo, QueueKind, QueueRefusal};
 use super::{QueueCounters, QueueStorage};
 
 /// The slot length under test: short, so NPDUs at, under and over it come
@@ -113,15 +114,15 @@ impl Model {
         priority: NetworkPriority,
         now: Instant,
         expires_at: Option<Instant>,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         let k = lane(QueueKind::from_destination(destination));
         if npdu.len() > N {
             self.counters[k].record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         }
         if expired(expires_at, now) {
             self.counters[k].record_drop_expired();
-            return Err(QueueRejectReason::Expired);
+            return Err(QueueRefusal::Expired);
         }
         let sequence = self.sequence;
         if self.numbers_full_refusals {
@@ -129,7 +130,7 @@ impl Model {
         }
         if self.lanes[k].len() >= self.capacity[k] {
             self.counters[k].record_drop_full();
-            return Err(QueueRejectReason::Full);
+            return Err(QueueRefusal::Full);
         }
         if !self.numbers_full_refusals {
             self.sequence = self.sequence.wrapping_add(1);
@@ -196,7 +197,7 @@ impl Model {
         kind: QueueKind,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<Taken>, QueueRejectReason> {
+    ) -> Result<Option<Taken>, QueueRefusal> {
         self.expire(now);
         let Some((_, index)) = self.select(&[kind], now) else {
             return Ok(None);
@@ -207,7 +208,7 @@ impl Model {
         self.counters[k].record_dequeue(depth);
         if item.npdu.len() > max_len {
             self.counters[k].record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         }
         for waiting in self.lanes.iter_mut().flatten() {
             waiting.service_wait = waiting.service_wait.saturating_add(1);
@@ -221,11 +222,7 @@ impl Model {
         )))
     }
 
-    fn dequeue(
-        &mut self,
-        now: Instant,
-        max_len: usize,
-    ) -> Result<Option<Taken>, QueueRejectReason> {
+    fn dequeue(&mut self, now: Instant, max_len: usize) -> Result<Option<Taken>, QueueRefusal> {
         let Some(info) = self.peek(&KINDS, now) else {
             return Ok(None);
         };
@@ -302,7 +299,7 @@ fn priority() -> impl Strategy<Value = NetworkPriority> {
 }
 
 fn op() -> impl Strategy<Value = Op> {
-    let destination = prop_oneof![Just(1u8), Just(2), Just(QueueKind::BROADCAST_DESTINATION)];
+    let destination = prop_oneof![Just(1u8), Just(2), Just(BROADCAST_MAC)];
     let kind = prop_oneof![Just(QueueKind::Unicast), Just(QueueKind::Broadcast)];
     prop_oneof![
         5 => (destination, 0..=N + 1, priority(), proptest::option::of(0u64..12)).prop_map(
@@ -458,7 +455,7 @@ fn alloc_queue_slots_stay_within_their_reservation() {
     let reserved = queue.slot_room().map(|(_, capacity)| capacity);
     let now = Instant::ZERO;
     for round in 0..200u8 {
-        for destination in [1, QueueKind::BROADCAST_DESTINATION] {
+        for destination in [1, BROADCAST_MAC] {
             for _ in 0..1 + usize::from(round % 3) {
                 let _ =
                     queue.enqueue_npdu(destination, &[round], NetworkPriority::Normal, now, None);

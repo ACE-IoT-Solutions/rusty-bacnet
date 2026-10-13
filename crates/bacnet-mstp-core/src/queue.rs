@@ -10,27 +10,28 @@
 //! out, so the core builds a frame straight from the queue's slot, with no
 //! NPDU-sized buffer on its stack.
 
-use bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA;
+use core::fmt;
+
+use bacnet_mstp_codec::{BROADCAST_MAC, MAX_STANDARD_MPDU_DATA};
 use bacnet_time::Instant;
 
 use crate::counters::QueueCounters;
 
 /// Destination class used by the two independently bounded queues.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum QueueKind {
     /// A frame addressed to one MAC address.
     Unicast,
-    /// A frame addressed to the MS/TP broadcast MAC (`0xff`).
+    /// A frame addressed to the MS/TP broadcast MAC
+    /// ([`BROADCAST_MAC`](bacnet_mstp_codec::BROADCAST_MAC), 255).
     Broadcast,
 }
 
 impl QueueKind {
-    /// The MS/TP broadcast MAC address.
-    pub const BROADCAST_DESTINATION: u8 = 0xff;
-
     /// Classify a destination MAC.
+    #[must_use]
     pub const fn from_destination(destination: u8) -> Self {
-        if destination == Self::BROADCAST_DESTINATION {
+        if destination == BROADCAST_MAC {
             Self::Broadcast
         } else {
             Self::Unicast
@@ -44,8 +45,19 @@ impl QueueKind {
 /// [`LifeSafety`](Self::LifeSafety) is selected before
 /// [`CriticalEquipment`](Self::CriticalEquipment), then [`Urgent`](Self::Urgent),
 /// and finally [`Normal`](Self::Normal).
+///
+/// The field is two bits, so the set is closed: convert from the wire value
+/// with `try_from` and back with `u8::from`.
+///
+/// ```
+/// use bacnet_mstp_core::NetworkPriority;
+///
+/// assert_eq!(NetworkPriority::try_from(3), Ok(NetworkPriority::LifeSafety));
+/// assert_eq!(u8::from(NetworkPriority::Urgent), 1);
+/// assert!(NetworkPriority::try_from(4).is_err());
+/// ```
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub enum NetworkPriority {
     /// Normal traffic (`0`).
     Normal = 0,
@@ -57,43 +69,62 @@ pub enum NetworkPriority {
     LifeSafety = 3,
 }
 
-impl NetworkPriority {
-    /// Convert the wire priority value, rejecting reserved values.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Normal),
-            1 => Some(Self::Urgent),
-            2 => Some(Self::CriticalEquipment),
-            3 => Some(Self::LifeSafety),
-            _ => None,
-        }
-    }
+/// The wire priority value, 0 to 3; anything else is refused.
+impl TryFrom<u8> for NetworkPriority {
+    type Error = PriorityError;
 
-    /// Return the Clause 6.2.2 numeric value.
-    pub const fn as_u8(self) -> u8 {
-        self as u8
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Normal),
+            1 => Ok(Self::Urgent),
+            2 => Ok(Self::CriticalEquipment),
+            3 => Ok(Self::LifeSafety),
+            _ => Err(PriorityError { value }),
+        }
     }
 }
 
-/// The reason an NPDU was rejected by a queue.
+/// The Clause 6.2.2 numeric value.
+impl From<NetworkPriority> for u8 {
+    fn from(priority: NetworkPriority) -> Self {
+        priority as u8
+    }
+}
+
+/// A value [`NetworkPriority::try_from`] refuses: a network priority is two
+/// bits, 0 to 3.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub struct PriorityError {
+    /// The value offered.
+    pub value: u8,
+}
+
+impl fmt::Display for PriorityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "network priority {} is not 0 to 3", self.value)
+    }
+}
+
+impl core::error::Error for PriorityError {}
+
+/// Why a queue, or [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu),
+/// refused an NPDU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub enum QueueRejectReason {
+pub enum QueueRefusal {
     /// The destination queue has no free slot.
     Full,
     /// The payload is too long: larger than the queue's owned slot or, from
     /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than
     /// the station sends
-    /// ([`MstpCoreConfig::max_npdu_length`](crate::MstpCoreConfig::max_npdu_length)).
+    /// ([`MstpCoreConfig::max_npdu`](crate::MstpCoreConfig::max_npdu)).
     /// A dequeue also returns it when it dropped an item longer than the
     /// caller takes (see [`QueueStorage::dequeue`]).
     Oversize,
     /// The supplied expiry is at or before the enqueue time, or an item
     /// reached its expiry boundary while waiting.
     Expired,
-    /// Reserved for policy layers that reject a request which has exceeded a
-    /// starvation budget.  Queue selection itself never drops a starved item.
-    Starved,
 }
 
 /// An NPDU taken off its queue, with its octets lent by the queue.
@@ -207,7 +238,7 @@ pub trait QueueStorage {
     /// The default is a standard frame's 501 octets, so storage that doesn't
     /// say is refused for extended frames: it fails closed. Storage whose
     /// slots hold extended NPDUs overrides it.
-    fn max_npdu_length(&self) -> usize {
+    fn max_npdu(&self) -> usize {
         bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA
     }
 
@@ -223,7 +254,7 @@ pub trait QueueStorage {
         priority: NetworkPriority,
         now: Instant,
         expires_at: Option<Instant>,
-    ) -> Result<(), QueueRejectReason>;
+    ) -> Result<(), QueueRefusal>;
 
     /// Remove expired items at `now`, returning the number removed.
     fn expire(&mut self, now: Instant) -> usize;
@@ -241,7 +272,7 @@ pub trait QueueStorage {
     /// expired ones, and lend its NPDU until the queue is next used mutably.
     ///
     /// An item longer than `max_len` octets is dropped instead, counted in
-    /// `drops_oversize`, and [`QueueRejectReason::Oversize`] is returned.
+    /// `drops_oversize`, and [`QueueRefusal::Oversize`] is returned.
     /// The core passes the longest NPDU its delivery slots hold, its `NPDU`,
     /// so such an item could never be sent; leaving it queued would keep it
     /// at the head.
@@ -249,7 +280,7 @@ pub trait QueueStorage {
         &mut self,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         let Some(info) = self.peek(now) else {
             return Ok(None);
         };
@@ -263,7 +294,7 @@ pub trait QueueStorage {
         kind: QueueKind,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason>;
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal>;
 
     /// Current depth for one destination class.
     fn depth(&self, kind: QueueKind) -> usize;
@@ -284,8 +315,8 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         (**self).set_starvation_limit(limit);
     }
 
-    fn max_npdu_length(&self) -> usize {
-        (**self).max_npdu_length()
+    fn max_npdu(&self) -> usize {
+        (**self).max_npdu()
     }
 
     fn enqueue_npdu(
@@ -295,7 +326,7 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         priority: NetworkPriority,
         now: Instant,
         expires_at: Option<Instant>,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         (**self).enqueue_npdu(destination, payload, priority, now, expires_at)
     }
 
@@ -315,7 +346,7 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         &mut self,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         (**self).dequeue(now, max_len)
     }
 
@@ -324,7 +355,7 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         kind: QueueKind,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         (**self).dequeue_kind(kind, now, max_len)
     }
 

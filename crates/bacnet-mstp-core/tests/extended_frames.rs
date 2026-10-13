@@ -13,7 +13,7 @@ use bacnet_mstp_codec::{
 use bacnet_mstp_core::{
     Action, ActionBuffers, ConfigError, CoreBuffer, CoreError, DequeuedNpdu, Direction, Duration,
     ExtendedActionBuffers, HeaplessQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    NetworkPriority, QueueCounters, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
+    NetworkPriority, QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
     ReplyDecision, RequestId,
 };
 
@@ -266,12 +266,12 @@ fn extended_frames_need_extended_buffers() {
         Instant::ZERO,
     )
     .is_ok());
-    assert_eq!(config(false).max_npdu_length(), MAX_STANDARD_MPDU_DATA);
-    assert_eq!(config(true).max_npdu_length(), MAX_EXTENDED_MPDU_DATA);
+    assert_eq!(config(false).max_npdu(), MAX_STANDARD_MPDU_DATA);
+    assert_eq!(config(true).max_npdu(), MAX_EXTENDED_MPDU_DATA);
 }
 
 /// Queues with extended slots behind a storage type that doesn't override
-/// `QueueStorage::max_npdu_length`, so it reports the default.
+/// `QueueStorage::max_npdu`, so it reports the default.
 struct Unsized(Queues);
 
 impl QueueStorage for Unsized {
@@ -286,7 +286,7 @@ impl QueueStorage for Unsized {
         priority: NetworkPriority,
         now: Instant,
         expires_at: Option<Instant>,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         self.0
             .enqueue_npdu(destination, payload, priority, now, expires_at)
     }
@@ -308,7 +308,7 @@ impl QueueStorage for Unsized {
         kind: QueueKind,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         self.0.dequeue_kind(kind, now, max_len)
     }
 
@@ -329,7 +329,7 @@ fn queue_storage_that_does_not_say_is_refused_for_extended_frames() {
     let mut rx = vec![0u8; MAX_EXTENDED_FRAME_LENGTH];
     let mut actions: Box<Actions> = Box::default();
     let unsized_queues = Unsized(Queues::new());
-    assert_eq!(unsized_queues.max_npdu_length(), MAX_STANDARD_MPDU_DATA);
+    assert_eq!(unsized_queues.max_npdu(), MAX_STANDARD_MPDU_DATA);
     let result = MasterCore::new(
         config(true),
         unsized_queues,
@@ -345,7 +345,7 @@ fn queue_storage_that_does_not_say_is_refused_for_extended_frames() {
             minimum: MAX_EXTENDED_MPDU_DATA,
         }))
     );
-    assert_eq!(Queues::new().max_npdu_length(), MAX_EXTENDED_MPDU_DATA);
+    assert_eq!(Queues::new().max_npdu(), MAX_EXTENDED_MPDU_DATA);
 }
 
 /// Clauses 9.3.9, 9.3.10 and 9.5.6.3 (SendAndWait, SendNoWait): with the
@@ -374,7 +374,7 @@ fn long_npdus_go_out_in_extended_frames() {
             NetworkPriority::Normal,
             Instant::from_micros(20_000),
         ),
-        Err(QueueRejectReason::Oversize)
+        Err(QueueRefusal::Oversize)
     );
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 
@@ -412,7 +412,7 @@ fn long_npdus_go_out_in_extended_frames() {
             NetworkPriority::Normal,
             Instant::ZERO,
         ),
-        Err(QueueRejectReason::Oversize)
+        Err(QueueRefusal::Oversize)
     );
 }
 

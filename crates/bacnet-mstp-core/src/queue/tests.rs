@@ -11,7 +11,7 @@ fn exercise<Q: QueueStorage>(mut queue: Q) {
     );
     assert_eq!(
         queue.enqueue_npdu(
-            QueueKind::BROADCAST_DESTINATION,
+            BROADCAST_MAC,
             &[3],
             NetworkPriority::Normal,
             Instant::ZERO,
@@ -43,10 +43,7 @@ fn drop_items_longer_than_the_caller_takes<Q: QueueStorage>(mut queue: Q) {
     queue
         .enqueue_npdu(1, &[4], NetworkPriority::Normal, Instant::ZERO, None)
         .unwrap();
-    assert_eq!(
-        queue.dequeue(Instant::ZERO, 2),
-        Err(QueueRejectReason::Oversize)
-    );
+    assert_eq!(queue.dequeue(Instant::ZERO, 2), Err(QueueRefusal::Oversize));
     let stats = queue.stats(QueueKind::Unicast);
     assert_eq!((stats.depth, stats.drops_oversize), (1, 1));
     let next = queue.dequeue(Instant::ZERO, 2).unwrap().unwrap();
@@ -72,7 +69,7 @@ fn exact_expiry_boundary_and_atomic_oversize() {
                 Instant::from_nanos(4),
                 Some(Instant::from_nanos(4))
             ),
-            Err(QueueRejectReason::Expired)
+            Err(QueueRefusal::Expired)
         );
         assert_eq!(queue.depth(QueueKind::Unicast), 0);
         assert_eq!(
@@ -81,7 +78,7 @@ fn exact_expiry_boundary_and_atomic_oversize() {
         );
         assert_eq!(
             queue.enqueue_npdu(1, &[3], NetworkPriority::Normal, Instant::ZERO, None),
-            Err(QueueRejectReason::Full)
+            Err(QueueRefusal::Full)
         );
         assert_eq!(queue.depth(QueueKind::Unicast), 1);
     }
@@ -96,7 +93,7 @@ fn exact_expiry_boundary_and_atomic_oversize() {
                 Instant::from_nanos(4),
                 Some(Instant::from_nanos(4))
             ),
-            Err(QueueRejectReason::Expired)
+            Err(QueueRefusal::Expired)
         );
         assert_eq!(queue.depth(QueueKind::Unicast), 0);
         assert_eq!(
@@ -105,7 +102,7 @@ fn exact_expiry_boundary_and_atomic_oversize() {
         );
         assert_eq!(
             queue.enqueue_npdu(1, &[3], NetworkPriority::Normal, Instant::ZERO, None),
-            Err(QueueRejectReason::Full)
+            Err(QueueRefusal::Full)
         );
         assert_eq!(queue.depth(QueueKind::Unicast), 1);
     }
@@ -114,7 +111,8 @@ fn exact_expiry_boundary_and_atomic_oversize() {
 #[test]
 fn starvation_forces_old_item_after_service_opportunities() {
     {
-        let mut queue = HeaplessQueues::<4, 0>::with_starvation_limit(1);
+        let mut queue = HeaplessQueues::<4, 0>::new();
+        queue.set_starvation_limit(1);
         queue
             .enqueue_npdu(1, &[1], NetworkPriority::Normal, Instant::ZERO, None)
             .unwrap();
@@ -126,7 +124,8 @@ fn starvation_forces_old_item_after_service_opportunities() {
     }
     #[cfg(feature = "alloc")]
     {
-        let mut queue = AllocQueues::<MAX_STANDARD_MPDU_DATA>::with_starvation_limit(4, 0, 1);
+        let mut queue = AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 0);
+        queue.set_starvation_limit(1);
         queue
             .enqueue_npdu(1, &[1], NetworkPriority::Normal, Instant::ZERO, None)
             .unwrap();
@@ -226,7 +225,7 @@ fn freed_slots_keep_the_order<Q: QueueStorage>(mut queue: Q) {
         .unwrap();
     assert_eq!(
         queue.enqueue_npdu(1, &[6], NetworkPriority::Normal, now, None),
-        Err(QueueRejectReason::Full)
+        Err(QueueRefusal::Full)
     );
     assert_eq!(queue.depth(QueueKind::Unicast), 4);
     assert_eq!(drain_first_octets(&mut queue, now), [1, 3, 4, 5]);
@@ -350,7 +349,7 @@ fn npdus_longer_than_a_slot_are_refused<Q: QueueStorage>(mut queue: Q) {
     for destination in [1, 0xff] {
         assert_eq!(
             queue.enqueue_npdu(destination, &long, NetworkPriority::Normal, now, None),
-            Err(QueueRejectReason::Oversize)
+            Err(QueueRefusal::Oversize)
         );
     }
     for kind in [QueueKind::Unicast, QueueKind::Broadcast] {

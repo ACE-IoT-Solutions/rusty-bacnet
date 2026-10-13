@@ -164,8 +164,8 @@ pub use counters::{MstpCounters, QueueCounters};
 #[cfg(feature = "alloc")]
 pub use queue::AllocQueues;
 pub use queue::{
-    DequeuedNpdu, HeaplessQueues, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason,
-    QueueStorage,
+    DequeuedNpdu, HeaplessQueues, NetworkPriority, PriorityError, QueueItemInfo, QueueKind,
+    QueueRefusal, QueueStorage,
 };
 pub use state::{
     CoreError, MasterCore, MasterSnapshot, MasterState, ReceiveError, ReplyDecision, LATE_DEADLINE,

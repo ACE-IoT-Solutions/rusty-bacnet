@@ -86,7 +86,7 @@ use bacnet_mstp_codec::{
 };
 use bacnet_mstp_core::{
     Action, CoreError, Direction, ExtendedActionBuffers, MasterCore, MasterState, MstpCoreConfig,
-    QueueRejectReason, ReplyDecision, RequestId, TransmitId,
+    QueueRefusal, ReplyDecision, RequestId, TransmitId,
 };
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -490,10 +490,10 @@ impl<S: SerialPort> Mac<S> {
             .enqueue_until(requester, answer, self.clock.now(), expires);
         match result {
             Ok(()) => increment(&self.counts.late_answers_queued),
-            Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Oversize)) => {
                 increment(&self.counts.outbound_oversize);
             }
-            Err(EnqueueError::Rejected(QueueRejectReason::Full)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Full)) => {
                 increment(&self.counts.outbound_queue_full);
             }
             Err(error) => debug!(?error, "MS/TP late answer not queued"),

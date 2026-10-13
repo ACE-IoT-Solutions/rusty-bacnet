@@ -4,11 +4,12 @@ use core::fmt;
 
 use bacnet_time::Instant;
 
+use crate::config::DEFAULT_STARVATION_LIMIT;
 use crate::counters::QueueCounters;
 
 use super::slots::{expired, Lane, LiveItems, Selected, Slot};
 use super::{
-    DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
+    DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
     MAX_STANDARD_MPDU_DATA,
 };
 
@@ -20,11 +21,7 @@ const EMPTY_QUEUE_COUNTERS: QueueCounters = QueueCounters {
     drops_full: 0,
     drops_oversize: 0,
     drops_expired: 0,
-    drops_starved: 0,
 };
-
-/// The starvation limit of [`HeaplessQueues::new`].
-const DEFAULT_STARVATION_LIMIT: u8 = 16;
 
 /// Fixed-capacity, independently bounded unicast and broadcast queues.
 ///
@@ -32,7 +29,7 @@ const DEFAULT_STARVATION_LIMIT: u8 = 16;
 /// NPDU a slot holds: a standard frame's 501 octets by default, and
 /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
 /// a core with extended frames on. `N` can be at most 65,535, or the
-/// constructors fail to compile:
+/// constructor fails to compile:
 ///
 /// ```
 /// use bacnet_mstp_core::HeaplessQueues;
@@ -52,6 +49,11 @@ const DEFAULT_STARVATION_LIMIT: u8 = 16;
 /// [`Self::new`] is a `const fn` whose result is all zero bits, so the
 /// queues can live in a zero-initialized static (`.bss`) and be lent to the
 /// core as `&mut` (see the crate docs).
+///
+/// The starvation limit comes from the core's configuration
+/// ([`MstpCoreConfig::starvation_limit`](crate::MstpCoreConfig::starvation_limit)),
+/// which [`MasterCore::new`](crate::MasterCore::new) hands over; until
+/// then the queues use that field's default.
 pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: Lane<[Slot<N>; U]>,
     broadcast: Lane<[Slot<N>; B]>,
@@ -61,17 +63,9 @@ pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_S
 }
 
 impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
-    /// Construct queues with the default starvation limit of 16 time units.
+    /// Empty queues.
+    #[must_use]
     pub const fn new() -> Self {
-        Self::with_limit(None)
-    }
-
-    /// Construct queues with an explicit starvation limit.
-    pub const fn with_starvation_limit(starvation_limit: u8) -> Self {
-        Self::with_limit(Some(starvation_limit))
-    }
-
-    const fn with_limit(starvation_limit: Option<u8>) -> Self {
         const {
             assert!(
                 N <= Slot::<N>::LONGEST,
@@ -82,7 +76,7 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
             unicast: Lane::new([Slot::EMPTY; U], EMPTY_QUEUE_COUNTERS),
             broadcast: Lane::new([Slot::EMPTY; B], EMPTY_QUEUE_COUNTERS),
             sequence: 0,
-            starvation_limit,
+            starvation_limit: None,
         }
     }
 
@@ -156,7 +150,7 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         self.starvation_limit = Some(limit);
     }
 
-    fn max_npdu_length(&self) -> usize {
+    fn max_npdu(&self) -> usize {
         N
     }
 
@@ -167,15 +161,15 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         priority: NetworkPriority,
         now: Instant,
         expires_at: Option<Instant>,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         let kind = QueueKind::from_destination(destination);
         if payload.len() > N {
             self.counters_mut(kind).record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         }
         if expired(expires_at, now) {
             self.counters_mut(kind).record_drop_expired();
-            return Err(QueueRejectReason::Expired);
+            return Err(QueueRefusal::Expired);
         }
         // The number is taken before the room is checked, so a full queue
         // uses one up too, as it always has here.
@@ -187,7 +181,7 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         };
         let Some(slot) = free else {
             self.counters_mut(kind).record_drop_full();
-            return Err(QueueRejectReason::Full);
+            return Err(QueueRefusal::Full);
         };
         slot.fill(destination, payload, priority, now, expires_at, sequence);
         match kind {
@@ -214,7 +208,7 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         kind: QueueKind,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         self.expire(now);
         let Some((_, index, info)) = self.select_kind(kind, now) else {
             return Ok(None);
@@ -225,7 +219,7 @@ impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQu
         }
         if info.len > max_len {
             self.counters_mut(kind).record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         }
         self.unicast.bump_waits();
         self.broadcast.bump_waits();

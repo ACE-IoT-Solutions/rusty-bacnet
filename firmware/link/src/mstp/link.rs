@@ -3,7 +3,7 @@
 
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
-    Action, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority, QueueRejectReason,
+    Action, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal,
     ReplyDecision, RequestId, TransmitId,
 };
 
@@ -131,12 +131,12 @@ fn fill_queues(core: &mut Core<'_>, oversize: &[u8], now: Instant, summary: &mut
     for _ in 0..=UNICAST_SLOTS {
         match core.enqueue_npdu(PEER, &WHO_IS, NetworkPriority::Normal, now) {
             Ok(()) => summary.queued_before_full += 1,
-            Err(QueueRejectReason::Full) => break,
+            Err(QueueRefusal::Full) => break,
             Err(_) => summary.error(),
         }
     }
     if core.enqueue_npdu(PEER, oversize, NetworkPriority::Normal, now)
-        != Err(QueueRejectReason::Oversize)
+        != Err(QueueRefusal::Oversize)
     {
         summary.error();
     }

@@ -264,7 +264,7 @@ pub fn run(memory: &mut Memory) -> Summary {
         actions,
     } = memory;
     let mut summary = Summary::new();
-    summary.max_npdu = CONFIG.max_npdu_length();
+    summary.max_npdu = CONFIG.max_npdu();
     let mut line = Line {
         now: Instant::ZERO,
         octet: CONFIG.octet_time(),

@@ -1,7 +1,7 @@
 //! Each step: what it feeds the core, and what the core must answer.
 
 use bacnet_mstp_core::{
-    CoreError, Instant, MasterCore, NetworkPriority, QueueRejectReason, QueueStorage, ReceiveError,
+    CoreError, Instant, MasterCore, NetworkPriority, QueueRefusal, QueueStorage, ReceiveError,
     ReplyDecision, RequestId, TransmitFailure, TransmitId,
 };
 
@@ -177,9 +177,9 @@ impl Driver<'_> {
                 for _ in 0..=copies % 4 {
                     let result = core.enqueue_npdu(to, &npdu, priority(*raw), self.at());
                     let fine = if length > max_npdu {
-                        result == Err(QueueRejectReason::Oversize)
+                        result == Err(QueueRefusal::Oversize)
                     } else {
-                        matches!(result, Ok(()) | Err(QueueRejectReason::Full))
+                        matches!(result, Ok(()) | Err(QueueRefusal::Full))
                     };
                     if !fine {
                         self.fail(&format!(
@@ -383,7 +383,7 @@ impl Driver<'_> {
         ];
         let mut id = TransmitId::new(id);
         while taken.contains(&Some(id)) {
-            id = TransmitId::new(id.raw().wrapping_add(1));
+            id = TransmitId::new(id.generation().wrapping_add(1));
         }
         let before = core.snapshot();
         let at = self.at();
@@ -428,8 +428,7 @@ impl Driver<'_> {
         };
         let reply = match decision {
             Decision::Data { .. } => ReplyDecision::Data(&data),
-            Decision::Postponed => ReplyDecision::Postponed,
-            Decision::Cancelled => ReplyDecision::Cancelled,
+            Decision::Postponed | Decision::Cancelled => ReplyDecision::Postponed,
             Decision::Abandoned => ReplyDecision::Abandoned,
         };
         let result = core.complete_request(request, reply, self.at());
@@ -491,7 +490,7 @@ impl Driver<'_> {
             7 => core.on_transmit_started(TransmitId::new(0), supplied),
             8 => core.on_validated_frame(self.token_frame(), supplied),
             _ => match core.enqueue_npdu(1, &[1, 0], NetworkPriority::Normal, supplied) {
-                Err(QueueRejectReason::Expired) => Err(CoreError::ClockRegression {
+                Err(QueueRefusal::Expired) => Err(CoreError::ClockRegression {
                     previous: Instant::from_micros(self.stamp),
                     supplied,
                 }),

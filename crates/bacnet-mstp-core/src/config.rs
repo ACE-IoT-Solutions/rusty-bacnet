@@ -47,6 +47,9 @@ pub const MAX_USAGE_TIMEOUT: Duration = Duration::from_millis(35);
 const MAX_REPLY_DELAY: Duration = Duration::from_millis(250);
 /// The longest T_usage_delay (Clause 9.5.3), the constructors' value.
 const MAX_USAGE_DELAY: Duration = Duration::from_millis(15);
+/// Default for [`MstpCoreConfig::starvation_limit`], which queues also use
+/// until a core hands them the configured one.
+pub(crate) const DEFAULT_STARVATION_LIMIT: u8 = 8;
 /// Default for [`MstpCoreConfig::reply_transmit_margin`], the value the host
 /// MS/TP transport reserves.
 const DEFAULT_REPLY_TRANSMIT_MARGIN: Duration = Duration::from_millis(25);
@@ -220,7 +223,7 @@ pub enum CoreBuffer {
     /// octets.
     DeliverySlot,
     /// Each queue slot, as
-    /// [`QueueStorage::max_npdu_length`](crate::QueueStorage::max_npdu_length)
+    /// [`QueueStorage::max_npdu`](crate::QueueStorage::max_npdu)
     /// reports it, which must hold as much.
     QueueSlot,
 }
@@ -325,6 +328,11 @@ pub struct MstpCoreConfig {
     /// of 100 leaves Clause 9 `Max_Info_Frames` unchanged.
     pub multiple_frame_ratio: u8,
     /// Number of service opportunities after which an item is promoted.
+    ///
+    /// The one source of the queues' starvation limit:
+    /// [`MasterCore::new`](crate::MasterCore::new) hands it to them through
+    /// [`QueueStorage::set_starvation_limit`](crate::QueueStorage::set_starvation_limit).
+    /// Default 8.
     pub starvation_limit: u8,
     /// Maximum time allowed for one platform transmit operation, from its
     /// confirmed start to its completion.
@@ -571,7 +579,7 @@ impl MstpCoreConfig {
             queue_max_age: Duration::from_secs(5),
             broadcast_unicast_ratio: 1,
             multiple_frame_ratio: 100,
-            starvation_limit: 8,
+            starvation_limit: DEFAULT_STARVATION_LIMIT,
             transmit_watchdog: DEFAULT_TRANSMIT_WATCHDOG,
             extended_frames: false,
         };
@@ -582,7 +590,7 @@ impl MstpCoreConfig {
     /// [`Self::extended_frames`] on (Clauses 9.3.9, 9.3.10), else 501
     /// (Clauses 9.3.6, 9.3.7).
     #[must_use]
-    pub const fn max_npdu_length(&self) -> usize {
+    pub const fn max_npdu(&self) -> usize {
         if self.extended_frames {
             MAX_EXTENDED_MPDU_DATA
         } else {
