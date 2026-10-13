@@ -29,6 +29,15 @@ impl Limits {
         }
     }
 
+    /// Whether a port may have these limits on a router whose scratch holds
+    /// `scratch` octets: at least [`Self::MIN`] and at most the scratch,
+    /// each way.
+    pub(super) fn fit(self, scratch: usize) -> bool {
+        [self.unicast, self.broadcast]
+            .iter()
+            .all(|&limit| limit >= Self::MIN && usize::from(limit) <= scratch)
+    }
+
     /// The limit for a broadcast, or for a unicast.
     #[must_use]
     pub const fn get(self, broadcast: bool) -> usize {
@@ -44,12 +53,16 @@ impl Limits {
 /// caller drives the link and carries out the router's sends on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortConfig {
-    /// The network number. A port numbered 0 or 0xFFFF is accepted, as the
-    /// hosted router accepts one, and gets no direct route.
+    /// The network number, 1 to 65534: 0 is never a valid network number,
+    /// and 0xFFFF, the global broadcast DNET, can't be an SNET (Clause
+    /// 6.2.2.1), which the router puts in what it relays from the port.
+    /// [`Router::new`](super::Router::new) refuses either.
     pub network: u16,
     /// The router's own MAC on the port.
     pub mac: Mac,
-    /// The largest NPDU the port carries.
+    /// The largest NPDU the port carries. A link whose limit changes while
+    /// the router runs has it replaced with
+    /// [`Router::set_port_max_npdu`](super::Router::set_port_max_npdu).
     pub max_npdu: Limits,
 }
 
@@ -129,6 +142,14 @@ pub enum ConfigError {
     },
     /// Two ports share a network number.
     DuplicateNetwork(u16),
+    /// A port's network number is 0 or 0xFFFF, which no port can use
+    /// ([`PortConfig::network`]).
+    ReservedNetwork {
+        /// The port.
+        port: PortId,
+        /// Its network number.
+        network: u16,
+    },
     /// A port's limit is under [`Limits::MIN`] or over the scratch.
     Limit(PortId),
     /// The route cap is over the table's capacity.
@@ -154,6 +175,11 @@ impl fmt::Display for ConfigError {
             Self::DuplicateNetwork(network) => {
                 write!(f, "duplicate network number {network} in router ports")
             }
+            Self::ReservedNetwork { port, network } => write!(
+                f,
+                "port {} is on network {network}, which no port can use: 1 to 65534 can",
+                port.0
+            ),
             Self::Limit(port) => write!(
                 f,
                 "port {} has an NPDU limit under 64 octets or over the scratch",
@@ -169,3 +195,29 @@ impl fmt::Display for ConfigError {
 }
 
 impl core::error::Error for ConfigError {}
+
+/// Why [`Router::set_port_max_npdu`](super::Router::set_port_max_npdu)
+/// refused new limits. It changed nothing.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LimitError {
+    /// The router has no such port.
+    UnknownPort,
+    /// A limit is under [`Limits::MIN`] or over the scratch, which
+    /// [`Router::new`](super::Router::new) refuses too.
+    OutOfRange,
+}
+
+impl fmt::Display for LimitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::UnknownPort => "the router has no such port",
+            Self::OutOfRange => "an NPDU limit under 64 octets or over the scratch",
+        })
+    }
+}
+
+impl core::error::Error for LimitError {}

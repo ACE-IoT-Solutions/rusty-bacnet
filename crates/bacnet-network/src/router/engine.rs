@@ -99,8 +99,9 @@ pub(super) struct Engine {
 impl Engine {
     /// An engine on `ports`, in port order, started on `clock`: each port's
     /// network installed as a direct route and the first sweep a period
-    /// away. Refused as the core refuses: no port, more than 255, two on
-    /// one network, or a router MAC longer than 18 octets.
+    /// away. Refused as the core refuses: no port, more than 255, one on
+    /// network 0 or 0xFFFF, two on one network, or a router MAC longer than
+    /// 18 octets.
     pub(super) fn new(ports: &[PortConfig], clock: RouterClock) -> Result<Self, ConfigError> {
         let router = Router::new(boxed_storage(), ports, OPTIONS, clock.now())?;
         Ok(Self {
@@ -111,9 +112,7 @@ impl Engine {
     }
 
     /// A port on `network` with the router's `mac` on it, carrying the
-    /// NPDUs its transport reports (`TransportPort::max_npdu`, #1665). A
-    /// report under [`Limits::MIN`] counts as that: the engine refuses a
-    /// smaller limit, and the transport still refuses what it can't carry.
+    /// NPDUs its transport reports ([`Self::limits`]).
     pub(super) fn port(
         network: u16,
         mac: bacnet_router_core::Mac,
@@ -122,10 +121,19 @@ impl Engine {
         PortConfig {
             network,
             mac,
-            max_npdu: Limits {
-                unicast: max_npdu.unicast.max(Limits::MIN),
-                broadcast: max_npdu.broadcast.max(Limits::MIN),
-            },
+            max_npdu: Self::limits(max_npdu),
+        }
+    }
+
+    /// The engine's limits for a port whose transport reports `reported`
+    /// (`TransportPort::max_npdu`, #1665), at start or later (#1696). A
+    /// report under [`Limits::MIN`] counts as that: the engine refuses a
+    /// smaller limit, and the transport still refuses what it can't carry.
+    /// None is over the scratch, which holds more than any `u16`.
+    pub(super) fn limits(reported: NpduLimits) -> Limits {
+        Limits {
+            unicast: reported.unicast.max(Limits::MIN),
+            broadcast: reported.broadcast.max(Limits::MIN),
         }
     }
 

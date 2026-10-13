@@ -240,27 +240,15 @@ fn proprietary_messages_route_opaquely() {
 }
 
 /// What the writer can't write goes nowhere and is counted, as an encode
-/// failure is logged and dropped today: an SNET of 0 from a port numbered
-/// 0, an empty SADR from an empty link source, and a global broadcast whose
-/// rewrite outgrows the scratch. A port's limit is at most the scratch, so
-/// anything routed toward one network meets that limit first.
+/// failure is logged and dropped today: an empty SADR from an empty link
+/// source, and a global broadcast whose rewrite outgrows the scratch. A
+/// port's limit is at most the scratch, so anything routed toward one
+/// network meets that limit first.
 #[test]
 fn unwritable_rewrites_are_dropped_and_counted() {
-    let ports = [port_on(0, OWN_0), port_on(2, OWN_1)];
-    let mut router = router_with(&ports, Options::HOSTED);
+    let mut router = router_with(&two_ports(), Options::HOSTED);
     let mut host = Recorder::default();
     let unwritable = Outcome::Discarded(Discard::Unwritable);
-    let (outcome, _) = deliver(
-        &mut router,
-        &mut host,
-        0,
-        NODE_A,
-        &apdu_to(2, &[5], CONFIRMED),
-        at(1),
-    );
-    assert_eq!(outcome, unwritable);
-
-    let mut router = router_with(&two_ports(), Options::HOSTED);
     let (outcome, _) = deliver(
         &mut router,
         &mut host,

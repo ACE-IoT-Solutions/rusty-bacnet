@@ -351,7 +351,7 @@ async fn skipped_retries_are_gated_but_disconnect_and_exhaustion_always_emit() {
             }
             let config = config(10);
             let mut failover_ws = None;
-            let maximum = AtomicU16::new(DEFAULT_MAX_APDU_LENGTH);
+            let limits = HubLimits::new();
             let mut recovery = Recovery {
                 config: &config,
                 diagnostic_throttle: &mut throttle,
@@ -362,7 +362,7 @@ async fn skipped_retries_are_gated_but_disconnect_and_exhaustion_always_emit() {
                 active_ws: &active_ws,
                 state_tx: &state_tx,
                 connect_timeout_ms: 10,
-                effective_max_apdu_length: &maximum,
+                hub_limits: &limits,
             };
             assert!(recovery
                 .reconnect(&ws, ActiveHub::Primary, false)

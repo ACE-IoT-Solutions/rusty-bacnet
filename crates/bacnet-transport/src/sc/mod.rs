@@ -4,7 +4,9 @@
 //! The actual WebSocket I/O is abstracted behind the [`WebSocketPort`] trait
 //! so the connection state machine can be tested without a TLS stack.
 
-use std::sync::atomic::{AtomicU16, Ordering};
+// The test modules take it through `use super::*`.
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -65,7 +67,7 @@ pub(crate) use random48::set_test_random48_vmac_generator;
 pub use reconnect::ScReconnectConfig;
 
 const DEFAULT_MAX_APDU_LENGTH: u16 = 1476;
-use egress_limits::publish_effective_max_apdu_length;
+use egress_limits::HubLimits;
 
 // ---------------------------------------------------------------------------
 // WebSocket abstraction
@@ -100,7 +102,8 @@ pub struct ScTransport<W: WebSocketPort> {
     #[cfg(feature = "sc-tls")]
     direct_listener_shutdown: Option<watch::Sender<bool>>,
     connection: Option<Arc<Mutex<ScConnection>>>,
-    effective_max_apdu_length: Arc<AtomicU16>,
+    /// What the hub connection lets this node send (#1665, #1696).
+    hub_limits: Arc<HubLimits>,
     state_tx: watch::Sender<ScConnectionState>,
     recv_task: Option<JoinHandle<()>>,
     connect_timeout_ms: u64,
@@ -139,7 +142,7 @@ impl<W: WebSocketPort> ScTransport<W> {
             #[cfg(feature = "sc-tls")]
             direct_listener_shutdown: None,
             connection: None,
-            effective_max_apdu_length: Arc::new(AtomicU16::new(DEFAULT_MAX_APDU_LENGTH)),
+            hub_limits: Arc::new(HubLimits::new()),
             state_tx,
             recv_task: None,
             connect_timeout_ms: 10_000,
@@ -256,14 +259,14 @@ async fn publish_connected_ws<W: WebSocketPort>(
     ws: &Arc<W>,
     probe_conn: &Arc<Mutex<ScConnection>>,
     state_tx: &watch::Sender<ScConnectionState>,
-    effective_max_apdu_length: &AtomicU16,
+    hub_limits: &HubLimits,
 ) {
     let restored = probe_conn.lock().await.clone();
     let mut current = active_ws.lock().await;
     let mut c = conn.lock().await;
     *c = restored;
     *current = ws.clone();
-    publish_effective_max_apdu_length(effective_max_apdu_length, &c);
+    hub_limits.publish(&c);
     state_tx.send_replace(c.state);
 }
 
@@ -363,7 +366,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         {
             let c = conn.lock().await;
             self.local_vmac = c.local_vmac;
-            publish_effective_max_apdu_length(&self.effective_max_apdu_length, &c);
+            self.hub_limits.publish(&c);
         }
 
         #[cfg(feature = "sc-tls")]
@@ -388,7 +391,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         let mut primary_ws = Some(primary_ws.clone());
         let mut ws_clone = ws.clone();
         let mut active_hub = active_hub;
-        let effective_max_apdu_length = self.effective_max_apdu_length.clone();
+        let hub_limits = self.hub_limits.clone();
         let advertised_payload = self.advertised_uris.join(" ").into_bytes();
         let direct = self.direct.clone();
         let mut direct_intake = std::mem::take(&mut self.direct_intake);
@@ -668,7 +671,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                     restore_disconnect_task: &restore_disconnect_task,
                                     state_tx: &state_tx,
                                     connect_timeout_ms,
-                                    effective_max_apdu_length: &effective_max_apdu_length,
+                                    hub_limits: &hub_limits,
                                 },
                                 &ws_clone,
                                 candidate,
@@ -739,7 +742,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                     active_ws: &active_ws,
                     state_tx: &state_tx,
                     connect_timeout_ms,
-                    effective_max_apdu_length: &effective_max_apdu_length,
+                    hub_limits: &hub_limits,
                 };
                 match recovery
                     .reconnect(&ws_clone, active_hub, current_reusable)
@@ -812,7 +815,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
     }
 
     fn egress_apdu_limit(&self) -> u16 {
-        self.effective_max_apdu_length.load(Ordering::Relaxed)
+        self.hub_limits.apdu()
     }
 
     /// Once started, what the hub connection carries: the hub's
@@ -820,6 +823,13 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
     /// both ways. Before start, the default.
     fn max_npdu(&self) -> NpduLimits {
         self.hub_npdu_limits()
+    }
+
+    /// The hub connection's NPDU limit, published whenever a hub
+    /// connection is established and the limit changed: the first one, a
+    /// failover to the other hub, a reconnect or a primary restore.
+    fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>> {
+        Some(self.hub_limits.npdu_changes())
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {

@@ -7,7 +7,8 @@
 //!   take no lock, so they return while the table's guard lives;
 //! - an I-Could-Be-Router for a new network stops at the route cap;
 //! - `start` refuses what the engine can't run: no port, more than 255,
-//!   or a router MAC longer than 18 octets;
+//!   a port on network 0 or 0xFFFF (before any transport starts), or a
+//!   router MAC longer than 18 octets;
 //! - a global broadcast whose rewrite is longer than the engine's scratch
 //!   isn't passed on; with R1, any other NPDU that long has already drawn
 //!   reason 4, since no port's limit reaches the scratch.
@@ -252,6 +253,38 @@ async fn start_refuses_what_the_engine_cannot_run() {
     .await
     .expect("18 octets is within the bound");
     router.stop().await;
+}
+
+/// A port on network 0 or 0xFFFF is refused before any transport starts
+/// (#1698): 0 is no network, and 0xFFFF, the global broadcast DNET, can't
+/// be an SNET (Clause 6.2.2.1).
+#[tokio::test]
+async fn start_refuses_a_reserved_network_before_any_transport_starts() {
+    use super::driven_port::Driven;
+    use std::sync::atomic::Ordering;
+
+    for reserved in [0, 0xFFFF] {
+        let (first, first_handle) = Driven::new(1, 1497);
+        let (second, second_handle) = Driven::new(2, 1497);
+        let ports = vec![
+            RouterPort {
+                transport: first,
+                network_number: 1,
+            },
+            RouterPort {
+                transport: second,
+                network_number: reserved,
+            },
+        ];
+        let error = BACnetRouter::start(ports, RouterOptions::new())
+            .await
+            .err()
+            .expect("a reserved network");
+        let named = format!("network {reserved}");
+        assert!(error.to_string().contains(&named), "{error}");
+        assert!(!first_handle.started.load(Ordering::SeqCst));
+        assert!(!second_handle.started.load(Ordering::SeqCst));
+    }
 }
 
 /// The engine's 65,556-octet scratch bounds what it writes, and no port's

@@ -13,7 +13,7 @@ use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// An owned copy of a link's group-destination rule
 /// ([`TransportPort::is_group_destination`]), for a sender that checks a
@@ -511,30 +511,51 @@ pub trait TransportPort: Send + Sync {
 
     /// The longest NPDU this link sends, to one node and to every node.
     ///
-    /// `bacnet_network`'s `BACnetRouter` reads it once, when it starts the
-    /// port, and answers an NPDU it would route here that is longer than
-    /// that with a reject (reason 4, Clause 6.4.4, #1665), where it used to
-    /// hand it to a send that failed. The default,
-    /// [`NpduLimits::STANDARD`], is what B/IPv6 and Ethernet carry; a link
-    /// that carries less must override it, or a router assumes 1,497
-    /// octets. MS/TP reports 501 octets without extended frames, and B/IP
-    /// its node's budget for each kind of send.
+    /// `bacnet_network`'s `BACnetRouter` reads it when it starts the port,
+    /// and follows it after that through [`Self::max_npdu_changes`]. It
+    /// answers an NPDU it would route here that is longer than that with a
+    /// reject (reason 4, Clause 6.4.4, #1665), where it used to hand it to a
+    /// send that failed. The default, [`NpduLimits::STANDARD`], is what
+    /// B/IPv6 and Ethernet carry; a link that carries less must override
+    /// it, or a router assumes 1,497 octets. MS/TP reports 501 octets
+    /// without extended frames, and B/IP its node's budget for each kind of
+    /// send.
     ///
     /// BACnet/SC reports, once started, what its hub connection carries
     /// with no data options: the hub's Max-NPDU-Length within its
     /// Max-BVLC-Length less the encapsulation. Data attributes a router
     /// forwards with an NPDU (Table 6-1, note 1) take more of the BVLC, so
     /// one at this limit with attributes can still fail the transport's
-    /// Max-BVLC-Length check. A router keeps the limit it read at start
-    /// through a failover or reconnect (#1696 tracks a refresh): if the new
-    /// hub takes less, the transport refuses the longer sends with its
-    /// throttled warning, not counted and with no reject; if it takes more,
-    /// the router still answers reason 4 above the old limit until it
-    /// restarts. A direct connection's own limit isn't part of it.
+    /// Max-BVLC-Length check. A failover or reconnect can change it, which
+    /// [`Self::max_npdu_changes`] publishes (#1696). A direct connection's
+    /// own limit isn't part of it.
     ///
     /// Wrappers must delegate.
     fn max_npdu(&self) -> NpduLimits {
         NpduLimits::default()
+    }
+
+    /// The changes to [`Self::max_npdu`] while the transport runs, for a
+    /// link whose limit can change after start, or `None`, the default,
+    /// when it never does.
+    ///
+    /// The receiver holds the limit `max_npdu` reports once started, and
+    /// changes only when that limit does. `BACnetRouter` takes one for each
+    /// port after starting it, and gives the port each new limit as soon as
+    /// it is published: every frame it routes after that goes by it, so an
+    /// NPDU too long for the new limit draws reason 4. A send already on
+    /// the port's queue when the limit falls can still be refused by the
+    /// transport as too long; the router counts that refusal as
+    /// `egress_too_long` too.
+    ///
+    /// BACnet/SC returns one: its limit comes from the hub connection, and
+    /// it publishes the new one whenever it connects to a hub that carries
+    /// more or less, the first time, on failover to the other hub, and on
+    /// reconnect. The other built-in transports keep the default.
+    ///
+    /// Wrappers must delegate.
+    fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>> {
+        None
     }
 
     /// Whether `mac` is this data link's broadcast address.

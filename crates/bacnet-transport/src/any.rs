@@ -292,6 +292,20 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
+    fn max_npdu_changes(&self) -> Option<tokio::sync::watch::Receiver<crate::port::NpduLimits>> {
+        match self {
+            Self::Bip(t) => t.max_npdu_changes(),
+            Self::Mstp(t) => t.max_npdu_changes(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.max_npdu_changes(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.max_npdu_changes(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.max_npdu_changes(),
+            Self::Loopback(t) => t.max_npdu_changes(),
+        }
+    }
+
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
         match self {
             Self::Bip(t) => t.is_broadcast_mac(mac),
@@ -483,9 +497,12 @@ mod tests {
         assert_eq!(any.max_npdu(), NpduLimits::both(501));
         any.prepare_for_routing();
         assert_eq!(any.max_npdu(), NpduLimits::both(1497));
+        // Neither limit changes once started (#1696).
+        assert!(any.max_npdu_changes().is_none());
         let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::BROADCAST);
         let any: AnyTransport<LoopbackSerial> = bip.into();
         assert_eq!(any.max_npdu(), NpduLimits::STANDARD);
+        assert!(any.max_npdu_changes().is_none());
     }
 
     #[test]

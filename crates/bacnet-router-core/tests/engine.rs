@@ -3,14 +3,15 @@
 
 mod fixture;
 
-use bacnet_router_core::message::MessageType;
+use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::router::{
-    Action, ConfigError, Discard, Event, Frame, Limits, Options, Permissive, Received, SendRefusal,
+    Action, ConfigError, Discard, Event, Frame, Kind, LimitError, Limits, Options, Permissive,
+    Received, SendRefusal,
 };
 use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
 use fixture::{
-    apdu_to, at, deliver, drain, learn_9_via_r7, options, port_on, router, two_ports, Outcome,
-    Recorder, Store, CONFIRMED, NODE_A, OWN_0, OWN_1, R7,
+    apdu_to, at, deliver, drain, learn_9_via_r7, message, options, port_on, router, sent_reject,
+    two_ports, Outcome, Recorder, Store, CONFIRMED, NODE_A, OWN_0, OWN_1, R7,
 };
 use proptest::prelude::*;
 
@@ -38,6 +39,18 @@ fn new_refuses_what_it_cannot_route() {
         new(&[port_on(1, OWN_0), port_on(1, OWN_1)], hosted),
         Err(ConfigError::DuplicateNetwork(1))
     );
+    // Clause 6.2.2.1: 0 is no network, and 0xFFFF no SNET (#1698).
+    for network in [0, 0xFFFF] {
+        assert_eq!(
+            new(&[port_on(1, OWN_0), port_on(network, OWN_1)], hosted),
+            Err(ConfigError::ReservedNetwork {
+                port: PortId(1),
+                network
+            })
+        );
+    }
+    let ends = [port_on(1, OWN_0), port_on(0xFFFE, OWN_1)];
+    assert_eq!(new(&ends, hosted), Ok(()));
     for limits in [
         Limits::both(63),
         Limits::both(1498),
@@ -153,6 +166,114 @@ fn refusals_are_counted() {
     }
     let counters = router.counters();
     assert_eq!((counters.refused, counters.egress_too_long), (3, 1));
+}
+
+/// A refusal reported after later polls (a link that queued the send) is
+/// counted as one at once is, but ends no table answer: the second Ack of
+/// a 132-route answer still goes.
+#[test]
+fn a_later_refusal_is_counted_and_ends_no_answer() {
+    let mut router = router();
+    let peer = Mac::from_slice(R7).unwrap();
+    for network in 100..230 {
+        router
+            .table_mut()
+            .add_learned(network, PortId(1), peer, at(0));
+    }
+    let query = message(MessageType::INITIALIZE_ROUTING_TABLE, &[0]);
+    let received = router.receive(
+        Frame {
+            port: PortId(0),
+            source: NODE_A,
+            link_group: false,
+            npdu: &query,
+        },
+        at(1),
+        &mut Permissive,
+    );
+    assert_eq!(received, Received::Handled);
+    assert!(matches!(router.poll_action(), Action::Send(_)));
+    router.refused_later(SendRefusal::TooLong);
+    assert_eq!(drain(&mut router).len(), 1, "the second Ack");
+    let counters = router.counters();
+    assert_eq!((counters.refused, counters.egress_too_long), (1, 1));
+}
+
+/// A port's limits replaced while the router runs (#1696) route every
+/// later frame: lowered, an NPDU that went before draws reason 4; raised
+/// again, it goes. An output still waiting when they drop is left out when
+/// polled and counted, with no reject. A port the router doesn't have, or
+/// a limit `new` refuses, changes nothing.
+#[test]
+fn a_ports_limits_can_change_while_it_runs() {
+    let mut router = router();
+    let mut host = Recorder::default();
+    // 598 octets in grow by 4 to 602 onto network 2: A's SADR comes, the
+    // DNET, DADR and hop count go.
+    let mut frame = apdu_to(2, &[5], CONFIRMED);
+    frame.resize(598, 0);
+    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(1));
+    assert_eq!(
+        (sent[0].port, sent[0].kind, sent[0].npdu.len()),
+        (1, Kind::Forward, 602)
+    );
+
+    assert_eq!(
+        router.set_port_max_npdu(PortId(1), Limits::both(601)),
+        Ok(())
+    );
+    assert_eq!(router.ports()[1].max_npdu, Limits::both(601));
+    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(2));
+    assert_eq!((sent.len(), sent[0].port), (1, 0));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::MESSAGE_TOO_LONG, 2, None)
+    );
+    assert_eq!(router.counters().egress_too_long, 1);
+
+    assert_eq!(
+        router.set_port_max_npdu(PortId(1), Limits::both(602)),
+        Ok(())
+    );
+    let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(3));
+    assert_eq!((sent[0].port, sent[0].npdu.len()), (1, 602));
+
+    // Written at 602, polled at 601.
+    let received = router.receive(
+        Frame {
+            port: PortId(0),
+            source: NODE_A,
+            link_group: false,
+            npdu: &frame,
+        },
+        at(4),
+        &mut host,
+    );
+    assert_eq!(received, Received::Handled);
+    assert_eq!(
+        router.set_port_max_npdu(PortId(1), Limits::both(601)),
+        Ok(())
+    );
+    assert!(drain(&mut router).is_empty());
+    let counters = router.counters();
+    assert_eq!((counters.egress_too_long, counters.rejects), (2, 1));
+
+    for (port, limits, refusal) in [
+        (PortId(2), Limits::both(1497), LimitError::UnknownPort),
+        (PortId(1), Limits::both(63), LimitError::OutOfRange),
+        (PortId(1), Limits::both(1498), LimitError::OutOfRange),
+        (
+            PortId(1),
+            Limits {
+                unicast: 1497,
+                broadcast: 10,
+            },
+            LimitError::OutOfRange,
+        ),
+    ] {
+        assert_eq!(router.set_port_max_npdu(port, limits), Err(refusal));
+    }
+    assert_eq!(router.ports()[1].max_npdu, Limits::both(601));
 }
 
 /// The sweep runs when due and not before; a late call runs it once and

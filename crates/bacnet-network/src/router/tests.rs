@@ -17,6 +17,7 @@ use super::{BACnetRouter, RouterOptions, RouterPort, SendRequest, StartedRouter}
 use crate::router_table::PortId;
 
 mod data_attributes;
+mod sc_limits;
 
 /// An APDU for `dnet`/`dadr` with `hop_count`.
 fn apdu_to(dnet: u16, dadr: &[u8], hop_count: u8) -> Npdu {

@@ -169,6 +169,7 @@
 //! | Flow control covers what its sender serves, named or not, and goes on to the other ports | 6.6.3.6, 6.6.3.7 | `tests/control.rs`: `flow_control_covers_what_the_sender_serves` |
 //! | A table update applies entry by entry and gets an empty answer; a query gets the whole table, over several answers when needed, and changes nothing | 6.4.7, 6.6.3.8, 6.6.3.9 | `tests/init.rs` |
 //! | The network-number messages stay on their link | 6.4.19, 6.4.20 | `tests/control.rs`: `network_number_messages_stay_local` |
+//! | No port sits on network 0, which names none, or 0xFFFF, which can't be the SNET of what it relays | 6.2.2.1 | `tests/engine.rs`: `new_refuses_what_it_cannot_route` |
 //! | At start each port hears its own number, then which networks lie beyond the others | 6.4.20, 6.6.2, 6.6.3.3 | `tests/traces.rs`: `a_discovery_learning_and_aging`, `a_one_port_router_announces_only_its_number` |
 //! | With no point-to-point links, connection messages change nothing | 6.6.3.10, 6.6.3.11 | `tests/control.rs`: `ptp_messages_change_nothing` |
 //! | A message too long for its egress port draws reason 4, a remote broadcast included, and a fan-out leaves that port out | 6.4.4, 6.6.3.5, Table 6-1 | `tests/forward.rs`: `too_long_for_the_egress_port_draws_reason_4`, `a_fan_out_goes_by_the_broadcast_limit` |

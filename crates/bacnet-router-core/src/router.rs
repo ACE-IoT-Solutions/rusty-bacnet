@@ -15,9 +15,10 @@
 //! [`on_deadline`](Router::on_deadline).
 //!
 //! To the router a port is data, a [`PortConfig`]: its network number, the
-//! router's MAC on it and the longest NPDU it carries. The link type never
-//! matters, so firmware joins B/IP and MS/TP ports through it, and the
-//! hosted router any transport it has.
+//! router's MAC on it and the longest NPDU it carries, which
+//! [`Router::set_port_max_npdu`] replaces for a link whose limit changes
+//! while it runs. The link type never matters, so firmware joins B/IP and
+//! MS/TP ports through it, and the hosted router any transport it has.
 //!
 //! [`receive`](Router::receive) follows the hosted router's order step for
 //! step, so each frame is dropped, answered or relayed for the same reason
@@ -64,7 +65,7 @@ mod tasks;
 use core::borrow::BorrowMut;
 use core::fmt;
 
-pub use config::{ConfigError, Limits, Options, PortConfig};
+pub use config::{ConfigError, LimitError, Limits, Options, PortConfig};
 pub use counters::Counters;
 pub use host::{Claim, ControlClass, Event, Group, Host, Permissive, Targets};
 pub use ingress::{Discard, Frame, Local, Received};
@@ -75,6 +76,7 @@ use output::Outputs;
 use tasks::Task;
 
 use crate::discovery::Discovery;
+use crate::npdu::GLOBAL_NETWORK;
 use crate::table::Table;
 use crate::{Instant, PortId, MAX_NPDU};
 
@@ -205,11 +207,10 @@ where
     /// convergence set from `options`, and the first sweep due
     /// `options.sweep` after `now`. Whatever `storage` held is cleared.
     ///
-    /// Refused: no port; more than `P` or 255; two ports with one network
-    /// number; a limit under 64 octets or over the scratch; a route cap
-    /// over `R`; a table too small for every port's network; a zero sweep.
-    /// A port numbered 0 or 0xFFFF is taken, with no direct route, as the
-    /// hosted router takes one.
+    /// Refused: no port; more than `P` or 255; a port numbered 0 or 0xFFFF
+    /// ([`PortConfig::network`]); two ports with one network number; a
+    /// limit under 64 octets or over the scratch; a route cap over `R`; a
+    /// table too small for every port's network; a zero sweep.
     pub fn new(
         mut storage: S,
         ports: &[PortConfig],
@@ -226,19 +227,22 @@ where
             });
         }
         for (index, port) in ports.iter().enumerate() {
+            // At most 255 ports.
+            let id = PortId(index as u8);
+            if port.network == 0 || port.network == GLOBAL_NETWORK {
+                return Err(ConfigError::ReservedNetwork {
+                    port: id,
+                    network: port.network,
+                });
+            }
             if ports[..index]
                 .iter()
                 .any(|other| other.network == port.network)
             {
                 return Err(ConfigError::DuplicateNetwork(port.network));
             }
-            let limits = [port.max_npdu.unicast, port.max_npdu.broadcast];
-            if limits
-                .iter()
-                .any(|&limit| limit < MIN_LIMIT || usize::from(limit) > N)
-            {
-                // At most 255 ports.
-                return Err(ConfigError::Limit(PortId(index as u8)));
+            if !port.max_npdu.fit(N) {
+                return Err(ConfigError::Limit(id));
             }
         }
         if usize::from(options.route_cap) > R {
@@ -260,8 +264,7 @@ where
         store.ports[..ports.len()].copy_from_slice(ports);
         store.port_count = ports.len();
         for (index, port) in ports.iter().enumerate() {
-            let reserved = port.network == 0 || port.network == 0xFFFF;
-            if !store.table.add_direct(port.network, PortId(index as u8)) && !reserved {
+            if !store.table.add_direct(port.network, PortId(index as u8)) {
                 return Err(ConfigError::TableTooSmall);
             }
         }
@@ -285,9 +288,9 @@ where
     }
 
     /// Queue the startup announcements, port by port: a Network-Number-Is
-    /// for a port with a usable number, then an I-Am-Router listing every
-    /// other port's network (none on a one-port router). They carry no
-    /// ingress data.
+    /// with the port's number, then an I-Am-Router listing every other
+    /// port's network (none on a one-port router). They carry no ingress
+    /// data.
     pub fn start(&mut self) {
         let store = self.store();
         store.drop_undrained();
@@ -319,11 +322,51 @@ where
     /// it ends a table answer (Initialize-Routing-Table-Ack) that still has
     /// Acks to send, as a full queue does in the hosted router.
     pub fn refused(&mut self, why: SendRefusal) {
-        let store = self.store();
+        self.refused_later(why);
+        self.store().end_refused_answer();
+    }
+
+    /// Say that a port refused a send polled before the last poll: one its
+    /// link took into a queue and failed later, as the hosted router's
+    /// ports do. It is counted as [`refused`](Self::refused) counts one,
+    /// in [`Counters::refused`], and in [`Counters::egress_too_long`] too
+    /// when it was [`SendRefusal::TooLong`]; the outputs waiting now are
+    /// left alone, so it ends no table answer.
+    pub fn refused_later(&mut self, why: SendRefusal) {
+        let counters = &mut self.store().counters;
         if why == SendRefusal::TooLong {
-            bump(&mut store.counters.egress_too_long);
+            bump(&mut counters.egress_too_long);
         }
-        store.refused();
+        bump(&mut counters.refused);
+    }
+
+    /// Replace port `port`'s NPDU limits while the router runs: for a link
+    /// whose limit changes after start, such as a BACnet/SC port that fails
+    /// over to a hub that carries more or less (#1696).
+    ///
+    /// Every routing decision after the call goes by the new limits. An
+    /// output still waiting to be polled is measured against them when it
+    /// is polled, as every send is: one that no longer fits is left out
+    /// and counted in [`Counters::egress_too_long`], with no reject. The
+    /// NPDUs already polled are the caller's; a link that then refuses one
+    /// as too long says so with [`refused_later`](Self::refused_later). The
+    /// table, the searches, the time and [`next_deadline`](Self::next_deadline)
+    /// don't change.
+    ///
+    /// Refused, changing nothing, for a port the router doesn't have, or a
+    /// limit under [`Limits::MIN`] or over the scratch, as
+    /// [`new`](Self::new) refuses one.
+    pub fn set_port_max_npdu(&mut self, port: PortId, limits: Limits) -> Result<(), LimitError> {
+        let store = self.store();
+        let count = store.port_count;
+        let Some(config) = store.ports[..count].get_mut(usize::from(port.0)) else {
+            return Err(LimitError::UnknownPort);
+        };
+        if !limits.fit(N) {
+            return Err(LimitError::OutOfRange);
+        }
+        config.max_npdu = limits;
+        Ok(())
     }
 
     /// When [`on_deadline`](Self::on_deadline) next has work: the next

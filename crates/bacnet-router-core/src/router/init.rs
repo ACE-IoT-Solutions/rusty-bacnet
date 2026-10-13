@@ -85,9 +85,10 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 
     /// Initialize-Routing-Table-Ack: one with no data answers an update and
     /// says nothing. Otherwise its networks are learned through the arrival
-    /// port and the sender, as I-Am-Router's are; its Port IDs are the
-    /// sender's own numbering, so they are not used. Reserved networks are
-    /// skipped.
+    /// port and the sender, as I-Am-Router's are, at the route cap too,
+    /// where the networks the table holds are still refreshed (#1698); its
+    /// Port IDs are the sender's own numbering, so they are not used.
+    /// Reserved networks are skipped.
     pub(super) fn routing_table_ack<'f>(
         &mut self,
         at: &Arrival<'f>,
