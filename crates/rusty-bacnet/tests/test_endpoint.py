@@ -208,6 +208,31 @@ class MstpConstructorTests(unittest.TestCase):
                         mstp_echo_grace_ms=grace,
                     )
 
+    def test_timing_keywords_are_checked_at_construction(self):
+        # #1654, #1655: the pad and the two timeouts, as for BACnetClient.
+        for kwargs in (
+            {"mstp_transmit_latency_pad_ms": 0},
+            {"mstp_transmit_latency_pad_ms": 15},
+            {"mstp_usage_timeout_ms": 20, "mstp_reply_timeout_ms": 255},
+            {"mstp_usage_timeout_ms": 35, "mstp_reply_timeout_ms": 300},
+        ):
+            with self.subTest(**kwargs):
+                MstpEndpoint(device_instance=1, serial_port="/tmp/nonexistent", **kwargs)
+        for kwargs, field in (
+            ({"mstp_transmit_latency_pad_ms": 16}, "transmit_latency_pad"),
+            ({"mstp_usage_timeout_ms": 19}, "usage_timeout"),
+            ({"mstp_usage_timeout_ms": 36}, "usage_timeout"),
+            ({"mstp_reply_timeout_ms": 254}, "reply_timeout"),
+            ({"mstp_reply_timeout_ms": 301}, "reply_timeout"),
+        ):
+            with self.subTest(**kwargs):
+                with self.assertRaisesRegex(ValueError, field):
+                    MstpEndpoint(device_instance=1, serial_port="/tmp/nonexistent", **kwargs)
+        with self.assertRaises(OverflowError):
+            MstpEndpoint(
+                device_instance=1, serial_port="/tmp/nonexistent", mstp_usage_timeout_ms=-1
+            )
+
     def test_queue_zero_rejected(self):
         with self.assertRaisesRegex(ValueError, "queue_capacity"):
             MstpEndpoint(

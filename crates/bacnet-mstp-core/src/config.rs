@@ -11,15 +11,19 @@ const DEFAULT_BAUD_RATE: u32 = 9_600;
 /// The longest T_frame_abort a station may use (Clause 9.5.3): 100 ms.
 /// [`MstpCoreConfig::validate`] refuses a longer one.
 pub const MAX_FRAME_ABORT: Duration = Duration::from_millis(100);
-/// The shortest T_reply_timeout a station may use (Clause 9.5.3). No requester
-/// stops waiting for a reply sooner, so it bounds how late a reply may start.
-pub(crate) const MIN_REPLY_TIMEOUT: Duration = Duration::from_millis(255);
+/// The shortest T_reply_timeout a station may use (Clause 9.5.3): 255 ms,
+/// the baud-rate constructors' value. [`MstpCoreConfig::validate`] refuses a
+/// shorter one. No requester stops waiting for a reply sooner, so the core
+/// also uses it to bound how late its own answer may start.
+pub const MIN_REPLY_TIMEOUT: Duration = Duration::from_millis(255);
 /// The longest T_reply_timeout a station may use (Clause 9.5.3): 300 ms.
 /// [`MstpCoreConfig::validate`] refuses a longer one.
 pub const MAX_REPLY_TIMEOUT: Duration = Duration::from_millis(300);
-/// The shortest T_usage_timeout a station may use (Clause 9.5.3). No poller
-/// gives up on a Reply To Poll For Master sooner.
-pub(crate) const MIN_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
+/// The shortest T_usage_timeout a station may use (Clause 9.5.3): 20 ms, the
+/// baud-rate constructors' value. [`MstpCoreConfig::validate`] refuses a
+/// shorter one. No poller stops waiting for the answer to its poll sooner,
+/// so the core also uses it to bound how late its own answer may start.
+pub const MIN_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 /// The longest T_usage_timeout a station may use (Clause 9.5.3): 35 ms.
 /// [`MstpCoreConfig::validate`] refuses a longer one.
 pub const MAX_USAGE_TIMEOUT: Duration = Duration::from_millis(35);
@@ -898,12 +902,37 @@ mod tests {
     /// The longest T_frame_abort, T_reply_timeout and T_usage_timeout
     /// Clause 9.5.3 allows, which a host transport uses, validate together
     /// at every standard baud rate; a microsecond more of any is refused.
+    /// The baud-rate constructors use the shortest timeouts, and a
+    /// microsecond less is refused.
     #[test]
     fn the_longest_permitted_timeouts_validate() {
-        use super::{MAX_FRAME_ABORT, MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT};
+        use super::{
+            MAX_FRAME_ABORT, MAX_REPLY_TIMEOUT, MAX_USAGE_TIMEOUT, MIN_REPLY_TIMEOUT,
+            MIN_USAGE_TIMEOUT,
+        };
         assert_eq!(MAX_FRAME_ABORT, Duration::from_millis(100));
         assert_eq!(MAX_REPLY_TIMEOUT, Duration::from_millis(300));
         assert_eq!(MAX_USAGE_TIMEOUT, Duration::from_millis(35));
+        assert_eq!(MIN_REPLY_TIMEOUT, Duration::from_millis(255));
+        assert_eq!(MIN_USAGE_TIMEOUT, Duration::from_millis(20));
+        let standard = MstpCoreConfig::standard();
+        assert_eq!(
+            (standard.t_reply_timeout, standard.t_usage_timeout),
+            (MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT)
+        );
+        let less = Duration::from_micros(1);
+        for under in [
+            MstpCoreConfig {
+                t_reply_timeout: MIN_REPLY_TIMEOUT - less,
+                ..standard
+            },
+            MstpCoreConfig {
+                t_usage_timeout: MIN_USAGE_TIMEOUT - less,
+                ..standard
+            },
+        ] {
+            assert!(under.validate().is_err());
+        }
         for baud in [9_600, 19_200, 38_400, 57_600, 76_800, 115_200] {
             let host = MstpCoreConfig {
                 t_frame_abort: MAX_FRAME_ABORT,

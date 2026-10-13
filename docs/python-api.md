@@ -657,10 +657,12 @@ Rust side.
 `mstp_baud` (9600, 19200, 38400, 57600, 76800 or 115200; default 38400),
 `mstp_mac` (default 1), `mstp_max_master` (default 127),
 `mstp_max_info_frames` (default 1), `mstp_extended_frames` (default False),
-`mstp_echo` (default False) and `mstp_echo_grace_ms` (default None).
+`mstp_echo` (default False), `mstp_echo_grace_ms` (default None),
+`mstp_transmit_latency_pad_ms`, `mstp_usage_timeout_ms` and
+`mstp_reply_timeout_ms` (each default None).
 `BACnetServer` and `MstpEndpoint` take the same options; `MstpEndpoint` takes
 `serial_port` through `mstp_max_info_frames` by position or keyword, and the
-other three by keyword only.
+others by keyword only.
 `mstp_extended_frames=True` turns on extended frames (Types 32 and 33), which
 carry NPDUs of up to 1497 octets, so the link carries APDUs of up to 1476
 instead of 480; without it, an extended frame the link hears counts as an
@@ -669,8 +671,21 @@ optional, and every node on the link must take them. `MstpEndpoint` checks
 its `max_apdu` against the link: up to 480 by default, up to 1476 with
 `mstp_extended_frames=True`, and a `ValueError` beyond. The memory cost is in
 the transmit queues each port reserves: 768 KiB of slots with extended frames
-against 272 KiB without, committed as the queues fill. The link runs the same
-Clause 9 master core as the Rust transport.
+against 272 KiB without, which become resident as the queues fill. The link
+runs the same Clause 9 master core as the Rust transport.
+
+The three timing options are in milliseconds, and None keeps the transport's
+own value (see [MS/TP](rust-api.md#mstp-serial-rs-485) for why).
+`mstp_transmit_latency_pad_ms` is added to a frame's time on the wire when
+the port can't say when its last octet left: 4 ms on Windows, whose serial
+port has no drain and is usually a USB adapter, and 0 elsewhere; raise it,
+up to 15 ms, for a slower adapter or driver. `mstp_usage_timeout_ms` (20 to
+35, default 35) is how long the station waits to hear its successor or a
+polled station, and `mstp_reply_timeout_ms` (255 to 300, default 300) how
+long it waits for an answer to a request; the defaults leave room for a USB
+adapter's receive latency. A value outside those ranges raises `ValueError`
+at start, before the port opens (`MstpEndpoint` raises it when it is built);
+a negative one raises `OverflowError` when the object is built.
 
 The port is taken not to hear its own frames (transceiver receiver off while
 transmitting). `mstp_echo=True` declares an adapter that returns every octet

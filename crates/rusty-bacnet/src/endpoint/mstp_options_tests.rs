@@ -28,6 +28,23 @@ fn endpoint(
     echo: bool,
     echo_grace_ms: Option<u32>,
 ) -> PyResult<PyMstpEndpoint> {
+    timed_endpoint(
+        MstpTiming::default(),
+        max_apdu,
+        extended_frames,
+        echo,
+        echo_grace_ms,
+    )
+}
+
+/// As [`endpoint`], with the timing keywords `timing` gives.
+fn timed_endpoint(
+    timing: MstpTiming,
+    max_apdu: u16,
+    extended_frames: bool,
+    echo: bool,
+    echo_grace_ms: Option<u32>,
+) -> PyResult<PyMstpEndpoint> {
     PyMstpEndpoint::new(
         8010,
         "injected-serial",
@@ -49,7 +66,75 @@ fn endpoint(
         extended_frames,
         echo,
         echo_grace_ms,
+        timing.transmit_latency_pad_ms,
+        timing.usage_timeout_ms,
+        timing.reply_timeout_ms,
     )
+}
+
+/// The timing keywords reach the link configuration the session is built
+/// with; left out they keep `MstpConfig::default()`'s. A pad over 15 ms or
+/// a timeout outside Clause 9.5.3's ranges is a ValueError naming the
+/// field, at construction.
+#[test]
+fn timing_keywords_reach_the_link_and_are_checked() {
+    Python::initialize();
+    let defaults = MstpConfig::default();
+    let link = endpoint(480, false, false, None).unwrap().config.link();
+    assert_eq!(
+        (
+            link.transmit_latency_pad,
+            link.usage_timeout,
+            link.reply_timeout
+        ),
+        (
+            defaults.transmit_latency_pad,
+            defaults.usage_timeout,
+            defaults.reply_timeout
+        )
+    );
+    let timing = MstpTiming {
+        transmit_latency_pad_ms: Some(10),
+        usage_timeout_ms: Some(30),
+        reply_timeout_ms: Some(290),
+    };
+    let link = timed_endpoint(timing, 480, false, false, None)
+        .unwrap()
+        .config
+        .link();
+    assert_eq!(link.transmit_latency_pad, Duration::from_millis(10));
+    assert_eq!(link.usage_timeout, Duration::from_millis(30));
+    assert_eq!(link.reply_timeout, Duration::from_millis(290));
+    // The session's builder hands the transport exactly that link.
+    let (serial, _peer) = LoopbackSerial::pair();
+    let transport = link_builder(serial, &link).build_transport().unwrap();
+    assert_eq!(transport.config(), &link);
+    for (timing, field) in [
+        (
+            MstpTiming {
+                transmit_latency_pad_ms: Some(16),
+                ..MstpTiming::default()
+            },
+            "transmit_latency_pad",
+        ),
+        (
+            MstpTiming {
+                usage_timeout_ms: Some(36),
+                ..MstpTiming::default()
+            },
+            "usage_timeout",
+        ),
+        (
+            MstpTiming {
+                reply_timeout_ms: Some(254),
+                ..MstpTiming::default()
+            },
+            "reply_timeout",
+        ),
+    ] {
+        let message = value_error(timed_endpoint(timing, 480, false, false, None));
+        assert!(message.contains(field), "{message}");
+    }
 }
 
 fn value_error(result: PyResult<PyMstpEndpoint>) -> String {

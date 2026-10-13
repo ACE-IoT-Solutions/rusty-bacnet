@@ -110,7 +110,9 @@ class EndpointStubParityTests(unittest.TestCase):
                             "services", "device_uuid", "queue_capacity",
                             "apdu_timeout_ms", "apdu_retries", "read_work_limit",
                             "min_request_interval_ms", "mstp_extended_frames",
-                            "mstp_echo", "mstp_echo_grace_ms"]),
+                            "mstp_echo", "mstp_echo_grace_ms",
+                            "mstp_transmit_latency_pad_ms", "mstp_usage_timeout_ms",
+                            "mstp_reply_timeout_ms"]),
         ]
         for cls, expected in cases:
             with self.subTest(cls=cls.__name__):

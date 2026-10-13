@@ -72,6 +72,46 @@ pub(crate) struct MstpOptions {
     /// How long after a frame its echo may still be arriving, in
     /// milliseconds; `None` is the transport's default grace.
     pub(crate) echo_grace_ms: Option<u32>,
+    /// The transmit-latency pad and the two host timeouts.
+    pub(crate) timing: MstpTiming,
+}
+
+/// The MS/TP timing keywords every MS/TP owner takes, `BACnetClient`,
+/// `BACnetServer` and `MstpEndpoint` alike, in milliseconds: the
+/// transmit-latency pad for a port without a drain (#1654), T_usage_timeout
+/// and T_reply_timeout (#1655). `None` keeps [`MstpConfig::default`]'s.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct MstpTiming {
+    pub(crate) transmit_latency_pad_ms: Option<u32>,
+    pub(crate) usage_timeout_ms: Option<u32>,
+    pub(crate) reply_timeout_ms: Option<u32>,
+}
+
+impl MstpTiming {
+    /// `config` with the timings given here; the others are kept.
+    pub(crate) fn apply(&self, config: MstpConfig) -> MstpConfig {
+        let ms = |value: u32| Duration::from_millis(u64::from(value));
+        MstpConfig {
+            transmit_latency_pad: self
+                .transmit_latency_pad_ms
+                .map_or(config.transmit_latency_pad, ms),
+            usage_timeout: self.usage_timeout_ms.map_or(config.usage_timeout, ms),
+            reply_timeout: self.reply_timeout_ms.map_or(config.reply_timeout, ms),
+            ..config
+        }
+    }
+}
+
+/// Check a configuration as the transport's start does, before a port
+/// opens: ValueError with the transport's message, which names the field.
+pub(crate) fn check_config(config: &MstpConfig) -> PyResult<()> {
+    config.validate().map_err(|error| {
+        let message = match error {
+            Error::Encoding(message) => message,
+            other => other.to_string(),
+        };
+        PyValueError::new_err(message)
+    })
 }
 
 /// What the port's receiver hears while it transmits, as the `mstp_echo`
@@ -100,14 +140,14 @@ impl MstpOptions {
     }
 
     fn config(&self) -> MstpConfig {
-        MstpConfig {
+        self.timing.apply(MstpConfig {
             this_station: self.mac,
             max_master: self.max_master,
             max_info_frames: self.max_info_frames,
             baud_rate: self.baud,
             extended_frames: self.extended_frames,
             ..MstpConfig::default()
-        }
+        })
     }
 }
 
@@ -132,6 +172,7 @@ fn open_port(options: &MstpOptions) -> PyResult<TokioSerialPort> {
         options.max_info_frames,
     )?;
     let echo = options.port_echo()?;
+    check_config(&options.config())?;
     let serial = TokioSerialPort::open(&SerialConfig {
         port_name: path.to_string(),
         baud_rate: options.baud,
@@ -265,6 +306,71 @@ mod tests {
             extended_frames: false,
             echo: false,
             echo_grace_ms: None,
+            timing: MstpTiming::default(),
+        }
+    }
+
+    /// The timing keywords set the transport's pad and timeouts; left out
+    /// they keep `MstpConfig::default()`'s.
+    #[test]
+    fn timing_keywords_reach_the_config() {
+        let defaults = MstpConfig::default();
+        let config = options().config();
+        assert_eq!(
+            (
+                config.transmit_latency_pad,
+                config.usage_timeout,
+                config.reply_timeout
+            ),
+            (
+                defaults.transmit_latency_pad,
+                defaults.usage_timeout,
+                defaults.reply_timeout
+            )
+        );
+        let config = MstpOptions {
+            timing: MstpTiming {
+                transmit_latency_pad_ms: Some(8),
+                usage_timeout_ms: Some(25),
+                reply_timeout_ms: Some(280),
+            },
+            ..options()
+        }
+        .config();
+        assert_eq!(config.transmit_latency_pad, Duration::from_millis(8));
+        assert_eq!(config.usage_timeout, Duration::from_millis(25));
+        assert_eq!(config.reply_timeout, Duration::from_millis(280));
+    }
+
+    /// A pad or timeout outside what the transport takes is a ValueError
+    /// naming the field, raised before the port opens.
+    #[test]
+    fn timing_keywords_are_checked_before_open() {
+        Python::initialize();
+        let cases = [
+            (Some(16), None, None, "transmit_latency_pad"),
+            (None, Some(19), None, "usage_timeout"),
+            (None, Some(36), None, "usage_timeout"),
+            (None, None, Some(254), "reply_timeout"),
+            (None, None, Some(301), "reply_timeout"),
+        ];
+        for (pad, usage, reply, field) in cases {
+            let options = MstpOptions {
+                timing: MstpTiming {
+                    transmit_latency_pad_ms: pad,
+                    usage_timeout_ms: usage,
+                    reply_timeout_ms: reply,
+                },
+                ..options()
+            };
+            let Err(error) = build_mstp_transport(&options) else {
+                panic!("{options:?} was taken");
+            };
+            Python::attach(|py| {
+                assert!(error.is_instance_of::<PyValueError>(py), "{options:?}");
+                let message = error.value(py).to_string();
+                assert!(message.contains(field), "{message}");
+            });
         }
     }
 
@@ -277,6 +383,11 @@ mod tests {
             extended_frames: true,
             echo: true,
             echo_grace_ms: Some(25),
+            timing: MstpTiming {
+                transmit_latency_pad_ms: Some(15),
+                usage_timeout_ms: Some(20),
+                reply_timeout_ms: Some(255),
+            },
             ..options()
         });
         let err = match result {

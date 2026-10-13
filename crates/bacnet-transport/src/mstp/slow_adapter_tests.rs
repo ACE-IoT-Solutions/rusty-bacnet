@@ -70,6 +70,14 @@ fn the_host_timeouts_are_the_longest_allowed() {
     let core = defaults.core_config().unwrap();
     assert_eq!(core.t_usage_timeout, bacnet_mstp_core::MAX_USAGE_TIMEOUT);
     assert_eq!(core.t_reply_timeout, bacnet_mstp_core::MAX_REPLY_TIMEOUT);
+    assert_eq!(
+        Duration::from(bacnet_mstp_core::MIN_USAGE_TIMEOUT),
+        SHORTEST_USAGE_TIMEOUT
+    );
+    assert_eq!(
+        Duration::from(bacnet_mstp_core::MIN_REPLY_TIMEOUT),
+        SHORTEST_REPLY_TIMEOUT
+    );
     assert!(T_USAGE_DELAY + RECEIVE_LATENCY < T_USAGE_TIMEOUT);
     assert!(T_USAGE_DELAY + RECEIVE_LATENCY > SHORTEST_USAGE_TIMEOUT);
     assert!(T_REPLY_DELAY + RECEIVE_LATENCY < T_REPLY_TIMEOUT);

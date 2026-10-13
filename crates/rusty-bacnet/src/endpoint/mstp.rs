@@ -6,7 +6,7 @@
 use bacnet_endpoint::identity::DeviceIdentity;
 use bacnet_endpoint::mstp::MstpEndpointBuilder;
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
-use bacnet_transport::mstp::{Echo, MstpConfig, MstpTransport};
+use bacnet_transport::mstp::{Echo, MstpConfig, MstpTransport, SerialPort};
 use bacnet_transport::mstp_serial::{SerialConfig, TokioSerialPort};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -20,6 +20,7 @@ use crate::endpoint::common::{
 use crate::endpoint::lifecycle::Lifecycle;
 use crate::endpoint::roles::{PyEndpointClient, PyEndpointServer};
 use crate::errors::to_py_err;
+use crate::mstp_py::MstpTiming;
 use crate::types::{PyReadAccessSpec, PySegmentation};
 
 /// The largest `max_apdu` the link carries, which the identity may
@@ -30,6 +31,37 @@ fn mstp_max_apdu(extended_frames: bool) -> u16 {
         ..MstpConfig::default()
     }
     .max_apdu_length()
+}
+
+/// An endpoint builder over `serial` whose transport takes `link`.
+fn link_builder<S: SerialPort>(serial: S, link: &MstpConfig) -> MstpEndpointBuilder<S> {
+    MstpEndpointBuilder::new(serial, link.this_station)
+        .max_master(link.max_master)
+        .max_info_frames(link.max_info_frames)
+        .baud_rate(link.baud_rate)
+        .extended_frames(link.extended_frames)
+        .usage_timeout(link.usage_timeout)
+        .reply_timeout(link.reply_timeout)
+        .transmit_latency_pad(link.transmit_latency_pad)
+}
+
+/// The link configuration an endpoint's keywords describe.
+fn link_config(
+    mac: u8,
+    max_master: u8,
+    max_info_frames: u8,
+    baud: u32,
+    extended_frames: bool,
+    timing: MstpTiming,
+) -> MstpConfig {
+    timing.apply(MstpConfig {
+        this_station: mac,
+        max_master,
+        max_info_frames,
+        baud_rate: baud,
+        extended_frames,
+        ..MstpConfig::default()
+    })
 }
 
 /// Owned, validated MS/TP endpoint startup configuration (no I/O here).
@@ -48,6 +80,9 @@ struct MstpEndpointConfig {
     /// What the port hears while it sends, from `mstp_echo` and
     /// `mstp_echo_grace_ms`, checked at construction (#1663).
     echo: Echo,
+    /// The transmit-latency pad and the host timeouts, checked at
+    /// construction.
+    timing: MstpTiming,
     identity: DeviceIdentity,
     queue_capacity: usize,
     read_work_limit: usize,
@@ -69,6 +104,19 @@ type EndpointSerial = TokioSerialPort;
 type MstpSession = EndpointSession<MstpTransport<EndpointSerial>>;
 
 impl MstpEndpointConfig {
+    /// The link configuration the keywords describe, as the builder will
+    /// make it.
+    fn link(&self) -> MstpConfig {
+        link_config(
+            self.mac,
+            self.max_master,
+            self.max_info_frames,
+            self.baud,
+            self.extended_frames,
+            self.timing,
+        )
+    }
+
     /// Open the serial port, declaring the echo the keywords asked for, so
     /// the declared echo can't be lost between the two.
     fn open_serial(&self) -> PyResult<EndpointSerial> {
@@ -95,11 +143,7 @@ impl MstpEndpointConfig {
         let serial = config.open_serial()?;
         let boxes = build_pending_boxes(&objects)?;
         let db = build_database(&config.identity, boxes)?;
-        let session = MstpEndpointBuilder::new(serial, config.mac)
-            .max_master(config.max_master)
-            .max_info_frames(config.max_info_frames)
-            .baud_rate(config.baud)
-            .extended_frames(config.extended_frames)
+        let session = link_builder(serial, &config.link())
             .role(SessionRole::Both)
             .queue_capacity(config.queue_capacity)
             .read_work_limit(config.read_work_limit)
@@ -166,6 +210,12 @@ impl PyMstpEndpoint {
     ///         how long after a frame its echo may still arrive (None: 40 ms),
     ///         as for `BACnetClient`. A grace of 0, or one without
     ///         ``mstp_echo=True``, is a ValueError here.
+    ///     mstp_transmit_latency_pad_ms / mstp_usage_timeout_ms /
+    ///         mstp_reply_timeout_ms: Keyword-only (default None, the
+    ///         transport's own: a 4 ms pad on Windows and none elsewhere,
+    ///         35 ms and 300 ms), as for `BACnetClient`. A pad over 15 ms, or
+    ///         a timeout outside 20-35 ms or 255-300 ms, is a ValueError
+    ///         here.
     #[new]
     #[pyo3(signature = (
         device_instance,
@@ -188,7 +238,10 @@ impl PyMstpEndpoint {
         min_request_interval_ms=0,
         mstp_extended_frames=false,
         mstp_echo=false,
-        mstp_echo_grace_ms=None
+        mstp_echo_grace_ms=None,
+        mstp_transmit_latency_pad_ms=None,
+        mstp_usage_timeout_ms=None,
+        mstp_reply_timeout_ms=None
     ))]
     fn new(
         device_instance: u32,
@@ -211,6 +264,9 @@ impl PyMstpEndpoint {
         mstp_extended_frames: bool,
         mstp_echo: bool,
         mstp_echo_grace_ms: Option<u32>,
+        mstp_transmit_latency_pad_ms: Option<u32>,
+        mstp_usage_timeout_ms: Option<u32>,
+        mstp_reply_timeout_ms: Option<u32>,
     ) -> PyResult<Self> {
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
@@ -229,6 +285,19 @@ impl PyMstpEndpoint {
             mstp_max_info_frames,
         )?;
         let echo = crate::mstp_py::port_echo(mstp_echo, mstp_echo_grace_ms)?;
+        let timing = MstpTiming {
+            transmit_latency_pad_ms: mstp_transmit_latency_pad_ms,
+            usage_timeout_ms: mstp_usage_timeout_ms,
+            reply_timeout_ms: mstp_reply_timeout_ms,
+        };
+        crate::mstp_py::check_config(&link_config(
+            mstp_mac,
+            mstp_max_master,
+            mstp_max_info_frames,
+            mstp_baud,
+            mstp_extended_frames,
+            timing,
+        ))?;
         let bound = mstp_max_apdu(mstp_extended_frames);
         if max_apdu > bound {
             let hint = if mstp_extended_frames {
@@ -264,6 +333,7 @@ impl PyMstpEndpoint {
                 max_info_frames: mstp_max_info_frames,
                 extended_frames: mstp_extended_frames,
                 echo,
+                timing,
                 identity,
                 queue_capacity,
                 read_work_limit,

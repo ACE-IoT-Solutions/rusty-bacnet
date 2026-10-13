@@ -25,6 +25,9 @@ pub(super) enum DrainMode {
     Immediate,
     /// `drain` is unsupported, as for a custom backend that has none.
     Unsupported,
+    /// `drain` fails with a transport error other than unsupported, as a
+    /// port whose transmit completion is unknown does.
+    Fails,
 }
 
 /// The station's end of the line.
@@ -79,6 +82,9 @@ impl SerialPort for WireSerial {
             DrainMode::Unsupported => Err(Error::Transport(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "no drain",
+            ))),
+            DrainMode::Fails => Err(Error::Transport(std::io::Error::other(
+                "simulated drain failure",
             ))),
         }
     }

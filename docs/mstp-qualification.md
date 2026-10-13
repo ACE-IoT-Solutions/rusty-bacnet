@@ -166,8 +166,8 @@ corrections; no licensed text/capture is bundled. One bit time is `1 / baud` sec
 | Last received stop-bit end to local DE assertion (also record first TX start) | Tturnaround minimum 40 bit times |
 | Last transmitted stop bit to DE release | Record offsets from **both beginning and end** of that stop bit. 9.2.3 uses beginning, while 9.5.3 defines Tpostdrive from end (15 bit times). Conservatively require release no later than 15 bit times from beginning and not before the stop bit is generated; retain both measurements, not a silently chosen origin. |
 | Within-frame idle interval: previous octet stop-bit beginning to next start-bit beginning (including the stop bit) | Tframe_gap maximum 20 bit times |
-| Transmitted request end to subsequent token activity when no reply begins | Observe Treply_timeout: 255 to 300 ms allowed; this implementation's host default is 300 ms (`MstpConfig::reply_timeout`), so record the configured value |
-| Token pass/PFM end to successor activity, and no-activity retry interval | Record both; peer response uses the 15 ms usage limit. Sender Tusage_timeout is 20 to 35 ms; the host default is 35 ms (`MstpConfig::usage_timeout`), so record the configured value |
+| Transmitted request end to subsequent token activity when no reply begins | Observe Treply_timeout: 255 to 300 ms allowed; this implementation's host default is 300 ms (`MstpConfig::reply_timeout`, Python `mstp_reply_timeout_ms`), so record the configured value |
+| Token pass/PFM end to successor activity, and no-activity retry interval | Record both; peer response uses the 15 ms usage limit. Sender Tusage_timeout is 20 to 35 ms; the host default is 35 ms (`MstpConfig::usage_timeout`, Python `mstp_usage_timeout_ms`), so record the configured value |
 
 For timeout measurements, absence of DataAvailable/ReceiveError events is part of
 the condition; host snapshots cannot establish it.
@@ -181,7 +181,15 @@ the token or poll ended, and an answer begun at the 250 ms reply limit about
 so every host port defaults to the longest ones 9.5.3 allows, 35 and 300 ms.
 That leaves 3 ms and 33 ms for an adapter whose latency is longer still, as an
 FTDI latency timer raised above 16 ms would be; lower the timer, rather than
-expect the timeouts to cover it. In the inventory, record the configured
+expect the timeouts to cover it. On Windows, where the port has no drain, the
+host counts a frame's end from its wire time plus the transmit-latency pad
+(4 ms by default), so both timers start up to the pad, less the adapter's real
+transmit latency, after the last stop bit: measured on the wire, the waits can
+run to about 39 ms and 304 ms. Token generation is tighter still: each master's
+generation slot (T_slot) is 10 ms wide, shorter than an FTDI part's default
+16 ms latency timer, so a host that hears the line that late can misjudge
+whose slot the silence has reached. For a station that may generate the token,
+set the adapter's latency timer to its minimum (1 ms on FTDI parts). In the inventory, record the configured
 `usage_timeout`, `reply_timeout` and `transmit_latency_pad` with the adapter's
 latency setting. Signs that the latency exceeds the margin: `mac.token_retries`
 rising while the successor is present, `wait_for_reply_timeouts` rising with

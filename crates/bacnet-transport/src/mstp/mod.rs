@@ -231,7 +231,8 @@ impl DedicatedRuntime {
 /// tail back for several milliseconds (16 ms by default on FTDI parts), so
 /// the 60 bit times a UART-driven station uses would abort frames that are
 /// still arriving. The core times each octet from the read that returned it.
-pub const HOST_FRAME_ABORT_MS: u64 = 100;
+/// It is [`bacnet_mstp_core::MAX_FRAME_ABORT`], in milliseconds.
+pub const HOST_FRAME_ABORT_MS: u64 = bacnet_mstp_core::MAX_FRAME_ABORT.as_millis();
 
 /// [`MstpConfig::usage_timeout`]'s default: 35 ms, the longest T_usage_timeout
 /// Clause 9.5.3 allows ([`bacnet_mstp_core::MAX_USAGE_TIMEOUT`]).
@@ -273,7 +274,7 @@ pub const HOST_REPLY_TIMEOUT: std::time::Duration =
 /// host controller and the serial driver to queue it. Unlike the receive
 /// side, where FTDI's latency timer holds back a short packet for 16 ms by
 /// default, nothing in this path waits for more data. A driver or a loaded
-/// host slower than that needs a larger pad.
+/// host slower than that needs a larger pad, up to T_usage_delay (15 ms).
 pub const USB_TRANSMIT_LATENCY_PAD: std::time::Duration = std::time::Duration::from_millis(4);
 
 /// Master node configuration.
@@ -312,8 +313,8 @@ pub struct MstpConfig {
     ///
     /// Memory per port: the queues reserve 512 slots, 768 KiB with the flag
     /// on (1536-octet slots, for 1497-octet NPDUs) against 272 KiB without
-    /// (544-octet slots); pages a queue never fills are usually not
-    /// committed. The core's action buffers, about 13 KiB, are sized for
+    /// (544-octet slots); pages a queue never fills usually don't become
+    /// resident. The core's action buffers, about 13 KiB, are sized for
     /// extended frames either way.
     pub extended_frames: bool,
     /// T_usage_timeout: how long after passing the token, or after a poll,
@@ -333,14 +334,18 @@ pub struct MstpConfig {
     ///
     /// The frame then ends no sooner than its write began plus its octets'
     /// time at the baud rate plus this pad. That end starts T_turnaround and
-    /// the reply and usage timeouts, so a pad too short starts them early,
-    /// and one too long only delays this station's next frame. A port whose
+    /// the reply and usage timeouts, so a pad too short starts them early.
+    /// One too long delays this station's next frame, and what the station
+    /// hears while the pad runs reaches the core only after it. A port whose
     /// drain works (`tcdrain` on Unix) is not padded.
     ///
     /// Default: [`USB_TRANSMIT_LATENCY_PAD`] on Windows, where
     /// `TokioSerialPort` has no drain and the port is usually a USB adapter,
-    /// and zero elsewhere. [`Self::validate`] refuses a pad that leaves the
-    /// longest frame no room inside the core's transmit watchdog.
+    /// and zero elsewhere. [`Self::validate`] refuses a pad over
+    /// T_usage_delay (15 ms), past which a token or a poll that arrived
+    /// during the pad could only be answered late (Clause 9.5.3). The core's
+    /// transmit watchdog is lengthened by the pad where it would otherwise
+    /// not cover the longest padded frame.
     pub transmit_latency_pad: std::time::Duration,
 }
 
@@ -373,7 +378,7 @@ impl MstpConfig {
     /// `this_station` above `max_master`, `max_info_frames` of zero, a
     /// `baud_rate` of zero or too low for Clause 9 timing, a `usage_timeout`
     /// or `reply_timeout` outside what Clause 9.5.3 allows, or a
-    /// `transmit_latency_pad` that would outlast the transmit watchdog.
+    /// `transmit_latency_pad` over T_usage_delay (15 ms).
     pub fn validate(&self) -> Result<(), Error> {
         self.core_config().map(drop)
     }
@@ -415,16 +420,22 @@ impl MstpConfig {
         config
             .validate()
             .map_err(|error| self.config_error(error))?;
-        // An unpadded frame already fits the watchdog; a padded one must
-        // too, or the core would abort a frame still on its way out.
+        // Octets that arrive while the pad runs reach the core only after
+        // it, so a pad past T_usage_delay would make the station answer a
+        // token or a poll late however quick the rest of the host is.
         let pad = CoreDuration::saturating_from_core(self.transmit_latency_pad);
-        if config.minimum_transmit_watchdog().saturating_add(pad) > config.transmit_watchdog {
+        if pad > config.t_usage_delay {
             return Err(Error::Encoding(format!(
-                "MS/TP transmit_latency_pad {:?} leaves the longest frame no room in the {:?} transmit watchdog",
+                "MS/TP transmit_latency_pad {:?} exceeds T_usage_delay ({:?})",
                 self.transmit_latency_pad,
-                std::time::Duration::from(config.transmit_watchdog)
+                std::time::Duration::from(config.t_usage_delay)
             )));
         }
+        // A padded frame must complete inside the watchdog too, or the core
+        // would abort a frame still on its way out: give it the pad.
+        config.transmit_watchdog = config
+            .transmit_watchdog
+            .max(config.minimum_transmit_watchdog().saturating_add(pad));
         Ok(config)
     }
 

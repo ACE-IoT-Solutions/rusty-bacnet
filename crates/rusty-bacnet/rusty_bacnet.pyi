@@ -2000,6 +2000,9 @@ class BACnetClient:
         mstp_extended_frames: bool = False,
         mstp_echo: bool = False,
         mstp_echo_grace_ms: Optional[int] = None,
+        mstp_transmit_latency_pad_ms: Optional[int] = None,
+        mstp_usage_timeout_ms: Optional[int] = None,
+        mstp_reply_timeout_ms: Optional[int] = None,
         sc_device_uuid: Optional[bytes | bytearray] = None,
         share_port_by_address: bool = False,
         min_request_interval_ms: int = 0,
@@ -2033,6 +2036,15 @@ class BACnetClient:
         long after a frame its echo may still be arriving. A negative value,
         or one above 4294967295, raises OverflowError when the client is
         built.
+
+        ``mstp_transmit_latency_pad_ms``, ``mstp_usage_timeout_ms`` and
+        ``mstp_reply_timeout_ms`` (MS/TP only, default None, the transport's
+        own): the time added to a frame's wire time on a port that can't
+        report its end (4 ms on Windows, where the port has none, 0 elsewhere;
+        at most 15), and T_usage_timeout (20 to 35, default 35) and
+        T_reply_timeout (255 to 300, default 300), in milliseconds. A value
+        outside those ranges raises ValueError at start, before the port
+        opens.
 
         ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so clients and devices on other addresses
@@ -3115,6 +3127,9 @@ class BACnetServer:
         mstp_extended_frames: bool = False,
         mstp_echo: bool = False,
         mstp_echo_grace_ms: Optional[int] = None,
+        mstp_transmit_latency_pad_ms: Optional[int] = None,
+        mstp_usage_timeout_ms: Optional[int] = None,
+        mstp_reply_timeout_ms: Optional[int] = None,
         max_confirmed_in_flight: int = 64,
         max_unconfirmed_in_flight: int = 32,
         max_confirmed_in_flight_per_peer: int = 16,
@@ -3166,7 +3181,11 @@ class BACnetServer:
         ``mstp_echo`` and ``mstp_echo_grace_ms`` (MS/TP only) declare an
         adapter that returns every octet this station sends, as for
         ``BACnetClient``; a negative grace, or one above 4294967295, raises
-        OverflowError when the server is built."""
+        OverflowError when the server is built.
+
+        ``mstp_transmit_latency_pad_ms``, ``mstp_usage_timeout_ms`` and
+        ``mstp_reply_timeout_ms`` (MS/TP only) set the transmit-latency pad
+        and the two timeouts, in milliseconds, as for ``BACnetClient``."""
         ...
 
     # --- Analog objects ---
@@ -4983,6 +5002,9 @@ class MstpEndpoint:
         mstp_extended_frames: bool = False,
         mstp_echo: bool = False,
         mstp_echo_grace_ms: Optional[int] = None,
+        mstp_transmit_latency_pad_ms: Optional[int] = None,
+        mstp_usage_timeout_ms: Optional[int] = None,
+        mstp_reply_timeout_ms: Optional[int] = None,
     ) -> None:
         """``read_work_limit`` and ``min_request_interval_ms`` are as for
         ``BipEndpoint``.
@@ -4998,6 +5020,10 @@ class MstpEndpoint:
         echo may still arrive (None: 40 ms), as for ``BACnetClient``. A grace
         of 0, or one given without ``mstp_echo=True``, raises ValueError here;
         a negative grace, or one above 4294967295, raises OverflowError.
+
+        ``mstp_transmit_latency_pad_ms``, ``mstp_usage_timeout_ms`` and
+        ``mstp_reply_timeout_ms`` are as for ``BACnetClient``, but a value
+        out of range raises ValueError here.
         """
         ...
 

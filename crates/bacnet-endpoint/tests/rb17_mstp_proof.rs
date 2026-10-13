@@ -291,6 +291,58 @@ async fn mstp_deferred_after_postponed_extended_dedicated() {
     deferred_impl(MstpExecutionMode::DedicatedThread, Frames::Extended).await;
 }
 
+/// The builder's timing setters reach the transport's `MstpConfig`; left
+/// alone they keep `MstpConfig::default()`'s, and a value outside Clause
+/// 9.5.3's ranges, or a pad over 15 ms, fails validation naming the field.
+#[test]
+fn mstp_builder_timing_setters_reach_the_transport() {
+    let ms = Duration::from_millis;
+    let (serial, _peer) = LoopbackSerial::pair();
+    let defaults = MstpEndpointBuilder::new(serial, SESSION_MAC)
+        .build_transport()
+        .expect("transport must build");
+    let expected = bacnet_transport::mstp::MstpConfig::default();
+    assert_eq!(
+        (
+            defaults.config().usage_timeout,
+            defaults.config().reply_timeout,
+            defaults.config().transmit_latency_pad
+        ),
+        (
+            expected.usage_timeout,
+            expected.reply_timeout,
+            expected.transmit_latency_pad
+        )
+    );
+    let (serial, _peer) = LoopbackSerial::pair();
+    let set = MstpEndpointBuilder::new(serial, SESSION_MAC)
+        .usage_timeout(ms(25))
+        .reply_timeout(ms(280))
+        .transmit_latency_pad(ms(10))
+        .build_transport()
+        .expect("transport must build");
+    assert_eq!(set.config().usage_timeout, ms(25));
+    assert_eq!(set.config().reply_timeout, ms(280));
+    assert_eq!(set.config().transmit_latency_pad, ms(10));
+    for (usage, reply, pad, field) in [
+        (ms(19), ms(300), ms(0), "usage_timeout"),
+        (ms(36), ms(300), ms(0), "usage_timeout"),
+        (ms(35), ms(254), ms(0), "reply_timeout"),
+        (ms(35), ms(301), ms(0), "reply_timeout"),
+        (ms(35), ms(300), ms(16), "transmit_latency_pad"),
+    ] {
+        let (serial, _peer) = LoopbackSerial::pair();
+        let error = MstpEndpointBuilder::new(serial, SESSION_MAC)
+            .usage_timeout(usage)
+            .reply_timeout(reply)
+            .transmit_latency_pad(pad)
+            .validate_only()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(field), "{error}");
+    }
+}
+
 // Relocated verbatim from rb17_mstp_flows.rs (file-size gate): builder
 // addressing/APDU-bound validation is mode-independent and self-contained.
 #[tokio::test]

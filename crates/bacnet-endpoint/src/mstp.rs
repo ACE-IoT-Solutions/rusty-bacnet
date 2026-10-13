@@ -37,6 +37,8 @@
 //! [`LoopbackSerial`]: bacnet_transport::mstp::LoopbackSerial
 //! [`MstpTransport`]: bacnet_transport::mstp::MstpTransport
 
+use std::time::Duration;
+
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_transport::mstp::{MstpConfig, MstpExecutionMode, MstpTransport, SerialPort};
 use bacnet_types::error::Error;
@@ -87,6 +89,9 @@ pub struct MstpEndpointBuilder<S: SerialPort> {
     max_info_frames: u8,
     baud_rate: u32,
     extended_frames: bool,
+    usage_timeout: Duration,
+    reply_timeout: Duration,
+    transmit_latency_pad: Duration,
     execution_mode: MstpExecutionMode,
     role: SessionRole,
     session: SessionConfig,
@@ -97,12 +102,13 @@ pub struct MstpEndpointBuilder<S: SerialPort> {
 impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// Creates an MS/TP endpoint builder holding `serial` for one station.
     ///
-    /// Addressing defaults mirror [`MstpConfig::default`] except the station,
+    /// Link defaults mirror [`MstpConfig::default`] except the station,
     /// which has no meaningful default: `max_master` 127, `max_info_frames`
-    /// 1, `baud_rate` 9600, standard frames only. The host timeouts and the
-    /// transmit-latency pad are [`MstpConfig::default`]'s. Execution
-    /// defaults to Tokio.
+    /// 1, `baud_rate` 9600, standard frames only, the host timeouts (35 ms
+    /// and 300 ms) and the transmit-latency pad (4 ms on Windows, zero
+    /// elsewhere). Execution defaults to Tokio.
     pub fn new(serial: S, this_station: u8) -> Self {
+        let link = MstpConfig::default();
         Self {
             serial: Some(serial),
             this_station,
@@ -110,6 +116,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             max_info_frames: 1,
             baud_rate: 9600,
             extended_frames: false,
+            usage_timeout: link.usage_timeout,
+            reply_timeout: link.reply_timeout,
+            transmit_latency_pad: link.transmit_latency_pad,
             execution_mode: MstpExecutionMode::default(),
             role: SessionRole::Both,
             session: SessionConfig::default(),
@@ -149,9 +158,35 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     ///
     /// Memory: the port's transmit queues reserve 512 slots, 768 KiB of
     /// 1536-octet slots with extended frames against 272 KiB of 544-octet
-    /// ones without; pages a queue never fills are usually not committed.
+    /// ones without; pages a queue never fills usually don't become
+    /// resident.
     pub fn extended_frames(mut self, extended_frames: bool) -> Self {
         self.extended_frames = extended_frames;
+        self
+    }
+
+    /// Sets T_usage_timeout, 20 to 35 ms (default: the host's 35 ms); see
+    /// [`MstpConfig::usage_timeout`]. A value outside that range fails
+    /// [`validate_only`](Self::validate_only).
+    pub fn usage_timeout(mut self, usage_timeout: Duration) -> Self {
+        self.usage_timeout = usage_timeout;
+        self
+    }
+
+    /// Sets T_reply_timeout, 255 to 300 ms (default: the host's 300 ms); see
+    /// [`MstpConfig::reply_timeout`]. A value outside that range fails
+    /// [`validate_only`](Self::validate_only).
+    pub fn reply_timeout(mut self, reply_timeout: Duration) -> Self {
+        self.reply_timeout = reply_timeout;
+        self
+    }
+
+    /// Sets the transmit-latency pad for a port with no drain, at most
+    /// 15 ms (default: 4 ms on Windows, zero elsewhere); see
+    /// [`MstpConfig::transmit_latency_pad`]. A longer one fails
+    /// [`validate_only`](Self::validate_only).
+    pub fn transmit_latency_pad(mut self, pad: Duration) -> Self {
+        self.transmit_latency_pad = pad;
         self
     }
 
@@ -229,8 +264,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     ///
     /// Runs the transport's own checks ([`MstpConfig::validate`]):
     /// `max_master <= 127`, `this_station <= max_master`,
-    /// `max_info_frames >= 1` and a baud rate Clause 9 timing allows, plus a
-    /// nonzero echo grace on a port that declares an echo
+    /// `max_info_frames >= 1`, a baud rate Clause 9 timing allows, the two
+    /// timeouts within Clause 9.5.3's ranges and a pad of at most 15 ms,
+    /// plus a nonzero echo grace on a port that declares an echo
     /// ([`Echo::validate`](bacnet_transport::mstp::Echo::validate)); returns
     /// a typed [`Error::Encoding`] otherwise.
     pub fn validate_only(&self) -> Result<(), Error> {
@@ -250,7 +286,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             // A device, not a router: standard frames unless asked for
             // (Clause 9.3 requires extended frames of routers only).
             extended_frames: self.extended_frames,
-            ..MstpConfig::default()
+            usage_timeout: self.usage_timeout,
+            reply_timeout: self.reply_timeout,
+            transmit_latency_pad: self.transmit_latency_pad,
         }
     }
 

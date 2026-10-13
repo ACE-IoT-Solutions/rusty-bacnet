@@ -94,24 +94,85 @@ fn the_default_pad_is_the_usb_adapters_on_windows_only() {
     assert_eq!(USB_TRANSMIT_LATENCY_PAD, Duration::from_millis(4));
 }
 
-/// A padded frame must still complete inside the core's transmit watchdog
-/// (one second at 9600 baud, against 0.53 s for the longest standard
-/// frame), so a pad that leaves it no room is refused, naming the field;
-/// the largest that fits is taken.
+/// Octets heard while the pad runs reach the core only after it, so a pad
+/// over T_usage_delay (15 ms) would make a token or poll that came during
+/// it be answered late: it is refused, naming the field, and 15 ms is taken.
 #[test]
-fn a_pad_that_outlasts_the_watchdog_is_refused() {
-    let core = config(3, 4).core_config().unwrap();
-    let room =
-        Duration::from(core.transmit_watchdog) - Duration::from(core.minimum_transmit_watchdog());
-    let fits = MstpConfig {
-        transmit_latency_pad: room,
+fn a_pad_over_the_usage_delay_is_refused() {
+    let at_most = MstpConfig {
+        transmit_latency_pad: Duration::from_millis(15),
         ..config(3, 4)
     };
-    assert!(fits.validate().is_ok());
+    assert!(at_most.validate().is_ok());
     let too_long = MstpConfig {
-        transmit_latency_pad: room + Duration::from_micros(1),
+        transmit_latency_pad: Duration::from_millis(15) + Duration::from_micros(1),
         ..config(3, 4)
     };
     let error = too_long.validate().unwrap_err().to_string();
     assert!(error.contains("transmit_latency_pad"), "{error}");
+    assert!(error.contains("T_usage_delay"), "{error}");
+}
+
+/// A padded frame must complete inside the core's transmit watchdog. The
+/// watchdog is one second at most baud rates, which leaves the longest
+/// standard frame room for any pad allowed; but from about 5,128 to 5,155
+/// baud that frame leaves it less than the 4 ms Windows default. There the
+/// watchdog is lengthened by the pad, rather than the configuration refused.
+#[test]
+fn the_watchdog_covers_a_padded_frame() {
+    let pad = USB_TRANSMIT_LATENCY_PAD;
+    let tight = MstpConfig {
+        baud_rate: 5_140,
+        transmit_latency_pad: pad,
+        ..config(3, 4)
+    };
+    let unpadded = MstpConfig {
+        transmit_latency_pad: Duration::ZERO,
+        ..tight.clone()
+    };
+    let core = unpadded.core_config().unwrap();
+    let floor = Duration::from(core.minimum_transmit_watchdog());
+    assert_eq!(
+        Duration::from(core.transmit_watchdog),
+        Duration::from_secs(1)
+    );
+    assert!(floor + pad > Duration::from_secs(1), "{floor:?}");
+    let core = tight.core_config().unwrap();
+    assert_eq!(Duration::from(core.transmit_watchdog), floor + pad);
+    assert!(core.validate().is_ok());
+    // Where the watchdog already covers the padded frame it is kept.
+    let roomy = MstpConfig {
+        transmit_latency_pad: pad,
+        ..config(3, 4)
+    };
+    let core = roomy.core_config().unwrap();
+    assert_eq!(
+        Duration::from(core.transmit_watchdog),
+        Duration::from_secs(1)
+    );
+}
+
+/// Only an unsupported drain means "no drain": a drain that fails with any
+/// other error leaves the frame's completion unknown, so the frame is
+/// aborted and counted as a write error, not taken as sent after the pad.
+#[tokio::test(start_paused = true)]
+async fn a_failed_drain_aborts_the_frame() {
+    let port = Port {
+        drain: DrainMode::Fails,
+        ..Port::PLAIN
+    };
+    let config = MstpConfig {
+        transmit_latency_pad: Duration::from_millis(6),
+        ..config(3, 7)
+    };
+    let mut bus = Bus::start_with(config, port).await;
+    // With no traffic the station generates a token: its first frame is a
+    // Poll For Master, written but never confirmed as sent.
+    let poll = bus.next().await;
+    assert_eq!(poll.frame_type, FrameType::PollForMaster);
+    bus.until(poll.end + Duration::from_millis(6) + TICK).await;
+    let counts = bus.transport.diagnostics().snapshot();
+    assert_eq!(counts.serial_write_errors, 1);
+    assert_eq!(counts.mac.frames_transmitted, 0);
+    bus.stop().await;
 }
