@@ -58,7 +58,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut router_ports = Vec::new();
     for spec in &specs {
-        let transport = BipTransport::new(spec.interface, spec.port, spec.broadcast);
+        let mut transport = BipTransport::new(spec.interface, spec.port, spec.broadcast);
+        // Every port uses the same UDP port on its own address: bind each
+        // address, or on Linux one wildcard socket gets every port's
+        // unicast and the router can't tell the networks apart.
+        transport.set_share_port_by_address(true);
         router_ports.push(RouterPort {
             transport,
             network_number: spec.network,

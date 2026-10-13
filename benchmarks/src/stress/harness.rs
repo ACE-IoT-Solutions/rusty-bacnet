@@ -9,21 +9,42 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
+use bacnet_types::enums::ObjectType;
 use bacnet_types::error::Error;
+use bacnet_types::primitives::ObjectIdentifier;
 
 /// Build an ObjectDatabase with `object_count` AnalogInput objects, plus
 /// one AnalogOutput, one BinaryValue, and the required Device object.
 pub fn make_large_db(device_instance: u32, object_count: u32) -> ObjectDatabase {
-    let mut db = ObjectDatabase::new();
+    make_large_db_with(stress_device_config(device_instance), object_count)
+}
 
-    let device = DeviceObject::new(DeviceConfig {
+/// The stress Device's configuration, before any scenario's changes.
+pub fn stress_device_config(device_instance: u32) -> DeviceConfig {
+    DeviceConfig {
         instance: device_instance,
         name: "Stress Device".into(),
         vendor_name: "Rusty BACnet".into(),
         vendor_id: 555,
         ..DeviceConfig::default()
-    })
-    .unwrap();
+    }
+}
+
+/// [`make_large_db`] with the Device built from `config`. The server
+/// refuses a Device whose Max_APDU_Length_Accepted or
+/// Segmentation_Supported differs from its own: 480 octets on an MS/TP port
+/// without extended frames, say.
+pub fn make_large_db_with(config: DeviceConfig, object_count: u32) -> ObjectDatabase {
+    let mut db = ObjectDatabase::new();
+    let device_instance = config.instance;
+    let mut device = DeviceObject::new(config).unwrap();
+    // The server leaves Object_List to its caller: list every object.
+    let oid = |kind, instance| ObjectIdentifier::new(kind, instance).unwrap();
+    let mut objects = vec![oid(ObjectType::DEVICE, device_instance)];
+    objects.extend((1..=object_count).map(|i| oid(ObjectType::ANALOG_INPUT, i)));
+    objects.push(oid(ObjectType::ANALOG_OUTPUT, 1));
+    objects.push(oid(ObjectType::BINARY_VALUE, 1));
+    device.set_object_list(objects);
     db.add(Box::new(device)).unwrap();
 
     for i in 1..=object_count {
