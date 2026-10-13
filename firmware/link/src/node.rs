@@ -194,13 +194,9 @@ pub struct Summary {
     /// Each registration event, in order.
     pub events: [Option<RegistrationEvent>; EVENTS],
     /// The registration at the end.
-    pub registration: Option<Registration>,
-    /// Everything the node counted, taken once, at the end, but the newest
-    /// registration attempt, which [`last_attempt`](Self::last_attempt)
-    /// holds.
+    pub registration: Option<RegistrationSnapshot>,
+    /// Everything the node counted, taken once, at the end.
     pub counters: NodeCounters,
-    /// The newest registration attempt the counters held.
-    pub last_attempt: Option<Attempt>,
     /// Every datagram the node sent.
     pub sent: Sent,
     /// Calls that failed or answered otherwise than the scenario expects.
@@ -222,7 +218,6 @@ impl Summary {
             events: [None; EVENTS],
             registration: None,
             counters: NodeCounters::default(),
-            last_attempt: None,
             sent: Sent::new(),
             errors: 0,
         }
@@ -234,9 +229,40 @@ impl Summary {
     }
 }
 
-/// The node's [`RegistrationSnapshot`] at the end, field by field. The
-/// snapshot is `#[non_exhaustive]`, so [`expected()`] couldn't build one to
-/// compare with; it builds this.
+/// What a good run's [`Summary`] holds, as [`expected()`] builds it.
+///
+/// The node's [`RegistrationSnapshot`] and the counters' newest
+/// [`RegisterAttempt`] are `#[non_exhaustive]`, so `expected()` can't build
+/// either: it gives their fields, and a summary is compared with it field by
+/// field there and whole everywhere else. The comparison happens outside
+/// [`run`], so the image links none of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Expected {
+    /// The summary, with no registration and no newest attempt in its
+    /// counters.
+    pub summary: Summary,
+    /// The registration at the end.
+    pub registration: Registration,
+    /// The newest registration attempt the counters hold.
+    pub last_attempt: Attempt,
+}
+
+impl PartialEq<Expected> for Summary {
+    fn eq(&self, expected: &Expected) -> bool {
+        let mut rest = *self;
+        let registration = rest.registration.take().map(Registration::of);
+        let last_attempt = rest
+            .counters
+            .last_registration_attempt
+            .take()
+            .map(Attempt::of);
+        rest == expected.summary
+            && registration == Some(expected.registration)
+            && last_attempt == Some(expected.last_attempt)
+    }
+}
+
+/// The node's [`RegistrationSnapshot`], field by field, for [`Expected`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Registration {
     /// The newest proven lease.
@@ -275,8 +301,7 @@ impl Registration {
     }
 }
 
-/// The node's newest [`RegisterAttempt`], field by field, for the same
-/// reason as [`Registration`].
+/// The node's newest [`RegisterAttempt`], field by field, for [`Expected`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Attempt {
     /// The BBMD it went to.
@@ -446,10 +471,8 @@ impl Device<'_> {
         self.answer(SUCCESS);
         self.answer(SUCCESS);
 
-        self.summary.registration = self.node.registration(self.now).map(Registration::of);
-        let mut counters = self.node.take_counters();
-        self.summary.last_attempt = counters.last_registration_attempt.take().map(Attempt::of);
-        self.summary.counters = counters;
+        self.summary.registration = self.node.registration(self.now);
+        self.summary.counters = self.node.take_counters();
     }
 
     /// The BBMD answers with `code` one round trip later, settling the

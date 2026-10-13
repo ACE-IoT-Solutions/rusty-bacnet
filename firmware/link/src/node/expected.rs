@@ -9,7 +9,7 @@ use bacnet_bip_core::node::{
 };
 use bacnet_bip_core::{Duration, Instant};
 
-use super::{Attempt, Registration, Summary, BBMD, ORIGIN, PEER, TTL};
+use super::{Attempt, Expected, Registration, Summary, BBMD, ORIGIN, PEER, TTL};
 use crate::tally::Sent;
 
 /// The hash over every datagram the node sends and where it goes. It was
@@ -27,7 +27,7 @@ const SUCCESS: BvlcResultCode = BvlcResultCode::SUCCESSFUL_COMPLETION;
 const DBTN_NAK: BvlcResultCode = BvlcResultCode::DISTRIBUTE_BROADCAST_TO_NETWORK_NAK;
 
 /// What the node counts in a good run, but the newest attempt
-/// ([`Summary::last_attempt`]). The counters are `#[non_exhaustive]`, so
+/// ([`Expected::last_attempt`]). The counters are `#[non_exhaustive]`, so
 /// they are built from their default.
 fn counters() -> NodeCounters {
     // Eight attempts sent, five answered with success, three timed out.
@@ -53,8 +53,8 @@ fn counters() -> NodeCounters {
 
 /// The summary [`run`](super::run) returns in a good run.
 #[must_use]
-pub fn expected() -> Summary {
-    Summary {
+pub fn expected() -> Expected {
+    let summary = Summary {
         // A 4-octet header for a unicast; for a broadcast, 6 octets more, the
         // originating address a BBMD adds when it forwards it. The budget of
         // 1507 octets leaves room for 1497 either way.
@@ -123,9 +123,23 @@ pub fn expected() -> Summary {
             Some(RegistrationEvent::Renewed { until: at(160_000) }),
             None,
         ],
+        // In `Expected::registration`.
+        registration: None,
+        counters: counters(),
+        // Six NAKs and eight registrations of 6 octets, and three
+        // Distribute-Broadcast-To-Network messages of 12.
+        sent: Sent {
+            count: 17,
+            octets: 120,
+            fnv: SENT_FNV,
+        },
+        errors: 0,
+    };
+    Expected {
+        summary,
         // At 100.02 s: the last renewal's lease, from the 100 s attempt, and
         // the next renewal one interval into it.
-        registration: Some(Registration {
+        registration: Registration {
             lease: Some(Lease {
                 since: at(100_000),
                 until: at(160_000),
@@ -138,21 +152,12 @@ pub fn expected() -> Summary {
             consecutive_failures: 0,
             first_resolved: true,
             held: 0,
-        }),
-        counters: counters(),
-        last_attempt: Some(Attempt {
+        },
+        last_attempt: Attempt {
             bbmd: BBMD,
             ttl: TTL,
             outcome: AttemptOutcome::Accepted,
             result: Some(SUCCESS),
-        }),
-        // Six NAKs and eight registrations of 6 octets, and three
-        // Distribute-Broadcast-To-Network messages of 12.
-        sent: Sent {
-            count: 17,
-            octets: 120,
-            fnv: SENT_FNV,
         },
-        errors: 0,
     }
 }

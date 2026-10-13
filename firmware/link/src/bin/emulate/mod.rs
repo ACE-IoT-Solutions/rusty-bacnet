@@ -61,8 +61,10 @@ const PAINT: u32 = 0xCCCC_CCCC;
 /// through semihosting, and exit with the status that says how it went.
 ///
 /// `expected` is built only after the measurement, so building it can't
-/// count toward the stack's high-water mark.
-pub fn finish<S: Debug + PartialEq>(summary: &S, expected: impl FnOnce() -> S) -> ! {
+/// count toward the stack's high-water mark. It is usually a summary too;
+/// the node image's is its own type, since the summary holds core types it
+/// can't build.
+pub fn finish<S: Debug + PartialEq<E>, E: Debug>(summary: &S, expected: impl FnOnce() -> E) -> ! {
     let stack = Stack::measure();
     let expected = expected();
     let status = if *summary != expected {
