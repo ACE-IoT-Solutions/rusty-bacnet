@@ -705,7 +705,7 @@ agree within 10%, which shows the run-to-run spread.
 | --- | --- | --- | --- | --- |
 | 1 | 5,296 | 5,540 | 5,644 | 8,560 |
 | 5 | 14,918 | 12,499 | 12,986 | 26,711 |
-| 10 | 23,317 | 23,975 | 24,478 | 20,120 after the fix for #1712, measured 13 October 2026 (50 before it, stalled; see below) |
+| 10 | 23,317 | 23,975 | 24,478 | 20,120 after the fix (50 before it, stalled; see below) |
 | 25 | failed (see below) | 33,963 | failed (see below) | 62 (stalled) |
 
 What it shows:
