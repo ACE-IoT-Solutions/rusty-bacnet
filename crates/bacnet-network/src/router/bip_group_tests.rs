@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
-use bacnet_transport::port::{GroupDestinations, ReceivedNpdu, TransportPort};
+use bacnet_transport::port::{GroupDestinations, NpduLimits, ReceivedNpdu, TransportPort};
 use bacnet_types::error::Error;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
@@ -67,6 +67,10 @@ impl TransportPort for Recorded {
 
     fn local_receive_apdu_capacity(&self) -> u16 {
         self.inner.local_receive_apdu_capacity()
+    }
+
+    fn max_npdu(&self) -> NpduLimits {
+        self.inner.max_npdu()
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
@@ -135,6 +139,13 @@ impl TransportPort for Port {
         match self {
             Self::Mstp(mstp) => mstp.local_receive_apdu_capacity(),
             Self::Bip(bip) => bip.local_receive_apdu_capacity(),
+        }
+    }
+
+    fn max_npdu(&self) -> NpduLimits {
+        match self {
+            Self::Mstp(mstp) => mstp.max_npdu(),
+            Self::Bip(bip) => bip.max_npdu(),
         }
     }
 

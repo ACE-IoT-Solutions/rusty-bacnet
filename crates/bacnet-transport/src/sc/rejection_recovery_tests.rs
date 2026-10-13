@@ -153,7 +153,7 @@ async fn fresh_redial_validates_probe(wire_index: usize) {
         // commit its UUID or advertised 32/40 limits into that fresh state.
         assert_eq!(conn.hub_device_uuid, None);
         assert_eq!(conn.hub_max_bvlc_length, 1476);
-        assert_eq!(conn.hub_max_apdu_length, 1476);
+        assert_eq!(conn.hub_max_npdu_length, 1476);
     }
     accept(&fresh, [0x11; 6], 32, 40).await;
     wait_for_state(&transport, ScConnectionState::Connected)

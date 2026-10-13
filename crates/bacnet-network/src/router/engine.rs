@@ -23,6 +23,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use bacnet_router_core::router::{ConfigError, Counters, Limits, Options, PortConfig};
 use bacnet_router_core::{Duration, Instant, Router, Storage};
+use bacnet_transport::port::NpduLimits;
 
 use crate::router_table::{HOLD_RECORDS, ROUTE_CAP};
 
@@ -46,8 +47,8 @@ type HostedStorage = Storage<PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH>;
 pub(super) type HostedRouter =
     Router<Box<HostedStorage>, PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH>;
 
-/// The hosted router's options: today's policy values and timers, the
-/// 256-route cap, and none of the Clause 6 fixes yet.
+/// The hosted router's options: its policy values and timers, the 256-route
+/// cap, and every Clause 6 fix (`Fixes::ALL`, #1679).
 const OPTIONS: Options = Options::HOSTED;
 
 // The engine's route cap is the table's size, which the crate publishes as
@@ -56,10 +57,6 @@ const _: () = assert!(
     OPTIONS.route_cap as usize == ROUTE_CAP,
     "the hosted route cap is ROUTE_CAP"
 );
-
-/// Each port's NPDU limits. With no fixes on, the engine checks none, and
-/// the scratch is the only bound.
-const LIMITS: Limits = Limits::both(u16::MAX);
 
 /// Tokio time on the engine's nanosecond timeline, from the router's start.
 #[derive(Debug, Clone, Copy)]
@@ -113,12 +110,22 @@ impl Engine {
         })
     }
 
-    /// A port on `network` with the router's `mac` on it.
-    pub(super) fn port(network: u16, mac: bacnet_router_core::Mac) -> PortConfig {
+    /// A port on `network` with the router's `mac` on it, carrying the
+    /// NPDUs its transport reports (`TransportPort::max_npdu`, #1665). A
+    /// report under [`Limits::MIN`] counts as that: the engine refuses a
+    /// smaller limit, and the transport still refuses what it can't carry.
+    pub(super) fn port(
+        network: u16,
+        mac: bacnet_router_core::Mac,
+        max_npdu: NpduLimits,
+    ) -> PortConfig {
         PortConfig {
             network,
             mac,
-            max_npdu: LIMITS,
+            max_npdu: Limits {
+                unicast: max_npdu.unicast.max(Limits::MIN),
+                broadcast: max_npdu.broadcast.max(Limits::MIN),
+            },
         }
     }
 

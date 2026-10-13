@@ -681,6 +681,30 @@ intake. Complete BVLC bounds, remote/path limits, routed overhead and the Hub's
 forwarding capacity remain independent. These APIs are new in
 0.12.0; this bounded evidence is not a full Annex AB or hardware qualification.
 
+`max_npdu()` reports the longest NPDU the link sends, as `NpduLimits` with a
+`unicast` and a `broadcast` limit in octets (#1665). `BACnetRouter` reads it
+once, when it starts the port, and answers an NPDU it would route there that
+is longer, once rewritten, with reject reason 4 instead of handing it to a send
+that fails. The default is `NpduLimits::STANDARD`, 1,497 octets each way, what
+B/IPv6 and Ethernet carry (Table 6-1). MS/TP reports 501 octets without
+extended frames and 1,497 with them, so a router port, which turns them on,
+reports 1,497. B/IP reports its node's budget for each kind of send, 1,497
+octets each way. BACnet/SC reports, once started, what its hub connection
+carries with no data options: the hub's Max-NPDU-Length within its
+Max-BVLC-Length less the encapsulation, which can pass 1,497 between BACnet/SC
+ports (Clause 6.6). Data attributes a router forwards with an NPDU (Table 6-1,
+note 1) take more of the BVLC, so one at this limit with attributes can still
+fail the transport's Max-BVLC-Length check. The router keeps the limit it read
+at start through an SC failover or reconnect (#1696 tracks a refresh): if the
+new hub takes less, the transport refuses the longer sends with its throttled
+warning, which nothing counts and no reject answers; if it takes more, the
+router still answers reason 4 above the old limit until it restarts. A direct
+connection's own limit isn't part of it. Wrappers and `AnyTransport` delegate,
+and a wrapper around an MS/TP or BACnet/SC transport that doesn't loses its
+real limit. A custom transport that carries more than 1,497 octets must
+override it, or a router refuses what it could have sent; one that carries
+less must too, or the router assumes 1,497.
+
 ### Feature Flags
 
 | Feature | Platforms | Transport |
@@ -2126,10 +2150,63 @@ engine's 65,556-octet scratch isn't routed: it is dropped, logged and
 counted in `BACnetRouter::counters().write_failures`. The scratch is the
 largest BVLC message, 65,535 octets, plus the SNET, SLEN and longest SADR a
 router adds, so any BACnet/SC NPDU (at most 61,327 octets, Table 6-1) fits
-with its added source address.
+with its added source address. No port carries more than 65,535 octets, so in
+practice only a global broadcast meets this bound: anything routed toward one
+network meets its port's limit first (below).
 And the table keeps at most `HOLD_RECORDS` (1,024) reject hold-down records,
 one per network and arrival port; a full pool gives up its oldest record,
 counted in its claim counters' `hold_evicted`.
+
+Where the router departed from Clause 6 before it moved onto the engine, it
+now follows the clause, each fix a switch in the core's `Fixes` (all on in
+the hosted router, and the core's default; `Fixes::NONE` is the router before
+them):
+
+- **Egress limits (R1, #1665).** Each port carries the NPDUs its transport's
+  `max_npdu()` reports, read when the router starts it (a report under 64
+  octets counts as 64). An NPDU whose rewrite for its egress port is longer
+  than the port's limit for that kind of send, unicast or broadcast, draws
+  Reject-Message-To-Network reason 4 naming its DNET, sent to its origin like
+  any other reject (Clauses 6.4.4 and 6.6.3.5), and isn't sent. A remote
+  broadcast (a DNET with DLEN 0) does too. A global broadcast, or any other
+  message the router sends to every other port, leaves out a port too short
+  for it, with no reject. Both count in `counters().egress_too_long`, and
+  log a warning at most once per interval, with the count since, as a failed
+  send does.
+- **Rejects keep routes (R2).** A received reject changes the table for
+  reasons 1 (unreachable) and 2 (busy) only (Clause 6.6.3.5). One with any
+  other reason, such as R1's reason 4, leaves a learned route as it is and
+  counts in the claim counters' `reject_kept`, where it used to remove the
+  route. Every reject is still passed on toward its destination.
+- **Network numbers at startup (R3).** Each port first broadcasts a
+  Network-Number-Is with its network number, flagged as configured (Clause
+  6.4.20), then its I-Am-Router; a one-port router sends only the first, and
+  a port numbered 0 or 0xFFFF has no number to send. Before, each port heard
+  only the I-Am-Router.
+- **Reachable networks only (R4).** A Who-Is-Router that names no network is
+  answered with the networks reached through the other ports, in ascending
+  order, leaving out any marked unreachable; busy ones stay (Clause 6.6.3.2).
+  Before, unreachable networks were listed too, in no set order.
+- **No search behind the arrival port (R5).** A Who-Is-Router naming a network
+  the router reaches through the port it arrived on, that port's own network
+  included, gets no answer and isn't passed on: the router that serves it is
+  on the asker's network (Clause 6.6.3.2 searches only for a network the
+  table lacks). Before, it was passed on to the other ports.
+- **Hop count (R6).** The hop count comes down before the router decides
+  (Clauses 6.2.3 and 6.3.2): an NPDU for another router that arrives with a
+  hop count of 1 isn't relayed, and a global broadcast that arrives with 1 is
+  delivered to the router's own application and passed on nowhere. Each
+  counts in `counters().hop_count_drops`, with no reject, and warns at most
+  once per interval. Delivery onto an attached network, where the NPDU carries
+  no hop count, is unchanged.
+  Before, such an NPDU left with a hop count of 0.
+- **The router's own address (R7).** An APDU addressed to the router's own
+  MAC on any of its networks goes to the local APDU receiver, with the
+  arrival port's network as `ingress_network` (Clause 6.1, Figure 6-12).
+  Before, only its address on the arrival network did, and one for its
+  address on another network went out on that network's wire, to the router
+  itself. A reply leaves from the router's address on the arrival port, with
+  no SNET, not from the address the request named.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

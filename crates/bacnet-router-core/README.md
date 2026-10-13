@@ -39,8 +39,9 @@ image follows (#1679).
   application; the sends it calls for are polled after, one at a time,
   from its scratch. A port is data to it (a network number, the router's
   MAC there, and the longest NPDU the port carries), so B/IP, MS/TP and the
-  hosted transports all plug in the same way. It behaves as the hosted
-  router does today, with the clause's fixes behind switches.
+  hosted transports all plug in the same way. Where the hosted router
+  once departed from the clause, a switch in `Fixes` picks the clause's
+  way or the old one; the clause's is the default.
 
 ## Example
 

@@ -9,7 +9,7 @@ use super::config::Options;
 use super::counters::bump;
 use super::host::{Claim, ControlClass, Event, Group, Host, Targets};
 use super::ingress::{Arrival, DropReason, Received};
-use super::output::{Kind, Target};
+use super::output::Kind;
 use super::tasks::Task;
 use super::Storage;
 use crate::message::{
@@ -55,7 +55,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return self.forward(at, npdu, &route, options, host);
         }
         match kind {
-            code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu),
+            code::WHO_IS_ROUTER_TO_NETWORK => self.who_is_router(at, npdu, options, host),
             code::I_AM_ROUTER_TO_NETWORK => self.i_am_router(at, npdu, options, host),
             code::I_COULD_BE_ROUTER_TO_NETWORK => self.i_could_be_router(at, npdu, options, host),
             code::REJECT_MESSAGE_TO_NETWORK => self.received_reject(at, npdu, options, host),
@@ -143,13 +143,21 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// Who-Is-Router (Clause 6.6.3.2). Unscoped, it is answered with every
-    /// network the table reaches through another port, Unreachable ones
-    /// too, as today. Scoped to a network reached through another port, it
-    /// is answered with that network, whatever its state. Scoped to one the
-    /// table lacks, or reaches through the arrival port, it is passed on to
-    /// every other port with SNET and SADR, and no DNET. Network 0 is
+    /// network the table reaches through another port, ascending; with R4
+    /// on, but those marked unreachable. Scoped to a network reached
+    /// through another port, it is answered with that network, whatever
+    /// its state. Scoped to one the table lacks, it is passed on to every
+    /// other port with SNET and SADR, and no DNET. Scoped to one reached
+    /// through the arrival port, it is left to the router there with R5
+    /// on, and passed on as for an unknown one with it off. Network 0 is
     /// refused.
-    fn who_is_router<'f>(&mut self, at: &Arrival<'f>, npdu: &Npdu<'f>) -> Received<'f> {
+    fn who_is_router<'f>(
+        &mut self,
+        at: &Arrival<'f>,
+        npdu: &Npdu<'f>,
+        options: &Options,
+        host: &mut impl Host,
+    ) -> Received<'f> {
         let network = match WhoIsRouter::parse(npdu.payload) {
             None | Some(WhoIsRouter::Network(0)) => return self.bad_message(),
             Some(WhoIsRouter::All) => {
@@ -158,13 +166,13 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
             Some(WhoIsRouter::Network(network)) => network,
         };
-        if self
-            .table
-            .lookup(network)
-            .is_some_and(|route| route.port != at.port)
-        {
-            self.out.push(Task::i_am_answer(at.port, Some(network)));
-            return Received::Handled;
+        match self.table.lookup(network) {
+            Some(route) if route.port != at.port => {
+                self.out.push(Task::i_am_answer(at.port, Some(network)));
+                return Received::Handled;
+            }
+            Some(_) if options.fixes.search_unknown_only => return Received::Handled,
+            _ => {}
         }
         let relay = Npdu {
             destination: None,
@@ -176,7 +184,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             ..*npdu
         };
         let kind = Kind::Relay(code::WHO_IS_ROUTER_TO_NETWORK);
-        if self.write_now(&relay, kind, Target::AllBut(at.port)) {
+        if self.write_fan_out(&relay, kind, at.port, options, host) {
             Received::Handled
         } else {
             Received::Dropped(DropReason::Unwritable)
@@ -185,9 +193,16 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 
     /// Pass a network message's data on, verbatim, as a fresh message of
     /// its type to every port but the arrival one.
-    fn rebroadcast<'f>(&mut self, at: &Arrival<'f>, npdu: &Npdu<'f>, kind: u8) -> Received<'f> {
+    fn rebroadcast<'f>(
+        &mut self,
+        at: &Arrival<'f>,
+        npdu: &Npdu<'f>,
+        kind: u8,
+        options: &Options,
+        host: &mut impl Host,
+    ) -> Received<'f> {
         let relay = Npdu::message(kind, npdu.payload);
-        if self.write_now(&relay, Kind::Relay(kind), Target::AllBut(at.port)) {
+        if self.write_fan_out(&relay, Kind::Relay(kind), at.port, options, host) {
             Received::Handled
         } else {
             Received::Dropped(DropReason::Unwritable)
@@ -216,7 +231,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 break;
             }
         }
-        self.rebroadcast(at, npdu, code::I_AM_ROUTER_TO_NETWORK)
+        self.rebroadcast(at, npdu, code::I_AM_ROUTER_TO_NETWORK, options, host)
     }
 
     /// One learning claim of an I-Am-Router or an Init-ACK. `false` when the
@@ -315,7 +330,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// A received reject (Clause 6.6.3.5): applied to the table, then for
-    /// the router itself or passed on.
+    /// the router itself or passed on, whatever its reason. With R2 on, a
+    /// reason other than 1 or 2 changes no route.
     fn received_reject<'f>(
         &mut self,
         at: &Arrival<'f>,
@@ -336,13 +352,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         ) {
             return Received::Dropped(DropReason::Denied);
         }
-        let effect = self.table.apply_reject(
-            reject.network,
-            at.port,
-            reject.reason,
-            at.now,
-            &options.timing,
-        );
+        let (network, reason, timing) = (reject.network, reject.reason, &options.timing);
+        let effect = if options.fixes.rejects_keep_routes {
+            self.table
+                .apply_reject(network, at.port, reason, at.now, timing)
+        } else {
+            self.table
+                .apply_reject_removing(network, at.port, reason, at.now, timing)
+        };
         host.observe(Event::RejectReceived {
             network: reject.network,
             reason: reject.reason,
@@ -409,7 +426,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
         }
         let kind = npdu.message_type.unwrap_or(0);
-        self.rebroadcast(at, npdu, kind)
+        self.rebroadcast(at, npdu, kind, options, host)
     }
 
     /// Network-Number-Is (Clause 6.4.20): heard only as a link broadcast
