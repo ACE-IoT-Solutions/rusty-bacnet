@@ -3,13 +3,13 @@
 ## Supported Versions
 
 Before 1.0, security fixes land on `dev` and ship in the next release, which may
-be a new minor version (for example 0.12.0). Fixes aren't backported to older
+be a new minor version (for example 0.14.0). Fixes aren't backported to older
 release lines, so upgrade to the latest release to receive them.
 
 | Version                            | Supported          |
 | ---------------------------------- | ------------------ |
 | `dev` branch                       | :white_check_mark: |
-| Latest release (currently 0.11.x)  | :white_check_mark: |
+| Latest release (currently 0.13.x)  | :white_check_mark: |
 | Older releases                     | :x:                |
 
 ## Reporting a Vulnerability

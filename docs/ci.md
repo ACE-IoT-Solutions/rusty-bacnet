@@ -1548,10 +1548,10 @@ To release:
    ```bash
    bash scripts/ci/fuzz.sh lock                # the fuzz crates' Cargo.lock files
    python3 scripts/changelog.py preview        # what the section will hold
-   python3 scripts/changelog.py assemble --version 0.12.0 [--date 2026-10-02]
+   python3 scripts/changelog.py assemble --version 0.13.0 [--date 2026-10-13]
    ```
 
-   `assemble` adds `## [0.12.0] - <date>` below `[Unreleased]`, with the
+   `assemble` adds `## [0.13.0] - <date>` below `[Unreleased]`, with the
    entries grouped by heading and ordered by issue number, and deletes the
    fragments it used. Each entry ends with a link to the GitHub commit that
    brought its fragment into dev, found along the first-parent history, so run
@@ -1563,8 +1563,8 @@ To release:
    not one inside a merged branch), once its CI has passed:
 
    ```bash
-   git tag -a v0.12.0 -m "Rusty BACnet 0.12.0"
-   git push origin v0.12.0
+   git tag -a v0.13.0 -m "Rusty BACnet 0.13.0"
+   git push origin v0.13.0
    ```
 
 The tag push also starts CI's heavy jobs on the tagged commit, and the release
@@ -2014,8 +2014,11 @@ permissions it declares (the workflow's default is none):
   could). It holds `CARGO_REGISTRY_TOKEN`. Only the two jobs above deploy to
   it, so a dry run, whatever started it, gets no secret.
 - **`CARGO_REGISTRY_TOKEN`**: a crates.io token that can publish new crates
-  and update existing ones. 0.12.0 is the first release of `bacnet-endpoint`
-  and `bacnet-cli`, which a token scoped to existing crates couldn't publish.
+  and update existing ones. 0.13.0 is the first release of `bacnet-time`,
+  `bacnet-mstp-codec`, `bacnet-bip-codec`, `bacnet-mstp-core`,
+  `bacnet-bip-core` and `bacnet-router-core`, which a token scoped to
+  existing crates couldn't publish, as 0.12.0 was for `bacnet-endpoint` and
+  `bacnet-cli`.
   crates.io trusted publishing may replace it later.
 - **PyPI trusted publishing.** PyPI accepts the PyPI job's OIDC token for
   `rusty-bacnet` when the project's trusted publisher names owner
