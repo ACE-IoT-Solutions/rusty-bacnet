@@ -21,7 +21,7 @@ use bacnet_router_core::npdu::{Address, Npdu};
 use bacnet_router_core::router::{Group, Host, Limits, Options, PortConfig, Received, SendRefusal};
 use bacnet_router_core::PortId;
 
-use fixture::{apdu_to, options, router_with, TestRouter, CONFIRMED, UNCONFIRMED};
+use fixture::{apdu_to, router_with, TestRouter, CONFIRMED, UNCONFIRMED};
 use glue::*;
 
 const BIP_NET: u16 = 1;
@@ -168,8 +168,8 @@ fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
         max_npdu: Limits::both(501),
         ..MstpPort::config(&config(true), MSTP_NET).unwrap()
     };
-    let r1 = options(|options| options.fixes.egress_limits = true);
-    let mut router = router(&bip, Some(held_to_501), r1);
+    // Fix R1 is on by default.
+    let mut router = router(&bip, Some(held_to_501), Options::HOSTED);
     let mut host = Groups {
         link: *bip.node().link(),
     };

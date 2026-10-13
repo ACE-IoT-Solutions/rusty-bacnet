@@ -266,6 +266,21 @@ pub enum Event {
         /// The network the relay was for: 0xFFFF for a global broadcast.
         network: u16,
     },
+    /// An NPDU too long for an egress port's limit for its kind of send
+    /// (fix R1). One routed toward a network drew reject reason 4 naming
+    /// it; a fan-out leaves that port out when it is polled, where the skip
+    /// is counted. Both count in
+    /// [`Counters::egress_too_long`](super::Counters::egress_too_long).
+    TooLong {
+        /// The egress port.
+        port: PortId,
+        /// The NPDU's length, as rewritten for that port.
+        octets: usize,
+        /// The port's limit for that kind of send.
+        limit: usize,
+        /// The network the reject named; `None` for a fan-out.
+        rejected: Option<u16>,
+    },
     /// A refused NPDU named this router as its origin, so no reject went.
     OwnOrigin {
         /// The network the reject would have named.

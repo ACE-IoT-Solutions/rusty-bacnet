@@ -1,7 +1,8 @@
 //! Virtual-time traces of the router engine (#1679 design, section 5.2),
-//! with today's options (`Options::HOSTED`, every fix off). Each step
-//! asserts the full list of sends, their octets, and the counters at that
-//! instant.
+//! with the hosted router's options (`Options::HOSTED`). Each step asserts
+//! the full list of sends, their octets, and the counters at that instant.
+//! Where a fix changes a trace, a second run with its switch off pins what
+//! the hosted router did before it.
 //!
 //! Where a step departs from the design's sketch, the hosted router's code
 //! decided, and the step says which line.
@@ -70,10 +71,6 @@ fn list_broadcast(sent: &Sent, port: u8, kind: Kind, message_type: u8, list: &[u
 }
 
 /// Trace A: discovery, learning and aging.
-///
-/// The design's sketch starts with a Network-Number-Is on each port; that is
-/// fix R3, off in today's options, since the hosted router announces only
-/// I-Am-Router (router/mod.rs:530-565). `startup_with_r3` covers it.
 #[test]
 fn a_discovery_learning_and_aging() {
     let mut router = router();
@@ -81,14 +78,22 @@ fn a_discovery_learning_and_aging() {
     let i_am_type = code::I_AM_ROUTER_TO_NETWORK;
     let learned = |learned_ok| claim_counts(|c| c.learned_ok = learned_ok);
 
-    // t = 0: each port announces the other port's network, port by port.
+    // t = 0: port by port, the port's own network number, configured (R3,
+    // Clause 6.4.20), then the other port's network (Clause 6.6.2).
     router.start();
     let sent = drain(&mut router);
-    assert_eq!(sent.len(), 2);
+    assert_eq!(sent.len(), 4);
+    let number = Kind::Announce(code::NETWORK_NUMBER_IS);
     let announce = Kind::Announce(i_am_type);
-    list_broadcast(&sent[0], 0, announce, i_am_type, &[2]);
-    list_broadcast(&sent[1], 1, announce, i_am_type, &[1]);
-    assert!(sent.iter().all(|sent| sent.cause == Cause::Local));
+    assert_eq!((sent[0].port, sent[0].kind), (0, number));
+    assert_eq!(sent[0].npdu, message(code::NETWORK_NUMBER_IS, &[0, 1, 1]));
+    list_broadcast(&sent[1], 0, announce, i_am_type, &[2]);
+    assert_eq!((sent[2].port, sent[2].kind), (1, number));
+    assert_eq!(sent[2].npdu, message(code::NETWORK_NUMBER_IS, &[0, 2, 1]));
+    list_broadcast(&sent[3], 1, announce, i_am_type, &[1]);
+    assert!(sent
+        .iter()
+        .all(|sent| sent.is_broadcast() && sent.cause == Cause::Local));
     assert_eq!(router.next_deadline(), Some(at(60)));
     assert_eq!(router.counters(), counts(0, 0));
 
@@ -197,31 +202,25 @@ fn a_discovery_learning_and_aging() {
     assert_eq!(router.table().claim_counters(), learned(1));
 }
 
-/// Trace A's start with R3 on: each port's Network-Number-Is, then its
-/// I-Am-Router.
+/// Trace A's start with R3 off, as the hosted router did before it
+/// (router/mod.rs:530-565): each port's I-Am-Router alone.
 #[test]
-fn startup_with_r3() {
-    let options = options(|o| o.fixes.announce_numbers = true);
+fn startup_without_r3() {
+    let options = options(|o| o.fixes.announce_numbers = false);
     let mut router = router_with(&two_ports(), options);
     router.start();
     let sent = drain(&mut router);
     let kinds: Vec<(u8, Kind)> = sent.iter().map(|sent| (sent.port, sent.kind)).collect();
+    let i_am_type = code::I_AM_ROUTER_TO_NETWORK;
     assert_eq!(
         kinds,
         [
-            (0, Kind::Announce(code::NETWORK_NUMBER_IS)),
-            (0, Kind::Announce(code::I_AM_ROUTER_TO_NETWORK)),
-            (1, Kind::Announce(code::NETWORK_NUMBER_IS)),
-            (1, Kind::Announce(code::I_AM_ROUTER_TO_NETWORK)),
+            (0, Kind::Announce(i_am_type)),
+            (1, Kind::Announce(i_am_type))
         ]
     );
-    assert_eq!(sent[0].npdu, message(code::NETWORK_NUMBER_IS, &[0, 1, 1]));
-    assert_eq!(sent[1].npdu, i_am(&[2]));
-    assert_eq!(sent[2].npdu, message(code::NETWORK_NUMBER_IS, &[0, 2, 1]));
-    assert_eq!(sent[3].npdu, i_am(&[1]));
-    assert!(sent
-        .iter()
-        .all(|sent| sent.is_broadcast() && sent.cause == Cause::Local));
+    assert_eq!(sent[0].npdu, i_am(&[2]));
+    assert_eq!(sent[1].npdu, i_am(&[1]));
     assert_eq!(router.counters(), counts(0, 0));
 }
 
@@ -314,15 +313,37 @@ fn b_flow_control() {
 
 /// Trace C: rejects from R7 about network 9, each addressed to the router.
 ///
-/// The design's sketch removes the route at 31 s, under the reason-4
-/// reject. The hosted table holds that change off: the reason-1 change at
-/// 30 s started a 30 s hold-down for (9, port 1), and a removal is a change
-/// like any other (router_table.rs:303-363). The removal comes at 60 s,
-/// under today's rule that any reason but 1 and 2 removes the route
-/// (router_table.rs:349-355, fix R2 in #1679).
+/// With fix R2 a reason-4 reject changes no route (Clause 6.6.3.5): at 31
+/// s and again at 60 s the route stays, and each counts as kept.
+/// `c_without_r2` runs the trace as the hosted router did before the fix.
 #[test]
 fn c_received_rejects() {
-    let mut router = router();
+    let effects = c_trace(router());
+    assert_eq!(
+        effects,
+        [RejectEffect::Kept, RejectEffect::Kept],
+        "R2: the route stays"
+    );
+}
+
+/// Trace C with fix R2 off, as the hosted router did before it. The
+/// design's sketch removes the route at 31 s, under the reason-4 reject.
+/// The hosted table held that change off: the reason-1 change at 30 s
+/// started a 30 s hold-down for (9, port 1), and a removal is a change like
+/// any other (router_table.rs:303-363). The removal came at 60 s, under the
+/// rule that any reason but 1 and 2 removes the route
+/// (router_table.rs:349-355).
+#[test]
+fn c_without_r2() {
+    let options = options(|o| o.fixes.rejects_keep_routes = false);
+    let effects = c_trace(router_with(&two_ports(), options));
+    assert_eq!(effects, [RejectEffect::HeldDown, RejectEffect::Applied]);
+}
+
+/// Trace C up to its reason-4 rejects at 31 s and 60 s, whose effects it
+/// returns after checking the route and the claim counts each leaves.
+fn c_trace(mut router: TestRouter) -> [RejectEffect; 2] {
+    let keeps = router.options().fixes.rejects_keep_routes;
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
     let reject = |why: u8| message(code::REJECT_MESSAGE_TO_NETWORK, &reject_data(why, 9));
@@ -338,15 +359,18 @@ fn c_received_rejects() {
             other => panic!("expected a reject event, got {other:?}"),
         }
     };
-    // The claim counts after each step: applied, same state, held down.
-    let rejects = |applied, same, held| {
+    // The claim counts after each step: applied, same state, held down,
+    // and kept (R2).
+    let rejects_kept = |applied, same, held, kept| {
         claim_counts(|c| {
             c.reject_applied = applied;
             c.reject_dampened = same + held;
             c.reject_dampened_same_state = same;
             c.reject_dampened_hold_down = held;
+            c.reject_kept = kept;
         })
     };
+    let rejects = |applied, same, held| rejects_kept(applied, same, held, 0);
 
     // t = 0: reason 1 makes 9 unreachable.
     assert_eq!(step(&mut router, 1, 0), RejectEffect::Applied);
@@ -380,20 +404,28 @@ fn c_received_rejects() {
     assert_eq!(step(&mut router, 1, 30), RejectEffect::Applied);
     assert_eq!(state(&router), Some(Reachability::Unreachable));
     assert_eq!(router.table().claim_counters(), rejects(2, 1, 1));
-    // t = 31 s: reason 4, within the hold-down from 30 s: the route stays.
-    assert_eq!(
-        step(&mut router, reason::MESSAGE_TOO_LONG, 31),
-        RejectEffect::HeldDown
-    );
+    // t = 31 s: reason 4. With R2 it is kept, changing nothing; without,
+    // it would remove the route, but comes within the hold-down from 30 s.
+    // The route stays either way.
+    let at_31 = step(&mut router, reason::MESSAGE_TOO_LONG, 31);
     assert_eq!(state(&router), Some(Reachability::Unreachable));
-    assert_eq!(router.table().claim_counters(), rejects(2, 1, 2));
-    // t = 60 s: reason 4 removes the route (parity; R2 keeps it later).
-    assert_eq!(
-        step(&mut router, reason::MESSAGE_TOO_LONG, 60),
-        RejectEffect::Applied
-    );
-    assert_eq!(state(&router), None);
-    assert_eq!(router.table().claim_counters(), rejects(3, 1, 2));
+    let after_31 = if keeps {
+        rejects_kept(2, 1, 1, 1)
+    } else {
+        rejects(2, 1, 2)
+    };
+    assert_eq!(router.table().claim_counters(), after_31);
+    // t = 60 s: reason 4 again. With R2 the route still stays; without, the
+    // hold-down is over and the route goes.
+    let at_60 = step(&mut router, reason::MESSAGE_TOO_LONG, 60);
+    if keeps {
+        assert_eq!(state(&router), Some(Reachability::Unreachable));
+        assert_eq!(router.table().claim_counters(), rejects_kept(2, 1, 1, 2));
+    } else {
+        assert_eq!(state(&router), None);
+        assert_eq!(router.table().claim_counters(), rejects(3, 1, 2));
+    }
+    [at_31, at_60]
 }
 
 /// Trace D: hardened convergence. B is another router, on port 0.
@@ -507,10 +539,24 @@ fn d_a_repeat_past_the_window_starts_over() {
     assert_eq!(counters.corroborated_applied, 0);
 }
 
-/// The startup announcements of a one-port router: none, as today.
+/// The startup announcements of a one-port router: its number, with R3,
+/// and no I-Am-Router, since no network lies beyond another port. One on
+/// network 0, which names no network, announces nothing; so did every
+/// one-port router before R3.
 #[test]
-fn a_one_port_router_announces_nothing() {
+fn a_one_port_router_announces_only_its_number() {
     let mut router = router_with(&[fixture::port_on(1, OWN_0)], Options::HOSTED);
+    router.start();
+    let sent = drain(&mut router);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].kind, Kind::Announce(code::NETWORK_NUMBER_IS));
+    assert_eq!(sent[0].npdu, message(code::NETWORK_NUMBER_IS, &[0, 1, 1]));
+
+    let mut router = router_with(&[fixture::port_on(0, OWN_0)], Options::HOSTED);
+    router.start();
+    assert!(drain(&mut router).is_empty());
+    let options = options(|o| o.fixes.announce_numbers = false);
+    let mut router = router_with(&[fixture::port_on(1, OWN_0)], options);
     router.start();
     assert!(drain(&mut router).is_empty());
 }

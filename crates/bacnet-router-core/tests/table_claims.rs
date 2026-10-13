@@ -178,9 +178,10 @@ fn pending_claim_preserves_busy_and_reject_records_until_apply() {
 
 #[test]
 fn cleanup_never_leaves_pending_without_a_learned_route() {
+    // A reject's removal, which only the router with fix R2 off makes, is
+    // `src/table/tests/rejects.rs`'s.
     for cleanup in [
         "remove",
-        "reject_remove",
         "aging",
         "direct",
         "manual",
@@ -196,9 +197,6 @@ fn cleanup_never_leaves_pending_without_a_learned_route() {
         match cleanup {
             "remove" => {
                 table.remove(3000);
-            }
-            "reject_remove" => {
-                table.apply_reject(3000, port(0), 0, now, &TIMING);
             }
             "aging" => assert_eq!(purge(&mut table, now, secs(60)), [3000]),
             "direct" => {

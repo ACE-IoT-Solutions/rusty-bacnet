@@ -12,7 +12,7 @@ use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::Permissive;
 use bacnet_router_core::bip::{BipPort, HeldBroadcast, Ingress};
 use bacnet_router_core::message::code;
-use bacnet_router_core::router::SendRefusal;
+use bacnet_router_core::router::{Options, SendRefusal};
 use bacnet_router_core::Instant;
 
 use fixture::*;
@@ -23,17 +23,16 @@ fn sent_at(out: &mut Wire, now: Instant, trace: &mut Vec<(Instant, Out)>) {
     trace.extend(out.take().into_iter().map(|sent| (now, sent)));
 }
 
-/// A foreign-device port holding two broadcasts, on a router with fix R3
-/// on, started at `t0`: its first registration sent, and the router's
-/// startup announcements carried out.
+/// A foreign-device port holding two broadcasts, on a router with the
+/// default options (fix R3 on among them), started at `t0`: its first
+/// registration sent, and the router's startup announcements carried out.
 fn started_foreign_port<'h>(
     held: &'h mut [HeldBroadcast],
     out: &mut Wire,
 ) -> (BipPort<'h>, TestRouter) {
     let t0 = Instant::ZERO;
     let mut bip = BipPort::new(BIP_PORT, node(foreign(2), t0), held).unwrap();
-    let r3 = options(|options| options.fixes.announce_numbers = true);
-    let mut router = router_with(&[bip.config(1), port_on(2, OWN_1)], r3);
+    let mut router = router_with(&[bip.config(1), port_on(2, OWN_1)], Options::HOSTED);
     // The registration waits in the node's queue until the port starts,
     // with no deadline to wake it; once sent, its response timeout is one.
     assert_eq!(bip.next_deadline(), None);
@@ -69,7 +68,7 @@ fn trace_e(released: Instant) -> [(Instant, Out); 3] {
 
 /// Trace E (design 5.2): a router port that is a foreign device, holding
 /// two broadcasts. At start it registers, and holds its two startup
-/// announcements, the Network-Number-Is and the I-Am-Router (fix R3 on);
+/// announcements, the Network-Number-Is and the I-Am-Router (fix R3);
 /// the BBMD's success 10 ms later releases them, in order (Annex J.7.4;
 /// decision D17).
 #[test]

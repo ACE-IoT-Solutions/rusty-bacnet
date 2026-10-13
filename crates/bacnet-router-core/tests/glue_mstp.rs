@@ -395,8 +395,8 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
         max_npdu: Limits::both(501),
         ..MstpPort::config(&config(true), 2).unwrap()
     };
-    let r1 = options(|options| options.fixes.egress_limits = true);
-    let mut router = router_with(&[port_on(1, OWN_0), held_to_501], r1);
+    // Fix R1 is on by default.
+    let mut router = router_with(&[port_on(1, OWN_0), held_to_501], Options::HOSTED);
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(true);
     let mut rejects = Vec::new();

@@ -28,21 +28,24 @@
 //! 4. An APDU with no DNET is delivered locally. A global broadcast is
 //!    passed on to every other port and delivered. Any other DNET is
 //!    looked up: no route starts a search and draws reason 1, a busy route
-//!    reason 2 and an unreachable one reason 1. On the arrival network, a
-//!    DADR that is the router's own MAC is delivered, and a DLEN 0
-//!    broadcast is delivered and also sent back out the same port.
+//!    reason 2 and an unreachable one reason 1. A DADR that is the
+//!    router's own MAC is delivered: on any of its networks with fix R7,
+//!    on the arrival network only without. On the arrival network, a DLEN
+//!    0 broadcast is delivered and also sent back out the same port.
 //! 5. The NPDU is rewritten (Clause 6.5.4) and sent: SNET and SADR added
 //!    when missing; onto a directly attached network without its DNET,
 //!    DADR and hop count, to the DADR or as a broadcast; toward the next
 //!    router with its hop count one lower. One that arrives with a hop
-//!    count of 0 goes nowhere.
+//!    count of 0 goes nowhere, and with fix R6 one whose count would leave
+//!    at 0 doesn't go either.
 //!
 //! The [`Host`] answers what the router can't know itself: which MACs are
 //! group addresses on a port ([`Group`]), and whether to act on a
 //! protected network message.
 //!
-//! [`Fixes`] holds the changes Clause 6 calls for, each off by default so
-//! the engine behaves as the hosted router does today.
+//! [`Fixes`] holds where the engine departs from what the router did before
+//! #1679, to do what Clause 6 asks, each behind a switch: all on by
+//! default, all off for the router before them.
 
 mod config;
 mod control;
@@ -73,7 +76,7 @@ use crate::table::Table;
 use crate::{Instant, PortId, MAX_NPDU};
 
 /// The NPDU limits a port may have: at least this.
-pub(crate) const MIN_LIMIT: u16 = 64;
+pub(crate) const MIN_LIMIT: u16 = Limits::MIN;
 
 /// Everything large a [`Router`] keeps: up to `P` ports, a table of `R`
 /// routes and `H` hold-down records, `D` searches, and an output scratch of
