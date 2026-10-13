@@ -64,6 +64,9 @@ MSTP_KEYWORD_ONLY = [
     "mstp_extended_frames",
     "mstp_echo",
     "mstp_echo_grace_ms",
+    "mstp_transmit_latency_pad_ms",
+    "mstp_usage_timeout_ms",
+    "mstp_reply_timeout_ms",
 ]
 CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + [
     "sc_device_uuid", "share_port_by_address", "min_request_interval_ms", "ipv6_device_instance",
@@ -170,7 +173,7 @@ class SignatureCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(
             [p.default for p in parameters if p.name in MSTP_KEYWORD_ONLY],
-            [None, 38_400, 1, 127, 1, False, False, None],
+            [None, 38_400, 1, 127, 1, False, False, None, None, None, None],
         )
 
     def test_runtime_and_stub_signatures_match_compatibility_contract(self) -> None:
@@ -343,6 +346,67 @@ class MstpRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await server.start()
             # Refused before anything started: registration stays open.
             server.add_binary_input(1, "After failure")
+
+    async def test_timing_options_reach_serial_open_for_client_and_server(
+        self,
+    ) -> None:
+        # The pad and the two timeouts (#1654, #1655) at the ends of their
+        # ranges need nothing more before the port opens.
+        path = nonexistent_serial_path()
+        for options in (
+            {"mstp_transmit_latency_pad_ms": 0, "mstp_usage_timeout_ms": 20, "mstp_reply_timeout_ms": 255},
+            {"mstp_transmit_latency_pad_ms": 15, "mstp_usage_timeout_ms": 35, "mstp_reply_timeout_ms": 300},
+        ):
+            client = make_client(path, **options)
+            with self.subTest(kind="client", **options), self.assertRaises(
+                RuntimeError
+            ) as caught:
+                await client.__aenter__()
+            self.assertTrue(str(caught.exception).startswith("Serial open failed"))
+
+            server = make_server(path, **options)
+            with self.subTest(kind="server", **options), self.assertRaises(
+                RuntimeError
+            ) as caught:
+                await server.start()
+            self.assertTrue(str(caught.exception).startswith("Serial open failed"))
+
+    async def test_out_of_range_timing_fails_before_open_for_client_and_server(
+        self,
+    ) -> None:
+        path = nonexistent_serial_path()
+        cases = [
+            ({"mstp_transmit_latency_pad_ms": 16}, "transmit_latency_pad"),
+            ({"mstp_usage_timeout_ms": 19}, "usage_timeout"),
+            ({"mstp_usage_timeout_ms": 36}, "usage_timeout"),
+            ({"mstp_reply_timeout_ms": 254}, "reply_timeout"),
+            ({"mstp_reply_timeout_ms": 301}, "reply_timeout"),
+        ]
+        for overrides, field in cases:
+            client = make_client(path, **overrides)
+            with self.subTest(kind="client", **overrides), self.assertRaisesRegex(
+                ValueError, field
+            ):
+                await client.__aenter__()
+
+            server = make_server(path, **overrides)
+            with self.subTest(kind="server", **overrides), self.assertRaisesRegex(
+                ValueError, field
+            ):
+                await server.start()
+
+    def test_negative_timing_is_refused_at_construction(self) -> None:
+        path = nonexistent_serial_path()
+        for keyword in (
+            "mstp_transmit_latency_pad_ms",
+            "mstp_usage_timeout_ms",
+            "mstp_reply_timeout_ms",
+        ):
+            with self.subTest(keyword=keyword):
+                with self.assertRaises(OverflowError):
+                    make_client(path, **{keyword: -1})
+                with self.assertRaises(OverflowError):
+                    make_server(path, **{keyword: -1})
 
     def test_negative_echo_grace_is_refused_at_construction(self) -> None:
         path = nonexistent_serial_path()

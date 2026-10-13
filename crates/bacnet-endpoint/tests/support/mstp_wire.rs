@@ -21,10 +21,13 @@ pub struct MstpFrame {
     pub data: Bytes,
 }
 
-/// Decode one frame from the start of `wire`, with the octets it took.
+/// Decode one frame from the start of `wire`, with the octets it took. An
+/// extended frame (Types 32 and 33) decodes too: its data is COBS-decoded
+/// in a copy.
 pub fn decode_frame(wire: &[u8]) -> Result<(MstpFrame, usize), Error> {
-    let (frame, consumed) =
-        codec::decode_frame(wire).map_err(|error| Error::Encoding(error.to_string()))?;
+    let mut copy = wire.to_vec();
+    let (frame, consumed) = codec::decode_frame_in_place(&mut copy)
+        .map_err(|error| Error::Encoding(error.to_string()))?;
     Ok((
         MstpFrame {
             frame_type: frame.header.frame_type,

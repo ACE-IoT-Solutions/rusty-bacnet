@@ -162,7 +162,8 @@ pub struct SessionConfig {
     /// [`DeviceIdentity`](crate::identity::DeviceIdentity) via
     /// [`with_identity`](EndpointSession::with_identity) overrides this with
     /// the identity value; the MS/TP builder additionally rejects identities
-    /// above its 480 transport bound at build time.
+    /// above its transport bound (480, or 1476 with extended frames) at
+    /// build time.
     pub max_apdu_length: u16,
     /// Result rows one ReadProperty served by the server role may expand
     /// (default 256).

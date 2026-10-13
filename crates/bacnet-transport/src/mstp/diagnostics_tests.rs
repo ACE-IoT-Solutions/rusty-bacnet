@@ -5,7 +5,7 @@ use bacnet_mstp_codec::FrameType;
 use bytes::Bytes;
 use tokio::time::Duration;
 
-use super::test_support::{config, encode, Bus, Sent};
+use super::test_support::{config, encode, Bus, Sent, T_REPLY_TIMEOUT};
 use super::{
     LoopbackSerial, MstpDiagnosticsSnapshot, MstpExecutionMode, MstpTransport, SerialPort,
 };
@@ -111,7 +111,10 @@ async fn reply_timeouts_are_counted() {
     assert_eq!(request.frame_type, FrameType::BACnetDataExpectingReply);
     let token = bus.next().await;
     assert_eq!(token.frame_type, FrameType::Token);
-    assert!(token.start >= request.end + Duration::from_millis(255));
+    assert!(token.start >= request.end + T_REPLY_TIMEOUT);
+    assert!(
+        token.start <= request.end + T_REPLY_TIMEOUT + bus.turnaround + Duration::from_millis(1)
+    );
     let counts = bus.transport.diagnostics().snapshot();
     assert_eq!(counts.wait_for_reply_timeouts, 1);
     assert_eq!(counts.der_tx, 1);

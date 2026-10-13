@@ -1590,9 +1590,9 @@ configuration gap is closed, not the full Annex AB profile or issue #513.
 
 MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes. The master node state machine is the portable `bacnet-mstp-core`, driven by the transport's Tokio task, and frames come from `bacnet-mstp-codec`, re-exported as `bacnet_transport::mstp::codec` for code that builds or reads frames (see [the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)). Firmware can drive the core directly. Its time is `bacnet-time`'s `Instant` and `Duration`, in nanoseconds from an epoch the caller picks, the same types `bacnet-bip-core` takes, so one clock feeds both.
 
-`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate; every Clause 9 timer is derived from them. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, and a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay). Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU longer than the port sends (`Error::Encoding`) is refused at once.
+`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate, from which the Clause 9 timers are derived, and the transmit-latency pad for a port without a drain (see [Auto-Direction](#auto-direction-usb-rs-485-adapters) below). Three timers that Clause 9.5.3 lets a station lengthen are lengthened on every host port, since a USB adapter delivers what it receives late (16 ms by default on FTDI parts) and can't be told from a native UART on every platform: T_frame_abort is fixed at its 100 ms maximum (`HOST_FRAME_ABORT_MS`), and `usage_timeout` (T_usage_timeout, 20 to 35 ms) and `reply_timeout` (T_reply_timeout, 255 to 300 ms) default to their maxima, `HOST_USAGE_TIMEOUT` and `HOST_REPLY_TIMEOUT`. With the minimums, a successor that used the token or answered a poll as late as T_usage_delay lets it, or a peer that answered a request as late as T_reply_delay lets it, could still be in the adapter when the station gave up: it would send the token again, poll the next address, or pass the token, over an answer already on the wire. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay), the two timeouts within their ranges, and a pad of at most T_usage_delay (15 ms): what the station hears while the pad runs reaches the core only after it, so a longer pad would make it answer a token or poll late. The core's transmit watchdog is lengthened by the pad where it would not otherwise cover the longest padded frame. The Python bindings take all three as `mstp_transmit_latency_pad_ms`, `mstp_usage_timeout_ms` and `mstp_reply_timeout_ms`, and `MstpEndpointBuilder` as `transmit_latency_pad`, `usage_timeout` and `reply_timeout`; the client and server builders take the whole `MstpConfig` with the transport. Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU longer than the port sends (`Error::Encoding`) is refused at once.
 
-`MstpConfig::extended_frames` (off by default) turns on the extended frame types, 32 and 33, which carry NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a routing node and leaves them optional for others, so `BACnetRouter::start` turns the flag on for every MS/TP port it routes, through `TransportPort::prepare_for_routing`, and a device keeps it off unless it sets it. With the flag on the port sends and takes NPDUs of up to 1497 octets (`MstpTransport::max_npdu_length`) and declares an APDU limit of 1476 instead of 480; an answer over 501 octets goes back as a Type 33. Without it, an extended frame the port hears counts as an invalid frame, as on a node without COBS support. On firmware, `MstpCoreConfig::with_extended_frames` sets the flag for `bacnet-mstp-core`, which then needs buffers sized for extended frames (`ExtendedActionBuffers`, 1497-octet queue slots and 1516 octets of receive storage). On a host each port's queues reserve about 770 KiB with the flag on, against about 270 KiB without, and the core's action buffers take about 13 KiB either way.
+`MstpConfig::extended_frames` (off by default) turns on the extended frame types, 32 and 33, which carry NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a routing node and leaves them optional for others, so `BACnetRouter::start` turns the flag on for every MS/TP port it routes, through `TransportPort::prepare_for_routing`, and a device keeps it off unless it sets it. With the flag on the port sends and takes NPDUs of up to 1497 octets (`MstpTransport::max_npdu_length`) and declares an APDU limit of 1476 instead of 480; an answer over 501 octets goes back as a Type 33. Without it, an extended frame the port hears counts as an invalid frame, as on a node without COBS support. On firmware, `MstpCoreConfig::with_extended_frames` sets the flag for `bacnet-mstp-core`, which then needs buffers sized for extended frames (`ExtendedActionBuffers`, 1497-octet queue slots and 1516 octets of receive storage). On a host each port's queues reserve 512 slots, 768 KiB with the flag on (1536-octet slots) against 272 KiB without (544-octet slots), resident as the queues fill, and the core's action buffers take about 13 KiB either way. `MstpEndpointBuilder::extended_frames(true)` turns the flag on for an endpoint, whose identity may then advertise a Max_APDU_Length_Accepted of up to 1476.
 
 #### Host Diagnostics and Qualification
 
@@ -1699,6 +1699,20 @@ for name in available_ports()? {
     println!("{name}"); // /dev/ttyUSB0, /dev/cu.usbserial-1410, COM3, ...
 }
 ```
+
+On Linux and macOS the transport waits for the port's drain (`tcdrain`) to
+know when a frame left. On Windows `TokioSerialPort` has no drain: its write
+returns once the system holds the data, before the adapter has sent it. The
+transport then takes a frame to end its wire time at the baud rate after the
+write began, plus `MstpConfig::transmit_latency_pad`, the time its first octet
+may take to leave. The default there is `USB_TRANSMIT_LATENCY_PAD`, 4 ms: a USB
+full-speed host starts a transfer only at the next 1 ms frame (FTDI
+AN232B-04), so the pad covers one frame of waiting, one for the transfer and
+2 ms for the host controller and driver. A port that drains is never padded,
+and the default is zero elsewhere. A slower driver or a busy host needs a
+larger pad, up to T_usage_delay (15 ms). One too short starts T_turnaround and
+the reply and usage timeouts early; one too long delays the station's next
+frame, and what it hears meanwhile reaches the core only after the pad.
 
 #### Kernel RS-485 Mode (Linux, RTS-based)
 
@@ -1829,7 +1843,7 @@ the frame may start. `drain()` reports completion of all accepted output,
 including the UART shift register. Its default implementation returns an
 unsupported-operation error, preserving existing custom backends without
 falsely claiming completion; the transport then times each frame by its
-octets at the baud rate. Custom backends used for software direction control
+octets at the baud rate plus `MstpConfig::transmit_latency_pad`. Custom backends used for software direction control
 must implement this operation. `read()` must be cancel safe: the transport
 drops a pending read to service a deadline, and polls one once, without
 waiting, to collect octets already there before it starts a frame. It waits
@@ -7480,7 +7494,11 @@ session.stop().await?;
 validation; `build_hub_session` over a caller-dialed `TlsWebSocket`,
 `sc-tls` only, proven against the local constrained-TLS hub).
 `MstpEndpointBuilder` composes one serial owner (simulator evidence only —
-no bench or on-wire conformance; timing is RB-26).
+no bench or on-wire conformance; timing is RB-26). It runs standard frames
+and a 480-octet APDU bound by default; `extended_frames(true)` turns on
+extended frames and lifts the bound the identity is checked against to 1476.
+The port declares its own echo, as for a transport built by hand
+(`with_echo(Echo::full())`; see [Echo](#echo)).
 
 ### Choosing standalone or shared client/server roles
 

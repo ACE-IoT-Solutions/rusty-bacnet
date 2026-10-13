@@ -8,13 +8,12 @@
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
 use tokio::time::{Duration, Instant};
 
-use super::test_support::{config, encode, Bus, Sent};
+use super::test_support::{config, encode, Bus, Sent, T_USAGE_TIMEOUT};
 use super::MstpConfig;
 use crate::port::TransportPort;
 
 const T_NO_TOKEN: Duration = Duration::from_millis(500);
 const T_SLOT: Duration = Duration::from_millis(10);
-const T_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 /// Slack for Tokio's millisecond timer wheel.
 const TICK: Duration = Duration::from_millis(1);
 

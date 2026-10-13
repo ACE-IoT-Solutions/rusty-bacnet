@@ -28,13 +28,36 @@ pub(super) struct TrackedSerial {
     serial: LoopbackSerial,
     _peer: LoopbackSerial,
     live: Arc<AtomicUsize>,
+    /// The echo declared for it; the injected port itself returns nothing.
+    echo: Echo,
 }
 impl Drop for TrackedSerial {
     fn drop(&mut self) {
         self.live.fetch_sub(1, Ordering::SeqCst);
     }
 }
+impl TestSerial {
+    /// Declare the echo, as `TokioSerialPort::with_echo` does. A peer
+    /// loopback then hears its own writes.
+    pub(super) fn with_echo(self, echo: Echo) -> Self {
+        match self {
+            Self::Real(port) => Self::Real(port.with_echo(echo)),
+            Self::Injected(mut port) => {
+                port.echo = echo;
+                Self::Injected(port)
+            }
+            Self::Peer(port) => Self::Peer(port.with_echo(echo)),
+        }
+    }
+}
 impl SerialPort for TestSerial {
+    fn echo(&self) -> Echo {
+        match self {
+            Self::Real(port) => port.echo(),
+            Self::Injected(port) => port.echo,
+            Self::Peer(port) => port.echo(),
+        }
+    }
     async fn write(&self, data: &[u8]) -> Result<(), Error> {
         match self {
             Self::Real(port) => port.write(data).await,
@@ -81,6 +104,12 @@ fn mstp_python_wrapper_owns_one_serial_and_returns_none() {
         0,
         256,
         0,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
     )
     .unwrap();
     endpoint.config.serial_opener = Some(Arc::new({
@@ -94,6 +123,7 @@ fn mstp_python_wrapper_owns_one_serial_and_returns_none() {
                 serial,
                 _peer: peer,
                 live: live.clone(),
+                echo: Echo::None,
             })))
         }
     }));
@@ -291,6 +321,12 @@ fn mstp_python_wrapper_applies_its_read_work_limit() {
         0,
         2,
         0,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
     )
     .unwrap();
     assert_eq!(endpoint.config.read_work_limit, 2);
