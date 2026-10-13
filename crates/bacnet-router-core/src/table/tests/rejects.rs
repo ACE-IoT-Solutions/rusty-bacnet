@@ -133,30 +133,80 @@ fn busy_duplicates_do_not_renew_deadline_and_expired_busy_can_be_rejected_again(
     );
 }
 
+/// Clause 6.6.3.5 changes the table for reasons 1 and 2 only (fix R2 in
+/// #1679): any other reason leaves a learned route as it was, starts no
+/// hold-down, and counts as kept, apart from the dampened rejects, even
+/// within a hold-down.
 #[test]
-fn every_legacy_removal_reason_applies_first_but_obeys_hold_down() {
+fn every_other_reason_keeps_a_learned_route() {
+    for reason in (0..=u8::MAX).filter(|reason| ![1, 2].contains(reason)) {
+        let mut table = learned_table();
+        let before = table.lookup(3000).unwrap();
+        assert_eq!(
+            table.apply_reject(3000, port(0), reason, BASE, &TIMING),
+            RejectEffect::Kept
+        );
+        assert_eq!(table.lookup(3000), Some(before));
+        assert_eq!(table.holds().count(), 0);
+
+        table.apply_reject(3000, port(0), 2, BASE, &TIMING);
+        let busy = table.lookup(3000).unwrap();
+        assert_eq!(
+            table.apply_reject(3000, port(0), reason, BASE + secs(1), &TIMING),
+            RejectEffect::Kept
+        );
+        assert_eq!(table.lookup(3000), Some(busy));
+        assert_eq!(table.held_since(3000, port(0)), Some(BASE));
+        assert_eq!(
+            table.claim_counters(),
+            ClaimCounters {
+                reject_applied: 1,
+                reject_kept: 2,
+                ..Default::default()
+            }
+        );
+    }
+}
+
+/// The router before fix R2, which `Fixes::NONE` keeps: any reason but 1
+/// and 2 removes a learned route, as a change like the others, first time
+/// and under the hold-down, and the removal takes the route's pending
+/// hardened-mode claim and hold-down records with it.
+#[test]
+fn with_r2_off_every_other_reason_removes_but_obeys_hold_down() {
     for reason in (0..=u8::MAX).filter(|reason| ![1, 2].contains(reason)) {
         let now = BASE;
         let mut table = learned_table();
-        table.apply_reject(3000, port(0), reason, now, &TIMING);
+        table.apply_reject_removing(3000, port(0), reason, now, &TIMING);
         assert!(table.lookup(3000).is_none());
         assert_eq!(table.holds().count(), 0);
-        table.apply_reject(3000, port(0), reason, now, &TIMING);
+        table.apply_reject_removing(3000, port(0), reason, now, &TIMING);
         assert_eq!(table.claim_counters().reject_applied, 1);
         assert_eq!(table.claim_counters().reject_dampened_same_state, 1);
 
         table.add_learned(3000, port(0), Mac::EMPTY, now);
-        table.apply_reject(3000, port(0), 2, now, &TIMING);
+        table.apply_reject_removing(3000, port(0), 2, now, &TIMING);
         assert_eq!(
-            table.apply_reject(3000, port(0), reason, now + secs(1), &TIMING),
+            table.apply_reject_removing(3000, port(0), reason, now + secs(1), &TIMING),
             RejectEffect::HeldDown
         );
         assert!(table.lookup(3000).is_some());
-        table.apply_reject(3000, port(0), reason, now + HOLD_DOWN, &TIMING);
+        table.apply_reject_removing(3000, port(0), reason, now + HOLD_DOWN, &TIMING);
         assert!(table.lookup(3000).is_none());
         assert_eq!(table.holds().count(), 0);
         assert_eq!(table.claim_counters().reject_applied, 3);
         assert_eq!(table.claim_counters().reject_dampened_hold_down, 1);
+
+        // A pending claim goes with the route.
+        let mut table = Hosted::new_hardened();
+        table.add_learned(3000, port(0), Mac::EMPTY, now);
+        assert!(!table
+            .apply_claim(3000, port(1), Mac::EMPTY, now, &TIMING)
+            .applied());
+        assert_eq!(table.pending_count(), 1);
+        table.apply_reject_removing(3000, port(0), reason, now, &TIMING);
+        assert_eq!(table.pending_count(), 0);
+        assert_eq!(table.claim_counters().pending_expired, 0);
     }
 }
 

@@ -6,7 +6,7 @@ use super::output::{Cause, Current, Kind, Target};
 use super::Storage;
 use crate::message::{code, NetworkNumberIs, Networks, Reject, RoutingEntries};
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
-use crate::table::Table;
+use crate::table::{Reachability, Table};
 use crate::{Mac, PortId};
 
 /// What a queued task writes. Zero is an empty slot.
@@ -19,7 +19,8 @@ pub(super) enum TaskKind {
     /// with `origin` as its DNET and DADR when `origin_network` isn't 0.
     Reject,
     /// An I-Am-Router on `port`: for `network`, or for 0 every network the
-    /// table reaches through another port.
+    /// table reaches through another port, with R4 on but those marked
+    /// unreachable.
     IAmAnswer,
     /// An Initialize-Routing-Table-Ack with no data, to `to` on `port`.
     UpdateAck,
@@ -213,7 +214,17 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 Some((len, Kind::Reject(task.reason), Cause::Ingress, target))
             }
             TaskKind::IAmAnswer => {
-                let mut others = self.table.networks_not_on_port(task.port).peekable();
+                let skip_unreachable = options.fixes.answer_reachable;
+                let mut others = self
+                    .table
+                    .routes()
+                    .filter(move |(_, route)| {
+                        route.port != task.port
+                            && !(skip_unreachable
+                                && route.reachability == Reachability::Unreachable)
+                    })
+                    .map(|(network, _)| network)
+                    .peekable();
                 let kind = Kind::Answer(code::I_AM_ROUTER_TO_NETWORK);
                 let target = Target::Broadcast(task.port);
                 let message = code::I_AM_ROUTER_TO_NETWORK;

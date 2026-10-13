@@ -8,7 +8,9 @@
 //! - an I-Could-Be-Router for a new network stops at the route cap;
 //! - `start` refuses what the engine can't run: no port, more than 255,
 //!   or a router MAC longer than 18 octets;
-//! - a rewrite longer than the engine's scratch isn't routed.
+//! - a global broadcast whose rewrite is longer than the engine's scratch
+//!   isn't passed on; with R1, any other NPDU that long has already drawn
+//!   reason 4, since no port's limit reaches the scratch.
 //!
 //! The bounded hold-down pool is `bacnet-router-core`'s own, tested there.
 
@@ -252,39 +254,63 @@ async fn start_refuses_what_the_engine_cannot_run() {
     router.stop().await;
 }
 
-/// A rewrite that fits the engine's 65,556-octet scratch is routed; one
-/// octet more is dropped, logged and counted in `write_failures`, where the
-/// router before the engine sent NPDUs of any length on to the port.
+/// The engine's 65,556-octet scratch bounds what it writes, and no port's
+/// limit reaches it: a port carries at most 65,535 octets, so with R1 an
+/// NPDU routed toward one network draws reason 4 before its rewrite is
+/// written. Only a fan-out is written first. A global broadcast whose
+/// rewrite fits the scratch, but no port, goes nowhere, counted as too
+/// long; one octet more is dropped, logged and counted in `write_failures`,
+/// where the router before the engine sent NPDUs of any length on to the
+/// port. It is delivered locally either way.
 #[tokio::test]
 async fn a_rewrite_past_the_scratch_is_dropped_and_counted() {
     use super::envelope_harness::Harness;
-    use bacnet_encoding::npdu::NpduAddress;
+    use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
+    use bacnet_transport::port::NpduLimits;
 
+    let widest = [NpduLimits::both(u16::MAX); 2];
+    let npdu = |network: u16, mac: &[u8], apdu_len: usize| Npdu {
+        destination: Some(NpduAddress {
+            network,
+            mac_address: MacAddr::from_slice(mac),
+        }),
+        hop_count: 255,
+        payload: Bytes::from(vec![0x10; apdu_len]),
+        ..Npdu::default()
+    };
     // Version and control, SNET, SLEN and an 18-octet SADR: 23 octets
-    // before the APDU.
-    for (apdu_len, routed) in [(65_533, true), (65_534, false)] {
-        let mut h = Harness::two_port();
-        let npdu = Npdu {
-            destination: Some(NpduAddress {
-                network: 2000,
-                mac_address: MacAddr::from_slice(&[5]),
-            }),
-            hop_count: 255,
-            payload: Bytes::from(vec![0x10; apdu_len]),
-            ..Npdu::default()
-        };
-        h.dispatch(h.ctx(0, &[0xA5; 18], npdu)).await;
+    // before the APDU on an attached network.
+    for (apdu_len, routed) in [(65_512, true), (65_513, false)] {
+        let mut h = Harness::with_limits(&[1000, 2000], &widest);
+        h.dispatch(h.ctx(0, &[0xA5; 18], npdu(2000, &[5], apdu_len)))
+            .await;
         let sent = h.drain(1);
         if routed {
             let [SendRequest::Unicast { npdu, mac, .. }] = &sent[..] else {
                 panic!("expected the rewrite on port 1, got {sent:?}");
             };
-            assert_eq!(npdu.len(), 65_556);
+            assert_eq!(npdu.len(), 65_535);
             assert_eq!(mac.as_slice(), [5]);
         } else {
             assert!(sent.is_empty(), "{apdu_len}");
+            let [SendRequest::Unicast { npdu, .. }] = &h.drain(0)[..] else {
+                panic!("expected a reject on port 0");
+            };
+            let reject = decode_npdu(npdu.clone()).unwrap();
+            assert_eq!(reject.payload.as_ref(), [4, 0x07, 0xD0]);
         }
-        assert_eq!(h.take_write_failures(), u64::from(!routed), "{apdu_len}");
+        assert_eq!(h.counters().egress_too_long, u64::from(!routed));
+        assert_eq!(h.take_write_failures(), 0, "{apdu_len}");
+        h.assert_quiet();
+    }
+    // A global broadcast keeps its DNET, DLEN and hop count too: 27 octets.
+    for (apdu_len, written) in [(65_529, true), (65_530, false)] {
+        let mut h = Harness::with_limits(&[1000, 2000], &widest);
+        h.dispatch(h.ctx(0, &[0xA5; 18], npdu(0xFFFF, &[], apdu_len)))
+            .await;
+        assert!(h.apdus.try_recv().is_ok(), "delivered locally");
+        assert_eq!(h.counters().egress_too_long, u64::from(written));
+        assert_eq!(h.take_write_failures(), u64::from(!written), "{apdu_len}");
         h.assert_quiet();
     }
 }

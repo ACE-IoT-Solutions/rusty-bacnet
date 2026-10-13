@@ -12,7 +12,10 @@
 //! - **Authorization** (RB-09): each protected control goes to the
 //!   [`ControlGate`], with the arrival's provenance.
 //! - **Logs**: each event the engine reports is logged with the message and
-//!   level the router used before the engine.
+//!   level the router used before the engine. The two that can come once
+//!   per frame, a spent hop count and an NPDU too long for its egress port
+//!   (#1665), warn at most once per interval, with the count since, as a
+//!   failed send does (#1672), and log the rest at debug.
 //!
 //! The hooks run under the engine's lock, so they never block and never
 //! call into the router.
@@ -23,6 +26,7 @@
 use bacnet_router_core::router::{Claim, ControlClass, Event, Group, Host};
 use bacnet_router_core::PortId;
 use bacnet_transport::port::{GroupDestinations, TransportProvenance};
+use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_types::MacAddr;
 use tracing::{debug, info, warn};
 
@@ -52,12 +56,24 @@ impl PortGroups {
     }
 }
 
+/// The router's throttles for the engine's warnings that can come once
+/// per frame.
+#[derive(Debug, Default)]
+pub(super) struct EngineWarnings {
+    /// Relays dropped for a spent hop count.
+    hop_count: WarnThrottle,
+    /// NPDUs too long for an egress port (R1, #1665).
+    too_long: WarnThrottle,
+}
+
 /// The [`Host`] for one call into the engine.
 pub(super) struct HostedHost<'a> {
     /// Each port's groups, by port index.
     groups: &'a [PortGroups],
     /// The wire-control gate.
     gate: &'a ControlGate,
+    /// The router's warning throttles.
+    warnings: &'a EngineWarnings,
     /// How the transport learned of the arrival's origin; unverified for
     /// the sweep, which authorizes nothing.
     provenance: TransportProvenance,
@@ -68,11 +84,13 @@ impl<'a> HostedHost<'a> {
     pub(super) fn new(
         groups: &'a [PortGroups],
         gate: &'a ControlGate,
+        warnings: &'a EngineWarnings,
         provenance: TransportProvenance,
     ) -> Self {
         Self {
             groups,
             gate,
+            warnings,
             provenance,
         }
     }
@@ -103,7 +121,42 @@ impl Host for HostedHost<'_> {
     }
 
     fn observe(&mut self, event: Event) {
-        log(event);
+        match event {
+            Event::HopCountSpent { network } => match self.warnings.hop_count.note() {
+                Some(dropped) => warn!(
+                    network,
+                    dropped,
+                    "Router dropped NPDUs whose hop count was spent (since the last warning)"
+                ),
+                None => debug!(network, "Router dropped an NPDU whose hop count was spent"),
+            },
+            Event::TooLong {
+                port,
+                octets,
+                limit,
+                rejected,
+            } => {
+                let port = port.0;
+                match self.warnings.too_long.note() {
+                    Some(refused) => warn!(
+                        port,
+                        octets,
+                        limit,
+                        ?rejected,
+                        refused,
+                        "Router refused NPDUs too long for their egress port (since the last warning)"
+                    ),
+                    None => debug!(
+                        port,
+                        octets,
+                        limit,
+                        ?rejected,
+                        "Router refused an NPDU too long for its egress port"
+                    ),
+                }
+            }
+            event => log(event),
+        }
     }
 }
 
@@ -222,7 +275,6 @@ fn log(event: Event) {
             peer_network = reported,
             "Network-Number-Is from peer (learned, differs from local)"
         ),
-        Event::HopCountSpent { .. } => warn!("Discarding NPDU with hop_count=0"),
         Event::OwnOrigin { network } => debug!(
             network,
             "Router refused an NPDU it originated itself; no reject sent"

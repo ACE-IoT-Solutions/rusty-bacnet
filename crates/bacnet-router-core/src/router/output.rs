@@ -11,6 +11,7 @@
 
 use super::config::Options;
 use super::counters::bump;
+use super::host::{Event, Host};
 use super::tasks::{Task, TaskKind};
 use super::Storage;
 use crate::npdu::Npdu;
@@ -333,6 +334,40 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 false
             }
         }
+    }
+
+    /// [`write_now`](Self::write_now) a frame's own fan-out to every port
+    /// but `except`. With R1 on, `host` hears of each port that will leave
+    /// it out as too long for its broadcast limit; the skip itself, and its
+    /// count, come when the send is polled.
+    pub(super) fn write_fan_out(
+        &mut self,
+        npdu: &Npdu<'_>,
+        kind: Kind,
+        except: PortId,
+        options: &Options,
+        host: &mut impl Host,
+    ) -> bool {
+        if !self.write_now(npdu, kind, Target::AllBut(except)) {
+            return false;
+        }
+        if options.fixes.egress_limits {
+            let octets = self.out.current.len;
+            let ports = &self.ports[..self.port_count];
+            for (index, config) in ports.iter().enumerate() {
+                let limit = config.max_npdu.get(true);
+                if index != usize::from(except.0) && octets > limit {
+                    host.observe(Event::TooLong {
+                        // At most 255 ports, so the index fits in a u8.
+                        port: PortId(index as u8),
+                        octets,
+                        limit,
+                        rejected: None,
+                    });
+                }
+            }
+        }
+        true
     }
 
     /// The next action: the current output's next send, or the next task's

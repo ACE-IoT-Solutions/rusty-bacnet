@@ -278,6 +278,20 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
+    fn max_npdu(&self) -> crate::port::NpduLimits {
+        match self {
+            Self::Bip(t) => t.max_npdu(),
+            Self::Mstp(t) => t.max_npdu(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.max_npdu(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.max_npdu(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.max_npdu(),
+            Self::Loopback(t) => t.max_npdu(),
+        }
+    }
+
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
         match self {
             Self::Bip(t) => t.is_broadcast_mac(mac),
@@ -455,6 +469,23 @@ mod tests {
         let any: AnyTransport<LoopbackSerial> = AnyTransport::Mstp(mstp);
         assert_eq!(any.egress_apdu_limit(), 480);
         assert_eq!(any.local_receive_apdu_capacity(), 480);
+    }
+
+    /// The NPDU limits a router reads come through the wrapper: MS/TP's
+    /// 501 octets without extended frames, and 1497 once a router has
+    /// prepared it (#1665); B/IP's 1497 both ways.
+    #[test]
+    fn any_transport_reports_its_variants_npdu_limits() {
+        use crate::port::NpduLimits;
+        let (serial, _) = LoopbackSerial::pair();
+        let mstp = MstpTransport::new(serial, MstpConfig::default());
+        let mut any: AnyTransport<LoopbackSerial> = mstp.into();
+        assert_eq!(any.max_npdu(), NpduLimits::both(501));
+        any.prepare_for_routing();
+        assert_eq!(any.max_npdu(), NpduLimits::both(1497));
+        let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::BROADCAST);
+        let any: AnyTransport<LoopbackSerial> = bip.into();
+        assert_eq!(any.max_npdu(), NpduLimits::STANDARD);
     }
 
     #[test]

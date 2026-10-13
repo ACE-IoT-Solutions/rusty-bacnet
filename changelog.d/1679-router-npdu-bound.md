@@ -1,7 +1,7 @@
 ---
 section: Changed
 ---
-- **Wire:** `BACnetRouter` no longer routes an NPDU whose rewrite is longer
-  than 65,556 octets: the largest BVLC message plus the source address a
-  router adds, which any BACnet/SC NPDU fits. It is dropped, logged and
-  counted in `BACnetRouter::counters().write_failures` (#1679).
+- **Wire:** `BACnetRouter` doesn't pass on a global broadcast whose rewrite
+  is longer than 65,556 octets, the largest BVLC message plus the source a
+  router adds; it is dropped, logged and counted in `write_failures`. Other
+  NPDUs meet their port's limit first (#1665, #1679).

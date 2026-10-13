@@ -17,7 +17,9 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::LoopbackSerial;
-use bacnet_transport::port::{DataAttribute, GroupDestinations, ReceivedNpdu, TransportPort};
+use bacnet_transport::port::{
+    DataAttribute, GroupDestinations, NpduLimits, ReceivedNpdu, TransportPort,
+};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
@@ -88,6 +90,10 @@ impl TransportPort for Reporting {
 
     fn local_receive_apdu_capacity(&self) -> u16 {
         self.inner.local_receive_apdu_capacity()
+    }
+
+    fn max_npdu(&self) -> NpduLimits {
+        self.inner.max_npdu()
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
