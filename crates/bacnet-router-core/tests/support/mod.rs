@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use bacnet_router_core::table::{Table, Timing};
+use bacnet_router_core::table::{ClaimCounters, Table, Timing};
 use bacnet_router_core::{Duration, Instant, Mac, PortId};
 
 /// The hosted router's sizes: 256 routes, 1,024 hold-down records.
@@ -35,6 +35,14 @@ pub const fn secs(n: u64) -> Duration {
 
 /// One nanosecond.
 pub const NANO: Duration = Duration::from_nanos(1);
+
+/// The table's claim counts: zero but for what `set` changes.
+/// `ClaimCounters` is `#[non_exhaustive]`, so a test can't spell it out.
+pub fn claim_counts(set: impl FnOnce(&mut ClaimCounters)) -> ClaimCounters {
+    let mut counts = ClaimCounters::default();
+    set(&mut counts);
+    counts
+}
 
 /// A MAC of these octets.
 pub fn mac(octets: &[u8]) -> Mac {

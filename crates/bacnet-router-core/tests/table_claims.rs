@@ -4,12 +4,12 @@
 
 mod support;
 
-use bacnet_router_core::table::{ClaimCounters, Convergence, Learned, Reachability, RejectEffect};
+use bacnet_router_core::table::{Convergence, Learned, Reachability, RejectEffect};
 use bacnet_router_core::table::{Refusal, Timing};
 use bacnet_router_core::{Instant, Mac, PortId};
 use support::{
-    expire_pending, learned_hardened as learned_table, mac, port, purge, secs, Hosted, BASE,
-    CORROBORATION_WINDOW, HOLD_DOWN, NANO, TIMING,
+    claim_counts, expire_pending, learned_hardened as learned_table, mac, port, purge, secs,
+    Hosted, BASE, CORROBORATION_WINDOW, HOLD_DOWN, NANO, TIMING,
 };
 
 fn claim(table: &mut Hosted, port: u8, now: Instant) -> bool {
@@ -37,10 +37,7 @@ fn corroboration_inclusive_deadline_and_expiry_restart() {
         assert_eq!(table.lookup(3000).unwrap().next_hop.as_slice(), &[1]);
         assert_eq!(
             table.claim_counters(),
-            ClaimCounters {
-                pending_started: 1,
-                ..Default::default()
-            }
+            claim_counts(|c| c.pending_started = 1)
         );
 
         let applies = elapsed <= CORROBORATION_WINDOW;
@@ -49,12 +46,11 @@ fn corroboration_inclusive_deadline_and_expiry_restart() {
         assert_eq!(table.pending_count() == 0, applies);
         assert_eq!(
             table.claim_counters(),
-            ClaimCounters {
-                pending_started: if applies { 1 } else { 2 },
-                corroborated_applied: u64::from(applies),
-                pending_expired: u64::from(!applies),
-                ..Default::default()
-            }
+            claim_counts(|c| {
+                c.pending_started = if applies { 1 } else { 2 };
+                c.corroborated_applied = u64::from(applies);
+                c.pending_expired = u64::from(!applies);
+            })
         );
         if !applies {
             assert_eq!(table.pending(3000).unwrap().first_seen, now + elapsed);
@@ -80,11 +76,10 @@ fn spaced_single_claims_never_accumulate_or_refresh_old_route() {
         assert_eq!(table.pending_count(), 1);
         assert_eq!(
             table.claim_counters(),
-            ClaimCounters {
-                pending_started: u64::from(index + 1),
-                pending_expired: u64::from(index),
-                ..Default::default()
-            }
+            claim_counts(|c| {
+                c.pending_started = u64::from(index + 1);
+                c.pending_expired = u64::from(index);
+            })
         );
     }
 }
@@ -104,10 +99,7 @@ fn alternating_challengers_replace_slot_and_reset_first_seen() {
     }
     assert_eq!(
         table.claim_counters(),
-        ClaimCounters {
-            pending_started: 100,
-            ..Default::default()
-        }
+        claim_counts(|c| c.pending_started = 100)
     );
     // Legitimate convergence resumes when a challenger can repeat uninterrupted.
     assert!(claim(&mut table, 2, now + secs(100)));
@@ -150,10 +142,7 @@ fn absent_current_port_direct_and_reserved_claims_remain_immediate() {
     assert_eq!(table.pending_count(), 0);
     assert_eq!(
         table.claim_counters(),
-        ClaimCounters {
-            pending_started: 2,
-            ..Default::default()
-        }
+        claim_counts(|c| c.pending_started = 2)
     );
 }
 
@@ -260,11 +249,10 @@ fn pending_store_is_bounded_and_networks_are_independent() {
     }
     assert_eq!(
         table.claim_counters(),
-        ClaimCounters {
-            pending_started: 2560,
-            corroborated_applied: 256,
-            ..Default::default()
-        }
+        claim_counts(|c| {
+            c.pending_started = 2560;
+            c.corroborated_applied = 256;
+        })
     );
 }
 

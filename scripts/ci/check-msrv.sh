@@ -105,29 +105,20 @@ FEATURES="$FEATURES,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless"
 # a run of their own.
 NO_STD_ARGS=(-p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc)
 
-# Crates that will publish but are still `publish = false`, so the metadata
-# list above leaves them out: bacnet-router-core until its firmware router
-# image lands (#1679). Its tests too, which build on the same toolchain.
-# Drop a crate from here when its manifest lets it publish.
-UNPUBLISHED_ARGS=(-p bacnet-router-core --all-targets)
-
 echo "MSRV gate covers:"
 for p in $PKGS; do echo "  - $p"; done
 echo "with features: $FEATURES"
 echo "and bacnet-types, bacnet-encoding and bacnet-services without std, with alloc"
-echo "and bacnet-router-core, not published yet, with its tests"
 echo
 
 run() { printf '+ ' >&2; printf '%q ' "$@" >&2; printf '\n' >&2; "$@"; }
 if "$native"; then
   run "$cargo_bin" check --locked "${ARGS[@]}" --features "$FEATURES" "${target_args[@]}"
   run "$cargo_bin" check --locked "${NO_STD_ARGS[@]}" "${target_args[@]}"
-  run "$cargo_bin" check --locked "${UNPUBLISHED_ARGS[@]}" "${target_args[@]}"
 else
   # Bash 3.2 with nounset cannot expand an empty array here.
   run "$cargo_bin" check --locked "${ARGS[@]}" --features "$FEATURES"
   run "$cargo_bin" check --locked "${NO_STD_ARGS[@]}"
-  run "$cargo_bin" check --locked "${UNPUBLISHED_ARGS[@]}"
   exit 0
 fi
 

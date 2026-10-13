@@ -28,7 +28,11 @@ pub enum Action<'a> {
 
 /// An NPDU for one port. If the port can't take it, say so with
 /// [`Router::refused`](super::Router::refused) before the next poll.
+///
+/// It is `#[non_exhaustive]`, so a new field isn't a breaking change: a
+/// pattern needs `..`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Send<'a> {
     /// The egress port.
     pub port: PortId,
@@ -55,7 +59,11 @@ pub enum Dest<'a> {
 
 /// Why the router sends an NPDU: what a host needs to log a refused send
 /// the way it logs one today.
+///
+/// It is `#[non_exhaustive]`, so a new kind isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Kind {
     /// A message routed toward its DNET: an APDU, a network message
     /// directed elsewhere, or a reject passed on.
@@ -88,7 +96,10 @@ pub enum Cause {
 }
 
 /// Why a port didn't take a send.
+///
+/// It is `#[non_exhaustive]`, so a new reason isn't a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SendRefusal {
     /// Its queue is full.
     Full,

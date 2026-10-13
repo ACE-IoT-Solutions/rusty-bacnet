@@ -7,7 +7,11 @@ use crate::message::reason;
 use crate::{Instant, PortId};
 
 /// What [`Table::apply_reject`] did.
+///
+/// It is `#[non_exhaustive]`, so a new effect isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RejectEffect {
     /// It changed a learned route's state, or removed the route.
     Applied,

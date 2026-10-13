@@ -10,8 +10,8 @@ use bacnet_router_core::router::{
 };
 use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
 use fixture::{
-    apdu_to, at, deliver, drain, learn_9_via_r7, port_on, router, two_ports, Outcome, Recorder,
-    Store, CONFIRMED, NODE_A, OWN_0, OWN_1, R7,
+    apdu_to, at, deliver, drain, learn_9_via_r7, options, port_on, router, two_ports, Outcome,
+    Recorder, Store, CONFIRMED, NODE_A, OWN_0, OWN_1, R7,
 };
 use proptest::prelude::*;
 
@@ -54,10 +54,7 @@ fn new_refuses_what_it_cannot_route() {
     let mut ports = two_ports();
     ports[0].max_npdu = Limits::both(64);
     assert_eq!(new(&ports, hosted), Ok(()));
-    let over = Options {
-        route_cap: 257,
-        ..hosted
-    };
+    let over = options(|o| o.route_cap = 257);
     assert_eq!(
         new(&two_ports(), over),
         Err(ConfigError::RouteCap {
@@ -65,17 +62,11 @@ fn new_refuses_what_it_cannot_route() {
             capacity: 256
         })
     );
-    let still = Options {
-        sweep: Duration::ZERO,
-        ..hosted
-    };
+    let still = options(|o| o.sweep = Duration::ZERO);
     assert_eq!(new(&two_ports(), still), Err(ConfigError::ZeroSweep));
 
     let mut storage = Storage::<2, 1, 1>::new();
-    let options = Options {
-        route_cap: 1,
-        ..hosted
-    };
+    let options = options(|o| o.route_cap = 1);
     let refused = Router::new(&mut storage, &two_ports(), options, Instant::ZERO).map(|_| ());
     assert_eq!(refused, Err(ConfigError::TableTooSmall));
 }
@@ -84,10 +75,7 @@ fn new_refuses_what_it_cannot_route() {
 #[test]
 fn new_clears_the_storage_it_is_given() {
     let mut storage = Box::new(Small::new());
-    let options = Options {
-        route_cap: 8,
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.route_cap = 8);
     let mut router = Router::new(&mut *storage, &two_ports(), options, at(0)).unwrap();
     router
         .table_mut()
@@ -270,10 +258,7 @@ fn discovery_is_bounded() {
     let mut router = Router::new(
         &mut *storage,
         &two_ports(),
-        Options {
-            route_cap: 8,
-            ..Options::HOSTED
-        },
+        options(|o| o.route_cap = 8),
         at(0),
     )
     .unwrap();

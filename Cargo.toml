@@ -92,6 +92,7 @@ bacnet-mstp-codec = { version = "0.12.0", path = "crates/bacnet-mstp-codec", def
 bacnet-mstp-core = { version = "0.12.0", path = "crates/bacnet-mstp-core", default-features = false }
 bacnet-bip-codec = { version = "0.12.0", path = "crates/bacnet-bip-codec", default-features = false }
 bacnet-bip-core = { version = "0.12.0", path = "crates/bacnet-bip-core" }
+bacnet-router-core = { version = "0.12.0", path = "crates/bacnet-router-core" }
 bacnet-transport = { version = "0.12.0", path = "crates/bacnet-transport" }
 bacnet-network = { version = "0.12.0", path = "crates/bacnet-network" }
 bacnet-endpoint-core = { version = "0.12.0", path = "crates/bacnet-endpoint-core" }

@@ -10,7 +10,8 @@ use bacnet_router_core::table::{Convergence, Reachability};
 use bacnet_router_core::{Mac, PortId};
 use fixture::{
     addr, at, bytes, deliver, deliver_broadcast, i_am, learn_9_via_r7, listed, message, networks,
-    port_on, router, router_with, sent_reject, Outcome, Recorder, NODE_A, OWN_0, OWN_1, R7,
+    options, port_on, router, router_with, sent_reject, Outcome, Recorder, NODE_A, OWN_0, OWN_1,
+    R7,
 };
 
 /// Another router on port 1.
@@ -102,10 +103,7 @@ fn i_am_router_learns_then_rebroadcasts() {
 /// (control_messages.rs:253-261).
 #[test]
 fn one_message_never_corroborates_itself() {
-    let options = Options {
-        convergence: Convergence::Hardened,
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.convergence = Convergence::Hardened);
     let mut router = router_with(&fixture::two_ports(), options);
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
@@ -127,10 +125,7 @@ fn one_message_never_corroborates_itself() {
 /// as today (control_messages.rs:247 against :762). Direct routes count.
 #[test]
 fn the_route_cap_ends_learning() {
-    let options = Options {
-        route_cap: 4,
-        ..Options::HOSTED
-    };
+    let options = options(|o| o.route_cap = 4);
     let mut router = router_with(&fixture::two_ports(), options);
     let mut host = Recorder::default();
     deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9, 10, 11]), at(1));
@@ -424,6 +419,44 @@ fn i_could_be_router_fills_only_gaps() {
     let (outcome, _) = deliver(&mut router, &mut host, 1, R8, &could_be(45), at(1));
     assert_eq!(outcome, Outcome::Dropped(DropReason::Denied));
     assert!(router.table().lookup(45).is_none());
+}
+
+/// The route cap turns an I-Could-Be-Router for a new network away, and
+/// counts it as the cap's other refusals are; reserved networks and ones
+/// the table holds are no new network, so they don't count. The hosted
+/// router stored these past its cap before #1679.
+#[test]
+fn the_route_cap_turns_i_could_be_router_away() {
+    let options = options(|o| o.route_cap = 3);
+    let mut router = router_with(&fixture::two_ports(), options);
+    let mut host = Recorder::default();
+    let could_be = |network: u16| {
+        let [high, low] = network.to_be_bytes();
+        message(code::I_COULD_BE_ROUTER_TO_NETWORK, &[high, low, 7])
+    };
+    deliver(&mut router, &mut host, 1, R8, &could_be(44), at(1));
+    assert!(router.table().lookup(44).is_some());
+    for network in [45, 44, 0, 0xFFFF] {
+        let (outcome, sent) = deliver(&mut router, &mut host, 1, R8, &could_be(network), at(2));
+        assert_eq!(outcome, Outcome::Handled, "{network}");
+        assert!(sent.is_empty(), "{network}");
+    }
+    assert_eq!(router.table().networks().collect::<Vec<_>>(), [1, 2, 44]);
+    assert_eq!(router.table().claim_counters().learned_cap_ignored, 1);
+    assert_eq!(
+        host.events[1..3],
+        [
+            Event::RouteCap {
+                class: ControlClass::ICouldBe
+            },
+            Event::ICouldBe {
+                network: 45,
+                performance_index: 7,
+                stored: false
+            },
+        ]
+    );
+    assert_eq!(host.events.len(), 6, "{:?}", host.events);
 }
 
 /// RB-09: the host sees each protected message once, after its data is

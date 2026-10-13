@@ -104,9 +104,7 @@ pub use issuance::IssuedApdu;
 
 #[path = "layer_admission.rs"]
 mod admission;
-pub(crate) use admission::{
-    broadcast_carries_unconfirmed, destination_is_coherent, link_source_fits, AdmissionSender,
-};
+pub(crate) use admission::AdmissionSender;
 pub use admission::{AdmissionReceiver, QueueAdmissionCounters, QueueAdmissionSnapshot};
 
 /// A received APDU with source addressing information.

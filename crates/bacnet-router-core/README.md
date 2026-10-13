@@ -15,8 +15,8 @@ and is meant to join their ports in firmware, and to run under the hosted
   is `bacnet-time`'s, in nanoseconds, re-exported here, the same type the
   MS/TP and B/IP cores take, so firmware feeds all three one clock.
 
-Not published yet: the hosted router's move onto the engine and a firmware
-router image come first (#1679).
+`bacnet-network`'s hosted `BACnetRouter` runs on it, and a firmware router
+image follows (#1679).
 
 ## What it has
 

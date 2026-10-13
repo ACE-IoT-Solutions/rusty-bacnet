@@ -152,7 +152,7 @@ proves all of that; each check covers a part.
 | `scripts/ci/check-default-features.sh` | Clippy | Clippy and rustdoc, private items included, for the three `alloc` crates without `std`, on Linux, Windows and macOS |
 | `cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets` | Clippy | The three crates' tests with `alloc` and without `std`, which the Test job runs, are lint-clean too |
 | The `alloc` tests and doctests | Test | The three crates' tests and doctests with `alloc` and without `std`: the code a bare-metal build compiles. The tests link `std`; `check-no-std.sh` shows the code needs none |
-| `scripts/ci/check-msrv.sh` | MSRV | The three crates with `alloc` and without `std` build at the MSRV, in a run of their own, since the hosted crates turn `std` back on in the main run. So does `bacnet-router-core` with its tests: it is `publish = false` until its firmware image lands (#1679), and the script otherwise takes only publishable crates |
+| `scripts/ci/check-msrv.sh` | MSRV | The three crates with `alloc` and without `std` build at the MSRV, in a run of their own, since the hosted crates turn `std` back on in the main run |
 | [Firmware link test](#firmware-link-test) | Clippy, `FIRMWARE_TARGETS` | The MS/TP and B/IP stacks link into bare-metal images with no allocator, and `bacnet-encoding` and `bacnet-services` into one with an allocator, each within its size budget |
 
 **ARMv6-M and `bytes`.** `bytes` needs atomic compare-and-swap, which
@@ -1305,10 +1305,9 @@ Clippy runs six ways:
 - `bacnet-types`, `bacnet-encoding` and `bacnet-services` with `alloc` in
   place of `std` and `--all-targets`, on the host, so the tests the Test job
   runs without `std` are linted too;
-- each published crate alone with default features, and
-  `bacnet-router-core`, which will publish once its firmware image lands
-  (#1679), plus the `no_std` builds of `bacnet-types`, `bacnet-encoding` and
-  `bacnet-services` (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
+- each published crate alone with default features, plus the `no_std` builds
+  of `bacnet-types`, `bacnet-encoding` and `bacnet-services`
+  (`scripts/ci/check-default-features.sh`). This also runs rustdoc, which is
   how docs.rs builds, a rustdoc-only run of `bacnet-cli` without the TUI,
   and rustdoc-only runs of `bacnet-mstp-core`, `bacnet-mstp-codec` and
   `bacnet-bip-codec` with `alloc` alone and `heapless` alone (#1681).
@@ -1378,9 +1377,6 @@ Run the file-size gate in its default strict mode, without `CHECK_FILE_SIZE_WARN
 `scripts/ci/check-msrv.sh --linux-native` needs a native Linux GNU host with
 the MSRV toolchain (`RUST_MSRV`) installed, Python 3, a C toolchain, `pkg-config`, `libpcap-dev`,
 `cmake`, `perl`, `file` and `ldd`. It never installs tools or skips features.
-It checks the crates whose manifests let them publish, and lists by name the
-ones that will publish but don't yet (`bacnet-router-core`, #1679), so a
-newer standard-library API in them fails here before they publish.
 CI runs it on PRs to `main`; on a Mac, rely on that job.
 
 ## Merge evidence
