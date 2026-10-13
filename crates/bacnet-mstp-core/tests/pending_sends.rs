@@ -395,10 +395,8 @@ fn a_valid_frame_ends_a_waiting_token_retry() {
 /// and it is dropped.
 #[test]
 fn a_token_retry_kept_waiting_past_t_usage_timeout_is_dropped() {
-    let config = bacnet_mstp_core::MstpCoreConfig {
-        t_turnaround: Duration::from_millis(15),
-        ..config()
-    };
+    let mut config = config();
+    config.t_turnaround = Duration::from_millis(15);
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = Core::new(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();

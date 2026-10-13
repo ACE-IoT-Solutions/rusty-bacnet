@@ -26,11 +26,9 @@ fn poll_from(source: u8) -> Seen {
 /// the next poll, which it then owes.
 #[test]
 fn a_deferred_answer_dropped_at_its_limit_frees_the_station() {
-    let config = MstpCoreConfig {
-        station: 1,
-        max_master: 15,
-        ..MstpCoreConfig::default()
-    };
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = 1;
+    config.max_master = 15;
     let params = Params::new(&config);
     let mut storage = vec![0; 600];
     let line = Line::new(&mut storage, false, params.frame_abort);

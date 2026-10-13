@@ -43,7 +43,7 @@
 use core::fmt;
 
 use bacnet_mstp_core::{
-    CoreError, MasterCore, MstpCoreConfig, NetworkPriority, QueueRejectReason, QueueStorage,
+    CoreError, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal, QueueStorage,
     ReplyDecision, RequestId,
 };
 
@@ -95,7 +95,7 @@ impl MstpPort {
 
     /// The [`PortConfig`] of an MS/TP port on `network` whose core runs
     /// with `config`: the router's MAC is the station, and it carries
-    /// [`MstpCoreConfig::max_npdu_length`] octets, 1,497, each way.
+    /// [`MstpCoreConfig::max_npdu`] octets, 1,497, each way.
     /// Refused without extended frames.
     pub const fn config(config: &MstpCoreConfig, network: u16) -> Result<PortConfig, NotExtended> {
         if !config.extended_frames {
@@ -105,7 +105,7 @@ impl MstpPort {
             network,
             mac: Mac::from_array([config.station]),
             // 1497 with extended frames on, so the cast is exact.
-            max_npdu: Limits::both(config.max_npdu_length() as u16),
+            max_npdu: Limits::both(config.max_npdu() as u16),
         })
     }
 
@@ -125,8 +125,9 @@ impl MstpPort {
     /// unless the router's own application answered it already, the core
     /// answers Reply Postponed (Clauses 6.5.4, 9.5.6.9). `None`, a delivery
     /// with no request, does nothing; so does a request already answered.
-    /// The core's other refusals, such as a clock that ran backwards, come
-    /// back as they are.
+    /// The core's other refusals, such as a release after the requester may
+    /// have stopped waiting ([`CoreError::RequestExpired`]), come back as
+    /// they are.
     pub fn release<Q: QueueStorage, const NPDU: usize>(
         core: &mut MasterCore<'_, Q, NPDU>,
         request: Option<RequestId>,
@@ -159,12 +160,12 @@ impl MstpPort {
             Dest::Unicast(&[station]) if station != BROADCAST => station,
             Dest::Unicast(_) => return Err(SendRefusal::Other),
         };
-        let priority = NetworkPriority::from_u8(send.priority).ok_or(SendRefusal::Other)?;
+        let priority = NetworkPriority::try_from(send.priority).map_err(|_| SendRefusal::Other)?;
         core.enqueue_npdu(destination, send.npdu, priority, now)
             .map_err(|why| match why {
-                QueueRejectReason::Full => SendRefusal::Full,
-                QueueRejectReason::Oversize => SendRefusal::TooLong,
-                QueueRejectReason::Expired | QueueRejectReason::Starved => SendRefusal::Other,
+                QueueRefusal::Full => SendRefusal::Full,
+                QueueRefusal::Oversize => SendRefusal::TooLong,
+                _ => SendRefusal::Other,
             })
     }
 }

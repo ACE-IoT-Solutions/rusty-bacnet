@@ -86,7 +86,7 @@ use bacnet_mstp_codec::{
 };
 use bacnet_mstp_core::{
     Action, CoreError, Direction, ExtendedActionBuffers, MasterCore, MasterState, MstpCoreConfig,
-    QueueRejectReason, ReplyDecision, RequestId, TransmitId,
+    QueueRefusal, ReplyDecision, RequestId, TransmitId,
 };
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -260,8 +260,7 @@ struct Mac<S> {
     clock: CoreClock,
     npdus: mpsc::Sender<ReceivedNpdu>,
     counts: Arc<Counters>,
-    /// The core's queues, for late answers (queued as a send call queues)
-    /// and for publishing their counters.
+    /// The core's queues, for late answers (queued as a send call queues).
     queues: SharedQueues,
     octet_time: Duration,
     /// Added to a frame's wire time when the port has no drain.
@@ -322,7 +321,7 @@ impl<S: SerialPort> Mac<S> {
     }
 
     /// Carry out the core's actions, defer a finished request's reply
-    /// channel, and publish the counters.
+    /// channel, and add the core's counters to the diagnostics' totals.
     fn settle(&mut self, core: &mut Core<'_>) {
         self.drain_actions(core);
         let finished = self
@@ -336,7 +335,7 @@ impl<S: SerialPort> Mac<S> {
         for _ in 0..expired {
             increment(&self.counts.late_answers_expired);
         }
-        self.counts.publish(core.counters(), &self.queues);
+        self.counts.publish(|| core.take_counters());
     }
 
     /// Poll the core until it has nothing left.
@@ -490,10 +489,10 @@ impl<S: SerialPort> Mac<S> {
             .enqueue_until(requester, answer, self.clock.now(), expires);
         match result {
             Ok(()) => increment(&self.counts.late_answers_queued),
-            Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Oversize)) => {
                 increment(&self.counts.outbound_oversize);
             }
-            Err(EnqueueError::Rejected(QueueRejectReason::Full)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Full)) => {
                 increment(&self.counts.outbound_queue_full);
             }
             Err(error) => debug!(?error, "MS/TP late answer not queued"),

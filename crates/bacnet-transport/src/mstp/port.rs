@@ -1,5 +1,5 @@
 use bacnet_mstp_codec::BROADCAST_MAC;
-use bacnet_mstp_core::{Duration as CoreDuration, QueueRejectReason};
+use bacnet_mstp_core::{Duration as CoreDuration, QueueRefusal};
 use bacnet_types::error::Error;
 use tokio::sync::{mpsc, Mutex};
 
@@ -136,7 +136,7 @@ impl<S: SerialPort> MstpTransport<S> {
                 std::io::ErrorKind::NotConnected,
                 "MS/TP transport is no longer running",
             ))),
-            Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Oversize)) => {
                 increment(&counts.outbound_oversize);
                 let class = if self.config.extended_frames {
                     "extended"
@@ -149,7 +149,7 @@ impl<S: SerialPort> MstpTransport<S> {
                     self.config.max_npdu_length()
                 )))
             }
-            Err(EnqueueError::Rejected(QueueRejectReason::Full)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Full)) => {
                 increment(&counts.outbound_queue_full);
                 Err(Error::Transport(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,

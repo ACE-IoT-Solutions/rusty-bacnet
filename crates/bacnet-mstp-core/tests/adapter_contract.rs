@@ -11,11 +11,10 @@ type Queues = HeaplessQueues<4, 4>;
 type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn config() -> MstpCoreConfig {
-    MstpCoreConfig {
-        station: 1,
-        max_master: 2,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = 1;
+    config.max_master = 2;
+    config
 }
 
 /// Take the token with one NPDU queued and wait out the turnaround, so a

@@ -5,7 +5,7 @@ use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType, MAX_EXTENDE
 use bacnet_mstp_core::{
     Action, DequeuedNpdu, Direction, ExtendedActionBuffers, HeaplessQueues, Instant, MasterCore,
     MasterState, MstpCoreConfig, NetworkPriority, QueueCounters, QueueItemInfo, QueueKind,
-    QueueRejectReason, QueueStorage,
+    QueueRefusal, QueueStorage,
 };
 
 /// Queues whose slots hold more than a standard frame's data.
@@ -13,11 +13,10 @@ type BigQueues = HeaplessQueues<4, 4, 1500>;
 type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn config() -> MstpCoreConfig {
-    MstpCoreConfig {
-        station: 1,
-        max_master: 2,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = 1;
+    config.max_master = 2;
+    config
 }
 
 /// Take the token and return the header of the frame it leads to.
@@ -59,7 +58,7 @@ fn enqueue_refuses_an_npdu_longer_than_a_standard_frame() {
                 NetworkPriority::Normal,
                 Instant::ZERO
             ),
-            Err(QueueRejectReason::Oversize)
+            Err(QueueRefusal::Oversize)
         );
     }
     let counters = core.counters();
@@ -120,7 +119,7 @@ fn the_queue_counts_an_npdu_longer_than_the_core_takes() {
         assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
         assert_eq!(core.counters().unicast.drops_oversize, 1);
     }
-    let stats = queues.stats(QueueKind::Unicast);
+    let stats = queues.counters(QueueKind::Unicast);
     assert_eq!(
         (stats.depth, stats.dequeued, stats.drops_oversize),
         (0, 1, 1)
@@ -161,7 +160,7 @@ impl<const L: usize> QueueStorage for Overstating<L> {
         priority: NetworkPriority,
         now: Instant,
         expires_at: Option<Instant>,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         self.0
             .enqueue_npdu(destination, payload, priority, now, expires_at)
     }
@@ -183,11 +182,16 @@ impl<const L: usize> QueueStorage for Overstating<L> {
         kind: QueueKind,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         let item = self.0.dequeue_kind(kind, now, max_len)?;
-        Ok(item.map(|item| DequeuedNpdu {
-            npdu: &self.1,
-            ..item
+        Ok(item.map(|item| {
+            DequeuedNpdu::new(
+                item.destination,
+                item.kind,
+                item.priority,
+                item.sequence,
+                &self.1,
+            )
         }))
     }
 
@@ -195,8 +199,12 @@ impl<const L: usize> QueueStorage for Overstating<L> {
         self.0.depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        self.0.stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.0.counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.0.take_counters(kind)
     }
 }
 

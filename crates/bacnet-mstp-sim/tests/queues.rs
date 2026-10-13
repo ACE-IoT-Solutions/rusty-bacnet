@@ -4,7 +4,7 @@
 mod common;
 
 use bacnet_mstp_codec::{FrameType, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA};
-use bacnet_mstp_core::QueueRejectReason;
+use bacnet_mstp_core::QueueRefusal;
 use bacnet_mstp_sim::analysis::{holds, token_users};
 use bacnet_mstp_sim::{MasterSpec, Sim, SimConfig};
 
@@ -33,7 +33,7 @@ fn a_full_queue_refuses_npdus_and_the_token_keeps_moving() {
     assert_eq!(rejects.len(), 16);
     assert!(rejects
         .iter()
-        .all(|&(_, reason)| reason == QueueRejectReason::Full));
+        .all(|&(_, reason)| reason == QueueRefusal::Full));
     assert_eq!(
         sent_by(sim.frames(), 3, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY).len(),
         4
@@ -64,7 +64,7 @@ fn an_oversized_npdu_is_refused_and_the_token_keeps_moving() {
     sim.enqueue(ms(1_500), 3, 10, &too_long)
         .enqueue(ms(1_500), 3, 10, &largest);
     sim.run_until(ms(3_000));
-    assert_eq!(sim.rejects(3), [(ms(1_500), QueueRejectReason::Oversize)]);
+    assert_eq!(sim.rejects(3), [(ms(1_500), QueueRefusal::Oversize)]);
     let sent = sent_by(sim.frames(), 3, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].octets.len(), MAX_STANDARD_FRAME_LENGTH);

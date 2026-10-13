@@ -18,7 +18,7 @@ use bacnet_mstp_codec::{MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA};
 
 use bacnet_mstp_core::{
     AllocQueues, DequeuedNpdu, Duration as CoreDuration, Instant as CoreInstant, NetworkPriority,
-    QueueCounters, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
+    QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
 };
 
 /// Room in each queue, unicast and broadcast: the host transport's limit
@@ -45,7 +45,7 @@ pub(super) enum EnqueueError {
     /// The transport's task has ended.
     Closed,
     /// The queue refused it.
-    Rejected(QueueRejectReason),
+    Rejected(QueueRefusal),
 }
 
 impl SharedQueues {
@@ -107,19 +107,20 @@ impl SharedQueues {
 
     /// The core's handle on these queues.
     pub(super) fn for_core(&self) -> CoreQueues {
-        let longest = self.lock().queues.max_npdu_length();
+        let longest = self.lock().queues.max_npdu();
         CoreQueues {
             shared: self.clone(),
             lent: vec![0; longest].into_boxed_slice(),
         }
     }
 
-    /// The unicast and broadcast queue counters.
-    pub(super) fn stats(&self) -> (QueueCounters, QueueCounters) {
-        let shared = self.lock();
+    /// Take the unicast and broadcast queue counters, which then start
+    /// again (see [`QueueStorage::take_counters`]).
+    pub(super) fn take_counters(&self) -> (QueueCounters, QueueCounters) {
+        let mut shared = self.lock();
         (
-            shared.queues.stats(QueueKind::Unicast),
-            shared.queues.stats(QueueKind::Broadcast),
+            shared.queues.take_counters(QueueKind::Unicast),
+            shared.queues.take_counters(QueueKind::Broadcast),
         )
     }
 }
@@ -129,7 +130,7 @@ impl SharedQueues {
 /// short to carry one.
 pub(super) fn npdu_priority(npdu: &[u8]) -> NetworkPriority {
     npdu.get(1)
-        .and_then(|control| NetworkPriority::from_u8(control & 0x03))
+        .and_then(|control| NetworkPriority::try_from(control & 0x03).ok())
         .unwrap_or(NetworkPriority::Normal)
 }
 
@@ -152,8 +153,8 @@ impl QueueStorage for CoreQueues {
         self.lock().queues.set_starvation_limit(limit);
     }
 
-    fn max_npdu_length(&self) -> usize {
-        self.lock().queues.max_npdu_length()
+    fn max_npdu(&self) -> usize {
+        self.lock().queues.max_npdu()
     }
 
     fn enqueue_npdu(
@@ -163,7 +164,7 @@ impl QueueStorage for CoreQueues {
         priority: NetworkPriority,
         now: CoreInstant,
         expires_at: Option<CoreInstant>,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         self.lock()
             .queues
             .enqueue_npdu(destination, payload, priority, now, expires_at)
@@ -186,7 +187,7 @@ impl QueueStorage for CoreQueues {
         kind: QueueKind,
         now: CoreInstant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         let mut shared = self.shared.lock();
         let Some(item) = shared.queues.dequeue_kind(kind, now, max_len)? else {
             return Ok(None);
@@ -202,27 +203,31 @@ impl QueueStorage for CoreQueues {
             self.lent.len()
         );
         let Some(lent) = self.lent.get_mut(..len) else {
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         };
         lent.copy_from_slice(item.npdu);
         let (destination, kind, priority, sequence) =
             (item.destination, item.kind, item.priority, item.sequence);
         drop(shared);
-        Ok(Some(DequeuedNpdu {
+        Ok(Some(DequeuedNpdu::new(
             destination,
             kind,
             priority,
             sequence,
-            npdu: &self.lent[..len],
-        }))
+            &self.lent[..len],
+        )))
     }
 
     fn depth(&self, kind: QueueKind) -> usize {
         self.lock().queues.depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        self.lock().queues.stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.lock().queues.counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.lock().queues.take_counters(kind)
     }
 }
 
@@ -290,7 +295,7 @@ mod tests {
             queues.enqueue(5, &[1, 0], now, age),
             Err(EnqueueError::Closed)
         );
-        assert_eq!(queues.stats().0.enqueued, 1);
+        assert_eq!(queues.take_counters().0.enqueued, 1);
     }
 
     #[test]
@@ -314,9 +319,9 @@ mod tests {
         let second = core.dequeue(now, MAX_EXTENDED_MPDU_DATA).unwrap().unwrap();
         assert_eq!((second.destination, second.npdu), (5, &long[..]));
         // Longer than the core takes: dropped and counted.
-        assert_eq!(core.dequeue(now, 1), Err(QueueRejectReason::Oversize));
+        assert_eq!(core.dequeue(now, 1), Err(QueueRefusal::Oversize));
         assert_eq!(core.dequeue(now, MAX_EXTENDED_MPDU_DATA), Ok(None));
-        let (unicast, _) = queues.stats();
+        let (unicast, _) = queues.take_counters();
         assert_eq!(
             (unicast.depth, unicast.dequeued, unicast.drops_oversize),
             (0, 3, 1)

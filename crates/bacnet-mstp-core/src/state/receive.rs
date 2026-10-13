@@ -170,7 +170,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         // event rather than as individual octets.
         if self.state == MasterState::PassToken {
             self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
+            self.protocol_deadline = Some(now + T_NO_TOKEN);
         }
         if self.state == MasterState::WaitForReply {
             return self.process_wait_for_reply(frame, now);
@@ -182,7 +182,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 return self.take_successor(frame.header.source, now);
             }
             self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
+            self.protocol_deadline = Some(now + T_NO_TOKEN);
             return Ok(());
         }
         let for_us = frame.header.destination == self.config.station;
@@ -347,7 +347,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 ));
         if !is_reply {
             self.set_state(MasterState::Idle);
-            self.protocol_deadline = Some(now + self.config.t_no_token);
+            self.protocol_deadline = Some(now + T_NO_TOKEN);
             return Ok(());
         }
         if frame_type != FrameType::REPLY_POSTPONED {

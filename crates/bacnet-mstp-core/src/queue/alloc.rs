@@ -5,11 +5,12 @@ use core::fmt;
 
 use bacnet_time::Instant;
 
+use crate::config::DEFAULT_STARVATION_LIMIT;
 use crate::counters::QueueCounters;
 
 use super::slots::{expired, Lane, LiveItems, Selected, Slot};
 use super::{
-    DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
+    DequeuedNpdu, NetworkPriority, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
     MAX_STANDARD_MPDU_DATA,
 };
 
@@ -38,6 +39,9 @@ use super::{
 /// so no removal moves another item. A slot is first used only when every
 /// one before it is in use, so the reserved memory is touched as the queue
 /// fills.
+///
+/// The starvation limit comes from the core's configuration, as for
+/// [`HeaplessQueues`](crate::HeaplessQueues).
 pub struct AllocQueues<const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: Lane<Vec<Slot<N>>>,
     broadcast: Lane<Vec<Slot<N>>>,
@@ -48,17 +52,10 @@ pub struct AllocQueues<const N: usize = MAX_STANDARD_MPDU_DATA> {
 }
 
 impl<const N: usize> AllocQueues<N> {
-    /// Construct independently bounded queues.
+    /// Empty queues holding up to `unicast_capacity` and
+    /// `broadcast_capacity` items, their room reserved now.
+    #[must_use]
     pub fn new(unicast_capacity: usize, broadcast_capacity: usize) -> Self {
-        Self::with_starvation_limit(unicast_capacity, broadcast_capacity, 16)
-    }
-
-    /// Construct queues with an explicit service-opportunity starvation limit.
-    pub fn with_starvation_limit(
-        unicast_capacity: usize,
-        broadcast_capacity: usize,
-        starvation_limit: u8,
-    ) -> Self {
         const {
             assert!(
                 N <= Slot::<N>::LONGEST,
@@ -77,7 +74,7 @@ impl<const N: usize> AllocQueues<N> {
             unicast_capacity,
             broadcast_capacity,
             sequence: 0,
-            starvation_limit,
+            starvation_limit: DEFAULT_STARVATION_LIMIT,
         }
     }
 
@@ -155,7 +152,7 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         self.starvation_limit = limit;
     }
 
-    fn max_npdu_length(&self) -> usize {
+    fn max_npdu(&self) -> usize {
         N
     }
 
@@ -166,7 +163,7 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         priority: NetworkPriority,
         now: Instant,
         expires_at: Option<Instant>,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         let kind = QueueKind::from_destination(destination);
         let capacity = match kind {
             QueueKind::Unicast => self.unicast_capacity,
@@ -176,15 +173,15 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         let lane = self.lane_mut(kind);
         if payload.len() > N {
             lane.counters.record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         }
         if expired(expires_at, now) {
             lane.counters.record_drop_expired();
-            return Err(QueueRejectReason::Expired);
+            return Err(QueueRefusal::Expired);
         }
         if lane.depth >= capacity {
             lane.counters.record_drop_full();
-            return Err(QueueRejectReason::Full);
+            return Err(QueueRefusal::Full);
         }
         // Fewer items than the capacity: a slot is free, or every slot so
         // far holds one and a new one fits the reservation.
@@ -218,7 +215,7 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         kind: QueueKind,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         self.expire(now);
         let Some((_, index, info)) = self.select_kind(kind, now) else {
             return Ok(None);
@@ -226,7 +223,7 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         self.lane_mut(kind).remove(index);
         if info.len > max_len {
             self.lane_mut(kind).counters.record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         }
         self.unicast.bump_waits();
         self.broadcast.bump_waits();
@@ -243,7 +240,11 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         self.lane(kind).depth
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
         self.lane(kind).counters
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.lane_mut(kind).counters.take()
     }
 }

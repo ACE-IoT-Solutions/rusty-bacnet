@@ -1,13 +1,15 @@
 //! Each step: what it feeds the core, and what the core must answer.
 
 use bacnet_mstp_core::{
-    CoreError, Instant, MasterCore, NetworkPriority, QueueRejectReason, QueueStorage, ReceiveError,
-    ReplyDecision, RequestId, TransmitFailure, TransmitId,
+    CoreError, MasterCore, QueueRefusal, QueueStorage, ReceiveError, ReplyDecision, RequestId,
+    TransmitFailure, TransmitId,
 };
 
 use super::Driver;
 use crate::checker::Decided;
-use crate::input::{fill, priority, Decision, Echo, Path, Step, TransmitEvent, MAX_OCTETS};
+use crate::input::{
+    fill, priority, Address, Decision, Echo, Path, Step, TransmitEvent, MAX_OCTETS,
+};
 use crate::model::{encode, Seen};
 
 /// How often a deadline may be serviced at one instant before it counts as
@@ -177,9 +179,9 @@ impl Driver<'_> {
                 for _ in 0..=copies % 4 {
                     let result = core.enqueue_npdu(to, &npdu, priority(*raw), self.at());
                     let fine = if length > max_npdu {
-                        result == Err(QueueRejectReason::Oversize)
+                        result == Err(QueueRefusal::Oversize)
                     } else {
-                        matches!(result, Ok(()) | Err(QueueRejectReason::Full))
+                        matches!(result, Ok(()) | Err(QueueRefusal::Full))
                     };
                     if !fine {
                         self.fail(&format!(
@@ -383,9 +385,9 @@ impl Driver<'_> {
         ];
         let mut id = TransmitId::new(id);
         while taken.contains(&Some(id)) {
-            id = TransmitId::new(id.raw().wrapping_add(1));
+            id = TransmitId::new(id.generation().wrapping_add(1));
         }
-        let before = core.snapshot();
+        let before = (core.snapshot(), core.counters());
         let at = self.at();
         let result = match event {
             TransmitEvent::Start => core.on_transmit_started(id, at),
@@ -393,8 +395,10 @@ impl Driver<'_> {
             TransmitEvent::Abort => core.on_transmit_aborted(id, TransmitFailure::Io, at),
         };
         self.stamp = self.now;
-        if result != Err(CoreError::StaleTransmit) || core.snapshot() != before {
-            self.fail(&format!("{event:?} for an id nobody holds got {result:?}"));
+        if result != Err(CoreError::StaleTransmit) || (core.snapshot(), core.counters()) != before {
+            self.fail(&format!(
+                "{event:?} for an id nobody holds got {result:?}, or changed the core"
+            ));
         }
     }
 
@@ -428,8 +432,7 @@ impl Driver<'_> {
         };
         let reply = match decision {
             Decision::Data { .. } => ReplyDecision::Data(&data),
-            Decision::Postponed => ReplyDecision::Postponed,
-            Decision::Cancelled => ReplyDecision::Cancelled,
+            Decision::Postponed | Decision::Cancelled => ReplyDecision::Postponed,
             Decision::Abandoned => ReplyDecision::Abandoned,
         };
         let result = core.complete_request(request, reply, self.at());
@@ -467,49 +470,70 @@ impl Driver<'_> {
         }
     }
 
-    /// A call stamped before the last one: every call refuses it as a clock
-    /// regression, and nothing changes.
+    /// A call stamped before the last one. The core takes a `now` earlier
+    /// than the latest it was given as that latest one, so the call must do
+    /// exactly what the same call stamped then would: the driver runs it as
+    /// that call, which the checker models at the latest time, and only the
+    /// core is told the earlier one. (Until #1684 the core refused such a
+    /// call, and this step checked that it changed nothing.)
+    ///
+    /// A silence first brings the core's latest time up to the driver's, so
+    /// the two agree on when that is.
     fn regress<Q: QueueStorage, const N: usize>(
         &mut self,
         core: &mut MasterCore<'_, Q, N>,
         back: u32,
         event: u8,
     ) {
+        self.step(core, &Step::Silence(0));
         if self.stamp == 0 {
             return;
         }
-        let supplied = Instant::from_micros(self.stamp - 1 - u64::from(back) % self.stamp);
-        let before = (core.snapshot(), core.counters());
-        let result = match event % 10 {
-            0 => core.on_octet(0x55, supplied),
-            1 => core.on_receive_error(ReceiveError::Framing, supplied),
-            2 => core.on_deadline(supplied),
-            3 => core.on_silence(supplied),
-            4 => core.on_host_activity(3, supplied),
-            5 => core.on_invalid_frame(supplied),
-            6 => core.complete_request(RequestId::new(0), ReplyDecision::Postponed, supplied),
-            7 => core.on_transmit_started(TransmitId::new(0), supplied),
-            8 => core.on_validated_frame(self.token_frame(), supplied),
-            _ => match core.enqueue_npdu(1, &[1, 0], NetworkPriority::Normal, supplied) {
-                Err(QueueRejectReason::Expired) => Err(CoreError::ClockRegression {
-                    previous: Instant::from_micros(self.stamp),
-                    supplied,
-                }),
-                other => {
-                    self.fail(&format!("an NPDU queued in the past got {other:?}"));
+        self.skew = 1 + u64::from(back) % self.stamp;
+        match event % 10 {
+            0 => self.octet(core, 0x55),
+            1 => self.line_input(
+                core,
+                |core, now| core.on_receive_error(ReceiveError::Framing, now),
+                |line, now, heard| line.receive_error(now, heard),
+            ),
+            2 => match core.next_deadline() {
+                Some(due) if due.as_micros() <= self.now => self.deadline(core, false),
+                _ => {
+                    // Nothing is due yet, so the call changes nothing.
+                    let before = (core.snapshot(), core.counters());
+                    self.expect_ok(core.on_deadline(self.at()), "on_deadline");
+                    if (core.snapshot(), core.counters()) != before {
+                        self.fail("a deadline serviced before it fell due changed the core");
+                    }
                 }
             },
-        };
-        let expected = Err(CoreError::ClockRegression {
-            previous: Instant::from_micros(self.stamp),
-            supplied,
-        });
-        if result != expected || (core.snapshot(), core.counters()) != before {
-            self.fail(&format!(
-                "a call stamped {} us, before the last at {}, got {result:?}",
-                supplied.as_micros(),
-                self.stamp
-            ));
+            3 => self.step(core, &Step::Silence(0)),
+            4 => self.line_input(
+                core,
+                |core, now| core.on_host_activity(3, now),
+                |line, now, _| line.host_activity(3, now),
+            ),
+            5 => self.line_input(
+                core,
+                |core, now| core.on_invalid_frame(now),
+                |line, now, heard| line.invalid(now, heard),
+            ),
+            6 => self.decide(core, 0, Decision::Postponed, 0),
+            7 => self.start(core, 0),
+            8 => self.validated(core, self.token_frame()),
+            _ => self.step(
+                core,
+                &Step::Enqueue {
+                    to: Address::Peer,
+                    length: 2,
+                    expecting: false,
+                    priority: 0,
+                    pattern: 0,
+                    copies: 0,
+                },
+            ),
         }
+        self.skew = 0;
     }
 }

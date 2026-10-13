@@ -12,7 +12,7 @@ use bacnet_mstp_codec::{
 };
 use bacnet_mstp_core::{
     AllocQueues, Duration, ExtendedActionBuffers, Instant, MasterCore, MasterState,
-    NetworkPriority, QueueRejectReason, RequestId, TransmitId,
+    NetworkPriority, QueueRefusal, RequestId, TransmitId,
 };
 
 use crate::event::{Class, Key, Queue};
@@ -346,7 +346,7 @@ impl Sim {
 
     /// The NPDUs a master's core refused to queue.
     #[must_use]
-    pub fn rejects(&self, station: u8) -> &[(Instant, QueueRejectReason)] {
+    pub fn rejects(&self, station: u8) -> &[(Instant, QueueRefusal)] {
         &self.master(station).rejects
     }
 

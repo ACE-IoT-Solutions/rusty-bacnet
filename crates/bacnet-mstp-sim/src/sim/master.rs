@@ -4,7 +4,7 @@
 use bacnet_mstp_codec::{FrameType, MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH};
 use bacnet_mstp_core::{
     Action, AllocQueues, CoreError, Direction, Instant, MasterCore, MasterState, MstpCounters,
-    NetworkPriority, QueueRejectReason, ReceiveError, ReplyDecision, RequestId, TransmitId,
+    NetworkPriority, QueueRefusal, ReceiveError, ReplyDecision, RequestId, TransmitId,
 };
 
 use super::{
@@ -46,7 +46,7 @@ pub(crate) struct MasterNode {
     /// another master doing the same is the generation race.
     pub(super) generating: bool,
     pub(super) deliveries: Vec<Delivery>,
-    pub(super) rejects: Vec<(Instant, QueueRejectReason)>,
+    pub(super) rejects: Vec<(Instant, QueueRefusal)>,
     spin: (Instant, u32),
 }
 
@@ -403,7 +403,11 @@ impl Sim {
                 Effect::Transmit(id, octets) => {
                     self.note(
                         who,
-                        TraceKind::Action(format!("Transmit #{} {}", id.raw(), describe(&octets))),
+                        TraceKind::Action(format!(
+                            "Transmit #{} {}",
+                            id.generation(),
+                            describe(&octets)
+                        )),
                     );
                     let now = self.now;
                     let activity = self.line.last_activity();
@@ -537,7 +541,7 @@ impl Sim {
             return;
         };
         let Some(core) = master.core.as_mut() else {
-            master.rejects.push((now, QueueRejectReason::Full));
+            master.rejects.push((now, QueueRefusal::Full));
             return;
         };
         if let Err(reason) = core.enqueue_npdu(destination, npdu, priority, now) {

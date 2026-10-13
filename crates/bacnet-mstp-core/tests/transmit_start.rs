@@ -9,7 +9,7 @@ mod support;
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, MasterState, ReceiveError, ReplyDecision,
-    TransmitFailure,
+    TransmitFailure, TransmitId,
 };
 
 use support::*;
@@ -278,6 +278,57 @@ fn only_a_started_transmit_adds_driver_on_time() {
         };
         assert_eq!(core.counters().de_assertion, on, "started {started}");
         assert_eq!(core.counters().cancelled_sends, u32::from(!started));
+        // The core's own watchdog aborts as a timeout.
+        assert_eq!(core.counters().transmit_timeouts, 1);
         assert_eq!(core.state(), MasterState::Idle);
     }
+}
+
+/// An abort counts under its reason only when it aborts the transmit: one
+/// for an id the core doesn't hold is refused as stale and counts nothing,
+/// and neither does a start or a completion for such an id.
+#[test]
+fn only_an_abort_of_the_transmit_counts_its_reason() {
+    let mut rx = [0; 64];
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
+    poll_waiting(&mut core);
+    let handed = core.next_deadline().unwrap();
+    core.on_deadline(handed).unwrap();
+    let (id, _) = handed_over(&mut core);
+    let stranger = TransmitId::new(id.generation().wrapping_add(7));
+    let before = core.counters();
+    for failure in [
+        TransmitFailure::Aborted,
+        TransmitFailure::Timeout,
+        TransmitFailure::Io,
+        TransmitFailure::Rejected,
+    ] {
+        assert_eq!(
+            core.on_transmit_aborted(stranger, failure, handed),
+            Err(CoreError::StaleTransmit)
+        );
+    }
+    assert_eq!(
+        core.on_transmit_started(stranger, handed),
+        Err(CoreError::StaleTransmit)
+    );
+    assert_eq!(
+        core.on_transmit_complete(stranger, handed),
+        Err(CoreError::StaleTransmit)
+    );
+    assert_eq!(core.counters(), before);
+
+    core.on_transmit_aborted(id, TransmitFailure::Rejected, handed)
+        .unwrap();
+    let counters = core.counters();
+    assert_eq!(
+        (
+            counters.transmit_aborts,
+            counters.transmit_timeouts,
+            counters.transmit_io_errors,
+            counters.transmit_rejections,
+        ),
+        (0, 0, 0, 1)
+    );
 }

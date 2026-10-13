@@ -16,8 +16,8 @@ use std::rc::Rc;
 
 use bacnet_mstp_codec::BROADCAST_MAC;
 use bacnet_mstp_core::{
-    DequeuedNpdu, Instant, NetworkPriority, QueueCounters, QueueItemInfo, QueueKind,
-    QueueRejectReason, QueueStorage,
+    DequeuedNpdu, Instant, NetworkPriority, QueueCounters, QueueItemInfo, QueueKind, QueueRefusal,
+    QueueStorage,
 };
 
 /// What the wrapper saw, shared with the checker.
@@ -91,8 +91,8 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         self.inner.set_starvation_limit(limit);
     }
 
-    fn max_npdu_length(&self) -> usize {
-        self.inner.max_npdu_length()
+    fn max_npdu(&self) -> usize {
+        self.inner.max_npdu()
     }
 
     fn enqueue_npdu(
@@ -102,7 +102,7 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         priority: NetworkPriority,
         now: Instant,
         expires_at: Option<Instant>,
-    ) -> Result<(), QueueRejectReason> {
+    ) -> Result<(), QueueRefusal> {
         if payload.len() > self.max_npdu {
             self.broken(format!(
                 "the core queued an NPDU of {} octets, longer than the {} the station sends",
@@ -121,7 +121,7 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
                 "an accepted NPDU took the {kind:?} queue from {before} items to {after}"
             ));
         }
-        if result == Err(QueueRejectReason::Full) && before < self.capacity[index(kind)] {
+        if result == Err(QueueRefusal::Full) && before < self.capacity[index(kind)] {
             self.broken(format!(
                 "the {kind:?} queue refused an NPDU as full with {before} of {} slots used",
                 self.capacity[index(kind)]
@@ -150,19 +150,19 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         kind: QueueKind,
         now: Instant,
         max_len: usize,
-    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRejectReason> {
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         // The item, its NPDU copied into `lent` so the queue is free again.
         let result = self.inner.dequeue_kind(kind, now, max_len).map(|item| {
             item.map(|item| {
                 self.lent.clear();
                 self.lent.extend_from_slice(item.npdu);
-                DequeuedNpdu {
-                    destination: item.destination,
-                    kind: item.kind,
-                    priority: item.priority,
-                    sequence: item.sequence,
-                    npdu: &[],
-                }
+                DequeuedNpdu::new(
+                    item.destination,
+                    item.kind,
+                    item.priority,
+                    item.sequence,
+                    &[],
+                )
             })
         });
         if let Ok(Some(item)) = result {
@@ -185,9 +185,14 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         }
         self.check_depths("a dequeue");
         result.map(|item| {
-            item.map(|item| DequeuedNpdu {
-                npdu: &self.lent,
-                ..item
+            item.map(|item| {
+                DequeuedNpdu::new(
+                    item.destination,
+                    item.kind,
+                    item.priority,
+                    item.sequence,
+                    &self.lent,
+                )
             })
         })
     }
@@ -196,7 +201,11 @@ impl<Q: QueueStorage> QueueStorage for Logged<Q> {
         self.inner.depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        self.inner.stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.inner.counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.inner.take_counters(kind)
     }
 }

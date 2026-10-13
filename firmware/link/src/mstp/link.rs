@@ -3,7 +3,7 @@
 
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
-    Action, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority, QueueRejectReason,
+    Action, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal,
     ReplyDecision, RequestId, TransmitId,
 };
 
@@ -25,10 +25,11 @@ const STATION: u8 = 1;
 const PEER: u8 = 2;
 
 /// Station 1 of masters 0-2, at the standard 9600 baud.
-const CONFIG: MstpCoreConfig = MstpCoreConfig {
-    station: STATION,
-    max_master: 2,
-    ..MstpCoreConfig::standard()
+const CONFIG: MstpCoreConfig = {
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 2;
+    config
 };
 
 /// The peer's ReadProperty of Device 1's Object_Name; the NPDU control
@@ -130,20 +131,21 @@ fn fill_queues(core: &mut Core<'_>, oversize: &[u8], now: Instant, summary: &mut
     for _ in 0..=UNICAST_SLOTS {
         match core.enqueue_npdu(PEER, &WHO_IS, NetworkPriority::Normal, now) {
             Ok(()) => summary.queued_before_full += 1,
-            Err(QueueRejectReason::Full) => break,
+            Err(QueueRefusal::Full) => break,
             Err(_) => summary.error(),
         }
     }
     if core.enqueue_npdu(PEER, oversize, NetworkPriority::Normal, now)
-        != Err(QueueRejectReason::Oversize)
+        != Err(QueueRefusal::Oversize)
     {
         summary.error();
     }
 }
 
-/// Copy the core counters the summary keeps.
-fn record_counters(core: &Core<'_>, summary: &mut Summary) {
-    let counters = core.counters();
+/// Take the core's counters, as firmware drains them, and copy the ones
+/// the summary keeps: the scenario takes them once, so they are its totals.
+fn record_counters(core: &mut Core<'_>, summary: &mut Summary) {
+    let counters = core.take_counters();
     summary.frames_received = counters.frames_received;
     summary.frames_transmitted = counters.frames_transmitted;
     summary.token_rotations = counters.token_rotations;

@@ -42,7 +42,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// [`Direction::Receive`](crate::Direction::Receive); the other
     /// refusals queue nothing.
     pub fn on_transmit_started(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         let tx = self
             .active_transmit
             .filter(|tx| tx.id == id)
@@ -122,7 +122,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// [`MstpCounters::adapter_errors`]; the transmit stays active until it
     /// is started and completed, aborted, or caught by the watchdog.
     pub fn on_transmit_complete(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         let tx = self
             .active_transmit
             .filter(|tx| tx.id == id)
@@ -172,18 +172,20 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// driver-on time and is counted as given up: in
     /// [`MstpCounters::expired_requests`] for an answer, which leaves its
     /// request unanswered, and in [`MstpCounters::cancelled_sends`] for any
-    /// other frame.
+    /// other frame. Every abort counts under its `reason`, in
+    /// [`MstpCounters::transmit_aborts`] and the three beside it.
     pub fn on_transmit_aborted(
         &mut self,
         id: TransmitId,
-        _reason: TransmitFailure,
+        reason: TransmitFailure,
         now: Instant,
     ) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         let tx = self
             .active_transmit
             .filter(|tx| tx.id == id)
             .ok_or(CoreError::StaleTransmit)?;
+        self.counters.record_transmit_failure(reason);
         self.withdraw_transmit(id);
         self.forget_pending();
         if tx.started {
@@ -195,7 +197,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 .record_de_assertion(now.saturating_duration_since(tx.asserted_at));
         }
         self.set_state(MasterState::Idle);
-        self.protocol_deadline = Some(now + self.config.t_no_token);
+        self.protocol_deadline = Some(now + T_NO_TOKEN);
         self.take_pending_token(now)
     }
 

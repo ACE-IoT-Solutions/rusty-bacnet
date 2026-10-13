@@ -76,8 +76,9 @@
 //!   the borrowed action buffers and fitting a slot.
 //! - **Deliveries** are frames heard for this station or broadcast, in
 //!   order; only a data request for this station carries a request id.
-//! - **Monotonic time.** A call stamped before the last one is refused as a
-//!   clock regression and changes nothing; that refusal is not a fault.
+//! - **Monotonic time.** A call stamped before the last one does exactly
+//!   what the same call stamped at the last one would: the core holds its
+//!   clock there rather than run it back.
 //! - **Progress.** A serviced deadline doesn't stay due.
 
 #![no_main]

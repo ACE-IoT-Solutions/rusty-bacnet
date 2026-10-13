@@ -342,7 +342,8 @@ fn strict_bip_failure_precedes_router_or_queue_mutation() {
 
 /// Every way the MS/TP port can take or refuse a relay from B/IP, each
 /// counted once by the router: taken; a full queue; too long for a core
-/// without extended frames; a clock that ran backwards; and a send for
+/// without extended frames; taken though stamped before the core's clock;
+/// expired at once on a core whose clock has run out; and a send for
 /// another port.
 ///
 /// Ported from ACE IoT's
@@ -390,13 +391,24 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
         [(1, Err(SendRefusal::TooLong))]
     );
 
+    // A send stamped before the core's clock is taken at the core's time
+    // (the core's clock rule), so it is queued.
     let mut bus = Bus::<1>::new();
     let mut ahead = bus.core(true);
     ahead.on_deadline(Instant::from_millis(20)).unwrap();
     let mut to_ahead =
         |send: &bacnet_router_core::router::Send<'_>| MSTP.send(&mut ahead, send, now);
+    assert_eq!(relay(&mut router, &short, &mut to_ahead), [(1, Ok(()))]);
+
+    // A core whose clock has reached the end of time: an NPDU queued then
+    // expires at once.
+    let mut bus = Bus::<1>::new();
+    let mut ended = bus.core(true);
+    ended.on_deadline(Instant::from_nanos(u64::MAX)).unwrap();
+    let mut to_ended =
+        |send: &bacnet_router_core::router::Send<'_>| MSTP.send(&mut ended, send, now);
     assert_eq!(
-        relay(&mut router, &short, &mut to_ahead),
+        relay(&mut router, &short, &mut to_ended),
         [(1, Err(SendRefusal::Other))]
     );
 

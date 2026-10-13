@@ -14,11 +14,10 @@ fn ms(value: u64) -> Instant {
 }
 
 fn config(station: u8, max_master: u8) -> MstpCoreConfig {
-    MstpCoreConfig {
-        station,
-        max_master,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = station;
+    config.max_master = max_master;
+    config
 }
 
 fn validated(

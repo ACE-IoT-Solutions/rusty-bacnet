@@ -179,12 +179,12 @@ const PEER: u8 = 2;
 
 /// Station 1 of masters 0-2, at the standard 9600 baud, with extended
 /// frames on.
-const CONFIG: MstpCoreConfig = MstpCoreConfig {
-    station: STATION,
-    max_master: 2,
-    ..MstpCoreConfig::standard()
-}
-.with_extended_frames();
+const CONFIG: MstpCoreConfig = {
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 2;
+    config.with_extended_frames()
+};
 
 /// An NPDU the scenario sends: version 1, a control octet, then octets that
 /// step through a pattern, so it can be checked without a copy.
@@ -264,7 +264,7 @@ pub fn run(memory: &mut Memory) -> Summary {
         actions,
     } = memory;
     let mut summary = Summary::new();
-    summary.max_npdu = CONFIG.max_npdu_length();
+    summary.max_npdu = CONFIG.max_npdu();
     let mut line = Line {
         now: Instant::ZERO,
         octet: CONFIG.octet_time(),
@@ -275,13 +275,14 @@ pub fn run(memory: &mut Memory) -> Summary {
         return summary;
     };
     line.exchange(&mut core);
-    record_counters(&core, &mut summary);
+    record_counters(&mut core, &mut summary);
     summary
 }
 
-/// Copy the core counters the summary keeps.
-fn record_counters(core: &Core<'_>, summary: &mut Summary) {
-    let counters = core.counters();
+/// Take the core's counters, as firmware drains them, and copy the ones
+/// the summary keeps: the scenario takes them once, so they are its totals.
+fn record_counters(core: &mut Core<'_>, summary: &mut Summary) {
+    let counters = core.take_counters();
     summary.frames_received = counters.frames_received;
     summary.frames_transmitted = counters.frames_transmitted;
     summary.token_rotations = counters.token_rotations;

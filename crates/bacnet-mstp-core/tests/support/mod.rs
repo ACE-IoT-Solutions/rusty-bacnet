@@ -21,11 +21,10 @@ pub const PEER: u8 = 2;
 /// Station 1 of masters 0 to 3 at 9600 baud: T_turnaround 4167 µs, one
 /// octet 1042 µs.
 pub fn config() -> MstpCoreConfig {
-    MstpCoreConfig {
-        station: STATION,
-        max_master: 3,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 3;
+    config
 }
 
 /// Station 1's core over `rx` and `actions`, from time zero.

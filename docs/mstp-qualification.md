@@ -75,8 +75,9 @@ and mark saturated fields indeterminate rather than claiming exact counts.
 | `mac.frames_received`, `mac.npdus_delivered`, `mac.frames_delivered` | Valid frames the core's decoder assembled (any destination), and data it passed up. |
 | `mac.parser_errors`, `mac.frame_aborts` | Frames invalid for this station per the receive rules (bad header, or bad data for this station or broadcast), and partial frames abandoned by T_frame_abort (100 ms on a host) or at a transmit start. Chunk gaps under 100 ms are not aborts. |
 | `mac.deadline_misses` | Deadlines the MAC task serviced 1 ms or more late. |
-| `mac.token_rotations`, `mac.token_retries`, `mac.token_regenerations`, `mac.deferred_starts`, `mac.late_replies`, `mac.expired_requests`, `mac.cancelled_sends`, `mac.discarded_while_busy`, `mac.own_address_frames` | The core's protocol counters; see `bacnet_mstp_core::MstpCounters`. |
-| `mac.unicast`, `mac.broadcast` | The two transmit queues' depth, high water and drops. |
+| `mac.token_rotations`, `mac.token_retries`, `mac.token_regenerations`, `mac.deferred_starts`, `mac.late_replies`, `mac.expired_requests`, `mac.cancelled_sends`, `mac.discarded_while_busy`, `mac.own_address_frames` | The core's protocol counters, which `bacnet_mstp_core::MstpCounters` describes; the transport adds up each take of them (`bacnet_transport::mstp::MstpCounters`). |
+| `mac.transmit_io_errors`, `mac.transmit_timeouts` | Frames aborted because a serial write or drain failed, and frames the core's transmit watchdog aborted. The receive-error counts (`mac.framing_errors` and the rest) stay zero on a host: its serial API reports no per-octet errors. So do `mac.transmit_aborts` and `mac.transmit_rejections`: the transport reports only `Io` aborts, and `Timeout` comes from the core's watchdog alone. |
+| `mac.unicast`, `mac.broadcast` | The two transmit queues' depth when last published, highest depth, and drops. |
 
 TX means the frame completed on the wire as far as the host can tell: the port's
 drain returned and its time at the baud rate had passed. That is not peer receipt

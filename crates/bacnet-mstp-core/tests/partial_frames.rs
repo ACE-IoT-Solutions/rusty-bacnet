@@ -8,7 +8,7 @@
 mod support;
 
 use bacnet_mstp_codec::FrameType;
-use bacnet_mstp_core::{Duration, Instant, MasterState, MstpCoreConfig};
+use bacnet_mstp_core::{Duration, Instant, MasterState};
 
 use support::*;
 
@@ -53,10 +53,8 @@ fn a_partial_frame_dies_when_a_poll_starts() {
 /// its full T_reply_timeout instead.
 #[test]
 fn a_partial_frame_does_not_end_the_wait_for_a_reply() {
-    let config = MstpCoreConfig {
-        t_frame_abort: Duration::from_millis(20),
-        ..config()
-    };
+    let mut config = config();
+    config.t_frame_abort = Duration::from_millis(20);
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = Core::new(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();

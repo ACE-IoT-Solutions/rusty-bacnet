@@ -489,7 +489,9 @@ pub enum Decision {
     },
     /// Reply Postponed.
     Postponed,
-    /// Cancelled.
+    /// Reply Postponed too: the core's `ReplyDecision::Cancelled`, which
+    /// acted as `Postponed`, is gone (#1684), and the variant stays so that
+    /// saved inputs decode as they did.
     Cancelled,
     /// Abandoned.
     Abandoned,
@@ -497,7 +499,7 @@ pub enum Decision {
 
 /// The network priority for `raw`.
 pub fn priority(raw: u8) -> NetworkPriority {
-    NetworkPriority::from_u8(raw % 4).expect("0-3 are priorities")
+    NetworkPriority::try_from(raw % 4).expect("0-3 are priorities")
 }
 
 /// `length` octets: `pattern`, then each one more than the last.
