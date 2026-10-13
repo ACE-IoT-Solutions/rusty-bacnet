@@ -2174,6 +2174,12 @@ them):
   counts in `counters().hop_count_drops`, with no reject. Delivery onto an
   attached network, where the NPDU carries no hop count, is unchanged.
   Before, such an NPDU left with a hop count of 0.
+- **The router's own address (R7).** An APDU addressed to the router's own
+  MAC on any of its networks goes to the local APDU receiver, with the
+  arrival port's network as `ingress_network` (Clause 6.1, Figure 6-12).
+  Before, only its address on the arrival network did, and one for its
+  address on another network went out on that network's wire, to the router
+  itself.
 
 An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it

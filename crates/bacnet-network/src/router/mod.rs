@@ -144,7 +144,10 @@ pub struct RouterPort<T: TransportPort> {
 /// the router keeps behind one lock: each port's dispatch task takes it for
 /// one frame at a time, as the sweep and [`Self::table`] do, and nothing
 /// holds it across an await. The engine's timers run on Tokio time from the
-/// router's start.
+/// router's start. It runs with every Clause 6 fix the core has (R1 to R7
+/// of #1679, `Fixes::ALL`): egress limits, rejects that keep routes,
+/// network numbers at startup, reachable-only and arrival-port-aware
+/// route answers, the hop count, and the router's own address on any port.
 pub struct BACnetRouter {
     /// The engine, the gate and the ports' groups.
     shared: Arc<Shared>,

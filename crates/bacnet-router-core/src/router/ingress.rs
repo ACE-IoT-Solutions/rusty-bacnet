@@ -232,6 +232,12 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             self.forward_global(at, npdu, options, host);
             return Received::Local(local(npdu, true, true));
         }
+        // R7: the router's own address on any of its networks is its own
+        // application's, before any route is looked up. A DLEN 0 broadcast
+        // names no one node, so it is never that.
+        if options.fixes.own_address && !destination.mac.is_empty() && self.is_own(destination) {
+            return Received::Local(local(npdu, false, false));
+        }
         let Some(route) = self.find_route(at, npdu, destination.network, options, host) else {
             return Received::Handled;
         };

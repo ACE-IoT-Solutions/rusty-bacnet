@@ -276,3 +276,30 @@ async fn r6_a_relay_never_leaves_with_a_hop_count_of_0() {
     assert_eq!(lengths_on(&mut h, 1), [24]);
     h.assert_quiet();
 }
+
+// --- R7: the router's own address on any of its networks is local ---
+
+/// R7 (Clause 6.1, Figure 6-12): a confirmed request from network 1000 for
+/// the router's own MAC on network 2000 ([2]) reaches the router's own
+/// application, with network 1000 as where it came in, and nothing goes on
+/// either wire. Before the fix it went out on network 2000, addressed to
+/// the router itself.
+#[tokio::test]
+async fn r7_an_apdu_for_the_routers_address_on_another_port_is_local() {
+    let mut h = Harness::two_port();
+    let request = Npdu {
+        destination: Some(address(2000, &[super::envelope_harness::PORT_MACS[1]])),
+        hop_count: 255,
+        expecting_reply: true,
+        payload: Bytes::from_static(&[0x00, 0x05, 0x01, 0x0C]),
+        ..Npdu::default()
+    };
+    h.dispatch(h.ctx(0, &SENDER, request)).await;
+    h.assert_quiet();
+    let delivered = h.apdus.try_recv().expect("delivered locally");
+    assert_eq!(delivered.apdu.as_ref(), [0x00, 0x05, 0x01, 0x0C]);
+    assert_eq!(delivered.ingress_network, Some(1000));
+    assert_eq!(delivered.source_mac.as_slice(), SENDER);
+    assert!(delivered.source_network.is_none());
+    assert!(!delivered.is_group && !delivered.global_broadcast);
+}

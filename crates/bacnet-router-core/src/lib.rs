@@ -55,11 +55,13 @@
 //! | A routing-table update replaces or adds a network's row, and Port ID 0 deletes it | 6.4.7, 6.6.3.8 | `tests/table.rs`: `management_updates_never_touch_direct_routes` |
 //! | A router with no route to a network looks for one before it refuses the message | 6.6.3.1 | `tests/discovery.rs` |
 //!
-//! Then the engine, with today's options unless a row names a fix:
+//! Then the engine, with the hosted router's options, every fix on; where a row
+//! names a fix, its test pins the router before the fix too:
 //!
 //! | Obligation | Clause | Test |
 //! | --- | --- | --- |
 //! | An address length no link uses draws reason 6 when the NPDU names a network, and nothing when it is a global broadcast | 6.2.2.2, 6.4.4 | `tests/ingress.rs`: `over_long_addresses_reject_with_reason_6` |
+//! | A message for the router's own address on any of its networks goes to its own application, not on a wire (R7) | 6.1, Figure 6-12 | `tests/ingress.rs`: `own_address_on_any_port_is_local` |
 //! | Only an Unconfirmed-Request may use a broadcast network address | 6.3 | `tests/ingress.rs`: `broadcast_addresses_carry_only_unconfirmed` |
 //! | Missing SNET and SADR are filled in from the arrival network and the link sender; present ones travel unchanged | 6.5.4 | `tests/forward.rs`: `source_is_added_once_and_kept_after` |
 //! | Onto an attached network the destination fields and hop count are dropped, and the frame goes to the DADR, or to every node for DLEN 0 | 6.5.4 | `tests/forward.rs`: `direct_delivery_strips_destination` |

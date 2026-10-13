@@ -106,6 +106,12 @@ pub struct Fixes {
     /// attached network carries no hop count, and is unchanged. Off, one
     /// that arrives with 1 leaves with 0.
     pub hop_count: bool,
+    /// R7: an APDU for the router's own address on any of its networks, a
+    /// port's network with the router's MAC on that port, is delivered to
+    /// the router's own application (Clause 6.1, Figure 6-12). Off, only
+    /// its address on the arrival network is, and one for its address on
+    /// another network goes out on that network's wire, to itself.
+    pub own_address: bool,
 }
 
 impl Fixes {
@@ -117,6 +123,7 @@ impl Fixes {
         answer_reachable: false,
         search_unknown_only: false,
         hop_count: false,
+        own_address: false,
     };
 
     /// Every switch on: the recommended setting.
@@ -127,6 +134,7 @@ impl Fixes {
         answer_reachable: true,
         search_unknown_only: true,
         hop_count: true,
+        own_address: true,
     };
 }
 
@@ -169,8 +177,7 @@ pub struct Options {
 impl Options {
     /// The hosted router's values: standard convergence, 256 routes, 300 s
     /// learned age, a 60 s sweep, [`Timing::DEFAULT`], a 5 s discovery
-    /// cooldown and 30 s age, and the fixes it has turned on so far: R1 to
-    /// R6.
+    /// cooldown and 30 s age, and every fix ([`Fixes::ALL`]).
     pub const HOSTED: Self = Self {
         convergence: Convergence::Standard,
         route_cap: 256,
@@ -179,15 +186,7 @@ impl Options {
         timing: Timing::DEFAULT,
         discovery_cooldown: Duration::from_secs(5),
         discovery_age: Duration::from_secs(30),
-        fixes: Fixes {
-            egress_limits: true,
-            rejects_keep_routes: true,
-            announce_numbers: true,
-            answer_reachable: true,
-            search_unknown_only: true,
-            hop_count: true,
-            ..Fixes::NONE
-        },
+        fixes: Fixes::ALL,
     };
 }
 

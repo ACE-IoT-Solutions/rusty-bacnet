@@ -28,9 +28,10 @@
 //! 4. An APDU with no DNET is delivered locally. A global broadcast is
 //!    passed on to every other port and delivered. Any other DNET is
 //!    looked up: no route starts a search and draws reason 1, a busy route
-//!    reason 2 and an unreachable one reason 1. On the arrival network, a
-//!    DADR that is the router's own MAC is delivered, and a DLEN 0
-//!    broadcast is delivered and also sent back out the same port.
+//!    reason 2 and an unreachable one reason 1. A DADR that is the
+//!    router's own MAC is delivered: on any of its networks with fix R7,
+//!    on the arrival network only without. On the arrival network, a DLEN
+//!    0 broadcast is delivered and also sent back out the same port.
 //! 5. The NPDU is rewritten (Clause 6.5.4) and sent: SNET and SADR added
 //!    when missing; onto a directly attached network without its DNET,
 //!    DADR and hop count, to the DADR or as a broadcast; toward the next
