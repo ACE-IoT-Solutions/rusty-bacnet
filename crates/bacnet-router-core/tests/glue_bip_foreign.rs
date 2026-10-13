@@ -9,9 +9,9 @@ mod fixture;
 mod glue;
 
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
-use bacnet_bip_core::node::Permissive;
-use bacnet_router_core::bip::{BipPort, HeldBroadcast, Ingress};
-use bacnet_router_core::message::code;
+use bacnet_bip_core::node::{Cast, Node, Permissive};
+use bacnet_router_core::bip::{BipPort, HeldBroadcast, Ingress, PortCounters};
+use bacnet_router_core::message::MessageType;
 use bacnet_router_core::router::{Options, SendRefusal};
 use bacnet_router_core::Instant;
 
@@ -24,7 +24,7 @@ fn sent_at(out: &mut Wire, now: Instant, trace: &mut Vec<(Instant, Out)>) {
 }
 
 /// A foreign-device port holding two broadcasts, on a router with the
-/// default options (fix R3 on among them), started at `t0`: its first
+/// default options, started at `t0`: its first
 /// registration sent, and the router's startup announcements carried out.
 fn started_foreign_port<'h>(
     held: &'h mut [HeldBroadcast],
@@ -55,7 +55,7 @@ fn started_foreign_port<'h>(
 fn trace_e(released: Instant) -> [(Instant, Out); 3] {
     let dbtn = BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK;
     let ttl = 60u16.to_be_bytes();
-    let number_is = message(code::NETWORK_NUMBER_IS, &[0, 1, 1]);
+    let number_is = message(MessageType::NETWORK_NUMBER_IS, &[0, 1, 1]);
     [
         (
             Instant::ZERO,
@@ -68,7 +68,7 @@ fn trace_e(released: Instant) -> [(Instant, Out); 3] {
 
 /// Trace E (design 5.2): a router port that is a foreign device, holding
 /// two broadcasts. At start it registers, and holds its two startup
-/// announcements, the Network-Number-Is and the I-Am-Router (fix R3);
+/// announcements, the Network-Number-Is and the I-Am-Router;
 /// the BBMD's success 10 ms later releases them, in order (Annex J.7.4;
 /// decision D17).
 #[test]
@@ -98,11 +98,11 @@ fn foreign_port_announces_after_registration() {
         (counters.broadcasts_held, counters.broadcasts_released),
         (2, 2)
     );
-    assert_eq!(bip.refused(), 0);
+    assert_eq!(bip.counters().refused, 0);
 
     // From now on a broadcast goes at once.
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
     let results = pump(&mut router, |send| bip.send(send, t10, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     assert_eq!(
@@ -133,7 +133,7 @@ fn foreign_port_announces_after_the_response_timeout() {
 }
 
 /// The BBMD's success, received at `now`.
-fn success_at(bip: &mut BipPort<'_>, now: Instant, out: &mut Wire) {
+fn success_at<const N: usize>(bip: &mut BipPort<'_, 4, N>, now: Instant, out: &mut Wire) {
     let success = encode(&Bvll::BvlcResult(BvlcResultCode::SUCCESSFUL_COMPLETION));
     let ingress = bip.receive(
         &datagram(&success, BBMD, UNICAST),
@@ -142,6 +142,37 @@ fn success_at(bip: &mut BipPort<'_>, now: Instant, out: &mut Wire) {
         out,
     );
     assert_eq!(ingress, Ingress::Handled);
+}
+
+/// Slots as long as the link's broadcast limit hold what it sends: with a
+/// send budget of 510 octets the link's broadcasts are at most 500 octets,
+/// and slots of 500 serve trace E as full-size ones do.
+#[test]
+fn slots_as_long_as_the_links_broadcasts_serve_trace_e() {
+    let t0 = Instant::ZERO;
+    let link = with(link(foreign(2)), |link| link.budget = Some(510));
+    assert_eq!(link.max_npdu(Cast::Broadcast), 500);
+    let mut held = [HeldBroadcast::<500>::EMPTY; 2];
+    let mut out = Wire::default();
+    let node = Node::<4>::new(link, t0).unwrap();
+    let mut bip = BipPort::new(BIP_PORT, node, &mut held).unwrap();
+    let mut router = router_with(&[bip.config(1), port_on(2, OWN_1)], Options::HOSTED);
+    bip.start(t0, &mut out);
+    router.start();
+    let results = pump(&mut router, |send| match send.port {
+        BIP_PORT => bip.send(send, t0, &mut out),
+        _ => Ok(()),
+    });
+    assert!(
+        results.iter().all(|(_, result)| result.is_ok()),
+        "{results:?}"
+    );
+    let mut trace = Vec::new();
+    sent_at(&mut out, t0, &mut trace);
+    let t10 = Instant::from_millis(10);
+    success_at(&mut bip, t10, &mut out);
+    sent_at(&mut out, t10, &mut trace);
+    assert_eq!(trace, trace_e(t10));
 }
 
 /// A broadcast the router sends after the first registration's response
@@ -157,7 +188,7 @@ fn held_broadcasts_leave_before_a_later_one() {
 
     let late = Instant::from_millis(3_500);
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), late, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), late, &mut host);
     let results = pump(&mut router, |send| bip.send(send, late, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     let sent = out.take();
@@ -171,7 +202,10 @@ fn held_broadcasts_leave_before_a_later_one() {
         [0x80, 0x80, 0x28],
         "the Number-Is, the I-Am-Router, then the Who-Is"
     );
-    assert_eq!(sent[0].npdu, message(code::NETWORK_NUMBER_IS, &[0, 1, 1]));
+    assert_eq!(
+        sent[0].npdu,
+        message(MessageType::NETWORK_NUMBER_IS, &[0, 1, 1])
+    );
     assert_eq!(sent[1].npdu, i_am(&[2]));
 }
 
@@ -203,7 +237,7 @@ fn a_refused_registration_discards_the_held_broadcasts() {
     );
 
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t10, &mut host);
     let results = pump(&mut router, |send| bip.send(send, t10, &mut out));
     assert_eq!(results, [(0, Ok(()))]);
     let sent = out.take();
@@ -217,7 +251,7 @@ fn a_refused_registration_discards_the_held_broadcasts() {
 #[test]
 fn a_registration_the_socket_refuses_ends_its_attempt() {
     let t0 = Instant::ZERO;
-    let mut held = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
+    let mut held: [HeldBroadcast; 2] = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
     let mut bip = BipPort::new(BIP_PORT, node(foreign(2), t0), &mut held).unwrap();
     let mut out = Wire {
         refuse: Some(SendRefusal::Full),
@@ -231,7 +265,7 @@ fn a_registration_the_socket_refuses_ends_its_attempt() {
     assert_eq!(bip.next_deadline(), Some(retry));
     let counters = bip.node_mut().take_counters();
     assert_eq!(counters.register_foreign_device.local_errors, 1);
-    assert_eq!(bip.refused(), 0, "the node counts its own attempt");
+    assert_eq!(bip.counters().refused, 0, "the node counts its own attempt");
 
     out.refuse = None;
     bip.on_deadline(retry, &mut out);
@@ -251,7 +285,7 @@ fn a_full_hold_refuses_the_next_broadcast() {
     let (mut bip, mut router) = started_foreign_port(&mut held, &mut out);
     let t1 = Instant::from_millis(1);
     let mut host = Recorder::default();
-    router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t1, &mut host);
+    let _ = router.receive(frame(1, &[5], true, &GLOBAL_WHO_IS), t1, &mut host);
     let results = pump(&mut router, |send| bip.send(send, t1, &mut out));
     assert_eq!(results, [(0, Err(SendRefusal::Full))]);
     assert_eq!(router.counters().refused, 1);
@@ -263,7 +297,8 @@ fn a_full_hold_refuses_the_next_broadcast() {
 }
 
 /// Each datagram of a foreign-device port's own that the socket refuses
-/// is counted once: a NAK, and each released broadcast.
+/// is counted once: a NAK, and each released broadcast. Taking the counts
+/// starts them again from zero.
 #[test]
 fn refused_datagrams_of_a_foreign_port_are_counted() {
     let mut held = [HeldBroadcast::EMPTY, HeldBroadcast::EMPTY];
@@ -278,7 +313,16 @@ fn refused_datagrams_of_a_foreign_port_are_counted() {
         &mut Permissive,
         &mut out,
     );
-    assert_eq!(bip.refused(), 1, "the NAK");
+    assert_eq!(bip.counters().refused, 1, "the NAK");
     success_at(&mut bip, t10, &mut out);
-    assert_eq!(bip.refused(), 3, "and the two held broadcasts");
+    assert_eq!(bip.counters().refused, 3, "and the two held broadcasts");
+    assert_eq!(bip.take_counters().refused, 3);
+    assert_eq!(bip.counters(), PortCounters::default(), "drained");
+    bip.receive(
+        &datagram(&read, PEER, UNICAST),
+        t10,
+        &mut Permissive,
+        &mut out,
+    );
+    assert_eq!(bip.take_counters().refused, 1, "counted from zero again");
 }

@@ -3,10 +3,9 @@
 
 mod fixture;
 
-use bacnet_router_core::message::code;
+use bacnet_router_core::message::MessageType;
 use bacnet_router_core::router::{
-    Action, ConfigError, DropReason, Event, Frame, Limits, Options, Permissive, Received,
-    SendRefusal,
+    Action, ConfigError, Discard, Event, Frame, Limits, Options, Permissive, Received, SendRefusal,
 };
 use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
 use fixture::{
@@ -108,7 +107,7 @@ fn undrained_actions_are_dropped_and_counted() {
     router.start();
     // The startup announcements are never polled.
     let frame = apdu_to(44, &[5], CONFIRMED);
-    router.receive(
+    let _ = router.receive(
         Frame {
             port: PortId(0),
             source: NODE_A,
@@ -138,7 +137,7 @@ fn refusals_are_counted() {
         SendRefusal::PortDown,
     ] {
         let frame = apdu_to(2, &[5], CONFIRMED);
-        router.receive(
+        let _ = router.receive(
             Frame {
                 port: PortId(0),
                 source: NODE_A,
@@ -212,7 +211,7 @@ fn the_sweep_clears_lapsed_busy_marks() {
     learn_9_via_r7(&mut router, at(0));
     router.table_mut().mark_busy(9, at(30));
     router.on_deadline(at(60), &mut Permissive);
-    assert_eq!(router.table().lookup(9).unwrap().busy_until, None);
+    assert_eq!(router.table().lookup(9).unwrap().busy_until(), None);
 }
 
 /// A route written locally on a port the router doesn't have carries
@@ -226,7 +225,7 @@ fn a_route_to_a_missing_port_carries_nothing() {
     assert!(router.table_mut().add_learned(9, PortId(3), peer, at(0)));
     let frame = apdu_to(9, &[5], CONFIRMED);
     let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(1));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::UnknownPort));
+    assert_eq!(outcome, Outcome::Discarded(Discard::UnknownPort));
     assert!(sent.is_empty());
     assert_eq!(router.counters().unknown_port, 1);
 }
@@ -265,7 +264,7 @@ fn discovery_is_bounded() {
     let mut solicited = 0;
     for network in 40..46 {
         let frame = apdu_to(network, &[5], CONFIRMED);
-        router.receive(
+        let _ = router.receive(
             Frame {
                 port: PortId(0),
                 source: NODE_A,
@@ -276,7 +275,7 @@ fn discovery_is_bounded() {
             &mut Permissive,
         );
         while let Action::Send(send) = router.poll_action() {
-            if send.npdu[2] == code::WHO_IS_ROUTER_TO_NETWORK {
+            if send.npdu[2] == MessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw() {
                 solicited += 1;
             }
         }
@@ -342,18 +341,18 @@ proptest! {
                 now,
                 &mut host,
             );
-            if let Received::Dropped(reason) = received {
+            if let Received::Discarded(reason) = received {
                 let key = match reason {
-                    DropReason::SourceTooLong { .. } | DropReason::AddressTooLong { .. } => "address",
-                    DropReason::Malformed(_) => "malformed",
+                    Discard::SourceTooLong { .. } | Discard::AddressTooLong { .. } => "address",
+                    Discard::Malformed(_) => "malformed",
                     other => match other {
-                        DropReason::UnknownPort => "port",
-                        DropReason::GlobalWithDadr => "global",
-                        DropReason::BroadcastNotUnconfirmed => "broadcast",
-                        DropReason::GroupDadr => "group",
-                        DropReason::Denied => "denied",
-                        DropReason::BadMessage => "bad",
-                        DropReason::Unroutable => "unroutable",
+                        Discard::UnknownPort => "port",
+                        Discard::GlobalWithDadr => "global",
+                        Discard::BroadcastNotUnconfirmed => "broadcast",
+                        Discard::GroupDadr => "group",
+                        Discard::Denied => "denied",
+                        Discard::BadMessage => "bad",
+                        Discard::Unroutable => "unroutable",
                         _ => "other",
                     },
                 };

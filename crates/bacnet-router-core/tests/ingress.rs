@@ -3,11 +3,11 @@
 
 mod fixture;
 
-use bacnet_router_core::message::{code, reason};
+use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::npdu::{AddressField, Malformed, Npdu};
-use bacnet_router_core::router::{DropReason, Kind, Options};
+use bacnet_router_core::router::{Discard, Kind, Options};
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, deliver_broadcast, learn_9_via_r7, options, port_on, router,
+    addr, apdu_to, at, bytes, deliver, deliver_broadcast, learn_9_via_r7, port_on, router,
     router_counts, router_with, sent_reject, Outcome, Recorder, CONFIRMED, NODE_A, OWN_0, OWN_1,
     R7, UNCONFIRMED,
 };
@@ -55,7 +55,7 @@ fn over_long(dnet: Option<u16>, long_source: bool, source: Option<(u16, &[u8])>)
 fn over_long_addresses_reject_with_reason_6() {
     let mut router = router();
     let mut host = Recorder::default();
-    let dropped = |field, length| Outcome::Dropped(DropReason::AddressTooLong { field, length });
+    let dropped = |field, length| Outcome::Discarded(Discard::AddressTooLong { field, length });
 
     // A long DADR from a local sender: reason 6 back to it, naming 9.
     let (outcome, sent) = deliver(
@@ -69,8 +69,11 @@ fn over_long_addresses_reject_with_reason_6() {
     assert_eq!(outcome, dropped(AddressField::Destination, 19));
     assert_eq!(sent.len(), 1);
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
-    assert_eq!(sent[0].kind, Kind::Reject(reason::ADDRESSING_ERROR));
-    assert_eq!(sent_reject(&sent[0]), (reason::ADDRESSING_ERROR, 9, None));
+    assert_eq!(sent[0].kind, Kind::Reject(RejectReason::ADDRESSING_ERROR));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::ADDRESSING_ERROR, 9, None)
+    );
 
     // A long DADR with a remote origin behind it: the reject goes to the
     // origin, through the router that relayed the NPDU.
@@ -79,7 +82,7 @@ fn over_long_addresses_reject_with_reason_6() {
     assert_eq!(sent[0].to.as_deref(), Some(NODE_A));
     assert_eq!(
         sent_reject(&sent[0]),
-        (reason::ADDRESSING_ERROR, 9, Some((7, vec![1, 2, 3])))
+        (RejectReason::ADDRESSING_ERROR, 9, Some((7, vec![1, 2, 3])))
     );
 
     // A long SADR: the origin can't be named, so the link sender hears.
@@ -92,7 +95,10 @@ fn over_long_addresses_reject_with_reason_6() {
         at(1),
     );
     assert_eq!(outcome, dropped(AddressField::Source, 19));
-    assert_eq!(sent_reject(&sent[0]), (reason::ADDRESSING_ERROR, 9, None));
+    assert_eq!(
+        sent_reject(&sent[0]),
+        (RejectReason::ADDRESSING_ERROR, 9, None)
+    );
 
     // A global broadcast, and an NPDU with no DNET: dropped, unanswered.
     let (outcome, sent) = deliver(
@@ -137,7 +143,7 @@ fn an_over_long_link_source_is_dropped_unanswered() {
     );
     assert_eq!(
         outcome,
-        Outcome::Dropped(DropReason::SourceTooLong { length: 19 })
+        Outcome::Discarded(Discard::SourceTooLong { length: 19 })
     );
     assert!(sent.is_empty());
     assert_eq!(router.counters().address_length_drops, 1);
@@ -167,13 +173,13 @@ fn malformed_frames_and_unknown_ports_are_dropped_and_counted() {
     );
     assert_eq!(
         outcome,
-        Outcome::Dropped(DropReason::Malformed(Malformed::Version))
+        Outcome::Discarded(Discard::Malformed(Malformed::Version))
     );
     assert!(sent.is_empty());
     let (outcome, _) = deliver(&mut router, &mut host, 0, NODE_A, &[1], at(1));
     assert_eq!(
         outcome,
-        Outcome::Dropped(DropReason::Malformed(Malformed::Truncated))
+        Outcome::Discarded(Discard::Malformed(Malformed::Truncated))
     );
     let (outcome, _) = deliver(
         &mut router,
@@ -183,7 +189,7 @@ fn malformed_frames_and_unknown_ports_are_dropped_and_counted() {
         &apdu_to(9, &[5], CONFIRMED),
         at(1),
     );
-    assert_eq!(outcome, Outcome::Dropped(DropReason::UnknownPort));
+    assert_eq!(outcome, Outcome::Discarded(Discard::UnknownPort));
     assert_eq!(
         router.counters(),
         router_counts(|c| {
@@ -201,12 +207,12 @@ fn a_global_broadcast_with_a_dadr_goes_nowhere() {
     let mut router = router();
     let mut host = Recorder::default();
     for frame in [apdu_to(0xFFFF, &[5], UNCONFIRMED), {
-        let mut npdu = Npdu::message(code::I_AM_ROUTER_TO_NETWORK, &[0, 9]);
+        let mut npdu = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 9]);
         npdu.destination = Some(addr(0xFFFF, &[5]));
         bytes(&npdu)
     }] {
         let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &frame, at(1));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::GlobalWithDadr));
+        assert_eq!(outcome, Outcome::Discarded(Discard::GlobalWithDadr));
         assert!(sent.is_empty());
     }
     assert!(router.table().lookup(9).is_none());
@@ -220,7 +226,7 @@ fn a_global_broadcast_with_a_dadr_goes_nowhere() {
 fn broadcast_addresses_carry_only_unconfirmed() {
     let mut router = router();
     let mut host = Recorder::default();
-    let refused = Outcome::Dropped(DropReason::BroadcastNotUnconfirmed);
+    let refused = Outcome::Discarded(Discard::BroadcastNotUnconfirmed);
     for frame in [
         apdu_to(0xFFFF, &[], CONFIRMED),
         apdu_to(2, &[], CONFIRMED),
@@ -243,7 +249,7 @@ fn broadcast_addresses_carry_only_unconfirmed() {
     );
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!(sent.len(), 1);
-    let mut who_is = Npdu::message(code::WHO_IS_ROUTER_TO_NETWORK, &[]);
+    let mut who_is = Npdu::message(MessageType::WHO_IS_ROUTER_TO_NETWORK, &[]);
     who_is.destination = Some(addr(0xFFFF, &[]));
     let (outcome, _) = deliver(&mut router, &mut host, 0, NODE_A, &bytes(&who_is), at(1));
     assert_eq!(outcome, Outcome::Handled);
@@ -371,9 +377,9 @@ fn the_arrival_network_as_dnet_goes_back_out_the_arrival_port() {
     assert_eq!(router.counters().hop_count_drops, 1);
 }
 
-/// R7 (Clause 6.1, Figure 6-12): an APDU for the router's own address on
-/// any of its networks is the router's own application's, as one for its
-/// address on the arrival network always was. It is delivered with its
+/// Clause 6.1, Figure 6-12: an APDU for the router's own address on any of
+/// its networks is the router's own application's, as one for its address
+/// on the arrival network is. It is delivered with its
 /// origin, as a routed APDU, and nothing goes on any wire.
 #[test]
 fn own_address_on_any_port_is_local() {
@@ -415,7 +421,7 @@ fn own_address_on_any_port_is_local() {
     assert!(sent.is_empty());
 }
 
-/// R7 matches the router's address as a whole, network and MAC: a DADR
+/// The router's own address is matched whole, network and MAC: a DADR
 /// that equals one of its own MACs on a network behind another router
 /// names some other node, so it is routed on. That is the usual MS/TP case,
 /// where the router is station 1 on its link and another station 1 sits on
@@ -434,28 +440,16 @@ fn own_mac_on_a_remote_network_is_routed_on() {
     }
 }
 
-/// Before R7 the hosted router compared a DADR with its own MAC on the
-/// arrival port only (router/dispatch.rs:178-187): an APDU for its MAC on
-/// another of its networks went out on that network's wire, to the router
-/// itself. A DLEN 0 broadcast is never the router's own address, fix or no
-/// fix: it goes out as a broadcast.
+/// A DLEN 0 broadcast is never the router's own address, even on a port
+/// whose own MAC is empty, which a DLEN 0 would match: it goes out as a
+/// broadcast.
 #[test]
-fn without_r7_own_address_on_another_port_goes_to_the_wire() {
-    let mut before = router_with(
-        &fixture::two_ports(),
-        options(|o| o.fixes.own_address = false),
-    );
-    let mut host = Recorder::default();
-    let frame = apdu_to(2, OWN_1, CONFIRMED);
-    let (outcome, sent) = deliver(&mut before, &mut host, 0, NODE_A, &frame, at(1));
-    assert_eq!(outcome, Outcome::Handled);
-    assert_eq!((sent[0].port, sent[0].to.as_deref()), (1, Some(OWN_1)));
-
-    // Even on a port whose own MAC is empty, which a DLEN 0 would match.
+fn a_dlen_0_broadcast_is_never_the_routers_own_address() {
     let ports = [port_on(1, OWN_0), port_on(2, &[])];
-    let mut fixed = router_with(&ports, options(|o| o.fixes.own_address = true));
+    let mut router = router_with(&ports, Options::HOSTED);
+    let mut host = Recorder::default();
     let frame = apdu_to(2, &[], UNCONFIRMED);
-    let (outcome, sent) = deliver(&mut fixed, &mut host, 0, NODE_A, &frame, at(1));
+    let (outcome, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(1));
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!((sent[0].port, sent[0].is_broadcast()), (1, true));
 }

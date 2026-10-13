@@ -2249,7 +2249,10 @@ across an await. `table()` returns a `RouterTableGuard`, which derefs to the
 live `RouterTable`: the core's `Table`, re-exported in
 `bacnet_network::router_table` and sized for `ROUTE_CAP` (256) routes and
 `HOLD_RECORDS` (1,024) reject hold-down records. A lookup returns a `Route`
-by value, with `port: PortId`, `direct` and `next_hop: Mac`. Times in the
+by value, a copy of the table's row read through its getters (`port()`,
+`is_direct()`, `next_hop()`, `reachability()` and the timestamps); a route
+changes only through the table's own calls. `router_table` also re-exports
+`RejectReason`, which `apply_reject` takes. Times in the
 table are the router's own, Tokio time since `start`, which `now()` reads, so
 paused-time tests drive the sweep too. Calls on the table are local
 management, which no wire-control policy sees; drop the guard soon, since
@@ -2288,9 +2291,7 @@ one per network and arrival port; a full pool gives up its oldest record,
 counted in its claim counters' `hold_evicted`.
 
 Where the router departed from Clause 6 before it moved onto the engine, it
-now follows the clause, each fix a switch in the core's `Fixes` (all on in
-the hosted router, and the core's default; `Fixes::NONE` is the router before
-them):
+now follows the clause, with no switch to turn back (#1679):
 
 - **Egress limits (R1, #1665).** Each port carries the NPDUs its transport's
   `max_npdu()` reports, read when the router starts it (a report under 64
@@ -2507,6 +2508,107 @@ counted too. A group DADR on a network behind another router, which that
 router judges, is not affected. A routed request's SADR names a node on
 another network, which the ingress rule above can't judge, so a reply to a
 group SADR is dropped only where the final router is a `BACnetRouter`.
+
+### bacnet-router-core (firmware)
+
+`BACnetRouter` runs on `bacnet-router-core`, which firmware can use on its
+own: `no_std`, no allocator, storage the caller sizes with const generics,
+and time as a `bacnet-time` `Instant` passed to each call. Its `bip` and
+`mstp` features add router ports over `bacnet-bip-core` and
+`bacnet-mstp-core`. A `now` earlier than the latest one passed in is taken
+as that latest one, so a clock that steps back holds the router's timers
+still instead of failing; the router keeps that time from `Router::new` on.
+
+The router always follows Clause 6 (#1684): `router::Fixes` and
+`Options::fixes` are gone, with every switch back to the hosted router's
+behaviour before #1679.
+
+Since 0.13.0 the types that may grow are `#[non_exhaustive]`, so code
+outside the crate builds them like this:
+
+- `router::Options::HOSTED` (also its `Default`), then set the fields to
+  change: a `Storage` smaller than the hosted router's needs a smaller
+  `route_cap`.
+- `Route::direct(port)` and `Route::learned(port, next_hop, now)`, to
+  compare with what a lookup returns.
+- `router::Counters`, `table::ClaimCounters` and `bip::PortCounters` from
+  `Default`, then set the counts.
+- `HeldBroadcast::<N>::EMPTY`, or `<HeldBroadcast>::EMPTY` for the default
+  `N`: a default doesn't drive inference, so a bare `HeldBroadcast::EMPTY`
+  in an expression leaves `N` open, but `<HeldBroadcast>` names the type,
+  default and all.
+
+The crate builds the rest, which a caller reads but can't build, or match
+without `..`: `Claim`, `Send`, `Pending` and `MacTooLong`; and a `Route`
+only through its two constructors above. A
+`match` on these enums needs a wildcard arm: `npdu::ParseError`,
+`Malformed`, `WriteError`, `message::DataError`, `router::ConfigError`,
+`Discard`, `Event`, `Kind`, `SendRefusal`, `ControlClass`,
+`table::LearnRefusal`, `Learned`, `RejectEffect` and `bip::PortError`. The
+enums a host acts on case by case, and the closed sets, stay exhaustive:
+`Action`, `Received`, `bip::Ingress`, `Dest`, `Cause`, `Group`, `Targets`,
+`Reachability`, `Convergence`, `AddressField` and `WhoIsRouter`.
+
+The wire codes are open newtypes, the shape the codecs give `BvlcFunction`
+and `FrameType`: `message::MessageType(u8)` and `RejectReason(u8)`, with
+named constants, `from_raw`, `to_raw`, `name` and `is_defined`.
+`Npdu::message_type`, `Npdu::message`, `Reject::reason`,
+`Claim::message_type`, the `Event`s and `Kind`s that carry a code, and
+`Table::apply_reject` take them. Match the constants with a wildcard arm
+for the rest (`Kind::Answer(MessageType::I_AM_ROUTER_TO_NETWORK) => ..`), or
+compare `to_raw()`; `MessageType::is_proprietary` and `is_removed_security`
+cover the ranges.
+
+A `Route` is a copy of the table's row, read through its getters:
+`port()`, `is_direct()`, `next_hop()`, `last_seen()`, `last_used()`,
+`reachability()`, `busy_until()`, `flap_count()` and `last_port_change()`.
+`Table::lookup_mut` is gone, and only the table's own calls change a row:
+
+- a route's port, next hop or `last_seen`: `add_learned` (or `learn` and
+  `apply_claim`, which also detect flaps and keep the convergence mode);
+- `direct`: `add_direct`, which replaces the route; the other way, from
+  direct to learned, `remove` and then `add_learned`, which refuses a
+  network whose route is direct;
+- `reachability` and `busy_until`: `mark_busy`, `mark_available` and
+  `mark_unreachable`;
+- `last_used`: `touch`;
+- `flap_count` and `last_port_change`: none; `learn` keeps them.
+
+The B/IP ports count what their socket refused, drained like the link
+cores' counts: `BipPort::take_counters()` and `BbmdPort::take_counters()`
+return a `PortCounters` of `u32`s that saturate between takes, and
+`counters()` looks without taking. The router keeps its cumulative `u64`
+`counters()`, which `BACnetRouter` reads without its lock.
+
+A foreign-device port holds broadcasts in `HeldBroadcast<N>` slots of `N`
+octets, `MAX_NPDU` by default. `BipPort::new` checks that the link's
+broadcast limit fits: a link with a smaller send budget can lend shorter
+slots.
+
+Renamed or removed in 0.13.0:
+
+- `router::DropReason` is `Discard`, and `Received::Dropped` is
+  `Discarded`.
+- `table::Refusal` is `LearnRefusal`.
+- `WriteError::NoRoom`'s `capacity` is `available`.
+- `message::code` and `message::reason` are `MessageType` and
+  `RejectReason`; `npdu::PROPRIETARY_FIRST` and `code::SECURITY_FIRST`/
+  `SECURITY_LAST` are `MessageType::is_proprietary` and
+  `is_removed_security`.
+- The message views return `Result<_, DataError>` where they returned
+  `Option`, and their writers `Result<usize, DataError>`;
+  `parse_disconnect(payload)` is `DisconnectConnection::parse(payload)`.
+- `Discovery::COOLDOWN` and `MAX_AGE` are gone: `Options::HOSTED` holds
+  them. `Table::new_hardened()` is gone: `set_convergence`, now a
+  `const fn`.
+- `BipPort::refused()` and `BbmdPort::refused()` are `counters().refused`.
+- `PortError::HeldStorage` and `TargetStorage` carry `needed` and
+  `available`; a link with no send budget, or a broadcast limit past the
+  slots, is `PortError::HeldLength`.
+- `mstp::BROADCAST` is gone: use the codec's `BROADCAST_MAC`.
+
+`Malformed`, `LearnRefusal` and `DataError` implement `Display` and
+`core::error::Error`, as the crate's other errors do.
 
 ---
 

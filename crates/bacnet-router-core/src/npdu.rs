@@ -23,6 +23,7 @@ use core::fmt;
 pub use mac::{Mac, MacTooLong};
 pub use write::WriteError;
 
+use crate::message::MessageType;
 use crate::MAX_MAC_LEN;
 
 /// The protocol version every NPDU starts with.
@@ -30,9 +31,6 @@ pub const VERSION: u8 = 1;
 
 /// The DNET of a global broadcast.
 pub const GLOBAL_NETWORK: u16 = 0xFFFF;
-
-/// The first message type that carries a vendor ID.
-pub const PROPRIETARY_FIRST: u8 = 0x80;
 
 /// Control octet: a network-layer message, not an APDU.
 const NETWORK_MESSAGE: u8 = 0x80;
@@ -65,7 +63,9 @@ pub struct Address<'a> {
 pub struct Npdu<'a> {
     /// Whether the sender expects a reply.
     pub expecting_reply: bool,
-    /// The network priority, 0 (normal) to 3 (life safety).
+    /// The network priority, 0 (normal) to 3 (life safety): the control
+    /// octet's two low bits. A parsed NPDU never has more than 3, and the
+    /// writer writes only those two bits.
     pub priority: u8,
     /// DNET and DADR, for a remote destination or a global broadcast.
     pub destination: Option<Address<'a>>,
@@ -75,9 +75,9 @@ pub struct Npdu<'a> {
     /// it this is 255, as in `bacnet-encoding`.
     pub hop_count: u8,
     /// The network-layer message type, or `None` for an APDU.
-    pub message_type: Option<u8>,
+    pub message_type: Option<MessageType>,
     /// The vendor ID of a proprietary message type
-    /// ([`PROPRIETARY_FIRST`] and up).
+    /// ([`MessageType::is_proprietary`]).
     pub vendor_id: Option<u16>,
     /// The APDU, or the message's data, behind the NPCI.
     pub payload: &'a [u8],
@@ -96,7 +96,11 @@ pub enum AddressField {
 }
 
 /// Why [`Npdu::parse`] refused a frame.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParseError<'a> {
     /// A DLEN or SLEN past [`MAX_MAC_LEN`]: an address no data link uses,
     /// which draws reject reason 6 (Clause 6.4.4) if the frame names a DNET.
@@ -117,7 +121,11 @@ pub enum ParseError<'a> {
 }
 
 /// What made a frame malformed.
+///
+/// It is `#[non_exhaustive]`, so a new fault isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Malformed {
     /// The frame ends inside a field it announces.
     Truncated,
@@ -135,6 +143,19 @@ impl From<Malformed> for ParseError<'_> {
     }
 }
 
+impl fmt::Display for Malformed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Truncated => "NPDU truncated",
+            Self::Version => "unsupported BACnet protocol version",
+            Self::ReservedNetwork => "NPDU names a reserved network number",
+            Self::EmptySource => "NPDU source SLEN=0 is invalid",
+        })
+    }
+}
+
+impl core::error::Error for Malformed {}
+
 impl fmt::Display for ParseError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -148,12 +169,7 @@ impl fmt::Display for ParseError<'_> {
                     "NPDU {octet}={length} exceeds the {MAX_MAC_LEN}-octet address limit"
                 )
             }
-            Self::Malformed(fault) => f.write_str(match fault {
-                Malformed::Truncated => "NPDU truncated",
-                Malformed::Version => "unsupported BACnet protocol version",
-                Malformed::ReservedNetwork => "NPDU names a reserved network number",
-                Malformed::EmptySource => "NPDU source SLEN=0 is invalid",
-            }),
+            Self::Malformed(fault) => fault.fmt(f),
         }
     }
 }
@@ -162,6 +178,7 @@ impl core::error::Error for ParseError<'_> {}
 
 impl<'a> Npdu<'a> {
     /// An APDU for the local network: no addresses, normal priority.
+    #[must_use]
     pub const fn apdu(payload: &'a [u8]) -> Self {
         Self {
             expecting_reply: false,
@@ -178,18 +195,21 @@ impl<'a> Npdu<'a> {
 
     /// A network-layer message of a standard type for the local network: no
     /// addresses, normal priority, no vendor ID.
-    pub const fn message(message_type: u8, payload: &'a [u8]) -> Self {
+    #[must_use]
+    pub const fn message(message_type: MessageType, payload: &'a [u8]) -> Self {
         let mut npdu = Self::apdu(payload);
         npdu.message_type = Some(message_type);
         npdu
     }
 
     /// Whether it carries a network-layer message rather than an APDU.
+    #[must_use]
     pub const fn is_network_message(&self) -> bool {
         self.message_type.is_some()
     }
 
     /// Whether its DNET is the global broadcast network.
+    #[must_use]
     pub fn is_global(&self) -> bool {
         self.destination
             .is_some_and(|destination| destination.network == GLOBAL_NETWORK)
@@ -265,9 +285,9 @@ impl<'a> Npdu<'a> {
         let mut message_type = None;
         let mut vendor_id = None;
         if control & NETWORK_MESSAGE != 0 {
-            let kind = *frame.get(at).ok_or(Malformed::Truncated)?;
+            let kind = MessageType::from_raw(*frame.get(at).ok_or(Malformed::Truncated)?);
             at += 1;
-            if kind >= PROPRIETARY_FIRST {
+            if kind.is_proprietary() {
                 let vendor = octets(frame, at, 2)?;
                 vendor_id = Some(u16::from_be_bytes([vendor[0], vendor[1]]));
                 at += 2;

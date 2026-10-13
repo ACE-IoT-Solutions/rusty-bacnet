@@ -1,5 +1,7 @@
 //! Learning: claims, convergence, flap detection and management writes.
 
+use core::fmt;
+
 use super::{is_reserved, Convergence, Pending, Route, Table, Timing};
 use crate::{Duration, Instant, Mac, PortId};
 
@@ -11,8 +13,12 @@ const FLAP_WINDOW: Duration = Duration::from_secs(60);
 const FLAP_WARNING: u8 = 3;
 
 /// Why a learning claim changed nothing.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
+#[non_exhaustive]
+pub enum LearnRefusal {
     /// Network 0 or 0xFFFF, which name no single network.
     Reserved,
     /// The network is directly attached, and learning never changes that.
@@ -21,11 +27,28 @@ pub enum Refusal {
     Full,
 }
 
+impl fmt::Display for LearnRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Reserved => "network 0 and 0xFFFF name no single network",
+            Self::Direct => "the network is directly attached",
+            Self::Full => "the routing table is full",
+        })
+    }
+}
+
+impl core::error::Error for LearnRefusal {}
+
 /// What a learning claim did.
+///
+/// It is `#[non_exhaustive]`, so a new outcome isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[must_use]
 pub enum Learned {
     /// Nothing, for the reason given.
-    Refused(Refusal),
+    Refused(LearnRefusal),
     /// Hardened convergence holds the move until a second claim.
     Held,
     /// A new route, or a refresh through the same port.
@@ -41,11 +64,13 @@ pub enum Learned {
 
 impl Learned {
     /// Whether the route was installed or refreshed.
+    #[must_use]
     pub const fn applied(self) -> bool {
         matches!(self, Self::Applied | Self::Moved { .. })
     }
 
     /// Whether this move reached the flap warning.
+    #[must_use]
     pub const fn flapping(self) -> bool {
         matches!(self, Self::Moved { flaps, .. } if flaps >= FLAP_WARNING)
     }
@@ -114,11 +139,11 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// [`add_learned`](Self::add_learned).
     pub fn learn(&mut self, network: u16, port: PortId, next_hop: Mac, now: Instant) -> Learned {
         if is_reserved(network) {
-            return Learned::Refused(Refusal::Reserved);
+            return Learned::Refused(LearnRefusal::Reserved);
         }
         if let Some(existing) = self.lookup(network) {
             if existing.direct {
-                return Learned::Refused(Refusal::Direct);
+                return Learned::Refused(LearnRefusal::Direct);
             }
             if existing.port != port {
                 let flaps = match existing.last_port_change {
@@ -145,7 +170,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
         if self.add_learned(network, port, next_hop, now) {
             Learned::Applied
         } else {
-            Learned::Refused(Refusal::Full)
+            Learned::Refused(LearnRefusal::Full)
         }
     }
 
@@ -177,12 +202,14 @@ impl<const R: usize, const H: usize> Table<R, H> {
     }
 
     /// The claim pending for `network` under hardened convergence.
+    #[must_use]
     pub fn pending(&self, network: u16) -> Option<Pending> {
         let index = self.find(network).ok()?;
         self.slots[index].pending
     }
 
     /// How many claims are pending: at most one per learned route.
+    #[must_use]
     pub fn pending_count(&self) -> usize {
         self.stored()
             .iter()

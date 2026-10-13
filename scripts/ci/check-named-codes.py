@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Check that the copies of the `named_codes!` macro stay byte-identical.
 
-The macro builds the open wire-code newtypes of the no_std codecs:
+The macro builds the open wire-code newtypes of the no_std crates:
 `BvlcFunction` and friends in bacnet-bip-codec, `FrameType` in
-bacnet-mstp-codec. Neither crate depends on the other, and the macro is
-private to each, so each keeps a copy (#1684). This compares the two
+bacnet-mstp-codec, and `MessageType` and `RejectReason` in
+bacnet-router-core. None of them depends on another for it, and the macro
+is private to each, so each keeps a copy (#1684). This compares the
 `macro_rules! named_codes { ... }` definitions, from that line to its
-closing brace, and prints a diff when they differ. The doc comments above
-them may differ; the definitions may not.
+closing brace, against the first copy, and prints a diff for each that
+differs. The doc comments above them may differ; the definitions may not.
 
     python3 scripts/ci/check-named-codes.py
 
-Exit status: 0 when the copies match, 1 when they differ or one can't be
-found.
+Exit status: 0 when the copies match, 1 when one differs or can't be found.
 """
 
 import difflib
@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 COPIES = [
     "crates/bacnet-bip-codec/src/function.rs",
     "crates/bacnet-mstp-codec/src/frame.rs",
+    "crates/bacnet-router-core/src/message/codes.rs",
 ]
 START = "macro_rules! named_codes {"
 
@@ -54,19 +55,21 @@ def main():
             print(f"error: no single `{START}` definition in {path}", file=sys.stderr)
             return 1
         definitions[path] = definition
-    first, second = COPIES
-    if definitions[first] == definitions[second]:
-        print(f"OK: named_codes! is identical in {first} and {second}.")
+    first, *others = COPIES
+    differing = [path for path in others if definitions[path] != definitions[first]]
+    if not differing:
+        print(f"OK: named_codes! is identical in {', '.join(COPIES)}.")
         return 0
-    diff = difflib.unified_diff(
-        definitions[first].splitlines(keepends=True),
-        definitions[second].splitlines(keepends=True),
-        fromfile=first,
-        tofile=second,
-    )
-    sys.stdout.writelines(diff)
+    for path in differing:
+        diff = difflib.unified_diff(
+            definitions[first].splitlines(keepends=True),
+            definitions[path].splitlines(keepends=True),
+            fromfile=first,
+            tofile=path,
+        )
+        sys.stdout.writelines(diff)
     print(
-        "\nerror: the named_codes! copies differ; change both together.",
+        "\nerror: the named_codes! copies differ; change all of them together.",
         file=sys.stderr,
     )
     return 1

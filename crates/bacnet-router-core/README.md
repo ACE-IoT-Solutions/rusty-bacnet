@@ -16,8 +16,9 @@ and is meant to join their ports in firmware, and to run under the hosted
   is `bacnet-time`'s, in nanoseconds, re-exported here, the same type the
   MS/TP and B/IP cores take, so firmware feeds all three one clock.
 
-`bacnet-network`'s hosted `BACnetRouter` runs on it, and a firmware router
-image follows (#1679).
+`bacnet-network`'s hosted `BACnetRouter` runs on it. A firmware router
+image is planned
+([#1679](https://github.com/jscott3201/rusty-bacnet/issues/1679)).
 
 ## What it has
 
@@ -40,9 +41,7 @@ image follows (#1679).
   application; the sends it calls for are polled after, one at a time,
   from its scratch. A port is data to it (a network number, the router's
   MAC there, and the longest NPDU the port carries), so B/IP, MS/TP and the
-  hosted transports all plug in the same way. Where the hosted router
-  once departed from the clause, a switch in `Fixes` picks the clause's
-  way or the old one; the clause's is the default.
+  hosted transports all plug in the same way.
 - `bip` (feature `bip`): B/IP ports over `bacnet-bip-core`'s node engine,
   in normal or foreign-device mode, or as a BBMD over its tables. A
   Forwarded-NPDU reaches the router from its origin, a unicast to a group
@@ -70,14 +69,14 @@ use bacnet_router_core::{Instant, Mac, PortId};
 let now = Instant::from_secs(1);
 let mut table: Table<8, 8> = Table::new();
 table.add_direct(1, PortId(0));
-table.learn(9, PortId(1), Mac::from_array([0x07]), now);
+assert!(table.learn(9, PortId(1), Mac::from_array([0x07]), now).applied());
 
 // Node 0x0A on network 1 sends an APDU to node 0x05 on network 9.
 let frame = [0x01, 0x20, 0x00, 0x09, 0x01, 0x05, 0xFF, 0x10, 0x08];
 let npdu = Npdu::parse(&frame).unwrap();
 let dnet = npdu.destination.unwrap().network;
 let route = table.lookup(dnet).unwrap();
-assert_eq!(route.port, PortId(1));
+assert_eq!(route.port(), PortId(1));
 assert_eq!(table.effective_reachability(dnet, now), Some(Reachability::Reachable));
 
 // Toward the next router the destination stays, the arrival network and

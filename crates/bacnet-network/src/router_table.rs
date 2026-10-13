@@ -13,8 +13,9 @@
 //! [`BACnetRouter::now`](crate::router::BACnetRouter::now) reads. Calls on
 //! the table are local management, which no wire-control policy sees.
 
+pub use bacnet_router_core::message::RejectReason;
 pub use bacnet_router_core::table::{
-    ClaimCounters, Convergence, Learned, Pending, Reachability, Refusal, RejectEffect, Route,
+    ClaimCounters, Convergence, LearnRefusal, Learned, Pending, Reachability, RejectEffect, Route,
     Table, Timing,
 };
 pub use bacnet_router_core::{Duration, Instant, Mac, MacTooLong, PortId};

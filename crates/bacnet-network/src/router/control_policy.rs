@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bacnet_transport::port::TransportProvenance;
+use tracing::debug;
 
 /// Wire-control authorization mode. Permissive preserves today's behavior.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,7 +73,7 @@ pub struct ControlAuthContext {
     /// Channel-level trust derived from `provenance`; says nothing about the leaf sender's
     /// identity.
     pub trust: ControlTrust,
-    /// Network-layer message type code of the control (`0xFF` when the NPDU carries none).
+    /// Network-layer message type code of the control, as received.
     pub message_type: u8,
     /// Vendor ID from a proprietary network message, if present.
     pub vendor_id: Option<u16>,
@@ -118,16 +119,18 @@ pub type ControlAuthorizer = Arc<dyn Fn(&ControlAuthContext) -> bool + Send + Sy
 /// Protected control class, `bacnet-router-core`'s. One counter row each.
 pub use bacnet_router_core::router::ControlClass;
 
-/// The counter row of `class`.
-fn index(class: ControlClass) -> usize {
+/// The counter row of `class`; `None` for a class a later engine adds,
+/// which has no row yet and isn't counted.
+fn index(class: ControlClass) -> Option<usize> {
     match class {
-        ControlClass::IAm => 0,
-        ControlClass::InitAck => 1,
-        ControlClass::InitMgmt => 2,
-        ControlClass::Busy => 3,
-        ControlClass::Available => 4,
-        ControlClass::Reject => 5,
-        ControlClass::ICouldBe => 6,
+        ControlClass::IAm => Some(0),
+        ControlClass::InitAck => Some(1),
+        ControlClass::InitMgmt => Some(2),
+        ControlClass::Busy => Some(3),
+        ControlClass::Available => Some(4),
+        ControlClass::Reject => Some(5),
+        ControlClass::ICouldBe => Some(6),
+        _ => None,
     }
 }
 
@@ -204,12 +207,18 @@ impl ControlDecisions {
     }
 
     fn record(&self, class: ControlClass, decision: Decision) {
+        let Some(row) = index(class) else {
+            debug!(
+                ?class,
+                "No decision counters for this control class; not counted"
+            );
+            return;
+        };
         let inc = |col: usize| {
             #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
-            let _ =
-                self.0[index(class)][col].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    Some(n.saturating_add(1))
-                });
+            let _ = self.0[row][col].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_add(1))
+            });
         };
         match decision {
             Decision::Allow => inc(0),

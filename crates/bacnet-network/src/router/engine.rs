@@ -47,8 +47,8 @@ type HostedStorage = Storage<PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH>;
 pub(super) type HostedRouter =
     Router<Box<HostedStorage>, PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH>;
 
-/// The hosted router's options: its policy values and timers, the 256-route
-/// cap, and every Clause 6 fix (`Fixes::ALL`, #1679).
+/// The hosted router's options: its policy values and timers, and the
+/// 256-route cap.
 const OPTIONS: Options = Options::HOSTED;
 
 // The engine's route cap is the table's size, which the crate publishes as

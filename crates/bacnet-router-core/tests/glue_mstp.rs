@@ -10,7 +10,7 @@ use bacnet_mstp_codec::{Frame as MstpFrame, FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::{
     Action, CoreError, Instant, NetworkPriority, QueueStorage, ReplyDecision, RequestId,
 };
-use bacnet_router_core::mstp::{group, MstpPort, NotExtended, BROADCAST};
+use bacnet_router_core::mstp::{group, MstpPort, NotExtended};
 use bacnet_router_core::npdu::Npdu;
 use bacnet_router_core::router::{Dest, Group, Limits, Options, Received, SendRefusal};
 use bacnet_router_core::{Mac, PortId};
@@ -64,8 +64,7 @@ fn config_needs_extended_frames() {
 
 #[test]
 fn the_broadcast_station_is_the_only_group() {
-    assert_eq!(BROADCAST, BROADCAST_MAC);
-    assert_eq!(group(&[BROADCAST]), Group::Broadcast);
+    assert_eq!(group(&[BROADCAST_MAC]), Group::Broadcast);
     assert_eq!(group(&[5]), Group::No);
     assert_eq!(group(&[]), Group::No);
 }
@@ -83,7 +82,7 @@ fn deliveries_become_frames() {
     let global = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
     let frame = MstpFrame::new(
         FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
-        BROADCAST,
+        BROADCAST_MAC,
         7,
         &global,
     );
@@ -240,7 +239,7 @@ fn priority_reaches_the_queue() {
         let mut router = router();
         let mut host = Recorder::default();
         for npdu in [&normal, &urgent] {
-            router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
+            let _ = router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
             let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
             assert_eq!(results, [(1, Ok(()))]);
         }
@@ -264,7 +263,7 @@ fn refusals_map_to_the_routers() {
     let mut router = router();
     let mut host = Recorder::default();
     let mut route = |router: &mut TestRouter, npdu: &[u8], core: &mut Core<'_, 1>| {
-        router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
+        let _ = router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
         pump(router, |send| MSTP_PORT.send(core, send, now))
     };
 
@@ -278,7 +277,7 @@ fn refusals_map_to_the_routers() {
         [(1, Err(SendRefusal::Full))]
     );
     // Station 255 is no unicast destination, nor is a two-octet MAC.
-    for dadr in [&[BROADCAST][..], &[1, 2]] {
+    for dadr in [&[BROADCAST_MAC][..], &[1, 2]] {
         let npdu = apdu_at(2, dadr, CONFIRMED, 0);
         assert_eq!(
             route(&mut router, &npdu, &mut core),
@@ -296,7 +295,7 @@ fn refusals_map_to_the_routers() {
     );
     // A send for another port.
     let other = MstpPort::new(PortId(0));
-    router.receive(frame_on(0, NODE_A, &fits), now, &mut host);
+    let _ = router.receive(frame_on(0, NODE_A, &fits), now, &mut host);
     let results = pump(&mut router, |send| other.send(&mut core, send, now));
     assert_eq!(results, [(1, Err(SendRefusal::Other))]);
 
@@ -336,7 +335,7 @@ fn relayed_in_one_extended_frame(len: usize) {
     let mut core = bus.core(true);
     let mut router = router();
     let npdu = relayed_as(len);
-    router.receive(frame_on(0, NODE_A, &npdu), now, &mut Recorder::default());
+    let _ = router.receive(frame_on(0, NODE_A, &npdu), now, &mut Recorder::default());
     let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
     assert_eq!(results, [(1, Ok(()))]);
 
@@ -396,7 +395,7 @@ fn extended_profile_admits_the_first_extended_boundary() {
 
 /// A router's MS/TP port has no standard-frame profile: a core
 /// configuration without extended frames is refused (Clause 9.3). Where a
-/// port is held to 501 octets anyway, fix R1 keeps a 502-octet NPDU from it
+/// port is held to 501 octets anyway, the router keeps a 502-octet NPDU from it
 /// with reject reason 4 to its sender (#1665), and a core without extended
 /// frames refuses one itself; either way nothing is queued.
 ///
@@ -416,12 +415,11 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
         max_npdu: Limits::both(501),
         ..MstpPort::config(&config(true), 2).unwrap()
     };
-    // Fix R1 is on by default.
     let mut router = router_with(&[port_on(1, OWN_0), held_to_501], Options::HOSTED);
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(true);
     let mut rejects = Vec::new();
-    router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
+    let _ = router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
     let results = pump(&mut router, |send| match send.port {
         PortId(0) => {
             let to = match send.to {
@@ -445,7 +443,7 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
     let mut router = self::router();
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(false);
-    router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
+    let _ = router.receive(frame_on(0, NODE_A, &npdu), now, &mut host);
     let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
     assert_eq!(results, [(1, Err(SendRefusal::TooLong))]);
     let counters = core.counters().unicast;
@@ -471,11 +469,11 @@ fn saturated_queue_backpressures_network_control() {
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(true);
     let query = message(
-        bacnet_router_core::message::code::INITIALIZE_ROUTING_TABLE,
+        bacnet_router_core::message::MessageType::INITIALIZE_ROUTING_TABLE,
         &[0],
     );
     let arrived = MSTP_PORT.arrived(7, STATION, &query);
-    router.receive(arrived.frame(), now, &mut Recorder::default());
+    let _ = router.receive(arrived.frame(), now, &mut Recorder::default());
     let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
     assert_eq!(results, [(1, Ok(())), (1, Err(SendRefusal::Full))]);
     assert_eq!(router.counters().refused, 1);
@@ -484,7 +482,7 @@ fn saturated_queue_backpressures_network_control() {
     // With room, the whole answer goes: three parts.
     let mut bus = Bus::<4>::new();
     let mut core = bus.core(true);
-    router.receive(arrived.frame(), now, &mut Recorder::default());
+    let _ = router.receive(arrived.frame(), now, &mut Recorder::default());
     let results = pump(&mut router, |send| MSTP_PORT.send(&mut core, send, now));
     assert_eq!(results, [(1, Ok(())), (1, Ok(())), (1, Ok(()))]);
 }

@@ -51,7 +51,7 @@ async fn permissive_default_matches_today() {
         ),
     ))
     .await;
-    assert_eq!(h.table().lookup(4000).unwrap().port, PortId(1));
+    assert_eq!(h.table().lookup(4000).unwrap().port(), PortId(1));
     assert_eq!(h.drain(0).len(), 1);
     assert_eq!(h.gate.snapshot().i_am.allow_total, 1);
     assert_eq!(h.gate.snapshot().init_mgmt.allow_total, 1);

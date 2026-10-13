@@ -4,7 +4,7 @@
 use super::config::Options;
 use super::control::Claimed;
 use super::host::{ControlClass, Event, Host, Targets};
-use super::ingress::{Arrival, DropReason, Received};
+use super::ingress::{Arrival, Discard, Received};
 use super::tasks::Task;
 use super::Storage;
 use crate::message::RoutingEntries;
@@ -29,7 +29,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         options: &Options,
         host: &mut impl Host,
     ) -> Received<'f> {
-        let Some(entries) = RoutingEntries::parse(npdu.payload) else {
+        let Ok(entries) = RoutingEntries::parse(npdu.payload) else {
             return self.bad_message();
         };
         if entries.count() == 0 {
@@ -43,7 +43,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             Targets::Entries(entries),
             host,
         ) {
-            return Received::Dropped(DropReason::Denied);
+            return Received::Discarded(Discard::Denied);
         }
         for entry in entries.iter() {
             let network = entry.network;
@@ -98,7 +98,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         if npdu.payload.is_empty() {
             return Received::Handled;
         }
-        let Some(entries) = RoutingEntries::parse(npdu.payload) else {
+        let Ok(entries) = RoutingEntries::parse(npdu.payload) else {
             return self.bad_message();
         };
         if !self.authorize(
@@ -108,7 +108,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             Targets::Entries(entries),
             host,
         ) {
-            return Received::Dropped(DropReason::Denied);
+            return Received::Discarded(Discard::Denied);
         }
         let mut claimed = Claimed::new();
         for entry in entries.iter() {

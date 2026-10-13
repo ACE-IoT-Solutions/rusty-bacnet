@@ -9,17 +9,18 @@
 //! queues at most two tasks, and a frame's own output always comes before
 //! them, so the queue never fills.
 
-use super::config::Options;
 use super::counters::bump;
 use super::host::{Event, Host};
 use super::tasks::{Task, TaskKind};
 use super::Storage;
+use crate::message::{MessageType, RejectReason};
 use crate::npdu::Npdu;
 use crate::{Mac, PortId};
 
 /// What to do next. Poll [`Router::poll_action`](super::Router::poll_action)
 /// until [`Action::Idle`] after every call into the router.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "carry out each send, and poll until Idle"]
 pub enum Action<'a> {
     /// Send an NPDU.
     Send(Send<'a>),
@@ -41,7 +42,9 @@ pub struct Send<'a> {
     pub to: Dest<'a>,
     /// The NPDU, in the router's scratch until the next poll.
     pub npdu: &'a [u8],
-    /// The NPDU's network priority, 0 to 3, for a port that queues by it.
+    /// The NPDU's network priority, 0 (normal) to 3 (life safety), for a
+    /// port that queues by it: the control octet's two low bits, so never
+    /// more than 3.
     pub priority: u8,
     /// Why the router sends it.
     pub kind: Kind,
@@ -74,14 +77,14 @@ pub enum Kind {
     /// A network message of this type passed on: an I-Am-Router, a
     /// Router-Busy or Router-Available, or a Who-Is-Router searching
     /// further.
-    Relay(u8),
+    Relay(MessageType),
     /// A reject this router sends, with this reason.
-    Reject(u8),
+    Reject(RejectReason),
     /// An answer of this type: I-Am-Router, Initialize-Routing-Table-Ack
     /// or Network-Number-Is.
-    Answer(u8),
+    Answer(MessageType),
     /// A startup announcement of this type.
-    Announce(u8),
+    Announce(MessageType),
     /// A Who-Is-Router for a network the router has no route to.
     Solicit,
 }
@@ -143,6 +146,7 @@ pub(super) struct Current {
     active: bool,
     len: usize,
     tag: Tag,
+    /// The [`Kind`]'s octet, its message type or reject reason.
     code: u8,
     /// [`Cause::Local`]; zero is [`Cause::Ingress`].
     local: bool,
@@ -186,10 +190,10 @@ impl Current {
         let (tag, code) = match kind {
             Kind::Forward => (Tag::Forward, 0),
             Kind::Global => (Tag::Global, 0),
-            Kind::Relay(code) => (Tag::Relay, code),
-            Kind::Reject(code) => (Tag::Reject, code),
-            Kind::Answer(code) => (Tag::Answer, code),
-            Kind::Announce(code) => (Tag::Announce, code),
+            Kind::Relay(code) => (Tag::Relay, code.to_raw()),
+            Kind::Reject(reason) => (Tag::Reject, reason.to_raw()),
+            Kind::Answer(code) => (Tag::Answer, code.to_raw()),
+            Kind::Announce(code) => (Tag::Announce, code.to_raw()),
             Kind::Solicit => (Tag::Solicit, 0),
         };
         let mut current = Self {
@@ -237,10 +241,10 @@ impl Current {
         match self.tag {
             Tag::Forward => Kind::Forward,
             Tag::Global => Kind::Global,
-            Tag::Relay => Kind::Relay(self.code),
-            Tag::Reject => Kind::Reject(self.code),
-            Tag::Answer => Kind::Answer(self.code),
-            Tag::Announce => Kind::Announce(self.code),
+            Tag::Relay => Kind::Relay(MessageType::from_raw(self.code)),
+            Tag::Reject => Kind::Reject(RejectReason::from_raw(self.code)),
+            Tag::Answer => Kind::Answer(MessageType::from_raw(self.code)),
+            Tag::Announce => Kind::Announce(MessageType::from_raw(self.code)),
             Tag::Solicit => Kind::Solicit,
         }
     }
@@ -337,34 +341,31 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// [`write_now`](Self::write_now) a frame's own fan-out to every port
-    /// but `except`. With R1 on, `host` hears of each port that will leave
-    /// it out as too long for its broadcast limit; the skip itself, and its
-    /// count, come when the send is polled.
+    /// but `except`. `host` hears of each port that will leave it out as too
+    /// long for its broadcast limit; the skip itself, and its count, come
+    /// when the send is polled.
     pub(super) fn write_fan_out(
         &mut self,
         npdu: &Npdu<'_>,
         kind: Kind,
         except: PortId,
-        options: &Options,
         host: &mut impl Host,
     ) -> bool {
         if !self.write_now(npdu, kind, Target::AllBut(except)) {
             return false;
         }
-        if options.fixes.egress_limits {
-            let octets = self.out.current.len;
-            let ports = &self.ports[..self.port_count];
-            for (index, config) in ports.iter().enumerate() {
-                let limit = config.max_npdu.get(true);
-                if index != usize::from(except.0) && octets > limit {
-                    host.observe(Event::TooLong {
-                        // At most 255 ports, so the index fits in a u8.
-                        port: PortId(index as u8),
-                        octets,
-                        limit,
-                        rejected: None,
-                    });
-                }
+        let octets = self.out.current.len;
+        let ports = &self.ports[..self.port_count];
+        for (index, config) in ports.iter().enumerate() {
+            let limit = config.max_npdu.get(true);
+            if index != usize::from(except.0) && octets > limit {
+                host.observe(Event::TooLong {
+                    // At most 255 ports, so the index fits in a u8.
+                    port: PortId(index as u8),
+                    octets,
+                    limit,
+                    rejected: None,
+                });
             }
         }
         true
@@ -372,9 +373,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 
     /// The next action: the current output's next send, or the next task's
     /// first, or [`Action::Idle`].
-    pub(super) fn poll(&mut self, options: &Options) -> Action<'_> {
+    pub(super) fn poll(&mut self) -> Action<'_> {
         loop {
-            if let Some((port, broadcast)) = self.next_target(options) {
+            if let Some((port, broadcast)) = self.next_target() {
                 self.out.last_table_ack = self.out.current.table_ack;
                 let current = &self.out.current;
                 return Action::Send(Send {
@@ -394,15 +395,15 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                     },
                 });
             }
-            if !self.write_task(options) {
+            if !self.write_task() {
                 return Action::Idle;
             }
         }
     }
 
     /// The current output's next port, and whether it is a broadcast there.
-    /// With R1 on, a port that can't carry it is left out and counted.
-    fn next_target(&mut self, options: &Options) -> Option<(PortId, bool)> {
+    /// A port that can't carry it is left out and counted.
+    fn next_target(&mut self) -> Option<(PortId, bool)> {
         let current = &mut self.out.current;
         if !current.active {
             return None;
@@ -410,10 +411,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         let ports = &self.ports[..self.port_count];
         let len = current.len;
         let fits = |port: PortId, broadcast: bool| {
-            !options.fixes.egress_limits
-                || ports
-                    .get(usize::from(port.0))
-                    .is_some_and(|config| len <= config.max_npdu.get(broadcast))
+            ports
+                .get(usize::from(port.0))
+                .is_some_and(|config| len <= config.max_npdu.get(broadcast))
         };
         if !current.fan_out {
             current.active = false;

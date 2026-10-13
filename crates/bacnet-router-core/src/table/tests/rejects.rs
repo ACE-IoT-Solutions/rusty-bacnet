@@ -9,6 +9,7 @@ use super::support::{
     held_networks, holds_for, learned_table, mac, port, purge, secs, Hosted, BASE, HOLD_DOWN, NANO,
     TIMING,
 };
+use crate::message::RejectReason;
 use crate::table::holds::Hold;
 use crate::table::{ClaimCounters, Reachability, RejectEffect, Table, Timing};
 use crate::{Mac, PortId};
@@ -19,12 +20,24 @@ fn reject_spam_is_idempotent_without_refreshing_route_or_window() {
     let seen = table.lookup(3000).unwrap().last_seen;
     let now = BASE;
     assert_eq!(
-        table.apply_reject(3000, port(0), 1, now, &TIMING),
+        table.apply_reject(
+            3000,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            now,
+            &TIMING
+        ),
         RejectEffect::Applied
     );
     for second in 1..100 {
         assert_eq!(
-            table.apply_reject(3000, port(0), 1, now + secs(second), &TIMING),
+            table.apply_reject(
+                3000,
+                port(0),
+                RejectReason::NOT_DIRECTLY_CONNECTED,
+                now + secs(second),
+                &TIMING
+            ),
             RejectEffect::SameState
         );
     }
@@ -57,10 +70,22 @@ fn alternating_rejects_hold_until_exact_boundary_without_sliding() {
         };
         for second in 0..10 {
             let reason = if second % 2 == 0 { first } else { 3 - first };
-            table.apply_reject(3000, port(0), reason, now + secs(second), &TIMING);
+            table.apply_reject(
+                3000,
+                port(0),
+                RejectReason::from_raw(reason),
+                now + secs(second),
+                &TIMING,
+            );
             assert_eq!(table.lookup(3000).unwrap().reachability, status);
         }
-        table.apply_reject(3000, port(0), 3 - first, now + HOLD_DOWN - NANO, &TIMING);
+        table.apply_reject(
+            3000,
+            port(0),
+            RejectReason::from_raw(3 - first),
+            now + HOLD_DOWN - NANO,
+            &TIMING,
+        );
         assert_eq!(table.lookup(3000).unwrap().reachability, status);
         assert_eq!(table.held_since(3000, port(0)), Some(now));
         if first == 2 {
@@ -69,7 +94,13 @@ fn alternating_rejects_hold_until_exact_boundary_without_sliding() {
                 Some(now + HOLD_DOWN)
             );
         }
-        table.apply_reject(3000, port(0), 3 - first, now + HOLD_DOWN, &TIMING);
+        table.apply_reject(
+            3000,
+            port(0),
+            RejectReason::from_raw(3 - first),
+            now + HOLD_DOWN,
+            &TIMING,
+        );
         // A Busy claim never lifts permanent Unreachable, even at the
         // hold-down boundary: only Available or fresh learning exits it, so
         // the window never slides on that claim.
@@ -108,16 +139,28 @@ fn busy_duplicates_do_not_renew_deadline_and_expired_busy_can_be_rejected_again(
     let now = BASE;
     let deadline = now + secs(10);
     table.mark_busy(3000, deadline); // A mark with no reject record.
-    table.apply_reject(3000, port(0), 2, now, &TIMING);
+    table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, now, &TIMING);
     assert_eq!(table.lookup(3000).unwrap().busy_until, Some(deadline));
     assert_eq!(table.holds().count(), 0);
-    table.apply_reject(3000, port(0), 2, deadline, &TIMING); // Lapsed inline, no sweep.
+    table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, deadline, &TIMING); // Lapsed inline, no sweep.
     assert_eq!(
         table.lookup(3000).unwrap().busy_until,
         Some(deadline + HOLD_DOWN)
     );
-    table.apply_reject(3000, port(0), 2, deadline + HOLD_DOWN - NANO, &TIMING);
-    table.apply_reject(3000, port(0), 2, deadline + HOLD_DOWN, &TIMING);
+    table.apply_reject(
+        3000,
+        port(0),
+        RejectReason::ROUTER_BUSY,
+        deadline + HOLD_DOWN - NANO,
+        &TIMING,
+    );
+    table.apply_reject(
+        3000,
+        port(0),
+        RejectReason::ROUTER_BUSY,
+        deadline + HOLD_DOWN,
+        &TIMING,
+    );
     assert_eq!(
         table.lookup(3000).unwrap().busy_until,
         Some(deadline + HOLD_DOWN + HOLD_DOWN)
@@ -133,8 +176,8 @@ fn busy_duplicates_do_not_renew_deadline_and_expired_busy_can_be_rejected_again(
     );
 }
 
-/// Clause 6.6.3.5 changes the table for reasons 1 and 2 only (fix R2 in
-/// #1679): any other reason leaves a learned route as it was, starts no
+/// Clause 6.6.3.5 changes the table for reasons 1 and 2 only (#1679): any
+/// other reason leaves a learned route as it was, starts no
 /// hold-down, and counts as kept, apart from the dampened rejects, even
 /// within a hold-down.
 #[test]
@@ -143,16 +186,22 @@ fn every_other_reason_keeps_a_learned_route() {
         let mut table = learned_table();
         let before = table.lookup(3000).unwrap();
         assert_eq!(
-            table.apply_reject(3000, port(0), reason, BASE, &TIMING),
+            table.apply_reject(3000, port(0), RejectReason::from_raw(reason), BASE, &TIMING),
             RejectEffect::Kept
         );
         assert_eq!(table.lookup(3000), Some(before));
         assert_eq!(table.holds().count(), 0);
 
-        table.apply_reject(3000, port(0), 2, BASE, &TIMING);
+        table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, BASE, &TIMING);
         let busy = table.lookup(3000).unwrap();
         assert_eq!(
-            table.apply_reject(3000, port(0), reason, BASE + secs(1), &TIMING),
+            table.apply_reject(
+                3000,
+                port(0),
+                RejectReason::from_raw(reason),
+                BASE + secs(1),
+                &TIMING
+            ),
             RejectEffect::Kept
         );
         assert_eq!(table.lookup(3000), Some(busy));
@@ -165,48 +214,6 @@ fn every_other_reason_keeps_a_learned_route() {
                 ..Default::default()
             }
         );
-    }
-}
-
-/// The router before fix R2, which `Fixes::NONE` keeps: any reason but 1
-/// and 2 removes a learned route, as a change like the others, first time
-/// and under the hold-down, and the removal takes the route's pending
-/// hardened-mode claim and hold-down records with it.
-#[test]
-fn with_r2_off_every_other_reason_removes_but_obeys_hold_down() {
-    for reason in (0..=u8::MAX).filter(|reason| ![1, 2].contains(reason)) {
-        let now = BASE;
-        let mut table = learned_table();
-        table.apply_reject_removing(3000, port(0), reason, now, &TIMING);
-        assert!(table.lookup(3000).is_none());
-        assert_eq!(table.holds().count(), 0);
-        table.apply_reject_removing(3000, port(0), reason, now, &TIMING);
-        assert_eq!(table.claim_counters().reject_applied, 1);
-        assert_eq!(table.claim_counters().reject_dampened_same_state, 1);
-
-        table.add_learned(3000, port(0), Mac::EMPTY, now);
-        table.apply_reject_removing(3000, port(0), 2, now, &TIMING);
-        assert_eq!(
-            table.apply_reject_removing(3000, port(0), reason, now + secs(1), &TIMING),
-            RejectEffect::HeldDown
-        );
-        assert!(table.lookup(3000).is_some());
-        table.apply_reject_removing(3000, port(0), reason, now + HOLD_DOWN, &TIMING);
-        assert!(table.lookup(3000).is_none());
-        assert_eq!(table.holds().count(), 0);
-        assert_eq!(table.claim_counters().reject_applied, 3);
-        assert_eq!(table.claim_counters().reject_dampened_hold_down, 1);
-
-        // A pending claim goes with the route.
-        let mut table = Hosted::new_hardened();
-        table.add_learned(3000, port(0), Mac::EMPTY, now);
-        assert!(!table
-            .apply_claim(3000, port(1), Mac::EMPTY, now, &TIMING)
-            .applied());
-        assert_eq!(table.pending_count(), 1);
-        table.apply_reject_removing(3000, port(0), reason, now, &TIMING);
-        assert_eq!(table.pending_count(), 0);
-        assert_eq!(table.claim_counters().pending_expired, 0);
     }
 }
 
@@ -225,8 +232,14 @@ fn learning_refresh_replacement_removal_and_aging_rearm_all_ingress_keys() {
         // Busy first, then Unreachable: both transitions apply and record
         // their arrival port (the reverse order would swallow the Busy
         // claim, since Busy never lifts Unreachable).
-        table.apply_reject(3000, port(0), 2, now, &TIMING);
-        table.apply_reject(3000, port(1), 1, now, &TIMING);
+        table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, now, &TIMING);
+        table.apply_reject(
+            3000,
+            port(1),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            now,
+            &TIMING,
+        );
         assert_eq!(holds_for(&table, 3000), 2);
         match rearm {
             "same_peer" => {
@@ -247,7 +260,7 @@ fn learning_refresh_replacement_removal_and_aging_rearm_all_ingress_keys() {
                 table.add_learned(3000, port(0), Mac::EMPTY, now);
             }
             "age" => {
-                table.lookup_mut(3000).unwrap().last_seen = Some(now - secs(120));
+                table.slot_mut(3000).unwrap().route.last_seen = Some(now - secs(120));
                 assert_eq!(purge(&mut table, now, secs(60)), [3000]);
                 assert_eq!(table.holds().count(), 0);
                 table.add_learned(3000, port(0), Mac::EMPTY, now);
@@ -255,8 +268,20 @@ fn learning_refresh_replacement_removal_and_aging_rearm_all_ingress_keys() {
             _ => unreachable!(),
         }
         assert_eq!(table.holds().count(), 0, "{rearm}");
-        table.apply_reject(3000, port(0), 1, now + secs(1), &TIMING);
-        table.apply_reject(3000, port(1), 2, now + secs(1), &TIMING);
+        table.apply_reject(
+            3000,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            now + secs(1),
+            &TIMING,
+        );
+        table.apply_reject(
+            3000,
+            port(1),
+            RejectReason::ROUTER_BUSY,
+            now + secs(1),
+            &TIMING,
+        );
         assert_eq!(
             table.claim_counters(),
             ClaimCounters {
@@ -278,10 +303,22 @@ fn reject_keys_are_independent_by_ingress_port_and_network() {
     table.add_learned(4000, port(0), mac(&[1]), BASE);
     let now = BASE;
     for (network, ingress, reason) in [(3000, 0, 2), (4000, 0, 2), (3000, 1, 1), (4000, 1, 1)] {
-        table.apply_reject(network, port(ingress), reason, now, &TIMING);
+        table.apply_reject(
+            network,
+            port(ingress),
+            RejectReason::from_raw(reason),
+            now,
+            &TIMING,
+        );
     }
-    table.apply_reject(3000, port(0), 1, now, &TIMING);
-    table.apply_reject(4000, port(0), 2, now, &TIMING);
+    table.apply_reject(
+        3000,
+        port(0),
+        RejectReason::NOT_DIRECTLY_CONNECTED,
+        now,
+        &TIMING,
+    );
+    table.apply_reject(4000, port(0), RejectReason::ROUTER_BUSY, now, &TIMING);
     assert_eq!(
         table.lookup(3000).unwrap().reachability,
         Reachability::Unreachable
@@ -308,13 +345,19 @@ fn reject_keys_are_independent_by_ingress_port_and_network() {
 fn direct_and_absent_spam_never_mutates_routes_or_allocates_records() {
     let mut table = learned_table();
     let now = BASE;
-    table.apply_reject(3000, port(0), 2, now, &TIMING);
+    table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, now, &TIMING);
     table.add_direct(3000, port(1)); // Replacing a learned route clears its records.
     assert_eq!(table.holds().count(), 0);
     for reason in 0..=u8::MAX {
         for network in [3000, 4000] {
             assert_eq!(
-                table.apply_reject(network, port(0), reason, now, &TIMING),
+                table.apply_reject(
+                    network,
+                    port(0),
+                    RejectReason::from_raw(reason),
+                    now,
+                    &TIMING
+                ),
                 RejectEffect::SameState
             );
         }
@@ -343,11 +386,17 @@ fn direct_and_absent_spam_never_mutates_routes_or_allocates_records() {
 fn nonlearning_maintenance_does_not_rearm_rejects() {
     let mut table = learned_table();
     let now = BASE;
-    table.apply_reject(3000, port(0), 1, now, &TIMING);
+    table.apply_reject(
+        3000,
+        port(0),
+        RejectReason::NOT_DIRECTLY_CONNECTED,
+        now,
+        &TIMING,
+    );
     table.touch(3000, now);
     table.mark_available(3000);
     table.clear_expired_busy(now);
-    table.apply_reject(3000, port(0), 2, now, &TIMING);
+    table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, now, &TIMING);
     assert_eq!(
         table.lookup(3000).unwrap().reachability,
         Reachability::Reachable
@@ -364,11 +413,29 @@ fn a_full_hold_pool_evicts_its_oldest_record_and_counts_it() {
     for network in [10, 20, 30] {
         table.add_learned(network, port(0), mac(&[1]), BASE);
     }
-    table.apply_reject(10, port(0), 2, BASE + secs(1), &TIMING);
-    table.apply_reject(20, port(0), 2, BASE + secs(2), &TIMING);
+    table.apply_reject(
+        10,
+        port(0),
+        RejectReason::ROUTER_BUSY,
+        BASE + secs(1),
+        &TIMING,
+    );
+    table.apply_reject(
+        20,
+        port(0),
+        RejectReason::ROUTER_BUSY,
+        BASE + secs(2),
+        &TIMING,
+    );
     assert_eq!(table.claim_counters().hold_evicted, 0);
     // A third record takes the oldest's place.
-    table.apply_reject(30, port(0), 2, BASE + secs(3), &TIMING);
+    table.apply_reject(
+        30,
+        port(0),
+        RejectReason::ROUTER_BUSY,
+        BASE + secs(3),
+        &TIMING,
+    );
     assert_eq!(table.claim_counters().hold_evicted, 1);
     let mut holds: Vec<Hold> = table.holds().collect();
     holds.sort_by_key(|hold| hold.network);
@@ -390,16 +457,28 @@ fn a_full_hold_pool_evicts_its_oldest_record_and_counts_it() {
     // Network 10 lost its hold-down, so a change from port 0 applies at
     // once, and its new record evicts the next oldest, network 20's.
     assert_eq!(
-        table.apply_reject(10, port(0), 1, BASE + secs(4), &TIMING),
+        table.apply_reject(
+            10,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            BASE + secs(4),
+            &TIMING
+        ),
         RejectEffect::Applied
     );
     assert_eq!(table.claim_counters().hold_evicted, 2);
     assert_eq!(table.held_since(20, port(0)), None);
     assert_eq!(table.held_since(10, port(0)), Some(BASE + secs(4)));
     // Updating a record already kept evicts nothing.
-    table.lookup_mut(30).unwrap().reachability = Reachability::Reachable;
+    table.mark_available(30);
     assert_eq!(
-        table.apply_reject(30, port(0), 1, BASE + secs(60), &TIMING),
+        table.apply_reject(
+            30,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            BASE + secs(60),
+            &TIMING
+        ),
         RejectEffect::Applied
     );
     assert_eq!(table.held_since(30, port(0)), Some(BASE + secs(60)));
@@ -409,7 +488,7 @@ fn a_full_hold_pool_evicts_its_oldest_record_and_counts_it() {
     let mut bare: Table<4, 0> = Table::new();
     bare.add_learned(10, PortId(0), Mac::EMPTY, BASE);
     assert_eq!(
-        bare.apply_reject(10, port(0), 2, BASE, &TIMING),
+        bare.apply_reject(10, port(0), RejectReason::ROUTER_BUSY, BASE, &TIMING),
         RejectEffect::Applied
     );
     assert_eq!(bare.holds().count(), 0);
@@ -424,21 +503,39 @@ fn the_hold_down_and_busy_period_follow_the_timing() {
         busy_for: secs(7),
         ..Timing::DEFAULT
     };
-    table.apply_reject(3000, port(0), 2, BASE, &timing);
+    table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, BASE, &timing);
     assert_eq!(table.lookup(3000).unwrap().busy_until, Some(BASE + secs(7)));
     assert_eq!(
-        table.apply_reject(3000, port(0), 1, BASE + secs(5) - NANO, &timing),
+        table.apply_reject(
+            3000,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            BASE + secs(5) - NANO,
+            &timing
+        ),
         RejectEffect::HeldDown
     );
     assert_eq!(
-        table.apply_reject(3000, port(0), 1, BASE + secs(5), &timing),
+        table.apply_reject(
+            3000,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            BASE + secs(5),
+            &timing
+        ),
         RejectEffect::Applied
     );
     // The default timing a moment later would still have held it down.
     let mut table: Hosted = learned_table();
-    table.apply_reject(3000, port(0), 2, BASE, &TIMING);
+    table.apply_reject(3000, port(0), RejectReason::ROUTER_BUSY, BASE, &TIMING);
     assert_eq!(
-        table.apply_reject(3000, port(0), 1, BASE + secs(5), &TIMING),
+        table.apply_reject(
+            3000,
+            port(0),
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            BASE + secs(5),
+            &TIMING
+        ),
         RejectEffect::HeldDown
     );
 }

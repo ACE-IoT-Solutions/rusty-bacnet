@@ -145,7 +145,7 @@ async fn available_reenables_before_expiry_and_omitted_clears_set() {
     h.handle(h.ctx(1, PEER_A, control_npdu(AVAILABLE, &busy_payload(&[3000]))))
         .await;
     assert_eq!(reachability(&h, 3000), Some(Reachability::Reachable));
-    assert!(h.table().lookup(3000).unwrap().busy_until.is_none());
+    assert!(h.table().lookup(3000).unwrap().busy_until().is_none());
 
     // Omitted Available clears the whole via-peer set and nothing else.
     h.handle(h.ctx(1, PEER_A, control_npdu(BUSY, &[]))).await;
@@ -196,7 +196,7 @@ async fn busy_never_resurrects_unreachable_route() {
     h.handle(h.ctx(1, PEER_A, control_npdu(BUSY, &[]))).await;
     assert_eq!(broadcast_data(h.drain(0)).len(), 1);
     assert_eq!(reachability(&h, 3000), Some(Reachability::Unreachable));
-    assert!(h.table().lookup(3000).unwrap().busy_until.is_none());
+    assert!(h.table().lookup(3000).unwrap().busy_until().is_none());
     let now = h.now();
     h.table().clear_expired_busy(now);
     assert_eq!(reachability(&h, 3000), Some(Reachability::Unreachable));
@@ -211,7 +211,7 @@ async fn busy_marks_leave_learning_freshness_untouched() {
         let table = h.table();
         [3000, 3001, 4000, 5000]
             .into_iter()
-            .map(|net| (net, table.lookup(net).unwrap().last_seen))
+            .map(|net| (net, table.lookup(net).unwrap().last_seen()))
             .collect()
     };
     h.handle(h.ctx(1, PEER_A, control_npdu(BUSY, &[]))).await;
@@ -220,7 +220,7 @@ async fn busy_marks_leave_learning_freshness_untouched() {
     let table = h.table();
     for (net, seen) in before {
         assert_eq!(
-            table.lookup(net).unwrap().last_seen,
+            table.lookup(net).unwrap().last_seen(),
             seen,
             "network {net} freshness must not move on Busy/Available"
         );

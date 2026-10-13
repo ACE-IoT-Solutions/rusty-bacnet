@@ -5,7 +5,7 @@ use super::counters::bump;
 use super::host::{Group, Host};
 use super::tasks::Task;
 use super::Storage;
-use crate::message::reason;
+use crate::message::RejectReason;
 use crate::npdu::{Address, AddressField, Malformed, Npdu, ParseError, GLOBAL_NETWORK};
 use crate::table::{Reachability, Route};
 use crate::{Instant, Mac, PortId};
@@ -27,6 +27,7 @@ pub struct Frame<'f> {
 /// What a frame means for the router itself. It borrows the frame, not the
 /// router, so the caller can poll the actions the frame also prompted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a frame may be for the router's own application"]
 pub enum Received<'f> {
     /// An APDU for the router's own application entity, if it has one. It
     /// may come with sends: a global broadcast, or a DLEN 0 broadcast on
@@ -37,8 +38,8 @@ pub enum Received<'f> {
     ToRouter(Npdu<'f>),
     /// Routed, answered, relayed or taken into the table: see the actions.
     Handled,
-    /// Dropped, and counted, for this reason.
-    Dropped(DropReason),
+    /// Discarded, and counted, for this reason.
+    Discarded(Discard),
 }
 
 /// An APDU for the router's own application entity.
@@ -58,18 +59,19 @@ pub struct Local<'f> {
     pub global: bool,
     /// Whether its sender expects a reply.
     pub expecting_reply: bool,
-    /// Its network priority.
+    /// Its network priority: the control octet's two low bits, 0 (normal)
+    /// to 3 (life safety), so never more than 3.
     pub priority: u8,
 }
 
-/// Why a frame was dropped. Each has its count in
+/// Why a frame was discarded. Each has its count in
 /// [`Counters`](super::Counters).
 ///
 /// It is `#[non_exhaustive]`, so a new reason isn't a breaking change: a
 /// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum DropReason {
+pub enum Discard {
     /// It came on a port the router doesn't have, or its route names one
     /// (a route written through [`Router::table_mut`](super::Router::table_mut)).
     UnknownPort,
@@ -162,11 +164,11 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         self.drop_undrained();
         let Some(config) = self.ports[..self.port_count].get(usize::from(frame.port.0)) else {
             bump(&mut self.counters.unknown_port);
-            return Received::Dropped(DropReason::UnknownPort);
+            return Received::Discarded(Discard::UnknownPort);
         };
         let Ok(source_mac) = Mac::from_slice(frame.source) else {
             bump(&mut self.counters.address_length_drops);
-            return Received::Dropped(DropReason::SourceTooLong {
+            return Received::Discarded(Discard::SourceTooLong {
                 length: frame.source.len(),
             });
         };
@@ -190,29 +192,29 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 // A global broadcast draws no reject, and an NPDU without a
                 // DNET has no network to name.
                 if let Some(dnet) = dnet.filter(|&dnet| dnet != GLOBAL_NETWORK) {
-                    self.reject(&at, source, dnet, reason::ADDRESSING_ERROR, host);
+                    self.reject(&at, source, dnet, RejectReason::ADDRESSING_ERROR, host);
                 }
-                return Received::Dropped(DropReason::AddressTooLong { field, length });
+                return Received::Discarded(Discard::AddressTooLong { field, length });
             }
             Err(ParseError::Malformed(fault)) => {
                 bump(&mut self.counters.malformed);
-                return Received::Dropped(DropReason::Malformed(fault));
+                return Received::Discarded(Discard::Malformed(fault));
             }
         };
         if let Some(destination) = npdu.destination {
             let global = destination.network == GLOBAL_NETWORK;
             if global && !destination.mac.is_empty() {
                 bump(&mut self.counters.global_broadcast_dadr_drops);
-                return Received::Dropped(DropReason::GlobalWithDadr);
+                return Received::Discarded(Discard::GlobalWithDadr);
             }
             let broadcast = global || destination.mac.is_empty();
             if broadcast && !npdu.is_network_message() && !is_unconfirmed(npdu.payload) {
                 bump(&mut self.counters.broadcast_pdu_type_drops);
-                return Received::Dropped(DropReason::BroadcastNotUnconfirmed);
+                return Received::Discarded(Discard::BroadcastNotUnconfirmed);
             }
         }
-        if npdu.is_network_message() {
-            return self.network_message(&at, &npdu, options, host);
+        if let Some(kind) = npdu.message_type {
+            return self.network_message(&at, &npdu, kind, options, host);
         }
         self.route_apdu(&at, &npdu, options, host)
     }
@@ -229,29 +231,29 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             return Received::Local(local(npdu, at.link_group, false));
         };
         if destination.network == GLOBAL_NETWORK {
-            self.forward_global(at, npdu, options, host);
+            self.forward_global(at, npdu, host);
             return Received::Local(local(npdu, true, true));
         }
-        // R7: the router's own address on any of its networks is its own
-        // application's, before any route is looked up. A DLEN 0 broadcast
-        // names no one node, so it is never that.
-        if options.fixes.own_address && !destination.mac.is_empty() && self.is_own(destination) {
+        // The router's own address on any of its networks is its own
+        // application's, before any route is looked up (Clause 6.1, Figure
+        // 6-12). A DLEN 0 broadcast names no one node, so it is never that.
+        if !destination.mac.is_empty() && self.is_own(destination) {
             return Received::Local(local(npdu, false, false));
         }
         let Some(route) = self.find_route(at, npdu, destination.network, options, host) else {
             return Received::Handled;
         };
         let mut delivered = None;
-        if route.port == at.port && route.direct {
+        if route.port() == at.port && route.is_direct() {
             let own = &self.ports[usize::from(at.port.0)].mac;
             if *own == *destination.mac {
                 return Received::Local(local(npdu, false, false));
             }
             // A DLEN 0 broadcast on the arrival network is delivered, and
             // also sent back out the arrival port below, as the hosted
-            // router does (group_dadr_tests.rs:96 pins that relay). With R1,
-            // one at the port's limit is delivered and also draws reason 4,
-            // since the relay gains SNET and SADR.
+            // router does (group_dadr_tests.rs:96 pins that relay). One at
+            // the port's limit is delivered and also draws reason 4, since
+            // the relay gains SNET and SADR.
             if destination.mac.is_empty() {
                 delivered = Some(local(npdu, true, false));
             }
@@ -268,13 +270,13 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                     network: destination.network,
                     mac: &[],
                 });
-                if route.port == at.port {
+                if route.port() == at.port {
                     delivered = Some(local(&npdu, true, false));
                 }
             }
             Group::Broadcast | Group::Refuse => return self.group_drop(),
         }
-        let forwarded = self.forward(at, &npdu, &route, options, host);
+        let forwarded = self.forward(at, &npdu, &route, host);
         delivered.map_or(forwarded, Received::Local)
     }
 
@@ -301,13 +303,19 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 bump(&mut self.counters.solicitations);
                 self.out.push(Task::solicit(at.port, dnet));
             }
-            self.reject(at, npdu.source, dnet, reason::NOT_DIRECTLY_CONNECTED, host);
+            self.reject(
+                at,
+                npdu.source,
+                dnet,
+                RejectReason::NOT_DIRECTLY_CONNECTED,
+                host,
+            );
             return None;
         };
         self.table.touch(dnet, at.now);
         let refusal = match reachability {
-            Some(Reachability::Busy) => reason::ROUTER_BUSY,
-            Some(Reachability::Unreachable) => reason::NOT_DIRECTLY_CONNECTED,
+            Some(Reachability::Busy) => RejectReason::ROUTER_BUSY,
+            Some(Reachability::Unreachable) => RejectReason::NOT_DIRECTLY_CONNECTED,
             _ => return Some(route),
         };
         self.reject(at, npdu.source, dnet, refusal, host);
@@ -319,8 +327,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// 0 broadcast, and a DADR beyond another router, are [`Group::No`].
     pub(super) fn group_of(&self, route: &Route, npdu: &Npdu<'_>, host: &impl Host) -> Group {
         match npdu.destination {
-            Some(destination) if route.direct && !destination.mac.is_empty() => {
-                host.group(route.port, destination.mac)
+            Some(destination) if route.is_direct() && !destination.mac.is_empty() => {
+                host.group(route.port(), destination.mac)
             }
             _ => Group::No,
         }
@@ -329,6 +337,6 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     /// Count a frame dropped for a group DADR (#1504, #1677).
     pub(super) fn group_drop<'f>(&mut self) -> Received<'f> {
         bump(&mut self.counters.group_dadr_drops);
-        Received::Dropped(DropReason::GroupDadr)
+        Received::Discarded(Discard::GroupDadr)
     }
 }

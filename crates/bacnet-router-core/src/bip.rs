@@ -55,8 +55,8 @@
 //! foreign-device port, a refused first registration drops the held
 //! broadcasts, a registration the socket refuses ends its attempt, and a
 //! full hold refuses the next broadcast as [`SendRefusal::Full`]; each
-//! datagram of a port's own that its socket refuses is counted once in
-//! `refused()` (`tests/glue_bip_foreign.rs`, `tests/glue_bip.rs`).
+//! datagram of a port's own that its socket refuses is counted once in its
+//! [`PortCounters`] (`tests/glue_bip_foreign.rs`, `tests/glue_bip.rs`).
 
 use core::fmt;
 use core::net::SocketAddrV4;
@@ -86,6 +86,7 @@ pub trait Datagrams {
 /// A B/IP port's [`PortConfig`] on `network`: the router's MAC is the
 /// link's own B/IP address, and its limits are [`Link::max_npdu`] for each
 /// cast, at most [`MAX_NPDU`] (Table 6-1).
+#[must_use]
 pub fn port_config(link: &Link, network: u16) -> PortConfig {
     // At most MAX_NPDU, so the casts are exact.
     let limit = |cast| link.max_npdu(cast).min(MAX_NPDU) as u16;
@@ -103,6 +104,7 @@ pub fn port_config(link: &Link, network: u16) -> PortConfig {
 /// one of the link's group addresses ([`Link::groups`]) at the link's own
 /// UDP port is its local broadcast; one at another port belongs to another
 /// B/IP network, and is refused (#1677, decision L24).
+#[must_use]
 pub fn group(link: &Link, mac: &[u8]) -> Group {
     match address_from_slice(mac) {
         Ok(address) if link.groups().contains(address) => {
@@ -118,10 +120,10 @@ pub fn group(link: &Link, mac: &[u8]) -> Group {
 
 /// What a received datagram brought.
 ///
-/// It is `#[non_exhaustive]`, so a new case isn't a breaking change: a
-/// `match` needs a wildcard arm.
+/// It is exhaustive, as the router's [`Received`](crate::router::Received)
+/// and the node's [`Inbound`] are: the caller serves each case, a BBMD's
+/// [`Management`](Self::Management) requests included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Ingress<'d> {
     /// An NPDU for the router: pass [`Arrived::frame`] to
     /// [`Router::receive`](crate::Router::receive).
@@ -140,113 +142,206 @@ pub enum Ingress<'d> {
 }
 
 /// Why a port refused its node and storage.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PortError {
     /// A [`BipPort`] was offered a BBMD's node, or a [`BbmdPort`] another
     /// mode's.
     Mode,
-    /// A foreign device holds more broadcasts than the port has room for,
-    /// or holds some with no send budget, so a held one could be longer
-    /// than a [`HeldBroadcast`].
-    HeldStorage,
+    /// A foreign device holds more broadcasts than the port has slots for.
+    HeldStorage {
+        /// The broadcasts the node holds ([`Foreign::hold`](node::Foreign::hold)).
+        needed: usize,
+        /// The slots lent.
+        available: usize,
+    },
+    /// A foreign device holds broadcasts longer than a slot: its link's
+    /// broadcast limit ([`Link::max_npdu`] for [`Cast::Broadcast`]) is
+    /// over the slots' `N`. A link with no send budget has no limit short
+    /// of the largest BVLL message.
+    HeldLength {
+        /// The longest broadcast the link sends, in octets.
+        needed: usize,
+        /// A slot's length, `N`.
+        available: usize,
+    },
     /// A [`BbmdPort`]'s target storage is shorter than
     /// [`Tables::MAX_TARGETS`].
-    TargetStorage,
+    TargetStorage {
+        /// [`Tables::MAX_TARGETS`].
+        needed: usize,
+        /// The targets lent.
+        available: usize,
+    },
 }
 
 impl fmt::Display for PortError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Mode => "the node's mode doesn't suit this port",
-            Self::HeldStorage => "no room for the broadcasts the node holds",
-            Self::TargetStorage => "no room for every target a BBMD forwards to",
-        })
+        match self {
+            Self::Mode => f.write_str("the node's mode doesn't suit this port"),
+            Self::HeldStorage { needed, available } => write!(
+                f,
+                "the node holds {needed} broadcasts, with slots for {available}"
+            ),
+            Self::HeldLength { needed, available } => write!(
+                f,
+                "a held broadcast may be {needed} octets, with slots of {available}"
+            ),
+            Self::TargetStorage { needed, available } => write!(
+                f,
+                "a BBMD forwards to up to {needed} targets, with room for {available}"
+            ),
+        }
     }
 }
 
 impl core::error::Error for PortError {}
 
+/// What a B/IP port counted since its counters were last taken. Its node
+/// keeps counts of its own ([`Node::take_counters`]).
+///
+/// It is `#[non_exhaustive]`, so a new count isn't a breaking change.
+/// Outside this crate, build one from `PortCounters::default()` and set its
+/// fields.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PortCounters {
+    /// Datagrams of the port's own that the sink refused: a NAK, a
+    /// released broadcast, or a BBMD's forwarded copy. A refused
+    /// registration is the node's
+    /// [`local_errors`](node::ExchangeCounters::local_errors).
+    pub refused: u32,
+}
+
 /// Room for one broadcast that a foreign device's port holds until its
 /// first registration attempt resolves (Annex J.7.4; decision D17). It is
 /// all zero bits, so firmware lends the port a static's.
 ///
-/// Each slot holds B/IP's largest NPDU, 1,497 octets; the firmware router
-/// image's RAM budget (#1679) may make that a const generic.
-#[derive(Debug, Clone)]
-pub struct HeldBroadcast {
+/// A slot holds `N` octets, at most 65,535: by default [`MAX_NPDU`], B/IP's
+/// largest NPDU. A link with a smaller send budget sends shorter
+/// broadcasts, and its port can hold them in shorter slots;
+/// [`BipPort::new`] checks that the link's broadcast limit fits `N`.
+///
+/// A default doesn't drive inference, so `HeldBroadcast::EMPTY` alone, in
+/// an expression, leaves `N` open. Name the type instead: `<HeldBroadcast>`
+/// is a type, so it takes the default.
+///
+/// ```
+/// use bacnet_router_core::bip::HeldBroadcast;
+///
+/// // Two slots of MAX_NPDU octets, the default.
+/// let full = [<HeldBroadcast>::EMPTY; 2];
+/// // Two slots of 501 octets, for a link whose broadcasts are no longer.
+/// let short = [HeldBroadcast::<501>::EMPTY; 2];
+/// # let _ = (full, short);
+/// ```
+#[derive(Clone)]
+pub struct HeldBroadcast<const N: usize = MAX_NPDU> {
     len: u16,
-    npdu: [u8; MAX_NPDU],
+    npdu: [u8; N],
 }
 
-impl HeldBroadcast {
+impl<const N: usize> HeldBroadcast<N> {
     /// An empty slot.
-    pub const EMPTY: Self = Self {
-        len: 0,
-        npdu: [0; MAX_NPDU],
+    pub const EMPTY: Self = {
+        assert!(
+            N <= u16::MAX as usize,
+            "a held broadcast is at most 65,535 octets"
+        );
+        Self {
+            len: 0,
+            npdu: [0; N],
+        }
     };
 }
 
-impl Default for HeldBroadcast {
+impl<const N: usize> Default for HeldBroadcast<N> {
     fn default() -> Self {
         Self::EMPTY
     }
 }
 
-/// A router port on a B/IP node in normal or foreign-device mode, which it
-/// owns, with `X` exchange slots.
-#[derive(Debug)]
-pub struct BipPort<'h, const X: usize = 4> {
-    port: PortId,
-    node: Node<X>,
-    held: &'h mut [HeldBroadcast],
-    held_len: usize,
-    refused: u32,
+/// The length held, not the slot.
+impl<const N: usize> fmt::Debug for HeldBroadcast<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeldBroadcast")
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
 }
 
-impl<'h, const X: usize> BipPort<'h, X> {
+/// A router port on a B/IP node in normal or foreign-device mode, which it
+/// owns, with `X` exchange slots and held-broadcast slots of `N` octets.
+#[derive(Debug)]
+pub struct BipPort<'h, const X: usize = 4, const N: usize = MAX_NPDU> {
+    port: PortId,
+    node: Node<X>,
+    held: &'h mut [HeldBroadcast<N>],
+    held_len: usize,
+    counters: PortCounters,
+}
+
+impl<'h, const X: usize, const N: usize> BipPort<'h, X, N> {
     /// Port `port` on `node`, holding a foreign device's broadcasts in
-    /// `held`: at least [`Foreign::hold`](node::Foreign::hold) slots, and a
-    /// link with a send budget when it holds any. A normal node holds none.
+    /// `held`: at least [`Foreign::hold`](node::Foreign::hold) slots, each
+    /// as long as the link's broadcast limit ([`Link::max_npdu`] for
+    /// [`Cast::Broadcast`]) when it holds any. A normal node holds none.
     pub fn new(
         port: PortId,
         node: Node<X>,
-        held: &'h mut [HeldBroadcast],
+        held: &'h mut [HeldBroadcast<N>],
     ) -> Result<Self, PortError> {
         let link = node.link();
         let hold = match link.mode {
             Mode::Normal => 0,
-            Mode::Foreign(foreign) => foreign.hold,
+            Mode::Foreign(foreign) => usize::from(foreign.hold),
             Mode::Bbmd => return Err(PortError::Mode),
         };
-        if usize::from(hold) > held.len() || (hold > 0 && link.budget.is_none()) {
-            return Err(PortError::HeldStorage);
+        if hold > held.len() {
+            return Err(PortError::HeldStorage {
+                needed: hold,
+                available: held.len(),
+            });
+        }
+        let longest = link.max_npdu(Cast::Broadcast);
+        if hold > 0 && longest > N {
+            return Err(PortError::HeldLength {
+                needed: longest,
+                available: N,
+            });
         }
         Ok(Self {
             port,
             node,
             held,
             held_len: 0,
-            refused: 0,
+            counters: PortCounters::default(),
         })
     }
 
     /// The port's index.
+    #[must_use]
     pub const fn port(&self) -> PortId {
         self.port
     }
 
     /// The port's [`PortConfig`] on `network` ([`port_config`]).
+    #[must_use]
     pub fn config(&self, network: u16) -> PortConfig {
         port_config(self.node.link(), network)
     }
 
     /// What `mac` is on this port ([`group`]).
+    #[must_use]
     pub fn group(&self, mac: &[u8]) -> Group {
         group(self.node.link(), mac)
     }
 
     /// The node.
+    #[must_use]
     pub const fn node(&self) -> &Node<X> {
         &self.node
     }
@@ -262,11 +357,20 @@ impl<'h, const X: usize> BipPort<'h, X> {
         &mut self.node
     }
 
-    /// Datagrams of the port's own (a NAK, a released broadcast) that the
-    /// sink refused. A refused registration is the node's
-    /// [`local_errors`](node::ExchangeCounters::local_errors).
-    pub const fn refused(&self) -> u32 {
-        self.refused
+    /// The counts since the counters were last taken, which then start
+    /// again from zero: add them to your own totals, as wide as you need.
+    /// Each is a `u32` that saturates between takes.
+    #[must_use = "the counts are gone once taken; add them to your totals"]
+    pub fn take_counters(&mut self) -> PortCounters {
+        core::mem::take(&mut self.counters)
+    }
+
+    /// The counts since the counters were last taken, as
+    /// [`take_counters`](Self::take_counters) would return them, without
+    /// taking them.
+    #[must_use]
+    pub const fn counters(&self) -> PortCounters {
+        self.counters
     }
 
     /// Take a datagram the port's socket received.
@@ -281,7 +385,7 @@ impl<'h, const X: usize> BipPort<'h, X> {
         let ingress = match self.node.receive(datagram, now, policy) {
             Inbound::Deliver(delivery) => Ingress::Npdu(arrived(self.port, &delivery)),
             Inbound::Nak { to, code, .. } => {
-                count(&mut self.refused, out.send(to, &Bvll::BvlcResult(code)));
+                count(&mut self.counters, out.send(to, &Bvll::BvlcResult(code)));
                 Ingress::Handled
             }
             Inbound::Discarded(why) => Ingress::Discarded(why),
@@ -330,6 +434,7 @@ impl<'h, const X: usize> BipPort<'h, X> {
     }
 
     /// When the node next has work of its own ([`Node::next_deadline`]).
+    #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         self.node.next_deadline()
     }
@@ -353,14 +458,14 @@ impl<'h, const X: usize> BipPort<'h, X> {
             Admission::Send => out.send(outgoing.to, &outgoing.message),
             Admission::Hold => {
                 // `new` lent a slot for each broadcast the node holds, each
-                // as long as any the budget lets through.
+                // as long as any the link's limit lets through.
                 let slot = self.held.get_mut(self.held_len).ok_or(SendRefusal::Full)?;
                 let room = slot
                     .npdu
                     .get_mut(..npdu.len())
                     .ok_or(SendRefusal::TooLong)?;
                 room.copy_from_slice(npdu);
-                // At most MAX_NPDU octets.
+                // At most N octets, and N is at most 65,535.
                 slot.len = npdu.len() as u16;
                 self.held_len += 1;
                 Ok(())
@@ -389,7 +494,7 @@ impl<'h, const X: usize> BipPort<'h, X> {
                             .broadcast(npdu)
                             .map_err(refusal)
                             .and_then(|(outgoing, _)| out.send(outgoing.to, &outgoing.message));
-                        count(&mut self.refused, sent);
+                        count(&mut self.counters, sent);
                     }
                     self.held_len = 0;
                 }
@@ -405,13 +510,20 @@ impl<'h, const X: usize> BipPort<'h, X> {
 /// A router port on a BBMD, which owns its node and borrows its tables, of
 /// `B` BDT rows and `F` foreign devices, and storage for the targets of
 /// one forwarding decision.
+///
+/// The tables keep no clock of their own, so the port keeps the latest
+/// time it has been given and hands them that: a `now` earlier than it is
+/// taken as it, as the node takes its own, and a registration that has
+/// lapsed stays lapsed.
 #[derive(Debug)]
 pub struct BbmdPort<'t, const B: usize, const F: usize, const X: usize = 4> {
     port: PortId,
     node: Node<X>,
     tables: &'t mut Tables<B, F>,
     targets: &'t mut [Target],
-    refused: u32,
+    counters: PortCounters,
+    /// The latest time any call has passed in.
+    latest: Instant,
 }
 
 impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
@@ -428,33 +540,48 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
             return Err(PortError::Mode);
         }
         if targets.len() < Tables::<B, F>::MAX_TARGETS {
-            return Err(PortError::TargetStorage);
+            return Err(PortError::TargetStorage {
+                needed: Tables::<B, F>::MAX_TARGETS,
+                available: targets.len(),
+            });
         }
         Ok(Self {
             port,
             node,
             tables,
             targets,
-            refused: 0,
+            counters: PortCounters::default(),
+            latest: Instant::ZERO,
         })
     }
 
+    /// `now`, or the latest time passed in when that is later, which it
+    /// then stays (the clock rule in the crate docs).
+    fn clock(&mut self, now: Instant) -> Instant {
+        self.latest = self.latest.max(now);
+        self.latest
+    }
+
     /// The port's index.
+    #[must_use]
     pub const fn port(&self) -> PortId {
         self.port
     }
 
     /// The port's [`PortConfig`] on `network` ([`port_config`]).
+    #[must_use]
     pub fn config(&self, network: u16) -> PortConfig {
         port_config(self.node.link(), network)
     }
 
     /// What `mac` is on this port ([`group`]).
+    #[must_use]
     pub fn group(&self, mac: &[u8]) -> Group {
         group(self.node.link(), mac)
     }
 
     /// The node.
+    #[must_use]
     pub const fn node(&self) -> &Node<X> {
         &self.node
     }
@@ -465,6 +592,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
     }
 
     /// The tables.
+    #[must_use]
     pub fn tables(&self) -> &Tables<B, F> {
         self.tables
     }
@@ -475,15 +603,26 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         self.tables
     }
 
-    /// Datagrams of the port's own (a NAK, a forwarded copy) that the sink
-    /// refused.
-    pub const fn refused(&self) -> u32 {
-        self.refused
+    /// The counts since the counters were last taken, which then start
+    /// again from zero: add them to your own totals, as wide as you need.
+    /// Each is a `u32` that saturates between takes.
+    #[must_use = "the counts are gone once taken; add them to your totals"]
+    pub fn take_counters(&mut self) -> PortCounters {
+        core::mem::take(&mut self.counters)
+    }
+
+    /// The counts since the counters were last taken, as
+    /// [`take_counters`](Self::take_counters) would return them, without
+    /// taking them.
+    #[must_use]
+    pub const fn counters(&self) -> PortCounters {
+        self.counters
     }
 
     /// Take a datagram the port's socket received. The BBMD's share of it
     /// goes through the tables: a broadcast is forwarded where they say,
-    /// and handed to the router too.
+    /// and handed to the router too. A `now` before the latest one passed
+    /// in is taken as that one.
     pub fn receive<'d>(
         &mut self,
         datagram: &Datagram<'d>,
@@ -491,11 +630,12 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         policy: &mut impl Policy,
         out: &mut impl Datagrams,
     ) -> Ingress<'d> {
+        let now = self.clock(now);
         let link = *self.node.link();
         let ingress = match self.node.receive(datagram, now, policy) {
             Inbound::Deliver(delivery) => Ingress::Npdu(arrived(self.port, &delivery)),
             Inbound::Nak { to, code, .. } => {
-                count(&mut self.refused, out.send(to, &Bvll::BvlcResult(code)));
+                count(&mut self.counters, out.send(to, &Bvll::BvlcResult(code)));
                 Ingress::Handled
             }
             Inbound::Discarded(why) => Ingress::Discarded(why),
@@ -526,7 +666,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
                     delivery.npdu,
                     self.targets,
                 );
-                add(&mut self.refused, fan_out(out, sent.transmissions()));
+                add(&mut self.counters, fan_out(out, sent.transmissions()));
                 return Ingress::Npdu(arrived(port, &delivery));
             }
             ForBbmd::Forwarded {
@@ -552,7 +692,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
                     .targets
                     .iter()
                     .map(|target| (target.destination, message));
-                add(&mut self.refused, fan_out(out, copies));
+                add(&mut self.counters, fan_out(out, copies));
                 (origin, npdu)
             }
             ForBbmd::Distribute { sender, npdu } => {
@@ -560,10 +700,10 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
                     self.tables
                         .distribute_broadcast(&cx, &link.subnet, sender, npdu, self.targets);
                 match distribution {
-                    Ok(sent) => add(&mut self.refused, fan_out(out, sent.transmissions())),
+                    Ok(sent) => add(&mut self.counters, fan_out(out, sent.transmissions())),
                     Err(why) => {
                         let nak = Bvll::BvlcResult(why.result_code());
-                        count(&mut self.refused, out.send(sender, &nak));
+                        count(&mut self.counters, out.send(sender, &nak));
                         return Ingress::Handled;
                     }
                 }
@@ -581,7 +721,8 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
 
     /// Carry out one of the router's sends on this port; one for another
     /// port is refused. A broadcast goes out on the subnet and, as the
-    /// BBMD's own, to its peers and foreign devices.
+    /// BBMD's own, to its peers and foreign devices. A `now` before the
+    /// latest one passed in is taken as that one.
     pub fn send(
         &mut self,
         send: &Send<'_>,
@@ -591,6 +732,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
         if send.port != self.port {
             return Err(SendRefusal::Other);
         }
+        let now = self.clock(now);
         let link = self.node.link();
         match send.to {
             Dest::Unicast(mac) => unicast(link, mac, send.npdu, out),
@@ -599,7 +741,7 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
                 out.send(outgoing.to, &outgoing.message)?;
                 let cx = Context::new(now, F);
                 let sent = self.tables.own_broadcast(&cx, send.npdu, self.targets);
-                add(&mut self.refused, fan_out(out, sent.transmissions()));
+                add(&mut self.counters, fan_out(out, sent.transmissions()));
                 Ok(())
             }
         }
@@ -607,12 +749,15 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
 
     /// When the node next has work of its own: a manual exchange's
     /// response timeout.
+    #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         self.node.next_deadline()
     }
 
-    /// Do what the node has due at `now`.
+    /// Do what the node has due at `now`, or at the latest time passed in
+    /// when that is later.
     pub fn on_deadline(&mut self, now: Instant) {
+        let now = self.clock(now);
         self.node.on_deadline(now);
         self.drain();
     }
@@ -666,12 +811,12 @@ fn fan_out<'n>(
     })
 }
 
-/// Add `n` to a count, saturating.
-fn add(count: &mut u32, n: u32) {
-    *count = count.saturating_add(n);
+/// Add `n` refused sends to the counts, saturating.
+fn add(counters: &mut PortCounters, n: u32) {
+    counters.refused = counters.refused.saturating_add(n);
 }
 
 /// Count a refused send.
-fn count(refused: &mut u32, sent: Result<(), SendRefusal>) {
-    add(refused, u32::from(sent.is_err()));
+fn count(counters: &mut PortCounters, sent: Result<(), SendRefusal>) {
+    add(counters, u32::from(sent.is_err()));
 }

@@ -208,7 +208,7 @@ async fn i_could_be_router_stops_at_the_route_cap() {
     barrier(&mut peers[1]).await;
     let route = router.table().lookup(5000).expect("stored below the cap");
     assert_eq!(
-        (route.port, route.next_hop),
+        (route.port(), *route.next_hop()),
         (PortId(1), Mac::from_array([7]))
     );
     assert_eq!(router.table().claim_counters().learned_cap_ignored, 1);

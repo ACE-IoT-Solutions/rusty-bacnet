@@ -101,7 +101,7 @@ async fn directed_unknown_discovered_via_answer_routes_next_packet() {
         }
     }
     assert!(h.table().lookup(3000).is_some());
-    assert_eq!(h.table().lookup(3000).unwrap().port, PortId(1));
+    assert_eq!(h.table().lookup(3000).unwrap().port(), PortId(1));
     // Next packet to the now-known network forwards instead of rejecting.
     let mut npdu = control_npdu(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK, &[0x0b, 0xb8]);
     npdu.destination = Some(NpduAddress {
@@ -283,7 +283,7 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
         let now = router.now();
         let mac = crate::router_table::Mac::from_array([2]);
         let port = crate::router_table::PortId(1);
-        router.table().learn(3000, port, mac, now);
+        let _ = router.table().learn(3000, port, mac, now);
     }
     tx0.send(ingress(apdu_to(3000))).await.unwrap();
     let mut forwarded = false;

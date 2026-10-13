@@ -23,8 +23,7 @@
 //!   extends a route's life. Busy and Available marks touch neither.
 //! - **Rejects** ([`Table::apply_reject`]): reason 1 marks a learned route
 //!   unreachable and reason 2 busy for 30 s; any other reason leaves it as
-//!   it is, and is counted apart (Clause 6.6.3.5). The router with fix R2
-//!   off removes the route for one, as the hosted router once did.
+//!   it is, and is counted apart (Clause 6.6.3.5).
 //!   Each change starts a 30 s hold-down for its network and arrival port,
 //!   during which further reject-driven changes from that port are ignored.
 //!   Hold-down records live in their own pool of `H`; a full pool evicts the
@@ -49,7 +48,7 @@ use core::fmt;
 
 use crate::{Duration, Instant, Mac, PortId};
 
-pub use claims::{Learned, Refusal};
+pub use claims::{LearnRefusal, Learned};
 pub use holds::RejectEffect;
 
 /// How far a route can be used.
@@ -77,31 +76,26 @@ pub enum Convergence {
     Hardened,
 }
 
-/// The way to one network.
+/// The way to one network: a copy of the table's row, which
+/// [`Table::lookup`] and [`Table::routes`] hand out.
+///
+/// Its fields are the table's bookkeeping, so they are read through its
+/// getters, and only the table's own calls change the row: a direct route
+/// stays direct, and the flap count and timestamps stay the table's. Build
+/// one with [`Route::direct`] or [`Route::learned`], to compare with what a
+/// lookup returns. It is `#[non_exhaustive]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Route {
-    /// The port the network is reached through.
-    pub port: PortId,
-    /// Whether the network is attached to that port, rather than reached
-    /// through another router.
-    pub direct: bool,
-    /// The next router's MAC on that port; empty for a direct route.
-    pub next_hop: Mac,
-    /// When learning or management last confirmed the route; `None` for a
-    /// direct route. Aging keys off it.
-    pub last_seen: Option<Instant>,
-    /// When the route last carried traffic; `None` until it does, and again
-    /// after a move to another port. It never extends the route's life.
-    pub last_used: Option<Instant>,
-    /// The stored state. A lapsed busy mark still reads `Busy` here until
-    /// the sweep; [`Table::effective_reachability`] reads it at a time.
-    pub reachability: Reachability,
-    /// When a busy mark lapses.
-    pub busy_until: Option<Instant>,
-    /// Moves to another port within 60 s of the one before.
-    pub flap_count: u8,
-    /// When the route last moved to another port.
-    pub last_port_change: Option<Instant>,
+    port: PortId,
+    direct: bool,
+    next_hop: Mac,
+    last_seen: Option<Instant>,
+    last_used: Option<Instant>,
+    reachability: Reachability,
+    busy_until: Option<Instant>,
+    flap_count: u8,
+    last_port_change: Option<Instant>,
 }
 
 impl Route {
@@ -119,6 +113,7 @@ impl Route {
     };
 
     /// A directly attached network on `port`.
+    #[must_use]
     pub const fn direct(port: PortId) -> Self {
         let mut route = Self::ZERO;
         route.port = port;
@@ -127,12 +122,71 @@ impl Route {
     }
 
     /// A network reached through `next_hop` on `port`, confirmed `now`.
+    #[must_use]
     pub const fn learned(port: PortId, next_hop: Mac, now: Instant) -> Self {
         let mut route = Self::ZERO;
         route.port = port;
         route.next_hop = next_hop;
         route.last_seen = Some(now);
         route
+    }
+
+    /// The port the network is reached through.
+    #[must_use]
+    pub const fn port(&self) -> PortId {
+        self.port
+    }
+
+    /// Whether the network is attached to that port, rather than reached
+    /// through another router.
+    #[must_use]
+    pub const fn is_direct(&self) -> bool {
+        self.direct
+    }
+
+    /// The next router's MAC on that port; empty for a direct route.
+    #[must_use]
+    pub const fn next_hop(&self) -> &Mac {
+        &self.next_hop
+    }
+
+    /// When learning or management last confirmed the route; `None` for a
+    /// direct route. Aging keys off it.
+    #[must_use]
+    pub const fn last_seen(&self) -> Option<Instant> {
+        self.last_seen
+    }
+
+    /// When the route last carried traffic; `None` until it does, and again
+    /// after a move to another port. It never extends the route's life.
+    #[must_use]
+    pub const fn last_used(&self) -> Option<Instant> {
+        self.last_used
+    }
+
+    /// The stored state. A lapsed busy mark still reads `Busy` here until
+    /// the sweep; [`Table::effective_reachability`] reads it at a time.
+    #[must_use]
+    pub const fn reachability(&self) -> Reachability {
+        self.reachability
+    }
+
+    /// When a busy mark lapses.
+    #[must_use]
+    pub const fn busy_until(&self) -> Option<Instant> {
+        self.busy_until
+    }
+
+    /// Moves to another port within 60 s of the one before.
+    #[must_use]
+    pub const fn flap_count(&self) -> u8 {
+        self.flap_count
+    }
+
+    /// When the route last moved to another port.
+    #[must_use]
+    pub const fn last_port_change(&self) -> Option<Instant> {
+        self.last_port_change
     }
 
     /// Whether flow control from the router at `peer` on `port` covers it:
@@ -143,7 +197,11 @@ impl Route {
 }
 
 /// A hardened-mode claim waiting for its second (see [`Table::pending`]).
+///
+/// The table builds it. It is `#[non_exhaustive]`, so a new field isn't a
+/// breaking change: a pattern needs `..`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Pending {
     /// The port the claim would move the route to.
     pub port: PortId,
@@ -164,8 +222,7 @@ pub struct Pending {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ClaimCounters {
-    /// Rejects that changed a learned route's state, or, with fix R2 off,
-    /// removed it.
+    /// Rejects that changed a learned route's state.
     pub reject_applied: u64,
     /// Rejects ignored, for either reason below; each counts once here.
     pub reject_dampened: u64,
@@ -175,7 +232,7 @@ pub struct ClaimCounters {
     /// State-changing rejects ignored within the hold-down.
     pub reject_dampened_hold_down: u64,
     /// Rejects for a learned route with a reason other than 1 or 2, which
-    /// leave it as it is (fix R2); the router before it removed the route.
+    /// leave it as it is (Clause 6.6.3.5).
     pub reject_kept: u64,
     /// Learning claims that added or refreshed a learned route.
     pub learned_ok: u64,
@@ -252,9 +309,20 @@ const fn is_reserved(network: u16) -> bool {
 /// A full table refuses a new network: [`add_direct`](Self::add_direct)
 /// and [`add_learned`](Self::add_learned) return `false`, and
 /// [`learn`](Self::learn) and [`apply_claim`](Self::apply_claim) return
-/// [`Refusal::Full`]. Routes it holds can still be refreshed, moved and
+/// [`LearnRefusal::Full`]. Routes it holds can still be refreshed, moved and
 /// removed. A router keeps its route cap at or below `R`, so the cap, which
 /// it counts, is met first.
+///
+/// A [`Route`] is a copy of a row, so a route changes only through the
+/// table's calls, each of which keeps its rules: [`add_direct`](Self::add_direct)
+/// and [`add_learned`](Self::add_learned) install one;
+/// [`learn`](Self::learn) and [`apply_claim`](Self::apply_claim) learn one,
+/// with flap detection and convergence; [`mark_busy`](Self::mark_busy),
+/// [`mark_available`](Self::mark_available) and
+/// [`mark_unreachable`](Self::mark_unreachable) set its state;
+/// [`touch`](Self::touch) notes its use; and [`remove`](Self::remove) and
+/// [`purge_stale`](Self::purge_stale) take it out. None of them makes a
+/// learned route direct, or a direct one learned, except by replacing it.
 ///
 /// [`new`](Self::new) is a `const fn` whose result is all zero bits, so a
 /// table can live in a zero-initialized static (`.bss`).
@@ -290,6 +358,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     pub const CAPACITY: usize = R;
 
     /// An empty table with standard convergence: all zero bits.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             slots: [VACANT; R],
@@ -324,40 +393,39 @@ impl<const R: usize, const H: usize> Table<R, H> {
         self.counters = ClaimCounters::default();
     }
 
-    /// An empty table with hardened convergence.
-    pub const fn new_hardened() -> Self {
-        let mut table = Self::new();
-        table.convergence = Convergence::Hardened;
-        table
-    }
-
     /// Choose the convergence mode for later claims. Routes stay; a pending
-    /// claim waits for its next claim or the sweep, as before.
-    pub fn set_convergence(&mut self, convergence: Convergence) {
+    /// claim waits for its next claim or the sweep, as before. It is a
+    /// `const fn`, so a table in a `static` can start hardened.
+    pub const fn set_convergence(&mut self, convergence: Convergence) {
         self.convergence = convergence;
     }
 
     /// The convergence mode.
+    #[must_use]
     pub const fn convergence(&self) -> Convergence {
         self.convergence
     }
 
     /// The claim counts so far.
+    #[must_use]
     pub const fn claim_counters(&self) -> ClaimCounters {
         self.counters
     }
 
     /// How many routes it holds.
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.len
     }
 
     /// Whether it holds none.
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Whether a new network has no room.
+    #[must_use]
     pub const fn is_full(&self) -> bool {
         self.len == R
     }
@@ -400,17 +468,10 @@ impl<const R: usize, const H: usize> Table<R, H> {
     }
 
     /// The route to `network`.
+    #[must_use]
     pub fn lookup(&self, network: u16) -> Option<Route> {
         let index = self.find(network).ok()?;
         Some(self.slots[index].route)
-    }
-
-    /// The route to `network`, to change in place. Any pending claim for it
-    /// is dropped, since the caller may change what it would have replaced.
-    pub fn lookup_mut(&mut self, network: u16) -> Option<&mut Route> {
-        let slot = self.slot_mut(network)?;
-        slot.pending = None;
-        Some(&mut slot.route)
     }
 
     /// Remove the route to `network`, with its pending claim and its
@@ -543,6 +604,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
     /// learned route through that port to that next router. This is the
     /// scope of a flow-control message from `peer`, whose own list, when it
     /// has one, is intersected with it.
+    #[must_use]
     pub fn is_served_via_peer(&self, network: u16, port: PortId, peer: &[u8]) -> bool {
         self.lookup(network)
             .is_some_and(|route| route.served_via(port, peer))
@@ -577,6 +639,7 @@ impl<const R: usize, const H: usize> Table<R, H> {
 
     /// The reachability of `network` at `now`: a busy mark reads
     /// `Reachable` from its deadline on, whether or not the sweep has run.
+    #[must_use]
     pub fn effective_reachability(&self, network: u16, now: Instant) -> Option<Reachability> {
         let route = self.lookup(network)?;
         Some(match route.busy_until {

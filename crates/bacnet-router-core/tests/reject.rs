@@ -3,13 +3,13 @@
 
 mod fixture;
 
-use bacnet_router_core::message::{code, reason};
+use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{ControlClass, DropReason, Event, Kind};
+use bacnet_router_core::router::{ControlClass, Discard, Event, Kind};
 use bacnet_router_core::table::{Reachability, RejectEffect};
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, options, reject_data, router, router_with,
-    sent_reject, two_ports, Outcome, Recorder, CONFIRMED, NODE_A, OWN_1, R7,
+    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, reject_data, router, sent_reject, Outcome,
+    Recorder, CONFIRMED, NODE_A, OWN_1, R7,
 };
 
 /// A request for unknown network 44, with `source` as its SNET and SADR.
@@ -86,7 +86,7 @@ fn reject_path_follows_the_origin() {
     assert_eq!(
         sent_reject(&reject),
         (
-            reason::NOT_DIRECTLY_CONNECTED,
+            RejectReason::NOT_DIRECTLY_CONNECTED,
             44,
             Some((7, OWN_1.to_vec()))
         )
@@ -105,7 +105,11 @@ fn reject_path_follows_the_origin() {
     assert_eq!((reject.port, reject.to.as_deref()), (0, Some(NODE_A)));
     assert_eq!(
         sent_reject(&reject),
-        (reason::NOT_DIRECTLY_CONNECTED, 44, Some((7, vec![1, 2, 3])))
+        (
+            RejectReason::NOT_DIRECTLY_CONNECTED,
+            44,
+            Some((7, vec![1, 2, 3]))
+        )
     );
     assert_eq!(router.counters().rejects, 4);
 }
@@ -119,8 +123,8 @@ fn received_rejects_relay_by_their_destination() {
     let mut host = Recorder::default();
     learn_9_via_r7(&mut router, at(0));
     let reject = |dnet: Option<(u16, &[u8])>| {
-        let data = reject_data(reason::NOT_DIRECTLY_CONNECTED, 9);
-        let mut npdu = Npdu::message(code::REJECT_MESSAGE_TO_NETWORK, &data);
+        let data = reject_data(RejectReason::NOT_DIRECTLY_CONNECTED, 9);
+        let mut npdu = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
         npdu.destination = dnet.map(|(network, mac)| addr(network, mac));
         bytes(&npdu)
     };
@@ -137,7 +141,7 @@ fn received_rejects_relay_by_their_destination() {
     );
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!(
-        router.table().lookup(9).unwrap().reachability,
+        router.table().lookup(9).unwrap().reachability(),
         Reachability::Unreachable
     );
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
@@ -147,7 +151,10 @@ fn received_rejects_relay_by_their_destination() {
         (parsed.destination, parsed.source),
         (None, Some(addr(2, R7)))
     );
-    assert_eq!(parsed.message_type, Some(code::REJECT_MESSAGE_TO_NETWORK));
+    assert_eq!(
+        parsed.message_type,
+        Some(MessageType::REJECT_MESSAGE_TO_NETWORK)
+    );
 
     // For a node behind R7: passed to R7 though 9 is unreachable, since a
     // reject is routed without a reachability check.
@@ -176,53 +183,42 @@ fn received_rejects_relay_by_their_destination() {
         reject(Some((44, &[5]))),
     ] {
         let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &frame, at(4));
-        assert_eq!(outcome, Outcome::Dropped(DropReason::Unroutable));
+        assert_eq!(outcome, Outcome::Discarded(Discard::Unroutable));
         assert!(sent.is_empty(), "nothing answers a reject");
     }
     assert_eq!(router.counters().unroutable_rejects, 3);
     assert_eq!(router.counters().rejects, 0);
 }
 
-/// R2 (Clause 6.6.3.5): a reject with a reason other than 1 or 2, such as
-/// the reason 4 that R1 makes routine, leaves the route to the network it
-/// names alone, and is still passed on toward its DNET, or kept for the
-/// router itself. With the switch off, as before #1679, it removes the
-/// route and is passed on all the same.
+/// Clause 6.6.3.5: a reject with a reason other than 1 or 2, such as the
+/// reason 4 that the egress limits make routine, leaves the route to the
+/// network it names alone, and is still passed on toward its DNET, or kept
+/// for the router itself.
 #[test]
 fn other_reasons_relay_and_keep_the_route() {
-    for keep in [true, false] {
-        let options = options(|o| o.fixes.rejects_keep_routes = keep);
-        let mut router = router_with(&two_ports(), options);
-        let mut host = Recorder::default();
-        learn_9_via_r7(&mut router, at(0));
-        let data = reject_data(reason::MESSAGE_TOO_LONG, 9);
-        let mut reject = Npdu::message(code::REJECT_MESSAGE_TO_NETWORK, &data);
-        reject.destination = Some(addr(1, NODE_A));
-        let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &bytes(&reject), at(1));
-        assert_eq!(outcome, Outcome::Handled);
-        assert_eq!(sent.len(), 1, "passed on either way");
-        assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
-        assert_eq!(sent[0].parsed().payload, [4, 0, 9]);
-        let route = router.table().lookup(9);
-        let effect = if keep {
-            assert_eq!(
-                route.map(|route| route.reachability),
-                Some(Reachability::Reachable)
-            );
-            RejectEffect::Kept
-        } else {
-            assert!(route.is_none(), "removed before R2");
-            RejectEffect::Applied
-        };
-        assert_eq!(
-            host.events,
-            [Event::RejectReceived {
-                network: 9,
-                reason: reason::MESSAGE_TOO_LONG,
-                effect,
-            }]
-        );
-    }
+    let mut router = router();
+    let mut host = Recorder::default();
+    learn_9_via_r7(&mut router, at(0));
+    let data = reject_data(RejectReason::MESSAGE_TOO_LONG, 9);
+    let mut reject = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
+    reject.destination = Some(addr(1, NODE_A));
+    let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &bytes(&reject), at(1));
+    assert_eq!(outcome, Outcome::Handled);
+    assert_eq!(sent.len(), 1, "passed on");
+    assert_eq!((sent[0].port, sent[0].to.as_deref()), (0, Some(NODE_A)));
+    assert_eq!(sent[0].parsed().payload, [4, 0, 9]);
+    assert_eq!(
+        router.table().lookup(9).map(|route| route.reachability()),
+        Some(Reachability::Reachable)
+    );
+    assert_eq!(
+        host.events,
+        [Event::RejectReceived {
+            network: 9,
+            reason: RejectReason::MESSAGE_TOO_LONG,
+            effect: RejectEffect::Kept,
+        }]
+    );
 }
 
 /// RB-09: a refused reject changes nothing and goes nowhere; a malformed
@@ -235,24 +231,22 @@ fn denied_and_malformed_rejects_do_nothing() {
         ..Recorder::default()
     };
     learn_9_via_r7(&mut router, at(0));
-    let mut npdu = Npdu::message(
-        code::REJECT_MESSAGE_TO_NETWORK,
-        &[reason::NOT_DIRECTLY_CONNECTED, 0, 9],
-    );
+    let data = reject_data(RejectReason::NOT_DIRECTLY_CONNECTED, 9);
+    let mut npdu = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
     npdu.destination = Some(addr(1, NODE_A));
     let (outcome, sent) = deliver(&mut router, &mut host, 1, R7, &bytes(&npdu), at(1));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::Denied));
+    assert_eq!(outcome, Outcome::Discarded(Discard::Denied));
     assert!(sent.is_empty());
     assert_eq!(
-        router.table().lookup(9).unwrap().reachability,
+        router.table().lookup(9).unwrap().reachability(),
         Reachability::Reachable
     );
     assert_eq!(host.asked[0].targets, [9]);
     assert_eq!(host.asked[0].dnet, Some(1));
 
-    let short = fixture::message(code::REJECT_MESSAGE_TO_NETWORK, &[1, 0]);
+    let short = fixture::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &[1, 0]);
     let (outcome, _) = deliver(&mut router, &mut host, 1, R7, &short, at(1));
-    assert_eq!(outcome, Outcome::Dropped(DropReason::BadMessage));
+    assert_eq!(outcome, Outcome::Discarded(Discard::BadMessage));
     assert_eq!(host.asked.len(), 1);
     assert_eq!(router.counters().denied, 1);
 }
@@ -274,9 +268,12 @@ fn unusable_routes_draw_their_reasons() {
         at(1),
     );
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent_reject(&sent[0]).0, reason::NOT_DIRECTLY_CONNECTED);
+    assert_eq!(
+        sent_reject(&sent[0]).0,
+        RejectReason::NOT_DIRECTLY_CONNECTED
+    );
     // The lookup still counts as use, as the hosted lookup touches first.
-    assert_eq!(router.table().lookup(9).unwrap().last_used, Some(at(1)));
+    assert_eq!(router.table().lookup(9).unwrap().last_used(), Some(at(1)));
 
     router.table_mut().mark_available(9);
     router.table_mut().mark_busy(9, at(30));
@@ -288,6 +285,6 @@ fn unusable_routes_draw_their_reasons() {
         &apdu_to(9, &[5], CONFIRMED),
         at(2),
     );
-    assert_eq!(sent_reject(&sent[0]).0, reason::ROUTER_BUSY);
+    assert_eq!(sent_reject(&sent[0]).0, RejectReason::ROUTER_BUSY);
     assert_eq!(router.counters().solicitations, 0);
 }

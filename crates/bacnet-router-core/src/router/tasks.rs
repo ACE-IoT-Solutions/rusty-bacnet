@@ -1,10 +1,12 @@
 //! Outputs that wait in the queue, and how each is written when polled.
 
-use super::config::{Options, PortConfig};
+use super::config::PortConfig;
 use super::counters::bump;
 use super::output::{Cause, Current, Kind, Target};
 use super::Storage;
-use crate::message::{code, NetworkNumberIs, Networks, Reject, RoutingEntries};
+use crate::message::{
+    MessageType, NetworkNumberIs, Networks, Reject, RejectReason, RoutingEntries,
+};
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
 use crate::table::{Reachability, Table};
 use crate::{Mac, PortId};
@@ -19,8 +21,7 @@ pub(super) enum TaskKind {
     /// with `origin` as its DNET and DADR when `origin_network` isn't 0.
     Reject,
     /// An I-Am-Router on `port`: for `network`, or for 0 every network the
-    /// table reaches through another port, with R4 on but those marked
-    /// unreachable.
+    /// table reaches through another port but those marked unreachable.
     IAmAnswer,
     /// An Initialize-Routing-Table-Ack with no data, to `to` on `port`.
     UpdateAck,
@@ -39,7 +40,7 @@ pub(super) struct Task {
     pub(super) kind: TaskKind,
     port: PortId,
     network: u16,
-    reason: u8,
+    reason: RejectReason,
     to: Mac,
     origin_network: u16,
     origin: Mac,
@@ -51,7 +52,7 @@ impl Task {
         kind: TaskKind::Empty,
         port: PortId(0),
         network: 0,
-        reason: 0,
+        reason: RejectReason::OTHER,
         to: Mac::EMPTY,
         origin_network: 0,
         origin: Mac::EMPTY,
@@ -80,7 +81,7 @@ impl Task {
         to: &[u8],
         origin: Option<Address<'_>>,
         network: u16,
-        reason: u8,
+        reason: RejectReason,
     ) -> Self {
         // A parsed address is never over the bound.
         let mac = |octets: &[u8]| Mac::from_slice(octets).unwrap_or(Mac::EMPTY);
@@ -139,7 +140,7 @@ const ACK_ENTRIES: usize = (501 - 3 - 1) / RoutingEntries::ENTRY_LEN;
 /// the three-octet header, then the data `data` writes behind it.
 fn write_message(
     scratch: &mut [u8],
-    kind: u8,
+    kind: MessageType,
     data: impl FnOnce(&mut [u8]) -> Option<usize>,
 ) -> Option<usize> {
     let header = Npdu::message(kind, &[]);
@@ -159,7 +160,7 @@ fn wire_entries<const R: usize, const H: usize>(
     table
         .routes()
         .filter(move |(network, _)| u32::from(*network) >= from)
-        .filter_map(|(network, route)| Some((network, route.port.wire_id()?)))
+        .filter_map(|(network, route)| Some((network, route.port().wire_id()?)))
 }
 
 /// Every other port's network, in port order.
@@ -176,7 +177,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 {
     /// Write the front task's next output into the scratch as the current
     /// one. `false` when no task is left.
-    pub(super) fn write_task(&mut self, options: &Options) -> bool {
+    pub(super) fn write_task(&mut self) -> bool {
         let Some(task) = self.out.front() else {
             return false;
         };
@@ -187,7 +188,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             TaskKind::Empty => None,
             TaskKind::Solicit => {
                 let data = task.network.to_be_bytes();
-                let npdu = Npdu::message(code::WHO_IS_ROUTER_TO_NETWORK, &data);
+                let npdu = Npdu::message(MessageType::WHO_IS_ROUTER_TO_NETWORK, &data);
                 let len = npdu.write(&mut self.scratch).ok();
                 Some((
                     len,
@@ -202,7 +203,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                     network: task.network,
                 }
                 .to_bytes();
-                let mut npdu = Npdu::message(code::REJECT_MESSAGE_TO_NETWORK, &data);
+                let mut npdu = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
                 if task.origin_network != 0 {
                     npdu.destination = Some(Address {
                         network: task.origin_network,
@@ -214,28 +215,26 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 Some((len, Kind::Reject(task.reason), Cause::Ingress, target))
             }
             TaskKind::IAmAnswer => {
-                let skip_unreachable = options.fixes.answer_reachable;
                 let mut others = self
                     .table
                     .routes()
                     .filter(move |(_, route)| {
-                        route.port != task.port
-                            && !(skip_unreachable
-                                && route.reachability == Reachability::Unreachable)
+                        route.port() != task.port
+                            && route.reachability() != Reachability::Unreachable
                     })
                     .map(|(network, _)| network)
                     .peekable();
-                let kind = Kind::Answer(code::I_AM_ROUTER_TO_NETWORK);
+                let kind = Kind::Answer(MessageType::I_AM_ROUTER_TO_NETWORK);
                 let target = Target::Broadcast(task.port);
-                let message = code::I_AM_ROUTER_TO_NETWORK;
+                let message = MessageType::I_AM_ROUTER_TO_NETWORK;
                 if task.network != 0 {
                     let len = write_message(&mut self.scratch, message, |data| {
-                        Networks::write([task.network], data)
+                        Networks::write([task.network], data).ok()
                     });
                     Some((len, kind, Cause::Ingress, target))
                 } else if others.peek().is_some() {
                     let len = write_message(&mut self.scratch, message, |data| {
-                        Networks::write(others, data)
+                        Networks::write(others, data).ok()
                     });
                     Some((len, kind, Cause::Ingress, target))
                 } else {
@@ -244,9 +243,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 }
             }
             TaskKind::UpdateAck => {
-                let npdu = Npdu::message(code::INITIALIZE_ROUTING_TABLE_ACK, &[]);
+                let npdu = Npdu::message(MessageType::INITIALIZE_ROUTING_TABLE_ACK, &[]);
                 let len = npdu.write(&mut self.scratch).ok();
-                let kind = Kind::Answer(code::INITIALIZE_ROUTING_TABLE_ACK);
+                let kind = Kind::Answer(MessageType::INITIALIZE_ROUTING_TABLE_ACK);
                 let target = Target::Unicast(task.port, task.to.as_slice());
                 Some((len, kind, Cause::Ingress, target))
             }
@@ -258,9 +257,9 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 if task.cursor != 0 && last.is_none() {
                     None
                 } else {
-                    let message = code::INITIALIZE_ROUTING_TABLE_ACK;
+                    let message = MessageType::INITIALIZE_ROUTING_TABLE_ACK;
                     let len = write_message(&mut self.scratch, message, |data| {
-                        RoutingEntries::write(entries, data)
+                        RoutingEntries::write(entries, data).ok()
                     });
                     // A write that fails ends the answer, as an encode
                     // failure does in the hosted router.
@@ -274,22 +273,21 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
             TaskKind::NumberIs => {
                 let len = self.write_number_is(task.port);
-                let kind = Kind::Answer(code::NETWORK_NUMBER_IS);
+                let kind = Kind::Answer(MessageType::NETWORK_NUMBER_IS);
                 Some((len, kind, Cause::Ingress, Target::Broadcast(task.port)))
             }
             TaskKind::Announce => {
-                self.next_announcement(task.cursor, options)
-                    .map(|(at, len)| {
-                        next = Some(at + 1).filter(|&cursor| cursor < self.announce_end());
-                        let kind = if at & 1 == 0 {
-                            Kind::Announce(code::NETWORK_NUMBER_IS)
-                        } else {
-                            Kind::Announce(code::I_AM_ROUTER_TO_NETWORK)
-                        };
-                        // At most 255 ports, so the index fits in a u8.
-                        let port = PortId((at >> 1) as u8);
-                        (len, kind, Cause::Local, Target::Broadcast(port))
-                    })
+                self.next_announcement(task.cursor).map(|(at, len)| {
+                    next = Some(at + 1).filter(|&cursor| cursor < self.announce_end());
+                    let kind = if at & 1 == 0 {
+                        Kind::Announce(MessageType::NETWORK_NUMBER_IS)
+                    } else {
+                        Kind::Announce(MessageType::I_AM_ROUTER_TO_NETWORK)
+                    };
+                    // At most 255 ports, so the index fits in a u8.
+                    let port = PortId((at >> 1) as u8);
+                    (len, kind, Cause::Local, Target::Broadcast(port))
+                })
             }
         };
         if let Some((len, kind, cause, target)) = output {
@@ -317,7 +315,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             flag: NetworkNumberIs::CONFIGURED,
         }
         .to_bytes();
-        Npdu::message(code::NETWORK_NUMBER_IS, &data)
+        Npdu::message(MessageType::NETWORK_NUMBER_IS, &data)
             .write(&mut self.scratch)
             .ok()
     }
@@ -328,27 +326,25 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 
     /// Write the next startup announcement from `cursor` (port index × 2 +
-    /// step): with R3 on, a Network-Number-Is for a port with a usable
-    /// number; then an I-Am-Router listing every other port's network, in
+    /// step): a Network-Number-Is for a port with a usable number (Clause
+    /// 6.4.20); then an I-Am-Router listing every other port's network, in
     /// port order, when there is another port. Returns its cursor and its
     /// length (`None`: the writer refused it), or `None` when none is left.
-    fn next_announcement(
-        &mut self,
-        cursor: u32,
-        options: &Options,
-    ) -> Option<(u32, Option<usize>)> {
+    fn next_announcement(&mut self, cursor: u32) -> Option<(u32, Option<usize>)> {
         for at in cursor..self.announce_end() {
             let port = PortId((at >> 1) as u8);
             if at & 1 == 0 {
                 let network = self.ports[usize::from(port.0)].network;
-                if options.fixes.announce_numbers && network != 0 && network != GLOBAL_NETWORK {
+                if network != 0 && network != GLOBAL_NETWORK {
                     return Some((at, self.write_number_is(port)));
                 }
             } else if self.port_count > 1 {
                 let others = other_networks(&self.ports[..self.port_count], port);
-                let len = write_message(&mut self.scratch, code::I_AM_ROUTER_TO_NETWORK, |data| {
-                    Networks::write(others, data)
-                });
+                let len = write_message(
+                    &mut self.scratch,
+                    MessageType::I_AM_ROUTER_TO_NETWORK,
+                    |data| Networks::write(others, data).ok(),
+                );
                 return Some((at, len));
             }
         }

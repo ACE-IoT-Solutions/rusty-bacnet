@@ -17,7 +17,10 @@ pub struct Mac {
 }
 
 /// A MAC longer than [`MAX_MAC_LEN`] octets was offered to [`Mac`].
+///
+/// It is `#[non_exhaustive]`: only the crate builds one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MacTooLong {
     /// The length offered.
     pub length: usize,
@@ -62,6 +65,7 @@ impl Mac {
 
     /// A MAC of `L` octets, `L` checked against [`MAX_MAC_LEN`] when the
     /// program compiles.
+    #[must_use]
     pub const fn from_array<const L: usize>(octets: [u8; L]) -> Self {
         const { assert!(L <= MAX_MAC_LEN, "a Mac holds at most MAX_MAC_LEN octets") };
         match Self::from_slice(&octets) {
@@ -71,16 +75,19 @@ impl Mac {
     }
 
     /// The octets.
+    #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         &self.octets[..usize::from(self.len)]
     }
 
     /// How many octets there are.
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.len as usize
     }
 
     /// Whether there are none.
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }

@@ -4,6 +4,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use bacnet_router_core::discovery::Discovery;
+use bacnet_router_core::router::Options;
 use bacnet_router_core::{Duration, Instant};
 
 const BASE: Instant = Instant::from_secs(1_000);
@@ -15,13 +16,13 @@ const fn secs(n: u64) -> Duration {
 
 /// [`Discovery::should_solicit`] with the hosted router's cooldown.
 fn solicit<const D: usize>(discovery: &mut Discovery<D>, network: u16, now: Instant) -> bool {
-    discovery.should_solicit(network, now, Discovery::<D>::COOLDOWN)
+    discovery.should_solicit(network, now, Options::HOSTED.discovery_cooldown)
 }
 
 /// Every network [`Discovery::expire`] forgets with the hosted router's age.
 fn expire<const D: usize>(discovery: &mut Discovery<D>, now: Instant) -> Vec<u16> {
     let mut expired = Vec::new();
-    let count = discovery.expire(now, Discovery::<D>::MAX_AGE, |network| {
+    let count = discovery.expire(now, Options::HOSTED.discovery_age, |network| {
         expired.push(network)
     });
     assert_eq!(count, expired.len());
@@ -94,8 +95,8 @@ fn the_timing_comes_with_each_call() {
         expired.push(network)
     });
     assert_eq!(expired, [9]);
-    assert_eq!(Discovery::<4>::COOLDOWN, secs(5));
-    assert_eq!(Discovery::<4>::MAX_AGE, secs(30));
+    assert_eq!(Options::HOSTED.discovery_cooldown, secs(5));
+    assert_eq!(Options::HOSTED.discovery_age, secs(30));
 }
 
 #[test]
@@ -108,7 +109,7 @@ fn a_panicking_expiry_callback_forgets_nothing() {
         assert!(solicit(&mut disc, network, at));
     }
     let unwound = catch_unwind(AssertUnwindSafe(|| {
-        disc.expire(BASE + secs(31), Discovery::<4>::MAX_AGE, |network| {
+        disc.expire(BASE + secs(31), Options::HOSTED.discovery_age, |network| {
             if network == 30 {
                 panic!("callback");
             }

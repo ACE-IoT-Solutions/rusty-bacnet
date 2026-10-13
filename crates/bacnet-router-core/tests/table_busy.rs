@@ -48,7 +48,7 @@ fn busy_and_available_never_override_direct_routes() {
         table.effective_reachability(1000, BASE),
         Some(Reachability::Reachable)
     );
-    assert!(table.lookup(1000).unwrap().busy_until.is_none());
+    assert!(table.lookup(1000).unwrap().busy_until().is_none());
     table.mark_unreachable(1000);
     table.mark_available(1000);
     assert_eq!(
@@ -75,8 +75,8 @@ fn busy_expiry_boundary_and_sweep() {
     table.mark_busy(3000, BASE - secs(1));
     assert_eq!(table.clear_expired_busy(BASE), 1);
     let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.reachability, Reachability::Reachable);
-    assert!(entry.busy_until.is_none());
+    assert_eq!(entry.reachability(), Reachability::Reachable);
+    assert!(entry.busy_until().is_none());
     assert_eq!(table.clear_expired_busy(BASE), 0);
 }
 
@@ -87,7 +87,7 @@ fn later_busy_update_extends_deadline() {
     table.mark_busy(3000, BASE + secs(30));
     table.mark_busy(3000, BASE + secs(31));
     assert_eq!(
-        table.lookup(3000).unwrap().busy_until,
+        table.lookup(3000).unwrap().busy_until(),
         Some(BASE + secs(31))
     );
 }
@@ -102,7 +102,7 @@ fn busy_never_revives_an_unreachable_route_and_available_does() {
         table.effective_reachability(3000, BASE + secs(31)),
         Some(Reachability::Unreachable)
     );
-    assert!(table.lookup(3000).unwrap().busy_until.is_none());
+    assert!(table.lookup(3000).unwrap().busy_until().is_none());
     table.mark_available(3000);
     assert_eq!(
         table.effective_reachability(3000, BASE),
@@ -132,26 +132,26 @@ fn a_busy_with_no_list_marks_every_route_via_the_peer() {
     );
     for network in [3000, 3001] {
         let route = table.lookup(network).unwrap();
-        assert_eq!(route.reachability, Reachability::Busy);
-        assert_eq!(route.busy_until, Some(BASE + secs(30)));
+        assert_eq!(route.reachability(), Reachability::Busy);
+        assert_eq!(route.busy_until(), Some(BASE + secs(30)));
     }
     // Other peers, other ports and direct routes stay as they were.
     for network in [2000, 4000, 5000] {
         let route = table.lookup(network).unwrap();
-        assert_eq!(route.reachability, Reachability::Reachable);
-        assert!(route.busy_until.is_none());
+        assert_eq!(route.reachability(), Reachability::Reachable);
+        assert!(route.busy_until().is_none());
     }
     // Freshness is untouched.
     let route = table.lookup(3000).unwrap();
-    assert_eq!(route.last_seen, Some(BASE));
-    assert_eq!(route.last_used, Some(BASE + secs(1)));
+    assert_eq!(route.last_seen(), Some(BASE));
+    assert_eq!(route.last_used(), Some(BASE + secs(1)));
     // A later Busy moves the deadline.
     assert_eq!(
         table.mark_busy_via_peer(port(1), PEER_A, BASE + secs(40)),
         2
     );
     assert_eq!(
-        table.lookup(3001).unwrap().busy_until,
+        table.lookup(3001).unwrap().busy_until(),
         Some(BASE + secs(40))
     );
     // No route via an unknown peer.
@@ -167,8 +167,8 @@ fn a_bulk_busy_never_revives_an_unreachable_route() {
         1
     );
     let route = table.lookup(3001).unwrap();
-    assert_eq!(route.reachability, Reachability::Unreachable);
-    assert!(route.busy_until.is_none());
+    assert_eq!(route.reachability(), Reachability::Unreachable);
+    assert!(route.busy_until().is_none());
     // Not even once the other route's busy mark lapses.
     assert_eq!(
         table.effective_reachability(3001, BASE + secs(31)),
@@ -189,11 +189,14 @@ fn an_available_with_no_list_lifts_every_mark_via_the_peer() {
     assert_eq!(table.mark_available_via_peer(port(1), PEER_A), 2);
     for network in [3000, 3001] {
         let route = table.lookup(network).unwrap();
-        assert_eq!(route.reachability, Reachability::Reachable);
-        assert!(route.busy_until.is_none());
+        assert_eq!(route.reachability(), Reachability::Reachable);
+        assert!(route.busy_until().is_none());
     }
     // Peer B's route keeps its own mark, and the direct route is untouched.
-    assert_eq!(table.lookup(4000).unwrap().reachability, Reachability::Busy);
-    assert!(table.lookup(2000).unwrap().direct);
+    assert_eq!(
+        table.lookup(4000).unwrap().reachability(),
+        Reachability::Busy
+    );
+    assert!(table.lookup(2000).unwrap().is_direct());
     assert_eq!(table.mark_available_via_peer(port(0), PEER_B), 0);
 }

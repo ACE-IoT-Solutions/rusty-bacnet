@@ -3,20 +3,24 @@
 use core::fmt;
 
 use super::{
-    Address, Npdu, DESTINATION, EXPECTING_REPLY, GLOBAL_NETWORK, NETWORK_MESSAGE, PRIORITY,
-    PROPRIETARY_FIRST, SOURCE, VERSION,
+    Address, Npdu, DESTINATION, EXPECTING_REPLY, GLOBAL_NETWORK, NETWORK_MESSAGE, PRIORITY, SOURCE,
+    VERSION,
 };
 use crate::MAX_MAC_LEN;
 
 /// Why [`Npdu::write`] wrote nothing.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WriteError {
     /// The buffer is shorter than the NPDU.
     NoRoom {
         /// The NPDU's length, [`Npdu::encoded_len`].
         needed: usize,
         /// The buffer's length.
-        capacity: usize,
+        available: usize,
     },
     /// A DNET of 0, or an SNET of 0 or 0xFFFF, which no parser accepts.
     ReservedNetwork,
@@ -29,8 +33,8 @@ pub enum WriteError {
 impl fmt::Display for WriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoRoom { needed, capacity } => {
-                write!(f, "an NPDU of {needed} octets doesn't fit in {capacity}")
+            Self::NoRoom { needed, available } => {
+                write!(f, "an NPDU of {needed} octets doesn't fit in {available}")
             }
             Self::ReservedNetwork => f.write_str("NPDU names a reserved network number"),
             Self::EmptySource => f.write_str("NPDU source SLEN=0 is invalid"),
@@ -44,10 +48,11 @@ impl core::error::Error for WriteError {}
 impl Npdu<'_> {
     /// The octets [`write`](Self::write) produces: the NPCI the fields call
     /// for, then the payload.
+    #[must_use]
     pub fn encoded_len(&self) -> usize {
         let address = |address: Option<Address<'_>>| address.map_or(0, |a| 3 + a.mac.len());
         let message = match self.message_type {
-            Some(kind) if kind >= PROPRIETARY_FIRST => 3,
+            Some(kind) if kind.is_proprietary() => 3,
             Some(_) => 1,
             None => 0,
         };
@@ -86,10 +91,10 @@ impl Npdu<'_> {
             }
         }
         let needed = self.encoded_len();
-        let capacity = out.len();
+        let available = out.len();
         let out = out
             .get_mut(..needed)
-            .ok_or(WriteError::NoRoom { needed, capacity })?;
+            .ok_or(WriteError::NoRoom { needed, available })?;
 
         let mut control = self.priority & PRIORITY;
         if self.message_type.is_some() {
@@ -116,8 +121,8 @@ impl Npdu<'_> {
             cursor.put(&[self.hop_count]);
         }
         if let Some(kind) = self.message_type {
-            cursor.put(&[kind]);
-            if kind >= PROPRIETARY_FIRST {
+            cursor.put(&[kind.to_raw()]);
+            if kind.is_proprietary() {
                 cursor.put(&self.vendor_id.unwrap_or(0).to_be_bytes());
             }
         }
