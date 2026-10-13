@@ -152,8 +152,8 @@ fn bdt_error(error: BdtError) -> Error {
         BdtError::ConflictingMasks { entry } => {
             format!("BDT conflicting masks: {:?}", BdtEntry::from(entry))
         }
-        BdtError::Capacity { needed, capacity } => {
-            format!("BDT size {needed} exceeds maximum of {capacity} after self-entry insertion")
+        BdtError::Capacity { needed, available } => {
+            format!("BDT size {needed} exceeds maximum of {available} after self-entry insertion")
         }
         other => format!("BDT refused: {other}"),
     })

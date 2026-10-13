@@ -6,7 +6,7 @@ mod support;
 use bacnet_bip_codec::{BvlcResultCode, FdtEntry};
 use bacnet_bip_core::bbmd::{
     Fdt, Registered, Registration, RegistrationLimits, RegistrationRefusal, Reservation,
-    StorageFull, GRACE_PERIOD_SECS,
+    StorageFull, GRACE_PERIOD,
 };
 use bacnet_bip_core::{Duration, Instant};
 use support::{addr, secs, OPEN, PORT};
@@ -287,7 +287,7 @@ fn a_registration_lapses_just_after_its_ttl_plus_the_grace_period() {
         ttl: 60,
         registered_at: T0,
     };
-    assert_eq!(GRACE_PERIOD_SECS, 30);
+    assert_eq!(GRACE_PERIOD, secs(30));
     assert_eq!(entry.lifetime(), secs(90));
     let deadline = T0 + secs(90);
     assert!(!entry.is_expired_at(T0));
@@ -414,8 +414,12 @@ fn restore_replaces_or_appends_without_checks() {
         address: addr(10, 0, 0, 3, PORT),
         ..b
     };
-    assert_eq!(fdt.restore(c), Err(StorageFull));
-    assert!(!StorageFull.to_string().is_empty());
+    let full = StorageFull {
+        needed: 3,
+        available: 2,
+    };
+    assert_eq!(fdt.restore(c), Err(full));
+    assert!(!full.to_string().is_empty());
 }
 
 #[test]
@@ -435,7 +439,18 @@ fn wire_entries_report_the_live_registrations() {
     let table = fdt.wire_entries(T0 + secs(40), &mut out).unwrap();
     assert_eq!(table.len(), 1);
     let mut none: [FdtEntry; 0] = [];
-    assert_eq!(fdt.wire_entries(now, &mut none), Err(StorageFull));
+    let full = StorageFull {
+        needed: 2,
+        available: 0,
+    };
+    assert_eq!(fdt.wire_entries(now, &mut none), Err(full));
+    // Room for one of the two: it says how many there are.
+    let mut one = [FdtEntry::new(addr(0, 0, 0, 0, 0), 0, 0); 1];
+    let full = StorageFull {
+        needed: 2,
+        available: 1,
+    };
+    assert_eq!(fdt.wire_entries(now, &mut one), Err(full));
 }
 
 #[test]

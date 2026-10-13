@@ -106,7 +106,7 @@ fn capacity_counts_the_own_row_and_refuses_without_change() {
         set(&mut bdt, &peers),
         Err(BdtError::Capacity {
             needed: 4,
-            capacity: 3
+            available: 3
         })
     );
     assert_eq!(bdt.rows(), before);
@@ -150,7 +150,7 @@ fn a_bad_row_past_the_capacity_is_reported_before_the_capacity() {
         set(&mut bdt, &[rows[0], rows[1], rows[2], rows[2], rows[1]]),
         Err(BdtError::Capacity {
             needed: 4,
-            capacity: 2
+            available: 2
         })
     );
 }
@@ -172,7 +172,7 @@ fn every_distinct_row_past_the_storage_is_counted() {
         set(&mut bdt, &rows),
         Err(BdtError::Capacity {
             needed: 6,
-            capacity: 2
+            available: 2
         })
     );
     let mut out = [row(addr(0, 0, 0, 0, 0), MASK_32); 2];
@@ -180,7 +180,7 @@ fn every_distinct_row_past_the_storage_is_counted() {
         canonicalize(BdtEntries::from_entries(&rows), &mut out),
         Err(BdtError::Capacity {
             needed: 5,
-            capacity: 2
+            available: 2
         })
     );
 }
@@ -197,7 +197,7 @@ fn canonicalize_writes_distinct_rows_without_an_own_row() {
         canonicalize(BdtEntries::from_entries(&[a, b, a]), &mut small),
         Err(BdtError::Capacity {
             needed: 2,
-            capacity: 1
+            available: 1
         })
     );
     let wire = [10, 0, 0, 1, 0xBA, 0xC0, 255, 255, 255, 255];
@@ -292,7 +292,7 @@ fn errors_display_what_went_wrong() {
         .contains("conflicting masks"));
     assert!(BdtError::Capacity {
         needed: 5,
-        capacity: 4
+        available: 4
     }
     .to_string()
     .contains('5'));
@@ -359,7 +359,7 @@ fn moving_the_own_address_refuses_to_overflow() {
         bdt.set_own_address(addr(192, 168, 1, 2, PORT)),
         Err(BdtError::Capacity {
             needed: 3,
-            capacity: 2
+            available: 2
         })
     );
     assert_eq!(bdt.own_address(), OWN);

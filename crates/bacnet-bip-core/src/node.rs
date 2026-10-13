@@ -66,7 +66,7 @@
 //!     Inbound::Matched { settled: true, .. }
 //! ));
 //! assert!(matches!(node.poll_action(), Action::Registration(_)));
-//! assert!(node.registration(now).is_some_and(|view| view.registered));
+//! assert!(node.registration(now).is_some_and(|snapshot| snapshot.registered));
 //! # Ok::<(), Box<dyn core::error::Error>>(())
 //! ```
 //!
@@ -139,5 +139,5 @@ pub use exchange::{ExchangeId, ExchangeRefusal, LocalFailure, Operation};
 pub use receive::{
     Datagram, Delivery, Discard, ForBbmd, Path, Permissive, Policy, Received, Response,
 };
-pub use registration::{Admission, AttemptOutcome, Lease, RegistrationEvent, RegistrationView};
+pub use registration::{Admission, AttemptOutcome, Lease, RegistrationEvent, RegistrationSnapshot};
 pub use send::{Cast, Outgoing, SendRefusal};

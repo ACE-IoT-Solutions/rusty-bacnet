@@ -6,9 +6,12 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use bacnet_bip_codec::{BvlcResultCode, FdtEntries, FdtEntry};
 use bacnet_time::{Duration, Instant};
 
-/// Seconds a BBMD keeps a registration past its time-to-live before it
-/// purges it (Annex J.5.2.3).
-pub const GRACE_PERIOD_SECS: u16 = 30;
+/// How long a BBMD keeps a registration past its time-to-live before it
+/// purges it: 30 seconds (Annex J.5.2.3).
+pub const GRACE_PERIOD: Duration = Duration::from_secs(30);
+
+/// [`GRACE_PERIOD`] in whole seconds, worked out when the crate is built.
+const GRACE_PERIOD_SECS: u64 = GRACE_PERIOD.as_secs();
 
 /// One foreign device's registration, as a BBMD keeps it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +33,10 @@ const EMPTY_SLOT: Registration = Registration {
 
 impl Registration {
     /// How long the registration lasts from `registered_at`: its time-to-live
-    /// plus the [`GRACE_PERIOD_SECS`].
+    /// plus the [`GRACE_PERIOD`].
     #[must_use]
     pub const fn lifetime(&self) -> Duration {
-        Duration::from_secs(self.ttl as u64 + GRACE_PERIOD_SECS as u64)
+        Duration::from_secs(self.ttl as u64 + GRACE_PERIOD_SECS)
     }
 
     /// Whether the registration has lapsed at `now`: more than its
@@ -53,7 +56,7 @@ impl Registration {
     /// live, on.
     #[must_use]
     pub fn seconds_remaining_at(&self, now: Instant) -> u16 {
-        let lifetime_secs = u64::from(self.ttl) + u64::from(GRACE_PERIOD_SECS);
+        let lifetime_secs = u64::from(self.ttl) + GRACE_PERIOD_SECS;
         let passed = now.saturating_duration_since(self.registered_at).as_secs();
         u16::try_from(lifetime_secs.saturating_sub(passed)).unwrap_or(u16::MAX)
     }
@@ -158,6 +161,8 @@ impl fmt::Display for RegistrationRefusal {
     }
 }
 
+impl core::error::Error for RegistrationRefusal {}
+
 /// What [`Fdt::register`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
@@ -169,13 +174,24 @@ pub struct RegisterOutcome {
     pub purged: usize,
 }
 
-/// Caller storage too small for what was asked of it.
+/// Storage too small for what was asked of it, counted in entries: the
+/// shape of the codec's [`SinkFull`](bacnet_bip_codec::SinkFull), which
+/// counts octets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StorageFull;
+pub struct StorageFull {
+    /// Entries the call needed room for, in all.
+    pub needed: usize,
+    /// Entries the storage holds.
+    pub available: usize,
+}
 
 impl fmt::Display for StorageFull {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("no room in the storage given")
+        write!(
+            f,
+            "storage full: need {} entries, have {}",
+            self.needed, self.available
+        )
     }
 }
 
@@ -352,7 +368,7 @@ impl<const N: usize> Fdt<N> {
     /// Store `registration` as given, with no checks: it replaces the entry
     /// for its address, or is appended. For a caller restoring a table it
     /// saved, or placing a registration at a chosen time. Fails only when
-    /// the table is full.
+    /// the table is full: it needed one entry more than its `N`.
     pub fn restore(&mut self, registration: Registration) -> Result<(), StorageFull> {
         let address = registration.address;
         if let Some(slot) = self.slots[..self.len]
@@ -362,7 +378,11 @@ impl<const N: usize> Fdt<N> {
             *slot = registration;
             return Ok(());
         }
-        let slot = self.slots.get_mut(self.len).ok_or(StorageFull)?;
+        let full = StorageFull {
+            needed: self.len + 1,
+            available: N,
+        };
+        let slot = self.slots.get_mut(self.len).ok_or(full)?;
         *slot = registration;
         self.len += 1;
         Ok(())
@@ -370,20 +390,27 @@ impl<const N: usize> Fdt<N> {
 
     /// The registrations live at `now` as Read-Foreign-Device-Table-Ack rows
     /// (Annex J.2.8.1), written to `out` and returned as a table the codec
-    /// encodes. Fails when `out` can't hold them all.
+    /// encodes. Fails when `out` can't hold them all, saying how many live
+    /// registrations there are.
     pub fn wire_entries<'o>(
         &self,
         now: Instant,
         out: &'o mut [FdtEntry],
     ) -> Result<FdtEntries<'o>, StorageFull> {
         let mut written = 0;
-        for entry in self.live_at(now) {
+        let mut live = self.live_at(now);
+        for entry in live.by_ref() {
             let FdtEntry {
                 address,
                 ttl,
                 remaining,
             } = entry.wire_entry_at(now);
-            let row = out.get_mut(written).ok_or(StorageFull)?;
+            let Some(row) = out.get_mut(written) else {
+                return Err(StorageFull {
+                    needed: written + 1 + live.count(),
+                    available: out.len(),
+                });
+            };
             // The address's IP and port one at a time: copied whole, its six
             // octets compile to a memmove call on ARMv6-M, about 1.3 KB of
             // code.

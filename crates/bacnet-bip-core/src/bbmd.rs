@@ -71,7 +71,7 @@ pub use bdt::{
 };
 pub use fdt::{
     Fdt, RegisterOutcome, Registered, Registration, RegistrationLimits, RegistrationRefusal,
-    Reservation, StorageFull, GRACE_PERIOD_SECS,
+    Reservation, StorageFull, GRACE_PERIOD,
 };
 pub use forward::{
     Context, DistributeRefusal, Distribution, Fanout, ForwardRefusal, Tables, Target, Via,

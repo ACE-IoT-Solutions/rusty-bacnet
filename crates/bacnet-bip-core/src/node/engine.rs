@@ -16,7 +16,7 @@ use super::exchange::{
 use super::receive::{Datagram, Delivery, Discard, ForBbmd, Policy, Received, Response};
 use super::registration::{
     Admission, AttemptOutcome, BroadcastDecision, HeldVerdict, Lifecycle, RegistrationEvent,
-    RegistrationView,
+    RegistrationSnapshot,
 };
 use super::send::{Outgoing, SendRefusal};
 
@@ -611,10 +611,10 @@ impl<const X: usize> Node<X> {
     /// A foreign device's registration as of `now`; `None` in the other
     /// modes.
     #[must_use]
-    pub fn registration(&self, now: Instant) -> Option<RegistrationView> {
+    pub fn registration(&self, now: Instant) -> Option<RegistrationSnapshot> {
         self.lifecycle
             .as_ref()
-            .map(|lifecycle| lifecycle.view(now.max(self.now)))
+            .map(|lifecycle| lifecycle.snapshot(now.max(self.now)))
     }
 
     /// The counts since the last call, which start again from zero.

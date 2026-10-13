@@ -93,6 +93,8 @@ impl fmt::Display for InvalidEntry {
     }
 }
 
+impl core::error::Error for InvalidEntry {}
+
 /// Why a BDT was refused. A refused table changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -115,7 +117,7 @@ pub enum BdtError {
         /// Rows the table would hold.
         needed: usize,
         /// Rows the storage holds.
-        capacity: usize,
+        available: usize,
     },
 }
 
@@ -130,8 +132,11 @@ impl fmt::Display for BdtError {
                 "BDT rows for {} with conflicting masks (one is {})",
                 entry.address, entry.mask
             ),
-            Self::Capacity { needed, capacity } => {
-                write!(f, "BDT of {needed} rows exceeds the capacity of {capacity}")
+            Self::Capacity { needed, available } => {
+                write!(
+                    f,
+                    "BDT of {needed} rows exceeds the capacity of {available}"
+                )
             }
         }
     }
@@ -243,7 +248,7 @@ pub fn canonicalize(table: BdtEntries<'_>, out: &mut [BdtEntry]) -> Result<usize
     if found.distinct > found.stored {
         return Err(BdtError::Capacity {
             needed: found.distinct,
-            capacity: out.len(),
+            available: out.len(),
         });
     }
     Ok(found.stored)
@@ -355,7 +360,7 @@ impl<const N: usize> Bdt<N> {
         if needed > N {
             return Err(BdtError::Capacity {
                 needed,
-                capacity: N,
+                available: N,
             });
         }
         next.len = found.stored;
@@ -380,7 +385,7 @@ impl<const N: usize> Bdt<N> {
         if needed > N {
             return Err(BdtError::Capacity {
                 needed,
-                capacity: N,
+                available: N,
             });
         }
         if self.own_row_appended {

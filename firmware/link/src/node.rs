@@ -54,7 +54,7 @@ use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{
     Action, Addressed, Admission, AttemptOutcome, Cast, Datagram, Discard, Foreign, ForwardedTrust,
     Inbound, Lease, Link, Mode, Node, NodeCounters, Permissive, RegisterAttempt, RegistrationEvent,
-    RegistrationView, Retry, SendRefusal, MAX_DATAGRAM,
+    RegistrationSnapshot, Retry, SendRefusal, MAX_DATAGRAM,
 };
 use bacnet_bip_core::{Duration, Instant, LocalSubnet};
 
@@ -234,9 +234,9 @@ impl Summary {
     }
 }
 
-/// The node's [`RegistrationView`] at the end, field by field. The view is
-/// `#[non_exhaustive]`, so [`expected()`] couldn't build one to compare
-/// with; it builds this.
+/// The node's [`RegistrationSnapshot`] at the end, field by field. The
+/// snapshot is `#[non_exhaustive]`, so [`expected()`] couldn't build one to
+/// compare with; it builds this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Registration {
     /// The newest proven lease.
@@ -260,17 +260,17 @@ pub struct Registration {
 }
 
 impl Registration {
-    fn of(view: RegistrationView) -> Self {
+    fn of(snapshot: RegistrationSnapshot) -> Self {
         Self {
-            lease: view.lease,
-            registered: view.registered,
-            lease_remaining: view.lease_remaining,
-            attempt_in_flight: view.attempt_in_flight,
-            next_attempt: view.next_attempt,
-            last_outcome: view.last_outcome,
-            consecutive_failures: view.consecutive_failures,
-            first_resolved: view.first_resolved,
-            held: view.held,
+            lease: snapshot.lease,
+            registered: snapshot.registered,
+            lease_remaining: snapshot.lease_remaining,
+            attempt_in_flight: snapshot.attempt_in_flight,
+            next_attempt: snapshot.next_attempt,
+            last_outcome: snapshot.last_outcome,
+            consecutive_failures: snapshot.consecutive_failures,
+            first_resolved: snapshot.first_resolved,
+            held: snapshot.held,
         }
     }
 }

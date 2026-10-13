@@ -104,7 +104,7 @@ pub enum RegistrationEvent {
 /// A foreign device's registration as the node sees it at one instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct RegistrationView {
+pub struct RegistrationSnapshot {
     /// The newest proven lease, live or not.
     pub lease: Option<Lease>,
     /// Whether that lease is live.
@@ -420,9 +420,9 @@ impl Lifecycle {
         (count > 0).then_some(HeldVerdict { release, count })
     }
 
-    pub(crate) fn view(&self, now: Instant) -> RegistrationView {
+    pub(crate) fn snapshot(&self, now: Instant) -> RegistrationSnapshot {
         let registered = self.lease.is_some_and(|lease| lease.is_live_at(now));
-        RegistrationView {
+        RegistrationSnapshot {
             lease: self.lease,
             registered,
             lease_remaining: self
