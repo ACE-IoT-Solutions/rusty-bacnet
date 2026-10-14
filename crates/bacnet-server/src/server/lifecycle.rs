@@ -166,7 +166,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             let mut notifications_open = true;
             let mut ingress_open = true;
 
+            // While ingress is open, finished handlers are joined at the top
+            // of each turn, not awaited below (IdleReap, #1713).
+            let mut idle_reap = super::request_tasks::IdleReap::new();
             loop {
+                requests.reap_finished();
                 // Drain all selected ownership before the first asynchronous Abort.
                 Self::reap_expired_requests(
                     &network_dispatch,
@@ -182,10 +186,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         NotificationTransactions::observe(result);
                         continue;
                     }
-                    result = requests.join_next(), if !requests.is_empty() => {
+                    result = requests.join_next(), if !ingress_open && !requests.is_empty() => {
                         super::request_tasks::RequestTasks::observe(result);
                         continue;
                     }
+                    () = idle_reap.tick(), if ingress_open && !requests.is_empty() => continue,
                     received = apdu_rx.recv(), if ingress_open => match received {
                         Some(received) => received,
                         None => {
