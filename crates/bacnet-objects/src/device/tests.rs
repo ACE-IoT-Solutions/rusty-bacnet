@@ -1,4 +1,6 @@
 mod audit_recipient;
+mod backup;
+mod database_revision;
 mod description;
 
 use super::*;
@@ -287,6 +289,47 @@ fn set_object_list() {
         .read_property(PropertyIdentifier::OBJECT_LIST, Some(0))
         .unwrap();
     assert_eq!(count, PropertyValue::Unsigned(3));
+}
+
+/// The Device held as a `dyn BACnetObject`, as a database holds it.
+#[test]
+fn set_object_list_through_the_device_authority() {
+    let mut dev: Box<dyn BACnetObject> = Box::new(make_device());
+    let dev_oid = dev.object_identifier();
+    let ai1 = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
+
+    dev.device_authority_internal()
+        .expect("the Device has an authority")
+        .set_object_list(vec![dev_oid, ai1]);
+
+    assert_eq!(
+        dev.read_property(PropertyIdentifier::OBJECT_LIST, None)
+            .unwrap(),
+        PropertyValue::List(vec![
+            PropertyValue::ObjectIdentifier(dev_oid),
+            PropertyValue::ObjectIdentifier(ai1),
+        ])
+    );
+}
+
+#[test]
+fn set_system_status_through_the_device_authority() {
+    let mut dev: Box<dyn BACnetObject> = Box::new(make_device());
+    assert_eq!(
+        dev.read_property(PropertyIdentifier::SYSTEM_STATUS, None)
+            .unwrap(),
+        PropertyValue::Enumerated(DeviceStatus::OPERATIONAL.to_raw())
+    );
+
+    dev.device_authority_internal()
+        .expect("the Device has an authority")
+        .set_system_status(DeviceStatus::BACKUP_IN_PROGRESS);
+
+    assert_eq!(
+        dev.read_property(PropertyIdentifier::SYSTEM_STATUS, None)
+            .unwrap(),
+        PropertyValue::Enumerated(DeviceStatus::BACKUP_IN_PROGRESS.to_raw())
+    );
 }
 
 #[test]
