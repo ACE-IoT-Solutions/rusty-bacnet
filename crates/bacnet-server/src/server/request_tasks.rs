@@ -154,6 +154,10 @@ impl RequestTasks {
 
     /// Acquire and register synchronously with close; construct the future only
     /// on success. The guard lives in that future, including before its first poll.
+    ///
+    /// The handler's future is boxed as it is made (#1713): it is several
+    /// kilobytes, and tokio's spawn path and task stages otherwise copy all of
+    /// it many times over for every request.
     pub(super) fn try_spawn<F: Future<Output = ()> + Send + 'static>(
         &self,
         class: Class,
@@ -162,7 +166,7 @@ impl RequestTasks {
     ) -> Result<(), Rejection> {
         let mut state = self.0.lock().unwrap();
         let guard = self.1.try_enter(class, peer, state.closed)?;
-        let task = make();
+        let task = Box::pin(make());
         let owner = state.audit_owner.as_ref().and_then(Weak::upgrade);
         state.tasks.spawn(async move {
             let _owner = owner;
