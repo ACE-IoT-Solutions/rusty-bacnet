@@ -469,8 +469,12 @@ async fn active_cov_read_only_list_scope_local_read_and_stop() {
         .await
         .add(Box::new(DeviceObject::new(config).unwrap()))
         .unwrap();
-    let selected =
-        handlers::resolve_read_target(&*wire.server.database().read().await, &wildcard(), None);
+    let selected = handlers::resolve_read_target(
+        &*wire.server.database().read().await,
+        &wildcard(),
+        None,
+        None,
+    );
     assert_eq!(
         selected,
         device(),
