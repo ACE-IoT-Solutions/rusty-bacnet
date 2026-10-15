@@ -1,16 +1,23 @@
 //! The rejects this router sends, and the ones it passes on.
 
 use super::counters::bump;
-use super::host::{Event, Group, Host};
+use super::host::{Event, Host};
 use super::ingress::{Arrival, Discard, Received};
 use super::tasks::Task;
+use super::Group;
 use super::Storage;
 use crate::message::RejectReason;
 use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
 use crate::PortId;
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: super::GroupClassifier,
+    > Storage<P, R, H, D, N, G>
 {
     /// Whether `address` is this router: a port's network with the
     /// router's MAC on that port.
@@ -87,7 +94,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         };
         match route {
             // Never as a broadcast (decisions L23 and L24 on #1677).
-            Some(route) if self.group_of(&route, npdu, host) != Group::No => self.group_drop(),
+            Some(route) if self.group_of(&route, npdu) != Group::No => self.group_drop(),
             Some(route) => self.forward(at, npdu, &route, host),
             None => {
                 bump(&mut self.counters.unroutable_rejects);

@@ -35,8 +35,8 @@
 //!   nowhere, and needs no start.
 //! - **Timers:** sleep until the earliest of the router's and the ports'
 //!   `next_deadline`, and call each one's `on_deadline`.
-//! - **Groups:** answer [`Host::group`](crate::router::Host::group) for
-//!   the port with [`group`].
+//! - **Groups:** [`port_config`] installs the link's rules in the router,
+//!   including the UDP port its local broadcast reaches.
 //!
 //! # Annex J and Clause 6, for a router's B/IP port
 //!
@@ -68,7 +68,7 @@ use bacnet_bip_core::node::{
     LocalFailure, Mode, Node, Policy,
 };
 
-use crate::router::{Dest, Group, Limits, PortConfig, Send, SendRefusal};
+use crate::router::{Dest, Groups, Limits, PortConfig, Send, SendRefusal};
 use crate::{Arrived, Instant, Mac, PortId, MAX_NPDU};
 
 /// Where a B/IP port's datagrams go: the host's UDP socket.
@@ -90,32 +90,18 @@ pub trait Datagrams {
 pub fn port_config(link: &Link, network: u16) -> PortConfig {
     // At most MAX_NPDU, so the casts are exact.
     let limit = |cast| link.max_npdu(cast).min(MAX_NPDU) as u16;
-    PortConfig {
+    PortConfig::new(
         network,
-        mac: Mac::from_array(address_to_octets(link.address)),
-        max_npdu: Limits {
+        Mac::from_array(address_to_octets(link.address)),
+        Limits {
             unicast: limit(Cast::Unicast),
             broadcast: limit(Cast::Broadcast),
         },
-    }
-}
-
-/// What `mac` is on a B/IP port, for [`Host::group`](crate::router::Host::group):
-/// one of the link's group addresses ([`Link::groups`]) at the link's own
-/// UDP port is its local broadcast; one at another port belongs to another
-/// B/IP network, and is refused (#1677, decision L24).
-#[must_use]
-pub fn group(link: &Link, mac: &[u8]) -> Group {
-    match address_from_slice(mac) {
-        Ok(address) if link.groups().contains(address) => {
-            if address.port() == link.address.port() {
-                Group::Broadcast
-            } else {
-                Group::Refuse
-            }
-        }
-        _ => Group::No,
-    }
+        Groups::Bip {
+            destinations: link.groups(),
+            port: link.address.port(),
+        },
+    )
 }
 
 /// What a received datagram brought.
@@ -332,12 +318,6 @@ impl<'h, const X: usize, const N: usize> BipPort<'h, X, N> {
     #[must_use]
     pub fn config(&self, network: u16) -> PortConfig {
         port_config(self.node.link(), network)
-    }
-
-    /// What `mac` is on this port ([`group`]).
-    #[must_use]
-    pub fn group(&self, mac: &[u8]) -> Group {
-        group(self.node.link(), mac)
     }
 
     /// The node.
@@ -572,12 +552,6 @@ impl<'t, const B: usize, const F: usize, const X: usize> BbmdPort<'t, B, F, X> {
     #[must_use]
     pub fn config(&self, network: u16) -> PortConfig {
         port_config(self.node.link(), network)
-    }
-
-    /// What `mac` is on this port ([`group`]).
-    #[must_use]
-    pub fn group(&self, mac: &[u8]) -> Group {
-        group(self.node.link(), mac)
     }
 
     /// The node.

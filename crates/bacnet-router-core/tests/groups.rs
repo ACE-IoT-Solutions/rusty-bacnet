@@ -1,19 +1,18 @@
 //! Group DADRs on a delivery port (#1504, #1677; decisions L19, L22, L23
 //! and L24): only an Unconfirmed-Request for a group of the port's own goes
 //! on, as that port's local broadcast; everything else is dropped and
-//! counted, with no reject. The hosted router's rules are in
-//! router/dispatch.rs (`group_dadr`) on the #1622 PR 3 branch.
+//! counted, with no reject.
 
 mod fixture;
 
 use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{Discard, Group, Kind};
-use bacnet_router_core::PortId;
+use bacnet_router_core::router::{Discard, Group, GroupClassifier, Kind, Options, PortConfig};
 use fixture::{
-    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, reject_data, router, Outcome, Recorder,
-    TestRouter, CONFIRMED, NODE_A, R7, UNCONFIRMED,
+    addr, apdu_to, at, bytes, deliver, learn_9_via_r7, reject_data, Outcome, Recorder, CONFIRMED,
+    NODE_A, R7, UNCONFIRMED,
 };
+use std::{cell::RefCell, rc::Rc};
 
 /// The subnet broadcast at port 0's own UDP port.
 const OWN_GROUP: &[u8] = &[10, 0, 0, 255, 0xBA, 0xC0];
@@ -22,15 +21,60 @@ const OTHER_GROUP: &[u8] = &[10, 0, 0, 255, 0xBA, 0xC1];
 /// A group on port 1, the MS/TP-like link.
 const PORT_1_GROUP: &[u8] = &[0x7F];
 
-fn host() -> Recorder {
-    Recorder {
-        groups: vec![
-            (PortId(0), OWN_GROUP.to_vec(), Group::Broadcast),
-            (PortId(0), OTHER_GROUP.to_vec(), Group::Refuse),
-            (PortId(1), PORT_1_GROUP.to_vec(), Group::Broadcast),
-        ],
-        ..Recorder::default()
+type Calls = Rc<RefCell<Vec<Vec<u8>>>>;
+
+#[derive(Clone)]
+struct CustomGroups {
+    matches: &'static [(&'static [u8], Group)],
+    asked: Option<Calls>,
+}
+
+impl GroupClassifier for CustomGroups {
+    const NONE: Self = Self {
+        matches: &[],
+        asked: None,
+    };
+
+    fn classify(&self, mac: &[u8]) -> Group {
+        if let Some(asked) = &self.asked {
+            asked.borrow_mut().push(mac.to_vec());
+        }
+        self.matches
+            .iter()
+            .find(|(address, _)| *address == mac)
+            .map_or(Group::No, |(_, group)| *group)
     }
+}
+
+type TestRouter = fixture::TestRouter<CustomGroups>;
+
+fn router() -> TestRouter {
+    let port = |network, mac, matches| {
+        PortConfig::new(
+            network,
+            bacnet_router_core::Mac::from_slice(mac).unwrap(),
+            bacnet_router_core::router::Limits::both(1497),
+            CustomGroups {
+                matches,
+                asked: Some(Rc::default()),
+            },
+        )
+    };
+    fixture::router_with(
+        &[
+            port(
+                1,
+                fixture::OWN_0,
+                &[(OWN_GROUP, Group::Broadcast), (OTHER_GROUP, Group::Refuse)],
+            ),
+            port(2, fixture::OWN_1, &[(PORT_1_GROUP, Group::Broadcast)]),
+        ],
+        Options::HOSTED,
+    )
+}
+
+fn host() -> Recorder {
+    Recorder::default()
 }
 
 fn dropped(router: &TestRouter, outcome: &Outcome, sent: &[fixture::Sent], drops: u64) {
@@ -67,8 +111,8 @@ fn an_unconfirmed_request_for_an_own_group_becomes_a_local_broadcast() {
     assert_eq!(sent[0].npdu, bytes(&expected));
     assert_eq!(router.counters().group_dadr_drops, 0);
     assert_eq!(
-        *host.group_asked.borrow(),
-        [(PortId(0), OWN_GROUP.to_vec())]
+        *router.ports()[0].groups.asked.as_ref().unwrap().borrow(),
+        [OWN_GROUP.to_vec()]
     );
 }
 
@@ -160,7 +204,7 @@ fn other_apdus_and_foreign_groups_are_dropped() {
 
 /// Only a directly attached port's group counts: a DADR beyond another
 /// router is the next router's business, and goes on unchanged, without
-/// asking the host. A group of one port means nothing on another.
+/// asking the classifier. A group of one port means nothing on another.
 #[test]
 fn only_a_directly_attached_ports_groups_count() {
     let mut router = router();
@@ -177,7 +221,13 @@ fn only_a_directly_attached_ports_groups_count() {
     assert_eq!(outcome, Outcome::Handled);
     assert_eq!((sent[0].port, sent[0].to.as_deref()), (1, Some(R7)));
     assert_eq!(sent[0].parsed().destination, Some(addr(9, PORT_1_GROUP)));
-    assert!(host.group_asked.borrow().is_empty());
+    assert!(router.ports().iter().all(|port| port
+        .groups
+        .asked
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .is_empty()));
 
     // Port 0's group address, sent to port 1: an ordinary unicast there.
     let (outcome, sent) = deliver(
@@ -199,7 +249,16 @@ fn only_a_directly_attached_ports_groups_count() {
         &apdu_to(2, &[], UNCONFIRMED),
         at(1),
     );
-    assert_eq!(host.group_asked.borrow().len(), 1);
+    assert_eq!(
+        router.ports()[1]
+            .groups
+            .asked
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .len(),
+        1
+    );
     assert_eq!(router.counters().group_dadr_drops, 0);
 }
 
@@ -241,4 +300,48 @@ fn a_reject_passing_on_to_a_group_is_dropped() {
     }
     assert_eq!(router.table().claim_counters().reject_applied, 1);
     assert_eq!(router.counters().unroutable_rejects, 0);
+}
+
+#[test]
+fn reusing_storage_releases_custom_rules_of_removed_ports() {
+    let mut storage = fixture::Store::<CustomGroups>::new();
+    let calls = Rc::default();
+    let weak = Rc::downgrade(&calls);
+    let port = |network, groups| {
+        PortConfig::new(
+            network,
+            bacnet_router_core::Mac::from_array([1]),
+            bacnet_router_core::router::Limits::both(1497),
+            groups,
+        )
+    };
+    {
+        let ports = [
+            port(1, CustomGroups::NONE),
+            port(
+                2,
+                CustomGroups {
+                    matches: &[],
+                    asked: Some(calls),
+                },
+            ),
+        ];
+        let _router =
+            bacnet_router_core::Router::new(&mut storage, &ports, Options::HOSTED, at(0)).unwrap();
+    }
+    assert!(
+        weak.upgrade().is_some(),
+        "storage retains its installed rule"
+    );
+    let _router = bacnet_router_core::Router::new(
+        &mut storage,
+        &[port(1, CustomGroups::NONE)],
+        Options::HOSTED,
+        at(0),
+    )
+    .unwrap();
+    assert!(
+        weak.upgrade().is_none(),
+        "a removed port no longer retains caller state"
+    );
 }

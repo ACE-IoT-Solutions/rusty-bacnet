@@ -7,7 +7,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use bacnet_bip_codec::BvlcFunction;
 use bacnet_mstp_codec::FrameType;
 use bacnet_router_core::message::{MessageType, RejectReason};
-use bacnet_router_core::router::{Counters, Event, Kind};
+use bacnet_router_core::router::{Counters, Discard, Event, Kind};
 use bacnet_router_core::{Duration, PortId};
 
 use super::{
@@ -17,9 +17,9 @@ use super::{
 use crate::tally::Sent;
 
 /// The hash over every datagram the B/IP port sends and where it goes. It
-/// was worked out apart from the codecs, from the 11 datagrams written out
-/// by hand from the Annex J.2 and Clause 6.2 layouts (158 octets).
-const BIP_FNV: u32 = 0xA941_5489;
+/// was worked out apart from the codecs, from the 13 datagrams written out
+/// by hand from the Annex J.2 and Clause 6.2 layouts (188 octets).
+const BIP_FNV: u32 = 0x16B5_FCC9;
 
 /// The hash over every frame the MS/TP core sends. It was worked out apart
 /// from the codecs, from the 16 frames written out by hand from the Clause
@@ -59,6 +59,8 @@ const RECEIVED: [Option<Outcome>; RECEIVES] = slots([
         group: true,
         global: true,
     }, // 8: the global broadcast
+    Outcome::Handled, // 9: the subnet group, as a local broadcast
+    Outcome::Discarded(Discard::GroupDadr), // 9: the group at another UDP port
 ]);
 
 const B: u8 = 0;
@@ -95,6 +97,8 @@ const SENT: [Option<(u8, Kind, bool)>; SENDS] = slots([
     ),
     // 8.
     (B, Kind::Global, true),
+    // 9: the subnet group, from the port configuration.
+    (B, Kind::Forward, true),
 ]);
 
 /// Step 6's NPDU of 1494 octets would leave at 1498 on MS/TP, whose limit
@@ -133,6 +137,9 @@ const DATAGRAMS_SENT: [Option<SentDatagram>; DATAGRAMS] = slots([
     // lower (12), on the subnet and to the peer.
     (BROADCAST, SUBNET_BROADCAST, 16),
     (FORWARDED, PEER_BBMD, 22),
+    // 9: no destination remains; SNET 2 and SADR 2 precede the Who-Is (8).
+    (BROADCAST, SUBNET_BROADCAST, 12),
+    (FORWARDED, PEER_BBMD, 18),
 ]);
 
 const DATA: FrameType = FrameType::BACNET_DATA_NOT_EXPECTING_REPLY;
@@ -184,6 +191,7 @@ pub fn expected() -> Summary {
     // One search: the second message for network 9 came within 5 s.
     counters.solicitations = 1;
     counters.egress_too_long = 1;
+    counters.group_dadr_drops = 1;
     Summary {
         received: RECEIVED,
         sends: SENT,
@@ -193,8 +201,8 @@ pub fn expected() -> Summary {
         routes: 2,
         datagrams: DATAGRAMS_SENT,
         bip: Sent {
-            count: 11,
-            octets: 158,
+            count: 13,
+            octets: 188,
             fnv: BIP_FNV,
         },
         bip_refused: 0,
@@ -204,11 +212,11 @@ pub fn expected() -> Summary {
             octets: 1704,
             fnv: MSTP_FNV,
         },
-        // Six tokens, the answer to the poll, and four frames with NPDUs:
-        // the request, the two route questions and the global broadcast.
-        frames_received: 11,
+        // Six tokens, the answer to the poll, and six frames with NPDUs:
+        // the request, two route questions, global broadcast and two group DADRs.
+        frames_received: 13,
         frames_transmitted: 16,
-        npdus_delivered: 4,
+        npdus_delivered: 6,
         parser_errors: 0,
         // For one station: steps 2, 3 and 6, and the Ack; for all: the
         // two announcements, the search and the I-Am-Router.

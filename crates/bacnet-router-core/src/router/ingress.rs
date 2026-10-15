@@ -2,8 +2,9 @@
 
 use super::config::Options;
 use super::counters::bump;
-use super::host::{Group, Host};
+use super::host::Host;
 use super::tasks::Task;
+use super::Group;
 use super::Storage;
 use crate::message::RejectReason;
 use crate::npdu::{Address, AddressField, Malformed, Npdu, ParseError, GLOBAL_NETWORK};
@@ -150,8 +151,14 @@ pub(super) fn is_unconfirmed(apdu: &[u8]) -> bool {
     apdu.first().is_some_and(|&first| first >> 4 == 1)
 }
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: super::GroupClassifier,
+    > Storage<P, R, H, D, N, G>
 {
     /// [`Router::receive`](super::Router::receive).
     pub(super) fn receive<'f>(
@@ -259,7 +266,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
             }
         }
         let mut npdu = *npdu;
-        match self.group_of(&route, &npdu, host) {
+        match self.group_of(&route, &npdu) {
             Group::No => {}
             // An Unconfirmed-Request for a group of the port's own goes out
             // as the port's local broadcast: no DADR on a directly attached
@@ -322,14 +329,15 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
         None
     }
 
-    /// What `npdu`'s DADR is on its delivery port: asked of the host only
+    /// What `npdu`'s DADR is on its delivery port: read from its port only
     /// when `route` hands it to a node on a directly attached port. A DLEN
     /// 0 broadcast, and a DADR beyond another router, are [`Group::No`].
-    pub(super) fn group_of(&self, route: &Route, npdu: &Npdu<'_>, host: &impl Host) -> Group {
+    pub(super) fn group_of(&self, route: &Route, npdu: &Npdu<'_>) -> Group {
         match npdu.destination {
-            Some(destination) if route.is_direct() && !destination.mac.is_empty() => {
-                host.group(route.port(), destination.mac)
-            }
+            Some(destination) if route.is_direct() && !destination.mac.is_empty() => self.ports
+                [usize::from(route.port().0)]
+            .groups
+            .classify(destination.mac),
             _ => Group::No,
         }
     }

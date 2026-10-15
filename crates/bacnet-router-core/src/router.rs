@@ -15,8 +15,8 @@
 //! [`on_deadline`](Router::on_deadline).
 //!
 //! To the router a port is data, a [`PortConfig`]: its network number, the
-//! router's MAC on it and the longest NPDU it carries, which
-//! [`Router::set_port_max_npdu`] replaces for a link whose limit changes
+//! router's MAC on it, its group-address rule, and its NPDU limits.
+//! [`Router::set_port_max_npdu`] replaces those for a link whose limit changes
 //! while it runs. The link type never matters, so firmware joins B/IP and
 //! MS/TP ports through it, and the hosted router any transport it has.
 //!
@@ -47,14 +47,14 @@
 //!    one lower. One that arrives with a hop count of 0 goes nowhere, and
 //!    toward the next router neither does one that arrives with 1.
 //!
-//! The [`Host`] answers what the router can't know itself: which MACs are
-//! group addresses on a port ([`Group`]), and whether to act on a
-//! protected network message.
+//! The [`Host`] authorizes protected network messages and observes events.
+//! Each port supplies its own group-address rule through [`PortConfig`].
 
 mod config;
 mod control;
 mod counters;
 mod forward;
+mod groups;
 mod host;
 mod ingress;
 mod init;
@@ -67,7 +67,8 @@ use core::fmt;
 
 pub use config::{ConfigError, LimitError, Limits, Options, PortConfig};
 pub use counters::Counters;
-pub use host::{Claim, ControlClass, Event, Group, Host, Permissive, Targets};
+pub use groups::{Group, GroupClassifier, Groups};
+pub use host::{Claim, ControlClass, Event, Host, Permissive, Targets};
 pub use ingress::{Discard, Frame, Local, Received};
 pub use output::{Action, Cause, Dest, Kind, Send, SendRefusal};
 
@@ -87,8 +88,9 @@ pub(crate) const MIN_LIMIT: u16 = Limits::MIN;
 /// routes and `H` hold-down records, `D` searches, and an output scratch of
 /// `N` octets.
 ///
-/// [`new`](Self::new) is a `const fn` whose result is all zero bits, so
-/// firmware keeps it in a zero-initialized static (`.bss`) and lends it to
+/// With the default [`Groups`], [`new`](Self::new) is a `const fn` whose
+/// result is all zero bits. Firmware keeps it in a zero-initialized static
+/// (`.bss`) and lends it to
 /// the router; a host can box it. `P` is at most 255 and `N` at least
 /// [`MAX_NPDU`], both checked when the program compiles:
 ///
@@ -111,8 +113,9 @@ pub struct Storage<
     const H: usize,
     const D: usize = 16,
     const N: usize = MAX_NPDU,
+    G = Groups,
 > {
-    ports: [PortConfig; P],
+    ports: [PortConfig<G>; P],
     port_count: usize,
     table: Table<R, H>,
     discovery: Discovery<D>,
@@ -121,16 +124,23 @@ pub struct Storage<
     counters: Counters,
 }
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: GroupClassifier,
+    > Storage<P, R, H, D, N, G>
 {
-    /// Empty storage: all zero bits.
+    /// Empty storage: all zero bits with the default [`Groups`] rule.
+    /// Custom rules supply their own unused-slot value through [`GroupClassifier::NONE`].
     #[must_use]
     pub const fn new() -> Self {
         const { assert!(P <= 255, "a router has at most 255 ports") };
         const { assert!(N >= MAX_NPDU, "the scratch holds at least MAX_NPDU") };
         Self {
-            ports: [PortConfig::ZERO; P],
+            ports: [const { PortConfig::ZERO }; P],
             port_count: 0,
             table: Table::new(),
             discovery: Discovery::new(),
@@ -141,8 +151,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
     }
 }
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize> Default
-    for Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: GroupClassifier,
+    > Default for Storage<P, R, H, D, N, G>
 {
     fn default() -> Self {
         Self::new()
@@ -150,8 +166,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 }
 
 /// The ports and state kept, not the scratch.
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize> fmt::Debug
-    for Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: GroupClassifier + fmt::Debug,
+    > fmt::Debug for Storage<P, R, H, D, N, G>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Storage")
@@ -166,7 +188,8 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
 
 /// A sans-IO BACnet router over the [`Storage`] it borrows or owns (`S` is
 /// `&mut Storage<..>` in firmware, a `Box<Storage<..>>` on a host). `D` and
-/// `N` default as [`Storage`]'s do.
+/// `N` default as [`Storage`]'s do. `G` is the ports' owned group rule,
+/// [`Groups`] unless a custom link supplies another [`GroupClassifier`].
 pub struct Router<
     S,
     const P: usize,
@@ -174,18 +197,27 @@ pub struct Router<
     const H: usize,
     const D: usize = 16,
     const N: usize = MAX_NPDU,
+    G = Groups,
 > {
     storage: S,
+    groups: core::marker::PhantomData<G>,
     options: Options,
     next_sweep: Instant,
     /// The latest time any call has passed in.
     latest: Instant,
 }
 
-impl<S, const P: usize, const R: usize, const H: usize, const D: usize, const N: usize> fmt::Debug
-    for Router<S, P, R, H, D, N>
+impl<
+        S,
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: GroupClassifier + fmt::Debug,
+    > fmt::Debug for Router<S, P, R, H, D, N, G>
 where
-    S: BorrowMut<Storage<P, R, H, D, N>>,
+    S: BorrowMut<Storage<P, R, H, D, N, G>>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Router")
@@ -197,10 +229,17 @@ where
     }
 }
 
-impl<S, const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Router<S, P, R, H, D, N>
+impl<
+        S,
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: GroupClassifier,
+    > Router<S, P, R, H, D, N, G>
 where
-    S: BorrowMut<Storage<P, R, H, D, N>>,
+    S: BorrowMut<Storage<P, R, H, D, N, G>>,
 {
     /// A router on `ports`, in that order (port `n` is [`PortId`]`(n)`),
     /// with each port's network installed as a direct route, the table's
@@ -213,7 +252,7 @@ where
     /// table too small for every port's network; a zero sweep.
     pub fn new(
         mut storage: S,
-        ports: &[PortConfig],
+        ports: &[PortConfig<G>],
         options: Options,
         now: Instant,
     ) -> Result<Self, ConfigError> {
@@ -261,7 +300,9 @@ where
         store.discovery.clear();
         store.out = Outputs::NEW;
         store.counters = Counters::ZERO;
-        store.ports[..ports.len()].copy_from_slice(ports);
+        store.ports[..ports.len()].clone_from_slice(ports);
+        // Release custom rules from ports a prior router used in this storage.
+        store.ports[ports.len()..].fill_with(|| PortConfig::ZERO);
         store.port_count = ports.len();
         for (index, port) in ports.iter().enumerate() {
             if !store.table.add_direct(port.network, PortId(index as u8)) {
@@ -270,13 +311,14 @@ where
         }
         Ok(Self {
             storage,
+            groups: core::marker::PhantomData,
             options,
             next_sweep: now + options.sweep,
             latest: now,
         })
     }
 
-    fn store(&mut self) -> &mut Storage<P, R, H, D, N> {
+    fn store(&mut self) -> &mut Storage<P, R, H, D, N, G> {
         self.storage.borrow_mut()
     }
 
@@ -442,7 +484,7 @@ where
     }
 
     /// The ports, by index.
-    pub fn ports(&self) -> &[PortConfig] {
+    pub fn ports(&self) -> &[PortConfig<G>] {
         let store = self.storage.borrow();
         &store.ports[..store.port_count]
     }
