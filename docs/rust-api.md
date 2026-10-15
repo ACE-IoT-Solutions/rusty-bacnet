@@ -5130,6 +5130,41 @@ let client = BACnetClient::sc_builder()
 Use `bip_builder()` for B/IP, `sc_builder()` for BACnet/SC, or
 `generic_builder()` with a prebuilt transport.
 
+### Choosing the client transport at runtime
+
+The B/IP, B/IPv6 and SC builders also offer `build_any::<S>()`, returning
+`BACnetClient<AnyTransport<S>>`. They apply the same configuration as `build()`:
+the B/IP mode and address sharing, the IPv6 interface and device instance,
+and SC identity, TLS, heartbeat and optional reconnect settings. Client tuning,
+notification capacities and custom COV response policies are preserved too.
+The existing `build()` methods still return concrete transport types.
+
+Choose `NoSerial` when the application does not use MS/TP. It supplies the type
+parameter without requiring a serial port, `Clone`, or `Default`. For example,
+with the client's `ipv6` feature enabled:
+
+```rust,no_run
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::{any::AnyTransport, mstp::NoSerial};
+
+async fn connect(ipv6: bool) -> Result<BACnetClient<AnyTransport<NoSerial>>,
+    bacnet_types::error::Error> {
+    if ipv6 {
+        BACnetClient::bip6_builder().port(0).device_instance(123)
+            .build_any::<NoSerial>().await
+    } else {
+        BACnetClient::bip_builder().port(0)
+            .build_any::<NoSerial>().await
+    }
+}
+```
+
+With `sc-tls`, a configured `BACnetClient::sc_builder()` can use the same
+`build_any::<NoSerial>().await` call. SC validates identity, reconnect and
+client options before dialing. Reconnect remains opt-in through `.reconnect(...)`;
+each retry uses the builder's TLS policy. Use `client.stop().await` to shut down
+the selected transport and its background work.
+
 ### Transport access and BBMD helpers
 
 `client.transport()` borrows the transport a built client owns, whichever

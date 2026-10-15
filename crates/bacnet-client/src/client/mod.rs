@@ -360,16 +360,6 @@ impl BipClientBuilder {
         self.options.cov_channel_capacity = capacity;
         self
     }
-
-    /// Build and start the client, constructing a BipTransport from the config.
-    pub async fn build(self) -> Result<BACnetClient<BipTransport>, Error> {
-        let config = &self.config;
-        let mut transport =
-            BipTransport::new(config.interface, config.port, config.broadcast_address);
-        transport.set_share_port_by_address(config.share_port_by_address);
-        transport.set_mode(self.mode);
-        BACnetClient::start_with_options(self.config, transport, self.options).await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -622,12 +612,6 @@ impl Bip6ClientBuilder {
         self.options.cov_channel_capacity = capacity;
         self
     }
-
-    /// Build and start the client, constructing a Bip6Transport from the config.
-    pub async fn build(self) -> Result<BACnetClient<Bip6Transport>, Error> {
-        let transport = Bip6Transport::new(self.interface, self.config.port, self.device_instance);
-        BACnetClient::start_with_options(self.config, transport, self.options).await
-    }
 }
 
 #[cfg(feature = "sc-tls")]
@@ -768,87 +752,8 @@ impl ScClientBuilder {
         self,
         ws: W,
     ) -> Result<BACnetClient<bacnet_transport::sc::ScTransport<W>>, Error> {
-        if let Some(config) = &self.reconnect {
-            config.validate()?;
-        }
-        self.validate_identity()?;
-        self.options.validate()?;
-        validate_max_segments(self.config.max_segments)?;
-        pacing::validate_interval_ms(self.config.min_request_interval_ms)?;
+        self.validate()?;
         let transport = self.sc_transport(ws);
-        BACnetClient::start_with_options(self.config, transport, self.options).await
-    }
-
-    /// Connect to the hub and start the client.
-    ///
-    /// Reconnect configuration is validated before TLS lookup or dialing, and
-    /// again when the transport starts. An error still consumes this builder
-    /// and drops its inputs; this does not promise generic endpoint rollback.
-    ///
-    /// The client's [`transport()`](BACnetClient::transport) lends the hub
-    /// connection-state watch and the NPDU drop counts:
-    ///
-    /// ```no_run
-    /// use bacnet_client::client::BACnetClient;
-    /// use bacnet_transport::sc::ScConnectionState;
-    /// use bacnet_transport::sc_tls::ScNodeTlsConfig;
-    ///
-    /// async fn watch_hub(tls: ScNodeTlsConfig) -> Result<(), bacnet_types::error::Error> {
-    ///     let client = BACnetClient::sc_builder()
-    ///         .hub_url("wss://hub.example.com/bacnet")
-    ///         .tls_config(tls)
-    ///         .vmac([0x02, 0, 0, 0, 0, 0x01])
-    ///         .device_uuid([0x42; 16])
-    ///         .build()
-    ///         .await?;
-    ///     // An owned receiver: it can live in its own task.
-    ///     let mut state = client.transport().connection_state_changes();
-    ///     tokio::spawn(async move {
-    ///         while state.changed().await.is_ok() {
-    ///             let _connected = *state.borrow_and_update() == ScConnectionState::Connected;
-    ///         }
-    ///     });
-    ///     // A snapshot: poll it as often as needed.
-    ///     let _full_queue_drops = client.transport().npdu_drop_counts().full_drops;
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn build(
-        self,
-    ) -> Result<
-        BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>,
-        Error,
-    > {
-        if let Some(config) = &self.reconnect {
-            config.validate()?;
-        }
-        self.validate_identity()?;
-        self.options.validate()?;
-        validate_max_segments(self.config.max_segments)?;
-        pacing::validate_interval_ms(self.config.min_request_interval_ms)?;
-        let tls_config =
-            self.tls_config.as_ref().cloned().ok_or_else(|| {
-                Error::Encoding("SC client builder: tls_config is required".into())
-            })?;
-
-        let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&self.hub_url, tls_config.clone())
-            .await?;
-
-        let mut transport = self.sc_transport(ws);
-        if let Some(rc) = self.reconnect {
-            let hub_url = self.hub_url.clone();
-            let tls_config = tls_config.clone();
-            transport = transport
-                .with_connector(move || {
-                    let hub_url = hub_url.clone();
-                    let tls_config = tls_config.clone();
-                    async move {
-                        bacnet_transport::sc_tls::TlsWebSocket::connect(&hub_url, tls_config).await
-                    }
-                })
-                .with_reconnect(rc);
-        }
-
         BACnetClient::start_with_options(self.config, transport, self.options).await
     }
 }
@@ -891,6 +796,7 @@ fn cap_max_apdu_to_transport(configured: u16, transport_limit: u16) -> Result<u1
 }
 
 mod audit;
+mod builder_build;
 mod builder_options;
 mod cov;
 mod cov_notifications;
