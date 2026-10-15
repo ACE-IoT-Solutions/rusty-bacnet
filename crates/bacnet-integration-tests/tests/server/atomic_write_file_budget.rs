@@ -25,7 +25,9 @@ async fn atomic_write_file_segmented_request_budget_and_client_readback() {
             let mut server = BACnetServer::bip_builder()
                 .interface(Ipv4Addr::LOCALHOST)
                 .port(0)
-                .segmentation_supported(Segmentation::BOTH)
+                .device(
+                    bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
+                )
                 .database(db)
                 .atomic_write_file_budget(AtomicWriteFileBudget {
                     max_stream_payload_octets: 300,

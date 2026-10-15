@@ -78,8 +78,9 @@ async fn group_present_value_bip_wire_rebuilds_from_members() {
     database
         .add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 100,
-                name: "DEV-100".into(),
+                identity: bacnet_objects::DeviceIdentity::new(100, 0)
+                    .expect("valid Device identity")
+                    .with_name("DEV-100"),
                 ..DeviceConfig::default()
             })
             .unwrap(),
@@ -89,6 +90,7 @@ async fn group_present_value_bip_wire_rebuilds_from_members() {
     database.add(Box::new(group_object)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(database)

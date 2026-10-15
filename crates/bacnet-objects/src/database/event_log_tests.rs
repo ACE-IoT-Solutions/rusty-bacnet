@@ -220,8 +220,9 @@ fn an_enrollment_notification_about_any_local_event_log_goes_in_no_log() {
     let mut db = database(&[1, 2], 8);
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 7,
-            name: "Device-7".into(),
+            identity: crate::DeviceIdentity::new(7, 0)
+                .expect("valid Device identity")
+                .with_name("Device-7"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -419,8 +420,9 @@ fn received_reports_on_event_log_buffers_and_this_devices_own_go_in_no_log() {
     received_log(&mut db, 1, true);
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 7,
-            name: "Device-7".into(),
+            identity: crate::DeviceIdentity::new(7, 0)
+                .expect("valid Device identity")
+                .with_name("Device-7"),
             ..DeviceConfig::default()
         })
         .unwrap(),

@@ -103,7 +103,9 @@ async fn atomic_read_file_within_budget_segmented_complete_ack() {
                 .interface(Ipv4Addr::LOCALHOST)
                 .port(0)
                 .database(database)
-                .segmentation_supported(Segmentation::BOTH)
+                .device(
+                    bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
+                )
                 .atomic_read_file_budget(AtomicReadFileBudget {
                     max_service_ack_bytes: size - usize::from(over),
                     ..Default::default()

@@ -115,26 +115,16 @@ fn compute_object_types_supported(types: &[u32]) -> Vec<u8> {
 
 /// Configuration for creating a Device object.
 pub struct DeviceConfig {
-    /// Device instance number (0..4194303).
-    pub instance: u32,
-    /// Device object name.
-    pub name: String,
+    /// One source for Device identity and runtime declarations.
+    pub identity: crate::DeviceIdentity,
     /// Vendor name string.
     pub vendor_name: String,
-    /// ASHRAE-assigned vendor identifier.
-    pub vendor_id: u16,
     /// Model name string.
     pub model_name: String,
     /// Firmware revision string.
     pub firmware_revision: String,
     /// Application software version string.
     pub application_software_version: String,
-    /// Maximum APDU length accepted (typically 1476 for BIP).
-    pub max_apdu_length: u32,
-    /// Segmentation support level.
-    pub segmentation_supported: Segmentation,
-    /// Segment timeout in milliseconds, exposed when segmentation is supported.
-    pub apdu_segment_timeout: u64,
     /// APDU timeout in milliseconds.
     pub apdu_timeout: u32,
     /// Number of APDU retries.
@@ -150,16 +140,11 @@ pub struct DeviceConfig {
 impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
-            instance: 1,
-            name: "BACnet Device".into(),
+            identity: crate::DeviceIdentity::default(),
             vendor_name: "Rusty BACnet".into(),
-            vendor_id: 0,
             model_name: "rusty-bacnet".into(),
             firmware_revision: "0.1.0".into(),
             application_software_version: "0.1.0".into(),
-            max_apdu_length: 1476,
-            segmentation_supported: Segmentation::NONE,
-            apdu_segment_timeout: 5000,
             apdu_timeout: 6000,
             apdu_retries: 3,
             backup_and_restore: false,
@@ -195,7 +180,8 @@ pub struct DeviceObject {
 impl DeviceObject {
     /// Create a new Device object from configuration.
     pub fn new(config: DeviceConfig) -> Result<Self, Error> {
-        let oid = ObjectIdentifier::new(ObjectType::DEVICE, config.instance)?;
+        config.identity.validate()?;
+        let oid = config.identity.device_oid();
         let mut properties = HashMap::new();
 
         properties.insert(
@@ -204,7 +190,7 @@ impl DeviceObject {
         );
         properties.insert(
             PropertyIdentifier::OBJECT_NAME,
-            PropertyValue::CharacterString(config.name),
+            PropertyValue::CharacterString(config.identity.name().to_owned()),
         );
         properties.insert(
             PropertyIdentifier::OBJECT_TYPE,
@@ -220,7 +206,7 @@ impl DeviceObject {
         );
         properties.insert(
             PropertyIdentifier::VENDOR_IDENTIFIER,
-            PropertyValue::Unsigned(config.vendor_id as u64),
+            PropertyValue::Unsigned(config.identity.vendor_id() as u64),
         );
         properties.insert(
             PropertyIdentifier::MODEL_NAME,
@@ -244,11 +230,11 @@ impl DeviceObject {
         );
         properties.insert(
             PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED,
-            PropertyValue::Unsigned(config.max_apdu_length as u64),
+            PropertyValue::Unsigned(config.identity.max_apdu_length() as u64),
         );
         properties.insert(
             PropertyIdentifier::SEGMENTATION_SUPPORTED,
-            PropertyValue::Enumerated(config.segmentation_supported.to_raw() as u32),
+            PropertyValue::Enumerated(config.identity.segmentation().to_raw() as u32),
         );
         properties.insert(
             PropertyIdentifier::APDU_TIMEOUT,
@@ -283,7 +269,7 @@ impl DeviceObject {
         // Device_UUID: 16-byte UUID stored as OctetString. Default: all zeros.
         properties.insert(
             PropertyIdentifier::DEVICE_UUID,
-            PropertyValue::OctetString(vec![0u8; 16]),
+            PropertyValue::OctetString(config.identity.device_uuid().to_vec()),
         );
 
         // Table 12-13 footnotes 7 and 8: present only on a device that performs the backup
@@ -316,17 +302,18 @@ impl DeviceObject {
         }
 
         // Max_Segments_Accepted — only included when segmentation is supported.
-        if config.segmentation_supported != Segmentation::NONE {
-            if config.apdu_segment_timeout == 0 {
+        if config.identity.segmentation() != Segmentation::NONE {
+            if config.identity.apdu_segment_timeout_ms() == 0 {
                 return Err(Error::Encoding(
                     "APDU_Segment_Timeout must be positive when segmentation is supported".into(),
                 ));
             }
             properties.insert(
                 PropertyIdentifier::APDU_SEGMENT_TIMEOUT,
-                PropertyValue::Unsigned(config.apdu_segment_timeout),
+                PropertyValue::Unsigned(config.identity.apdu_segment_timeout_ms()),
             );
-            let max_segments_accepted = if config.segmentation_supported == Segmentation::TRANSMIT {
+            let max_segments_accepted = if config.identity.segmentation() == Segmentation::TRANSMIT
+            {
                 1
             } else {
                 65

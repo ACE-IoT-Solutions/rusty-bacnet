@@ -79,7 +79,7 @@ async fn one_owner_impl(mode: MstpExecutionMode, frames: Frames) {
         .extended_frames(frames.extended())
         .execution_mode(mode)
         .database(db_with_analog(&id, 1, 1.0))
-        .identity(id)
+        .device(id)
         .build_session()
         .expect("session must build");
     drop(writes);
@@ -368,12 +368,12 @@ async fn mstp_builder_bounds_reject() {
             .validate_only()
             .is_err()
     );
-    // An identity advertising beyond the 480 transport bound is rejected.
+    // The requested ceiling is accepted here and resolved before startup.
     let (serial, _peer) = LoopbackSerial::pair();
     let big = DeviceIdentity::new(2002, 42).unwrap();
     assert_eq!(big.max_apdu_length(), 1476);
     assert!(MstpEndpointBuilder::new(serial, SESSION_MAC)
-        .identity(big)
+        .device(big)
         .build_session()
-        .is_err());
+        .is_ok());
 }

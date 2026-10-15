@@ -79,6 +79,7 @@ pub struct EndpointResponder {
     reinitialize: Option<(ReinitializeHandler, Option<String>)>,
     registered_port: Option<(ObjectIdentifier, std::sync::Weak<()>)>,
     read_work_limit: usize,
+    identity: Option<bacnet_objects::DeviceIdentity>,
 }
 
 impl Drop for EndpointResponder {
@@ -101,11 +102,19 @@ impl EndpointResponder {
             egress,
             open: AtomicBool::new(true),
             device_writes: None,
+            identity: None,
             reinitialize: None,
             registered_port: None,
             read_work_limit: crate::server::ReadPropertyMultipleBudget::default()
                 .max_result_elements,
         }
+    }
+
+    /// Install the immutable Device declaration validated before transport startup.
+    #[doc(hidden)]
+    pub fn with_device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {
+        self.identity = Some(identity);
+        self
     }
 
     /// Result rows one ReadProperty may expand: its own row plus, for a
@@ -302,6 +311,7 @@ impl EndpointResponder {
                 self.reinitialize.is_some(),
                 self.registered_port.as_ref().map(|(oid, _)| *oid),
                 self.read_work_limit,
+                self.identity.as_ref(),
             )
             .await
         } else if let Some((handler, password)) = reinitialization {

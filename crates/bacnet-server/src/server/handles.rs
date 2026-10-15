@@ -80,6 +80,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             &db,
             crate::device_view::DeviceExecution::FullServer,
         )
+        .with_identity(Some(&self.config.device))
         .with_work_limit(
             self.config
                 .read_property_multiple_budget

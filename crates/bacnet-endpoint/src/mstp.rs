@@ -151,7 +151,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// Clause 9.3 leaves them optional for a device. With them on, the
     /// transport carries APDUs of 1476 octets instead of 480, so the
     /// composed identity may advertise a Max_APDU_Length_Accepted of up to
-    /// 1476 ([`build_session`](Self::build_session) checks it), and the
+    /// 1476 (startup resolves the requested ceiling), and the
     /// link's other nodes must take extended frames too: one without them
     /// counts a frame of over 501 octets as invalid. See
     /// [`MstpConfig::extended_frames`].
@@ -241,7 +241,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// Attaches the object database for the server responder.
     ///
     /// Build it from the same identity passed to
-    /// [`identity`](Self::identity) so Device readback agrees with I-Am.
+    /// [`device`](Self::device) so Device readback agrees with I-Am.
     pub fn database(mut self, db: ObjectDatabase) -> Self {
         self.database = Some(db);
         self
@@ -255,7 +255,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// the transport carries, 480, or 1476 with
     /// [`extended_frames`](Self::extended_frames) (checked at
     /// [`build_session`](Self::build_session)).
-    pub fn identity(mut self, identity: crate::identity::DeviceIdentity) -> Self {
+    pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.identity = Some(identity);
         self
     }
@@ -316,23 +316,6 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// [`SessionConfig`] 480 default is kept untouched otherwise.
     pub fn build_session(mut self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
         self.validate_only()?;
-        if let Some(identity) = self.identity.as_ref() {
-            // Respect the APDU bound the transport declares
-            // (`local_receive_apdu_capacity`): never compose an identity that
-            // invites responses the link can't carry.
-            let bound = self.config().max_apdu_length();
-            if identity.max_apdu_length() > bound {
-                let frames = if self.extended_frames {
-                    "extended"
-                } else {
-                    "standard"
-                };
-                return Err(Error::Encoding(format!(
-                    "MS/TP endpoint: identity max-APDU {} exceeds MS/TP transport bound {bound} ({frames} frames)",
-                    identity.max_apdu_length()
-                )));
-            }
-        }
         let role = self.role;
         let session = self.session.clone();
         let database = self.database.take();
@@ -343,7 +326,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             endpoint = endpoint.with_database(db);
         }
         if let Some(id) = identity {
-            endpoint = endpoint.with_identity(id);
+            endpoint = endpoint.device(id);
         }
         Ok(endpoint)
     }

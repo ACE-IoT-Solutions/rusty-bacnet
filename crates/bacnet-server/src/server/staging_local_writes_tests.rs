@@ -49,8 +49,9 @@ fn config(
 fn add_device(db: &mut ObjectDatabase) {
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 100,
-            name: "Staging test device".into(),
+            identity: bacnet_objects::DeviceIdentity::new(100, 0)
+                .expect("valid Device identity")
+                .with_name("Staging test device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -113,6 +114,7 @@ async fn staging_writes_bo_bv_blo_at_priority_skips_wildcard_and_notifies_target
     ))
     .unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(transport)
         .database(db)
         .enable_event_enrollment(false)
@@ -214,6 +216,7 @@ async fn out_of_service_suppresses_targets_and_in_service_reapplies_current_stag
     ))
     .unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(recording_transport().0)
         .database(db)
         .enable_event_enrollment(false)
@@ -284,6 +287,7 @@ async fn target_failure_faults_source_and_current_success_recovers() {
     ))
     .unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(recording_transport().0)
         .database(db)
         .enable_event_enrollment(false)
@@ -412,6 +416,7 @@ async fn retained_stage_does_not_emit_a_duplicate_plan() {
     ))
     .unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(recording_transport().0)
         .database(db)
         .enable_event_enrollment(false)

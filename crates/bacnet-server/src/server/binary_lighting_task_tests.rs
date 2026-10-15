@@ -38,8 +38,9 @@ async fn start_server(
     let oid = object.object_identifier();
 
     let device = DeviceObject::new(DeviceConfig {
-        instance: 100,
-        name: "Binary-lighting-task-device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(100, 0)
+            .expect("valid Device identity")
+            .with_name("Binary-lighting-task-device"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -47,6 +48,7 @@ async fn start_server(
     db.add(Box::new(device)).unwrap();
     db.add(Box::new(object)).unwrap();
     let config = ServerConfig {
+        device: bacnet_objects::DeviceIdentity::new(100, 0).unwrap(),
         enable_event_enrollment: false,
         ..ServerConfig::default()
     };

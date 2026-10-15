@@ -23,7 +23,7 @@ async fn wire_contract(writes: bool, custom: bool) {
         crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
             .role(SessionRole::ServerOnly)
             .database(db)
-            .identity(identity)
+            .device(identity)
             .build_session()
             .unwrap();
     if writes {
@@ -113,6 +113,16 @@ impl BACnetObject for CustomDevice {
         property: PropertyIdentifier,
         _: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        match property {
+            PropertyIdentifier::OBJECT_IDENTIFIER => {
+                return Ok(PropertyValue::ObjectIdentifier(oid(123)))
+            }
+            PropertyIdentifier::VENDOR_IDENTIFIER => return Ok(PropertyValue::Unsigned(42)),
+            PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED => {
+                return Ok(PropertyValue::Unsigned(1476))
+            }
+            _ => {}
+        }
         // Startup validates the ordinary Device declaration. Execution-owned
         // service/COV properties below must still bypass the custom reader.
         if property == PropertyIdentifier::SEGMENTATION_SUPPORTED {
@@ -152,7 +162,7 @@ async fn endpoint_execution_profile_refusals_precede_ingress_and_allow_repair() 
             ],
         ] {
             let (session, _peer, starts) = session(role);
-            let mut session = session.with_database(database(&[123])).with_identity(
+            let mut session = session.with_database(database(&[123])).device(
                 crate::DeviceIdentity::new(123, 42)
                     .unwrap()
                     .with_services(&declared),
@@ -175,7 +185,7 @@ async fn endpoint_execution_profile_refusals_precede_ingress_and_allow_repair() 
 async fn endpoint_client_only_keeps_local_declaration_without_responder_claim() {
     let (session, _peer, starts) = session(SessionRole::ClientOnly);
     let declared = [ServiceSupported::SUBSCRIBE_COV];
-    let mut session = session.with_identity(
+    let mut session = session.device(
         crate::DeviceIdentity::new(123, 42)
             .unwrap()
             .with_services(&declared),
@@ -184,5 +194,43 @@ async fn endpoint_client_only_keeps_local_declaration_without_responder_claim() 
     assert!(session.server().is_none());
     assert_eq!(session.identity().unwrap().services(), declared);
     assert_eq!(starts.load(Ordering::SeqCst), 1);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn generated_identity_preflight_failure_can_change_identity_and_retry() {
+    let (session, _peer, starts) = session(SessionRole::Both);
+    let mut session = session.device(
+        crate::DeviceIdentity::new(123, 42)
+            .unwrap()
+            .with_max_apdu(1474)
+            .unwrap()
+            .with_services(&[]),
+    );
+    assert!(session.start().await.is_err());
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    assert!(
+        session.database.is_none(),
+        "failed stock generation is not committed"
+    );
+    assert_eq!(session.identity().unwrap().max_apdu_length(), 1474);
+    session = session.device(
+        crate::DeviceIdentity::new(456, 99)
+            .unwrap()
+            .with_max_apdu(206)
+            .unwrap(),
+    );
+    session.start().await.unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        session
+            .database
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
+            .selected_device(),
+        Some(oid(456))
+    );
     session.stop().await.unwrap();
 }

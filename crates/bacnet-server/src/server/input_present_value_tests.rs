@@ -53,8 +53,9 @@ async fn fixture() -> Fixture {
         av.object_identifier(),
     );
     let device = DeviceObject::new(DeviceConfig {
-        instance: 100,
-        name: "Input-local-write-test-device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(100, 0)
+            .expect("valid Device identity")
+            .with_name("Input-local-write-test-device"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -66,6 +67,7 @@ async fn fixture() -> Fixture {
     db.add(Box::new(msi)).unwrap();
     db.add(Box::new(av)).unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(transport)
         .database(db)
         .enable_event_enrollment(false)

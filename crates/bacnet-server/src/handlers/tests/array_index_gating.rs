@@ -68,8 +68,7 @@ fn gating_db() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
 
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1,
-        name: "GateDevice".into(),
+        identity: bacnet_objects::DeviceIdentity::default().with_name("GateDevice"),
         ..Default::default()
     })
     .unwrap();

@@ -54,8 +54,9 @@ impl Fixture {
         let mut db = crate::server::clock::clocked_test_database();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 896,
-                name: "Confirmed COV".into(),
+                identity: bacnet_objects::DeviceIdentity::new(896, 0)
+                    .expect("valid Device identity")
+                    .with_name("Confirmed COV"),
                 ..DeviceConfig::default()
             })
             .unwrap(),

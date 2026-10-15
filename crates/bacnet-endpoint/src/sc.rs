@@ -127,7 +127,7 @@ impl ScEndpointBuilder {
     /// Attaches the object database for the server responder.
     ///
     /// Build it from the same identity passed to
-    /// [`identity`](Self::identity) so I-Am vs ReadProperty agree.
+    /// [`device`](Self::device) so I-Am vs ReadProperty agree.
     pub fn database(mut self, db: ObjectDatabase) -> Self {
         self.database = Some(db);
         self
@@ -140,7 +140,7 @@ impl ScEndpointBuilder {
     /// already be built from the same identity so I-Am vs ReadProperty vs
     /// role limits agree. The builder neither generates nor stores the UUID
     /// beyond the caller-supplied bytes (mirror `sc_builder` docs).
-    pub fn identity(mut self, identity: crate::identity::DeviceIdentity) -> Self {
+    pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.identity = Some(identity);
         self
     }
@@ -239,7 +239,7 @@ impl ScEndpointBuilder {
             endpoint = endpoint.with_database(db);
         }
         if let Some(id) = self.identity.take() {
-            endpoint = endpoint.with_identity(id);
+            endpoint = endpoint.device(id);
         }
         Ok(endpoint)
     }
@@ -306,7 +306,7 @@ impl ScEndpointBuilder {
             endpoint = endpoint.with_database(db);
         }
         if let Some(id) = self.identity.take() {
-            endpoint = endpoint.with_identity(id);
+            endpoint = endpoint.device(id);
         }
         Ok(endpoint)
     }

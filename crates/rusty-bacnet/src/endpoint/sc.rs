@@ -63,7 +63,7 @@ impl ScEndpointConfig {
             .min_request_interval_ms(config.min_request_interval_ms)
             .heartbeat(config.heartbeat_interval_ms, config.heartbeat_timeout_ms)
             .database(db)
-            .identity(config.identity.clone())
+            .device(config.identity.clone())
             .build_hub_session(ws)
             .map_err(to_py_err)?;
         Ok(session)

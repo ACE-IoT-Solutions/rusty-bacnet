@@ -65,7 +65,7 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
                     let bytes = encode_notification(
                         &pending.notification,
                         pending.confirmed,
-                        self.config.max_apdu_length,
+                        u32::from(self.config.device.max_apdu_length()),
                         invoke,
                     )
                     .ok_or_else(denied)?;

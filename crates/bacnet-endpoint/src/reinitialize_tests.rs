@@ -39,7 +39,7 @@ async fn running(
     let builder = Builder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::ServerOnly)
         .database(db)
-        .identity(identity);
+        .device(identity);
     let mut endpoint = configure(builder).build_session().unwrap();
     endpoint.start().await.unwrap();
     // The endpoint bound port 0; the client talks to the port it actually got.
@@ -274,7 +274,7 @@ async fn an_identity_advertising_reinitialize_needs_a_handler() {
         EndpointSession::new(transport, SessionRole::ServerOnly, SessionConfig::default())
             .unwrap()
             .with_database(db)
-            .with_identity(identity);
+            .device(identity);
 
     assert_refused(
         &mut session,

@@ -81,8 +81,7 @@ async fn disable_initiation_preserves_delayed_detection_but_suppresses_distribut
     db.add(Box::new(ai)).unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),

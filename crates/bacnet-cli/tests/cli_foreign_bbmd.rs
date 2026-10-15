@@ -18,14 +18,16 @@ async fn bbmd(instance: u32, accept: bool) -> BACnetServer<BipTransport> {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance,
-            name: format!("bbmd-{instance}"),
+            identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+                .expect("valid Device identity")
+                .with_name(format!("bbmd-{instance}")),
             ..DeviceConfig::default()
         })
         .unwrap(),
     ))
     .unwrap();
     BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(instance, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(Ipv4Addr::LOCALHOST)

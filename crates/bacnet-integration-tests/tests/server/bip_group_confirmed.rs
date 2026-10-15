@@ -128,8 +128,9 @@ async fn server() -> BACnetServer<BipTransport> {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: DEVICE,
-            name: "B/IP server".into(),
+            identity: bacnet_objects::DeviceIdentity::new(DEVICE, 0)
+                .expect("valid Device identity")
+                .with_name("B/IP server"),
             ..DeviceConfig::default()
         })
         .unwrap(),

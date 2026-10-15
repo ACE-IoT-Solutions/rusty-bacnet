@@ -150,7 +150,7 @@ impl MstpEndpointConfig {
             .client_timers(config.apdu_timeout_ms, config.apdu_retries)
             .min_request_interval_ms(config.min_request_interval_ms)
             .database(db)
-            .identity(config.identity.clone())
+            .device(config.identity.clone())
             .build_session()
             .map_err(to_py_err)?;
         Ok(session)

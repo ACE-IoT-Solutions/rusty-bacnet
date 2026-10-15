@@ -147,7 +147,7 @@ impl BipEndpointBuilder {
     /// Attaches the object database for the server responder.
     ///
     /// Build it from the same identity passed to
-    /// [`identity`](Self::identity) so Device readback agrees with I-Am.
+    /// [`device`](Self::device) so Device readback agrees with I-Am.
     pub fn database(mut self, db: ObjectDatabase) -> Self {
         self.database = Some(db);
         self
@@ -166,7 +166,7 @@ impl BipEndpointBuilder {
     /// Truth direction: the database should already be built from the same
     /// identity (`DeviceIdentity::build_database`); this only wires I-Am +
     /// role limits. No generation, no extra socket.
-    pub fn identity(mut self, identity: crate::identity::DeviceIdentity) -> Self {
+    pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.identity = Some(identity);
         self
     }
@@ -299,7 +299,7 @@ impl BipEndpointBuilder {
             endpoint = endpoint.with_database(db);
         }
         if let Some(id) = identity {
-            endpoint = endpoint.with_identity(id);
+            endpoint = endpoint.device(id);
         }
         if let Some(authorizer) = device_write_authorizer {
             endpoint = endpoint.with_device_writes(authorizer);

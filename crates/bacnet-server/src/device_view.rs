@@ -1,5 +1,7 @@
 //! Executor-owned Device reads, independent of mutable object declarations.
 //! This request-scoped adapter never changes the database or service dispatch.
+#[path = "device_view_identity.rs"]
+mod identity;
 use crate::cov::active::LiveDeviceCov;
 use bacnet_objects::{
     audit::{AuditLogForwarding, AuditLogStorage, AuditReporterObject, ObjectAuditPolicy},
@@ -21,6 +23,7 @@ use bacnet_types::{
     error::Error,
     primitives::{ObjectIdentifier, PropertyValue},
 };
+use identity::{identity_property, IdentityView};
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,6 +74,7 @@ pub(crate) struct DeviceReadContext<'a> {
     execution: DeviceExecution,
     clock: bool,
     live: Option<&'a LiveDeviceCov>,
+    identity: Option<IdentityView>,
 }
 
 impl<'a> DeviceReadContext<'a> {
@@ -83,6 +87,7 @@ impl<'a> DeviceReadContext<'a> {
             execution,
             clock: db.clock_frame().is_some(),
             live: None,
+            identity: None,
         }
     }
     /// The same context, serving the selected Device's COV lists from `live`.
@@ -95,7 +100,15 @@ impl<'a> DeviceReadContext<'a> {
             execution: self.execution,
             clock: self.clock,
             live,
+            identity: self.identity,
         }
+    }
+    pub(crate) fn with_identity(
+        mut self,
+        identity: Option<&bacnet_objects::DeviceIdentity>,
+    ) -> Self {
+        self.identity = identity.map(IdentityView::from);
+        self
     }
     pub(crate) fn with_registered_port(mut self, oid: Option<ObjectIdentifier>) -> Self {
         self.registered_port = oid;
@@ -128,10 +141,10 @@ fn owned(property: P) -> bool {
             | P::DEVICE_ADDRESS_BINDING
     )
 }
-/// The five served fields cannot be assigned through a custom Device writer.
+/// Executor-owned fields cannot be assigned through a custom Device writer.
 /// Call only after the existing object/index/value and authorization preflight.
 pub(crate) fn check_executor_owned_write(oid: ObjectIdentifier, property: P) -> Result<(), Error> {
-    if oid.object_type() == ObjectType::DEVICE && owned(property) {
+    if oid.object_type() == ObjectType::DEVICE && (owned(property) || identity_property(property)) {
         Err(property_error(ErrorCode::WRITE_ACCESS_DENIED))
     } else {
         Ok(())
@@ -146,6 +159,15 @@ fn property_error(code: ErrorCode) -> Error {
 }
 
 impl DeviceReadView<'_> {
+    fn identity(&self) -> Option<&IdentityView> {
+        self.context
+            .identity
+            .as_ref()
+            .filter(|identity| identity.oid == self.object.object_identifier())
+    }
+    fn owns(&self, property: P) -> bool {
+        owned(property) || (self.identity().is_some() && identity_property(property))
+    }
     fn is_device(&self) -> bool {
         self.object.object_identifier().object_type() == ObjectType::DEVICE
     }
@@ -162,6 +184,14 @@ impl BACnetObject for DeviceReadView<'_> {
         self.object.object_name()
     }
     fn read_property(&self, property: P, index: Option<u32>) -> Result<PropertyValue, Error> {
+        if let Some(identity) = self.identity().filter(|_| identity_property(property)) {
+            let value = identity.value(property)?;
+            return if index.is_some() {
+                Err(property_error(ErrorCode::PROPERTY_IS_NOT_AN_ARRAY))
+            } else {
+                Ok(value)
+            };
+        }
         if !self.is_device() || !owned(property) {
             return self.object.read_property(property, index);
         }
@@ -266,7 +296,17 @@ impl BACnetObject for DeviceReadView<'_> {
         } else {
             original.into_owned()
         };
-        rows.retain(|row| !owned(row.property_identifier));
+        rows.retain(|row| !self.owns(row.property_identifier));
+        if let Some(identity) = self.identity() {
+            rows.extend(identity.properties().map(|property| {
+                PropertyMetadata::new(
+                    property,
+                    PropertyConformance::RequiredRead,
+                    None,
+                    PropertyWriteCapability::ReadOnly,
+                )
+            }));
+        }
         for property in [
             P::PROTOCOL_SERVICES_SUPPORTED,
             P::PROPERTY_LIST,
@@ -315,7 +355,7 @@ impl BACnetObject for DeviceReadView<'_> {
         )
     }
     fn is_array_property(&self, property: P) -> bool {
-        if self.is_device() && owned(property) {
+        if self.is_device() && self.owns(property) {
             property == P::PROPERTY_LIST
         } else {
             self.object.is_array_property(property)
@@ -325,7 +365,7 @@ impl BACnetObject for DeviceReadView<'_> {
     /// and Device_Address_Binding are BACnetLISTs, Property_List is an array
     /// and the services bit string is a single value.
     fn is_list_property(&self, property: P) -> bool {
-        if self.is_device() && owned(property) {
+        if self.is_device() && self.owns(property) {
             matches!(
                 property,
                 P::ACTIVE_COV_SUBSCRIPTIONS
@@ -337,7 +377,7 @@ impl BACnetObject for DeviceReadView<'_> {
         }
     }
     fn is_writable_property(&self, property: P) -> bool {
-        if self.is_device() && owned(property) {
+        if self.is_device() && self.owns(property) {
             false
         } else {
             self.object.is_writable_property(property)

@@ -36,6 +36,7 @@ async fn audit_reporter_create_delete_reach_real_log_over_udp() {
         .unwrap();
     target_db.add(Box::new(reporter)).unwrap();
     let mut target = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(10, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(target_db)

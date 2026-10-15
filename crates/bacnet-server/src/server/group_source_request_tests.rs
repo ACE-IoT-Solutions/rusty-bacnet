@@ -102,8 +102,9 @@ fn subscribe_cov(invoke_id: u8) -> Bytes {
 async fn a_confirmed_request_from_a_group_source_is_ignored_and_counted() {
     let mut db = ObjectDatabase::new();
     let device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Group source".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Group source"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -117,9 +118,16 @@ async fn a_confirmed_request_from_a_group_source_is_ignored_and_counted() {
         .inbound(rx)
         .build();
     let sent = transport.sent();
-    let mut server = BACnetServer::start(ServerConfig::default(), db, transport)
-        .await
-        .unwrap();
+    let mut server = BACnetServer::start(
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(1234, 0).unwrap(),
+            ..Default::default()
+        },
+        db,
+        transport,
+    )
+    .await
+    .unwrap();
 
     // From the group: a read and a subscription for confirmed
     // notifications. From the peer last: a subscription and a read, whose

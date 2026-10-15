@@ -36,8 +36,9 @@ pub(super) fn clocked_database() -> (ObjectDatabase, Arc<Mutex<Duration>>, Arc<W
     db.add(Box::new(ao)).unwrap();
     db.add(Box::new(
         crate::device::DeviceObject::new(crate::device::DeviceConfig {
-            instance: THIS_DEVICE,
-            name: "Device".into(),
+            identity: crate::DeviceIdentity::new(THIS_DEVICE, 0)
+                .expect("valid Device identity")
+                .with_name("Device"),
             ..Default::default()
         })
         .unwrap(),

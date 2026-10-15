@@ -87,7 +87,7 @@ impl BipEndpointConfig {
             .min_request_interval_ms(config.min_request_interval_ms)
             .mode(config.mode.clone())
             .database(db)
-            .identity(config.identity.clone());
+            .device(config.identity.clone());
         if let Some(instance) = config.registered_network_port {
             let oid = bacnet_types::primitives::ObjectIdentifier::new(
                 bacnet_types::enums::ObjectType::NETWORK_PORT,

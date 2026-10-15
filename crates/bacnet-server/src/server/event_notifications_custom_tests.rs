@@ -238,8 +238,7 @@ fn database(
     .unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Custom Device".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Custom Device"),
             ..DeviceConfig::default()
         })
         .unwrap(),

@@ -19,15 +19,17 @@ fn database(mask: u8) -> ObjectDatabase {
     // Higher identity is inserted first; the profiled Device must still own views.
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 900,
-            name: "Higher Device".into(),
+            identity: bacnet_objects::DeviceIdentity::new(900, 0)
+                .expect("valid Device identity")
+                .with_name("Higher Device"),
             ..Default::default()
         })
         .unwrap(),
     ))
     .unwrap();
     let mut object = DeviceObject::new(DeviceConfig {
-        instance: device().instance_number(),
+        identity: bacnet_objects::DeviceIdentity::new(device().instance_number(), 0)
+            .expect("valid Device identity"),
         ..Default::default()
     })
     .unwrap();

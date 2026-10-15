@@ -276,12 +276,16 @@ pub async fn run(
         eprintln!("--- {baud} baud, {reply:?} reply ---");
         let (client_end, server_end, counters) = SimWire::pair(baud);
         let server_port = MstpTransport::new(server_end, station(1, baud, extended));
-        let max_apdu = u32::from(server_port.local_receive_apdu_capacity());
+        let identity = stress_device_config(1234)
+            .identity
+            .resolve(server_port.local_receive_apdu_capacity())
+            .unwrap();
         let mut server = BACnetServer::<MstpTransport<SimWire>>::generic_builder()
+            .device(identity.clone())
             .transport(server_port)
             .database(make_large_db_with(
                 DeviceConfig {
-                    max_apdu_length: max_apdu,
+                    identity,
                     ..stress_device_config(1234)
                 },
                 reply.analog_inputs(),

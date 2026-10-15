@@ -267,7 +267,13 @@ async fn audit_forwarding_goes_out_under_disable_initiation() {
 #[tokio::test(start_paused = true)]
 async fn audit_forwarding_oversize_and_send_errors_leave_local_success() {
     let mut f = ready().await;
-    f.server.config_mut().max_apdu_length = 50;
+    f.server.config_mut().device = f
+        .server
+        .config_mut()
+        .device
+        .clone()
+        .with_max_apdu(50)
+        .unwrap();
     assert!(matches!(
         f.confirmed(2, &[3], payload(false)).await,
         Some(Apdu::SimpleAck(_))
@@ -277,7 +283,13 @@ async fn audit_forwarding_oversize_and_send_errors_leave_local_success() {
         f.requests().is_empty(),
         "oversized forward is not segmented"
     );
-    f.server.config_mut().max_apdu_length = 1476;
+    f.server.config_mut().device = f
+        .server
+        .config_mut()
+        .device
+        .clone()
+        .with_max_apdu(1476)
+        .unwrap();
     f.wire.fail.store(true, Ordering::Release);
     assert!(matches!(
         f.confirmed(3, &[3], payload(false)).await,

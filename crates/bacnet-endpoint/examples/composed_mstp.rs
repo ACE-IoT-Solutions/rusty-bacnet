@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execution_mode(MstpExecutionMode::Tokio)
         .role(SessionRole::Both)
         .database(db)
-        .identity(identity)
+        .device(identity)
         .build_session()?;
     endpoint.start().await?;
     assert!(endpoint.is_running());
@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let oversize = DeviceIdentity::new(2002, 42)?.with_max_apdu(1476)?;
     let (serial2, _peer2) = LoopbackSerial::pair();
     assert!(MstpEndpointBuilder::new(serial2, 4)
-        .identity(oversize)
+        .device(oversize)
         .build_session()
         .is_err());
 

@@ -50,8 +50,9 @@ fn database() -> ObjectDatabase {
     let mut db = crate::server::clocked_test_database();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 856,
-            name: "D-856".into(),
+            identity: bacnet_objects::DeviceIdentity::new(856, 0)
+                .expect("valid Device identity")
+                .with_name("D-856"),
             ..Default::default()
         })
         .unwrap(),
