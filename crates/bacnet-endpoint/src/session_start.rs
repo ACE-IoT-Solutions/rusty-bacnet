@@ -65,6 +65,9 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                     .get_or_insert_with(|| Arc::new(RwLock::new(ObjectDatabase::new())));
                 let mut responder = EndpointResponder::new(Arc::clone(db), egress.clone())
                     .with_read_work_limit(self.config.read_work_limit);
+                if let Some(identity) = &self.identity {
+                    responder = responder.with_device(identity.clone());
+                }
                 if let Some(oid) = self.registered_network_port {
                     responder =
                         responder.with_registered_port(oid, self.registered_port_lease.clone());

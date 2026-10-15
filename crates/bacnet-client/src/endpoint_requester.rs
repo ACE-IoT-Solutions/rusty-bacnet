@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bacnet_encoding::apdu::{
-    encode_apdu, validate_max_apdu_length, AbortPdu, Apdu, ConfirmedRequest as ConfirmedRequestPdu,
+    encode_apdu, max_apdu_header_at_or_below, AbortPdu, Apdu,
+    ConfirmedRequest as ConfirmedRequestPdu,
 };
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_endpoint_core::coordinator::{
@@ -164,7 +165,7 @@ impl EndpointRequester {
         coordinator: Arc<OutboundTransactionCoordinator>,
         config: ClientConfig,
     ) -> Result<Self, Error> {
-        validate_max_apdu_length(config.max_apdu_length)?;
+        max_apdu_header_at_or_below(u32::from(config.max_apdu_length))?;
         pacing::validate_interval_ms(config.min_request_interval_ms)?;
         let pacer = Arc::new(RequestPacer::new(Duration::from_millis(
             config.min_request_interval_ms,

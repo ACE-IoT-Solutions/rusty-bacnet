@@ -350,6 +350,7 @@ async fn source_read_and_target_reporting_remain_independent_over_bip() {
         )))
         .unwrap();
     let mut target_server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(456, 42).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(db)

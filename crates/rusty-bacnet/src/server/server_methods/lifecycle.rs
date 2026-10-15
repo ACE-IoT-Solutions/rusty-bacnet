@@ -33,9 +33,13 @@ impl BACnetServer {
                 audit_configuration::pending_audit_log_index(&pending, object.object_identifier())?;
             }
         }
-        let mut builder = server::BACnetServer::generic_builder()
-            .segmentation_supported(self.segmentation_supported)
-            .apdu_segment_timeout_ms(self.apdu_segment_timeout_ms);
+        let identity = bacnet_objects::DeviceIdentity::new(self.device_instance, 555)
+            .map_err(to_py_err)?
+            .with_name(self.device_name.clone())
+            .with_segmentation(self.segmentation_supported)
+            .with_apdu_segment_timeout_ms(self.apdu_segment_timeout_ms);
+        identity.validate().map_err(to_py_err)?;
+        let mut builder = server::BACnetServer::generic_builder().device(identity.clone());
         if let Some(instance) = self.registered_network_port {
             let oid = bacnet_types::primitives::ObjectIdentifier::new(
                 bacnet_types::enums::ObjectType::NETWORK_PORT,
@@ -78,10 +82,7 @@ impl BACnetServer {
         let inner = self.inner.clone();
         let started = self.started.clone();
         let device_instance = self.device_instance;
-        let segmentation_supported = self.segmentation_supported;
-        let apdu_segment_timeout_ms = self.apdu_segment_timeout_ms;
         let audit_recipient = recipient_input.take();
-        let device_name = self.device_name.clone();
         let transport_type = self.transport_type.clone();
         let interface_str = self.interface.clone();
         let port = self.port;
@@ -180,10 +181,10 @@ impl BACnetServer {
                 };
 
             // Validate the generated Device and entire pending DB before SC I/O.
+            let identity = identity.resolve(local_capacity).map_err(to_py_err)?;
             let mut device = DeviceObject::new(DeviceConfig {
-                segmentation_supported,
-                apdu_segment_timeout: apdu_segment_timeout_ms,
-                ..generated_device_config(device_instance, device_name, local_capacity)
+                identity,
+                ..DeviceConfig::default()
             })
             .map_err(to_py_err)?;
             if let Some(recipient) = audit_recipient {
@@ -540,24 +541,6 @@ impl BACnetServer {
     }
 }
 
-// The binding owns this Device; derive its declaration before adding it to DB.
-fn generated_device_config(
-    instance: u32,
-    name: String,
-    local_receive_apdu_capacity: u16,
-) -> DeviceConfig {
-    DeviceConfig {
-        instance,
-        name,
-        vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
-        max_apdu_length: server::ServerConfig::default()
-            .max_apdu_length
-            .min(u32::from(local_receive_apdu_capacity)),
-        ..DeviceConfig::default()
-    }
-}
-
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
@@ -567,9 +550,15 @@ mod capacity_tests {
         let (serial, _peer) = LoopbackSerial::pair();
         let transport: AnyTransport<LoopbackSerial> =
             AnyTransport::Mstp(MstpTransport::new(serial, MstpConfig::default()));
-        let config =
-            generated_device_config(893, "test".into(), transport.local_receive_apdu_capacity());
-        assert_eq!(config.max_apdu_length, 480);
+        let identity = bacnet_objects::DeviceIdentity::new(893, 555)
+            .unwrap()
+            .resolve(transport.local_receive_apdu_capacity())
+            .unwrap();
+        assert_eq!(identity.max_apdu_length(), 480);
+        let config = DeviceConfig {
+            identity,
+            ..Default::default()
+        };
         let device = DeviceObject::new(config).unwrap();
         assert_eq!(
             device

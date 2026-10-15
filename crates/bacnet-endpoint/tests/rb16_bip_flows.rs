@@ -72,7 +72,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::Both)
         .database(db)
-        .identity(id)
+        .device(id)
         .build_session()
         .unwrap();
     endpoint.start().await.unwrap();
@@ -299,7 +299,7 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
     let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::Both)
         .database(db)
-        .identity(id)
+        .device(id)
         .build_session()
         .unwrap();
     endpoint.start().await.unwrap();

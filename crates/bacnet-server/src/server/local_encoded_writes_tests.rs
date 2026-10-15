@@ -21,8 +21,9 @@ async fn server() -> BACnetServer<TestTransport> {
     let mut db = clocked_test_database();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1296,
-            name: "Encoded writes".into(),
+            identity: bacnet_objects::DeviceIdentity::new(1296, 0)
+                .expect("valid Device identity")
+                .with_name("Encoded writes"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -71,6 +72,7 @@ async fn server() -> BACnetServer<TestTransport> {
     ))
     .unwrap();
     BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1296, 0).unwrap())
         .transport(TestTransport::new())
         .database(db)
         .enable_event_enrollment(false)

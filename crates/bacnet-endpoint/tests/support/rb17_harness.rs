@@ -157,7 +157,7 @@ impl Harness {
             .queue_capacity(32)
             .client_timers(2_000, 0)
             .database(db)
-            .identity(id)
+            .device(id)
             .build_session()
             .expect("mstp session must build");
         session.start().await.expect("mstp session must start");

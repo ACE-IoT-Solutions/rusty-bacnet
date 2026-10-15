@@ -119,6 +119,7 @@ async fn an_original_unicast_sent_to_the_multicast_group_is_not_answered() {
         return;
     };
     let mut server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(DEVICE, 0).unwrap())
         .database(database())
         .transport(Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(DEVICE)))
         .build()

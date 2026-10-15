@@ -176,8 +176,7 @@ fn read_range_refuses_whole_arrays_and_array_elements_as_not_a_list() {
     let device = add(
         &mut db,
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "DEV-1".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("DEV-1"),
             ..Default::default()
         })
         .unwrap(),
@@ -513,8 +512,7 @@ fn read_range_standalone_device_cov_lists_page_as_read_property_reads_them() {
     let device = add(
         &mut db,
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "DEV-1".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("DEV-1"),
             ..Default::default()
         })
         .unwrap(),

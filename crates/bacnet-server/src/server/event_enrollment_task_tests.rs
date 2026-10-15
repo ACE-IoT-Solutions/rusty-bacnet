@@ -54,8 +54,7 @@ async fn spawned_task_advances_and_fires_the_time_delay_countdown() {
     db.add(Box::new(ee)).unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -155,8 +154,7 @@ async fn default_interval_server(
     db.add(Box::new(ee)).unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),

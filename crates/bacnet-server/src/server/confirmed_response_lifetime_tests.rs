@@ -250,7 +250,7 @@ async fn reassemble(f: &mut Fixture, request: &Apdu) {
 async fn reassembled_exact_request_is_suppressed_only_before_original_issuance() {
     let mut f = Fixture::configured(
         ServerConfig {
-            segmentation_supported: Segmentation::BOTH,
+            device: bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
             ..Default::default()
         },
         16,

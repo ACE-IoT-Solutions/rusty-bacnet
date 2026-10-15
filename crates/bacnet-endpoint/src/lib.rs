@@ -23,7 +23,7 @@
 //! let mut session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
 //!     .role(SessionRole::Both)
 //!     .database(db)
-//!     .identity(identity)
+//!     .device(identity)
 //!     .build_session()?;
 //! session.start().await?;
 //! session.broadcast_i_am().await?;
@@ -146,8 +146,8 @@
 //! | Standalone construction | Shared endpoint composition |
 //! |---------------------|---------------------|
 //! | `BACnetClient::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ClientOnly).build_session()?` then `start()` |
-//! | `BACnetServer::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ServerOnly).database(db).identity(id).build_session()?` then `start()` |
-//! | Client + server on one device | `BipEndpointBuilder::...role(Both).database(db).identity(id).build_session()?` (or the SC / MS/TP builder) |
+//! | `BACnetServer::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ServerOnly).database(db).device(id).build_session()?` then `start()` |
+//! | Client + server on one device | `BipEndpointBuilder::...role(Both).database(db).device(id).build_session()?` (or the SC / MS/TP builder) |
 //! | `BACnetClient::sc_builder()...build().await` | `ScEndpointBuilder::new(vmac, uuid)...build_hub_session(ws)?` (`sc-tls`; dial first, then compose) |
 //! | `BACnetServer::sc_builder()...build().await` | Same `ScEndpointBuilder` with `ServerOnly` + `database` + `identity` |
 //! | `generic_builder().transport(mstp)...` | `MstpEndpointBuilder::new(serial, station)...build_session()?` (one serial owner, simulator evidence) |

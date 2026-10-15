@@ -212,14 +212,16 @@ async fn cov_subscribe_then_cancel() {
     let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
     db.add(Box::new(ao)).unwrap();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Cancel-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Cancel-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(db)

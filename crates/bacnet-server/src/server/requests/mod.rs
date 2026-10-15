@@ -123,18 +123,17 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let invoke_id = req.invoke_id;
         let service_choice = req.service_choice;
         let client_max_apdu = req.max_apdu_length;
-        let client_accepts_segmented = req.segmented_response_accepted;
         let client_max_segments = req.max_segments;
-        let effective_max_apdu = event_information::limit(client_max_apdu, config.max_apdu_length);
+        let effective_max_apdu =
+            event_information::limit(client_max_apdu, u32::from(config.device.max_apdu_length()));
         let effective_max_apdu = route
             .max_apdu_length(effective_max_apdu, source_network.as_ref())
             // Invalid reply authority must not revoke already-admitted service
             // execution. Keep its construction budget; issuance still fails
             // closed on the same invalid route without any fallback.
             .unwrap_or(effective_max_apdu);
-        let device_transmits_segments =
-            event_information::can_segment(config.segmentation_supported);
-        let segmented_response_available = client_accepts_segmented && device_transmits_segments;
+        let segmented_response_available = req.segmented_response_accepted
+            && event_information::can_segment(config.device.segmentation());
         let mut effects = MutationEffects::default();
         let mut initial_cov_notifications: Vec<InitialCovNotification> = Vec::new();
         let mut accepted_acknowledgment = None;
@@ -201,9 +200,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 confirmed_response::read_property_response_observed(
                     db,
                     Some(services.live_tables()),
-                    crate::device_view::DeviceExecution::FullServer,
-                    config.registered_network_port,
-                    config.read_property_multiple_budget.max_result_elements,
+                    confirmed_response::ReadProfile {
+                        execution: crate::device_view::DeviceExecution::FullServer,
+                        registered_port: config.registered_network_port,
+                        work_limit: config.read_property_multiple_budget.max_result_elements,
+                        identity: Some(&config.device),
+                    },
                     &req,
                     |db, oid, req, result| {
                         let result = match result {
@@ -235,8 +237,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     services.live_tables(),
                     &req.service_request,
                     &mut ack_buf,
-                    config.read_property_multiple_budget,
-                    config.registered_network_port,
+                    config,
                     |db, oid, property, index, result| {
                         read_audits.extend(audit.read_intent(db, oid, property, index, result));
                     },
@@ -427,7 +428,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 network,
                                 notification_transactions,
                                 device_bindings,
-                                config.max_apdu_length,
+                                u32::from(config.device.max_apdu_length()),
                             );
                         }
                         simple_ack()
@@ -623,7 +624,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 // fits neither an unsegmented nor a segmented send and draws the
                 // same Abort; SendSegmentedComplexACK is available only when
                 // the device supports transmitting segments (#381).
-                if !client_accepts_segmented || !device_transmits_segments {
+                if !segmented_response_available {
                     let abort = Apdu::Abort(AbortPdu {
                         sent_by_server: true,
                         invoke_id,
@@ -664,7 +665,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         },
                         ack.service_ack.clone(),
                         pending,
-                        Duration::from_millis(config.apdu_segment_timeout_ms),
+                        Duration::from_millis(config.device.apdu_segment_timeout_ms()),
                     );
                 }
 

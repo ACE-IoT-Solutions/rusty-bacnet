@@ -254,7 +254,7 @@ async fn bip_one_socket_bidirectional_and_device_inspection() {
     let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::Both)
         .database(db)
-        .identity(id.clone())
+        .device(id.clone())
         .build_session()
         .expect("bip session must build");
     endpoint.start().await.unwrap();
@@ -353,7 +353,7 @@ async fn bip_one_socket_bidirectional_and_device_inspection() {
 
     // Device properties inspection over the same real socket: every Device
     // ReadProperty must equal the I-Am fields (I-Am ≡ ReadProperty).
-    let iam = id.iam_request();
+    let iam = bacnet_endpoint::identity::iam_request(&id);
     for (idx, (prop, expect_value)) in [
         (
             PropertyIdentifier::OBJECT_IDENTIFIER,
@@ -450,7 +450,7 @@ async fn bip_one_socket_bidirectional_and_device_inspection() {
     let mut re = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::Both)
         .database(db2)
-        .identity(id2)
+        .device(id2)
         .build_session()
         .unwrap();
     re.start().await.unwrap();

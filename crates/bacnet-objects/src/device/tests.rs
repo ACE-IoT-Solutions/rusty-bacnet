@@ -2,6 +2,7 @@ mod audit_recipient;
 mod backup;
 mod database_revision;
 mod description;
+mod identity;
 
 use super::*;
 use crate::clock::{ClockFrame, ClockReader};
@@ -52,8 +53,9 @@ fn bind_clock(device: &mut DeviceObject, clock: FakeClock) {
 
 fn make_device() -> DeviceObject {
     DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Test Device".into(),
+        identity: crate::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Test Device"),
         ..DeviceConfig::default()
     })
     .unwrap()
@@ -103,81 +105,6 @@ fn read_max_apdu_length() {
         .read_property(PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED, None)
         .unwrap();
     assert_eq!(val, PropertyValue::Unsigned(1476));
-}
-
-#[test]
-fn mode_derived_max_segments_accepted() {
-    let cases = [
-        ("none", Segmentation::NONE, None),
-        ("transmit", Segmentation::TRANSMIT, Some(1)),
-        ("receive", Segmentation::RECEIVE, Some(65)),
-        ("both", Segmentation::BOTH, Some(65)),
-        ("unknown", Segmentation::from_raw(64), Some(65)),
-    ];
-
-    for (name, segmentation, expected_max_segments) in cases {
-        let dev = DeviceObject::new(DeviceConfig {
-            segmentation_supported: segmentation,
-            ..DeviceConfig::default()
-        })
-        .unwrap();
-
-        assert_eq!(
-            dev.read_property(PropertyIdentifier::SEGMENTATION_SUPPORTED, None)
-                .unwrap(),
-            PropertyValue::Enumerated(segmentation.to_raw() as u32),
-            "{name} segmentation readback"
-        );
-
-        let PropertyValue::List(property_list) = dev
-            .read_property(PropertyIdentifier::PROPERTY_LIST, None)
-            .unwrap()
-        else {
-            panic!("{name} Property_List was not a list");
-        };
-        assert_eq!(
-            property_list.contains(&PropertyValue::Enumerated(
-                PropertyIdentifier::MAX_SEGMENTS_ACCEPTED.to_raw(),
-            )),
-            expected_max_segments.is_some(),
-            "{name} Property_List presence"
-        );
-
-        let max_segments = dev.read_property(PropertyIdentifier::MAX_SEGMENTS_ACCEPTED, None);
-        match expected_max_segments {
-            Some(expected) => assert_eq!(
-                max_segments.unwrap(),
-                PropertyValue::Unsigned(expected),
-                "{name} Max_Segments_Accepted"
-            ),
-            None => assert!(matches!(
-                max_segments,
-                Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
-            )),
-        }
-    }
-}
-
-#[test]
-fn segment_timeout_is_present_for_segmented_devices() {
-    for segmentation in [
-        Segmentation::TRANSMIT,
-        Segmentation::RECEIVE,
-        Segmentation::BOTH,
-    ] {
-        let dev = DeviceObject::new(DeviceConfig {
-            segmentation_supported: segmentation,
-            ..DeviceConfig::default()
-        })
-        .unwrap();
-        assert_eq!(
-            dev.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None)
-                .unwrap(),
-            PropertyValue::Unsigned(5000)
-        );
-    }
 }
 
 #[test]
@@ -588,8 +515,7 @@ fn compute_object_types_supported_old_bits_preserved() {
 #[test]
 fn device_protocol_object_types_has_new_bits() {
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1,
-        name: "Test".into(),
+        identity: crate::DeviceIdentity::default().with_name("Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -621,10 +547,9 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
         Segmentation::TRANSMIT,
         Segmentation::RECEIVE,
         Segmentation::BOTH,
-        Segmentation::from_raw(64),
     ] {
         let mut device = DeviceObject::new(DeviceConfig {
-            segmentation_supported,
+            identity: crate::DeviceIdentity::default().with_segmentation(segmentation_supported),
             ..DeviceConfig::default()
         })
         .unwrap();
@@ -719,60 +644,5 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
                 assert_eq!(device.read_property(p, None).unwrap(), before);
             }
         }
-    }
-}
-
-#[test]
-fn segment_timeout_absence_custom_value_and_zero_validation() {
-    let none = DeviceObject::new(DeviceConfig {
-        apdu_segment_timeout: 0,
-        ..Default::default()
-    })
-    .unwrap();
-    assert!(
-        matches!(none.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None),
-        Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
-    );
-    assert!(!none
-        .property_list()
-        .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT));
-    for mode in [
-        Segmentation::TRANSMIT,
-        Segmentation::RECEIVE,
-        Segmentation::BOTH,
-    ] {
-        assert!(DeviceObject::new(DeviceConfig {
-            segmentation_supported: mode,
-            apdu_segment_timeout: 0,
-            ..Default::default()
-        })
-        .is_err());
-        let device = DeviceObject::new(DeviceConfig {
-            segmentation_supported: mode,
-            apdu_segment_timeout: 7300,
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(
-            device
-                .read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None)
-                .unwrap(),
-            PropertyValue::Unsigned(7300)
-        );
-        assert_eq!(
-            device
-                .read_property(PropertyIdentifier::APDU_TIMEOUT, None)
-                .unwrap(),
-            PropertyValue::Unsigned(6000)
-        );
-        assert_eq!(
-            device
-                .read_property(PropertyIdentifier::NUMBER_OF_APDU_RETRIES, None)
-                .unwrap(),
-            PropertyValue::Unsigned(3)
-        );
-        assert!(device
-            .property_list()
-            .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT));
     }
 }

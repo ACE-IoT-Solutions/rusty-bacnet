@@ -57,7 +57,7 @@ impl PacedEndpointOperation {
             )
             .map_err(|error| Error::Encoding(error.to_string()))?
         };
-        let max_apdu_length = inner.max_apdu_length;
+        let max_apdu_length = max_apdu_header_at_or_below(u32::from(inner.max_apdu_length))?;
         let guard = EndpointRequestGuard {
             inner,
             destination: tsm_mac,

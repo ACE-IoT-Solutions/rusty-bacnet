@@ -55,7 +55,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             .configured_bip_port_internal(&oid)
             .ok_or_else(|| invalid("selected built-in B/IP port missing"))?;
         if let Some(identity) = &self.identity {
-            identity.validate_registered_bip(oid, &configured)?;
+            identity.validate_registered_bip_internal(oid, &configured)?;
         }
         let (_, lease) = db.reserve_bip_port_internal(oid, ip.octets(), address.port())?;
         self.registered_port_lease = Arc::downgrade(&lease);
@@ -93,7 +93,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             local_network.publish(state);
         }
         if let Some(identity) = &mut self.identity {
-            identity.publish_registered_bip(oid, address);
+            identity.publish_registered_bip_internal(oid, address);
         }
         Ok(())
     }

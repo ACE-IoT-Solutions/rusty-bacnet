@@ -62,8 +62,7 @@ fn active_cov_subscriptions_low_level_handlers_read_standalone_empty_list() {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "COV Device".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("COV Device"),
             ..Default::default()
         })
         .unwrap(),

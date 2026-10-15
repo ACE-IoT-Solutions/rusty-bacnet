@@ -13,16 +13,20 @@ pub(super) async fn read_property_response(
     reinitialize: bool,
     registered_port: Option<ObjectIdentifier>,
     work_limit: usize,
+    identity: Option<&bacnet_objects::DeviceIdentity>,
 ) -> Apdu {
     read_property_response_observed(
         db,
         None,
-        DeviceExecution::Endpoint {
-            writes,
-            reinitialize,
+        ReadProfile {
+            execution: DeviceExecution::Endpoint {
+                writes,
+                reinitialize,
+            },
+            registered_port,
+            work_limit,
+            identity,
         },
-        registered_port,
-        work_limit,
         request,
         |_, _, _, _| {},
     )
@@ -88,8 +92,7 @@ pub(super) async fn read_property_multiple_observed(
     tables: LiveTables<'_>,
     service_request: &[u8],
     service_ack: &mut BytesMut,
-    budget: crate::server::ReadPropertyMultipleBudget,
-    registered_port: Option<ObjectIdentifier>,
+    config: &ServerConfig,
     mut completed: impl FnMut(
         &ObjectDatabase,
         ObjectIdentifier,
@@ -101,8 +104,10 @@ pub(super) async fn read_property_multiple_observed(
     let db = db.read().await;
     let request = bacnet_services::rpm::ReadPropertyMultipleRequest::decode(service_request)
         .map_err(|error| handlers::ReadFailure::Service(error.into_request_reject()))?;
+    let budget = config.read_property_multiple_budget;
     let view = DeviceReadContext::new(&db, DeviceExecution::FullServer)
-        .with_registered_port(registered_port);
+        .with_identity(Some(&config.device))
+        .with_registered_port(config.registered_network_port);
     let plan = handlers::RpmPlan::new(&db, &request, budget.max_result_elements, Some(&view))?;
     let live = match plan.live_cov(&db) {
         Some(selection) => Some(active_cov_snapshot(&db, tables, selection).await),
@@ -118,6 +123,14 @@ pub(super) async fn read_property_multiple_observed(
     )
 }
 
+/// Runtime declarations and work limits for one Device property read.
+pub(super) struct ReadProfile<'a> {
+    pub(super) execution: DeviceExecution,
+    pub(super) registered_port: Option<ObjectIdentifier>,
+    pub(super) work_limit: usize,
+    pub(super) identity: Option<&'a bacnet_objects::DeviceIdentity>,
+}
+
 /// ReadProperty under one database read guard, planned before any table is
 /// sampled (#1213). A Group's Present_Value counts against `work_limit` as
 /// a ReadPropertyMultiple naming only it would, and a read past it is aborted
@@ -125,9 +138,7 @@ pub(super) async fn read_property_multiple_observed(
 pub(super) async fn read_property_response_observed(
     db: &RwLock<ObjectDatabase>,
     tables: Option<LiveTables<'_>>,
-    execution: DeviceExecution,
-    registered_port: Option<ObjectIdentifier>,
-    work_limit: usize,
+    profile: ReadProfile<'_>,
     request: &ConfirmedRequestPdu,
     mut completed: impl FnMut(
         &ObjectDatabase,
@@ -142,11 +153,16 @@ pub(super) async fn read_property_response_observed(
         .map_err(Error::into_request_reject)
     {
         Ok(decoded) => {
-            let lookup_oid =
-                handlers::resolve_read_target(&db, &decoded.object_identifier, registered_port);
-            let view = DeviceReadContext::new(&db, execution)
-                .with_registered_port(registered_port)
-                .with_work_limit(work_limit);
+            let view = DeviceReadContext::new(&db, profile.execution)
+                .with_identity(profile.identity)
+                .with_registered_port(profile.registered_port)
+                .with_work_limit(profile.work_limit);
+            let lookup_oid = handlers::resolve_read_target(
+                &db,
+                &decoded.object_identifier,
+                profile.registered_port,
+                view.device_oid(),
+            );
             match handlers::plan_read_property(
                 &db,
                 Some(&view),

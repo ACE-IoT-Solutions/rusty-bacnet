@@ -120,8 +120,9 @@ pub(super) fn subscribe(
 
 pub(super) fn local_device() -> DeviceObject {
     DeviceObject::new(DeviceConfig {
-        instance: LOCAL_DEVICE,
-        name: "Forwarding device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(LOCAL_DEVICE, 0)
+            .expect("valid Device identity")
+            .with_name("Forwarding device"),
         ..DeviceConfig::default()
     })
     .unwrap()

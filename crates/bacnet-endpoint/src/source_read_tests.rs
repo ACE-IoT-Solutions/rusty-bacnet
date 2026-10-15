@@ -535,7 +535,10 @@ async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
     remote.set_audit_policy(policy);
     remote_db.add(Box::new(remote)).unwrap();
     let mut remote_server = BACnetServer::start_clockless(
-        ServerConfig::default(),
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(456, 42).unwrap(),
+            ..Default::default()
+        },
         remote_db,
         BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
     )

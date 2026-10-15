@@ -15,11 +15,11 @@ async fn server_segments_large_rpm_response() {
     let mut db = ObjectDatabase::new();
 
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 5678,
-        name: "Segmentation Test Device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(5678, 555)
+            .expect("valid Device identity")
+            .with_name("Segmentation Test Device")
+            .with_segmentation(Segmentation::BOTH),
         vendor_name: "Rusty BACnet Seg Test".into(),
-        vendor_id: 555,
-        segmentation_supported: Segmentation::BOTH,
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -51,7 +51,7 @@ async fn server_segments_large_rpm_response() {
         .port(0)
         // The transmit side is gated on the advertisement too (Clause
         // 5.4.5.3 case (a)): segmenting the response requires saying so.
-        .segmentation_supported(Segmentation::BOTH)
+        .device(bacnet_objects::DeviceIdentity::new(5678, 555).unwrap().with_segmentation(Segmentation::BOTH))
         .database(db)
         .build()
         .await

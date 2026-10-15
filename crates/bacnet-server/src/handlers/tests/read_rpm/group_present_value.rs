@@ -165,8 +165,9 @@ fn each_member_reads_as_read_property_multiple_reads_its_specification() {
     // Selectors expand against the member, and the Device wildcard resolves
     // to this device, as they do in a ReadPropertyMultiple request.
     let device = bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
-        instance: 100,
-        name: "DEV-100".into(),
+        identity: bacnet_objects::DeviceIdentity::new(100, 0)
+            .expect("valid Device identity")
+            .with_name("DEV-100"),
         ..Default::default()
     })
     .unwrap();

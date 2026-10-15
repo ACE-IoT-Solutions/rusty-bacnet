@@ -31,6 +31,7 @@ async fn small_fixture() -> (
     fixture_with_config(
         "admission",
         ServerConfig {
+            device: bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
             request_admission_policy: RequestAdmissionPolicy {
                 max_confirmed_in_flight: 1,
                 confirmed_recovery_reserve: 0,
@@ -38,7 +39,6 @@ async fn small_fixture() -> (
                 ..Default::default()
             },
             discovery_policy: DiscoveryPolicy::unlimited(),
-            segmentation_supported: Segmentation::BOTH,
             ..ServerConfig::default()
         },
     )

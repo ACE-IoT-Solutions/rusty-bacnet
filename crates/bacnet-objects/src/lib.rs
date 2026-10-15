@@ -14,6 +14,8 @@ pub mod command_source;
 pub(crate) mod common;
 pub mod database;
 pub mod device;
+pub mod device_identity;
+pub use device_identity::DeviceIdentity;
 pub(crate) mod device_reference;
 pub mod durable;
 pub mod elevator;

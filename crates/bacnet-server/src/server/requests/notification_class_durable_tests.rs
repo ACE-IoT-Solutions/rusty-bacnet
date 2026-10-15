@@ -215,8 +215,9 @@ async fn local_server(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 100,
-            name: "Notification Class device".into(),
+            identity: bacnet_objects::DeviceIdentity::new(100, 0)
+                .expect("valid Device identity")
+                .with_name("Notification Class device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -226,6 +227,7 @@ async fn local_server(
     let nc = class.object_identifier();
     db.add(Box::new(class)).unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(TestTransport::new())
         .database(db)
         .enable_event_enrollment(false)

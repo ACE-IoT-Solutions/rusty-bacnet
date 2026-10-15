@@ -215,13 +215,8 @@ pub(super) fn validate_apdu_capacity<T: TransportPort>(
     config: &mut ServerConfig,
     transport: &T,
 ) -> Result<(), Error> {
-    let transport_max = transport.local_receive_apdu_capacity() as u32;
-    config.max_apdu_length = config.max_apdu_length.min(transport_max);
-    if config.max_apdu_length < u32::from(apdu::MINIMUM_MESSAGE_SIZE) {
-        return Err(Error::Encoding(format!(
-            "local max_apdu_length {} is below 50",
-            config.max_apdu_length
-        )));
-    }
+    config.device = config
+        .device
+        .resolve(transport.local_receive_apdu_capacity())?;
     Ok(())
 }

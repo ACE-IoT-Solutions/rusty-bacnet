@@ -67,11 +67,15 @@ fn profiled_database(
     let before = identity_rows.map(|p| original.read_property(p, None).unwrap());
     let mut object = DeviceObject::with_tags_persistence(
         DeviceConfig {
-            instance: identity.instance(),
-            name,
-            vendor_id: identity.vendor_id(),
-            max_apdu_length: identity.max_apdu_length().into(),
-            segmentation_supported: identity.segmentation(),
+            identity: bacnet_objects::DeviceIdentity::new(
+                identity.instance(),
+                identity.vendor_id(),
+            )
+            .expect("valid Device identity")
+            .with_name(name)
+            .with_max_apdu(identity.max_apdu_length())
+            .expect("valid Device APDU")
+            .with_segmentation(identity.segmentation()),
             ..Default::default()
         },
         store,
@@ -108,7 +112,7 @@ async fn device_profiles_read_but_tags_never_enter_endpoint_mutation_authority()
                 crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
                     .role(SessionRole::ServerOnly)
                     .database(db)
-                    .identity(identity)
+                    .device(identity)
                     .build_session()
                     .unwrap();
             if writes {

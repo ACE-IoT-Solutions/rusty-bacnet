@@ -18,10 +18,10 @@ pub fn make_benchmark_db(device_instance: u32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
 
     let device = DeviceObject::new(DeviceConfig {
-        instance: device_instance,
-        name: "Benchmark Device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(device_instance, 555)
+            .expect("valid Device identity")
+            .with_name("Benchmark Device"),
         vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -47,6 +47,7 @@ pub async fn make_bip_server() -> Result<BACnetServer<BipTransport>, Error> {
     let db = make_benchmark_db(1234);
 
     BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 555)?)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(Ipv4Addr::LOCALHOST)
@@ -73,6 +74,7 @@ pub async fn make_bip6_server() -> Result<BACnetServer<Bip6Transport>, Error> {
     let transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(2345));
 
     BACnetServer::<Bip6Transport>::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(2345, 555)?)
         .transport(transport)
         .database(db)
         .build()

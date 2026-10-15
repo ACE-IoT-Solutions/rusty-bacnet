@@ -6,7 +6,6 @@
 use std::net::Ipv4Addr;
 use std::time::Instant;
 
-use bacnet_objects::device::DeviceConfig;
 use bacnet_server::server::BACnetServer;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier, Segmentation};
@@ -24,15 +23,13 @@ pub async fn run(_transport: &str, steps: &[u64]) -> Vec<DegradationPoint> {
 
         // The server and its Device both segment, so a reply longer than
         // the client's 1,476-octet APDU goes out in segments.
-        let config = DeviceConfig {
-            segmentation_supported: Segmentation::BOTH,
-            ..stress_device_config(1234)
-        };
+        let mut config = stress_device_config(1234);
+        config.identity = config.identity.with_segmentation(Segmentation::BOTH);
         let mut server = BACnetServer::bip_builder()
             .interface(Ipv4Addr::LOCALHOST)
             .port(0)
             .broadcast_address(Ipv4Addr::LOCALHOST)
-            .segmentation_supported(Segmentation::BOTH)
+            .device(config.identity.clone())
             .database(make_large_db_with(config, max_objects))
             .build()
             .await

@@ -220,7 +220,10 @@ async fn source_write_empty_recipient_list_success_and_empty_scalar_remote_error
     db.add(Box::new(AnalogValueObject::new(7, "scalar", 62).unwrap()))
         .unwrap();
     let mut remote = BACnetServer::start_clockless(
-        ServerConfig::default(),
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(456, 42).unwrap(),
+            ..Default::default()
+        },
         db,
         BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
     )

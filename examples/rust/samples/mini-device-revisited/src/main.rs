@@ -347,13 +347,14 @@ fn build_database(args: &Args) -> Result<ObjectDatabase, Box<dyn std::error::Err
     object_list.extend(point_oids);
 
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: args.instance,
-        name: args.name.clone(),
+        identity: bacnet_objects::DeviceIdentity::new(args.instance, VENDOR_ID)
+            .expect("valid Device identity")
+            .with_name(args.name.clone())
+            .with_max_apdu(u16::try_from(MAX_APDU_LENGTH).expect("Device APDU fits u16"))
+            .expect("valid Device APDU"),
         vendor_name: "rs-bacnet-testers".into(),
-        vendor_id: VENDOR_ID,
         model_name: "mini-device-revisited".into(),
         application_software_version: env!("CARGO_PKG_VERSION").into(),
-        max_apdu_length: MAX_APDU_LENGTH,
         ..DeviceConfig::default()
     })?;
     device.set_object_list(object_list);
@@ -520,7 +521,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .interface(net.socket_bind)
         .port(args.port)
         .broadcast_address(net.broadcast)
-        .vendor_id(VENDOR_ID)
+        .device(bacnet_objects::DeviceIdentity::new(
+            args.instance,
+            VENDOR_ID,
+        )?)
         .database(db)
         .build()
         .await
