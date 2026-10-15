@@ -249,41 +249,90 @@ async fn shared_address<T: TransportPort + 'static>(mut client: BACnetClient<T>,
 }
 
 #[tokio::test]
+#[allow(clippy::print_stderr)] // Report the observed startup capability, not a blanket success.
 async fn bip6_builders_preserve_explicit_and_random_identity_and_interface() {
-    for erased in [false, true] {
-        for instance in [Some(0x123456), None] {
+    for instance in [Some(0x123456), None] {
+        let mut outcomes = Vec::new();
+        for erased in [false, true] {
             let mut builder = BACnetClient::bip6_builder()
                 .interface(Ipv6Addr::LOCALHOST)
                 .port(0);
             if let Some(instance) = instance {
                 builder = builder.device_instance(instance);
             }
-            if erased {
-                let mut client = builder.build_any::<NoSerial>().await.unwrap();
-                let AnyTransport::Bip6(transport) = client.transport() else {
-                    panic!("expected B/IPv6");
-                };
-                bip6_identity(transport, instance);
-                client.stop().await.unwrap();
+            let outcome = if erased {
+                match builder.build_any::<NoSerial>().await {
+                    Ok(mut client) => {
+                        let AnyTransport::Bip6(transport) = client.transport() else {
+                            panic!("expected B/IPv6");
+                        };
+                        bip6_identity(transport, instance).await;
+                        client.stop().await.unwrap();
+                        Bip6Startup::WireIdentityVerified
+                    }
+                    Err(error) => bip6_start_failure(error, instance),
+                }
             } else {
-                let mut client = builder.build().await.unwrap();
-                bip6_identity(client.transport(), instance);
-                client.stop().await.unwrap();
-            }
+                match builder.build().await {
+                    Ok(mut client) => {
+                        bip6_identity(client.transport(), instance).await;
+                        client.stop().await.unwrap();
+                        Bip6Startup::WireIdentityVerified
+                    }
+                    Err(error) => bip6_start_failure(error, instance),
+                }
+            };
+            outcomes.push(outcome);
         }
+        assert_eq!(outcomes[0], outcomes[1], "identity {instance:?}");
+        eprintln!("B/IPv6 identity {instance:?}, concrete then erased: {outcomes:?}");
     }
 }
 
-fn bip6_identity(transport: &Bip6Transport, instance: Option<u32>) {
+#[derive(Debug, PartialEq, Eq)]
+enum Bip6Startup {
+    WireIdentityVerified,
+    #[cfg(target_os = "linux")]
+    UnsupportedMulticastRoute,
+}
+
+fn bip6_start_failure(error: Error, instance: Option<u32>) -> Bip6Startup {
+    // Random identity requires a successful multicast collision probe. Linux
+    // loopback can reject that send with ENETUNREACH; preserve the exact
+    // failure on both builder paths instead of claiming startup/wire coverage.
+    #[cfg(target_os = "linux")]
+    if instance.is_none()
+        && matches!(&error, Error::Transport(error)
+            if error.kind() == std::io::ErrorKind::NetworkUnreachable
+                && error.raw_os_error() == Some(101))
+    {
+        return Bip6Startup::UnsupportedMulticastRoute;
+    }
+    panic!("unexpected B/IPv6 startup failure for identity {instance:?}: {error:?}");
+}
+
+async fn bip6_identity(transport: &Bip6Transport, instance: Option<u32>) {
     let vmac = transport.local_vmac().unwrap();
     if instance.is_some() {
         assert_eq!(vmac, Bip6Vmac::new([0x12, 0x34, 0x56]));
     } else {
         assert_eq!(vmac.octets()[0] >> 6, 1, "random VMAC range");
     }
+    let address = transport.local_address().unwrap();
+    assert_eq!(*address.ip(), Ipv6Addr::LOCALHOST);
+    assert_ne!(address.port(), 0);
+
+    // A raw, directed VAR avoids any multicast-route requirement after start.
+    // The ACK independently exposes the identity and actual bound source.
+    let peer = UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).await.unwrap();
+    let request = [0x82, 6, 0, 7, 0, 0, 1];
     assert_eq!(
-        *transport.local_address().unwrap().ip(),
-        Ipv6Addr::LOCALHOST
+        peer.send_to(&request, address).await.unwrap(),
+        request.len()
     );
-    assert_ne!(transport.local_address().unwrap().port(), 0);
+    let mut response = [0; 64];
+    let (length, source) = bounded(peer.recv_from(&mut response)).await.unwrap();
+    assert_eq!(source, std::net::SocketAddr::V6(address));
+    let [a, b, c] = vmac.octets();
+    assert_eq!(&response[..length], &[0x82, 7, 0, 10, a, b, c, 0, 0, 1]);
 }
