@@ -552,6 +552,7 @@ client = BACnetClient(
     sc_heartbeat_interval_ms=None,  # 3000..=300000 ms when configured
     sc_heartbeat_timeout_ms=None,   # must be greater than interval
     min_request_interval_ms=0,   # Keyword-only; least ms between confirmed requests to one destination
+    reconnect=None,              # Keyword-only; SC only, a ScReconnect configuration
 )
 ```
 
@@ -740,6 +741,18 @@ print(rusty_bacnet.list_serial_ports())  # ['/dev/ttyUSB0'], ['/dev/cu.usbserial
 
 ### Lifecycle
 
+Entry holds exclusive lifecycle ownership while building and publishing the
+client. Entering an already running or closing client raises `RuntimeError`.
+Cancelling pending entry drops its unfinished connection setup. A concurrent
+`stop()` waits for entry to complete or be cancelled, then closes the client.
+
+`stop()` and context exit refuse new operations, let existing native operations
+finish or be cancelled, and join transport teardown. Operations remain concurrent
+while the client is running. Close has no universal deadline: draining depends on
+the outstanding requests. Cancelling the close Future leaves its owned shutdown
+task running; await `stop()` again to join that same teardown. Close errors are
+reported to the caller, and later close can retry. Repeated close is safe.
+
 ```python
 # Preferred: async context manager
 async with BACnetClient() as client:
@@ -748,6 +761,39 @@ async with BACnetClient() as client:
 # Manual:
 await client.stop()
 ```
+
+### SC reconnect
+
+`reconnect=None` keeps automatic redial disabled. Pass a frozen `ScReconnect`
+object to an SC client to retry after connection loss:
+
+```python
+from rusty_bacnet import BACnetClient, ScReconnect
+
+client = BACnetClient(
+    transport="sc", sc_hub="wss://hub.example.com/bacnet",
+    sc_vmac=node_vmac, sc_device_uuid=persistent_node_uuid,
+    sc_ca_cert="site-ca.pem", sc_client_cert="node.pem", sc_client_key="node.key",
+    reconnect=ScReconnect(
+        initial_delay_ms=10_000, max_delay_ms=600_000, max_retries=10,
+    ),
+)
+```
+
+All three `ScReconnect` arguments are keyword-only and have the defaults shown.
+The initial delay is the minimum reconnect sleep; exponential backoff and jitter
+stay within the configured minimum and maximum. Delays must be positive,
+`initial_delay_ms <= max_delay_ms`, and the maximum must not exceed 86,400,000 ms.
+Invalid settings raise `ValueError`; negative or overflowing unsigned integers
+raise `OverflowError`. These checks do not qualify deployment timing.
+
+`max_retries=0` still permits the initial connection and disables active-hub
+retries after loss. Passing a `ScReconnect` object to a non-SC client raises `ValueError`.
+Retries reuse the loaded TLS trust and operational identity, VMAC, UUID and
+heartbeat settings; credential files are loaded at entry, not reread on each
+retry. A new connection must complete TLS and SC admission before service
+traffic resumes. Applications still handle request errors; reconnection does
+not guarantee that an interrupted operation completes.
 
 ### Address Format
 

@@ -1930,6 +1930,26 @@ class _DeviceWriteBatchResult(TypedDict):
     error: BacnetError | None
 
 
+class ScReconnect:
+    """Frozen SC client retry settings, copied when passed to BACnetClient.
+
+    Delays must be nonzero, initial <= maximum, and maximum <= 86,400,000 ms.
+    Invalid settings raise ValueError; unsigned integer overflow raises
+    OverflowError. Zero retries allows the initial connection and disables
+    active-hub retries after loss. Validation is not deployment qualification.
+    """
+    def __init__(
+        self, *, initial_delay_ms: int = 10000,
+        max_delay_ms: int = 600000, max_retries: int = 10,
+    ) -> None: ...
+    @property
+    def initial_delay_ms(self) -> int: ...
+    @property
+    def max_delay_ms(self) -> int: ...
+    @property
+    def max_retries(self) -> int: ...
+
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
@@ -1949,6 +1969,15 @@ class BACnetClient:
     Provision before deployment and durably reuse the same UUID for the device's
     lifetime. No generation, persistence, change detection, or version/variant
     enforcement is provided. Non-SC transports ignore this option.
+
+    Keyword-only reconnect=None preserves the default without automatic
+    redial. Supply ScReconnect for SC retries with the same loaded TLS policy,
+    VMAC, UUID and heartbeat settings. Other transports reject this option.
+
+    stop() and context exit refuse new work, drain outstanding native operations
+    and join teardown. Cancelling the close Future leaves shutdown running;
+    await stop() again to join it. Drain duration depends on outstanding requests.
+    Entry is exclusive; entering an already running or closing client fails.
 
     Usage::
 
@@ -2009,6 +2038,7 @@ class BACnetClient:
         ipv6_device_instance: Optional[int] = None,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
+        reconnect: Optional[ScReconnect] = None,
     ) -> None:
         """``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
         ValueError): run the client as a BBMD, or register it with a BBMD
@@ -2964,7 +2994,12 @@ class BACnetClient:
         ...
 
     def stop(self) -> Awaitable[None]:
-        """Explicitly stop the client and release resources."""
+        """Refuse new work, drain operations, and join native teardown.
+
+        Cancelling this Future leaves shutdown running; call stop() again to
+        join it. Drain duration depends on existing requests. Errors retain
+        closing state for another stop attempt.
+        """
         ...
 
 
