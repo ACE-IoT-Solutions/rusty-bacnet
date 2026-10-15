@@ -190,8 +190,9 @@ impl PyMstpEndpoint {
     ///     mstp_baud: One of 9600/19200/38400/57600/76800/115200.
     ///     mstp_mac / mstp_max_master / mstp_max_info_frames: Addressing
     ///         (mac <= max_master, both <=127, info frames >=1).
-    ///     max_apdu: Wire-legal APDU within the link's bound: 480, or 1476
-    ///         with ``mstp_extended_frames=True``.
+    ///     max_apdu: Raw receive ceiling, at least 50 bytes and no more than
+    ///         480, or 1476 with ``mstp_extended_frames=True``. Request headers
+    ///         use the largest supported code that does not exceed it.
     ///     segmentation / services / device_uuid: Identity knobs (UUID zeros
     ///         allowed; stored into DEVICE_UUID).
     ///     queue_capacity / apdu_timeout_ms / apdu_retries: Session tuning.

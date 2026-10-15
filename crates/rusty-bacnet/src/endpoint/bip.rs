@@ -14,6 +14,7 @@ use bacnet_endpoint::bip::BipEndpointBuilder;
 use bacnet_endpoint::identity::DeviceIdentity;
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
 use bacnet_transport::bip::{BipMode, BipTransport};
+use bacnet_transport::port::TransportPort;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -156,7 +157,9 @@ impl PyBipEndpoint {
     ///     network_port_instance: Declared Network Port instance (default 1).
     ///     registered_network_port: Explicit instance to associate with the live
     ///         B/IP transport, in any one mode; None leaves the declaration unbound.
-    ///     max_apdu: Wire-legal APDU (50/128/206/480/1024/1476).
+    ///     max_apdu: Raw receive ceiling, at least 50 bytes, resolved against
+    ///         the B/IP link before Device construction. Request headers use
+    ///         the largest supported code that does not exceed it.
     ///     segmentation: `Segmentation` override (default NONE, the proven value).
     ///     services: Optional service-bit list (default `[READ_PROPERTY]`, the
     ///         narrow endpoint reality; wider profiles need the full server).
@@ -260,7 +263,9 @@ impl PyBipEndpoint {
             segmentation,
             &service_list,
             uuid,
-        )?;
+        )?
+        .resolve(BipTransport::new(interface_ip, port, broadcast).local_receive_apdu_capacity())
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let identity = with_bip_port(
             identity,
             network_port_instance,

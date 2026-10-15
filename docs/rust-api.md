@@ -663,10 +663,13 @@ ceiling, segmentation mode and segment timeout. Full-server builders and
 endpoint builders take `.device(identity)`; `ServerConfig.device` and
 `DeviceConfig.identity` reuse that value. Startup resolves the ceiling against
 the transport's stable local capacity before generating a stock Device. A
-builder with no database generates one; `.database(ObjectDatabase::new())`
-preserves an explicitly empty database and emits no I-Am until the configured
-Device identifier exists. Default identity is Device 1, vendor 0, APDU 1476,
-unsegmented, with a 5000 ms segment timeout; standard MS/TP resolves to 480.
+full-server builder with no database generates one from its configured or
+default identity. Endpoint generation requires an explicit `.device(identity)`;
+an identity-free endpoint invents no Device. For both, an explicit
+`.database(ObjectDatabase::new())` stays empty and emits no I-Am until the
+configured Device identifier exists. The full-server default is Device 1,
+vendor 0, APDU 1476, unsegmented, with a 5000 ms segment timeout; standard
+MS/TP resolves to 480.
 
 A supplied database is preserved, including custom Device and backup/profile
 state. Its initially selected Device must match the resolved identifier,
