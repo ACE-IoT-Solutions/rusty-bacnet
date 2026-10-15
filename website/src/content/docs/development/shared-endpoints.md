@@ -26,7 +26,7 @@ async fn example() -> Result<(), bacnet_types::error::Error> {
     )
         .role(SessionRole::Both)
         .database(db)
-        .identity(identity)
+        .device(identity)
         .build_session()?;
     session.start().await?;
     let local = session.bip_local_address();

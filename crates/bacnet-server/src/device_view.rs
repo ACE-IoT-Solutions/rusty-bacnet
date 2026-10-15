@@ -110,6 +110,10 @@ impl<'a> DeviceReadContext<'a> {
         self.identity = identity.map(IdentityView::from);
         self
     }
+    /// The executor's fixed wildcard target, even when its object is absent.
+    pub(crate) fn device_oid(&self) -> Option<ObjectIdentifier> {
+        self.identity.map(|identity| identity.oid)
+    }
     pub(crate) fn with_registered_port(mut self, oid: Option<ObjectIdentifier>) -> Self {
         self.registered_port = oid;
         self

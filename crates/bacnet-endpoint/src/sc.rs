@@ -136,10 +136,11 @@ impl ScEndpointBuilder {
     /// Composes the single Device identity (overrides SessionConfig 480).
     ///
     /// The identity VMAC + UUID must equal this builder's `vmac` +
-    /// `device_uuid` (checked at hub-dial build time); the database should
-    /// already be built from the same identity so I-Am vs ReadProperty vs
-    /// role limits agree. The builder neither generates nor stores the UUID
-    /// beyond the caller-supplied bytes (mirror `sc_builder` docs).
+    /// `device_uuid` (checked at hub-dial build time). At start, the requested
+    /// ceiling resolves against the stable local receive capacity. An omitted
+    /// database generates a Device from the resolved identity; a supplied
+    /// database is preserved and its selected Device must match. The builder
+    /// uses the caller-supplied UUID and does not generate or persist one.
     pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.identity = Some(identity);
         self

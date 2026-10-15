@@ -163,9 +163,10 @@ impl BipEndpointBuilder {
 
     /// Composes the single Device identity (overrides SessionConfig 480).
     ///
-    /// Truth direction: the database should already be built from the same
-    /// identity (`DeviceIdentity::build_database`); this only wires I-Am +
-    /// role limits. No generation, no extra socket.
+    /// At start, the requested ceiling resolves against the transport's
+    /// stable local receive capacity. An omitted database generates a Device
+    /// from that resolved identity. A supplied database is preserved and its
+    /// selected Device must match. No additional socket is created.
     pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.identity = Some(identity);
         self

@@ -20,7 +20,11 @@ use bacnet_transport::{
 };
 use bacnet_types::{
     constructed::{PropertyReference, ReadAccessSpecification},
-    enums::{BackupAndRestoreState, ObjectType, PropertyIdentifier as P, Segmentation},
+    enums::{
+        BackupAndRestoreState, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier as P,
+        Segmentation,
+    },
+    error::Error,
     primitives::{ObjectIdentifier, PropertyValue},
 };
 use std::{net::Ipv4Addr, time::Duration};
@@ -77,18 +81,20 @@ async fn assert_views(
     server: &BACnetServer<BipTransport>,
     client: &BACnetClient<BipTransport>,
     identity: &DeviceIdentity,
+    target: ObjectIdentifier,
 ) {
     let rows = declaration(identity);
     let oid = identity.device_oid();
     for (property, expected) in &rows {
         assert_eq!(
-            server.read_local(&oid, *property, None).await.unwrap(),
+            server.read_local(&target, *property, None).await.unwrap(),
             *expected
         );
         let ack = client
-            .read_property(server.local_mac(), oid, *property, None)
+            .read_property(server.local_mac(), target, *property, None)
             .await
             .unwrap();
+        assert_eq!(ack.object_identifier, oid);
         assert_eq!(
             decode_application_value(&ack.property_value, 0).unwrap().0,
             *expected
@@ -98,7 +104,7 @@ async fn assert_views(
         .read_property_multiple(
             server.local_mac(),
             vec![ReadAccessSpecification {
-                object_identifier: oid,
+                object_identifier: target,
                 list_of_property_references: rows
                     .iter()
                     .map(|(p, _)| PropertyReference {
@@ -110,6 +116,7 @@ async fn assert_views(
         )
         .await
         .unwrap();
+    assert_eq!(ack.list_of_read_access_results[0].object_identifier, oid);
     for (result, (property, expected)) in ack.list_of_read_access_results[0]
         .list_of_results
         .iter()
@@ -124,7 +131,7 @@ async fn assert_views(
         );
     }
     let PropertyValue::List(list) = server
-        .read_local(&oid, P::PROPERTY_LIST, None)
+        .read_local(&target, P::PROPERTY_LIST, None)
         .await
         .unwrap()
     else {
@@ -137,7 +144,7 @@ async fn assert_views(
         );
         if identity.segmentation() == Segmentation::NONE {
             assert!(client
-                .read_property(server.local_mac(), oid, property, None)
+                .read_property(server.local_mac(), target, property, None)
                 .await
                 .is_err());
         }
@@ -275,16 +282,76 @@ async fn bip_identity_matches_discovery_reads_and_preserves_supplied_device_stat
                 assert_eq!(iam.max_apdu_length, 1474);
                 assert_eq!(iam.segmentation_supported, mode);
             }
-            assert_views(&server, &client, &identity).await;
+            for target in [
+                oid,
+                ObjectIdentifier::new(ObjectType::DEVICE, ObjectIdentifier::MAX_INSTANCE).unwrap(),
+            ] {
+                assert_views(&server, &client, &identity, target).await;
+            }
         }
         server.database().write().await.remove(&oid).unwrap();
         let sent = server.discovery_counters().i_am_sent;
         assert!(server.broadcast_i_am().await.is_err());
         assert_eq!(server.discovery_counters().i_am_sent, sent);
-        assert!(server
-            .read_local(&oid, P::VENDOR_IDENTIFIER, None)
+        for target in [
+            oid,
+            ObjectIdentifier::new(ObjectType::DEVICE, ObjectIdentifier::MAX_INSTANCE).unwrap(),
+        ] {
+            for result in [
+                server
+                    .read_local(&target, P::VENDOR_IDENTIFIER, None)
+                    .await
+                    .map(|_| ()),
+                client
+                    .read_property(server.local_mac(), target, P::VENDOR_IDENTIFIER, None)
+                    .await
+                    .map(|_| ()),
+            ] {
+                assert!(
+                    matches!(result, Err(Error::Protocol { class, code })
+                    if class == u32::from(ErrorClass::OBJECT.to_raw()) && code == u32::from(ErrorCode::UNKNOWN_OBJECT.to_raw())),
+                    "{result:?}"
+                );
+            }
+            let ack = client
+                .read_property_multiple(
+                    server.local_mac(),
+                    vec![ReadAccessSpecification {
+                        object_identifier: target,
+                        list_of_property_references: vec![PropertyReference {
+                            property_identifier: P::VENDOR_IDENTIFIER,
+                            property_array_index: None,
+                        }],
+                    }],
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                ack.list_of_read_access_results[0].list_of_results[0].error,
+                Some((ErrorClass::OBJECT, ErrorCode::UNKNOWN_OBJECT))
+            );
+        }
+        server
+            .database()
+            .write()
             .await
-            .is_err());
+            .add(Box::new(
+                DeviceObject::new(DeviceConfig {
+                    identity: DeviceIdentity::new(1720, 99).unwrap(),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ))
+            .unwrap();
+        assert_views(
+            &server,
+            &client,
+            &identity,
+            ObjectIdentifier::new(ObjectType::DEVICE, ObjectIdentifier::MAX_INSTANCE).unwrap(),
+        )
+        .await;
+        server.broadcast_i_am().await.unwrap();
+        assert_eq!(receive_iam(&sink).await.object_identifier, oid);
         client.stop().await.unwrap();
         server.stop().await.unwrap();
     }

@@ -420,8 +420,11 @@ discovery. Inbound cursor/no-op and ordered-prefix error semantics are separate.
 For a Device wildcard request `(Device,4194303)`, the bundled server's
 ReadPropertyMultiple result wrapper names the resolved local Device, including
 wrappers containing per-property errors. Its Object_Identifier value names the
-same Device. Without a matching Device, the wrapper retains the wildcard and
-its references return UNKNOWN_OBJECT. Concrete requests remain unchanged.
+same Device. Full servers and endpoints with a composed identity resolve the
+wildcard to their frozen Device identifier; if that Device is absent, its
+references return UNKNOWN_OBJECT without selecting another Device. Standalone
+handlers and identity-free endpoints use the database's selected Device and
+retain the wildcard if none exists. Concrete requests remain unchanged.
 
 ReadPropertyMultiple response indexes follow the effective object declaration:
 requested indexes remain on known arrays, including index zero and inline array
@@ -675,9 +678,11 @@ A supplied database is preserved, including custom Device and backup/profile
 state. Its initially selected Device must match the resolved identifier,
 vendor, capacity, segmentation and active segment timeout before I/O. Runtime
 announcements and served identity properties use that frozen declaration.
+Device wildcard reads through RP, RPM and `read_local` select its identifier.
 Replacing the Device at its identifier does not change those served fields;
 removing it suppresses announcements, and adding a lower Device does not rebind
-them. Raw database reads still expose the object's own declarations.
+them. An absent configured Device yields UNKNOWN_OBJECT for wildcard reads.
+Raw database reads still expose the object's own declarations.
 
 For migration, replace the old independent server vendor/capacity/segmentation/
 timeout fields and builder setters with `.device(DeviceIdentity::new(instance,

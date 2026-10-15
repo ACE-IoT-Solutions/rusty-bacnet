@@ -160,10 +160,9 @@ pub struct SessionConfig {
     ///
     /// Standalone default is 480. Composing a
     /// [`DeviceIdentity`](crate::identity::DeviceIdentity) via
-    /// [`device`](EndpointSession::device) overrides this with
-    /// the identity value; the MS/TP builder additionally rejects identities
-    /// above its transport bound (480, or 1476 with extended frames) at
-    /// build time.
+    /// [`device`](EndpointSession::device) overrides this at start with the
+    /// identity's ceiling resolved against the transport's stable local
+    /// receive capacity (480 for standard MS/TP, 1476 for extended MS/TP).
     pub max_apdu_length: u16,
     /// Result rows one ReadProperty served by the server role may expand
     /// (default 256).

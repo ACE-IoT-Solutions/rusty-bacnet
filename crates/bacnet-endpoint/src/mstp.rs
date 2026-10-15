@@ -22,11 +22,11 @@
 //!
 //! # Bounds and evidence level
 //!
-//! - `SessionConfig` keeps its 480 APDU default, which fits the 501
-//!   frame-data cap. A composed identity may advertise no more than the
-//!   transport carries: 480 with standard frames, the default, and 1476
-//!   with [`MstpEndpointBuilder::extended_frames`]; a larger one is
-//!   rejected at build time.
+//! - An identity-free `SessionConfig` keeps its 480 APDU default. At start,
+//!   a composed identity's requested ceiling resolves against the stable
+//!   local receive capacity: 480 with standard frames, the default, or 1476
+//!   with [`MstpEndpointBuilder::extended_frames`]. An omitted database
+//!   generates a Device after resolution; a supplied Device must match.
 //! - No router capability (RB-25 owns routing): non-routing endpoint
 //!   behavior, the network layer discarding DNET-addressed traffic.
 //! - **Simulator evidence only**: proofs run over [`LoopbackSerial`] with a
@@ -249,12 +249,11 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
 
     /// Composes the single Device identity.
     ///
-    /// Truth direction (mirror [`BipEndpointBuilder`](crate::bip::BipEndpointBuilder)):
-    /// the database should already be built from the same identity; this
-    /// only wires I-Am + role limits. The identity max-APDU must fit what
-    /// the transport carries, 480, or 1476 with
-    /// [`extended_frames`](Self::extended_frames) (checked at
-    /// [`build_session`](Self::build_session)).
+    /// At start, its requested ceiling resolves against the transport's
+    /// stable receive capacity: 480, or 1476 with
+    /// [`extended_frames`](Self::extended_frames). With no database, the
+    /// resolved identity generates a Device. A supplied database is preserved
+    /// and its selected Device must match the resolved identity.
     pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.identity = Some(identity);
         self
@@ -310,10 +309,10 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     ///
     /// One-link proof: this builds exactly one [`MstpTransport`] (one serial
     /// owner after `start()`); no second serial owner or duplicated MAC state
-    /// machine is created here or in [`EndpointSession`]. The composed
-    /// identity must fit the transport's APDU bound, 480, or 1476 with
-    /// [`extended_frames`](Self::extended_frames); the standalone
-    /// [`SessionConfig`] 480 default is kept untouched otherwise.
+    /// machine is created here or in [`EndpointSession`]. At start, a composed
+    /// identity resolves against the transport's receive capacity before
+    /// generating or validating its Device. An identity-free session keeps
+    /// the [`SessionConfig`] 480 default.
     pub fn build_session(mut self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
         self.validate_only()?;
         let role = self.role;

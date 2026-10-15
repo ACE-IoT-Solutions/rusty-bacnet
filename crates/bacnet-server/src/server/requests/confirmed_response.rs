@@ -153,15 +153,16 @@ pub(super) async fn read_property_response_observed(
         .map_err(Error::into_request_reject)
     {
         Ok(decoded) => {
-            let lookup_oid = handlers::resolve_read_target(
-                &db,
-                &decoded.object_identifier,
-                profile.registered_port,
-            );
             let view = DeviceReadContext::new(&db, profile.execution)
                 .with_identity(profile.identity)
                 .with_registered_port(profile.registered_port)
                 .with_work_limit(profile.work_limit);
+            let lookup_oid = handlers::resolve_read_target(
+                &db,
+                &decoded.object_identifier,
+                profile.registered_port,
+                view.device_oid(),
+            );
             match handlers::plan_read_property(
                 &db,
                 Some(&view),
