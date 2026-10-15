@@ -197,8 +197,9 @@ impl ScClientBuilder {
     /// Connect to the hub and start a transport-erased BACnet/SC client.
     ///
     /// Shares [`Self::build`]'s validation, TLS policy, identity, heartbeat and
-    /// optional reconnect configuration. Validation finishes before dialing.
-    /// No serial-port value is required.
+    /// optional reconnect configuration. Identity, reconnect and client options
+    /// are checked before dialing; heartbeat timing is checked when the transport
+    /// starts. No serial-port value is required.
     ///
     /// ```no_run
     /// use bacnet_client::client::BACnetClient;

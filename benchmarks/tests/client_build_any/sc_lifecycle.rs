@@ -19,6 +19,18 @@ use tokio_tungstenite::{
 
 type Socket = WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>;
 
+const HEARTBEAT_INTERVAL_MS: u64 = 3_000;
+// The existing receive loop records its idle origin after starting the timer.
+// Its first tick can precede one full idle period, so observe two periods plus
+// scheduling margin. This is a fixture deadline, not a transport timing promise.
+const FIRST_HEARTBEAT_BUDGET: Duration = Duration::from_millis(2 * HEARTBEAT_INTERVAL_MS + 2_000);
+
+async fn observe<T>(phase: &str, budget: Duration, future: impl Future<Output = T>) -> T {
+    tokio::time::timeout(budget, future)
+        .await
+        .unwrap_or_else(|_| panic!("{phase} exceeded {budget:?}"))
+}
+
 struct Peer<T>(JoinHandle<T>);
 impl<T> Drop for Peer<T> {
     fn drop(&mut self) {
@@ -104,7 +116,10 @@ async fn erased_sc_preserves_heartbeat_retry_spacing_and_stop_cancels_pending_tl
         // A configured heartbeat arrives; withholding its ACK exercises the
         // configured timeout and causes the client's reconnect connector to dial.
         loop {
-            let message = bounded(ws.next()).await.unwrap().unwrap();
+            let message = observe("first heartbeat frame", FIRST_HEARTBEAT_BUDGET, ws.next())
+                .await
+                .unwrap()
+                .unwrap();
             if let Message::Binary(data) = message {
                 if data[0] == 10 {
                     events.send(0).await.unwrap();
@@ -133,23 +148,50 @@ async fn erased_sc_preserves_heartbeat_retry_spacing_and_stop_cancels_pending_tl
         );
         drop(ws);
     }));
-    let mut client: BACnetClient<AnyTransport<NoSerial>> = bounded(Box::pin(
-        builder(&url, &certs)
-            .heartbeat_interval_ms(3_000)
-            .heartbeat_timeout_ms(3_200)
-            .reconnect(ScReconnectConfig {
-                initial_delay_ms: 120,
-                max_delay_ms: 120,
-                max_retries: 10,
-            })
-            .build_any::<NoSerial>(),
-    ))
+    let mut client: BACnetClient<AnyTransport<NoSerial>> = observe(
+        "initial SC connection",
+        Duration::from_secs(5),
+        Box::pin(
+            builder(&url, &certs)
+                .heartbeat_interval_ms(HEARTBEAT_INTERVAL_MS)
+                .heartbeat_timeout_ms(3_200)
+                .reconnect(ScReconnectConfig {
+                    initial_delay_ms: 120,
+                    max_delay_ms: 120,
+                    max_retries: 10,
+                })
+                .build_any::<NoSerial>(),
+        ),
+    )
     .await
     .unwrap();
-    for expected in 0..3 {
-        assert_eq!(bounded(received.recv()).await, Some(expected));
+    assert_eq!(
+        observe(
+            "first heartbeat observation",
+            FIRST_HEARTBEAT_BUDGET,
+            received.recv()
+        )
+        .await,
+        Some(0)
+    );
+    for expected in 1..3 {
+        assert_eq!(
+            observe(
+                "retry TCP observation",
+                Duration::from_secs(5),
+                received.recv()
+            )
+            .await,
+            Some(expected)
+        );
     }
-    bounded(Box::pin(client.stop())).await.unwrap();
+    observe(
+        "stop during pending TLS",
+        Duration::from_secs(5),
+        Box::pin(client.stop()),
+    )
+    .await
+    .unwrap();
     bounded(&mut peer.0).await.unwrap();
 }
 
