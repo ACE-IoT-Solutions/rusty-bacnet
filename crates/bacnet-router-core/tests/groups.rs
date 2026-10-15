@@ -345,3 +345,47 @@ fn reusing_storage_releases_custom_rules_of_removed_ports() {
         "a removed port no longer retains caller state"
     );
 }
+
+/// Public table edits can name an absent port, inside or beyond storage.
+/// Classification must leave the established forwarding guard in charge.
+fn assert_unconfigured_port(npdu: &[u8]) {
+    for port in [2, 255] {
+        let mut router = router();
+        assert!(router
+            .table_mut()
+            .add_direct(9, bacnet_router_core::PortId(port)));
+        let (outcome, sent) = deliver(&mut router, &mut host(), 0, NODE_A, npdu, at(1));
+        assert_eq!(outcome, Outcome::Discarded(Discard::UnknownPort));
+        assert!(sent.is_empty());
+        assert_eq!(router.counters().unknown_port, 1);
+        assert_eq!(router.counters().group_dadr_drops, 0);
+        assert_eq!(router.counters().rejects, 0);
+        assert!(router.ports().iter().all(|port| port
+            .groups
+            .asked
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .is_empty()));
+    }
+}
+
+#[test]
+fn unconfigured_direct_ports_for_apdus_are_counted_without_classification() {
+    assert_unconfigured_port(&apdu_to(9, OWN_GROUP, UNCONFIRMED));
+}
+
+#[test]
+fn unconfigured_direct_ports_for_network_messages_are_counted_without_classification() {
+    let mut npdu = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
+    npdu.destination = Some(addr(9, OWN_GROUP));
+    assert_unconfigured_port(&bytes(&npdu));
+}
+
+#[test]
+fn unconfigured_direct_ports_for_forwarded_rejects_are_counted_without_classification() {
+    let data = reject_data(RejectReason::NOT_DIRECTLY_CONNECTED, 77);
+    let mut npdu = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &data);
+    npdu.destination = Some(addr(9, OWN_GROUP));
+    assert_unconfigured_port(&bytes(&npdu));
+}

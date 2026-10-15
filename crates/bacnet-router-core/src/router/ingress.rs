@@ -334,10 +334,13 @@ impl<
     /// 0 broadcast, and a DADR beyond another router, are [`Group::No`].
     pub(super) fn group_of(&self, route: &Route, npdu: &Npdu<'_>) -> Group {
         match npdu.destination {
-            Some(destination) if route.is_direct() && !destination.mac.is_empty() => self.ports
-                [usize::from(route.port().0)]
-            .groups
-            .classify(destination.mac),
+            Some(destination) if route.is_direct() && !destination.mac.is_empty() => {
+                // A public table edit can name an absent port. Leave that
+                // route to forward's UnknownPort guard, without classifying.
+                self.ports[..self.port_count]
+                    .get(usize::from(route.port().0))
+                    .map_or(Group::No, |port| port.groups.classify(destination.mac))
+            }
             _ => Group::No,
         }
     }
