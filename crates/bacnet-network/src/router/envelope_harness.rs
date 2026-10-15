@@ -23,8 +23,8 @@ use tokio::sync::mpsc;
 use super::control_policy::ControlGate;
 use super::dispatch::{Outputs, PortDispatch, Shared};
 use super::engine::{Engine, RouterClock};
-use super::hosted_host::PortGroups;
 use super::local_control::LocalControl;
+use super::port_groups::PortGroups;
 use super::{RouterTableGuard, SendRequest};
 use crate::layer::{AdmissionReceiver, ReceivedApdu, ReceivedNetworkControl};
 use crate::router_table::{ClaimCounters, Convergence, Mac, PortId};
@@ -202,14 +202,18 @@ impl Harness {
         let configs: Vec<_> = (0u8..)
             .zip(networks.iter().zip(limits))
             .map(|(index, (&network, &limits))| {
-                Engine::port(network, Mac::from_array([index + 1]), limits)
+                Engine::port(
+                    network,
+                    Mac::from_array([index + 1]),
+                    limits,
+                    PortGroups::default(),
+                )
             })
             .collect();
         let engine = Engine::new(&configs, RouterClock::start()).unwrap();
         let shared = Arc::new(Shared {
             engine,
             gate: Arc::clone(&gate),
-            groups: vec![PortGroups::default(); networks.len()],
             networks: networks.to_vec(),
             warnings: Default::default(),
         });

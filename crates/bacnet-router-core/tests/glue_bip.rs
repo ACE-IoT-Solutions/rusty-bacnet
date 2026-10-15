@@ -9,10 +9,10 @@ mod glue;
 use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::bbmd::{ForwardRefusal, RegistrationLimits, Reservation, Tables, Target};
 use bacnet_bip_core::node::{Cast, Discard, ForBbmd, Mode, Node, Permissive};
-use bacnet_router_core::bip::{
-    group, port_config, BbmdPort, BipPort, HeldBroadcast, Ingress, PortError,
+use bacnet_router_core::bip::{port_config, BbmdPort, BipPort, HeldBroadcast, Ingress, PortError};
+use bacnet_router_core::router::{
+    Group, GroupClassifier, Limits, Options, PortConfig, Received, SendRefusal,
 };
-use bacnet_router_core::router::{Group, Limits, Options, PortConfig, Received, SendRefusal};
 use bacnet_router_core::Instant;
 
 use fixture::*;
@@ -57,16 +57,24 @@ fn groups_are_local_broadcasts_only_at_the_links_own_port() {
         sock(255, 255, 255, 255, PORT),
         sock(239, 1, 2, 3, PORT),
     ] {
-        assert_eq!(group(&link, &mac(local)), Group::Broadcast, "{local}");
+        assert_eq!(
+            port_config(&link, 1).groups.classify(&mac(local)),
+            Group::Broadcast,
+            "{local}"
+        );
     }
     for elsewhere in [
         sock(192, 0, 2, 255, PORT + 1),
         sock(255, 255, 255, 255, PORT + 1),
     ] {
-        assert_eq!(group(&link, &mac(elsewhere)), Group::Refuse, "{elsewhere}");
+        assert_eq!(
+            port_config(&link, 1).groups.classify(&mac(elsewhere)),
+            Group::Refuse,
+            "{elsewhere}"
+        );
     }
-    assert_eq!(group(&link, &mac(PEER)), Group::No);
-    assert_eq!(group(&link, &[0x05]), Group::No);
+    assert_eq!(port_config(&link, 1).groups.classify(&mac(PEER)), Group::No);
+    assert_eq!(port_config(&link, 1).groups.classify(&[0x05]), Group::No);
 }
 
 #[test]
@@ -514,7 +522,7 @@ fn ingress_fails_closed_before_the_router() {
 
 /// Nothing goes to a group address as a unicast: a router send to the
 /// subnet broadcast, the limited broadcast or a multicast address, which a
-/// host that knows no groups lets through, is refused before anything is
+/// deliberately incomplete port configuration lets through, is refused before anything is
 /// encoded or reaches the socket (#1677, decision L19).
 ///
 /// Ported from ACE IoT's bacnet-router-adapters
@@ -525,7 +533,10 @@ fn ingress_fails_closed_before_the_router() {
 fn unicast_group_destinations_are_rejected_before_encoding_or_send() {
     let now = Instant::ZERO;
     let mut bip = bip_port(Mode::Normal, &mut []);
-    let mut router = router_on(bip.config(1));
+    let mut config = bip.config(1);
+    // Exercise the link's own guard even when a custom caller loses the rule.
+    config.groups = bacnet_router_core::router::Groups::None;
+    let mut router = router_on(config);
     let (mut out, mut host) = (Wire::default(), Recorder::default());
     for group in [
         SUBNET.broadcast,

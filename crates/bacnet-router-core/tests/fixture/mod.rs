@@ -12,17 +12,17 @@
 use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::npdu::{Address, Npdu};
 use bacnet_router_core::router::{
-    Action, Cause, Claim, ControlClass, Counters, Dest, Discard, Event, Frame, Group, Host, Kind,
-    Limits, Options, PortConfig, Received, SendRefusal,
+    Action, Cause, Claim, ControlClass, Counters, Dest, Discard, Event, Frame, GroupClassifier,
+    Groups, Host, Kind, Limits, Options, PortConfig, Received, SendRefusal,
 };
 use bacnet_router_core::table::ClaimCounters;
 use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, Storage};
 
 /// Up to 4 ports, with the hosted router's table and discovery sizes: 256
 /// routes, 1,024 hold-down records, 256 searches.
-pub type Store = Storage<4, 256, 1024, 256>;
+pub type Store<G = Groups> = Storage<4, 256, 1024, 256, 1497, G>;
 /// The router over it.
-pub type TestRouter = Router<Box<Store>, 4, 256, 1024, 256, 1497>;
+pub type TestRouter<G = Groups> = Router<Box<Store<G>>, 4, 256, 1024, 256, 1497, G>;
 
 /// The router's MAC on port 0.
 pub const OWN_0: &[u8] = &[10, 0, 0, 1, 0xBA, 0xC0];
@@ -72,11 +72,12 @@ pub fn claim_counts(set: impl FnOnce(&mut ClaimCounters)) -> ClaimCounters {
 
 /// A port on `network` at `mac`, carrying 1,497 octets each way.
 pub fn port_on(network: u16, mac: &[u8]) -> PortConfig {
-    PortConfig {
+    PortConfig::new(
         network,
-        mac: Mac::from_slice(mac).unwrap(),
-        max_npdu: Limits::both(1497),
-    }
+        Mac::from_slice(mac).unwrap(),
+        Limits::both(1497),
+        Groups::None,
+    )
 }
 
 /// The two standard ports.
@@ -85,7 +86,7 @@ pub fn two_ports() -> [PortConfig; 2] {
 }
 
 /// A router on `ports` with `options`, built at t = 0.
-pub fn router_with(ports: &[PortConfig], options: Options) -> TestRouter {
+pub fn router_with<G: GroupClassifier>(ports: &[PortConfig<G>], options: Options) -> TestRouter<G> {
     Router::new(Box::new(Store::new()), ports, options, Instant::ZERO).unwrap()
 }
 
@@ -118,21 +119,9 @@ pub struct Recorder {
     pub events: Vec<Event>,
     /// Classes to refuse.
     pub deny: Vec<ControlClass>,
-    /// Group MACs, by port, with their kind.
-    pub groups: Vec<(PortId, Vec<u8>, Group)>,
-    /// Every (port, MAC) the router asked about.
-    pub group_asked: std::cell::RefCell<Vec<(PortId, Vec<u8>)>>,
 }
 
 impl Host for Recorder {
-    fn group(&self, port: PortId, mac: &[u8]) -> Group {
-        self.group_asked.borrow_mut().push((port, mac.to_vec()));
-        self.groups
-            .iter()
-            .find(|(group_port, group, _)| *group_port == port && group == mac)
-            .map_or(Group::No, |(_, _, kind)| *kind)
-    }
-
     fn authorize(&mut self, claim: &Claim<'_>) -> bool {
         self.asked.push(Asked {
             class: claim.class,
@@ -221,7 +210,7 @@ impl Outcome {
 }
 
 /// Every action the router has, polled until idle.
-pub fn drain(router: &mut TestRouter) -> Vec<Sent> {
+pub fn drain<G: GroupClassifier>(router: &mut TestRouter<G>) -> Vec<Sent> {
     let mut sent = Vec::new();
     loop {
         match router.poll_action() {
@@ -243,8 +232,8 @@ pub fn drain(router: &mut TestRouter) -> Vec<Sent> {
 }
 
 /// Polls until idle, refusing the sends `refuse` picks.
-pub fn drain_refusing(
-    router: &mut TestRouter,
+pub fn drain_refusing<G: GroupClassifier>(
+    router: &mut TestRouter<G>,
     mut refuse: impl FnMut(usize, &Sent) -> Option<SendRefusal>,
 ) -> Vec<Sent> {
     let mut sent = Vec::new();
@@ -273,9 +262,9 @@ pub fn drain_refusing(
 
 /// Hand `npdu` to the router as port `port` received it from `source`, as
 /// a unicast, and poll until idle.
-pub fn deliver(
-    router: &mut TestRouter,
-    host: &mut Recorder,
+pub fn deliver<G: GroupClassifier>(
+    router: &mut TestRouter<G>,
+    host: &mut impl Host,
     port: u8,
     source: &[u8],
     npdu: &[u8],
@@ -285,9 +274,9 @@ pub fn deliver(
 }
 
 /// The same, as a link broadcast.
-pub fn deliver_broadcast(
-    router: &mut TestRouter,
-    host: &mut Recorder,
+pub fn deliver_broadcast<G: GroupClassifier>(
+    router: &mut TestRouter<G>,
+    host: &mut impl Host,
     port: u8,
     source: &[u8],
     npdu: &[u8],
@@ -297,9 +286,9 @@ pub fn deliver_broadcast(
 }
 
 /// The same, with the link group flag given.
-pub fn deliver_frame(
-    router: &mut TestRouter,
-    host: &mut Recorder,
+pub fn deliver_frame<G: GroupClassifier>(
+    router: &mut TestRouter<G>,
+    host: &mut impl Host,
     port: u8,
     source: &[u8],
     link_group: bool,
@@ -394,7 +383,7 @@ pub fn listed(sent: &Sent) -> Vec<u16> {
 }
 
 /// R7 serving network 9 through port 1, learned at `now`.
-pub fn learn_9_via_r7(router: &mut TestRouter, now: Instant) {
+pub fn learn_9_via_r7<G: GroupClassifier>(router: &mut TestRouter<G>, now: Instant) {
     assert!(router
         .table_mut()
         .add_learned(9, PortId(1), Mac::from_slice(R7).unwrap(), now));

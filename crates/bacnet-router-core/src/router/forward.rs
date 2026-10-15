@@ -28,8 +28,14 @@ fn source_of<'f>(at: &Arrival<'f>, npdu: &Npdu<'f>) -> Option<Address<'f>> {
 pub(super) const LONGEST_REJECT: usize = 2 + 2 * (3 + MAX_MAC_LEN) + 1 + 1 + 3;
 const _: () = assert!(LONGEST_REJECT < MIN_LIMIT as usize);
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: super::GroupClassifier,
+    > Storage<P, R, H, D, N, G>
 {
     /// Drop a relay whose hop count has run out, counting it and telling
     /// the host, which logs it as the hosted router does

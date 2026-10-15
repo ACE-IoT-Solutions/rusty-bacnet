@@ -33,7 +33,7 @@ impl GroupDestinations {
 
     /// No rule: nothing matches. A sender holding this leaves the check to the
     /// send path, which asks the transport itself.
-    pub fn unknown() -> Self {
+    pub const fn unknown() -> Self {
         Self(None)
     }
 

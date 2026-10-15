@@ -50,6 +50,9 @@
 //! 8. **A global broadcast from MS/TP** goes out on B/IP as an
 //!    Original-Broadcast, which the BBMD forwards to its peer, and reaches
 //!    the router's own application too.
+//! 9. **A group DADR from MS/TP** reaches the B/IP subnet as a local
+//!    broadcast, using the port configuration alone. The same group IP at
+//!    another UDP port is dropped and counted.
 //!
 //! The summary holds what the router made of each frame, every send it
 //! asked for, the events it reported, its counters, and every datagram and
@@ -86,10 +89,10 @@ use bacnet_mstp_core::{
     Action as MstpAction, Duration, ExtendedActionBuffers, HeaplessQueues, MasterCore,
     MstpCoreConfig, RequestId, TransmitId,
 };
-use bacnet_router_core::bip::{self, BbmdPort, Datagrams, Ingress};
-use bacnet_router_core::mstp::{self, MstpPort};
+use bacnet_router_core::bip::{BbmdPort, Datagrams, Ingress};
+use bacnet_router_core::mstp::MstpPort;
 use bacnet_router_core::router::{
-    Action, Counters, Dest, Discard, Event, Group, Host, Kind, Options, Received, SendRefusal,
+    Action, Counters, Dest, Discard, Event, Host, Kind, Options, Received, SendRefusal,
 };
 use bacnet_router_core::{Instant, PortId, Router, Storage, MAX_NPDU};
 
@@ -222,6 +225,11 @@ pub const INIT_RT_QUERY: [u8; 4] = [0x01, 0x80, 0x06, 0x00];
 /// Step 8: a global-broadcast Who-Is.
 pub const GLOBAL_WHO_IS: [u8; 8] = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
 
+/// Step 9: an Unconfirmed-Request naming the subnet broadcast in DADR.
+pub const SUBNET_GROUP: [u8; 14] = [
+    0x01, 0x20, 0x00, 0x01, 0x06, 192, 168, 1, 255, 0xBA, 0xC0, 0xFF, 0x10, 0x08,
+];
+
 /// Step 6: the B/IP node's NPDU too long for MS/TP once rewritten.
 pub const REFUSED_LENGTH: usize = MAX_NPDU - 3;
 /// Step 6: the longest of its NPDUs that MS/TP carries once rewritten.
@@ -336,7 +344,7 @@ pub const SENDS: usize = 20;
 /// Room for the events it reports.
 pub const EVENTS: usize = 4;
 /// Room for the datagrams the B/IP port sends.
-pub const DATAGRAMS: usize = 12;
+pub const DATAGRAMS: usize = 14;
 /// Room for the frames the MS/TP core sends.
 pub const FRAMES: usize = 20;
 
@@ -458,7 +466,6 @@ pub fn run(memory: &mut Memory) -> Summary {
         bbmd: &mut bbmd,
         core: &mut core,
         host: Hooks {
-            link: LINK,
             events: [None; EVENTS],
         },
         datagram_in,
@@ -473,22 +480,12 @@ pub fn run(memory: &mut Memory) -> Summary {
     summary
 }
 
-/// The router's host: each port's group addresses, and a record of the
-/// events the router reports.
+/// The router's host: a record of the events it reports.
 struct Hooks {
-    link: Link,
     events: [Option<Event>; EVENTS],
 }
 
 impl Host for Hooks {
-    fn group(&self, port: PortId, mac: &[u8]) -> Group {
-        if port == BIP {
-            bip::group(&self.link, mac)
-        } else {
-            mstp::group(mac)
-        }
-    }
-
     fn observe(&mut self, event: Event) {
         // A full record shows as a summary that differs.
         if let Some(slot) = self.events.iter_mut().find(|slot| slot.is_none()) {
@@ -606,6 +603,13 @@ impl Device<'_, '_> {
         // 8. A global broadcast from MS/TP.
         self.at(8_000);
         self.mstp_in(data, BROADCAST_MAC, &GLOBAL_WHO_IS);
+
+        // 9. Port-derived group classification, with no group host hook.
+        self.at(9_000);
+        self.mstp_in(data, STATION, &SUBNET_GROUP);
+        let mut other_port = SUBNET_GROUP;
+        other_port[10] = 0xC1;
+        self.mstp_in(data, STATION, &other_port);
 
         self.finish();
     }
