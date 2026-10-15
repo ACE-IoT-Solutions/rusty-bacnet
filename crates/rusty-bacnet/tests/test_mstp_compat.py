@@ -70,7 +70,7 @@ MSTP_KEYWORD_ONLY = [
 ]
 CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + [
     "sc_device_uuid", "share_port_by_address", "min_request_interval_ms", "ipv6_device_instance",
-    "bbmd", "foreign_device",
+    "bbmd", "foreign_device", "reconnect",
 ]
 SERVER_KEYWORD_ONLY = ["mutation_policy", "dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
     "max_confirmed_in_flight", "max_unconfirmed_in_flight",
