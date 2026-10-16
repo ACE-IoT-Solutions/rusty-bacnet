@@ -217,8 +217,12 @@ fn inspect(der: &[u8]) -> Option<ScCertificateMetadata> {
     if !remaining.is_empty() {
         return None;
     }
+    Some(metadata(&cert))
+}
+
+pub(super) fn metadata(cert: &X509Certificate<'_>) -> ScCertificateMetadata {
     let mut truncated = false;
-    Some(ScCertificateMetadata {
+    ScCertificateMetadata {
         subject: escaped(&cert.subject(), &mut truncated),
         issuer: escaped(&cert.issuer(), &mut truncated),
         not_before_unix: cert.validity().not_before.timestamp(),
@@ -226,21 +230,30 @@ fn inspect(der: &[u8]) -> Option<ScCertificateMetadata> {
         public_key_algorithm_oid: escaped(&cert.public_key().algorithm.algorithm, &mut truncated),
         signature_algorithm_oid: escaped(&cert.signature_algorithm.algorithm, &mut truncated),
         text_truncated: truncated,
-    })
+    }
 }
 
 // A bounded formatting sink avoids allocating an arbitrarily long Display
 // result first. Escape controls and non-ASCII, including bidi control text.
-fn escaped(value: &impl fmt::Display, truncated: &mut bool) -> String {
+pub(super) fn escaped(value: &impl fmt::Display, truncated: &mut bool) -> String {
+    escaped_bounded(value, truncated, 1024)
+}
+
+pub(super) fn escaped_bounded(
+    value: &impl fmt::Display,
+    truncated: &mut bool,
+    limit: usize,
+) -> String {
     struct Escaped {
         value: String,
         truncated: bool,
+        limit: usize,
     }
     impl Write for Escaped {
         fn write_str(&mut self, s: &str) -> fmt::Result {
             for c in s.chars() {
                 let escaped = c.escape_default();
-                if self.value.len() + escaped.len() > 1024 {
+                if self.value.len() + escaped.len() > self.limit {
                     self.truncated = true;
                     return Err(fmt::Error);
                 }
@@ -252,6 +265,7 @@ fn escaped(value: &impl fmt::Display, truncated: &mut bool) -> String {
     let mut output = Escaped {
         value: String::new(),
         truncated: false,
+        limit,
     };
     let _ = write!(&mut output, "{value}");
     *truncated |= output.truncated;

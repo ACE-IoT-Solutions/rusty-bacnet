@@ -1973,6 +1973,88 @@ class ScCertificateMetadata:
     @property
     def text_truncated(self) -> bool: ...
 
+class ScInspectionFinding:
+    """Frozen local interpretation finding; never a TLS acceptance decision."""
+    @property
+    def area(self) -> Literal["certificate", "san", "key_usage", "extended_key_usage"]: ...
+    @property
+    def kind(self) -> Literal["malformed", "duplicate", "unsupported", "truncated"]: ...
+
+class ScExtensionInspection:
+    """Frozen bounded display. Read certificate findings alongside these values."""
+    @property
+    def assessed(self) -> bool: ...
+    @property
+    def present(self) -> bool: ...
+    @property
+    def values(self) -> tuple[str, ...]: ...
+
+class ScInspectedCertificate:
+    """Frozen exact DER fingerprint and optional interpretation, without retained DER."""
+    @property
+    def role(self) -> Literal["identity", "peer_trust"]: ...
+    @property
+    def index(self) -> int: ...
+    @property
+    def sha256(self) -> bytes: ...
+    @property
+    def metadata(self) -> ScCertificateMetadata | None: ...
+    @property
+    def validity(self) -> Literal["unavailable", "invalid_interval", "not_yet_valid", "expired", "within_interval"]: ...
+    @property
+    def expiry(self) -> Literal["not_assessed", "none", "warning", "alarm"]: ...
+    @property
+    def san(self) -> ScExtensionInspection: ...
+    @property
+    def key_usage(self) -> ScExtensionInspection: ...
+    @property
+    def extended_key_usage(self) -> ScExtensionInspection: ...
+    @property
+    def findings(self) -> tuple[ScInspectionFinding, ...]: ...
+
+class ScKeyFilePermissions:
+    """Frozen Unix read-mode observations from the opened key file; no ACL audit."""
+    @property
+    def group_readable(self) -> bool: ...
+    @property
+    def world_readable(self) -> bool: ...
+
+class ScPemInspection:
+    """Frozen owned offline data. No credential bytes, client or TLS policy is retained."""
+    @property
+    def inspected_at_unix(self) -> int: ...
+    @property
+    def peer_trust_supplied(self) -> bool: ...
+    @property
+    def certificates(self) -> tuple[ScInspectedCertificate, ...]: ...
+    @property
+    def key_consistency(self) -> Literal["not_assessed", "match", "mismatch", "unusable", "unknown"]: ...
+    @property
+    def key_file_permissions(self) -> ScKeyFilePermissions | None: ...
+
+def inspect_sc_pem(
+    identity_pem: bytes | bytearray, *, peer_trust_pem: bytes | bytearray | None = None,
+    private_key_pem: bytes | bytearray | None = None, inspected_at_unix: int | None = None,
+) -> ScPemInspection:
+    """Inspect bounded PEM bytes synchronously. Time is a signed 64-bit integer second.
+
+    ValueError: malformed/empty/oversized supplied PEM. TypeError: wrong input type,
+    including bool time. OverflowError: time outside the signed 64-bit range.
+    DER defects and key/date observations are returned in the report.
+    """
+    ...
+
+def inspect_sc_pem_files(
+    identity_path: str | os.PathLike[str], *, peer_trust_path: str | os.PathLike[str] | None = None,
+    private_key_path: str | os.PathLike[str] | None = None, inspected_at_unix: int | None = None,
+) -> ScPemInspection:
+    """Read selected files once and inspect them without network I/O; OSError retains errno.
+
+    None time samples the clock once. A later connection may read changed files.
+    Same interpretation and input limits as inspect_sc_pem; no chmod or startup gate.
+    """
+    ...
+
 class ScPeerCertificate:
     """Frozen original DER and optional display interpretation."""
     @property

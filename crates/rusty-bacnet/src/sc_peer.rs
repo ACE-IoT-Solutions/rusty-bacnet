@@ -137,7 +137,7 @@ impl PyScPeerCertificate {
 
 /// Bounded ASCII-escaped names/OIDs and signed Unix validity dates.
 #[pyclass(name = "ScCertificateMetadata", module = "rusty_bacnet", frozen)]
-pub(crate) struct PyScCertificateMetadata(ScCertificateMetadata);
+pub(crate) struct PyScCertificateMetadata(pub(crate) ScCertificateMetadata);
 
 #[pymethods]
 impl PyScCertificateMetadata {

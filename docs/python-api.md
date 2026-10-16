@@ -795,6 +795,16 @@ retry. A new connection must complete TLS and SC admission before service
 traffic resumes. Applications still handle request errors; reconnection does
 not guarantee that an interrupted operation completes.
 
+### Offline SC credential inspection
+
+`inspect_sc_pem(identity_pem, *, peer_trust_pem=None, private_key_pem=None,
+inspected_at_unix=None)` returns a frozen, owned report without opening a
+connection. `inspect_sc_pem_files` accepts explicit `str | os.PathLike[str]` paths
+and reads each selected file once. Reports contain fingerprints, bounded metadata,
+date and SAN/KU/EKU findings, key consistency and optional Unix mode observations.
+These are advisory observations and do not change startup acceptance. See
+[the bounds, error contract and examples](sc-offline-inspection.md).
+
 ### SC peer certificates
 
 `await client.sc_peer_info()` observes the accepted active Hub without another
