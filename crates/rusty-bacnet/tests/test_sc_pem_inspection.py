@@ -1,0 +1,217 @@
+"""Offline installed-extension reports, with independent OpenSSL/hashlib inputs."""
+import errno
+import hashlib
+import importlib.util
+import io
+import os
+import pickle
+import ssl
+import subprocess
+import tempfile
+import time
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+
+from rusty_bacnet import (
+    ScPemInspection, ScInspectedCertificate, ScInspectionFinding,
+    ScExtensionInspection, ScKeyFilePermissions, inspect_sc_pem, inspect_sc_pem_files,
+)
+
+
+class ScPemInspectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix="bacnet-offline-pem-")
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.root = Path(cls.temp.name)
+
+        def run(*args):
+            return subprocess.run(["openssl", *args], cwd=cls.root, check=True,
+                                  capture_output=True, timeout=15).stdout
+        cls.openssl = staticmethod(run)
+        for name in ("identity", "other"):
+            run("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                "-nodes", "-days", "25", "-subj", f"/CN={name}",
+                "-keyout", f"{name}.key", "-out", f"{name}.pem",
+                "-addext", "keyUsage=critical,digitalSignature",
+                "-addext", "extendedKeyUsage=serverAuth,clientAuth",
+                "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1")
+        cls.identity = (cls.root / "identity.pem").read_bytes()
+        cls.key = (cls.root / "identity.key").read_bytes()
+        cls.trust = (cls.root / "other.pem").read_bytes()
+        cls.der = ssl.PEM_cert_to_DER_cert(cls.identity.decode("ascii"))
+        dates = run("x509", "-in", "identity.pem", "-noout", "-dates").decode().splitlines()
+        cls.before, cls.after = (int(ssl.cert_time_to_seconds(line.split("=", 1)[1])) for line in dates)
+
+    def report(self, **kwargs):
+        return inspect_sc_pem(self.identity, private_key_pem=self.key,
+                              inspected_at_unix=self.before, **kwargs)
+
+    def test_bytes_and_file_reports_match_independent_metadata(self):
+        report = self.report(peer_trust_pem=self.trust)
+        disk = inspect_sc_pem_files(str(self.root / "identity.pem"),
+                                   peer_trust_path=self.root / "other.pem",
+                                   private_key_path=self.root / "identity.key",
+                                   inspected_at_unix=self.before)
+        self.assertIsInstance(report, ScPemInspection)
+        self.assertEqual(report.inspected_at_unix, self.before)
+        self.assertTrue(report.peer_trust_supplied)
+        self.assertEqual(report.key_consistency, "match")
+        self.assertIsNone(report.key_file_permissions)
+        self.assertEqual([c.sha256 for c in report.certificates], [c.sha256 for c in disk.certificates])
+        self.assertEqual([(c.role, c.index) for c in report.certificates], [("identity", 0), ("peer_trust", 0)])
+        cert = report.certificates[0]
+        self.assertIsInstance(cert, ScInspectedCertificate)
+        self.assertEqual(cert.sha256, hashlib.sha256(self.der).digest())
+        self.assertEqual(cert.metadata.subject, "CN=identity")
+        self.assertEqual(cert.metadata.issuer, "CN=identity")
+        self.assertEqual((cert.metadata.not_before_unix, cert.metadata.not_after_unix), (self.before, self.after))
+        self.assertEqual(cert.metadata.public_key_algorithm_oid, "1.2.840.10045.2.1")
+        self.assertEqual(cert.metadata.signature_algorithm_oid, "1.2.840.10045.4.3.2")
+        self.assertEqual((cert.validity, cert.expiry), ("within_interval", "warning"))
+        self.assertIsInstance(cert.san, ScExtensionInspection)
+        self.assertTrue(cert.san.assessed and cert.san.present)
+        self.assertEqual(cert.san.values, ("DNS:localhost", "IP:127.0.0.1"))
+        self.assertEqual(cert.key_usage.values, ("digital_signature",))
+        self.assertEqual(cert.extended_key_usage.values, ("server_auth", "client_auth"))
+        self.assertEqual(cert.findings, ())
+
+    def test_nested_values_are_frozen_independent_and_reprs_omit_credentials(self):
+        source, key = bytearray(self.identity), bytearray(self.key)
+        report = inspect_sc_pem(source, private_key_pem=key, inspected_at_unix=self.before)
+        source[:] = b"changed"
+        key[:] = b"changed"
+        cert = report.certificates[0]
+        for obj, attribute, value in [(report, "key_consistency", "mismatch"),
+                                     (cert, "sha256", b"changed"), (cert.san, "present", False),
+                                     (cert.metadata, "subject", "changed")]:
+            with self.assertRaises(AttributeError):
+                setattr(obj, attribute, value)
+            self.assertNotIn("CN=", repr(obj))
+            self.assertNotIn(self.key.decode(), repr(obj))
+            with self.assertRaises(TypeError):
+                pickle.dumps(obj)
+        self.assertIsInstance(report.certificates, tuple)
+        self.assertIsInstance(cert.findings, tuple)
+        self.assertIsInstance(cert.san.values, tuple)
+        self.assertEqual(cert.sha256, hashlib.sha256(self.der).digest())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "identity.pem"
+            path.write_bytes(self.identity)
+            retained = inspect_sc_pem_files(path, inspected_at_unix=self.before)
+            path.unlink()
+        self.assertEqual(retained.certificates[0].metadata.subject, "CN=identity")
+
+    def test_time_types_extremes_thresholds_and_clock_sample(self):
+        for now, validity in [(self.before-1, "not_yet_valid"), (self.before, "within_interval"),
+                              (self.after, "within_interval"), (self.after+1, "expired"),
+                              (-(2**63), "not_yet_valid"), (2**63-1, "expired")]:
+            cert = inspect_sc_pem(self.identity, inspected_at_unix=now).certificates[0]
+            self.assertEqual(cert.validity, validity)
+            if validity != "within_interval":
+                self.assertEqual(cert.expiry, "not_assessed")
+        for remaining, expiry in [(7*86400, "alarm"), (7*86400+1, "warning")]:
+            cert = inspect_sc_pem(self.identity, inspected_at_unix=self.after-remaining).certificates[0]
+            self.assertEqual(cert.expiry, expiry)
+        for now in (True, False, 1.5, "123"):
+            with self.assertRaises(TypeError):
+                inspect_sc_pem(self.identity, inspected_at_unix=now)
+        for now in (-(2**63)-1, 2**63):
+            with self.assertRaises(OverflowError):
+                inspect_sc_pem(self.identity, inspected_at_unix=now)
+        start = int(time.time())
+        report = inspect_sc_pem(self.identity)
+        self.assertLessEqual(start, report.inspected_at_unix)
+        self.assertLessEqual(report.inspected_at_unix, int(time.time()))
+
+    def test_missing_malformed_oversized_inputs_and_safe_errors(self):
+        for kwargs in ({"peer_trust_pem": b""}, {"private_key_pem": b""}):
+            with self.assertRaises(ValueError):
+                inspect_sc_pem(self.identity, **kwargs)
+        for value in ("looks like PEM", [1, 2], memoryview(self.identity)):
+            with self.assertRaises(TypeError):
+                inspect_sc_pem(value)
+        with self.assertRaisesRegex(ValueError, "input_too_large"):
+            inspect_sc_pem(b" " * (1024 * 1024 + 1))
+        for sentinel in (b"-----BEGIN SENTINEL-SECRET invalid\n", b"-----BEGIN SENTINEL-SECRET-----\n"):
+            with self.assertRaises(ValueError) as caught:
+                inspect_sc_pem(self.identity, private_key_pem=sentinel)
+            for text in (str(caught.exception), repr(caught.exception)):
+                self.assertNotIn("SENTINEL", text)
+                self.assertNotIn("83, 69, 78, 84, 73, 78, 69, 76", text)
+                self.assertLess(len(text), 200)
+        invalid = b"-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n"
+        cert = inspect_sc_pem(invalid).certificates[0]
+        self.assertIsNone(cert.metadata)
+        self.assertFalse(cert.san.assessed)
+        finding = cert.findings[0]
+        self.assertIsInstance(finding, ScInspectionFinding)
+        self.assertEqual((finding.area, finding.kind), ("certificate", "malformed"))
+        with self.assertRaises(AttributeError):
+            finding.kind = "changed"
+
+    def test_key_outcomes_first_key_and_encoding_contracts(self):
+        self.assertEqual(inspect_sc_pem(self.identity).key_consistency, "not_assessed")
+        other = (self.root / "other.key").read_bytes()
+        self.assertEqual(inspect_sc_pem(self.identity, private_key_pem=other).key_consistency, "mismatch")
+        unusable = b"-----BEGIN PRIVATE KEY-----\nYWJj\n-----END PRIVATE KEY-----\n"
+        self.assertEqual(inspect_sc_pem(self.identity, private_key_pem=unusable).key_consistency, "unusable")
+        tail = self.key + other + b"-----BEGIN SECRET invalid\n"
+        self.assertEqual(inspect_sc_pem(self.identity, private_key_pem=tail).key_consistency, "match")
+        sec1 = self.openssl("ec", "-in", "identity.key", "-outform", "PEM")
+        self.assertIn(b"EC PRIVATE KEY", sec1)
+        self.assertEqual(inspect_sc_pem(self.identity, private_key_pem=sec1).key_consistency, "match")
+        encrypted = self.openssl("pkcs8", "-topk8", "-in", "identity.key", "-passout", "pass:fixture-only")
+        with self.assertRaises(ValueError):
+            inspect_sc_pem(self.identity, private_key_pem=encrypted)
+
+    def test_rsa_pkcs1_key_matches_its_identity(self):
+        self.openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                     "-subj", "/CN=rsa fixture", "-keyout", "rsa.key", "-out", "rsa.pem")
+        # `-traditional` requests the supported PKCS#1 representation explicitly.
+        key = self.openssl("rsa", "-in", "rsa.key", "-traditional", "-outform", "PEM")
+        self.assertIn(b"RSA PRIVATE KEY", key)
+        self.assertEqual(inspect_sc_pem((self.root / "rsa.pem").read_bytes(),
+                                       private_key_pem=key).key_consistency, "match")
+
+    def test_paths_errno_and_opened_file_mode_observations(self):
+        with self.assertRaises(OSError) as caught:
+            inspect_sc_pem_files(self.root / "missing.pem")
+        self.assertEqual(caught.exception.errno, errno.ENOENT)
+        self.assertIsInstance(caught.exception, FileNotFoundError)
+        self.assertTrue(caught.exception.strerror)
+        for path in (bytes(self.root), 123):
+            with self.assertRaises(TypeError):
+                inspect_sc_pem_files(path)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "key.pem"
+            path.write_bytes(self.key)
+            for mode in (0o600, 0o640, 0o604, 0o644):
+                path.chmod(mode)
+                report = inspect_sc_pem_files(self.root / "identity.pem", private_key_path=path)
+                observation = report.key_file_permissions
+                if os.name == "posix":
+                    self.assertIsInstance(observation, ScKeyFilePermissions)
+                    self.assertEqual(observation.group_readable, bool(mode & 0o040))
+                    self.assertEqual(observation.world_readable, bool(mode & 0o004))
+                    with self.assertRaises(AttributeError):
+                        observation.group_readable = False
+                else:
+                    self.assertIsNone(observation)
+
+    def test_offline_example_uses_only_supplied_files(self):
+        example = Path(__file__).resolve().parents[3] / "examples/python/sc_inspect_pem.py"
+        spec = importlib.util.spec_from_file_location("sc_inspect_example", example)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with redirect_stdout(io.StringIO()) as out:
+            report = module.inspect(self.root / "identity.pem", peer_trust=self.root / "other.pem",
+                                    key=self.root / "identity.key", inspected_at_unix=self.before)
+        self.assertEqual(report.key_consistency, "match")
+        self.assertIn(hashlib.sha256(self.der).hexdigest(), out.getvalue())
+        self.assertNotIn(self.key.decode(), out.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
