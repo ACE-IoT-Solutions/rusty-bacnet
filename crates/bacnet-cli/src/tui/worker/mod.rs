@@ -7,6 +7,7 @@
 //! rather than queued without limit, and the table is resynchronised from the
 //! client's own discovery table afterwards.
 
+pub(crate) mod coordinator;
 pub(crate) mod session;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,6 +42,7 @@ pub(crate) enum Offer {
 pub(crate) struct EventSink {
     tx: mpsc::Sender<WorkerEvent>,
     dropped: Arc<AtomicU64>,
+    session: Option<(u64, tokio::sync::watch::Receiver<bool>)>,
 }
 
 impl EventSink {
@@ -50,8 +52,53 @@ impl EventSink {
         let sink = Self {
             tx,
             dropped: Arc::new(AtomicU64::new(0)),
+            session: None,
         };
         (sink, rx)
+    }
+
+    /// Scope every event to this session and make blocked sends cancellable.
+    pub(crate) fn for_session(
+        &self,
+        generation: u64,
+        cancelled: tokio::sync::watch::Receiver<bool>,
+    ) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            dropped: Arc::clone(&self.dropped),
+            session: Some((generation, cancelled)),
+        }
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|(_, cancelled)| *cancelled.borrow())
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        let Some((_, receiver)) = &self.session else {
+            return std::future::pending().await;
+        };
+        let mut receiver = receiver.clone();
+        loop {
+            if *receiver.borrow_and_update() {
+                return;
+            }
+            if receiver.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    fn scoped(&self, event: WorkerEvent) -> WorkerEvent {
+        match &self.session {
+            Some((generation, _)) => WorkerEvent::Session {
+                generation: *generation,
+                event: Box::new(event),
+            },
+            None => event,
+        }
     }
 
     /// The shared dropped-events counter the status bar shows.
@@ -66,7 +113,10 @@ impl EventSink {
 
     /// Queue a high-rate event without waiting; drop and count it when full.
     pub(crate) fn offer(&self, event: WorkerEvent) -> Offer {
-        match self.tx.try_send(event) {
+        if self.is_cancelled() {
+            return Offer::Closed;
+        }
+        match self.tx.try_send(self.scoped(event)) {
             Ok(()) => Offer::Sent,
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.add_dropped(1);
@@ -79,7 +129,11 @@ impl EventSink {
     /// Queue a rare control event (connect, operation progress), waiting for
     /// room. Returns false if the UI has gone.
     pub(crate) async fn deliver(&self, event: WorkerEvent) -> bool {
-        self.tx.send(event).await.is_ok()
+        tokio::select! {
+            biased;
+            () = self.cancelled() => false,
+            result = self.tx.send(self.scoped(event)) => result.is_ok(),
+        }
     }
 }
 

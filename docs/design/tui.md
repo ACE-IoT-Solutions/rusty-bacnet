@@ -1,8 +1,8 @@
 # Design: a terminal UI for the `bacnet` CLI
 
 Status: accepted (2026-10-01). Milestone M0's first issue, the scaffold and the
-live devices screen (#961), is implemented; the rest is planned work tracked by
-epic #975. Spec references are clause numbers in ANSI/ASHRAE 135-2020,
+live devices screen (#961), and the B/IP profile/connection portion of #962
+are implemented. The remaining #962 transports and the rest of epic #975 are planned. Spec references are clause numbers in ANSI/ASHRAE 135-2020,
 paraphrased. Anything marked **planned** does not exist yet.
 
 ## 1. Summary
@@ -124,7 +124,7 @@ What M0 draws (80x24):
 | SC (planned) | Hub connector status, connection-doctor phase timeline, local and peer certificates, VMAC and UUID |
 | MS/TP (planned) | Participant panel or passive monitor (station grid, token timing, Max_Master analysis, error counters, join wizard) |
 | Capture (planned) | Frame list, decode tree, hex view, filters, pcap export |
-| Overlays | Help (`?`), log pane (`L`) and interface picker in M0; session ledger, confirmation modals and profile picker later |
+| Overlays | Help (`?`), log pane (`L`), interface/profile pickers and the B/IP editor/preview; session ledger and write confirmations remain planned |
 
 ### 4.3 Keybindings
 
@@ -177,9 +177,10 @@ tracks guarding those separately, without changing the one-shot contract here.
 1. **Passive** (planned, `--passive`): never transmits. Capture, the MS/TP
    monitor and offline files only.
 2. **Read-only** (the default, and the only level in M0): discovery, reads,
-   ReadRange, BDT and FDT reads. COV subscriptions and FD registrations create
-   state on remote devices, so they always use finite lifetimes, are cancelled
-   on exit, and are counted in the footprint.
+   ReadRange, BDT and FDT reads. FD registrations create remote state with a finite TTL. Disconnect stops
+   local renewal and releases the client; the remote FDT entry expires under
+   its TTL plus grace rather than being deleted immediately (J.5.2.2–J.5.2.3).
+   COV cancellation and the footprint ledger remain planned.
 3. **Write session** (planned, #964): armed with `W`. A modal shows the site and
    network, asks for an optional reason or ticket, and sets a duration (default
    15 min). The bar turns red with a countdown and the session disarms when it
@@ -245,8 +246,10 @@ distinctly.
   bare `bacnet` to the TUI, with `--no-tui` and `BACNET_NO_TUI` as escape
   hatches, is #974.
 - The global transport flags (`-i`, `-p`, `-b`, `-t`, `--ipv6`, `--sc*`) feed
-  both modes. Profiles (§6.6, planned) add defaults that explicit flags
-  override.
+  both modes. B/IP profiles (§6.6) provide settings that explicit flags
+  override, including values equal to the CLI defaults. Bare `tui` opens
+  profile management; explicit network flags without `--profile`, or
+  `--no-profile`, retain the nonpersistent connection path.
 - The one-shot contract that must not change: subcommand names and aliases;
   global flags on either side of the subcommand; automatic JSON when not a TTY;
   JSON and NDJSON shapes with display-string values; errors on stderr with an
@@ -268,7 +271,7 @@ advice and exits 1.
 ```
 crates/bacnet-cli/src/
   main.rs            dispatch: one-shot | shell | tui (the hand-built runtime from #950)
-  args.rs            + the Tui subcommand (--fps, --log-file)
+  args.rs            + Tui flags and explicit-value provenance
   core/              code shared by one-shot, shell and TUI: interface listing,
                      Who-Is range parsing (more as later screens need it)
   commands/          one-shot handlers (contract unchanged)
@@ -280,14 +283,15 @@ crates/bacnet-cli/src/
     event_loop.rs    select! over input, frames, worker events and signals
     message.rs       Command and WorkerEvent: the UI <-> worker protocol
     log_layer.rs     tracing layer -> ring buffer
-    worker/          generic over T: TransportPort; owns the BACnetClient
+    profile/         versioned B/IP TOML store, overrides and pre-connect persistence
+    worker/          coordinator + generic session; owns and retires the BACnetClient
     view/            pure rendering: devices table, chrome, dialogs
     tests/           app-core, frames (insta), in-process lab, load, event loop
 ```
 
 Planned additions: `safety.rs` (levels, tiers, ledger, audit writer),
-`profile.rs` (TOML profiles and workspaces), and one worker and view module per
-later screen.
+and one worker and view module per later screen. The implemented profile
+store is in `profile/`; SC and MS/TP persistence are still planned.
 
 The 700-line file cap (`scripts/ci/check-file-size.sh`) and `missing_docs =
 deny` apply. The TUI writes through the crossterm backend, not `print!`, so the
@@ -363,8 +367,10 @@ signals ------------------+      if dirty: terminal.draw(view)
   terminal. On Unix the TUI then exits with 128 plus the signal number, as
   shells report it (143, 129, 130); on Windows it exits 1. The handlers stay
   installed while the worker shuts down, so a Ctrl-C during that wait (SIGINT
-  again, now that the terminal is cooked) exits at once instead of being
-  swallowed. Windows ends a process soon after console close, so that restore
+  again, now that the terminal is cooked) is recorded for the eventual exit
+  status. The coordinator retains every client build and shutdown future and
+  joins its worker before exit; after three seconds it logs that resource
+  release is still pending. It never drops a timed-out join handle. Windows ends a process soon after console close, so that restore
   is best effort. A terminal that passes the TTY check but refuses raw mode
   (MSYS and mintty) gets the same hint as the TTY check and exit status 1.
 
@@ -416,20 +422,44 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
   owns the serial port (#958). Live capture of our own traffic needs a
   link-level tap (#957).
 
-### 6.6 Profiles and workspaces (planned, #962)
+### 6.6 Profiles and workspaces (B/IP portion of #962)
 
-- Profiles are TOML files in the platform config directory (via
-  `directories::ProjectDirs`), overridable with `BACNET_CONFIG_DIR`.
-- One profile per site, holding transport settings (interface, port,
-  broadcast, BBMD and TTL; SC primary and failover URLs and **paths** to the
-  CA, certificate and key; VMAC; a device UUID generated once and persisted,
-  since Annex AB.1.5 expects it to stay the same for the device's life; MS/TP
-  port, baud, MAC, Max_Master and Max_Info_Frames) and a safety policy
-  (`writes = "never" | "session"`, `dangerous = false`).
-- A workspace directory per profile holds the device cache (keyed by
-  Database_Revision), watch lists, captures, the ledger and `audit.jsonl`.
-- Passwords and key bytes are never stored. Flags-only runs work without a
-  profile. The shell history moves off `$HOME`, which is unset on Windows.
+B/IP profiles are implemented behind `tui`. The entry flow, schema and keys are
+in the [CLI reference](../CLI.md#terminal-ui). SC UUID/TLS/failover persistence,
+MS/TP profiles and shell-history migration remain separate work in #962.
+
+- Version 1 TOML files live at `profiles/NAME.toml` under
+  `directories::ProjectDirs::from("", "", "bacnet").config_dir()`. Set
+  `BACNET_CONFIG_DIR` to replace that root. Per-profile `workspaces/NAME/`
+  directories use the same root; no device cache, watch list, capture, ledger
+  or audit content is persisted by this slice.
+- Names are bounded ASCII identifiers, checked before constructing paths.
+  New files cannot overwrite an existing profile. Saves publish a complete,
+  synced temporary file atomically and preserve the prior file on failure.
+  Reload and stale-preview checks detect changed documents; this is not a
+  cross-process editing lock or crash-durability guarantee for the directory.
+- B/IP settings cover the local IPv4 address, UDP port (including 0),
+  broadcast address, timeout, pacing, optional BBMD, TTL and renewal. The
+  editor clears renewal when the BBMD is cleared, returning to Normal mode.
+  Deterministic invalid settings are rejected before binding. Whether the
+  BBMD equals the actual local endpoint is checked by the transport after bind.
+- `writes = "never" | "session"` and `dangerous = false` record the intended
+  policy. The UI remains read-only for both write policies. First use requires
+  an explicit authorization attestation, saved with a Unix timestamp before
+  construction of the client. A save/workspace failure prevents connection.
+  Editing saved network settings clears the attestation. CLI overrides stay
+  session-local, including during the authorization save.
+- The connection dialog previews the resolved settings and requires
+  disconnection before editing or selecting another profile. One retained
+  coordinator owns attempts and workers; disconnect is acknowledged only
+  after stop and join, and a replacement starts after retirement. Session
+  generations reject late connection, discovery, snapshot and collision
+  events. Bounded command rejection is visible rather than silently dropped.
+- A local foreign-device start and accepted remote registration are distinct.
+  The first registration outcome appears in the log pane; a refusal or timeout
+  keeps the existing background renewal policy. Disconnect stops renewals,
+  without promising immediate remote FDT deletion.
+
 
 ## 7. Crate choices
 
@@ -441,7 +471,8 @@ The TUI uses only public `bacnet-client` and `bacnet-transport` APIs.
 | own tracing layer | | | | the log pane (a small `Layer`; avoids `log` and `env_filter` through tui-logger) |
 | dev: insta | 1.48 | 1.66 | Apache-2.0 | snapshot tests |
 | dev: tokio `test-util` | workspace | | MIT | paused-time tests |
-| later, if needed | tui-tree-widget 0.24 (capture decode tree), tui-input 0.15 (command bar), toml 1.1 and directories 6.0 (profiles), x509-parser 0.18 behind `sc-tls` (certificate lint), tui-popup, tui-scrollview, nucleo-matcher (MPL-2.0, allowed by `deny.toml`), portable-pty and vt100 (PTY end-to-end tests) | | | |
+| toml / directories | 1.1 / 6.0 | within workspace MSRV | MIT/Apache-2.0 | versioned B/IP profiles and platform config paths, behind `tui` |
+| later, if needed | tui-tree-widget 0.24 (capture decode tree), tui-input 0.15 (command bar), x509-parser 0.18 behind `sc-tls` (certificate lint), tui-popup, tui-scrollview, nucleo-matcher (MPL-2.0, allowed by `deny.toml`), portable-pty and vt100 (PTY end-to-end tests) | | | |
 | skipped | color-eyre, better-panic, human-panic, template config stacks | | | the panic hook above already restores the terminal |
 
 - **MSRV.** The highest requirement is 1.88 (ratatui), against a workspace MSRV

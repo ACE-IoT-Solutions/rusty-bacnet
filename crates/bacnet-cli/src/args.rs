@@ -22,6 +22,10 @@ pub(crate) enum FileReadAccess {
 #[derive(Debug, Parser)]
 #[command(name = "bacnet", about = "BACnet command-line tool", version)]
 pub(crate) struct Cli {
+    /// Argument IDs explicitly supplied by the caller, captured before extraction.
+    #[arg(skip)]
+    pub(crate) explicit_args: Vec<String>,
+
     /// Network interface IP address to bind (omit to select interactively in shell mode).
     #[arg(short, long, global = true)]
     pub(crate) interface: Option<Ipv4Addr>,
@@ -66,7 +70,7 @@ pub(crate) struct Cli {
     /// Seconds between --foreign-bbmd registrations, less than --ttl
     /// (default: half the TTL). Behind NAT, renew often so the mapping the
     /// BBMD's replies use stays open.
-    #[arg(long, global = true, value_name = "SECS", requires = "foreign_bbmd")]
+    #[arg(long, global = true, value_name = "SECS")]
     pub(crate) renewal: Option<u64>,
 
     /// Use BACnet/IPv6 transport.
@@ -146,10 +150,17 @@ pub(crate) enum Command {
 
     /// Open the full-screen terminal UI (read-only).
     ///
-    /// Uses the transport chosen by the global flags (BACnet/IP by default,
-    /// --ipv6 or --sc). Needs an interactive terminal: stdin and stdout must be
+    /// Opens B/IP profiles by default. Explicit transport flags without
+    /// --profile retain a nonpersistent B/IP, B/IPv6 or SC connection.
+    /// Needs an interactive terminal: stdin and stdout must be
     /// a TTY and TERM must not be "dumb".
     Tui {
+        /// Named BACnet/IP profile to preview before connecting.
+        #[arg(long, value_name = "NAME", conflicts_with = "no_profile")]
+        profile: Option<String>,
+        /// Use global transport flags without reading or writing profiles.
+        #[arg(long)]
+        no_profile: bool,
         /// Frames per second for redraws (1-60).
         #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=60))]
         fps: u16,
@@ -426,6 +437,32 @@ pub(crate) enum Command {
     },
 }
 
+/// Capture global argument provenance and validate cross-command requirements.
+pub(crate) fn capture_sources(matches: &clap::ArgMatches) -> Result<Vec<String>, clap::Error> {
+    let explicit: Vec<String> = matches
+        .ids()
+        .filter(|id| {
+            matches.value_source(id.as_str()) == Some(clap::parser::ValueSource::CommandLine)
+        })
+        .map(ToString::to_string)
+        .collect();
+    let named_profile = matches
+        .subcommand_matches("tui")
+        .is_some_and(|tui| tui.get_one::<String>("profile").is_some());
+    if matches.get_one::<u64>("renewal").is_some()
+        && matches
+            .get_one::<std::net::SocketAddrV4>("foreign_bbmd")
+            .is_none()
+        && !named_profile
+    {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "--renewal requires --foreign-bbmd (or a named TUI profile containing a BBMD)",
+        ));
+    }
+    Ok(explicit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,7 +472,14 @@ mod tests {
     // The derived parser's debug-build frames nearly fill a 1 MiB test thread,
     // so parse where `main` does: on a thread with a larger stack (#953).
     fn parse<const N: usize>(args: [&'static str; N]) -> Result<Cli, clap::Error> {
-        crate::parse_on_large_stack(move || Cli::try_parse_from(args))
+        crate::parse_on_large_stack(move || {
+            use clap::{CommandFactory, FromArgMatches};
+            let mut matches = Cli::command().try_get_matches_from(args)?;
+            let explicit_args = capture_sources(&matches)?;
+            let mut cli = Cli::from_arg_matches_mut(&mut matches)?;
+            cli.explicit_args = explicit_args;
+            Ok(cli)
+        })
     }
 
     /// `--foreign-bbmd`, `--ttl` and `--renewal` reach the transport's
@@ -497,13 +541,14 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(cli.interface, Some(Ipv4Addr::new(10, 0, 0, 5)));
-        let Some(Command::Tui { fps, log_file }) = cli.command else {
+        let Some(Command::Tui { fps, log_file, .. }) = cli.command else {
             panic!("expected Tui");
         };
         assert_eq!(fps, 5);
         assert_eq!(log_file, Some(PathBuf::from("tui.log")));
 
-        let Some(Command::Tui { fps, log_file }) = parse(["bacnet", "tui"]).unwrap().command else {
+        let Some(Command::Tui { fps, log_file, .. }) = parse(["bacnet", "tui"]).unwrap().command
+        else {
             panic!("expected Tui");
         };
         assert_eq!((fps, log_file), (20, None));

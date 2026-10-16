@@ -13,14 +13,15 @@
 //! - [`terminal`]: the TTY guard, raw mode, the panic hook and signals.
 //! - [`log_layer`]: tracing into an in-memory ring for the log pane.
 //!
-//! This milestone is read-only: it sends discovery requests and nothing that
-//! changes a remote device.
+//! This milestone is read-only: discovery and finite foreign-device
+//! registrations, with no device application writes.
 
 mod app;
 mod event_loop;
 mod keymap;
 mod log_layer;
 mod message;
+mod profile;
 mod terminal;
 mod view;
 mod worker;
@@ -38,17 +39,19 @@ use ratatui::crossterm::event::EventStream;
 use tokio::sync::mpsc;
 
 use self::app::picker::Picker;
-use self::app::{App, AppConfig};
+use self::app::{App, AppConfig, Link, Overlay};
 use self::event_loop::LoopIo;
 use self::log_layer::{LogRing, RingLayer, LOG_CAPACITY};
 use self::terminal::Signals;
-use self::worker::session::{self, ConnectPlan, TransportKind};
+use self::worker::coordinator;
+use self::worker::session::{ConnectPlan, TransportKind};
 use self::worker::{EventSink, COMMAND_CHANNEL_CAPACITY, EVENT_CHANNEL_CAPACITY};
 use crate::args::{Cli, Command};
 use crate::core::interfaces::list_ipv4_interfaces;
 use crate::transport::TransportArgs;
 
-/// How long to wait for the worker to stop the client on exit.
+/// When to report that shutdown is taking longer than expected.
+/// The join remains owned and is always completed.
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Run `bacnet tui`. Returns only on a clean quit; errors are printed after
@@ -59,7 +62,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         std::process::exit(1);
     }
     let (fps, log_file) = match &cli.command {
-        Some(Command::Tui { fps, log_file }) => (*fps, log_file.clone()),
+        Some(Command::Tui { fps, log_file, .. }) => (*fps, log_file.clone()),
         _ => (20, None),
     };
     let kind = if cli.sc {
@@ -80,18 +83,20 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         std::process::exit(1);
     }
 
-    let (interface, broadcast, picker) = choose_interface(&cli, kind, &log);
-    let args = match TransportArgs::from_cli(&cli, interface, broadcast) {
-        Ok(args) => args,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            std::process::exit(1);
-        }
-    };
-    let plan = ConnectPlan {
-        kind,
-        args,
-        await_interface: picker.is_some(),
+    let (plan, profiles, connection, picker) = if let Some((service, connection)) =
+        profile::startup::open(&cli).map_err(std::io::Error::other)?
+    {
+        (None, Some(service), Some(connection), None)
+    } else {
+        let (interface, broadcast, picker) = choose_interface(&cli, kind, &log);
+        let args =
+            TransportArgs::from_cli(&cli, interface, broadcast).map_err(std::io::Error::other)?;
+        let plan = ConnectPlan {
+            kind,
+            args,
+            await_interface: picker.is_some(),
+        };
+        (Some(plan), None, None, picker)
     };
     let color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     let mut app = Box::new(App::new(
@@ -104,6 +109,12 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
         },
         log,
     ));
+
+    if let Some(connection) = connection {
+        app.connection = Some(connection);
+        app.link = Link::Down;
+        app.overlay = Overlay::Connection;
+    }
 
     let signals = Signals::install()?;
     // Before any network traffic: a terminal that passes the TTY check can
@@ -121,7 +132,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     let (sink, events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
     let dropped = sink.dropped_counter();
     let (commands, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-    let worker = session::spawn(plan, sink, command_rx);
+    let mut worker = coordinator::spawn(plan, profiles, sink, command_rx);
     let mut io = LoopIo {
         input: EventStream::new(),
         events,
@@ -149,13 +160,21 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
     } = io;
     drop((input, events, commands));
     let mut signal = None;
-    tokio::select! {
-        joined = tokio::time::timeout(STOP_TIMEOUT, worker) => {
-            if joined.is_err() {
-                tracing::warn!("the network worker did not stop in time");
+    let notice = tokio::time::sleep(STOP_TIMEOUT);
+    tokio::pin!(notice);
+    let mut warned = false;
+    loop {
+        tokio::select! {
+            joined = &mut worker => {
+                if let Err(error) = joined { app.fail(format!("network coordinator failed: {error}"), 1); }
+                break;
             }
+            _ = &mut notice, if !warned => {
+                warned = true;
+                tracing::warn!("waiting for the network worker to release its resources");
+            }
+            received = signals.recv() => { signal.get_or_insert(received); }
         }
-        received = signals.recv() => signal = Some(received),
     }
     let (error, code) = match (result, signal) {
         (Err(error), _) => (Some(error.to_string()), 1),
@@ -184,11 +203,17 @@ fn choose_interface(
     if kind != TransportKind::Bip {
         return (Ipv4Addr::UNSPECIFIED, cli.broadcast, None);
     }
+    let explicit_broadcast = cli.explicit_args.iter().any(|id| id == "broadcast");
     let mut interfaces = list_ipv4_interfaces();
+    if explicit_broadcast {
+        for interface in &mut interfaces {
+            interface.broadcast = cli.broadcast;
+        }
+    }
     match interfaces.len() {
         0 => {
             log.info("No network interfaces found; binding to 0.0.0.0.");
-            (Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, None)
+            (Ipv4Addr::UNSPECIFIED, cli.broadcast, None)
         }
         1 => {
             let only = interfaces.remove(0);

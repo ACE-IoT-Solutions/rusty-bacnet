@@ -13,6 +13,8 @@ use crate::tui::app::{App, Link, Overlay};
 pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let bar = theme.bar();
     let (endpoint, state) = match &app.link {
+        Link::Down => (app.transport.to_string(), "disconnected"),
+        Link::Disconnecting => (app.transport.to_string(), "disconnecting"),
         Link::Picking => (app.transport.to_string(), "choose an interface"),
         Link::Connecting => (app.transport.to_string(), "connecting"),
         Link::Up { local } => (format!("{} {local}", app.transport), "up"),
@@ -51,6 +53,8 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         ])
     } else if let Some(flash) = &app.flash {
         Line::styled(format!(" {}", flash.text), theme.warn())
+    } else if let Link::Failed(error) = &app.link {
+        Line::styled(format!(" {error} | p settings | c retry"), theme.danger())
     } else if app.overlay != Overlay::None {
         // The open dialog lists its own keys.
         Line::raw("")
@@ -60,12 +64,18 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("d", "Who-Is"),
                 ("/", "filter"),
                 ("s", "sort"),
-                ("S", "reverse"),
-                ("L", "log"),
+                ("p", "profiles"),
+                ("x", "disconnect"),
                 ("?", "help"),
                 ("q", "quit"),
             ],
-            _ => &[("L", "log"), ("?", "help"), ("q", "quit")],
+            _ => &[
+                ("c", "connect"),
+                ("p", "profiles"),
+                ("x", "cancel"),
+                ("L", "log"),
+                ("q", "quit"),
+            ],
         };
         let mut spans = Vec::new();
         for (key, what) in hints {
@@ -85,6 +95,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("q", "Quit"),
             ("Ctrl-C", "Cancel the running operation; twice quits"),
             ("L", "Show or hide the log pane"),
+            ("p  c  x", "Profiles; connect; disconnect/cancel"),
         ],
     ),
     (
@@ -121,7 +132,7 @@ pub(super) fn help(frame: &mut Frame, area: Rect, theme: &Theme) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        " READ-ONLY: this version only sends discovery requests.",
+        " READ-ONLY: discovery and finite FD registrations.",
         theme.dim(),
     ));
     let height = lines.len() as u16 + 2;

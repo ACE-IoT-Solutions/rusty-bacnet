@@ -5,6 +5,7 @@
 //! Below the minimum only a notice is drawn.
 
 mod chrome;
+mod connection;
 mod devices;
 mod dialogs;
 
@@ -66,6 +67,11 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
     chrome::footer(frame, footer, app, &theme);
     match &app.overlay {
         Overlay::None => {}
+        Overlay::Connection => {
+            if let Some(connection) = &app.connection {
+                connection::draw(frame, area, connection, &theme);
+            }
+        }
         Overlay::Help => chrome::help(frame, area, &theme),
         Overlay::WhoIs(form) => dialogs::who_is(frame, area, app, form, &theme),
         Overlay::Picker(picker) => dialogs::picker(frame, area, picker, &theme),

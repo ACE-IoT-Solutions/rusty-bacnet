@@ -57,7 +57,7 @@ and its headers (`libpcap-dev` on Debian and Ubuntu).
 
 Output auto-detects: tables in TTY, JSON when piped.
 
-**Interface selection:** When launching the interactive shell without `--interface` on BACnet/IP, the CLI lists available network interfaces and prompts you to select one; `bacnet tui` shows the same list as a dialog. For one-shot commands without `--interface`, it defaults to `0.0.0.0`.
+**Interface selection:** When launching the interactive shell without `--interface` on BACnet/IP, the CLI lists available network interfaces and prompts you to select one; `bacnet tui --no-profile` shows the same list as a dialog. Named B/IP profiles use their saved interface. For one-shot commands without `--interface`, it defaults to `0.0.0.0`.
 
 ## Target Resolution
 
@@ -145,7 +145,10 @@ exit                        # exit the shell (also: quit, Ctrl-D)
 ### Terminal UI
 
 ```bash
-bacnet tui                               # full-screen UI on BACnet/IP
+bacnet tui                               # create, select or preview a B/IP profile
+bacnet tui --profile plant-a             # preview this saved B/IP connection
+bacnet tui --profile plant-a --port 47808 # explicit flags override saved settings
+bacnet tui --no-profile                  # flags-only connection, no profile I/O
 bacnet tui -i 10.0.1.5                   # bind this interface, skip the picker
 bacnet --ipv6 tui                        # BACnet/IPv6
 bacnet --sc --sc-url wss://hub:443 --sc-ca ca.pem --sc-cert me.pem \
@@ -154,18 +157,26 @@ bacnet --sc --sc-url wss://hub:443 --sc-ca ca.pem --sc-cert me.pem \
 bacnet tui --fps 5 --log-file tui.log    # lower redraw rate, keep a log file
 ```
 
-`bacnet tui` opens a full-screen terminal UI on the transport chosen by the
-global flags. This first version has one screen, **Devices**: a live table of
-the devices that answer Who-Is, built from the client's I-Am notifications. It
-is **read-only**: it sends discovery requests and nothing that changes a remote
-device, and the status bar says `READ-ONLY`. The design and the planned screens
+`bacnet tui` opens a B/IP profile dialog before connecting. With no saved
+profiles it opens creation; with one it previews that connection; with several
+it shows a picker. `--profile NAME` selects one directly. The Devices screen is
+a live table of I-Am answers, with a Who-Is form. The status bar remains
+`READ-ONLY`: this version supports discovery and finite foreign-device
+registrations, with no device-write commands. The design and planned screens
 (browse, watch, BBMD, SC, MS/TP, capture) are in
 [docs/design/tui.md](design/tui.md).
+
+Explicit global network flags without `--profile`, or `--no-profile`, start
+the existing flags-only connection flow and do not read or write profiles or
+workspaces. B/IPv6 and SC continue to use that flow; named profiles currently
+support B/IP only. Global flags can appear before or after `tui`.
 
 **Tui flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--profile <NAME>` | | Preview a named B/IP profile; explicit global flags override saved values |
+| `--no-profile` | | Use flags only, without profile/workspace I/O; conflicts with `--profile` |
 | `--fps <N>` | `20` | Redraws per second, 1 to 60. Idle screens are not redrawn |
 | `--log-file <FILE>` | | Append log lines to this file as well as the in-app log pane |
 
@@ -180,14 +191,79 @@ supported terminal and 120x40 shows the full table; below 80x24 the TUI shows a
 notice until the window is resized. Colour follows `NO_COLOR`. On Windows use
 Windows Terminal or conhost; mintty and Git Bash are not supported.
 
-**Exit status.** 0 after `q` or a second Ctrl-C. 1 for an error, such as a
-failed connection or an internal error, with the reason on stderr. When a
+**Exit status.** 0 after `q` or a second Ctrl-C. Connection failures remain in
+the UI so settings can be corrected and retried. Terminal/internal failures
+exit 1, with the reason on stderr. When a
 signal ends it, the terminal is restored first; on Unix the status then follows
 the shell convention of 128 plus the signal number (130 for SIGINT, 129 for
 SIGHUP, 143 for SIGTERM), and on Windows a console close or Ctrl-Break exits 1.
 
-**Interface selection.** On BACnet/IP without `-i`, a dialog lists the IPv4
-interfaces (one interface is used without asking, as in the shell).
+**Interface selection.** In flags-only B/IP sessions without `-i`, a dialog
+lists the IPv4 interfaces (one is used without asking, as in the shell). An
+explicit broadcast value survives either choice. Profiles use their saved
+interface; `0.0.0.0` binds all interfaces.
+
+**Profiles and connection lifecycle.** Press `p` to open the profile dialog,
+`x` to disconnect or cancel a connection attempt, and `c` to reconnect. A
+profile reconnect opens its preview again. Disconnect must finish before
+another profile can be loaded or edited. Failed connection attempts keep the
+TUI open. Rows, duplicates and running operations are reset between sessions;
+late events from a previous session cannot repopulate the new one.
+
+In the profile picker, Up/Down choose, Enter previews, `n` creates and `r`
+reloads the list. In a preview, `e` edits, `r` reloads the file, `p` returns to
+the list, and `n` creates another profile. The editor uses Tab/Shift-Tab and
+Backspace; Enter saves without connecting. A blank BBMD selects Normal mode
+and clears the saved renewal; a BBMD selects Foreign Device mode. Blank
+renewal uses half the TTL. Port `0` requests an ephemeral local UDP port.
+
+The preview shows the settings after CLI overrides. Explicit values win even
+when equal to defaults, such as `--port 47808`, `--timeout 6000` or
+`--min-interval-ms 0`. They are not written to the profile by a connection or
+an authorization save. `--renewal` may use a named profile's saved BBMD.
+
+On first use, `a` explicitly attests that you are authorized to use BACnet on
+the displayed network. Its timestamp must be saved successfully before the
+client is built. Enter alone does not attest. Subsequent connections use Enter
+or `c`; editing saved network settings clears the old attestation. The safety
+policy accepts `writes = "never"` or `"session"` and requires
+`dangerous = false`; neither setting enables writes in this TUI.
+
+The config root is the platform directory returned by
+`directories::ProjectDirs::from("", "", "bacnet").config_dir()`. The dialog
+shows its path. `BACNET_CONFIG_DIR` replaces it completely, including all
+per-profile workspaces. Profiles are `profiles/NAME.toml`; workspaces are
+`workspaces/NAME/` and currently contain no saved device/cache/history data.
+Names use 1–64 ASCII letters, digits, `_` or `-`, excluding Windows device
+names. New-profile saves never overwrite an existing name. Failed saves keep
+the previous file; errors stay visible. Reload after changing a file outside
+the TUI. A profile uses this versioned schema:
+
+```toml
+version = 1
+transport = "bip"
+# authorized_at_unix is added only after explicit first-use attestation.
+
+[bip]
+interface = "127.0.0.1"
+port = 0
+broadcast = "127.0.0.255"
+timeout_ms = 6000
+min_interval_ms = 0
+ttl = 300
+# bbmd = "127.0.0.2:47808"
+# renewal_secs = 30
+
+[safety]
+writes = "never"
+dangerous = false
+```
+
+Local connection does not establish that a BBMD accepted registration. See
+`L` for the first outcome; refusal or timeout is logged while renewal retries
+continue. Disconnect stops local renewals and releases the client; it does
+not promise immediate deletion of the remote FDT entry. The remote entry
+expires according to its TTL plus grace (J.5.2.2–J.5.2.3).
 
 **Devices screen.** Press `d` for the Who-Is form:
 
@@ -212,13 +288,16 @@ client's discovery table afterwards.
 
 | Key | Action |
 |---|---|
+| `p` | Profile picker/editor/preview (profile-enabled sessions only) |
+| `c` | Reconnect; named profiles return to the resolved preview |
+| `x` | Disconnect or cancel connection; wait for resources to be released |
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `s` / `S` | Next sort column / reverse the order |
 | arrows, `j`/`k`, `PgUp`/`PgDn`, `Home`/`End` | Move |
 | `L` | Show or hide the log pane |
 | `?` | Help |
-| `Ctrl-C` | Close the open dialog or cancel the running Who-Is; press again within 2 s to quit |
+| `Ctrl-C` | Close a dialog or cancel the running Who-Is/connection attempt; press again within 2 s to quit |
 | `q` | Quit |
 
 The `tui` cargo feature is off by default until the terminal UI ships in

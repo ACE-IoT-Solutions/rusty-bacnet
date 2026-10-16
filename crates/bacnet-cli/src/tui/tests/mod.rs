@@ -17,10 +17,13 @@
 
 mod app_core;
 mod bip6_worker;
+mod build_retirement;
+mod connections;
 mod event_loop;
 mod frames;
 mod inprocess;
 mod load;
+mod profile_ui;
 
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;

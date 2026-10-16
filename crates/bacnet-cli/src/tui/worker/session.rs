@@ -56,6 +56,7 @@ impl TransportKind {
 }
 
 /// What the worker needs to connect.
+#[derive(Clone)]
 pub(crate) struct ConnectPlan {
     /// The transport.
     pub(crate) kind: TransportKind,
@@ -75,57 +76,78 @@ pub(crate) fn spawn(
     tokio::spawn(Box::pin(connect(plan, sink, commands)))
 }
 
-async fn connect(plan: ConnectPlan, sink: EventSink, mut commands: mpsc::Receiver<Command>) {
-    let mut args = plan.args;
-    if plan.await_interface {
-        loop {
-            match commands.recv().await {
-                Some(Command::Connect {
-                    interface,
-                    broadcast,
-                }) => {
-                    args.interface = interface;
-                    args.broadcast = broadcast;
-                    break;
-                }
-                Some(_) => {}
-                None => return,
-            }
-        }
-    }
+async fn connect(plan: ConnectPlan, sink: EventSink, commands: mpsc::Receiver<Command>) {
+    let args = plan.args;
     let style = plan.kind.style();
     match plan.kind {
-        TransportKind::Bip => match Box::pin(transport::build_bip_client(&args)).await {
-            Ok(client) => {
-                // `--foreign-bbmd`: say in the log pane how the first
-                // registration went, as the shell does at start (#938).
+        TransportKind::Bip => {
+            if let Some(mut client) =
+                finish_build(Box::pin(transport::build_bip_client(&args)), &sink).await
+            {
                 if let Some(foreign) = &args.foreign_device {
                     let bbmd = std::net::SocketAddrV4::new(foreign.bbmd_ip, foreign.bbmd_port);
-                    match crate::foreign::await_registration(&client, bbmd).await {
-                        Ok(()) => tracing::info!(
-                            "BBMD {bbmd} accepted the foreign-device registration; it renews automatically"
-                        ),
+                    let outcome = tokio::select! {
+                        biased;
+                        () = sink.cancelled() => None,
+                        result = crate::foreign::await_registration(&client, bbmd) => Some(result),
+                    };
+                    let Some(outcome) = outcome else {
+                        if let Err(error) = client.stop().await {
+                            tracing::warn!("client stop: {error}");
+                        }
+                        return;
+                    };
+                    match outcome {
+                        Ok(()) => tracing::info!("BBMD {bbmd} accepted the foreign-device registration; it renews automatically"),
                         Err(error) => tracing::warn!("{error}; retrying in the background"),
                     }
                 }
-                Box::pin(serve(client, style, sink, commands)).await
+                Box::pin(serve(client, style, sink, commands)).await;
             }
-            Err(error) => failed(&sink, error).await,
-        },
-        TransportKind::Bip6 => match Box::pin(transport::build_bip6_client(&args)).await {
-            Ok(client) => Box::pin(serve(client, style, sink, commands)).await,
-            Err(error) => failed(&sink, error).await,
-        },
+        }
+        TransportKind::Bip6 => {
+            if let Some(client) =
+                finish_build(Box::pin(transport::build_bip6_client(&args)), &sink).await
+            {
+                Box::pin(serve(client, style, sink, commands)).await;
+            }
+        }
         #[cfg(feature = "sc-tls")]
-        TransportKind::Sc => match Box::pin(transport::build_sc_client(&args)).await {
-            Ok(client) => Box::pin(serve(client, style, sink, commands)).await,
-            Err(error) => failed(&sink, error).await,
-        },
+        TransportKind::Sc => {
+            if let Some(client) =
+                finish_build(Box::pin(transport::build_sc_client(&args)), &sink).await
+            {
+                Box::pin(serve(client, style, sink, commands)).await;
+            }
+        }
         #[cfg(not(feature = "sc-tls"))]
         TransportKind::Sc => {
-            // `tui::run` refuses --sc without the feature before getting here.
-            let error = Error::Encoding("BACnet/SC requires the 'sc-tls' feature".into());
-            failed(&sink, error).await;
+            failed(
+                &sink,
+                Error::Encoding("BACnet/SC requires the 'sc-tls' feature".into()),
+            )
+            .await;
+        }
+    }
+}
+
+/// Retain a partially completed builder through cancellation: it may already
+/// own resources. Finish construction, then stop fully without publishing it.
+pub(crate) async fn finish_build<T: TransportPort + 'static>(
+    builder: Pin<Box<impl Future<Output = Result<BACnetClient<T>, Error>>>>,
+    sink: &EventSink,
+) -> Option<BACnetClient<T>> {
+    match builder.await {
+        Ok(mut client) if sink.is_cancelled() => {
+            if let Err(error) = client.stop().await {
+                tracing::warn!("client stop: {error}");
+            }
+            None
+        }
+        Ok(client) => Some(client),
+        Err(error) => {
+            failed(sink, error).await;
+            None
         }
     }
 }
@@ -184,6 +206,8 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
         loop {
             let deadline = listening.map_or_else(far_future, |(_, until)| until);
             tokio::select! {
+                biased;
+                () = sink.cancelled() => break,
                 command = commands.recv() => match command {
                     Some(Command::WhoIs { op, spec }) => {
                         let superseded = listening.take().map(|(old, _)| old);
@@ -208,7 +232,8 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                             sink.deliver(WorkerEvent::OpFinished { op, outcome: OpOutcome::Cancelled }).await;
                         }
                     }
-                    Some(Command::Connect { .. }) => {}
+                    Some(Command::Disconnect) => break,
+                    Some(Command::Connect { .. } | Command::Reconnect | Command::Profile(_)) => {}
                     None => break,
                 },
                 vmac = resolved(&mut resolving), if resolving.is_some() => {
@@ -258,7 +283,12 @@ async fn who_is<T: TransportPort + 'static>(
     op: OpId,
     spec: &WhoIsSpec,
 ) -> Option<(OpId, Instant)> {
-    match send_who_is(client, spec).await {
+    let result = tokio::select! {
+        biased;
+        () = sink.cancelled() => return None,
+        result = send_who_is(client, spec) => result,
+    };
+    match result {
         Ok(()) => {
             tracing::info!("Who-Is {op} sent ({})", spec.describe());
             sink.deliver(WorkerEvent::WhoIsSent { op }).await;
