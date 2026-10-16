@@ -10,7 +10,7 @@ use std::{io::IsTerminal, net::Ipv4Addr};
 
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::{bip::BipTransport, port::TransportPort};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 mod args;
 mod commands;
@@ -21,6 +21,7 @@ mod foreign;
 mod output;
 mod parse;
 mod resolve;
+mod sc_check;
 mod session;
 mod shell;
 mod timestamp;
@@ -104,7 +105,7 @@ async fn execute_command<T: TransportPort + 'static>(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Command::Shell | Command::Tui { .. } => unreachable!(),
+        Command::Shell | Command::Tui { .. } | Command::ScCheck { .. } => unreachable!(),
         Command::Discover {
             range,
             wait,
@@ -454,13 +455,39 @@ type CliResult = Result<(), Box<dyn std::error::Error>>;
 // subcommand's arguments inline). So the command line is parsed on a thread of
 // its own (#953). A read or a discover then needs about 240 KiB of the main
 // thread's stack in a debug build, where it needed 860 KiB before.
-fn main() -> CliResult {
-    let cli = parse_on_large_stack(Cli::parse);
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("Failed building the Runtime")
-        .block_on(boxed_cli_main(cli))
+fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
+    let cli = parse_on_large_stack(|| {
+        let mut matches = Cli::command().get_matches();
+        // Capture provenance before FromArgMatches removes argument values.
+        sc_check::validate(&matches).unwrap_or_else(|error| error.exit());
+        Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|error| error.exit())
+    });
+    dispatch(cli, |cli| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed building the Runtime")
+            .block_on(boxed_cli_main(cli))
+    })
+}
+
+/// The network path owns runtime/tracing/transport initialization. Keeping it
+/// behind this boundary makes offline dispatch testable without any of them.
+fn dispatch(
+    cli: Cli,
+    network: impl FnOnce(Cli) -> CliResult,
+) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
+    if let Some(Command::ScCheck { at_unix }) = cli.command {
+        let status = sc_check::execute(
+            &cli,
+            at_unix,
+            resolve_format(&cli),
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        );
+        return Ok(std::process::ExitCode::from(status));
+    }
+    network(cli).map(|()| std::process::ExitCode::SUCCESS)
 }
 
 /// Stack for the thread that parses the command line; see `main`.
@@ -615,6 +642,42 @@ mod tests {
     use bacnet_transport::bip6::Bip6Transport;
 
     use super::*;
+
+    #[test]
+    fn sc_check_never_invokes_runtime_or_network_initialization() {
+        use clap::Parser;
+        let cli = parse_on_large_stack(|| {
+            Cli::parse_from([
+                "bacnet",
+                "sc-check",
+                "--sc-cert",
+                "missing-offline-input",
+                "--json",
+            ])
+        });
+        let result = dispatch(cli, |_| {
+            panic!("offline command entered network initialization")
+        });
+        assert_eq!(result.unwrap(), std::process::ExitCode::from(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sc_check_parser_preserves_non_utf8_credential_bytes() {
+        use clap::Parser;
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let cli = parse_on_large_stack(|| {
+            let mut arguments = ["bacnet", "sc-check", "--sc-cert"]
+                .map(std::ffi::OsString::from)
+                .to_vec();
+            arguments.push(std::ffi::OsString::from_vec(b"identity-\xff.pem".to_vec()));
+            Cli::parse_from(arguments)
+        });
+        assert_eq!(
+            cli.sc_cert.unwrap().as_os_str().as_bytes(),
+            b"identity-\xff.pem"
+        );
+    }
 
     /// A one-shot command's `[ip]:port` target is the VMAC of the node
     /// there, found with a Virtual-Address-Resolution before the command

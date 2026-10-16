@@ -83,5 +83,8 @@ succeeds, certificate and key defects belong in the report.
 Run [the Python example](../examples/python/sc_inspect_pem.py) against existing
 credential files, or the packaged [Rust example](../crates/bacnet-transport/examples/sc_inspect_pem.rs)
 with `cargo run -p bacnet-transport --features sc-tls --example sc_inspect_pem -- node.pem site-ca.pem node.key`.
-The later CLI/TUI, direct-local-issuer and mandatory pre-dial policy work remains
-tracked in [#968](https://github.com/jscott3201/rusty-bacnet/issues/968).
+The development CLI exposes these observations through
+[`bacnet sc-check`](sc-check.md), adding documented local diagnostic severities
+and exit statuses. TUI/profile consumption, direct-local-issuer evidence and the
+separate mandatory pre-dial policy decision remain tracked in
+[#968](https://github.com/jscott3201/rusty-bacnet/issues/968).
