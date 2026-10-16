@@ -783,6 +783,8 @@ whose soft limit on open files was 1024. On the hosted runner they run as
   Host and mixed-node runs use buffered, timestamped reads, seeded chunk
   boundaries, serial-drain completion and optional content-matched echo.
   Paired paused-time fixtures also drive the public `MstpTransport` boundary.
+  Ready application answers wait for drain/echo completion; first-reply
+  timing follows the accepted request's physical end across unrelated traffic.
   Physical wire checks remain active: randomized fault runs retain and assert
   diagnosed failures when a host starts before injected activity becomes
   readable; clean and settled operation must pass the strict checks. These

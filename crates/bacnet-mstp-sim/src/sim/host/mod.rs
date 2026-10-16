@@ -1,7 +1,10 @@
 //! Chunked serial reads around the unchanged portable core.
+mod application;
 #[cfg(test)]
 mod differential;
 mod echo;
+#[cfg(test)]
+mod repair_tests;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -12,7 +15,8 @@ use crate::line::Character;
 use crate::report::{HostStats, ViolationKind};
 use crate::trace::{TraceKind, Who};
 pub(crate) use state::HostState;
-use state::Write;
+pub(crate) use state::WireRequest;
+use state::{Received, Write};
 
 /// Fixed storage bound, independent of run length. An overloaded adapter
 /// reports a violation rather than silently losing input or growing forever.
@@ -37,7 +41,10 @@ impl Sim {
             );
             return;
         }
-        host.input.push_back(character);
+        host.input.push_back(Received {
+            character,
+            wire_end: now,
+        });
         host.ready.get_or_insert(now + spec.receive_latency);
         host.stats.max_buffered = host.stats.max_buffered.max(host.input.len());
     }
@@ -53,6 +60,7 @@ impl Sim {
         if host.filter.confirmed_start() > 0 {
             host.stats.echo_fragments_dropped += 1;
         }
+        host.held_at.clear();
         host.write = Some(Write {
             ended: wire_end.max(now + spec.drain_duration),
             frame: frame.to_vec(),
@@ -96,6 +104,7 @@ impl Sim {
         }
         self.host_read(node);
         self.host_timer(node);
+        self.host_decisions(node);
         // The production main loop services overdue timers after each read,
         // even when another chunk is already available. Input wins the tie,
         // but a continuously readable port cannot starve core deadlines.
@@ -134,26 +143,37 @@ impl Sim {
             Who::Station(station),
             TraceKind::Note(format!("host read {count} characters")),
         );
-        for character in characters {
-            match character {
+        for received in characters {
+            match received.character {
                 Character::Garbled => {
                     self.host_complete(node);
-                    self.host_feed(node, Input::Garbled);
+                    self.host_feed(node, Input::Garbled, received.wire_end);
                 }
                 Character::Clean(octet) => {
                     let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
                     let pushed = host.filter.push(octet, now);
-                    let mut passed = host.filter.held(pushed.release).to_vec();
+                    host.held_at.drain(..pushed.stale);
+                    let mut passed: Vec<_> = host
+                        .filter
+                        .held(pushed.release)
+                        .iter()
+                        .copied()
+                        .zip(host.held_at.drain(..pushed.release))
+                        .collect();
                     if pushed.pass {
-                        passed.push(octet);
+                        passed.push((octet, received.wire_end));
+                    } else if pushed.echo {
+                        host.held_at.clear();
+                    } else {
+                        host.held_at.push_back(received.wire_end);
                     }
                     host.stats.echo_fragments_dropped += u32::from(pushed.stale > 0);
                     host.stats.echo_mismatches += u32::from(pushed.first_mismatch);
                     if pushed.echo || pushed.passes() {
                         self.host_complete(node);
                     }
-                    for octet in passed {
-                        self.host_feed(node, Input::Octet(octet));
+                    for (octet, wire_end) in passed {
+                        self.host_feed(node, Input::Octet(octet), wire_end);
                     }
                 }
             }
@@ -161,15 +181,18 @@ impl Sim {
         true
     }
 
-    fn host_feed(&mut self, node: usize, input: Input) {
+    fn host_feed(&mut self, node: usize, input: Input, wire_end: bacnet_mstp_core::Instant) {
         let now = self.now;
+        let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
+        host.activity = Some(now);
+        host.receiving = Some(wire_end);
+        let _ = self.master_input(node, input);
         self.master_mut(node)
             .unwrap()
             .host
             .as_mut()
             .unwrap()
-            .activity = Some(now);
-        let _ = self.master_input(node, input);
+            .receiving = None;
     }
 
     fn host_timer(&mut self, node: usize) {
@@ -177,14 +200,21 @@ impl Sim {
         let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
         let due = host.filter.deadline().is_some_and(|end| end <= now);
         let ended = host.filter.timer(now);
-        let passed = host.filter.held(ended.release).to_vec();
+        host.held_at.drain(..ended.stale);
+        let passed: Vec<_> = host
+            .filter
+            .held(ended.release)
+            .iter()
+            .copied()
+            .zip(host.held_at.drain(..ended.release))
+            .collect();
         host.stats.echo_missing += u32::from(ended.missing);
         host.stats.echo_fragments_dropped += u32::from(ended.stale > 0);
         if due {
             self.host_complete(node);
         }
-        for octet in passed {
-            self.host_feed(node, Input::Octet(octet));
+        for (octet, wire_end) in passed {
+            self.host_feed(node, Input::Octet(octet), wire_end);
         }
     }
 
@@ -202,10 +232,17 @@ impl Sim {
         let now = self.now;
         let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
         let ended = host.filter.before_start(now);
-        let passed = host.filter.held(ended.release).to_vec();
+        host.held_at.drain(..ended.stale);
+        let passed: Vec<_> = host
+            .filter
+            .held(ended.release)
+            .iter()
+            .copied()
+            .zip(host.held_at.drain(..ended.release))
+            .collect();
         host.stats.echo_fragments_dropped += u32::from(ended.stale > 0);
-        for octet in passed {
-            self.host_feed(node, Input::Octet(octet));
+        for (octet, wire_end) in passed {
+            self.host_feed(node, Input::Octet(octet), wire_end);
         }
     }
 

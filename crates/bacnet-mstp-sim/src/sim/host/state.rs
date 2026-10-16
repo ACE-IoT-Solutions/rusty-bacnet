@@ -1,7 +1,7 @@
 //! Buffered state is owned by one powered incarnation, never queued globally.
 use std::collections::VecDeque;
 
-use bacnet_mstp_core::{Duration, Instant};
+use bacnet_mstp_core::{Duration, Instant, RequestId};
 
 use super::echo::EchoFilter;
 use crate::line::Character;
@@ -15,8 +15,36 @@ pub(super) struct Write {
     pub hunting: bool,
 }
 
+/// Physical provenance follows the bytes, independently of delivery time.
+pub(super) struct Received {
+    pub character: Character,
+    pub wire_end: Instant,
+}
+
+/// Bound to an accepted core request, never to the most recent wire frame.
+#[derive(Clone, Copy)]
+pub(crate) struct WireRequest {
+    pub id: RequestId,
+    pub source: u8,
+    pub incarnation: u64,
+    pub end: Instant,
+}
+
+pub(super) struct Decision {
+    pub request: RequestId,
+    pub requester: u8,
+    pub postpone: bool,
+    pub payload: Vec<u8>,
+}
+
 pub(crate) struct HostState {
-    pub(super) input: VecDeque<Character>,
+    pub(super) input: VecDeque<Received>,
+    /// Provenance for the filter's held prefix, bounded by the sent frame.
+    pub(super) held_at: VecDeque<Instant>,
+    pub(super) decisions: VecDeque<Decision>,
+    /// Physical stop bit of the octet currently entering the core.
+    pub(super) receiving: Option<Instant>,
+    pub(crate) request: Option<WireRequest>,
     pub(super) ready: Option<Instant>,
     pub(super) write: Option<Write>,
     pub(super) filter: EchoFilter,
@@ -29,6 +57,10 @@ pub(crate) struct HostState {
 }
 
 impl HostState {
+    pub(crate) fn writing(&self) -> bool {
+        self.write.is_some()
+    }
+
     pub(crate) fn unread_until(&self) -> Option<Instant> {
         self.ready.filter(|_| !self.input.is_empty())
     }
@@ -36,6 +68,10 @@ impl HostState {
     pub(crate) fn new(frame_abort: Duration) -> Self {
         Self {
             input: VecDeque::new(),
+            held_at: VecDeque::new(),
+            decisions: VecDeque::new(),
+            receiving: None,
+            request: None,
             ready: None,
             write: None,
             filter: EchoFilter::new(frame_abort),

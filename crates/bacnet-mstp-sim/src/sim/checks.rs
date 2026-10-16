@@ -299,20 +299,23 @@ impl Sim {
         }
         let limit = master.spec.config.t_reply_delay;
         let station = self.nodes[node].station;
-        let Some((header, end)) = self.last_clean_frame() else {
+        let Some(request) = pending.reply_to else {
+            self.violation(
+                ViolationKind::CoreError,
+                format!("host station {station}: answer lacks an accepted wire request"),
+            );
             return;
         };
-        if header.destination == station
-            && matches!(
-                header.frame_type,
-                FrameType::BACNET_DATA_EXPECTING_REPLY
-                    | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY
-            )
-            && self.now - end > limit
+        let answers_request = super::decode_whole(&pending.octets)
+            .is_some_and(|(header, _)| header.destination == request.source);
+        if request.incarnation == master.incarnation
+            && answers_request
+            && self.now - request.end > limit
         {
             self.violation(ViolationKind::ReplyDelay, format!(
-                "host station {station} started a reply {} us after the request, T_reply_delay {} us",
-                (self.now - end).as_micros(), limit.as_micros()));
+                "host station {station} started a reply {} us after request #{} from {} ending at {}, T_reply_delay {} us",
+                (self.now - request.end).as_micros(), request.id.generation(), request.source,
+                Millis(request.end), limit.as_micros()));
         }
     }
 

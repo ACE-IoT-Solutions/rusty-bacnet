@@ -62,6 +62,8 @@ pub(crate) struct PendingTx {
     /// The frame is the core's answer to a request (a data frame or Reply
     /// Postponed, handed over while answering).
     pub(super) while_answering: bool,
+    /// The accepted host request that caused this answer, on the wire clock.
+    pub(super) reply_to: Option<super::host::WireRequest>,
     pub(super) generation: bool,
 }
 
@@ -306,6 +308,7 @@ impl Sim {
                 format!("station {station}: {count} actions from one event"),
             ),
         }
+        self.host_finish_request(node);
         result
     }
 
@@ -450,6 +453,9 @@ impl Sim {
                         dispatched: now,
                         activity_at_dispatch: activity,
                         while_answering: answer,
+                        reply_to: answer
+                            .then(|| master.host.as_ref().and_then(|host| host.request))
+                            .flatten(),
                         generation,
                     });
                     let incarnation = master.incarnation;
@@ -514,6 +520,8 @@ impl Sim {
         let Some(request) = request else {
             return;
         };
+        self.host_accept_request(node, request, source);
+        let master = self.master_mut(node).expect("a master");
         let (delay, postpone, payload) = match master.spec.reply.clone() {
             ReplyPolicy::Answer { delay, payload } => (delay, false, payload),
             ReplyPolicy::Postpone { delay, payload } => (delay, true, payload),
@@ -545,6 +553,21 @@ impl Sim {
         postpone: bool,
         payload: Vec<u8>,
     ) {
+        let master = self.master_mut(node).expect("a master");
+        if let Some(host) = master.host.as_ref() {
+            if host.writing() {
+                self.host_defer_decision(node, request, requester, postpone, payload);
+                return;
+            }
+            // Production moves a finished request's channel to its deferred
+            // queue. A ready late answer queues data without entering the
+            // core (even a refused complete_request would advance its clock).
+            if master.core.as_ref().unwrap().snapshot().request_id != Some(request) {
+                self.report.late_answers += 1;
+                self.enqueue_now(node, requester, &payload, NetworkPriority::Normal);
+                return;
+            }
+        }
         let data = if postpone {
             None
         } else {

@@ -20,6 +20,7 @@ struct FixtureSerial {
     input: Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
     remaining: StdMutex<Vec<u8>>,
     writes: mpsc::UnboundedSender<(Instant, Vec<u8>)>,
+    grace: Duration,
 }
 
 impl SerialPort for FixtureSerial {
@@ -55,7 +56,7 @@ impl SerialPort for FixtureSerial {
     }
 
     fn echo(&self) -> Echo {
-        Echo::Full { grace: GRACE }
+        Echo::Full { grace: self.grace }
     }
 }
 
@@ -142,6 +143,7 @@ async fn paired(case: Case) {
         input: Mutex::new(rx),
         remaining: StdMutex::new(Vec::new()),
         writes: tx,
+        grace: GRACE,
     };
     // One millisecond per octet avoids Tokio's timer granularity changing
     // inclusive filter boundaries. Production accepts this configured baud.
@@ -253,4 +255,73 @@ async fn paired_public_transport_echo_fixtures() {
     ] {
         paired(case).await;
     }
+}
+
+/// The public adapter cannot poll an application answer while strip_echo
+/// awaits. Its next no-token poll remains anchored to the completed frame,
+/// and the finished request's answer is queued without a core callback.
+#[tokio::test(start_paused = true)]
+async fn paired_ready_answer_during_echo_wait_keeps_wire_deadline() {
+    let (input, rx) = mpsc::unbounded_channel();
+    let (tx, mut writes) = mpsc::unbounded_channel();
+    let mut transport = MstpTransport::new(
+        FixtureSerial {
+            input: Mutex::new(rx),
+            remaining: StdMutex::new(Vec::new()),
+            writes: tx,
+            grace: Duration::from_millis(40),
+        },
+        MstpConfig {
+            this_station: 0,
+            max_master: 1,
+            baud_rate: 10_000,
+            transmit_latency_pad: Duration::ZERO,
+            ..MstpConfig::default()
+        },
+    );
+    let mut npdus = transport.start().await.unwrap();
+    settle_task().await;
+    let received = Instant::now();
+    let request = encode(FrameType::BACNET_DATA_EXPECTING_REPLY, 0, 1, &[1, 4, 9]);
+    input.send(request.clone()).unwrap();
+    let delivery = npdus.recv().await.unwrap();
+    let (first_start, first) = writes.recv().await.unwrap();
+    let first_end = first_start + Duration::from_millis(first.len() as u64);
+    tokio::time::sleep_until(received + Duration::from_millis(240)).await;
+    delivery
+        .reply_tx
+        .unwrap()
+        .send(PAYLOAD.to_vec().into())
+        .unwrap();
+    let (poll_start, poll) = tokio::time::timeout(Duration::from_secs(1), writes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let queued = transport.diagnostics().snapshot().late_answers_queued;
+    transport.stop().await.unwrap();
+
+    let mut sim = Sim::new(SimConfig::new(10_000));
+    sim.add_master(
+        MasterSpec::new(0, 1, 10_000)
+            .host(HostSpec {
+                echo_grace: Some(CoreDuration::from_millis(40)),
+                ..HostSpec::default()
+            })
+            .reply(crate::ReplyPolicy::Answer {
+                delay: CoreDuration::from_millis(240),
+                payload: PAYLOAD.to_vec(),
+            }),
+    );
+    model_read(&mut sim, ms(0), &request);
+    sim.run_until(ms(741));
+    assert_eq!(first, sim.frames()[0].octets);
+    assert_eq!(poll, sim.frames()[1].octets);
+    assert_eq!(queued, 1);
+    assert_eq!(sim.report().late_answers, 1);
+    let actual_silence = poll_start - first_end;
+    let modeled_silence = sim.frames()[1].start - sim.frames()[0].end;
+    assert_eq!(modeled_silence, CoreDuration::from_millis(500));
+    // Tokio's timer wheel can wake one millisecond after a virtual deadline.
+    assert!((Duration::from_millis(500)..=Duration::from_millis(501)).contains(&actual_silence));
+    sim.assert_no_violations();
 }
