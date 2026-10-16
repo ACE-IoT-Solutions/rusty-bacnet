@@ -237,10 +237,13 @@ async fn queue_full_keeps_marks_bounded_and_local() {
     h.learned(4000, 1, PEER_B);
     h.learned(5000, 0, &[9]);
     h.txs[0]
-        .try_send(SendRequest::Broadcast {
-            npdu: Bytes::from_static(&[0]),
-            data_attributes: Vec::new(),
-        })
+        .try_send(
+            0,
+            SendRequest::Broadcast {
+                npdu: Bytes::from_static(&[0]),
+                data_attributes: Vec::new(),
+            },
+        )
         .unwrap();
 
     h.handle(h.ctx(1, PEER_A, control_npdu(BUSY, &[]))).await;

@@ -26,7 +26,7 @@ use super::engine::Engine;
 use super::hosted_host::{EngineWarnings, HostedHost};
 use super::local_control::LocalControl;
 use super::local_delivery::Delivery;
-use super::SendRequest;
+use super::send_queue;
 use crate::layer::{AdmissionSender, ReceivedApdu};
 
 /// What the router, every port's dispatch and the sweep share.
@@ -43,7 +43,7 @@ pub(super) struct Shared {
 
 impl Shared {
     /// Queue the startup announcements and send them on `send_txs`.
-    pub(super) fn announce(&self, send_txs: &[mpsc::Sender<SendRequest>]) {
+    pub(super) fn announce(&self, send_txs: &[send_queue::Sender]) {
         let mut router = self.engine.lock();
         router.start();
         drain(&mut router, &[], send_txs);
@@ -71,7 +71,7 @@ impl Shared {
 /// receivers see their queues close.
 pub(super) struct Outputs {
     /// Each port's send queue, by port index.
-    pub(super) send_txs: Vec<mpsc::Sender<SendRequest>>,
+    pub(super) send_txs: Vec<send_queue::Sender>,
     /// The local application receive queue.
     pub(super) local_tx: AdmissionSender<ReceivedApdu>,
     /// The router's own network-control consumer.

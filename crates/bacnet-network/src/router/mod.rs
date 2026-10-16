@@ -14,6 +14,12 @@
 //! [receive-queue contract](crate::layer#receive-queue-admission), independently
 //! of forwarding and inline network-message handling.
 //!
+//! Each outgoing port holds at most 256 queued sends, plus one in progress.
+//! Among queued sends, higher network priority goes first; equal priorities
+//! keep their arrival order (Clause 6.5.4). A full queue refuses the new send
+//! without evicting an earlier one. A send in progress is not preempted, and
+//! sustained higher-priority traffic can delay lower-priority traffic.
+//!
 //! # Routing-claim trust model (RB-06)
 //!
 //! Classic BACnet routing claims are unauthenticated: an ingress port, next-hop
@@ -67,6 +73,7 @@ mod local_control;
 mod local_delivery;
 mod options;
 mod port_groups;
+mod send_queue;
 mod send_warning;
 mod sender;
 
@@ -433,7 +440,7 @@ impl BACnetRouter {
         let mut send_txs = Vec::new();
         let mut sender_tasks = Vec::new();
         for port in ports {
-            let (send_tx, send_rx) = mpsc::channel::<SendRequest>(256);
+            let (send_tx, send_rx) = send_queue::channel(send_queue::CAPACITY);
             send_txs.push(send_tx);
             sender_tasks.push(tokio::spawn(sender::run(
                 port.transport,
@@ -609,6 +616,10 @@ mod init_routing_table_tests;
 mod limit_tests;
 #[cfg(test)]
 mod mstp_extended_tests;
+#[cfg(test)]
+mod priority_harness;
+#[cfg(test)]
+mod priority_tests;
 #[cfg(test)]
 mod rb06_convergence_tests;
 #[cfg(test)]
