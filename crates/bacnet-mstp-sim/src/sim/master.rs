@@ -641,6 +641,9 @@ impl Sim {
     /// The adapter gets to a frame the core handed it: confirm the start,
     /// then drive the line.
     pub(super) fn adapter_start(&mut self, node: usize, id: TransmitId) {
+        if self.wait_for_release(node, id) {
+            return;
+        }
         self.host_before_start(node);
         let station = self.nodes[node].station;
         let Some(master) = self.master_mut(node) else {
@@ -660,11 +663,18 @@ impl Sim {
                 self.check_host_reply_delay(node, &pending);
                 self.host_started(node, &pending.octets);
                 let corruption = self.take_corruption(station, &pending.octets);
+                let post_drive = self
+                    .master_mut(node)
+                    .expect("a master")
+                    .spec
+                    .adapter
+                    .post_drive;
                 let tx = self.begin_transmission(
                     Driver::Station(station),
                     pending.octets,
                     corruption,
                     Some((pending.dispatched, pending.generation)),
+                    post_drive,
                 );
                 let master = self.master_mut(node).expect("a master");
                 master.transmitting = Some(id);

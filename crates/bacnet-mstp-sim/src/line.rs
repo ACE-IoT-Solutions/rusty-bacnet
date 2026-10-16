@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use bacnet_mstp_core::Instant;
+use bacnet_mstp_core::{Duration, Instant};
 
 use crate::spec::Corruption;
 use crate::wire::WireTiming;
@@ -50,8 +50,16 @@ pub(crate) struct Transmission {
 #[derive(Debug, Clone, Copy)]
 struct ActiveOctet {
     tx: TxId,
-    driver: Driver,
     end: Instant,
+}
+
+/// Physical driver ownership outlives the payload during post-drive hold.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Ownership {
+    pub driver: Driver,
+    pub start: Instant,
+    pub data_end: Instant,
+    pub release: Instant,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,7 +93,7 @@ pub(crate) struct WindowOutcome {
 /// The result of starting an octet.
 #[derive(Debug, Clone)]
 pub(crate) struct OctetOutcome {
-    /// Other drivers whose octets overlap this one.
+    /// Other drivers, transmitting data or held at idle mark, overlapping.
     pub overlaps: Vec<Driver>,
     /// When the receiver window this octet opened ends, if it opened one.
     pub window_end: Option<Instant>,
@@ -103,6 +111,7 @@ pub(crate) struct Line {
     timing: WireTiming,
     next_id: TxId,
     live: BTreeMap<TxId, Transmission>,
+    owners: BTreeMap<TxId, Ownership>,
     active: Vec<ActiveOctet>,
     window: Option<Window>,
     last_activity: Option<Instant>,
@@ -114,6 +123,7 @@ impl Line {
             timing,
             next_id: 0,
             live: BTreeMap::new(),
+            owners: BTreeMap::new(),
             active: Vec::new(),
             window: None,
             last_activity: None,
@@ -131,13 +141,22 @@ impl Line {
         self.active.iter().any(|octet| octet.end > now)
     }
 
-    /// Transmissions in progress.
+    /// Physical transmissions in progress, including post-drive holds.
     pub(crate) fn live_count(&self) -> usize {
-        self.live.len()
+        self.owners.len()
     }
 
     pub(crate) fn get(&self, tx: TxId) -> Option<&Transmission> {
         self.live.get(&tx)
+    }
+
+    pub(crate) fn owner(&self, tx: TxId) -> Option<&Ownership> {
+        self.owners.get(&tx)
+    }
+
+    /// Drop only this transmission's ownership, fencing old release events.
+    pub(crate) fn release(&mut self, tx: TxId) -> Option<Ownership> {
+        self.owners.remove(&tx)
     }
 
     /// Register a transmission. Its first octet starts with
@@ -148,9 +167,21 @@ impl Line {
         octets: Vec<u8>,
         start: Instant,
         corruption: Option<(usize, Corruption)>,
+        post_drive: Duration,
     ) -> TxId {
+        self.timing.validate_post_drive(post_drive);
         let id = self.next_id;
         self.next_id += 1;
+        let data_end = self.timing.end_of(start, octets.len());
+        self.owners.insert(
+            id,
+            Ownership {
+                driver,
+                start,
+                data_end,
+                release: data_end + post_drive,
+            },
+        );
         self.live.insert(
             id,
             Transmission {
@@ -178,9 +209,9 @@ impl Line {
             )
         };
         let mut overlaps = Vec::new();
-        for octet in &self.active {
-            if octet.driver != driver && octet.end > now {
-                overlaps.push((octet.tx, octet.driver));
+        for (&other, owner) in &self.owners {
+            if owner.driver != driver && owner.start <= now && owner.release > now {
+                overlaps.push((other, owner.driver));
             }
         }
         if !overlaps.is_empty() {
@@ -193,14 +224,14 @@ impl Line {
                 }
             }
         }
-        self.active.push(ActiveOctet { tx, driver, end });
+        self.active.push(ActiveOctet { tx, end });
         let window_end = match self.window.as_mut() {
             None => {
                 self.window = Some(Window {
                     start: now,
                     end,
                     opener: Some((tx, index)),
-                    corrupted: false,
+                    corrupted: !overlaps.is_empty(),
                 });
                 Some(end)
             }
@@ -311,7 +342,7 @@ mod tests {
     use super::{Character, Driver, Line, Next};
     use crate::spec::Corruption;
     use crate::wire::WireTiming;
-    use bacnet_mstp_core::Instant;
+    use bacnet_mstp_core::{Duration, Instant};
 
     fn us(value: u64) -> Instant {
         Instant::from_micros(value)
@@ -321,7 +352,13 @@ mod tests {
     fn a_lone_driver_delivers_each_octet_once() {
         let timing = WireTiming::new(9_600);
         let mut line = Line::new(timing);
-        let tx = line.begin(Driver::Station(1), vec![0x55, 0xFF], us(0), None);
+        let tx = line.begin(
+            Driver::Station(1),
+            vec![0x55, 0xFF],
+            us(0),
+            None,
+            Duration::ZERO,
+        );
         let first = line.start_octet(tx, 0, us(0));
         assert!(first.overlaps.is_empty());
         assert_eq!(first.window_end, Some(us(1_042)));
@@ -347,8 +384,20 @@ mod tests {
     fn overlapping_drivers_garble_and_mark_both() {
         let timing = WireTiming::new(9_600);
         let mut line = Line::new(timing);
-        let a = line.begin(Driver::Station(1), vec![0x55, 0xFF], us(0), None);
-        let b = line.begin(Driver::Station(2), vec![0x55], us(500), None);
+        let a = line.begin(
+            Driver::Station(1),
+            vec![0x55, 0xFF],
+            us(0),
+            None,
+            Duration::ZERO,
+        );
+        let b = line.begin(
+            Driver::Station(2),
+            vec![0x55],
+            us(500),
+            None,
+            Duration::ZERO,
+        );
         line.start_octet(a, 0, us(0));
         let overlap = line.start_octet(b, 0, us(500));
         assert_eq!(overlap.overlaps, vec![Driver::Station(1)]);
@@ -370,6 +419,7 @@ mod tests {
             vec![0x55, 0xFF],
             us(0),
             Some((1, Corruption::Xor(0x01))),
+            Duration::ZERO,
         );
         line.start_octet(tx, 0, us(0));
         assert_eq!(
@@ -382,7 +432,13 @@ mod tests {
             Character::Clean(0xFE)
         );
 
-        let cut = line.begin(Driver::Station(2), vec![0x55, 0xFF], us(10_000), None);
+        let cut = line.begin(
+            Driver::Station(2),
+            vec![0x55, 0xFF],
+            us(10_000),
+            None,
+            Duration::ZERO,
+        );
         line.start_octet(cut, 0, us(10_000));
         assert!(line.truncate(cut, us(10_500)).unwrap().truncated);
         assert!(!line.busy(us(10_500)));

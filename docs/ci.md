@@ -785,6 +785,12 @@ whose soft limit on open files was 1024. On the hosted runner they run as
   Paired paused-time fixtures also drive the public `MstpTransport` boundary.
   Ready application answers wait for drain/echo completion; first-reply
   timing follows the accepted request's physical end across unrelated traffic.
+  Configurable post-drive holds keep physical ownership after the final data
+  stop, with separate release records, overlap checks and receiver gating.
+  The model uses a conservative maximum of 14 bit times after the stop ends
+  to satisfy the different reference edges in 135-2020 9.2.3 and 9.5.3;
+  core and host completion timestamps keep their final-data/drain semantics.
+  Idle holds do not generate characters or extend the line-activity clock.
   Physical wire checks remain active: randomized fault runs retain and assert
   diagnosed failures when a host starts before injected activity becomes
   readable; clean and settled operation must pass the strict checks. These

@@ -5,12 +5,13 @@
 //! heap internals:
 //!
 //! 1. receiver windows ending (characters that finished arrive first);
-//! 2. transmissions ending (the driver releases the line);
-//! 3. scheduled scenario and application events;
-//! 4. ready host reads, completion and echo timers;
-//! 5. core deadlines;
-//! 6. adapters starting transmissions;
-//! 7. later octets of a transmission starting.
+//! 2. transmissions ending (final data stop bit);
+//! 3. physical driver releases after post-drive hold;
+//! 4. scheduled scenario and application events;
+//! 5. ready host reads, completion and echo timers;
+//! 6. core deadlines;
+//! 7. adapters starting transmissions;
+//! 8. later octets of a transmission starting.
 //!
 //! Putting arrivals first means a node always hears an octet that ended at
 //! the instant it decides to transmit, the conservative reading of a tie.
@@ -25,6 +26,7 @@ use bacnet_mstp_core::Instant;
 pub(crate) enum Class {
     WindowEnd,
     TxEnd,
+    DriverRelease,
     Scheduled,
     HostRead,
     Deadline,

@@ -6,7 +6,9 @@ use bacnet_mstp_core::MasterState;
 use super::master::PendingTx;
 use super::{NodeKind, Sim};
 use crate::line::{Driver, TxId};
-use crate::report::{Collision, CollisionClass, Episode, ViolationKind, WireFrame};
+use crate::report::{
+    Collision, CollisionClass, Episode, PostDriveOverlap, ViolationKind, WireFrame,
+};
 use crate::trace::{Millis, TraceKind, Who};
 
 /// States in which a master acts on the token it holds. A master in
@@ -111,6 +113,16 @@ impl Sim {
             other,
             class,
             host_timing,
+            post_drive: other_tx
+                .and_then(|tx| self.line.owner(tx))
+                .and_then(|owner| {
+                    (owner.data_end <= self.now && self.now < owner.release).then_some(
+                        PostDriveOverlap {
+                            data_end: owner.data_end,
+                            release: owner.release,
+                        },
+                    )
+                }),
         };
         self.report.collisions.push(collision);
         self.note(
@@ -161,7 +173,7 @@ impl Sim {
         // at fault whatever its adapter.
         let dispatched = |tx: Option<TxId>| tx.and_then(|tx| self.meta.get(&tx)?.dispatched);
         let first_heard = |tx: Option<TxId>| {
-            tx.and_then(|tx| self.line.get(tx))
+            tx.and_then(|tx| self.line.owner(tx))
                 .map(|t| t.start + self.timing.octet())
         };
         let slow_first = |slow: &super::master::MasterNode, own: Option<TxId>, theirs| {
@@ -425,8 +437,13 @@ mod tests {
         let octet = sim.timing.octet();
         let t0 = Instant::from_micros(1_000_000);
         sim.now = t0;
-        let first =
-            sim.begin_transmission(Driver::Station(0), token(0, 3), None, Some((t0, false)));
+        let first = sim.begin_transmission(
+            Driver::Station(0),
+            token(0, 3),
+            None,
+            Some((t0, false)),
+            Duration::ZERO,
+        );
         sim.nodes[0].driving = Some(first);
         sim.octet_start(first, 0);
         sim.now = t0 + octet;
@@ -437,6 +454,7 @@ mod tests {
             token(3, 0),
             None,
             Some((t0 + dispatched, false)),
+            Duration::ZERO,
         );
         sim.nodes[1].driving = Some(second);
         sim.octet_start(second, 0);

@@ -7,6 +7,11 @@ use bacnet_mstp_core::{Duration, Instant, MstpCoreConfig};
 /// How a simulated master's platform adapter behaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AdapterSpec {
+    /// Idle-mark driver hold after the final data stop bit ends. Zero by
+    /// default; must not exceed [`crate::WireTiming::max_post_drive`]. This
+    /// delays physical release and receiver enable, not the core's final-stop
+    /// completion timestamp or the host's drain observation.
+    pub post_drive: Duration,
     /// Chunked host reads and completion timing, or octet delivery when absent.
     pub host: Option<HostSpec>,
     /// How long after the core hands it a frame the adapter confirms the
@@ -327,6 +332,9 @@ pub struct SeenFrame {
 pub struct ScriptSend {
     /// Delay from the frame that triggered it to the first octet.
     pub after: Duration,
+    /// Idle-mark driver hold after the last stop bit, with the same limit
+    /// as [`AdapterSpec::post_drive`].
+    pub post_drive: Duration,
     /// The octets, preamble included.
     pub octets: Vec<u8>,
     /// Whether the octets are deliberately not a valid frame. Such a send
@@ -355,9 +363,18 @@ impl ScriptSend {
         octets.truncate(length);
         Self {
             after,
+            post_drive: Duration::ZERO,
             octets,
             malformed: false,
         }
+    }
+
+    /// Hold the driver after the final stop bit. The simulator validates
+    /// the limit against its baud rate before transmitting.
+    #[must_use]
+    pub fn post_drive(mut self, hold: Duration) -> Self {
+        self.post_drive = hold;
+        self
     }
 
     /// A well-formed frame with one octet XORed by `mask` afterwards, so its

@@ -1,7 +1,7 @@
 //! Line events: octets going out, characters arriving, transmissions ending.
 
 use bacnet_mstp_codec::{DecodeEvent, FrameHeader};
-use bacnet_mstp_core::Instant;
+use bacnet_mstp_core::{Duration, Instant};
 
 use super::master::Input;
 use super::{describe, tie_of, Event, NodeKind, Sim, TxMeta};
@@ -32,6 +32,7 @@ impl Sim {
         octets: Vec<u8>,
         corruption: Option<(usize, Corruption)>,
         dispatch: Option<(Instant, bool)>,
+        post_drive: Duration,
     ) -> TxId {
         let now = self.now;
         self.note(who(driver), TraceKind::FrameStart(describe(&octets)));
@@ -41,7 +42,7 @@ impl Sim {
             self.listening_masters(driver)
         };
         let cut_after = self.take_cut_off(driver);
-        let tx = self.line.begin(driver, octets, now, corruption);
+        let tx = self.line.begin(driver, octets, now, corruption, post_drive);
         self.meta.insert(
             tx,
             TxMeta {
@@ -170,10 +171,19 @@ impl Sim {
         };
         let driver = transmission.driver;
         self.record_frame(tx, transmission);
+        let release = self.line.owner(tx).expect("a physical driver").release;
+        if release == self.now {
+            self.release_driver(tx, false);
+        } else {
+            self.push(
+                release,
+                Class::DriverRelease,
+                tie_of(driver),
+                Event::DriverRelease { tx },
+            );
+        }
         if let Driver::Station(station) = driver {
             let node = self.index_of(station);
-            self.nodes[node].driving = None;
-            self.nodes[node].listening_since = Some(self.now);
             self.master_tx_done(node);
         }
     }
@@ -181,7 +191,7 @@ impl Sim {
     /// Log a finished or cut-off transmission and check it.
     pub(super) fn record_frame(&mut self, tx: TxId, transmission: Transmission) {
         let now = self.now;
-        let meta = self.meta.remove(&tx).unwrap_or_default();
+        let meta = self.meta.get(&tx).cloned().unwrap_or_default();
         let decoded = super::decode_whole(&transmission.octets);
         let frame = WireFrame {
             driver: transmission.driver,
@@ -267,6 +277,7 @@ impl Sim {
 
     /// A scripted station puts its octets on the line.
     pub(super) fn script_send(&mut self, node: usize, send: ScriptSend) {
+        self.timing.validate_post_drive(send.post_drive);
         let station = self.nodes[node].station;
         if self.nodes[node].listening_since.is_none() {
             self.note(
@@ -278,7 +289,13 @@ impl Sim {
         if send.malformed {
             self.perturb("a deliberately malformed scripted frame");
         }
-        let tx = self.begin_transmission(Driver::Station(station), send.octets, None, None);
+        let tx = self.begin_transmission(
+            Driver::Station(station),
+            send.octets,
+            None,
+            None,
+            send.post_drive,
+        );
         self.nodes[node].driving = Some(tx);
         self.nodes[node].listening_since = None;
         self.octet_start(tx, 0);
@@ -291,7 +308,13 @@ impl Sim {
         }
         self.perturb("injected noise");
         self.noise_bursts += 1;
-        let tx = self.begin_transmission(Driver::Noise(self.noise_bursts), octets, None, None);
+        let tx = self.begin_transmission(
+            Driver::Noise(self.noise_bursts),
+            octets,
+            None,
+            None,
+            Duration::ZERO,
+        );
         self.octet_start(tx, 0);
     }
 
