@@ -23,6 +23,21 @@ Default behavior:
 - Keep PRs small: one BACnet layer, state-machine family, or measured hotspot per PR.
 - Do not add new CI unless explicitly requested.
 - Do not broaden README or public support claims without tests and evidence.
+
+## Shared code index across worktrees
+
+- Keep one CocoIndex Code index in the canonical checkout, whose `.git`
+  directory is the shared Git common directory. Do not run `ccc init` in each
+  linked worktree.
+- From either the canonical checkout or a linked worktree, invoke semantic
+  search and refreshes through `scripts/ccc-shared.sh`, for example
+  `scripts/ccc-shared.sh search "routed property requests"` or
+  `scripts/ccc-shared.sh index`. The wrapper resolves the canonical checkout
+  with `git rev-parse --git-common-dir`, so every worktree reuses the same
+  database.
+- The shared index represents the canonical checkout. Use `rg` for
+  worktree-only or uncommitted changes, and refresh the shared index after the
+  canonical checkout advances materially.
 - Use `_spec/rusty-bacnet-compliance-execution-plan/` for the current roadmap: read the current block of `NEXT_HANDOFF.md`, then relevant `CURRENT_STATUS.md`, `WORK_QUEUE.md`, `DECISIONS.md`, and packet/gate files. Historical blocks preserve evidence, not current instructions. The older `_spec/rusty_bacnet_compliance_specs_v1/` path is absent in this checkout. Locate the licensed Standard through `STANDARD_NAVIGATION.md` before protocol work; never infer a missing source.
 
 
