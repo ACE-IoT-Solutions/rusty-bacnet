@@ -9,7 +9,7 @@ use bacnet_transport::sc_hub::{ScHub, ScHubTlsConfig};
 use bacnet_transport::sc_tls::ScNodeTlsConfig;
 use tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer;
 
-#[path = "../../../examples/rust/sc_peer_certificates.rs"]
+#[path = "support/sc_peer_certificates.rs"]
 mod certificate_example;
 
 #[tokio::test]
