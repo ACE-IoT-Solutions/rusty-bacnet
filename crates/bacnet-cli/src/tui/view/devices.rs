@@ -45,6 +45,7 @@ fn op_status(app: &App) -> Option<String> {
         OpState::Done => format!("{what}: done, {replies}"),
         OpState::Cancelled => format!("{what}: cancelled, {replies}"),
         OpState::Failed(error) => format!("{what} failed: {error}"),
+        OpState::CancelFailed(error) => format!("{what} cancel failed: {error}"),
     })
 }
 
@@ -214,6 +215,8 @@ fn scroll(app: &App, height: usize) -> usize {
 
 fn empty(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let text = match (&app.link, app.devices.len()) {
+        (Link::Down, _) => "Disconnected. Press p for profiles or c to connect.".into(),
+        (Link::Disconnecting, _) => "Disconnecting; waiting for local resources to stop...".into(),
         (Link::Picking, _) => String::new(),
         (Link::Connecting, _) => "Connecting...".to_string(),
         (Link::Failed(error), _) => format!("Connection failed: {error}"),

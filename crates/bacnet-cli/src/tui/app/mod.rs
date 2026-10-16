@@ -5,6 +5,7 @@
 //! [`Action::Tick`], so the whole state machine is testable without a
 //! terminal or a transport.
 
+pub(crate) mod connection;
 pub(crate) mod devices;
 pub(crate) mod picker;
 pub(crate) mod whois;
@@ -26,6 +27,10 @@ const FLASH_FOR: Duration = Duration::from_secs(4);
 /// State of the link to the network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Link {
+    /// No client owns network resources.
+    Down,
+    /// Waiting for the old attempt and all its tasks to retire.
+    Disconnecting,
     /// Waiting for the user to pick an interface.
     Picking,
     /// Building the client.
@@ -42,6 +47,8 @@ pub(crate) enum Link {
 /// The modal on top of the screen, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Overlay {
+    /// Named connection settings, editor and resolved preview.
+    Connection,
     /// Nothing.
     None,
     /// Key help.
@@ -66,6 +73,8 @@ pub(crate) enum OpState {
     Done,
     /// Cancelled.
     Cancelled,
+    /// Cancellation was not admitted; Ctrl-C can retry it.
+    CancelFailed(String),
     /// Sending failed.
     Failed(String),
 }
@@ -136,6 +145,14 @@ pub(crate) enum Action {
     ToggleHelp,
     /// Show or hide the log pane.
     ToggleLog,
+    /// Open the profile manager.
+    OpenConnection,
+    /// A key in the connection dialog.
+    Connection(connection::Key),
+    /// Connect again using the selected configuration.
+    Reconnect,
+    /// Cancel connection or stop the active client.
+    Disconnect,
     /// Open the Who-Is form.
     OpenWhoIs,
     /// Move the table selection.
@@ -180,6 +197,10 @@ pub(crate) struct App {
     pub(crate) color: bool,
     /// Link state.
     pub(crate) link: Link,
+    /// Present only when profile persistence is enabled.
+    pub(crate) connection: Option<connection::Connection>,
+    /// The only worker generation allowed to change this session.
+    pub(crate) generation: u64,
     /// The device table.
     pub(crate) devices: DeviceTable,
     /// Instances claimed by more than one address.
@@ -228,6 +249,8 @@ impl App {
             style: config.style,
             color: config.color,
             link,
+            connection: None,
+            generation: 0,
             devices: DeviceTable::default(),
             duplicates: Duplicates::default(),
             overlay,
@@ -316,9 +339,13 @@ impl App {
             self.quit = true;
             return;
         }
-        if matches!(self.link, Link::Picking | Link::Connecting) {
-            // Starting up is the only operation; cancelling it means leaving.
+        if self.link == Link::Picking {
             self.quit = true;
+            return;
+        }
+        if self.link == Link::Connecting {
+            self.ctrl_c_at = Some(now);
+            self.disconnect(out);
             return;
         }
         self.ctrl_c_at = Some(now);
@@ -328,7 +355,11 @@ impl App {
         } else if self.filter_editing {
             self.filter_editing = false;
             Some("Closed the filter")
-        } else if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
+        } else if let Some(op) = self
+            .op
+            .as_mut()
+            .filter(|op| op.running() || matches!(op.state, OpState::CancelFailed(_)))
+        {
             op.state = OpState::Cancelled;
             out.push(Command::Cancel { op: op.id });
             Some("Cancelled the Who-Is")
@@ -345,7 +376,7 @@ impl App {
     fn escape(&mut self) {
         match self.overlay {
             Overlay::Picker(_) => self.quit = true,
-            Overlay::Help | Overlay::WhoIs(_) => self.overlay = Overlay::None,
+            Overlay::Help | Overlay::WhoIs(_) | Overlay::Connection => self.overlay = Overlay::None,
             Overlay::None if !self.devices.filter().is_empty() => {
                 self.devices.clear_filter();
                 self.devices.settle();
@@ -432,12 +463,142 @@ impl App {
         }
     }
 
+    fn reset_session(&mut self) {
+        self.devices = DeviceTable::default();
+        self.duplicates = Duplicates::default();
+        self.op = None;
+        self.last_spec = None;
+        self.filter_editing = false;
+    }
+
+    fn disconnect(&mut self, out: &mut Vec<Command>) {
+        if matches!(
+            self.link,
+            Link::Connecting | Link::Up { .. } | Link::Failed(_)
+        ) {
+            self.link = Link::Disconnecting;
+            self.overlay = Overlay::None;
+            out.push(Command::Disconnect);
+        }
+    }
+
+    fn open_connection(&mut self) {
+        if self.connection.is_some() {
+            self.overlay = Overlay::Connection;
+        } else {
+            self.flash(
+                "Profiles disabled. Start bacnet tui without transport flags to manage them.",
+                FLASH_FOR,
+            );
+        }
+    }
+
+    fn connection_key(&mut self, key: connection::Key, out: &mut Vec<Command>) {
+        if !matches!(self.link, Link::Down | Link::Failed(_)) {
+            self.flash(
+                "Disconnect (Esc then x) before changing profiles.",
+                FLASH_FOR,
+            );
+            return;
+        }
+        if let Some(connection) = &mut self.connection {
+            if let Some(command) = connection.key(key) {
+                if matches!(
+                    command,
+                    Command::Profile(super::profile::service::Request::Connect { .. })
+                ) {
+                    self.link = Link::Connecting;
+                }
+                out.push(command);
+            }
+        }
+    }
+
+    /// Channel admission is part of the UI transition: never silently report
+    /// a disconnected or connecting state for a command that was dropped.
+    pub(crate) fn command_rejected(&mut self, command: Command, prior_link: Link, error: String) {
+        self.link = prior_link;
+        if let Command::Profile(_) = command {
+            if let Some(connection) = &mut self.connection {
+                connection.reply(Err(error.clone()));
+            }
+        }
+        if let Command::WhoIs { op, .. } | Command::Cancel { op } = command {
+            self.operation_rejected(op, matches!(command, Command::Cancel { .. }), error);
+        } else {
+            self.flash(error, FLASH_FOR);
+        }
+        self.dirty = true;
+    }
+    /// Only admission failure may correct an optimistic cancellation. Ordinary
+    /// late progress/completion continues to require a running operation.
+    fn operation_rejected(&mut self, id: OpId, cancel: bool, error: String) {
+        let Some(op) = self.op.as_mut().filter(|op| {
+            op.id == id
+                && if cancel {
+                    matches!(op.state, OpState::Cancelled | OpState::CancelFailed(_))
+                } else {
+                    op.running()
+                }
+        }) else {
+            return;
+        };
+        if cancel {
+            op.state = OpState::CancelFailed(error);
+            self.ctrl_c_at = None;
+            self.flash("Cancel refused. Ctrl-C to retry; x disconnects.", FLASH_FOR);
+        } else {
+            op.state = OpState::Failed(error.clone());
+            self.flash(error, FLASH_FOR);
+        }
+    }
+
     fn worker_event(&mut self, event: WorkerEvent) {
         match event {
+            WorkerEvent::Fatal { error } => self.fail(error, 1),
+            WorkerEvent::Session { generation, event } => {
+                if generation == self.generation && self.link != Link::Disconnecting {
+                    self.worker_event(*event);
+                }
+            }
+            WorkerEvent::SessionStarted { generation } => {
+                self.generation = generation;
+                self.reset_session();
+                if self.link != Link::Disconnecting {
+                    self.link = Link::Connecting;
+                }
+                self.overlay = Overlay::None;
+            }
+            WorkerEvent::Disconnected { generation } => {
+                if generation == self.generation {
+                    self.reset_session();
+                    self.link = Link::Down;
+                    self.flash("Disconnected; local resources released.", FLASH_FOR);
+                }
+            }
+            WorkerEvent::Profile(result) => {
+                if let Err(error) = &result {
+                    if self.link == Link::Connecting {
+                        self.link = Link::Failed(error.clone());
+                    }
+                }
+                if let Some(connection) = &mut self.connection {
+                    connection.reply(result);
+                }
+            }
+            WorkerEvent::Rejected { error } => {
+                if self.link == Link::Connecting {
+                    self.link = Link::Failed(error.clone());
+                }
+                if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
+                    op.state = OpState::Failed(error.clone());
+                }
+                self.flash(error, FLASH_FOR);
+            }
             WorkerEvent::Connected { local } => self.link = Link::Up { local },
             WorkerEvent::ConnectFailed { error } => {
                 self.link = Link::Failed(error.clone());
-                self.fail(error, 1);
+                self.flash(error, FLASH_FOR);
             }
             WorkerEvent::Discovered(row) | WorkerEvent::Updated(row) => {
                 if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
@@ -457,6 +618,9 @@ impl App {
                         until: now + op.spec.listen,
                     };
                 }
+            }
+            WorkerEvent::OpRejected { op, cancel, error } => {
+                self.operation_rejected(op, cancel, error)
             }
             WorkerEvent::OpFinished { op, outcome } => {
                 if let Some(op) = self.running_op_mut(op) {
@@ -497,6 +661,19 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         }
         Action::ToggleLog => app.show_log = !app.show_log,
         Action::OpenWhoIs => app.open_who_is(),
+        Action::OpenConnection => app.open_connection(),
+        Action::Connection(key) => app.connection_key(key, &mut out),
+        Action::Disconnect => app.disconnect(&mut out),
+        Action::Reconnect => {
+            if matches!(app.link, Link::Down | Link::Failed(_)) {
+                if app.connection.is_some() {
+                    app.open_connection();
+                } else {
+                    app.link = Link::Connecting;
+                    out.push(Command::Reconnect);
+                }
+            }
+        }
         Action::Move(movement) => app.devices.move_selection(movement),
         Action::CycleSort => {
             app.devices.cycle_sort();

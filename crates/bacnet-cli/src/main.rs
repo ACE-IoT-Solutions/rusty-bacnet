@@ -460,7 +460,10 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
         let mut matches = Cli::command().get_matches();
         // Capture provenance before FromArgMatches removes argument values.
         sc_check::validate(&matches).unwrap_or_else(|error| error.exit());
-        Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|error| error.exit())
+        let explicit_args = args::capture_sources(&matches).unwrap_or_else(|error| error.exit());
+        let mut cli = Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|error| error.exit());
+        cli.explicit_args = explicit_args;
+        cli
     });
     dispatch(cli, |cli| {
         tokio::runtime::Builder::new_multi_thread()

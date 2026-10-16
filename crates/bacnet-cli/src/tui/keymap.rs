@@ -17,6 +17,7 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
         return Some(Action::CtrlC);
     }
     match &app.overlay {
+        Overlay::Connection => connection(app, key),
         Overlay::Picker(_) => picker(key),
         Overlay::WhoIs(_) => form(key),
         Overlay::Help => match key.code {
@@ -68,6 +69,9 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('?') => Action::ToggleHelp,
         KeyCode::Char('L') => Action::ToggleLog,
         KeyCode::Char('d') => Action::OpenWhoIs,
+        KeyCode::Char('p') => Action::OpenConnection,
+        KeyCode::Char('c') => Action::Reconnect,
+        KeyCode::Char('x') => Action::Disconnect,
         KeyCode::Char('/') => Action::StartFilter,
         KeyCode::Char('s') => Action::CycleSort,
         KeyCode::Char('S') => Action::ReverseSort,
@@ -110,4 +114,34 @@ fn picker(key: KeyEvent) -> Option<Action> {
         }
         _ => return None,
     })
+}
+
+fn connection(app: &App, key: KeyEvent) -> Option<Action> {
+    use super::app::connection::{Key, Screen};
+    let connection = app.connection.as_ref()?;
+    let editing = connection.screen == Screen::Edit;
+    if key.code == KeyCode::Esc {
+        return Some(if editing {
+            Action::Connection(Key::Discard)
+        } else {
+            Action::Escape
+        });
+    }
+    if !editing && key.code == KeyCode::Char('q') {
+        return Some(Action::Quit);
+    }
+    Some(Action::Connection(match key.code {
+        KeyCode::Tab | KeyCode::Down => Key::Next,
+        KeyCode::BackTab | KeyCode::Up => Key::Prev,
+        KeyCode::Enter => Key::Submit,
+        KeyCode::Backspace if editing => Key::Backspace,
+        _ if editing => Key::Char(typed(key)?),
+        KeyCode::Char('n') => Key::New,
+        KeyCode::Char('e') => Key::Edit,
+        KeyCode::Char('r') => Key::Reload,
+        KeyCode::Char('p') => Key::List,
+        KeyCode::Char('c') => Key::Connect,
+        KeyCode::Char('a') => Key::Attest,
+        _ => return None,
+    }))
 }

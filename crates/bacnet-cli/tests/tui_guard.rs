@@ -12,6 +12,8 @@ async fn tui_without_a_terminal_fails_with_a_hint_and_writes_nothing() {
         vec!["tui"],
         vec!["--json", "tui", "--fps", "5"],
         vec!["--sc", "tui"],
+        vec!["tui", "--profile", "site"],
+        vec!["tui", "--no-profile"],
     ] {
         let output = run(&args).await;
         failure(&output, "needs an interactive terminal");
@@ -33,7 +35,10 @@ async fn tui_help_lists_its_flags() {
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(
-        text.contains("--fps <FPS>") && text.contains("--log-file <FILE>"),
+        text.contains("--fps <FPS>")
+            && text.contains("--log-file <FILE>")
+            && text.contains("--profile <NAME>")
+            && text.contains("--no-profile"),
         "{text}"
     );
 }

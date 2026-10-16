@@ -30,8 +30,17 @@ Prebuilt binaries are attached to each
 bacnet discover
 bacnet read 192.168.1.100 ai:1 pv
 bacnet --json readm 192.168.1.100 ai:1 pv,object-name
-bacnet tui    # built with --features tui
+bacnet tui    # built with --features tui; create/select a B/IP profile
+bacnet tui --profile plant-a
+bacnet tui --no-profile -i 127.0.0.1 -p 0 -b 127.0.0.255
 ```
+
+Named B/IP profiles preview resolved settings before connecting and record an
+explicit first-use authorization. Press `p` for profiles, `x` to disconnect and
+`c` to reconnect. `BACNET_CONFIG_DIR` isolates both profiles and workspaces.
+`--no-profile` or explicit network flags without `--profile` retain the
+nonpersistent connection flow; SC and B/IPv6 still use that flow. The TUI
+remains read-only.
 
 The [CLI reference](https://github.com/jscott3201/rusty-bacnet/blob/main/docs/CLI.md)
 lists every command and option.

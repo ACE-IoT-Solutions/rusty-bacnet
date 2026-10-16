@@ -102,6 +102,12 @@ impl WhoIsSpec {
 /// UI to worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
+    /// Load, save or start a named B/IP profile.
+    Profile(super::profile::service::Request),
+    /// Start the most recently selected flags-only configuration again.
+    Reconnect,
+    /// Retire the current connection and wait for resource release.
+    Disconnect,
     /// Bind BACnet/IP to this interface (the answer to the interface picker).
     Connect {
         /// Interface address.
@@ -157,12 +163,27 @@ pub(crate) enum OpOutcome {
 /// Worker to UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkerEvent {
+    /// An unexpected worker failure makes resource ownership uncertain.
+    Fatal { error: String },
+    /// A profile I/O operation completed.
+    Profile(Result<super::profile::service::Reply, String>),
+    /// An attempted command was not admitted.
+    Rejected { error: String },
+    /// A new session owns all subsequent tagged events.
+    SessionStarted { generation: u64 },
+    /// Every resource of this session has been retired.
+    Disconnected { generation: u64 },
+    /// Events from a single connection attempt, isolated across reconnects.
+    Session {
+        generation: u64,
+        event: Box<WorkerEvent>,
+    },
     /// The client is up; `local` is its own address.
     Connected {
         /// Local address for the status bar.
         local: String,
     },
-    /// Building the client failed. The TUI exits and prints the error.
+    /// Building the client failed. The connection can be edited and retried.
     ConnectFailed {
         /// The error.
         error: String,
@@ -186,6 +207,15 @@ pub(crate) enum WorkerEvent {
     WhoIsSent {
         /// Operation id.
         op: OpId,
+    },
+    /// An operation command could not enter the session's command queue.
+    OpRejected {
+        /// Operation identity, checked even after optimistic cancellation.
+        op: OpId,
+        /// Whether the refused command was a cancellation.
+        cancel: bool,
+        /// Admission failure; this is not an operation completion.
+        error: String,
     },
     /// An operation ended.
     OpFinished {
