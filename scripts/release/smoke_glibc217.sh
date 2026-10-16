@@ -36,7 +36,7 @@ fi
 
 ldd --version | sed -n 1p
 python=/opt/python/cp312-cp312/bin/python
-wheels=("$assets"/rusty_bacnet-*-cp312-cp312-manylinux*_"$arch".whl)
+wheels=("$assets"/ace_rusty_bacnet-*-cp312-cp312-manylinux*_"$arch".whl)
 [ ${#wheels[@]} = 1 ] && [ -f "${wheels[0]}" ] || fail "expected one cp312 $arch wheel in $assets, found: ${wheels[*]}"
 "$python" -m pip install -q --disable-pip-version-check --root-user-action=ignore --no-index --no-deps "${wheels[0]}"
 "$python" -I scripts/release/wheel_smoke.py --version "$version"

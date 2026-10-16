@@ -49,8 +49,9 @@ import zipfile
 from pathlib import Path
 
 GLIBC = re.compile(r"\bGLIBC_(\d+(?:\.\d+)+)\b")
-WHEEL = re.compile(r"^rusty_bacnet-(?P<ver>[^-]+)-(?P<py>[^-]+)-(?P<abi>[^-]+)-(?P<plat>[^-]+)\.whl$")
-SDIST = re.compile(r"^rusty_bacnet-(?P<ver>[^-]+)\.tar\.gz$")
+DISTRIBUTION_STEM = "ace_rusty_bacnet"
+WHEEL = re.compile(rf"^{DISTRIBUTION_STEM}-(?P<ver>[^-]+)-(?P<py>[^-]+)-(?P<abi>[^-]+)-(?P<plat>[^-]+)\.whl$")
+SDIST = re.compile(rf"^{DISTRIBUTION_STEM}-(?P<ver>[^-]+)\.tar\.gz$")
 ARCHES = ("x86_64", "aarch64")
 # `readelf -h` names every machine; an x86_64 objdump calls aarch64 "elf64-little".
 READELF_MACHINE = {"x86_64": "Advanced Micro Devices X86-64", "aarch64": "AArch64"}
@@ -140,7 +141,7 @@ def check_wheel_set(names, pythons, platforms, version):
     errors = []
     sdists = [m for m in map(SDIST.match, names) if m]
     if len(sdists) != 1:
-        errors.append(f"expected one rusty_bacnet sdist, found {len(sdists)}")
+        errors.append(f"expected one {DISTRIBUTION_STEM} sdist, found {len(sdists)}")
     for m in sdists:
         if m["ver"] != version:
             errors.append(f"{m.string} has version {m['ver']}, the release {version}")
@@ -338,14 +339,14 @@ def check_notices(directory, wheels, version, notices):
     """Errors for wheels or an sdist whose THIRD-PARTY-NOTICES is missing or differs."""
     errors = []
     want = notices.read_bytes()
-    member = f"rusty_bacnet-{version}.dist-info/licenses/{notices.name}"
+    member = f"{DISTRIBUTION_STEM}-{version}.dist-info/licenses/{notices.name}"
     for name in sorted(wheels.values()):
         with zipfile.ZipFile(directory / name) as whl:
             if member not in whl.namelist():
                 errors.append(f"{name} lacks {member}")
             elif whl.read(member) != want:
                 errors.append(f"{name}'s {member} differs from {notices}")
-    sdist = directory / f"rusty_bacnet-{version}.tar.gz"
+    sdist = directory / f"{DISTRIBUTION_STEM}-{version}.tar.gz"
     if sdist.is_file():
         with tarfile.open(sdist) as tar:
             found = [m for m in tar.getmembers() if m.isfile() and m.name.endswith("/" + notices.name)]

@@ -509,7 +509,7 @@ jobs:
             interpreter=${!var:-}
             [ -n "$interpreter" ] || { echo "::error::no CPython $py is set up for this job; add a setup-python step"; exit 1; }
             if [ "$RUNNER_OS" = Windows ]; then interpreter=$(cygpath -m "$interpreter"); fi
-            wheels=(assets/rusty_bacnet-*-"$tag-$tag"-*.whl)
+            wheels=(assets/ace_rusty_bacnet-*-"$tag-$tag"-*.whl)
             [ ${#wheels[@]} = 1 ] && [ -f "${wheels[0]}" ] || { echo "::error::expected one $tag wheel, found: ${wheels[*]}"; exit 1; }
             venv=$tmp/venv-$tag
             "$interpreter" -m venv "$venv"
@@ -627,7 +627,9 @@ jobs:
   pypi-preflight:
     name: PyPI trusted publishing
     needs: validate
-    if: needs.validate.outputs.publish == 'true'
+    if: >-
+      needs.validate.outputs.publish == 'true' &&
+      github.repository == 'jscott3201/rusty-bacnet'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:
@@ -664,7 +666,9 @@ jobs:
   crates-io:
     name: Publish to crates.io
     needs: [validate, github-draft, pypi-preflight]
-    if: needs.validate.outputs.publish == 'true'
+    if: >-
+      needs.validate.outputs.publish == 'true' &&
+      github.repository == 'jscott3201/rusty-bacnet'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment:
@@ -689,7 +693,9 @@ jobs:
   pypi:
     name: Publish to PyPI
     needs: [validate, crates-io]
-    if: needs.validate.outputs.publish == 'true'
+    if: >-
+      needs.validate.outputs.publish == 'true' &&
+      github.repository == 'jscott3201/rusty-bacnet'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
@@ -708,13 +714,107 @@ jobs:
         with:
           packages-dir: dist/
 
+  # The ACE fork publishes its renamed Python distribution only to the
+  # Tailscale-protected registry. It reuses the fully verified release wheels,
+  # but rebuilds the sdist through the fork release script so the packaged
+  # Cargo.lock is proven with --locked before upload.
+  ace-pypi:
+    name: Publish to ACE PyPI
+    needs: [validate, github-draft]
+    if: >-
+      needs.validate.outputs.publish == 'true' &&
+      github.repository == 'ACE-IoT-Solutions/rusty-bacnet'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment:
+      name: release
+      url: https://ace-pypi.tail8c70f.ts.net/simple/ace-rusty-bacnet/
+    permissions:
+      contents: read
+    env:
+      PRIVATE_INDEX_URL: https://ace-pypi.tail8c70f.ts.net/simple/
+      PRIVATE_PUBLISH_URL: https://ace-pypi.tail8c70f.ts.net/
+      TAILSCALE_ACL_TAG: ${{ vars.TAILSCALE_ACL_TAG }}
+    steps:
+      - *checkout
+      - *toolchain
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@b75a909f75acd358c2196fb9a5f1299a9a8868a4 # v6.7.0
+        with:
+          version: "0.12.15"
+          enable-cache: true
+      - name: Native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends cmake libudev-dev perl pkg-config
+      - *release-assets
+      - name: Select the CPython 3.13 release wheels
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          mkdir -p dist/release-wheels
+          cp release/ace_rusty_bacnet-"$VERSION"-cp313-cp313-*.whl dist/release-wheels/
+          wheels=(dist/release-wheels/*.whl)
+          [ ${#wheels[@]} = 5 ] || { echo "::error::expected five CPython 3.13 wheels, found ${#wheels[@]}"; exit 1; }
+          for pattern in \
+            '*manylinux*x86_64.whl' \
+            '*manylinux*aarch64.whl' \
+            '*macosx*x86_64.whl' \
+            '*macosx*arm64.whl' \
+            '*win_amd64.whl'; do
+            matches=$(find dist/release-wheels -maxdepth 1 -type f -name "$pattern" | wc -l)
+            [ "$matches" = 1 ] \
+              || { echo "::error::expected one wheel matching $pattern, found $matches"; exit 1; }
+          done
+      - name: Build and validate the repaired source distribution
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: scripts/publish-python-release.sh "$VERSION" --build-only --allow-dirty --wheel-dir dist/release-wheels
+      - name: Connect to the ACE tailnet
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:${{ vars.TAILSCALE_ACL_TAG }}
+          ping: ace-pypi.tail8c70f.ts.net
+      - name: Publish and verify the private release
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          UV_PUBLISH_USERNAME: tailscale
+          UV_PUBLISH_PASSWORD: tailscale
+        run: |
+          [ -n "$TAILSCALE_ACL_TAG" ] || { echo "::error::TAILSCALE_ACL_TAG is required"; exit 1; }
+          curl --fail --silent --show-error --retry 5 --retry-all-errors "$PRIVATE_INDEX_URL" >/dev/null
+          sdists=(dist/python/"$VERSION"/ace_rusty_bacnet-"$VERSION".tar.gz)
+          wheels=(dist/release-wheels/ace_rusty_bacnet-"$VERSION"-cp313-cp313-*.whl)
+          [ ${#sdists[@]} = 1 ] && [ -f "${sdists[0]}" ] && [ ${#wheels[@]} = 5 ] \
+            || { echo "::error::private artifact set is incomplete"; exit 1; }
+          uv publish --publish-url "$PRIVATE_PUBLISH_URL" --check-url "$PRIVATE_INDEX_URL" \
+            --trusted-publishing never --no-attestations "${sdists[0]}" "${wheels[@]}"
+          page=$(curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            "${PRIVATE_INDEX_URL}ace-rusty-bacnet/")
+          for artifact in "${sdists[@]}" "${wheels[@]}"; do
+            grep -Fq "$(basename "$artifact")" <<<"$page"
+          done
+          uv venv --python python3.13 dist/published-smoke
+          uv pip install --python dist/published-smoke/bin/python --no-cache --no-deps \
+            --index-url "$PRIVATE_INDEX_URL" --only-binary=:all: "ace-rusty-bacnet==$VERSION"
+          (cd dist && PYTHONPATH='' published-smoke/bin/python -I -c \
+            'import importlib.metadata as m, os, rusty_bacnet; assert m.version("ace-rusty-bacnet") == os.environ["VERSION"]')
+
   # Publishes the draft the GitHub draft job staged, unchanged: it must be that
   # draft, holding exactly these files with their digests and the same
   # SHA256SUMS. Nothing is uploaded or deleted.
   github-release:
     name: GitHub release
-    needs: [validate, github-draft, pypi]
-    if: needs.validate.outputs.publish == 'true'
+    needs: [validate, github-draft, pypi, ace-pypi]
+    if: >-
+      always() && needs.validate.outputs.publish == 'true' &&
+      needs.github-draft.result == 'success' &&
+      ((github.repository == 'ACE-IoT-Solutions/rusty-bacnet' && needs.ace-pypi.result == 'success') ||
+       (github.repository != 'ACE-IoT-Solutions/rusty-bacnet' && needs.pypi.result == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
