@@ -208,6 +208,15 @@ pub(crate) enum WorkerEvent {
         /// Operation id.
         op: OpId,
     },
+    /// An operation command could not enter the session's command queue.
+    OpRejected {
+        /// Operation identity, checked even after optimistic cancellation.
+        op: OpId,
+        /// Whether the refused command was a cancellation.
+        cancel: bool,
+        /// Admission failure; this is not an operation completion.
+        error: String,
+    },
     /// An operation ended.
     OpFinished {
         /// Operation id.

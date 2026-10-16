@@ -143,7 +143,7 @@ M0 keys:
 | `Tab`, `Shift-Tab`, Up, Down | Who-Is form | next or previous field |
 | Left, Right, Space | Who-Is form | change the scope |
 | `Enter` | Who-Is form | send; a global or unbounded request needs a second Enter |
-| `Esc` | dialogs | close |
+| `Esc` | dialogs | discard/back in the profile editor; close other dialogs |
 
 Planned: `1` to `7` and `Tab` to switch screens, `:` for a command bar that
 accepts one-shot syntax, `W` to arm writes, `u` for the ledger, `r` to refresh,
@@ -441,6 +441,8 @@ MS/TP profiles and shell-history migration remain separate work in #962.
 - B/IP settings cover the local IPv4 address, UDP port (including 0),
   broadcast address, timeout, pacing, optional BBMD, TTL and renewal. The
   editor clears renewal when the BBMD is cleared, returning to Normal mode.
+  Save errors retain the draft; Esc discards it and returns to a preview or
+  picker where reload is reachable. Stale saves still preserve external edits.
   Deterministic invalid settings are rejected before binding. Whether the
   BBMD equals the actual local endpoint is checked by the transport after bind.
 - `writes = "never" | "session"` and `dangerous = false` record the intended
@@ -450,7 +452,10 @@ MS/TP profiles and shell-history migration remain separate work in #962.
   Editing saved network settings clears the attestation. CLI overrides stay
   session-local, including during the authorization save.
 - The connection dialog previews the resolved settings and requires
-  disconnection before editing or selecting another profile. One retained
+  disconnection before editing or selecting another profile. Rejected operation
+  commands carry generation and operation identity separately from completion.
+  A refused cancel corrects optimistic cancellation and offers immediate retry
+  or disconnect; ordinary late progress cannot erase that failure. One retained
   coordinator owns attempts and workers; disconnect is acknowledged only
   after stop and join, and a replacement starts after retirement. Session
   generations reject late connection, discovery, snapshot and collision

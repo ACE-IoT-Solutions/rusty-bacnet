@@ -25,7 +25,14 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, connection: &Connection, theme
     }
     let block = Block::bordered()
         .title(Line::styled(" B/IP connection profiles ", theme.accent()))
-        .title_bottom(Line::styled(" Esc close | READ-ONLY ", theme.dim()))
+        .title_bottom(Line::styled(
+            if connection.screen == Screen::Edit {
+                " Esc discard / back | READ-ONLY "
+            } else {
+                " Esc close | READ-ONLY "
+            },
+            theme.dim(),
+        ))
         .border_style(theme.accent())
         .padding(Padding::horizontal(1));
     frame.render_widget(

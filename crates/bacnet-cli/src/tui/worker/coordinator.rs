@@ -2,7 +2,7 @@
 
 use super::session::{ConnectPlan, TransportKind};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
-use crate::tui::message::{Command, OpOutcome, WorkerEvent};
+use crate::tui::message::{Command, OpId, WorkerEvent};
 use crate::tui::profile::service::{Reply, Request, Service};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -106,14 +106,7 @@ async fn run(
                         sink.deliver(WorkerEvent::Disconnected { generation }).await;
                     }
                     Command::WhoIs { op, .. } | Command::Cancel { op } => {
-                        let error = match active.as_ref() {
-                            Some(active) => active.commands.try_send(command).err().map(|e| format!("session command not admitted: {e}")),
-                            None => Some("no active connection".into()),
-                        };
-                        if let Some(error) = error {
-                            sink.deliver(WorkerEvent::Session { generation,
-                                event: Box::new(WorkerEvent::OpFinished { op, outcome: OpOutcome::Failed(error) }) }).await;
-                        }
+                        forward_operation(active.as_ref(), command, op, generation, &sink).await;
                     }
                     Command::Profile(request) => {
                         let Some(profiles) = &profiles else {
@@ -183,3 +176,33 @@ async fn reject(sink: &EventSink, error: &str) {
     })
     .await;
 }
+
+/// Forward across the second bounded queue, retaining operation/session identity.
+async fn forward_operation(
+    active: Option<&Active>,
+    command: Command,
+    op: OpId,
+    generation: u64,
+    sink: &EventSink,
+) {
+    let cancel = matches!(command, Command::Cancel { .. });
+    let error = match active {
+        Some(active) => active
+            .commands
+            .try_send(command)
+            .err()
+            .map(|e| format!("session command not admitted: {e}")),
+        None => Some("no active connection".into()),
+    };
+    if let Some(error) = error {
+        sink.deliver(WorkerEvent::Session {
+            generation,
+            event: Box::new(WorkerEvent::OpRejected { op, cancel, error }),
+        })
+        .await;
+    }
+}
+
+#[cfg(test)]
+#[path = "coordinator_tests.rs"]
+mod tests;

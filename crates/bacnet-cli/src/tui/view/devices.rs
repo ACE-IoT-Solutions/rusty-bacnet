@@ -45,6 +45,7 @@ fn op_status(app: &App) -> Option<String> {
         OpState::Done => format!("{what}: done, {replies}"),
         OpState::Cancelled => format!("{what}: cancelled, {replies}"),
         OpState::Failed(error) => format!("{what} failed: {error}"),
+        OpState::CancelFailed(error) => format!("{what} cancel failed: {error}"),
     })
 }
 

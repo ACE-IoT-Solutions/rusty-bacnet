@@ -73,6 +73,8 @@ pub(crate) enum OpState {
     Done,
     /// Cancelled.
     Cancelled,
+    /// Cancellation was not admitted; Ctrl-C can retry it.
+    CancelFailed(String),
     /// Sending failed.
     Failed(String),
 }
@@ -353,7 +355,11 @@ impl App {
         } else if self.filter_editing {
             self.filter_editing = false;
             Some("Closed the filter")
-        } else if let Some(op) = self.op.as_mut().filter(|op| op.running()) {
+        } else if let Some(op) = self
+            .op
+            .as_mut()
+            .filter(|op| op.running() || matches!(op.state, OpState::CancelFailed(_)))
+        {
             op.state = OpState::Cancelled;
             out.push(Command::Cancel { op: op.id });
             Some("Cancelled the Who-Is")
@@ -517,14 +523,36 @@ impl App {
                 connection.reply(Err(error.clone()));
             }
         }
-        if matches!(command, Command::WhoIs { .. } | Command::Cancel { .. }) {
-            if let Some(op) = &mut self.op {
-                op.state = OpState::Failed(error.clone());
-            }
+        if let Command::WhoIs { op, .. } | Command::Cancel { op } = command {
+            self.operation_rejected(op, matches!(command, Command::Cancel { .. }), error);
+        } else {
+            self.flash(error, FLASH_FOR);
         }
-        self.flash(error, FLASH_FOR);
         self.dirty = true;
     }
+    /// Only admission failure may correct an optimistic cancellation. Ordinary
+    /// late progress/completion continues to require a running operation.
+    fn operation_rejected(&mut self, id: OpId, cancel: bool, error: String) {
+        let Some(op) = self.op.as_mut().filter(|op| {
+            op.id == id
+                && if cancel {
+                    matches!(op.state, OpState::Cancelled | OpState::CancelFailed(_))
+                } else {
+                    op.running()
+                }
+        }) else {
+            return;
+        };
+        if cancel {
+            op.state = OpState::CancelFailed(error);
+            self.ctrl_c_at = None;
+            self.flash("Cancel refused. Ctrl-C to retry; x disconnects.", FLASH_FOR);
+        } else {
+            op.state = OpState::Failed(error.clone());
+            self.flash(error, FLASH_FOR);
+        }
+    }
+
     fn worker_event(&mut self, event: WorkerEvent) {
         match event {
             WorkerEvent::Fatal { error } => self.fail(error, 1),
@@ -590,6 +618,9 @@ impl App {
                         until: now + op.spec.listen,
                     };
                 }
+            }
+            WorkerEvent::OpRejected { op, cancel, error } => {
+                self.operation_rejected(op, cancel, error)
             }
             WorkerEvent::OpFinished { op, outcome } => {
                 if let Some(op) = self.running_op_mut(op) {

@@ -195,3 +195,113 @@ fn q_quits_picker_and_preview_but_types_in_the_editor() {
     assert!(!app.quit);
     assert_eq!(app.connection.as_ref().unwrap().fields[0], "q");
 }
+
+#[test]
+fn stale_editor_can_discard_then_reload_the_current_disk_profile() {
+    use crate::tui::profile::{service::Service, store::Store};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().to_owned());
+    let initial = Profile::default();
+    store.save("lab", &initial, true).unwrap();
+    let service = Service {
+        store: Ok(store.clone()),
+        overrides: Overrides::default(),
+    };
+    let mut app = profile_app();
+    worker(&mut app, WorkerEvent::Profile(service.load("lab")));
+    press(&mut app, KeyCode::Char('e'));
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Tab);
+    }
+    press(&mut app, KeyCode::Backspace);
+    type_text(&mut app, "1");
+    assert_eq!(app.connection.as_ref().unwrap().fields[4], "6001");
+    let mut external = initial.clone();
+    external.bip.timeout_ms = 7000;
+    store.save("lab", &external, false).unwrap();
+    let commands = press(&mut app, KeyCode::Enter);
+    let [Command::Profile(Request::Save {
+        name,
+        profile,
+        create,
+        previous,
+    })] = commands.as_slice()
+    else {
+        panic!("unexpected {commands:?}");
+    };
+    let result = service.save(name, profile.clone(), *create, previous.clone());
+    assert!(result
+        .as_ref()
+        .unwrap_err()
+        .contains("profile changed on disk"));
+    worker(&mut app, WorkerEvent::Profile(result));
+    assert!(screen(&mut app, 80, 24).contains("reload before saving"));
+    assert_eq!(
+        app.connection.as_ref().unwrap().fields[4],
+        "6001",
+        "a refused save retains the draft"
+    );
+    assert_eq!(
+        store.load("lab").unwrap(),
+        external,
+        "refusal preserves the external edit"
+    );
+
+    assert!(
+        press(&mut app, KeyCode::Esc).is_empty(),
+        "discard does not save or dial"
+    );
+    assert_eq!(
+        app.overlay,
+        Overlay::Connection,
+        "discard returns to a visible preview"
+    );
+    assert_eq!(app.connection.as_ref().unwrap().screen, Screen::Preview);
+    assert!(screen(&mut app, 80, 24).contains("r reload from disk"));
+    assert_eq!(
+        press(&mut app, KeyCode::Char('r')),
+        [Command::Profile(Request::Load("lab".into()))]
+    );
+    worker(&mut app, WorkerEvent::Profile(service.load("lab")));
+    assert_eq!(
+        app.connection.as_ref().unwrap().saved.as_ref(),
+        Some(&external)
+    );
+    assert!(screen(&mut app, 80, 24).contains("7000 ms"));
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(
+        app.connection.as_ref().unwrap().fields[4],
+        "7000",
+        "discarded draft cannot reappear"
+    );
+}
+
+#[test]
+fn new_editor_keeps_draft_on_save_error_until_explicit_discard() {
+    let mut app = profile_app();
+    press(&mut app, KeyCode::Char('n'));
+    type_text(&mut app, "unsaved");
+    assert!(!press(&mut app, KeyCode::Enter).is_empty());
+    worker(
+        &mut app,
+        WorkerEvent::Profile(Err("cannot save profile".into())),
+    );
+    assert_eq!(app.connection.as_ref().unwrap().fields[0], "unsaved");
+    assert_eq!(app.connection.as_ref().unwrap().screen, Screen::Edit);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.overlay, Overlay::Connection);
+    assert_eq!(app.connection.as_ref().unwrap().screen, Screen::List);
+    assert_eq!(
+        press(&mut app, KeyCode::Char('r')),
+        [Command::Profile(Request::List)]
+    );
+    worker(
+        &mut app,
+        WorkerEvent::Profile(Ok(Reply::Catalog {
+            names: vec![],
+            root: "/isolated".into(),
+        })),
+    );
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.connection.as_ref().unwrap().fields[0], "");
+}

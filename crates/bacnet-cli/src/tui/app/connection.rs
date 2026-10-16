@@ -11,6 +11,7 @@ pub(crate) enum Key {
     Prev,
     Char(char),
     Backspace,
+    Discard,
     Submit,
     New,
     Edit,
@@ -211,6 +212,16 @@ impl Connection {
             }
             (Screen::Edit, Key::Backspace) => {
                 self.fields[self.focus].pop();
+                None
+            }
+            (Screen::Edit, Key::Discard) => {
+                self.fields = Default::default();
+                self.creating = false;
+                self.screen = if self.saved.is_some() {
+                    Screen::Preview
+                } else {
+                    Screen::List
+                };
                 None
             }
             (Screen::Edit, Key::Submit) => match self.edited() {

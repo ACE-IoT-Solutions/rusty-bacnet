@@ -118,11 +118,15 @@ fn picker(key: KeyEvent) -> Option<Action> {
 
 fn connection(app: &App, key: KeyEvent) -> Option<Action> {
     use super::app::connection::{Key, Screen};
-    if key.code == KeyCode::Esc {
-        return Some(Action::Escape);
-    }
     let connection = app.connection.as_ref()?;
     let editing = connection.screen == Screen::Edit;
+    if key.code == KeyCode::Esc {
+        return Some(if editing {
+            Action::Connection(Key::Discard)
+        } else {
+            Action::Escape
+        });
+    }
     if !editing && key.code == KeyCode::Char('q') {
         return Some(Action::Quit);
     }

@@ -208,14 +208,20 @@ interface; `0.0.0.0` binds all interfaces.
 profile reconnect opens its preview again. Disconnect must finish before
 another profile can be loaded or edited. Failed connection attempts keep the
 TUI open. Rows, duplicates and running operations are reset between sessions;
-late events from a previous session cannot repopulate the new one.
+late events from a previous session cannot repopulate the new one. If a
+Who-Is cancellation cannot enter a command queue, its status shows the
+failure; Ctrl-C retries immediately and `x` disconnects. The queued Who-Is
+may still run until cancellation is accepted or the connection is retired.
 
 In the profile picker, Up/Down choose, Enter previews, `n` creates and `r`
 reloads the list. In a preview, `e` edits, `r` reloads the file, `p` returns to
 the list, and `n` creates another profile. The editor uses Tab/Shift-Tab and
-Backspace; Enter saves without connecting. A blank BBMD selects Normal mode
-and clears the saved renewal; a BBMD selects Foreign Device mode. Blank
-renewal uses half the TTL. Port `0` requests an ephemeral local UDP port.
+Backspace; Enter saves without connecting. Save errors retain the draft.
+Esc explicitly discards it and returns to the saved preview (or the picker
+for a new profile), where `r` reloads from disk. If a file changed externally,
+the refused save leaves that file untouched; discard, reload and edit again.
+A blank BBMD selects Normal mode and clears the saved renewal; a BBMD selects
+Foreign Device mode. Blank renewal uses half the TTL. Port `0` requests an ephemeral local UDP port.
 
 The preview shows the settings after CLI overrides. Explicit values win even
 when equal to defaults, such as `--port 47808`, `--timeout 6000` or
