@@ -153,6 +153,14 @@ fn transport_error(io: std::io::Error) -> PyErr {
             Some(errno) => class.call1((errno, &message))?,
             None => class.call1((&message,))?,
         };
+        if let Some(info) = bacnet_transport::sc::ScConnectError::from_io_error(&io)
+            .and_then(|error| error.untrusted_peer_info())
+        {
+            instance.setattr(
+                "sc_untrusted_peer",
+                Py::new(py, crate::sc_peer::PyScUntrustedPeerInfo(info.clone()))?,
+            )?;
+        }
         Ok(PyErr::from_value(instance))
     })
     .unwrap_or_else(|_| BacnetError::new_err(message))
@@ -175,6 +183,7 @@ fn transport_error_type(py: Python<'_>) -> PyResult<&Py<PyType>> {
         )?;
         let namespace = PyDict::new(py);
         namespace.set_item("__module__", "rusty_bacnet")?;
+        namespace.set_item("sc_untrusted_peer", py.None())?;
         namespace.set_item(
             "__doc__",
             "A transport I/O failure: a bind, listen, dial or socket error. \

@@ -85,10 +85,11 @@ pub struct ScPeerCertificate {
 
 impl ScPeerCertificate {
     pub(super) fn new(der: &[u8]) -> Self {
-        Self {
-            der: der.to_vec(),
-            metadata: inspect(der),
-        }
+        Self::from_owned_der(der.to_vec())
+    }
+    pub(super) fn from_owned_der(der: Vec<u8>) -> Self {
+        let metadata = inspect(&der);
+        Self { der, metadata }
     }
     /// Explicit export of the original certificate bytes, without re-encoding.
     pub fn der(&self) -> &[u8] {

@@ -9,6 +9,7 @@ These examples demonstrate using the `bacnet-*` crates directly in Rust.
 | [`bip_client_server.rs`](bip_client_server.rs) | BACnet/IP client + server — read, write, RPM, WhoIs |
 | [`cov_subscriptions.rs`](cov_subscriptions.rs) | COV subscription with broadcast channel receiver |
 | [`multi_object_server.rs`](multi_object_server.rs) | Server with 14 object types, bulk RPM queries |
+| [`sc_peer_certificates.rs`](../../crates/bacnet-client/tests/support/sc_peer_certificates.rs) | Owned accepted-Hub snapshots and untrusted rejected-attempt certificates; exercised by the SC client integration test |
 
 ## Sample programs
 
