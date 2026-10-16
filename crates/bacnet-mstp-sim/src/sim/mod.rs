@@ -5,6 +5,9 @@ mod faults;
 mod host;
 mod master;
 mod medium;
+mod post_drive;
+#[cfg(test)]
+mod post_drive_tests;
 
 use std::collections::BTreeMap;
 
@@ -86,6 +89,9 @@ pub(crate) enum Event {
     TxEnd {
         tx: TxId,
     },
+    DriverRelease {
+        tx: TxId,
+    },
     AdapterStart {
         node: usize,
         id: TransmitId,
@@ -134,7 +140,7 @@ pub(crate) struct Node {
 }
 
 /// Facts about a transmission the line itself doesn't track.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct TxMeta {
     /// When a master's core handed this frame over.
     dispatched: Option<Instant>,
@@ -223,7 +229,7 @@ impl Sim {
     /// # Panics
     ///
     /// If the station is taken or the spec's baud rate differs from the
-    /// line's.
+    /// line's, or the post-drive hold exceeds the line's conservative limit.
     pub fn add_master(&mut self, spec: MasterSpec) -> &mut Self {
         let station = spec.station();
         self.claim_station(station);
@@ -232,6 +238,7 @@ impl Sim {
             "station {station}: core baud rate differs from the line's"
         );
         let powered = spec.powered;
+        self.timing.validate_post_drive(spec.adapter.post_drive);
         self.nodes.push(Node {
             station,
             kind: NodeKind::Master(Box::new(MasterNode::new(spec))),
@@ -576,6 +583,7 @@ impl Sim {
             Event::WindowEnd => self.window_end(),
             Event::OctetStart { tx, index } => self.octet_start(tx, index),
             Event::TxEnd { tx } => self.tx_end(tx),
+            Event::DriverRelease { tx } => self.release_driver(tx, false),
             Event::AdapterStart {
                 node,
                 id,

@@ -30,9 +30,10 @@
 //!
 //! **Time and events.** Virtual time is the core's own
 //! [`Instant`](bacnet_mstp_core::Instant), which counts nanoseconds; the
-//! simulator's own times (octet boundaries, adapter jitter) are whole
-//! microseconds of it. One queue orders every event by time, then by a fixed
-//! class (characters arriving, transmissions ending, scheduled events, host
+//! octet boundaries and adapter jitter use whole microseconds; configured
+//! driver holds retain nanosecond precision. One queue orders every event by
+//! time, then by a fixed class (characters arriving, data ending, physical
+//! driver releases, scheduled events, host
 //! reads/completion, core deadlines, adapters starting frames, later octets), then by
 //! station address, then by scheduling order. Nothing reads a wall clock or
 //! runs on another thread, so a run replays exactly from its seed on any
@@ -47,6 +48,12 @@
 //! octet; otherwise they get a framing error, and while out-of-step octets
 //! remain they get further framing errors, one per octet time. Propagation is
 //! ideal: every receiver sees the same line at the same instant.
+//! A configured [`AdapterSpec::post_drive`] holds idle mark after the final
+//! data stop bit. It remains an overlapping driver but generates no characters
+//! and does not reset line activity. [`Report::driver_releases`] records its
+//! physical release separately from [`WireFrame::end`]; an overlap during the
+//! hold carries [`PostDriveOverlap`] evidence without changing a completed
+//! frame's receipt. Power loss releases the driver immediately.
 //!
 //! **Masters and their adapters.** Each master runs a core over
 //! [`AllocQueues`](bacnet_mstp_core::AllocQueues). A master built with
@@ -64,7 +71,10 @@
 //! - For a transmit, after [`AdapterSpec::start_delay`] it calls
 //!   `on_transmit_started` and, if the core agrees, drives the frame. It
 //!   reports `on_transmit_complete` when the final stop bit has gone out and
-//!   re-enables its receiver then. Until the start, its receiver stays on;
+//!   re-enables its receiver after any post-drive hold. Thus the core's timer
+//!   origin is the final data stop, even when physical release comes later.
+//!   A new start waits for its own previous driver's release. Until the start,
+//!   its receiver stays on;
 //!   if the core switches back to receive first, it has taken the frame
 //!   back, and the adapter drops it.
 //! - It hands NPDUs to the node's application, which answers requests per
@@ -87,7 +97,8 @@
 //! available reads without waiting, then checks the core's start contract.
 //!
 //! Host completion is stamped with the later of serial drain return and
-//! physical wire end. With `echo_grace` configured, a content-matching filter
+//! final data stop, independently of physical driver release. With
+//! `echo_grace` configured, a content-matching filter
 //! suppresses a complete copy of the outgoing frame and preserves differing
 //! peer bytes, including a shared preamble. Its Grace, Residual and Probe
 //! phases model the production policy; paired fixtures through the public
@@ -104,7 +115,18 @@
 //!
 //! **Scripted stations** decode the line with the codec's stream decoder
 //! and react to frames through a [`Script`]: a minimal master that answers
-//! polls and sends test frames, a slave, a misbehaving device.
+//! polls and sends test frames, a slave, a misbehaving device. Each
+//! [`ScriptSend`] can also set a post-drive hold.
+//!
+//! **Post-drive limits.** Holds default to zero. The 135-2020 text uses
+//! different edges: 9.2.3 limits release to 15 bit times from the final stop
+//! bit's beginning, while 9.5.3 measures from its end. This model explicitly
+//! takes their conservative intersection: at most 14 bit times after the
+//! end. [`WireTiming::max_post_drive`] rounds that upper bound down to a
+//! nanosecond; larger configurations panic instead of being clamped. This is
+//! a bounded interpretation of the conflicting reference edges, not hardware
+//! conformance evidence. Release is ordered before new starts at the same
+//! instant, and each release is fenced to its original transmission.
 //!
 //! **Faults** ([`Fault`]): noise bursts, one damaged octet in a station's
 //! next frame, power loss (at once, or part way through the next frame) and
@@ -163,14 +185,14 @@
 //!
 //! It models bit-time framing at any baud rate, collisions and the framing
 //! errors they cause, the core's Clause 9 timers against real line
-//! activity, adapter latency and timer jitter, and power loss.
+//! activity, adapter latency and timer jitter, post-drive ownership, and power loss.
 //!
 //! It does not model:
 //!
-//! - **Electrical behaviour.** There is no biasing, reflection or driver
-//!   edge. A driver stops exactly at its final stop bit, so Tpostdrive is
-//!   zero, and sends its octets with no idle gap, so Tframe_gap is never
-//!   tested.
+//! - **Electrical behaviour.** There is no biasing, reflection, analog driver
+//!   edge or hardware watchdog qualification. Drivers send their octets with
+//!   no idle gap, so Tframe_gap is never tested. Post-drive hold models
+//!   ownership and receiver eligibility, not voltage or current.
 //! - **Propagation and drift.** Propagation is instantaneous. Every node
 //!   runs at exactly the line's baud rate, with no ±1% tolerance. Seeded
 //!   [`AdapterSpec::deadline_jitter`] stands in for clock and timer
@@ -228,8 +250,8 @@ mod wire;
 
 pub use line::Driver;
 pub use report::{
-    Collision, CollisionClass, Delivery, Episode, HostStats, HostTimingFailure, Report, Tolerance,
-    Violation, ViolationKind, WireFrame,
+    Collision, CollisionClass, Delivery, DriverRelease, Episode, HostStats, HostTimingFailure,
+    PostDriveOverlap, Report, Tolerance, Violation, ViolationKind, WireFrame,
 };
 pub use rng::SimRng;
 pub use sim::{Sim, SimConfig, SimCore};

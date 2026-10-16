@@ -24,7 +24,9 @@ pub struct WireFrame {
     pub header: Option<FrameHeader>,
     /// The data field, when the octets decode.
     pub data: Vec<u8>,
-    /// Another driver was on the line at the same time.
+    /// Another driver overlapped this frame's data. A later overlap while
+    /// this driver holds idle mark is recorded in [`Report::collisions`]
+    /// without retroactively corrupting the completed data.
     pub collided: bool,
     /// An injected corruption damaged one of its octets.
     pub corrupted: bool,
@@ -225,6 +227,36 @@ pub struct Collision {
     /// An observed host turnaround failure at this exact start, when
     /// present. This diagnoses the overlap; it does not tolerate it.
     pub host_timing: Option<HostTimingFailure>,
+    /// The other driver was holding idle mark after its final data stop.
+    /// The completed frame remains unchanged; this overlap damages the new
+    /// transmission and is observable independently of its classification.
+    pub post_drive: Option<PostDriveOverlap>,
+}
+
+/// Physical edges of the held driver involved in an overlap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostDriveOverlap {
+    /// When the held driver's final data stop bit ended.
+    pub data_end: Instant,
+    /// When that driver is scheduled to release the line.
+    pub release: Instant,
+}
+
+/// A physical driver release, separate from data and software completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DriverRelease {
+    /// Which station or noise source released the line.
+    pub driver: Driver,
+    /// First octet start; together with `driver`, identifies the wire frame.
+    pub start: Instant,
+    /// Final data stop, absent if power failed before it completed.
+    pub data_end: Option<Instant>,
+    /// Release originally scheduled when this transmission started.
+    pub scheduled: Instant,
+    /// Actual release instant, possibly earlier due to power loss.
+    pub at: Instant,
+    /// Whether power loss caused this release.
+    pub power_loss: bool,
 }
 
 /// A stretch of time in which more than one master believed it held the
@@ -240,6 +272,8 @@ pub struct Episode {
 /// What the invariant checks found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
+    /// Physical releases in event order, including zero holds and power loss.
+    pub driver_releases: Vec<DriverRelease>,
     /// Invariant failures, in order.
     pub violations: Vec<Violation>,
     /// Every overlap of two drivers, explained or not.

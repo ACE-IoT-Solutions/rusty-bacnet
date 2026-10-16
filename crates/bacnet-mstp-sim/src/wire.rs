@@ -55,6 +55,24 @@ impl WireTiming {
         self.boundary(1)
     }
 
+    /// Largest whole-nanosecond hold after the final stop bit's end.
+    ///
+    /// 135-2020 9.2.3 counts a maximum 15 bit times from the stop bit's
+    /// beginning; 9.5.3 counts from its end. This model uses their conservative
+    /// intersection: at most 14 bit times after the end. The upper bound is
+    /// rounded down, unlike character boundaries, so it cannot be widened.
+    #[must_use]
+    pub fn max_post_drive(self) -> Duration {
+        Duration::from_nanos(14_000_000_000 / u64::from(self.baud))
+    }
+
+    pub(crate) fn validate_post_drive(self, hold: Duration) {
+        assert!(
+            u128::from(hold.as_nanos()) * u128::from(self.baud) <= 14_000_000_000,
+            "post-drive hold exceeds 14 bit times after the final stop bit"
+        );
+    }
+
     /// When a transmission of `octets` octets that starts at `start` ends.
     #[must_use]
     pub fn end_of(self, start: Instant, octets: usize) -> Instant {
@@ -84,5 +102,29 @@ mod tests {
             WireTiming::new(38_400).bits(40),
             Duration::from_micros(1_042)
         );
+    }
+
+    #[test]
+    fn post_drive_limit_rounds_down_and_rejects_the_next_nanosecond() {
+        for (baud, max_ns) in [(10_000, 1_400_000), (115_200, 121_527), (9_600, 1_458_333)] {
+            let timing = WireTiming::new(baud);
+            assert_eq!(timing.max_post_drive(), Duration::from_nanos(max_ns));
+            timing.validate_post_drive(Duration::ZERO);
+            timing.validate_post_drive(Duration::from_nanos(max_ns));
+            assert!(std::panic::catch_unwind(|| {
+                timing.validate_post_drive(Duration::from_nanos(max_ns + 1));
+            })
+            .is_err());
+            assert!(std::panic::catch_unwind(|| {
+                timing.validate_post_drive(timing.bits(15));
+            })
+            .is_err());
+        }
+        // Rounding the 14-bit upper bound up to a character's microsecond
+        // granularity would admit 122 us at 115200, exceeding the bound.
+        assert!(std::panic::catch_unwind(|| {
+            WireTiming::new(115_200).validate_post_drive(Duration::from_micros(122));
+        })
+        .is_err());
     }
 }
