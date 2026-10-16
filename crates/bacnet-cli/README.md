@@ -14,8 +14,10 @@ cargo install bacnet-cli --locked --features sc-tls
 
 The binary is called `bacnet`. Features:
 
-- `tui` (default): `bacnet tui`, the full-screen terminal UI.
-- `sc-tls`: the BACnet/SC transport (WebSocket over TLS).
+- `tui`: `bacnet tui`, the full-screen terminal UI. It is off by default, and
+  out of the release binaries, until the terminal UI ships in 0.14.0.
+- `sc-tls`: the BACnet/SC transport (WebSocket over TLS) and offline credential
+  inspection in the development checkout.
 - `pcap`: `bacnet capture`, live or from a pcap file. It needs libpcap and its
   headers (`libpcap-dev` on Debian and Ubuntu).
 
@@ -28,11 +30,19 @@ Prebuilt binaries are attached to each
 bacnet discover
 bacnet read 192.168.1.100 ai:1 pv
 bacnet --json readm 192.168.1.100 ai:1 pv,object-name
-bacnet tui
+bacnet tui    # built with --features tui
 ```
 
 The [CLI reference](https://github.com/jscott3201/rusty-bacnet/blob/main/docs/CLI.md)
 lists every command and option.
+
+Development builds also support `bacnet sc-check --sc-cert node.pem`, with
+optional `--sc-ca` and `--sc-key` files. Install from this checkout with
+`cargo install --path crates/bacnet-cli --locked --features sc-tls` for this new
+command. It reports local certificate observations without a network connection;
+exit 0 can include warnings and does not predict TLS acceptance. See the
+[SC check guide](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/sc-check.md)
+for human/JSON output and exit statuses.
 
 ## License
 

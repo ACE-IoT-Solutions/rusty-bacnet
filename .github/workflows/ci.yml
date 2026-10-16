@@ -75,7 +75,7 @@ env:
   # such as bacnet-endpoint/sc-tls and bacnet-cli/{sc-tls,pcap,tui} that nothing
   # else in the workspace turns on (#906). bacnet-benchmarks/console is left
   # out: it needs tokio_unstable.
-  LINUX_FEATURES: bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-mstp-core/heapless,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-transport/serial,bacnet-transport/serial-gpio,bacnet-transport/ethernet,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-integration-tests/ethernet,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
+  LINUX_FEATURES: bacnet-types/serde,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless,bacnet-router-core/bip,bacnet-router-core/mstp,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-transport/serial,bacnet-transport/serial-gpio,bacnet-transport/ethernet,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-integration-tests/ethernet,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/tui
 
 jobs:
   lint:
@@ -142,9 +142,9 @@ jobs:
           fi
           exit $fail
       # Each fuzz crate's own Cargo.lock still matches its manifests. It
-      # records the codec's workspace version and the workspace's dependency
-      # requirements, so a change to either that skipped `fuzz.sh lock` fails
-      # here, not in a scheduled fuzz run (docs/ci.md, "Fuzzing").
+      # records the fuzzed crate's workspace version and the workspace's
+      # dependency requirements, so a change to either that skipped `fuzz.sh
+      # lock` fails here, not in a scheduled fuzz run (docs/ci.md, "Fuzzing").
       - name: Fuzz crate lockfiles
         run: bash scripts/ci/fuzz.sh lock --check
       - name: Rustfmt
@@ -159,6 +159,9 @@ jobs:
         run: python3 scripts/ci/test-check-msrv.py
       - name: Firmware size script regressions
         run: python3 scripts/ci/test-firmware-size.py
+      # The three private copies of named_codes! (docs/ci.md, "Local checks").
+      - name: named_codes! copies match
+        run: python3 scripts/ci/check-named-codes.py
       - name: Release script tests
         run: python3 -m unittest discover -s scripts/release
       # Entries are changelog.d/ fragments; [Unreleased] in CHANGELOG.md holds none.
@@ -250,7 +253,9 @@ jobs:
         run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --features alloc --all-targets --locked -- -D warnings
       # Clippy doesn't link, so this builds the stacks into bare-metal images
       # (firmware/link), one per stack, for each target, and checks their
-      # sizes against the budget: MS/TP and B/IP with no allocator, and
+      # sizes against the budget: MS/TP (extended frames off and on), the
+      # B/IP codec, node and BBMD, and a router between B/IP and MS/TP with
+      # no allocator (#1664, #1667, #1679), and
       # bacnet-encoding and bacnet-services with one, its critical section
       # and, without compare-and-swap, portable-atomic (#1635). It links with
       # the rust-lld that rustc ships, so the targets' core libraries are all
@@ -316,7 +321,7 @@ jobs:
       - name: bacnet-cli tests (default features)
         run: cargo nextest run -p bacnet-cli --locked --profile ci
       # And with no default features at all. Until `tui` is on by default again
-      # (0.13.0, #975) this matches the run above; both keep `bacnet tui`'s
+      # (0.14.0, #975) this matches the run above; both keep `bacnet tui`'s
       # rebuild advice tested.
       - name: bacnet-cli tests (no default features)
         if: ${{ !cancelled() }}

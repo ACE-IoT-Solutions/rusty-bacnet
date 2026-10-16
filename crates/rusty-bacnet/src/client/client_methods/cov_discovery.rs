@@ -18,16 +18,12 @@ impl BACnetClient {
         lifetime: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let oid = monitored_object_identifier.to_rust();
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             c.subscribe_cov(
                 &mac,
                 subscriber_process_identifier,
@@ -52,16 +48,12 @@ impl BACnetClient {
         monitored_object_identifier: PyObjectIdentifier,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let oid = monitored_object_identifier.to_rust();
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             c.unsubscribe_cov(&mac, subscriber_process_identifier, oid)
                 .await
                 .map_err(to_py_err)?;
@@ -74,11 +66,7 @@ impl BACnetClient {
     fn cov_notifications<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         crate::py_async::future_into_py(py, async move {
-            let guard = inner.lock().await;
-            let c = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("client not started — use 'async with'"))?;
-            let rx = c.cov_notifications();
+            let rx = started(&inner).await?.cov_notifications();
             Ok(PyCovNotificationIterator::new(rx))
         })
     }
@@ -104,12 +92,7 @@ impl BACnetClient {
         let oid = object_id.to_rust();
 
         let future = async move {
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let c = started(&inner).await?;
             c.who_has(WhoHasObject::Identifier(oid), range)
                 .await
                 .map_err(to_py_err)?;
@@ -132,12 +115,7 @@ impl BACnetClient {
         let inner = self.inner.clone();
 
         let future = async move {
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let c = started(&inner).await?;
             c.who_has(WhoHasObject::Name(name), range)
                 .await
                 .map_err(to_py_err)?;
@@ -151,12 +129,7 @@ impl BACnetClient {
         let inner = self.inner.clone();
 
         crate::py_async::future_into_py(py, async move {
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let c = started(&inner).await?;
             let devices = c.discovered_devices().await;
             Ok(devices
                 .into_iter()
@@ -170,12 +143,7 @@ impl BACnetClient {
         let inner = self.inner.clone();
 
         crate::py_async::future_into_py(py, async move {
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let c = started(&inner).await?;
             Ok(c.get_device(instance)
                 .await
                 .map(PyDiscoveredDevice::from_rust))
@@ -187,15 +155,39 @@ impl BACnetClient {
         let inner = self.inner.clone();
 
         let future = async move {
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let c = started(&inner).await?;
             c.clear_devices().await;
             Ok(())
         };
         crate::py_async::future_into_py(py, crate::unit_result(future))
+    }
+
+    /// Find the VMAC of the B/IPv6 node at `address`, given as `"[ip]:port"`,
+    /// and return it as `"bip6:0x0004D2"`, the form the other methods take.
+    ///
+    /// A B/IPv6 node is addressed by its VMAC, not its IPv6 address (Clause
+    /// U.1.3). This asks the node itself with a Virtual-Address-Resolution
+    /// sent by unicast, up to three times a second apart (Clause U.5), unless
+    /// the client already knows which VMAC is at that address. Needs a
+    /// started client with `transport="ipv6"`, else `RuntimeError`. Raises
+    /// `BacnetTransportError` when nothing answers within three seconds or
+    /// the node refuses.
+    fn resolve_vmac<'py>(&self, py: Python<'py>, address: String) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+
+        crate::py_async::future_into_py(py, async move {
+            let peer = parse_bip6_address(&address)?;
+            let c = started(&inner).await?;
+            let AnyTransport::Bip6(transport) = c.transport() else {
+                return Err(PyRuntimeError::new_err(
+                    "resolve_vmac needs a client with transport='ipv6'",
+                ));
+            };
+            let vmac = transport
+                .resolve_virtual_address(peer)
+                .await
+                .map_err(to_py_err)?;
+            Ok(bacnet_transport::bip6::format_vmac_text(vmac))
+        })
     }
 }

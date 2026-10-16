@@ -5,31 +5,33 @@
 //! short-lived receive buffer, while the core must retain it until a token is
 //! available.  The alloc implementation reserves all of its item storage in
 //! its constructor; enqueue and dequeue do not grow a vector.
+//!
+//! A dequeue lends the NPDU from where it was queued rather than copying it
+//! out, so the core builds a frame straight from the queue's slot, with no
+//! NPDU-sized buffer on its stack.
 
-#[cfg(any(feature = "alloc", feature = "heapless"))]
-use core::cmp::Ordering;
+use core::fmt;
 
-#[cfg(any(feature = "alloc", feature = "heapless"))]
-use bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA;
+use bacnet_mstp_codec::{BROADCAST_MAC, MAX_STANDARD_MPDU_DATA};
+use bacnet_time::Instant;
 
 use crate::counters::QueueCounters;
 
 /// Destination class used by the two independently bounded queues.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum QueueKind {
     /// A frame addressed to one MAC address.
     Unicast,
-    /// A frame addressed to the MS/TP broadcast MAC (`0xff`).
+    /// A frame addressed to the MS/TP broadcast MAC
+    /// ([`BROADCAST_MAC`], 255).
     Broadcast,
 }
 
 impl QueueKind {
-    /// The MS/TP broadcast MAC address.
-    pub const BROADCAST_DESTINATION: u8 = 0xff;
-
     /// Classify a destination MAC.
+    #[must_use]
     pub const fn from_destination(destination: u8) -> Self {
-        if destination == Self::BROADCAST_DESTINATION {
+        if destination == BROADCAST_MAC {
             Self::Broadcast
         } else {
             Self::Unicast
@@ -43,8 +45,19 @@ impl QueueKind {
 /// [`LifeSafety`](Self::LifeSafety) is selected before
 /// [`CriticalEquipment`](Self::CriticalEquipment), then [`Urgent`](Self::Urgent),
 /// and finally [`Normal`](Self::Normal).
+///
+/// The field is two bits, so the set is closed: convert from the wire value
+/// with `try_from` and back with `u8::from`.
+///
+/// ```
+/// use bacnet_mstp_core::NetworkPriority;
+///
+/// assert_eq!(NetworkPriority::try_from(3), Ok(NetworkPriority::LifeSafety));
+/// assert_eq!(u8::from(NetworkPriority::Urgent), 1);
+/// assert!(NetworkPriority::try_from(4).is_err());
+/// ```
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub enum NetworkPriority {
     /// Normal traffic (`0`).
     Normal = 0,
@@ -56,61 +69,128 @@ pub enum NetworkPriority {
     LifeSafety = 3,
 }
 
-impl NetworkPriority {
-    /// Convert the wire priority value, rejecting reserved values.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Normal),
-            1 => Some(Self::Urgent),
-            2 => Some(Self::CriticalEquipment),
-            3 => Some(Self::LifeSafety),
-            _ => None,
-        }
-    }
+/// The wire priority value, 0 to 3; anything else is refused.
+impl TryFrom<u8> for NetworkPriority {
+    type Error = PriorityError;
 
-    /// Return the Clause 6.2.2 numeric value.
-    pub const fn as_u8(self) -> u8 {
-        self as u8
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Normal),
+            1 => Ok(Self::Urgent),
+            2 => Ok(Self::CriticalEquipment),
+            3 => Ok(Self::LifeSafety),
+            _ => Err(PriorityError { value }),
+        }
     }
 }
 
-/// The reason an NPDU was rejected by a queue.
+/// The Clause 6.2.2 numeric value.
+impl From<NetworkPriority> for u8 {
+    fn from(priority: NetworkPriority) -> Self {
+        priority as u8
+    }
+}
+
+/// A value [`NetworkPriority::try_from`] refuses: a network priority is two
+/// bits, 0 to 3.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub struct PriorityError {
+    /// The value offered.
+    pub value: u8,
+}
+
+impl fmt::Display for PriorityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "network priority {} is not 0 to 3", self.value)
+    }
+}
+
+impl core::error::Error for PriorityError {}
+
+/// Why a queue, or [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu),
+/// refused an NPDU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum QueueRejectReason {
+#[non_exhaustive]
+pub enum QueueRefusal {
     /// The destination queue has no free slot.
     Full,
     /// The payload is too long: larger than the queue's owned slot or, from
     /// [`MasterCore::enqueue_npdu`](crate::MasterCore::enqueue_npdu), than
     /// the station sends
-    /// ([`MstpCoreConfig::max_npdu_length`](crate::MstpCoreConfig::max_npdu_length)).
-    /// A dequeue also returns it when it dropped an item too long for the
-    /// caller's scratch.
+    /// ([`MstpCoreConfig::max_npdu`](crate::MstpCoreConfig::max_npdu)).
+    /// A dequeue also returns it when it dropped an item longer than the
+    /// caller takes (see [`QueueStorage::dequeue`]).
     Oversize,
     /// The supplied expiry is at or before the enqueue time, or an item
     /// reached its expiry boundary while waiting.
     Expired,
-    /// Reserved for policy layers that reject a request which has exceeded a
-    /// starvation budget.  Queue selection itself never drops a starved item.
-    Starved,
 }
 
-/// Metadata returned after copying a queued NPDU into caller-owned storage.
+impl fmt::Display for QueueRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Full => "the queue is full",
+            Self::Oversize => "the NPDU is too long to queue or send",
+            Self::Expired => "the NPDU expired",
+        })
+    }
+}
+
+impl core::error::Error for QueueRefusal {}
+
+/// An NPDU taken off its queue, with its octets lent by the queue.
+///
+/// The item has left the queue, but [`Self::npdu`] borrows the queue: the
+/// octets stay where they were queued until the queue is next used
+/// mutably, so the caller reads or sends them from there instead of copying
+/// them out.
+///
+/// It is `#[non_exhaustive]`: a [`QueueStorage`] of your own builds one with
+/// [`Self::new`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DequeuedNpdu {
+#[non_exhaustive]
+pub struct DequeuedNpdu<'a> {
     /// Destination MAC address.
     pub destination: u8,
     /// Whether this was taken from the unicast or broadcast queue.
     pub kind: QueueKind,
     /// BACnet network priority.
     pub priority: NetworkPriority,
-    /// Number of bytes copied into the caller's scratch buffer.
-    pub len: usize,
     /// Sequence assigned when the item was accepted.
     pub sequence: u64,
+    /// The NPDU, lent by the queue.
+    pub npdu: &'a [u8],
+}
+
+impl<'a> DequeuedNpdu<'a> {
+    /// An item for `destination` from the `kind` queue, at `priority`, with
+    /// the `sequence` it was accepted under, lending `npdu`.
+    #[must_use]
+    pub const fn new(
+        destination: u8,
+        kind: QueueKind,
+        priority: NetworkPriority,
+        sequence: u64,
+        npdu: &'a [u8],
+    ) -> Self {
+        Self {
+            destination,
+            kind,
+            priority,
+            sequence,
+            npdu,
+        }
+    }
 }
 
 /// A non-mutating view of the next item selected by queue policy.
+///
+/// It is `#[non_exhaustive]`: a [`QueueStorage`] of your own builds one with
+/// [`Self::new`], then sets [`Self::expires_at`] and [`Self::service_wait`]
+/// when they are not `None` and zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct QueueItemInfo {
     /// Destination MAC address.
     pub destination: u8,
@@ -120,29 +200,54 @@ pub struct QueueItemInfo {
     pub priority: NetworkPriority,
     /// Payload length.
     pub len: usize,
-    /// Enqueue timestamp supplied by the caller.
-    pub enqueued_at: u64,
-    /// Absolute expiry timestamp, if one was supplied.
-    pub expires_at: Option<u64>,
+    /// When the item was queued, on the core's timeline.
+    pub enqueued_at: Instant,
+    /// When the item expires, on the same timeline, if it does.
+    pub expires_at: Option<Instant>,
     /// Sequence assigned when the item was accepted.
     pub sequence: u64,
     /// Number of service opportunities this item has waited.
     pub service_wait: u8,
 }
 
-#[cfg(feature = "heapless")]
-const EMPTY_QUEUE_COUNTERS: QueueCounters = QueueCounters {
-    depth: 0,
-    high_water: 0,
-    enqueued: 0,
-    dequeued: 0,
-    drops_full: 0,
-    drops_oversize: 0,
-    drops_expired: 0,
-    drops_starved: 0,
-};
+impl QueueItemInfo {
+    /// An item of `len` octets for `destination` in the `kind` queue, at
+    /// `priority`, queued at `enqueued_at` under `sequence`; it never
+    /// expires and has waited no service opportunity.
+    #[must_use]
+    pub const fn new(
+        destination: u8,
+        kind: QueueKind,
+        priority: NetworkPriority,
+        len: usize,
+        enqueued_at: Instant,
+        sequence: u64,
+    ) -> Self {
+        Self {
+            destination,
+            kind,
+            priority,
+            len,
+            enqueued_at,
+            expires_at: None,
+            sequence,
+            service_wait: 0,
+        }
+    }
+}
 
-/// A bounded storage backend for queued NPDUs.
+/// A bounded storage backend for queued NPDUs: the core's transmit queues.
+///
+/// [`HeaplessQueues`] implements it, and `AllocQueues` with the `alloc`
+/// feature; so may storage of your own, such as queues another task fills
+/// too (the Tokio MS/TP transport keeps `AllocQueues` behind a lock that
+/// way). It carries the queue policy as well as the items: which item goes
+/// next, starvation, expiry and the oversize rule, so a backend of your own
+/// carries them out as those two do.
+///
+/// It is an extension point, and its methods are part of this crate's
+/// semver: changing one, or adding one without a default, is a breaking
+/// change.
 pub trait QueueStorage {
     /// Apply the core's service-opportunity starvation limit.
     fn set_starvation_limit(&mut self, limit: u8);
@@ -156,68 +261,76 @@ pub trait QueueStorage {
     /// The default is a standard frame's 501 octets, so storage that doesn't
     /// say is refused for extended frames: it fails closed. Storage whose
     /// slots hold extended NPDUs overrides it.
-    fn max_npdu_length(&self) -> usize {
+    fn max_npdu(&self) -> usize {
         bacnet_mstp_codec::MAX_STANDARD_MPDU_DATA
     }
 
     /// Add a payload to the destination queue.
     ///
-    /// `expires_at` is an absolute timestamp in the same monotonically
-    /// increasing unit as `now`.  Expiry is inclusive: an item is expired
-    /// when `now >= expires_at`.
+    /// `expires_at` is an absolute time on the same timeline as `now`, the
+    /// core's. Expiry is inclusive: an item is expired when
+    /// `now >= expires_at`.
     fn enqueue_npdu(
         &mut self,
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason>;
+        now: Instant,
+        expires_at: Option<Instant>,
+    ) -> Result<(), QueueRefusal>;
 
     /// Remove expired items at `now`, returning the number removed.
-    fn expire(&mut self, now: u64) -> usize;
+    fn expire(&mut self, now: Instant) -> usize;
 
     /// Inspect the item that policy would service next.
-    fn peek(&self, now: u64) -> Option<QueueItemInfo>;
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo>;
 
     /// Inspect the next item in one destination class.
     ///
     /// The core uses this form when applying its configured
     /// broadcast/unicast service ratio.
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo>;
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo>;
 
-    /// Copy the selected payload into `scratch` and remove it atomically.
+    /// Remove the item that policy would service next, after removing the
+    /// expired ones, and lend its NPDU until the queue is next used mutably.
     ///
-    /// If `scratch` is too small, the item is dropped, counted in
-    /// `drops_oversize`, and [`QueueRejectReason::Oversize`] is returned. The
-    /// core's scratch holds the longest NPDU its delivery slots do, so such
-    /// an item could never be sent; leaving it queued would keep it at the
-    /// head.
-    fn dequeue_into(
+    /// An item longer than `max_len` octets is dropped instead, counted in
+    /// `drops_oversize`, and [`QueueRefusal::Oversize`] is returned.
+    /// The core passes the longest NPDU its delivery slots hold, its `NPDU`,
+    /// so such an item could never be sent; leaving it queued would keep it
+    /// at the head.
+    fn dequeue(
         &mut self,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        now: Instant,
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         let Some(info) = self.peek(now) else {
             return Ok(None);
         };
-        self.dequeue_kind_into(info.kind, now, scratch)
+        self.dequeue_kind(info.kind, now, max_len)
     }
 
-    /// Copy and remove the next item from one destination class, with the
-    /// oversize rule of [`Self::dequeue_into`].
-    fn dequeue_kind_into(
+    /// Remove the next item from one destination class and lend its NPDU,
+    /// as [`Self::dequeue`] does, with its oversize rule.
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason>;
+        now: Instant,
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal>;
 
     /// Current depth for one destination class.
     fn depth(&self, kind: QueueKind) -> usize;
 
-    /// Maximum depth and drop counters for one destination class.
-    fn stats(&self, kind: QueueKind) -> QueueCounters;
+    /// One destination class's counters since they were last taken,
+    /// without taking them.
+    fn counters(&self, kind: QueueKind) -> QueueCounters;
+
+    /// One destination class's counters since they were last taken, which
+    /// then start again (see [`QueueCounters`]).
+    /// [`MasterCore::take_counters`](crate::MasterCore::take_counters) takes
+    /// them with its own.
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters;
 
     /// The total number of queued NPDUs.
     fn total_depth(&self) -> usize {
@@ -232,8 +345,8 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         (**self).set_starvation_limit(limit);
     }
 
-    fn max_npdu_length(&self) -> usize {
-        (**self).max_npdu_length()
+    fn max_npdu(&self) -> usize {
+        (**self).max_npdu()
     }
 
     fn enqueue_npdu(
@@ -241,47 +354,51 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
+        now: Instant,
+        expires_at: Option<Instant>,
+    ) -> Result<(), QueueRefusal> {
         (**self).enqueue_npdu(destination, payload, priority, now, expires_at)
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: Instant) -> usize {
         (**self).expire(now)
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         (**self).peek(now)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
         (**self).peek_kind(kind, now)
     }
 
-    fn dequeue_into(
+    fn dequeue(
         &mut self,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        (**self).dequeue_into(now, scratch)
+        now: Instant,
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
+        (**self).dequeue(now, max_len)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        (**self).dequeue_kind_into(kind, now, scratch)
+        now: Instant,
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
+        (**self).dequeue_kind(kind, now, max_len)
     }
 
     fn depth(&self, kind: QueueKind) -> usize {
         (**self).depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        (**self).stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        (**self).counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        (**self).take_counters(kind)
     }
 
     fn total_depth(&self) -> usize {
@@ -289,340 +406,19 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
     }
 }
 
-// The item type and selection policy below are shared by the two queue
-// backends, so they build only when one of them does.
+// The slots and selection policy that the two queue backends share.
+mod slots;
 
-#[cfg(any(feature = "alloc", feature = "heapless"))]
-#[derive(Clone, Copy, Debug)]
-struct Item<const N: usize> {
-    destination: u8,
-    priority: NetworkPriority,
-    enqueued_at: u64,
-    expires_at: Option<u64>,
-    sequence: u64,
-    service_wait: u8,
-    len: usize,
-    payload: [u8; N],
-}
+mod heapless;
 
-#[cfg(any(feature = "alloc", feature = "heapless"))]
-impl<const N: usize> Item<N> {
-    fn info(self, kind: QueueKind) -> QueueItemInfo {
-        QueueItemInfo {
-            destination: self.destination,
-            kind,
-            priority: self.priority,
-            len: self.len,
-            enqueued_at: self.enqueued_at,
-            expires_at: self.expires_at,
-            sequence: self.sequence,
-            service_wait: self.service_wait,
-        }
-    }
-}
-
-#[cfg(any(feature = "alloc", feature = "heapless"))]
-fn expired(expires_at: Option<u64>, now: u64) -> bool {
-    expires_at.is_some_and(|deadline| now >= deadline)
-}
-
-#[cfg(any(feature = "alloc", feature = "heapless"))]
-fn is_older(left: u64, right: u64) -> bool {
-    // Sequence numbers are only compared while both entries are live.  This
-    // half-range comparison remains FIFO-correct across a u64 wrap unless a
-    // queue retains 2^63 live items, which is impossible for a bounded queue.
-    left != right && left.wrapping_sub(right) > (u64::MAX / 2)
-}
-
-#[cfg(any(feature = "alloc", feature = "heapless"))]
-fn better(candidate: QueueItemInfo, current: Option<QueueItemInfo>, starvation_limit: u8) -> bool {
-    let Some(current) = current else { return true };
-    let candidate_starved = candidate.service_wait >= starvation_limit;
-    let current_starved = current.service_wait >= starvation_limit;
-    match (candidate_starved, current_starved) {
-        (true, false) => true,
-        (false, true) => false,
-        (true, true) => is_older(candidate.sequence, current.sequence),
-        (false, false) => match candidate.priority.cmp(&current.priority) {
-            Ordering::Greater => true,
-            Ordering::Less => false,
-            Ordering::Equal => is_older(candidate.sequence, current.sequence),
-        },
-    }
-}
-
-/// The starvation limit of [`HeaplessQueues::new`].
-#[cfg(feature = "heapless")]
-const DEFAULT_STARVATION_LIMIT: u8 = 16;
-
-#[cfg(feature = "heapless")]
-#[derive(Debug)]
-/// Heapless, independently bounded unicast and broadcast queues.
-///
-/// `U` and `B` are the unicast and broadcast capacities, and `N` the longest
-/// NPDU a slot holds: a standard frame's 501 octets by default, and
-/// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
-/// a core with extended frames on.
-///
-/// [`Self::new`] is a `const fn` whose result is all zero bits, so the
-/// queues can live in a zero-initialized static (`.bss`) and be lent to the
-/// core as `&mut` (see the crate docs).
-pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
-    unicast: heapless::Vec<Item<N>, U>,
-    broadcast: heapless::Vec<Item<N>, B>,
-    sequence: u64,
-    /// `None` for [`DEFAULT_STARVATION_LIMIT`], so that `new` is all zeros.
-    starvation_limit: Option<u8>,
-    unicast_counters: QueueCounters,
-    broadcast_counters: QueueCounters,
-}
-
-#[cfg(feature = "heapless")]
-impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
-    /// Construct queues with the default starvation limit of 16 time units.
-    pub const fn new() -> Self {
-        Self::with_limit(None)
-    }
-
-    /// Construct queues with an explicit starvation limit.
-    pub const fn with_starvation_limit(starvation_limit: u8) -> Self {
-        Self::with_limit(Some(starvation_limit))
-    }
-
-    const fn with_limit(starvation_limit: Option<u8>) -> Self {
-        Self {
-            unicast: heapless::Vec::new(),
-            broadcast: heapless::Vec::new(),
-            sequence: 0,
-            starvation_limit,
-            unicast_counters: EMPTY_QUEUE_COUNTERS,
-            broadcast_counters: EMPTY_QUEUE_COUNTERS,
-        }
-    }
-
-    fn starvation_limit(&self) -> u8 {
-        self.starvation_limit.unwrap_or(DEFAULT_STARVATION_LIMIT)
-    }
-
-    fn select(&self, now: u64) -> Option<(QueueKind, usize, QueueItemInfo)> {
-        let mut selected: Option<(QueueKind, usize, QueueItemInfo)> = None;
-        for (index, item) in self.unicast.iter().copied().enumerate() {
-            let info = item.info(QueueKind::Unicast);
-            if !expired(info.expires_at, now)
-                && better(info, selected.map(|v| v.2), self.starvation_limit())
-            {
-                selected = Some((QueueKind::Unicast, index, info));
-            }
-        }
-        for (index, item) in self.broadcast.iter().copied().enumerate() {
-            let info = item.info(QueueKind::Broadcast);
-            if !expired(info.expires_at, now)
-                && better(info, selected.map(|v| v.2), self.starvation_limit())
-            {
-                selected = Some((QueueKind::Broadcast, index, info));
-            }
-        }
-        selected
-    }
-
-    fn select_kind(&self, kind: QueueKind, now: u64) -> Option<(usize, QueueItemInfo)> {
-        let mut selected: Option<(usize, QueueItemInfo)> = None;
-        match kind {
-            QueueKind::Unicast => {
-                for (index, item) in self.unicast.iter().copied().enumerate() {
-                    let info = item.info(kind);
-                    if !expired(info.expires_at, now)
-                        && better(info, selected.map(|v| v.1), self.starvation_limit())
-                    {
-                        selected = Some((index, info));
-                    }
-                }
-            }
-            QueueKind::Broadcast => {
-                for (index, item) in self.broadcast.iter().copied().enumerate() {
-                    let info = item.info(kind);
-                    if !expired(info.expires_at, now)
-                        && better(info, selected.map(|v| v.1), self.starvation_limit())
-                    {
-                        selected = Some((index, info));
-                    }
-                }
-            }
-        }
-        selected
-    }
-
-    fn bump_waits(&mut self) {
-        for item in &mut self.unicast {
-            item.service_wait = item.service_wait.saturating_add(1);
-        }
-        for item in &mut self.broadcast {
-            item.service_wait = item.service_wait.saturating_add(1);
-        }
-    }
-
-    fn push_item(&mut self, kind: QueueKind, item: Item<N>) -> Result<(), QueueRejectReason> {
-        match kind {
-            QueueKind::Unicast => self.unicast.push(item).map_err(|_| QueueRejectReason::Full),
-            QueueKind::Broadcast => self
-                .broadcast
-                .push(item)
-                .map_err(|_| QueueRejectReason::Full),
-        }
-    }
-
-    fn counters_mut(&mut self, kind: QueueKind) -> &mut QueueCounters {
-        match kind {
-            QueueKind::Unicast => &mut self.unicast_counters,
-            QueueKind::Broadcast => &mut self.broadcast_counters,
-        }
-    }
-}
-
-#[cfg(feature = "heapless")]
-impl<const U: usize, const B: usize, const N: usize> Default for HeaplessQueues<U, B, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(feature = "heapless")]
-impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQueues<U, B, N> {
-    fn set_starvation_limit(&mut self, limit: u8) {
-        self.starvation_limit = Some(limit);
-    }
-
-    fn max_npdu_length(&self) -> usize {
-        N
-    }
-
-    fn enqueue_npdu(
-        &mut self,
-        destination: u8,
-        payload: &[u8],
-        priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
-        let kind = QueueKind::from_destination(destination);
-        if payload.len() > N {
-            self.counters_mut(kind).record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
-        }
-        if expired(expires_at, now) {
-            self.counters_mut(kind).record_drop_expired();
-            return Err(QueueRejectReason::Expired);
-        }
-        let mut owned = Item {
-            destination,
-            priority,
-            enqueued_at: now,
-            expires_at,
-            sequence: self.sequence,
-            service_wait: 0,
-            len: payload.len(),
-            payload: [0; N],
-        };
-        owned.payload[..payload.len()].copy_from_slice(payload);
-        self.sequence = self.sequence.wrapping_add(1);
-        self.push_item(kind, owned)
-            .inspect_err(|_| self.counters_mut(kind).record_drop_full())?;
-        let depth = match kind {
-            QueueKind::Unicast => self.unicast.len(),
-            QueueKind::Broadcast => self.broadcast.len(),
-        };
-        self.counters_mut(kind).record_enqueue(depth);
-        Ok(())
-    }
-
-    fn expire(&mut self, now: u64) -> usize {
-        let mut removed = 0;
-        let mut index = 0;
-        while index < self.unicast.len() {
-            if expired(self.unicast[index].expires_at, now) {
-                self.unicast.remove(index);
-                self.unicast_counters.record_drop_expired();
-                self.unicast_counters.record_dequeue(self.unicast.len());
-                removed += 1;
-            } else {
-                index += 1;
-            }
-        }
-        let mut index = 0;
-        while index < self.broadcast.len() {
-            if expired(self.broadcast[index].expires_at, now) {
-                self.broadcast.remove(index);
-                self.broadcast_counters.record_drop_expired();
-                self.broadcast_counters.record_dequeue(self.broadcast.len());
-                removed += 1;
-            } else {
-                index += 1;
-            }
-        }
-        removed
-    }
-
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
-        self.select(now).map(|selected| selected.2)
-    }
-
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
-        self.select_kind(kind, now).map(|selected| selected.1)
-    }
-
-    fn dequeue_kind_into(
-        &mut self,
-        kind: QueueKind,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        self.expire(now);
-        let Some((index, info)) = self.select_kind(kind, now) else {
-            return Ok(None);
-        };
-        let item = match kind {
-            QueueKind::Unicast => self.unicast.remove(index),
-            QueueKind::Broadcast => self.broadcast.remove(index),
-        };
-        if scratch.len() < info.len {
-            let depth = self.depth(kind);
-            let counters = self.counters_mut(kind);
-            counters.record_dequeue(depth);
-            counters.record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
-        }
-        let depth = self.depth(kind);
-        self.counters_mut(kind).record_dequeue(depth);
-        self.bump_waits();
-        scratch[..item.len].copy_from_slice(&item.payload[..item.len]);
-        Ok(Some(DequeuedNpdu {
-            destination: item.destination,
-            kind,
-            priority: item.priority,
-            len: item.len,
-            sequence: item.sequence,
-        }))
-    }
-
-    fn depth(&self, kind: QueueKind) -> usize {
-        match kind {
-            QueueKind::Unicast => self.unicast.len(),
-            QueueKind::Broadcast => self.broadcast.len(),
-        }
-    }
-
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        match kind {
-            QueueKind::Unicast => self.unicast_counters,
-            QueueKind::Broadcast => self.broadcast_counters,
-        }
-    }
-}
+pub use heapless::HeaplessQueues;
 
 #[cfg(feature = "alloc")]
 mod alloc;
 
 #[cfg(feature = "alloc")]
 pub use alloc::AllocQueues;
-#[cfg(all(test, any(feature = "alloc", feature = "heapless")))]
+#[cfg(test)]
+mod model_tests;
+#[cfg(test)]
 mod tests;

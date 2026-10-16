@@ -174,8 +174,9 @@ pub fn database() -> bacnet_objects::database::ObjectDatabase {
     let mut db = bacnet_objects::database::ObjectDatabase::new();
     db.add(Box::new(
         bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
-            instance: 7,
-            name: "progress".into(),
+            identity: bacnet_objects::DeviceIdentity::new(7, 0)
+                .expect("valid Device identity")
+                .with_name("progress"),
             ..Default::default()
         })
         .unwrap(),

@@ -200,7 +200,7 @@ fn make_pics_config() -> PicsConfig {
 fn generate_pics_basic() {
     let db = make_test_db();
     let server_config = ServerConfig {
-        vendor_id: 999,
+        device: bacnet_objects::DeviceIdentity::new(1, 999).expect("valid Device identity"),
         ..ServerConfig::default()
     };
     let pics_config = make_pics_config();
@@ -297,8 +297,7 @@ fn real_device_and_network_port_overrides_not_createable_or_deleteable() {
     use bacnet_objects::network_port::NetworkPortObject;
 
     let device = DeviceObject::new(DeviceConfig {
-        instance: 1,
-        name: "Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
         ..Default::default()
     })
     .unwrap();
@@ -371,7 +370,7 @@ fn services_match_implementation() {
 fn text_output_contains_key_sections() {
     let db = make_test_db();
     let server_config = ServerConfig {
-        vendor_id: 42,
+        device: bacnet_objects::DeviceIdentity::new(1, 42).expect("valid Device identity"),
         ..ServerConfig::default()
     };
     let pics_config = make_pics_config();

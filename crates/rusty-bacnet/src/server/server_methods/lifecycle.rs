@@ -33,9 +33,13 @@ impl BACnetServer {
                 audit_configuration::pending_audit_log_index(&pending, object.object_identifier())?;
             }
         }
-        let mut builder = server::BACnetServer::generic_builder()
-            .segmentation_supported(self.segmentation_supported)
-            .apdu_segment_timeout_ms(self.apdu_segment_timeout_ms);
+        let identity = bacnet_objects::DeviceIdentity::new(self.device_instance, 555)
+            .map_err(to_py_err)?
+            .with_name(self.device_name.clone())
+            .with_segmentation(self.segmentation_supported)
+            .with_apdu_segment_timeout_ms(self.apdu_segment_timeout_ms);
+        identity.validate().map_err(to_py_err)?;
+        let mut builder = server::BACnetServer::generic_builder().device(identity.clone());
         if let Some(instance) = self.registered_network_port {
             let oid = bacnet_types::primitives::ObjectIdentifier::new(
                 bacnet_types::enums::ObjectType::NETWORK_PORT,
@@ -70,14 +74,7 @@ impl BACnetServer {
         // registrations are moved into the startup future.
         let mut mstp_transport: Option<AnyTransport<crate::mstp_py::PySerial>> =
             if self.transport_type == "mstp" {
-                Some(crate::mstp_py::build_mstp_transport(
-                    self.serial_port.as_deref(),
-                    self.mstp_baud,
-                    self.mstp_mac,
-                    self.mstp_max_master,
-                    self.mstp_max_info_frames,
-                    self.mstp_extended_frames,
-                )?)
+                Some(crate::mstp_py::build_mstp_transport(&self.mstp)?)
             } else {
                 None
             };
@@ -85,15 +82,13 @@ impl BACnetServer {
         let inner = self.inner.clone();
         let started = self.started.clone();
         let device_instance = self.device_instance;
-        let segmentation_supported = self.segmentation_supported;
-        let apdu_segment_timeout_ms = self.apdu_segment_timeout_ms;
         let audit_recipient = recipient_input.take();
-        let device_name = self.device_name.clone();
         let transport_type = self.transport_type.clone();
         let interface_str = self.interface.clone();
         let port = self.port;
         let broadcast_str = self.broadcast_address.clone();
         let share_port_by_address = self.share_port_by_address;
+        let bip_mode = self.bip_mode.clone();
         let sc_hub = self.sc_hub.clone();
         let sc_vmac = self.sc_vmac.clone();
         let sc_device_uuid = self.sc_device_uuid;
@@ -145,6 +140,7 @@ impl BACnetServer {
                         })?;
                         let mut bip = BipTransport::new(interface, port, broadcast);
                         bip.set_share_port_by_address(share_port_by_address);
+                        bip.set_mode(bip_mode);
                         Some(AnyTransport::Bip(Box::new(bip)))
                     }
                     "ipv6" => {
@@ -152,8 +148,14 @@ impl BACnetServer {
                         let interface: std::net::Ipv6Addr = iface_str.parse().map_err(|e| {
                             PyRuntimeError::new_err(format!("invalid IPv6 interface: {e}"))
                         })?;
+                        // A B/IPv6 device's VMAC is its device instance
+                        // (Clauses U.1.3, H.7.2), so peers can name it by
+                        // instance; startup fails if another node on the
+                        // link already uses it.
                         Some(AnyTransport::Bip6(Bip6Transport::new(
-                            interface, port, None,
+                            interface,
+                            port,
+                            Some(device_instance),
                         )))
                     }
                     // SC can only be constructed after its dial; defer that I/O.
@@ -179,10 +181,10 @@ impl BACnetServer {
                 };
 
             // Validate the generated Device and entire pending DB before SC I/O.
+            let identity = identity.resolve(local_capacity).map_err(to_py_err)?;
             let mut device = DeviceObject::new(DeviceConfig {
-                segmentation_supported,
-                apdu_segment_timeout: apdu_segment_timeout_ms,
-                ..generated_device_config(device_instance, device_name, local_capacity)
+                identity,
+                ..DeviceConfig::default()
             })
             .map_err(to_py_err)?;
             if let Some(recipient) = audit_recipient {
@@ -230,17 +232,18 @@ impl BACnetServer {
                     let tls_config = sc_tls_config
                         .ok_or_else(|| PyRuntimeError::new_err("SC TLS config was not prepared"))?;
 
-                    let interval = sc_heartbeat_interval_ms.unwrap_or(30_000);
-                    let timeout = sc_heartbeat_timeout_ms.unwrap_or(60_000);
-                    let config = bacnet_transport::sc_tls::ScTlsTransportConfig::new(
-                        hub_url,
-                        vmac,
-                        sc_device_uuid,
-                    )
-                    .with_heartbeat(interval, timeout);
-                    let sc = bacnet_transport::sc_tls::connect_sc_transport(config, tls_config)
+                    let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&hub_url, tls_config)
                         .await
                         .map_err(to_py_err)?;
+
+                    let mut sc = bacnet_transport::sc::ScTransport::new(ws, vmac)
+                        .with_device_uuid(sc_device_uuid);
+                    if let Some(ms) = sc_heartbeat_interval_ms {
+                        sc = sc.with_heartbeat_interval_ms(ms);
+                    }
+                    if let Some(ms) = sc_heartbeat_timeout_ms {
+                        sc = sc.with_heartbeat_timeout_ms(ms);
+                    }
                     AnyTransport::Sc(Box::new(sc))
                 }
             };
@@ -315,7 +318,9 @@ impl BACnetServer {
     /// Get the retained server instance's last bound address as a string.
     /// This remains a snapshot during interrupted shutdown; successful stop clears it.
     ///
-    /// For BIP: `ip:port`, for IPv6: `[ip]:port`, for SC: hex-encoded VMAC.
+    /// For BIP: `ip:port`; for IPv6: the VMAC peers address it by, as
+    /// `bip6:0x0004D2` (its device instance, Clause H.7.2); for MS/TP: the
+    /// station; for SC: the hex-encoded VMAC.
     fn local_address<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let transport_type = self.transport_type.clone();
@@ -338,17 +343,15 @@ impl BACnetServer {
                     Ok(format!("{ip}:{port}"))
                 }
                 "ipv6" => {
-                    if mac.len() < 18 {
-                        return Err(PyRuntimeError::new_err(format!(
-                            "unexpected IPv6 MAC length: {}",
+                    let vmac = <[u8; 3]>::try_from(mac).map_err(|_| {
+                        PyRuntimeError::new_err(format!(
+                            "unexpected B/IPv6 MAC length: {}",
                             mac.len()
-                        )));
-                    }
-                    let mut ip_bytes = [0u8; 16];
-                    ip_bytes.copy_from_slice(&mac[..16]);
-                    let ip = std::net::Ipv6Addr::from(ip_bytes);
-                    let port = u16::from_be_bytes([mac[16], mac[17]]);
-                    Ok(format!("[{ip}]:{port}"))
+                        ))
+                    })?;
+                    Ok(bacnet_transport::bip6::format_vmac_text(
+                        bacnet_transport::bip6::Bip6Vmac::new(vmac),
+                    ))
                 }
                 "mstp" => {
                     if mac.len() != 1 {
@@ -538,24 +541,6 @@ impl BACnetServer {
     }
 }
 
-// The binding owns this Device; derive its declaration before adding it to DB.
-fn generated_device_config(
-    instance: u32,
-    name: String,
-    local_receive_apdu_capacity: u16,
-) -> DeviceConfig {
-    DeviceConfig {
-        instance,
-        name,
-        vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
-        max_apdu_length: server::ServerConfig::default()
-            .max_apdu_length
-            .min(u32::from(local_receive_apdu_capacity)),
-        ..DeviceConfig::default()
-    }
-}
-
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
@@ -565,9 +550,15 @@ mod capacity_tests {
         let (serial, _peer) = LoopbackSerial::pair();
         let transport: AnyTransport<LoopbackSerial> =
             AnyTransport::Mstp(MstpTransport::new(serial, MstpConfig::default()));
-        let config =
-            generated_device_config(893, "test".into(), transport.local_receive_apdu_capacity());
-        assert_eq!(config.max_apdu_length, 480);
+        let identity = bacnet_objects::DeviceIdentity::new(893, 555)
+            .unwrap()
+            .resolve(transport.local_receive_apdu_capacity())
+            .unwrap();
+        assert_eq!(identity.max_apdu_length(), 480);
+        let config = DeviceConfig {
+            identity,
+            ..Default::default()
+        };
         let device = DeviceObject::new(config).unwrap();
         assert_eq!(
             device

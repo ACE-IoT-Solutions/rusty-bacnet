@@ -250,8 +250,9 @@ async fn cov_property_multiple_subscription_uses_multiple_notification_on_change
 
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Multiple-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Multiple-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -363,8 +364,9 @@ async fn capture_timestamped_cov_multiple(
         db.set_clock_reader(Some(StdArc::new(FixedClock(frame))));
     }
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Timestamped-COV-Multiple-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Timestamped-COV-Multiple-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -492,8 +494,9 @@ async fn confirmed_cov_single_and_multiple_retries_retain_their_leases() {
 
     let mut db = clocked_test_database();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Confirmed-COV-Retry-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Confirmed-COV-Retry-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -534,8 +537,10 @@ async fn confirmed_cov_single_and_multiple_retries_retain_their_leases() {
         }
     }
     let config = Arc::new(ServerConfig {
+        device: bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(1474)
+            .expect("valid Device APDU"),
         cov_retry_timeout_ms: 100,
-        max_apdu_length: 1474,
         ..ServerConfig::default()
     });
 

@@ -3,38 +3,12 @@
 /// Node receive capacity is independent of every negotiated egress path.
 pub(crate) const LOCAL_RECEIVE_APDU_CAPACITY: u16 = 1476;
 pub(crate) const LOCAL_NPDU_HEADER_LEN: u16 = 2;
-/// Table 6-1 minimum routed NPDU length for BACnet/SC.
-pub const MIN_ROUTED_NPDU_LENGTH: u16 = 1497;
-/// Table 6-1 maximum BACnet/SC NPDU after reserving required Data Options.
-pub const MAX_NPDU_LENGTH: u16 = 61_327;
-/// Minimum Data Options content a secure-connect router forwards between SC ports.
-pub const MIN_ROUTED_DATA_OPTIONS_LENGTH: u16 = 4_192;
-/// Fixed BVLC header length used by the Table 6-1 maximum calculation.
-pub const BVLC_HEADER_LENGTH: u16 = 16;
-pub(crate) const LOCAL_RECEIVE_NPDU_CAPACITY: u16 = MIN_ROUTED_NPDU_LENGTH;
+pub(crate) const LOCAL_RECEIVE_NPDU_CAPACITY: u16 =
+    LOCAL_RECEIVE_APDU_CAPACITY + LOCAL_NPDU_HEADER_LEN;
 
 // Annex AB.5.1 hub workload: 16-byte envelope + 4192 encoded option bytes
 // + 1497-byte NPDU. Nodes use this full-message default independently of NPDU.
 pub(crate) const DEFAULT_MAX_BVLC_LENGTH: u16 = 5705;
-
-pub(crate) fn validate_router_receive_limits(
-    max_npdu_length: u16,
-    max_bvlc_length: u16,
-) -> Result<(), bacnet_types::error::Error> {
-    if !(MIN_ROUTED_NPDU_LENGTH..=MAX_NPDU_LENGTH).contains(&max_npdu_length) {
-        return Err(bacnet_types::error::Error::Encoding(format!(
-            "SC router max NPDU length must be in {MIN_ROUTED_NPDU_LENGTH}..={MAX_NPDU_LENGTH}"
-        )));
-    }
-    let required_bvlc =
-        max_npdu_length as u32 + MIN_ROUTED_DATA_OPTIONS_LENGTH as u32 + BVLC_HEADER_LENGTH as u32;
-    if (max_bvlc_length as u32) < required_bvlc {
-        return Err(bacnet_types::error::Error::Encoding(format!(
-            "SC router max BVLC length must be at least {required_bvlc} for max NPDU length {max_npdu_length}"
-        )));
-    }
-    Ok(())
-}
 
 #[cfg(feature = "sc-tls")]
 pub(crate) fn websocket(

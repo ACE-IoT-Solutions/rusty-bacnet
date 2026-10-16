@@ -8,8 +8,8 @@
 //!
 //! # Extended frames
 //!
-//! The action buffers and the core's NPDU scratch are always sized for
-//! extended frames, whatever the configuration: on a host they cost only
+//! The action buffers, and so the core's `NPDU` parameter, are always sized
+//! for extended frames, whatever the configuration: on a host they cost only
 //! memory, and one core type serves both settings. What changes behaviour
 //! follows [`MstpConfig::extended_frames`](super::MstpConfig::extended_frames):
 //! the core's flag, the receive storage (a standard frame's, or an extended
@@ -31,11 +31,13 @@
 //!
 //! # Deadlines
 //!
-//! The task sleeps until [`MasterCore::next_deadline`], mapped onto Tokio
-//! time from the moment the transport started, and stamps
-//! [`MasterCore::on_deadline`] with the time it actually woke. A deadline
-//! serviced a millisecond or more late counts in the core's
-//! `deadline_misses`, published in [`MstpDiagnosticsSnapshot::mac`](super::MstpDiagnosticsSnapshot::mac).
+//! The task sleeps until the earliest of [`MasterCore::next_deadline`]
+//! (mapped onto Tokio time from the moment the transport started), the echo
+//! filter's next deadline and the first expiry in the deferred reply set
+//! (see below). It stamps [`MasterCore::on_deadline`] with the time it
+//! actually woke. A deadline serviced a millisecond or more late counts in
+//! the core's `deadline_misses`, published in
+//! [`MstpDiagnosticsSnapshot::mac`](super::MstpDiagnosticsSnapshot::mac).
 //! Reads are served first when both are ready, and a deadline that is
 //! already due is serviced right after each read, so a port that is always
 //! readable cannot hold a deadline back.
@@ -60,7 +62,17 @@
 //! requester, to go out when this station holds the token, as Clause
 //! 9.5.6.9 has a deferred reply do. It keeps its request's expiry (arrival
 //! plus the queue's maximum age) in the queue. The `replies` module bounds
-//! the set.
+//! the set; the task wakes at each channel's expiry to drop it, so an idle
+//! station holds no channel past its age.
+//!
+//! # End of file
+//!
+//! A read that returns no octets is the port's end of file (see
+//! [`SerialPort::read`]). The task lets other work run after one, and ends
+//! at the [`END_OF_FILE_READS`]th in a row, as it does at a read error: it
+//! counts it in `serial_read_errors` and logs it, and its end closes the
+//! NPDU channel and refuses later sends. Reads that return octets in
+//! between start the count again.
 
 use std::future::Future;
 use std::ops::Range;
@@ -74,7 +86,7 @@ use bacnet_mstp_codec::{
 };
 use bacnet_mstp_core::{
     Action, CoreError, Direction, ExtendedActionBuffers, MasterCore, MasterState, MstpCoreConfig,
-    QueueRejectReason, ReplyDecision, RequestId, TransmitId,
+    QueueRefusal, ReplyDecision, RequestId, TransmitId,
 };
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
@@ -84,7 +96,7 @@ use tracing::{debug, warn};
 
 use super::diagnostics::{increment, Counters};
 use super::echo::{EchoFilter, Ended, Pushed};
-use super::queues::{CoreClock, EnqueueError, SharedQueues};
+use super::queues::{CoreClock, CoreQueues, EnqueueError, SharedQueues};
 use super::replies::{Finished, Late, Replies, Resolved};
 use super::{Echo, SerialPort};
 use crate::port::{ReceivedNpdu, TransportProvenance};
@@ -94,7 +106,12 @@ mod transmit;
 /// Octets asked for in one serial read.
 const READ_CHUNK: usize = 512;
 
-type Core<'a> = MasterCore<'a, SharedQueues, MAX_EXTENDED_MPDU_DATA>;
+/// Reads in a row that return no octets after which the task takes the
+/// port to be at its end of file. More than one, so that a single empty read
+/// from a port that breaks the contract does not end it.
+pub(super) const END_OF_FILE_READS: u32 = 3;
+
+type Core<'a> = MasterCore<'a, CoreQueues, MAX_EXTENDED_MPDU_DATA>;
 
 /// The transport's task: everything it needs, moved in at start.
 pub(super) struct Task<S> {
@@ -104,6 +121,8 @@ pub(super) struct Task<S> {
     pub(super) clock: CoreClock,
     pub(super) npdus: mpsc::Sender<ReceivedNpdu>,
     pub(super) counts: Arc<Counters>,
+    /// [`MstpConfig::transmit_latency_pad`](super::MstpConfig::transmit_latency_pad).
+    pub(super) transmit_pad: Duration,
 }
 
 impl<S: SerialPort> Task<S> {
@@ -116,6 +135,7 @@ impl<S: SerialPort> Task<S> {
             clock,
             npdus,
             counts,
+            transmit_pad,
         } = self;
         let _closed = CloseOnExit(queues.clone());
         let mut rx_storage = vec![
@@ -127,29 +147,36 @@ impl<S: SerialPort> Task<S> {
             }
         ];
         let mut buffers: Box<ExtendedActionBuffers> = Box::default();
-        let shared = queues.clone();
-        let mut core =
-            match MasterCore::new(config, queues, &mut rx_storage, &mut buffers, clock.now()) {
-                Ok(core) => core,
-                Err(error) => {
-                    warn!(?error, "MS/TP core refused its configuration");
-                    return;
-                }
-            };
-        let max_age = Duration::from_micros(config.queue_max_age.as_micros());
+        let core_queues = queues.for_core();
+        let mut core = match MasterCore::new(
+            config,
+            core_queues,
+            &mut rx_storage,
+            &mut buffers,
+            clock.now(),
+        ) {
+            Ok(core) => core,
+            Err(error) => {
+                warn!(?error, "MS/TP core refused its configuration");
+                return;
+            }
+        };
+        let max_age = Duration::from(config.queue_max_age);
         let mut mac = Mac {
             echo: serial.echo(),
             serial,
             clock,
             npdus,
             counts,
-            queues: shared,
-            octet_time: Duration::from_micros(config.octet_time().as_micros()),
+            queues,
+            octet_time: Duration::from(config.octet_time()),
+            transmit_pad,
             read_buf: vec![0; READ_CHUNK],
             tx_frame: Vec::with_capacity(MAX_EXTENDED_FRAME_LENGTH),
             outgoing: None,
             replies: Replies::new(max_age),
             filter: EchoFilter::new(Duration::from_millis(super::HOST_FRAME_ABORT_MS)),
+            empty_reads: 0,
         };
         mac.run(&mut core).await;
     }
@@ -164,7 +191,8 @@ impl Drop for CloseOnExit {
     }
 }
 
-/// The serial port failed a read; the task ends.
+/// The serial port failed a read, or reached its end of file; the task
+/// ends.
 struct ReadFailed;
 
 /// What a frame being sent counts as in the diagnostics.
@@ -183,17 +211,18 @@ impl SentKind {
     fn of(frame: &[u8], answering: bool) -> Self {
         match frame.get(2).copied().map(FrameType::from_raw) {
             Some(
-                FrameType::BACnetDataExpectingReply | FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_DATA_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
             ) => Self::DataExpectingReply,
             Some(
-                FrameType::BACnetDataNotExpectingReply
-                | FrameType::BACnetExtendedDataNotExpectingReply,
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             ) if answering => Self::DirectAnswer,
             Some(
-                FrameType::BACnetDataNotExpectingReply
-                | FrameType::BACnetExtendedDataNotExpectingReply,
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             ) => Self::QueuedData,
-            Some(FrameType::ReplyPostponed) => Self::ReplyPostponed,
+            Some(FrameType::REPLY_POSTPONED) => Self::ReplyPostponed,
             _ => Self::Other,
         }
     }
@@ -231,15 +260,18 @@ struct Mac<S> {
     clock: CoreClock,
     npdus: mpsc::Sender<ReceivedNpdu>,
     counts: Arc<Counters>,
-    /// The core's queues, for late answers (queued as a send call queues)
-    /// and for publishing their counters.
+    /// The core's queues, for late answers (queued as a send call queues).
     queues: SharedQueues,
     octet_time: Duration,
+    /// Added to a frame's wire time when the port has no drain.
+    transmit_pad: Duration,
     read_buf: Vec<u8>,
     /// The octets of the frame handed over last.
     tx_frame: Vec<u8>,
     outgoing: Option<Outgoing>,
     filter: EchoFilter,
+    /// Reads in a row that returned no octets.
+    empty_reads: u32,
 }
 
 impl<S: SerialPort> Mac<S> {
@@ -252,11 +284,14 @@ impl<S: SerialPort> Mac<S> {
                 }
                 continue;
             }
-            let deadline = core.next_deadline().map(|at| self.clock.instant(at));
-            let wake = match (deadline, self.filter.deadline()) {
-                (Some(core), Some(filter)) => Some(core.min(filter)),
-                (core, filter) => core.or(filter),
-            };
+            let wake = [
+                core.next_deadline().map(|at| self.clock.instant(at)),
+                self.filter.deadline(),
+                self.replies.next_expiry(),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             let sleep =
                 wake.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3_600));
             // Input before a deadline at the same moment: the core judges
@@ -268,18 +303,15 @@ impl<S: SerialPort> Mac<S> {
                     Resolved::Late(late) => self.late(late),
                 },
                 read = self.serial.read(&mut self.read_buf) => {
-                    match read {
-                        // Nothing read: let other work, an abort included,
-                        // run before the next read.
+                    match self.outcome(read) {
+                        // Nothing read, short of the end of file: let other
+                        // work, an abort included, run before the next read.
                         Ok(0) => tokio::task::yield_now().await,
                         Ok(count) => {
                             let now = self.clock.now();
                             self.receive(core, 0..count, now);
                         }
-                        Err(error) => {
-                            self.read_failed(&error);
-                            return;
-                        }
+                        Err(ReadFailed) => return,
                     }
                     self.timers(core);
                 }
@@ -289,7 +321,7 @@ impl<S: SerialPort> Mac<S> {
     }
 
     /// Carry out the core's actions, defer a finished request's reply
-    /// channel, and publish the counters.
+    /// channel, and add the core's counters to the diagnostics' totals.
     fn settle(&mut self, core: &mut Core<'_>) {
         self.drain_actions(core);
         let finished = self
@@ -303,7 +335,7 @@ impl<S: SerialPort> Mac<S> {
         for _ in 0..expired {
             increment(&self.counts.late_answers_expired);
         }
-        self.counts.publish(core.counters(), &self.queues);
+        self.counts.publish(|| core.take_counters());
     }
 
     /// Poll the core until it has nothing left.
@@ -457,10 +489,10 @@ impl<S: SerialPort> Mac<S> {
             .enqueue_until(requester, answer, self.clock.now(), expires);
         match result {
             Ok(()) => increment(&self.counts.late_answers_queued),
-            Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Oversize)) => {
                 increment(&self.counts.outbound_oversize);
             }
-            Err(EnqueueError::Rejected(QueueRejectReason::Full)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Full)) => {
                 increment(&self.counts.outbound_queue_full);
             }
             Err(error) => debug!(?error, "MS/TP late answer not queued"),
@@ -568,9 +600,32 @@ impl<S: SerialPort> Mac<S> {
         }
     }
 
-    fn read_failed(&self, error: &Error) {
-        increment(&self.counts.serial_read_errors);
-        warn!("MS/TP serial read error: {error}");
+    /// Take what a read returned: the count of octets read, zero for an
+    /// empty read short of the end of file, or [`ReadFailed`] for an error
+    /// or the end of file, counted and logged.
+    fn outcome(&mut self, read: Result<usize, Error>) -> Result<usize, ReadFailed> {
+        match read {
+            Ok(0) => {
+                self.empty_reads = self.empty_reads.saturating_add(1);
+                if self.empty_reads < END_OF_FILE_READS {
+                    return Ok(0);
+                }
+                increment(&self.counts.serial_read_errors);
+                warn!(
+                    "MS/TP serial port at end of file: {END_OF_FILE_READS} reads in a row returned nothing"
+                );
+                Err(ReadFailed)
+            }
+            Ok(count) => {
+                self.empty_reads = 0;
+                Ok(count)
+            }
+            Err(error) => {
+                increment(&self.counts.serial_read_errors);
+                warn!("MS/TP serial read error: {error}");
+                Err(ReadFailed)
+            }
+        }
     }
 }
 

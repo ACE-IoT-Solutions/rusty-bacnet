@@ -15,7 +15,10 @@ async fn endpoint_device_wildcard_accepts_bundled_server_concrete_ack() {
         .build_database()
         .unwrap();
     let mut server = BACnetServer::start_clockless(
-        ServerConfig::default(),
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(10, 42).unwrap(),
+            ..Default::default()
+        },
         database,
         BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
     )
@@ -63,7 +66,7 @@ fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
 }
 
 enum Reader {
-    Standalone(Box<BACnetClient<LoopbackTransport>>),
+    Standalone(BACnetClient<LoopbackTransport>),
     Endpoint(Box<EndpointSession<LoopbackTransport>>),
 }
 impl Reader {
@@ -131,13 +134,13 @@ async fn correlation_matrix(endpoint: bool, routed: bool) {
         session.start().await.unwrap();
         Reader::Endpoint(Box::new(session))
     } else {
-        Reader::Standalone(Box::new(
+        Reader::Standalone(
             BACnetClient::generic_builder()
                 .transport(transport)
                 .build()
                 .await
                 .unwrap(),
-        ))
+        )
     };
     let concrete = oid(ObjectType::ANALOG_INPUT, 7);
     let device_alias = oid(ObjectType::DEVICE, ObjectIdentifier::MAX_INSTANCE);

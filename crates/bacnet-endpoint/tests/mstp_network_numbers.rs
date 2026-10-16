@@ -98,7 +98,7 @@ async fn responder_progress(peer: &mut Peer) {
     // NPDU version1/expecting-reply, confirmed unsegmented APDU, max-APDU480.
     let request = [1, 4, 0, 3, 42, 12, 0x0c, 0, 0, 0, 1, 0x19, 85];
     peer.await_token().await;
-    bounded(peer.frame(FrameType::BACnetDataExpectingReply, NODE, &request))
+    bounded(peer.frame(FrameType::BACNET_DATA_EXPECTING_REPLY, NODE, &request))
         .await
         .unwrap();
     let frame = peer.answer().await;
@@ -126,7 +126,7 @@ async fn requester_progress(client: &BACnetClient<GatedTransport>, peer: &mut Pe
     let request = client.read_property(&[PEER], object, PropertyIdentifier::PRESENT_VALUE, None);
     let respond = async {
         let frame = peer.data().await;
-        assert_eq!(frame.frame_type, FrameType::BACnetDataExpectingReply);
+        assert_eq!(frame.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
         assert_eq!(frame.destination, PEER);
         let npdu = decode_npdu(frame.data).unwrap();
         assert!(!npdu.is_network_message);
@@ -148,7 +148,7 @@ async fn requester_progress(client: &BACnetClient<GatedTransport>, peer: &mut Pe
             1, 0, 0x30, invoke_id, 12, 0x0c, 0, 0, 0, 1, 0x19, 85, 0x3e, 0x44, 0x42, 0x28, 0, 0,
             0x3f,
         ];
-        bounded(peer.frame(FrameType::BACnetDataNotExpectingReply, NODE, &ack))
+        bounded(peer.frame(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, NODE, &ack))
             .await
             .unwrap();
     };

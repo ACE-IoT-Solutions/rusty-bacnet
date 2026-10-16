@@ -169,8 +169,9 @@ impl Fixture {
         let mut db = ObjectDatabase::new();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 123,
-                name: "CLI site device".into(),
+                identity: bacnet_objects::DeviceIdentity::new(123, 0)
+                    .expect("valid Device identity")
+                    .with_name("CLI site device"),
                 ..Default::default()
             })
             .unwrap(),
@@ -181,6 +182,7 @@ impl Fixture {
         self.server = Some(
             bounded(Box::pin(
                 BACnetServer::generic_builder()
+                    .device(bacnet_objects::DeviceIdentity::new(123, 0).unwrap())
                     .transport(transport)
                     .database(db)
                     .build(),

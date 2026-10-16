@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_transport::bip::BipMode;
 
 #[tokio::test]
 async fn registered_port_invalid_selection_profile_and_identity_fail_before_publication() {
@@ -11,7 +12,7 @@ async fn registered_port_invalid_selection_profile_and_identity_fail_before_publ
         let id = identity();
         let mut endpoint =
             crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
-                .identity(id.clone())
+                .device(id.clone())
                 .database(id.build_database().unwrap())
                 .registered_network_port(selected)
                 .build_session()
@@ -20,8 +21,8 @@ async fn registered_port_invalid_selection_profile_and_identity_fail_before_publ
         assert!(endpoint.bip_local_address().is_none());
     }
     // BBMD and foreign-device links register in their own mode (#939); a
-    // link configured as both, a wildcard interface and an identity mismatch
-    // are refused.
+    // foreign device the transport refuses to start, a wildcard interface
+    // and an identity mismatch are refused.
     for mode in 1..4 {
         let id = if mode == 2 {
             crate::DeviceIdentity::new(785, 555)
@@ -42,16 +43,17 @@ async fn registered_port_invalid_selection_profile_and_identity_fail_before_publ
             .registered_network_port(port());
         builder = match mode {
             1 => builder
-                .identity(id)
-                .enable_bbmd(vec![])
-                .register_as_foreign_device(bacnet_transport::bip::ForeignDeviceConfig {
-                    bbmd_ip: Ipv4Addr::LOCALHOST,
-                    bbmd_port: 47808,
-                    renewal_interval: None,
-                    ttl: 60,
-                }),
-            2 => builder.identity(id),
-            _ => builder.identity(
+                .device(id)
+                .mode(bacnet_transport::bip::BipMode::Foreign(
+                    bacnet_transport::bip::ForeignDeviceConfig {
+                        bbmd_ip: Ipv4Addr::LOCALHOST,
+                        bbmd_port: 47808,
+                        renewal_interval: None,
+                        ttl: 0,
+                    },
+                )),
+            2 => builder.device(id),
+            _ => builder.device(
                 crate::DeviceIdentity::new(785, 555)
                     .unwrap()
                     .with_bip_port(2, 18, Ipv4Addr::LOCALHOST, 0)
@@ -62,7 +64,7 @@ async fn registered_port_invalid_selection_profile_and_identity_fail_before_publ
         let error = endpoint.start().await.unwrap_err().to_string();
         if mode == 1 {
             assert!(
-                error.contains("a BBMD that also registers as a foreign device"),
+                error.contains("foreign-device mode needs TTL > 0"),
                 "{error}"
             );
         }
@@ -83,7 +85,7 @@ async fn registered_port_invalid_selection_profile_and_identity_fail_before_publ
         EndpointSession::new(transport, SessionRole::ServerOnly, SessionConfig::default())
             .unwrap()
             .with_database(id.build_database().unwrap())
-            .with_identity(id)
+            .device(id)
             .with_registered_network_port(port());
     assert!(endpoint.start().await.is_err());
 }
@@ -99,19 +101,19 @@ async fn registered_port_publishes_the_bbmd_or_foreign_mode() {
         let mut builder =
             crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
                 .role(SessionRole::ServerOnly)
-                .identity(id)
+                .device(id)
                 .database(db)
                 .registered_network_port(port());
-        builder = if bbmd {
-            builder.enable_bbmd(vec![])
+        builder = builder.mode(if bbmd {
+            BipMode::Bbmd(bacnet_transport::bip::BbmdOptions::default())
         } else {
-            builder.register_as_foreign_device(bacnet_transport::bip::ForeignDeviceConfig {
+            BipMode::Foreign(bacnet_transport::bip::ForeignDeviceConfig {
                 bbmd_ip: Ipv4Addr::LOCALHOST,
                 bbmd_port: stand_in.local_addr().unwrap().port(),
                 renewal_interval: None,
                 ttl: 60,
             })
-        };
+        });
         let mut endpoint = builder.build_session().unwrap();
         endpoint.start().await.unwrap();
         let address = endpoint.bip_local_address().unwrap();
@@ -144,7 +146,7 @@ async fn registered_port_capacity_stays_independent_of_device_limit_and_row_orde
             .unwrap();
         let db = id.build_database().unwrap();
         let mut owner = if full {
-            let mut config = id.server_config();
+            let mut config = crate::identity::server_config(&id);
             config.registered_network_port = Some(port());
             Owner::Server(Box::new(
                 bacnet_server::server::BACnetServer::start(
@@ -158,7 +160,7 @@ async fn registered_port_capacity_stays_independent_of_device_limit_and_row_orde
         } else {
             let mut endpoint =
                 crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
-                    .identity(id)
+                    .device(id)
                     .database(db)
                     .registered_network_port(port())
                     .build_session()

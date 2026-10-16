@@ -7,6 +7,8 @@ use pyo3::prelude::*;
 use super::validate_network_number;
 
 const BROADCAST_VMAC: [u8; 6] = [0xff; 6];
+const ROUTED_NPDU_LENGTH: u16 = 1497;
+const ROUTED_BVLC_LENGTH: u16 = 5705;
 
 /// Typed BACnet/IP router-port configuration.
 #[pyclass(
@@ -89,8 +91,11 @@ pub struct PyRouterScPort {
     pub(super) reconnect_max_retries: u32,
     #[pyo3(get)]
     pub(super) reconnect_forever: bool,
+    /// Retained for the pre-0.13 Python constructor contract and required to
+    /// match the upstream transport's fixed receive capacity.
     #[pyo3(get)]
     pub(super) max_npdu_length: u16,
+    /// Retained for the pre-0.13 Python constructor contract.
     #[pyo3(get)]
     pub(super) max_bvlc_length: u16,
 }
@@ -144,6 +149,10 @@ impl PyRouterScPort {
                     "failover_hub must differ from primary_hub",
                 ));
             }
+            return Err(PyValueError::new_err(
+                "failover_hub is not supported by the upstream 0.13 Python router; \
+                 initial TLS failover cannot yet preserve hub identity",
+            ));
         }
         if local_vmac.len() != 6 {
             return Err(PyValueError::new_err("local_vmac must be exactly 6 bytes"));
@@ -192,16 +201,17 @@ impl PyRouterScPort {
                 "reconnect_max_delay_ms must be at least reconnect_initial_delay_ms",
             ));
         }
+        if reconnect_max_delay_ms > 86_400_000 {
+            return Err(PyValueError::new_err(
+                "reconnect_max_delay_ms must not exceed 86400000 (24 hours)",
+            ));
+        }
         if reconnect_max_retries == 0 && !reconnect_forever {
             return Err(PyValueError::new_err(
                 "reconnect_max_retries must be greater than zero unless reconnect_forever is true",
             ));
         }
-        bacnet_transport::sc_hub::ScHubTlsConfig::validate_receive_limits(
-            max_npdu_length,
-            max_bvlc_length,
-        )
-        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        validate_receive_limits(max_npdu_length, max_bvlc_length)?;
         Ok(Self {
             network_number,
             primary_hub,
@@ -259,7 +269,9 @@ pub(super) fn validate_ports(ports: &[PyRouterPortConfig]) -> PyResult<()> {
                     .interface
                     .parse::<Ipv4Addr>()
                     .expect("RouterBipPort validated its interface");
-                if !bip_endpoints.insert((interface, port.port)) {
+                // Port zero requests a fresh ephemeral endpoint for each
+                // transport, so equal pre-bind tuples are not duplicates.
+                if port.port != 0 && !bip_endpoints.insert((interface, port.port)) {
                     return Err(PyValueError::new_err(format!(
                         "duplicate B/IP router endpoint {}:{}",
                         port.interface, port.port
@@ -276,9 +288,15 @@ fn validate_hub(value: &str, name: &str) -> PyResult<()> {
     if value.trim().is_empty() {
         return Err(PyValueError::new_err(format!("{name} must not be blank")));
     }
-    if !value.starts_with("wss://") {
+    bacnet_transport::sc_tls::validate_wss_uri(value)
+        .map_err(|error| PyValueError::new_err(format!("invalid {name}: {error}")))
+}
+
+fn validate_receive_limits(max_npdu_length: u16, max_bvlc_length: u16) -> PyResult<()> {
+    if max_npdu_length != ROUTED_NPDU_LENGTH || max_bvlc_length != ROUTED_BVLC_LENGTH {
         return Err(PyValueError::new_err(format!(
-            "{name} must use a wss:// URL"
+            "upstream 0.13 SC router ports use fixed receive limits of \
+             {ROUTED_NPDU_LENGTH} NPDU / {ROUTED_BVLC_LENGTH} BVLC"
         )));
     }
     Ok(())

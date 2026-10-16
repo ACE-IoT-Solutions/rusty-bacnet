@@ -81,7 +81,7 @@ pub(crate) async fn execution_timing_harness<S: SerialPort, P: SerialPort>(
         assert_eq!(npdus.max_capacity(), 64);
         transport.send_unicast(&[1, 0, 0x10], &[7]).await.unwrap();
         transport.send_unicast(&[1, 0, 0x20], &[8]).await.unwrap();
-        let incoming = encode(FrameType::Token, 3, 7, &[]);
+        let incoming = encode(FrameType::TOKEN, 3, 7, &[]);
         let split = if chunked {
             incoming.len() - 1
         } else {
@@ -116,9 +116,17 @@ pub(crate) async fn execution_timing_harness<S: SerialPort, P: SerialPort>(
         let mut expected_wire = Vec::new();
         let mut wire = Vec::new();
         for (index, (kind, destination, data)) in [
-            (FrameType::BACnetDataNotExpectingReply, 7, &[1, 0, 0x10][..]),
-            (FrameType::BACnetDataNotExpectingReply, 8, &[1, 0, 0x20][..]),
-            (FrameType::PollForMaster, 4, &[][..]),
+            (
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+                7,
+                &[1, 0, 0x10][..],
+            ),
+            (
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+                8,
+                &[1, 0, 0x20][..],
+            ),
+            (FrameType::POLL_FOR_MASTER, 4, &[][..]),
         ]
         .into_iter()
         .enumerate()
@@ -201,7 +209,7 @@ async fn execution_modes_answer_requests_in_time() {
                 )
                 .with_execution_mode(mode);
                 let mut npdus = transport.start().await.unwrap();
-                let request = encode(FrameType::BACnetDataExpectingReply, 3, 7, &[1, 4, 0x10]);
+                let request = encode(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 7, &[1, 4, 0x10]);
                 peer.write(&request).await.unwrap();
                 let (received_at, _, _) = reads.recv().await.unwrap();
                 let reply_tx = npdus.recv().await.unwrap().reply_tx.unwrap();
@@ -214,11 +222,11 @@ async fn execution_modes_answer_requests_in_time() {
                 assert_eq!(frame.header.destination, 7);
                 let (kind, minimum) = if ready {
                     (
-                        FrameType::BACnetDataNotExpectingReply,
+                        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
                         Duration::from_micros(4167),
                     )
                 } else {
-                    (FrameType::ReplyPostponed, Duration::from_millis(225))
+                    (FrameType::REPLY_POSTPONED, Duration::from_millis(225))
                 };
                 assert_eq!(frame.header.frame_type, kind);
                 assert!(sent_at >= received_at + minimum);
@@ -244,7 +252,8 @@ async fn abort_and_drop_release_serial_and_pending_reply(mode: MstpExecutionMode
                     MstpTransport::new(serial, config(3, 127)).with_execution_mode(mode);
                 let mut npdus = transport.start().await.unwrap();
                 let reply_tx = if pending_reply {
-                    let request = encode(FrameType::BACnetDataExpectingReply, 3, 7, &[1, 4, 0x10]);
+                    let request =
+                        encode(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 7, &[1, 4, 0x10]);
                     peer.write(&request).await.unwrap();
                     npdus.recv().await.unwrap().reply_tx
                 } else {

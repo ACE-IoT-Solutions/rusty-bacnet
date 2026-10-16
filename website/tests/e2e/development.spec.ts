@@ -27,7 +27,7 @@ test('search discovers development Network Port guidance and retains its scope',
   await expect(result.first()).toBeVisible();
   await result.first().click();
   await expect(page).toHaveURL(/\/development\/network-number\//);
-  await expect(page.locator('main')).toContainText('no proactive startup announcement');
+  await expect(page.locator('main')).toContainText('They make no announcement at startup');
   const raw = await request.get(base + 'raw/development/network-number.md');
   const text = await raw.text();
   expect(text).toContain('A Network Port object, a transport');

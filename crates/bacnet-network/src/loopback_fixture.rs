@@ -229,16 +229,21 @@ impl RouterFixture {
     }
 }
 
-/// The next frame a router sends to a peer, past its I-Am-Router-To-Network
-/// announcements, with the MAC it was unicast to, or `None` when it went out
-/// as a data-link broadcast.
+/// The next frame a router sends to a peer, past its startup announcements
+/// (Network-Number-Is and I-Am-Router-To-Network), with the MAC it was
+/// unicast to, or `None` when it went out as a data-link broadcast.
 pub(crate) async fn next_received_from_router(
     rx: &mut FromRouter,
 ) -> (ReceivedNpdu, Option<MacAddr>) {
-    let i_am = Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw());
+    let announcements = [
+        NetworkMessageType::I_AM_ROUTER_TO_NETWORK,
+        NetworkMessageType::NETWORK_NUMBER_IS,
+    ]
+    .map(|message| Some(message.to_raw()));
     loop {
         let (frame, to) = rx.recv().await;
-        if decode_npdu(frame.npdu.clone()).unwrap().message_type != i_am {
+        let message_type = decode_npdu(frame.npdu.clone()).unwrap().message_type;
+        if !announcements.contains(&message_type) {
             return (frame, to);
         }
     }

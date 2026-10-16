@@ -13,6 +13,7 @@ categories = ["network-programming"]
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-bip-codec = { workspace = true, features = ["bytes"] }
+bacnet-bip-core = { workspace = true }
 bacnet-mstp-codec = { workspace = true, features = ["alloc"] }
 bacnet-mstp-core = { workspace = true, features = ["alloc"] }
 bytes = { workspace = true, features = ["std"] }
@@ -28,6 +29,7 @@ tokio-serial = { version = "5", optional = true }
 gpiocdev = { version = "0.8", optional = true }
 libc = { workspace = true }
 getrandom = { workspace = true }
+x509-parser = { version = "0.18.1", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -47,6 +49,7 @@ sc-tls = [
     "dep:rustls",
     "dep:futures-util",
     "dep:aws-lc-rs",
+    "dep:x509-parser",
 ]
 serial = ["dep:tokio-serial", "tokio/io-util"]
 serial-gpio = ["serial", "dep:gpiocdev"]

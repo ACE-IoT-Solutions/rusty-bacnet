@@ -8,13 +8,12 @@
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
 use tokio::time::{Duration, Instant};
 
-use super::test_support::{config, encode, Bus, Sent};
+use super::test_support::{config, encode, Bus, Sent, T_USAGE_TIMEOUT};
 use super::MstpConfig;
 use crate::port::TransportPort;
 
 const T_NO_TOKEN: Duration = Duration::from_millis(500);
 const T_SLOT: Duration = Duration::from_millis(10);
-const T_USAGE_TIMEOUT: Duration = Duration::from_millis(20);
 /// Slack for Tokio's millisecond timer wheel.
 const TICK: Duration = Duration::from_millis(1);
 
@@ -22,7 +21,7 @@ const TICK: Duration = Duration::from_millis(1);
 /// station once its header has passed (Clause 9.5.4).
 fn bad_data_crc(destination: u8, source: u8) -> Vec<u8> {
     let mut wire = encode(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         destination,
         source,
         &[1, 0, 0x55],
@@ -34,7 +33,7 @@ fn bad_data_crc(destination: u8, source: u8) -> Vec<u8> {
 
 /// A frame whose header CRC is wrong: invalid wherever it was going.
 fn bad_header_crc(destination: u8, source: u8) -> Vec<u8> {
-    let mut wire = encode(FrameType::Token, destination, source, &[]);
+    let mut wire = encode(FrameType::TOKEN, destination, source, &[]);
     wire[7] ^= 0x01;
     wire
 }
@@ -50,7 +49,7 @@ async fn waiting_for_reply() -> (Bus, Sent) {
         .unwrap();
     bus.return_token(&token, 4).await;
     let request = bus.next().await;
-    assert_eq!(request.frame_type, FrameType::BACnetDataExpectingReply);
+    assert_eq!(request.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
     bus.until(request.end + bus.turnaround).await;
     (bus, request)
 }
@@ -63,7 +62,7 @@ async fn expect_token_dropped(bus: &mut Bus, heard: Instant) {
     let next = bus.next().await;
     assert_eq!(
         next.frame_type,
-        FrameType::PollForMaster,
+        FrameType::POLL_FOR_MASTER,
         "the token was not dropped: {next:?}"
     );
     assert!(next.start >= slot, "{next:?} came before the slot");
@@ -78,12 +77,12 @@ async fn expect_token_dropped(bus: &mut Bus, heard: Instant) {
 #[tokio::test(start_paused = true)]
 async fn u3_unexpected_frame_in_wait_for_reply_drops_the_token() {
     for (frame_type, destination) in [
-        (FrameType::BACnetDataNotExpectingReply, 2),
-        (FrameType::Token, 3),
-        (FrameType::PollForMaster, 3),
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 2),
+        (FrameType::TOKEN, 3),
+        (FrameType::POLL_FOR_MASTER, 3),
     ] {
         let (mut bus, _request) = waiting_for_reply().await;
-        let data: &[u8] = if frame_type == FrameType::BACnetDataNotExpectingReply {
+        let data: &[u8] = if frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY {
             &[1, 0, 0x20]
         } else {
             &[]
@@ -103,7 +102,7 @@ async fn u3_invalid_frame_in_wait_for_reply_passes_the_token() {
         let (mut bus, _request) = waiting_for_reply().await;
         let heard = bus.send_raw(&invalid);
         let token = bus.next().await;
-        assert_eq!((token.frame_type, token.destination), (FrameType::Token, 4));
+        assert_eq!((token.frame_type, token.destination), (FrameType::TOKEN, 4));
         assert!(token.start >= heard + bus.turnaround);
         assert!(token.start <= heard + bus.turnaround + TICK, "{token:?}");
         let invalid_frames = bus.transport.diagnostics().snapshot().mac.parser_errors;
@@ -115,11 +114,11 @@ async fn u3_invalid_frame_in_wait_for_reply_passes_the_token() {
 /// Station 3, with no known successor, given the token: it polls 4.
 async fn polling() -> (Bus, Sent) {
     let mut bus = Bus::start(config(3, 7)).await;
-    bus.send(FrameType::Token, 3, 6, &[]);
+    bus.send(FrameType::TOKEN, 3, 6, &[]);
     let poll = bus.next().await;
     assert_eq!(
         (poll.frame_type, poll.destination),
-        (FrameType::PollForMaster, 4)
+        (FrameType::POLL_FOR_MASTER, 4)
     );
     (bus, poll)
 }
@@ -130,13 +129,13 @@ async fn polling() -> (Bus, Sent) {
 #[tokio::test(start_paused = true)]
 async fn u3_unexpected_frame_in_poll_for_master_drops_the_token() {
     for (frame_type, destination) in [
-        (FrameType::BACnetDataNotExpectingReply, BROADCAST_MAC),
-        (FrameType::ReplyToPollForMaster, 2),
-        (FrameType::Token, 3),
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, BROADCAST_MAC),
+        (FrameType::REPLY_TO_POLL_FOR_MASTER, 2),
+        (FrameType::TOKEN, 3),
     ] {
         let (mut bus, poll) = polling().await;
         bus.until(poll.end + bus.turnaround).await;
-        let data: &[u8] = if frame_type == FrameType::BACnetDataNotExpectingReply {
+        let data: &[u8] = if frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY {
             &[1, 0, 0x20]
         } else {
             &[]
@@ -164,7 +163,7 @@ async fn u3_invalid_frame_in_poll_for_master_polls_on() {
         let next = bus.next().await;
         assert_eq!(
             (next.frame_type, next.destination),
-            (FrameType::PollForMaster, 5)
+            (FrameType::POLL_FOR_MASTER, 5)
         );
         assert!(next.start >= heard + bus.turnaround);
         assert!(next.start <= heard + bus.turnaround + TICK);
@@ -193,9 +192,9 @@ async fn u4_turnaround_separates_every_frame() {
     bus.transport.send_broadcast(&[1, 0, 0x02]).await.unwrap();
     let mut last_end = bus.return_token(&token, 4).await;
     for expected in [
-        FrameType::BACnetDataNotExpectingReply,
-        FrameType::BACnetDataNotExpectingReply,
-        FrameType::Token,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        FrameType::TOKEN,
     ] {
         let sent = bus.next().await;
         assert_eq!(sent.frame_type, expected, "{sent:?}");
@@ -222,7 +221,7 @@ async fn u4_turnaround_separates_every_frame() {
 async fn u6_broadcast_data_expecting_reply_is_delivered() {
     let mut bus = Bus::start(config(3, 7)).await;
     let heard = bus.send(
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         BROADCAST_MAC,
         4,
         &[1, 0x04, 0x77],

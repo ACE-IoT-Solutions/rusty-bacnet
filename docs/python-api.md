@@ -2,9 +2,9 @@
 
 `rusty_bacnet` provides Python bindings for the Rust BACnet protocol stack via PyO3. All I/O operations are async (`asyncio`-based).
 
-This reference follows the fork's development branch. Fork releases use the
-`ace-rusty-bacnet` distribution in the private ACE index while retaining the
-`rusty_bacnet` import; see the [installation guidance](../README.md#install).
+This reference follows the `dev` branch. At the `v0.13.0` tag it describes the
+[published 0.13.0 package](https://pypi.org/project/rusty-bacnet/0.13.0/), which
+the site's tutorials also target; see the [installation guidance](../README.md#install).
 Changes merged after the release wait in [`changelog.d/`](../changelog.d/); to
 use them, follow [Build from source](../README.md#build-from-source).
 
@@ -34,10 +34,10 @@ that yields a notification or raises `StopAsyncIteration` when the channel close
 
 ## Installation
 
-Install the latest private fork package with:
+Install the published 0.13.0 package with:
 
 ```bash
-pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ ace-rusty-bacnet
+pip install "rusty-bacnet==0.13.0"
 ```
 
 Wheels cover CPython 3.11 to 3.14 on Linux (glibc 2.17 or newer; x86_64,
@@ -471,7 +471,7 @@ Read-only device information from WhoIs/IAm discovery (frozen).
 | Property | Type | Description |
 |----------|------|-------------|
 | `.object_identifier` | `ObjectIdentifier` | Device object ID |
-| `.mac_address` | `list[int]` | Raw MAC bytes |
+| `.mac_address` | `bytes` | The MAC the I-Am came from: IPv4 and port on B/IP, the 3-octet VMAC on B/IPv6, the station on MS/TP |
 | `.max_apdu_length` | `int` | Max APDU the device accepts |
 | `.segmentation_supported` | `Segmentation` | Segmentation capability |
 | `.vendor_id` | `int` | Vendor identifier |
@@ -535,10 +535,13 @@ client = BACnetClient(
     port=47808,                  # UDP port
     broadcast_address="255.255.255.255",
     apdu_timeout_ms=6000,
-    transport="bip",             # "bip", "ipv6", or "sc"
+    transport="bip",             # "bip", "ipv6", "sc" or "mstp"
     share_port_by_address=False, # Keyword-only; B/IP, see "Sharing a port by address"
+    bbmd=None,                   # Keyword-only; B/IP, a Bbmd: see "BBMD and foreign-device modes"
+    foreign_device=None,         # Keyword-only; B/IP, a ForeignDevice; not with bbmd
     # IPv6 options:
     ipv6_interface=None,         # IPv6 selected local address; None means ::
+    ipv6_device_instance=None,   # Keyword-only; 0..=4194303 for the VMAC of that instance, None for random
     # SC options:
     sc_hub=None,                 # WebSocket hub URL
     sc_vmac=None,                # 6-byte VMAC
@@ -549,6 +552,7 @@ client = BACnetClient(
     sc_heartbeat_interval_ms=None,  # 3000..=300000 ms when configured
     sc_heartbeat_timeout_ms=None,   # must be greater than interval
     min_request_interval_ms=0,   # Keyword-only; least ms between confirmed requests to one destination
+    reconnect=None,              # Keyword-only; SC only, a ScReconnect configuration
 )
 ```
 
@@ -592,23 +596,135 @@ on `0.0.0.0` at that port. See
 [Sharing a port by address](rust-api.md#sharing-a-port-by-address) for each
 OS.
 
+### BBMD and foreign-device modes
+
+A B/IP `BACnetClient`, `BACnetServer` or `BipEndpoint` is a normal node by
+default. The keyword-only `bbmd=` makes it a BBMD, and `foreign_device=`
+registers it with a BBMD on another subnet as a foreign device, so its
+broadcasts, Who-Is among them, reach that subnet (#938). Each takes a typed
+object; giving both, or either on another transport, raises `ValueError`.
+
+```python
+from rusty_bacnet import BACnetClient, BACnetServer, Bbmd, ForeignDevice
+
+# A BBMD that forwards to the BBMD of another subnet and takes foreign devices.
+server = BACnetServer(
+    1234, interface="192.168.1.10", broadcast_address="192.168.1.255",
+    bbmd=Bbmd(["10.0.5.2:47808"], accept_foreign_devices=True),
+)
+
+# A client behind NAT, registered with that BBMD for ten minutes and
+# renewing every 20 seconds so the NAT mapping the BBMD's replies use stays open.
+async with BACnetClient(port=0, foreign_device=ForeignDevice(
+        "203.0.113.7:47808", ttl=600, renewal=20)) as client:
+    await client.who_is()
+    status = await client.foreign_registration()
+```
+
+`ForeignDevice(bbmd, ttl=300, renewal=None)` takes the BBMD as `"ip"` or
+`"ip:port"` (port 47808 by default), how many seconds the BBMD keeps the entry (at least
+1), and the seconds between registrations, at least 0.1 and less than
+`ttl`; `None` renews at half the TTL. The owner registers when it starts and renews
+on its own; its first broadcasts wait for the first registration to be
+answered.
+
+`Bbmd(bdt=None, *, accept_foreign_devices=False, management_acl=None,
+bdt_persist_path=None)` takes the BDT as `"ip:port"` rows (forwarded to by
+unicast) or `("ip:port", "mask")` pairs; the BBMD's own row is added when
+missing. Without `accept_foreign_devices=True` every registration is
+refused, and `management_acl` lists the addresses allowed to delete Foreign
+Device Table entries (none by default). `bdt_persist_path` names a file
+holding a BDT, 10 octets per row, to start with instead when it loads;
+Write-BDT from the network is always refused. Both classes check their
+values when built and raise `ValueError`, or `OverflowError` for an integer
+out of range (a `ttl` outside 1 to 65535, say).
+
+`foreign_registration()`, on all three owners, returns how the registration
+is going without sending anything: `registered`, `lease_remaining` and
+`next_attempt_in` in seconds (or None), the latest attempt's `last_bbmd`,
+`last_result` (the BVLC result code, 0x0030 when the BBMD refused it) and
+`last_outcome` (`"pending"`, `"accepted"`, `"refused"`, `"timed_out"`,
+`"local_error"` or `"cancelled"`), and the `attempts`, `accepted`, `refused`,
+`lapses` (leases that ran out with no newer success) and `renewal_hints`
+(the BBMD's Distribute-Broadcast-To-Network NAKs, each bringing the next
+attempt forward) totals. The latest attempt clears when the owner stops; the
+totals stay. It raises `RuntimeError` before start and after stop. See
+[B/IP modes on the builders](rust-api.md#bip-modes-on-the-builders) for the
+Rust side.
+
 ### MS/TP serial ports
 
 `transport="mstp"` takes the keyword-only `serial_port` (required),
 `mstp_baud` (9600, 19200, 38400, 57600, 76800 or 115200; default 38400),
 `mstp_mac` (default 1), `mstp_max_master` (default 127),
-`mstp_max_info_frames` (default 1) and `mstp_extended_frames` (default False).
-`BACnetServer` takes the same options, and `MstpEndpoint` its own
-`serial_port` and all of them but `mstp_extended_frames`.
+`mstp_max_info_frames` (default 1), `mstp_extended_frames` (default False),
+`mstp_echo` (default False), `mstp_echo_grace_ms` (default None),
+`mstp_transmit_latency_pad_ms`, `mstp_usage_timeout_ms` and
+`mstp_reply_timeout_ms` (each default None).
+`BACnetServer` and `MstpEndpoint` take the same options; `MstpEndpoint` takes
+`serial_port` through `mstp_max_info_frames` by position or keyword, and the
+others by keyword only.
 `mstp_extended_frames=True` turns on extended frames (Types 32 and 33), which
 carry NPDUs of up to 1497 octets, so the link carries APDUs of up to 1476
 instead of 480; without it, an extended frame the link hears counts as an
 invalid frame. Routers need them (Clause 9.3); for a device they are
-optional. The link runs the same Clause 9 master
-core as the Rust transport. The port is taken not to hear its own frames
-(transceiver receiver off while transmitting); an adapter that echoes them can
-be declared only from Rust for now (`TokioSerialPort::with_echo`, see
-[Echo](rust-api.md#echo)).
+optional, and every node on the link must take them. `MstpEndpoint` checks
+its `max_apdu` against the link: up to 480 by default, up to 1476 with
+`mstp_extended_frames=True`, and a `ValueError` beyond. The memory cost is in
+the transmit queues each port reserves: 768 KiB of slots with extended frames
+against 272 KiB without, which become resident as the queues fill. The link
+runs the same Clause 9 master core as the Rust transport.
+
+The three timing options are in milliseconds, and None keeps the transport's
+own value (see [MS/TP](rust-api.md#mstp-serial-rs-485) for why).
+`mstp_transmit_latency_pad_ms` is added to a frame's time on the wire when
+the port can't say when its last octet left: 4 ms on Windows, whose serial
+port has no drain and is usually a USB adapter, and 0 elsewhere; raise it,
+up to 15 ms, for a slower adapter or driver. `mstp_usage_timeout_ms` (20 to
+35, default 35) is how long the station waits to hear its successor or a
+polled station, and `mstp_reply_timeout_ms` (255 to 300, default 300) how
+long it waits for an answer to a request; the defaults leave room for a USB
+adapter's receive latency. A value outside those ranges raises `ValueError`
+at start, before the port opens (`MstpEndpoint` raises it when it is built);
+a negative one raises `OverflowError` when the object is built.
+
+The port is taken not to hear its own frames (transceiver receiver off while
+transmitting). `mstp_echo=True` declares an adapter that returns every octet
+the station sends, as a transceiver whose receiver stays on does: the link
+then drops that echo instead of taking its own frames for another station's
+traffic, as `TokioSerialPort::with_echo` does from Rust (see
+[Echo](rust-api.md#echo)). `mstp_echo_grace_ms` is how long after a frame its
+echo may still be arriving, 40 ms when not given, enough for a USB adapter's
+receive latency. A grace of 0, or one given without `mstp_echo=True`, raises
+`ValueError` at start, before the port opens (`MstpEndpoint` raises it when
+it is built); a negative grace, or one above 4294967295, raises
+`OverflowError` when the client, server or endpoint is built.
+
+```python
+from rusty_bacnet import BACnetClient
+
+client = BACnetClient(
+    transport="mstp",
+    serial_port="/dev/ttyUSB0",
+    mstp_baud=38400,
+    mstp_mac=3,
+    mstp_echo=True,          # this adapter echoes what it sends
+    mstp_echo_grace_ms=60,   # its echo can lag a frame by up to 60 ms
+)
+```
+
+```python
+from rusty_bacnet import MstpEndpoint
+
+endpoint = MstpEndpoint(
+    device_instance=3001,
+    serial_port="/dev/ttyUSB0",
+    mstp_mac=3,
+    max_apdu=1476,               # needs extended frames on the link
+    mstp_extended_frames=True,
+    mstp_echo=True,
+)
+```
 
 `rusty_bacnet.list_serial_ports()` returns the names of the serial ports the
 operating system reports, to pass as `serial_port`: macOS lists them through
@@ -625,6 +741,18 @@ print(rusty_bacnet.list_serial_ports())  # ['/dev/ttyUSB0'], ['/dev/cu.usbserial
 
 ### Lifecycle
 
+Entry holds exclusive lifecycle ownership while building and publishing the
+client. Entering an already running or closing client raises `RuntimeError`.
+Cancelling pending entry drops its unfinished connection setup. A concurrent
+`stop()` waits for entry to complete or be cancelled, then closes the client.
+
+`stop()` and context exit refuse new operations, let existing native operations
+finish or be cancelled, and join transport teardown. Operations remain concurrent
+while the client is running. Close has no universal deadline: draining depends on
+the outstanding requests. Cancelling the close Future leaves its owned shutdown
+task running; await `stop()` again to join that same teardown. Close errors are
+reported to the caller, and later close can retry. Repeated close is safe.
+
 ```python
 # Preferred: async context manager
 async with BACnetClient() as client:
@@ -634,12 +762,157 @@ async with BACnetClient() as client:
 await client.stop()
 ```
 
+### SC reconnect
+
+`reconnect=None` keeps automatic redial disabled. Pass a frozen `ScReconnect`
+object to an SC client to retry after connection loss:
+
+```python
+from rusty_bacnet import BACnetClient, ScReconnect
+
+client = BACnetClient(
+    transport="sc", sc_hub="wss://hub.example.com/bacnet",
+    sc_vmac=node_vmac, sc_device_uuid=persistent_node_uuid,
+    sc_ca_cert="site-ca.pem", sc_client_cert="node.pem", sc_client_key="node.key",
+    reconnect=ScReconnect(
+        initial_delay_ms=10_000, max_delay_ms=600_000, max_retries=10,
+    ),
+)
+```
+
+All three `ScReconnect` arguments are keyword-only and have the defaults shown.
+The initial delay is the minimum reconnect sleep; exponential backoff and jitter
+stay within the configured minimum and maximum. Delays must be positive,
+`initial_delay_ms <= max_delay_ms`, and the maximum must not exceed 86,400,000 ms.
+Invalid settings raise `ValueError`; negative or overflowing unsigned integers
+raise `OverflowError`. These checks do not qualify deployment timing.
+
+`max_retries=0` still permits the initial connection and disables active-hub
+retries after loss. Passing a `ScReconnect` object to a non-SC client raises `ValueError`.
+Retries reuse the loaded TLS trust and operational identity, VMAC, UUID and
+heartbeat settings; credential files are loaded at entry, not reread on each
+retry. A new connection must complete TLS and SC admission before service
+traffic resumes. Applications still handle request errors; reconnection does
+not guarantee that an interrupted operation completes.
+
+### Offline SC credential inspection
+
+`inspect_sc_pem(identity_pem, *, peer_trust_pem=None, private_key_pem=None,
+inspected_at_unix=None)` returns a frozen, owned report without opening a
+connection. `inspect_sc_pem_files` accepts explicit `str | os.PathLike[str]` paths
+and reads each selected file once. Reports contain fingerprints, bounded metadata,
+date and SAN/KU/EKU findings, key consistency and optional Unix mode observations.
+These are advisory observations and do not change startup acceptance. See
+[the bounds, error contract and examples](sc-offline-inspection.md).
+
+### SC peer certificates
+
+`await client.sc_peer_info()` observes the accepted active Hub without another
+connection. It returns a frozen `ScPeerInfo`, or `None` while disconnected or
+reconnecting. A non-SC, stopped or closing client raises `RuntimeError`. The
+result and its nested values own data only; keeping them after close keeps no
+client or socket alive.
+
+```python
+peer = await client.sc_peer_info()
+if peer is not None:
+    print(peer.peer_address, peer.connection_id, peer.handshake_kind)
+    print(peer.leaf_sha256.hex())  # SHA-256 of the exact leaf DER
+    leaf = peer.certificates[0]
+    if leaf.metadata is not None:
+        print(leaf.metadata.subject, leaf.metadata.issuer)
+        print(leaf.metadata.not_after_unix)  # signed Unix seconds
+    # leaf.der explicitly exports original bytes; normal repr omits them.
+```
+
+`certificates` is an ordered tuple of `ScPeerCertificate` objects, leaf first.
+This is the session-associated certificate list, which can omit trust anchors
+or include extra certificates outside the verified path. `handshake_kind` is
+`"full"`, `"resumed"`, or `"unknown"`. Resumed sessions may reuse cached
+certificates without a new certificate exchange or fresh verification.
+`protocol_version` and `cipher_suite` contain the negotiated rustls names (or
+`None` if unavailable). `server_name` is the intended URI host; `peer_address`
+is the actual remote TCP endpoint, which can be a proxy.
+
+`connection_id` is process-local and changes on every physical dial, even for
+an unchanged certificate or resumed TLS. SC retries reusing the same socket
+retain it. `observed_at_unix` records when that socket was observed as SC
+Connected, not when its certificate was validated. The returned value is
+historical; read again to observe a new accepted connection. Failed restore
+candidates do not replace the active Hub observation.
+
+The shared Rust parser supplies subject, issuer, signed Unix not-before and
+not-after dates, public-key and signature algorithm OIDs. Names and OIDs are
+ASCII escaped and bounded to 1024 bytes each; `text_truncated` signals any
+truncation. `metadata=None` with `inspection_error="certificate_parse_failed"`
+means display parsing failed, while original DER remains available. Parsing
+never changes TLS acceptance. SAN, KU and EKU interpretation is outside this
+API. The underlying TLS implementation bounds the certificate message to 64 KiB.
+
+Certificate display does not authorize a VMAC/UUID, identify a relayed BACnet
+origin, establish current validity, or report a revocation check. Existing
+WebPKI path building and URI-name checks are unchanged; this is not a claim of
+complete Annex AB certificate-profile conformance. Credential files remain
+loaded at client entry. Recreate the client to load replacement material, then
+inspect its newly accepted connection.
+
+Rust callers use `client.transport().hub_peer_info().await` for a concrete SC
+client, or match `AnyTransport::Sc(transport)` and call the same method. The
+returned `ScHubPeerInfo` exposes `tls()` and `observed_at()`; `TlsWebSocket::peer_info()`
+provides the lower-level TLS observation before SC admission.
+
+When initial SC startup rejects a TLS peer, `BacnetTransportError` can carry a
+frozen `sc_untrusted_peer: ScUntrustedPeerInfo | None`. It contains certificates
+observed in that actual failed outbound attempt, without another connection:
+
+```python
+from rusty_bacnet import BacnetTransportError
+
+try:
+    await client.__aenter__()  # client already configured for SC
+except BacnetTransportError as error:
+    print(error)  # original failure remains the reason for rejection
+    untrusted = error.sc_untrusted_peer
+    if untrusted is not None:
+        for certificate in untrusted.certificates:
+            if certificate.metadata is not None:
+                print("UNTRUSTED", certificate.metadata.subject,
+                      certificate.metadata.issuer, certificate.metadata.not_after_unix)
+            # certificate.der explicitly exports the observed, untrusted bytes.
+    raise
+```
+
+This value is separate from `ScPeerInfo`: it has no accepted connection ID,
+authenticated identity or verified-chain claim. Its `peer_address` is the
+attempt's TCP endpoint and `server_name` is the intended URI host. Its frozen
+certificate tuple uses the same bounded optional metadata as successful
+observations and owns no socket or client. Normal representations omit the
+captured bytes and parsed names; the original TLS error text is unchanged.
+
+`None` means unavailable at the verifier observation point. It can occur before
+TLS receives certificates, when protocol processing rejects a message earlier,
+or on resumption; it does not prove no certificate was sent. Non-TLS transport
+errors also have `sc_untrusted_peer=None`. This API covers returned outbound
+dial errors, including initial client entry; it does not retain a history of
+background reconnect failures or inbound rejected clients. Rust callers use
+`ScConnectError::from_error(&error).and_then(|e| e.untrusted_peer_info())`.
+
 ### Address Format
 
 All `address` parameters accept:
 - IPv4: `"192.168.1.100:47808"` (4-byte IP + 2-byte port)
-- IPv6: `"[::1]:47808"` (16-byte IP + 2-byte port)
-- Hex MAC: `"01:02:03:04:05:06"` (raw bytes, for SC/Ethernet)
+- B/IPv6: `"bip6:1234"`, the VMAC of device instance 1234 (0 to 4194303,
+  Clause H.7.2), or `"bip6:0x40ABCD"`, any 3-octet VMAC. A B/IPv6 node is
+  addressed by its VMAC (Clause U.1.3); `"bip6:0x0004D2"` is the form
+  `resolve_vmac` and `BACnetServer.local_address()` return. Only a
+  `transport="ipv6"` client takes it; any other raises `ValueError`.
+- Hex MAC: `"01:02:03:04:05:06"` (raw bytes, for SC/Ethernet, or `"00:04:d2"`
+  for a B/IPv6 VMAC)
+- MS/TP: `"7"` or `"mstp:7"` (a station, 0 to 254)
+
+An IPv6 address in brackets, `"[::1]:47808"`, raises `ValueError`: it says
+where a node is, not which VMAC it has. Find the VMAC with
+[`resolve_vmac`](#resolve_vmacaddress---str).
 
 ---
 
@@ -923,6 +1196,30 @@ Reset the discovered devices table.
 
 ```python
 await client.clear_devices()
+```
+
+#### `resolve_vmac(address) -> str`
+
+Find the VMAC of the B/IPv6 node at `address`, written `"[ip]:port"`, and
+return it as `"bip6:0x0004D2"`, the form every other method takes. A B/IPv6
+node is addressed by its VMAC, not its IPv6 address (Clause U.1.3), so this
+is how an IPv6 address becomes a target. It sends the node a
+Virtual-Address-Resolution by unicast, up to three times a second apart
+(Clause U.5), unless the client already knows which VMAC is at that address.
+The request itself is unicast, so it reaches a node that multicast doesn't,
+but a client without `ipv6_device_instance` still needs a multicast-capable
+link to start (see [BACnet/IPv6](#bacnetipv6)). A link-local address may carry
+its interface as a numeric zone, `"[fe80::1%3]:47808"`.
+
+It needs a started client with `transport="ipv6"` (`RuntimeError` otherwise),
+and any other address form raises `ValueError`. When nothing answers within
+three seconds, or the node refuses, it raises `BacnetTransportError` (errno
+`ETIMEDOUT` for the timeout).
+
+```python
+async with BACnetClient(transport="ipv6", port=0, ipv6_device_instance=4321) as client:
+    vmac = await client.resolve_vmac("[2001:db8::10]:47808")  # "bip6:0x0004D2"
+    name = await client.read_property(vmac, device, PropertyIdentifier.OBJECT_NAME)
 ```
 
 #### `discover(timeout_ms=3000, low_limit=None, high_limit=None) -> list[DiscoveredDevice]`
@@ -1838,163 +2135,55 @@ await client.who_am_i(260, "Controller-X", "SN-0001")
 
 ---
 
-## Reconciled targets, observation, and runtime
+## BACnetRouter
 
-The installed 0.11 surface includes `DirectTarget` and `RoutedTarget` for
-persisted RP/RPM/WP/WPM, file, device-management, and managed-COV operations.
-Routed targets retain DNET and the complete multi-byte DADR; direct targets
-retain non-default B/IP ports. Protocol failures use the typed
-`BacnetError` hierarchy rather than string matching.
-
-`BACnetClient.i_am_events()` and `apdu_events()` expose bounded iterators with
-lag reporting. I-Am events retain attachment, immediate peer, original
-Forwarded-NPDU source, BVLL function, raw MAC, and routed source provenance.
-The APDU observer is opt-in and passive: decode failures are projected as data,
-and observation cannot change admission, ACK policy, transaction correlation,
-or forwarding. `BbmdControl`, `BbmdSnapshot`, and the BVLL policy models expose
-live BDT/FDT management and counters. Custom BVLL callbacks are narrowing-only:
-a callback can deny traffic, but cannot override native validation, admission,
-capacity, rate, fanout, or amplification denials.
-
-`BACnetRuntime` owns a revisioned set of B/IP, MS/TP, and BACnet/SC
-attachments. It provides discovery, topology, batching, cache/scan,
-reconcile/rollback reports, health, passive COV/I-Am events, cancellation, and
-resource counters while delegating confirmed transactions to the shared client
-stack. Device aliases select only among currently observed attachment-qualified
-paths; they are not durable global identity resolution and can change after
-topology refresh. `BACnetRouter` and named `VirtualNetwork` instances provide
-bounded in-process routing fixtures without creating a physical data-link
-support claim.
-
-Runtime SC health is derived from the transport's latest connection state.
-`RuntimeScAttachment` requires a keyword-only `device_uuid` containing exactly
-16 nonzero bytes. This identity is caller-provisioned and must be persisted for
-the node's lifetime; it is independent from `attachment_id` and is validated
-before any hub dial.
-After all configured hubs are unavailable, the attachment reports `Failed`
-with `ScDisconnected`; successful failover remains `Running`. Health is a
-point-in-time signal, so rapid intermediate state transitions may coalesce.
-Cold start tries a configured failover when the primary cannot be reached, and
-device selection refreshes attachment health so a failed preferred path yields
-to an observed healthy alternative.
-
-### Mixed-transport `BACnetRouter`
-
-`BACnetRouter.from_ports()` accepts at least two frozen typed port
-configurations. The names below are provisional because the router team's
-referenced section 5.1 was not available in this repository:
+`BACnetRouter` composes two or more typed B/IP or BACnet/SC ports over the
+native 0.13 routing engine. Construction validates configuration without I/O;
+`start()` binds/dials every port and `stop()` joins the router tasks. Both
+awaitables return `None`, and a stopped router can be started again.
 
 ```python
-from rusty_bacnet import BACnetRouter, RouterBipPort, RouterScPort
+from rusty_bacnet import BACnetRouter, RouterBipPort
 
 router = BACnetRouter.from_ports([
-    RouterBipPort(
-        1001,
-        interface="127.0.0.1",
-        port=47808,
-        broadcast_address="127.0.0.1",
-    ),
-    RouterScPort(
-        2001,
-        primary_hub="wss://hub.example:47808",
-        local_vmac=b"\x02\x00\x00\x00\x00\x02",
-        device_uuid=persisted_device_uuid,  # exactly 16 bytes and not all zero
-        ca_cert="site-ca.pem",
-        client_cert="router.pem",
-        client_key="router.key",
-        failover_hub="wss://failover.example:47808",
-        reconnect_forever=True,
-        max_npdu_length=1497,
-        max_bvlc_length=5705,
-    ),
-], announce_interval_s=300)
-
+    RouterBipPort(100, interface="192.0.2.10", port=47808),
+    RouterBipPort(200, interface="198.51.100.10", port=47808),
+])
 await router.start()
-health = await router.port_health()
-routes = await router.routing_table()
+print(await router.local_address())
+print(await router.port_health())
+print(await router.routing_table())
 await router.stop()
 ```
 
-`RouterBipPort(network_number, interface="0.0.0.0", port=0xBAC0,
-broadcast_address="255.255.255.255", reuse_port=False)` validates both IPv4
-addresses. `reuse_port` remains accepted for 0.11 adaptor configuration
-compatibility; the 0.12 native transport automatically enables OS port sharing
-for every explicit nonzero port, so this value no longer changes socket setup.
-The 0.12 router binding supports B/IP and SC ports; the superseded fork-only
-virtual-network port is not exposed. Network numbers `0` and `65535`, duplicate
-network numbers, duplicate B/IP `(interface, port)` endpoints, and a port list
-shorter than two are rejected.
+`announce_interval_s`, when set, must be at least one second. Startup already
+announces every port. The interval repeats those announcements; an SC recovery
+also reannounces only that port through the native router's bounded send queue.
 
-`RouterScPort` requires a `wss://` primary hub, a non-reserved six-byte VMAC, a
-nonzero 16-byte device UUID, and nonempty CA/certificate/key paths. Its remaining
-keywords are `failover_hub=None`, `heartbeat_interval_ms=30000`,
-`heartbeat_timeout_ms=60000`, `reconnect_initial_delay_ms=10000`,
-`reconnect_max_delay_ms=600000`, `reconnect_max_retries=10`, and
-`reconnect_forever=False`, `max_npdu_length=1497`, and
-`max_bvlc_length=5705`. The NPDU limit must be in `1497..=61327`; the BVLC
-limit must cover that NPDU plus the 16-byte header and 4192 bytes of routed
-Data Options. With `reconnect_forever=True`, the SC transport alternates
-eligible primary/failover attempts with exponential backoff capped by
-`reconnect_max_delay_ms`; a hub result that forbids retry still terminates
-recovery. A zero `reconnect_max_retries` retains its existing bounded meaning
-unless `reconnect_forever` is true.
+`RouterScPort` requires a `wss://` primary hub, non-reserved six-byte VMAC,
+nonzero 16-byte durable device UUID, and explicit mutual-TLS credential paths.
+The current upstream transport fixes local receive capacity at 1497-octet NPDU
+and 5705-octet BVLC values. Other values and `failover_hub` are rejected: this
+binding does not claim cold-start TLS failover until upstream can preserve the
+active-hub identity across that path. For compatibility with the earlier
+Python router, `reconnect_max_retries=0` is rejected unless
+`reconnect_forever=True`; the latter maps to the upstream finite retry counter's
+maximum value.
 
-`port_health()` returns immutable entries in configuration order. Each entry
-has `config_index`, `network_number`, `transport_kind`, `identity`, `state`,
-`detail`, `active_hub`, `last_error`, `attempt`, and `since`. States are
-`"Down"`, `"Connecting"`, `"Reconnecting"`, `"Up"`, and `"Failed"`;
-`since` is elapsed seconds for the current operational connection. B/IP
-transports report static `Up`; SC health follows its connection and
-recovery tasks, including terminal failure.
-
-`routing_table()` returns immutable entries sorted by `network_number`, detached
-from the native table. Fields are `network_number`, `port_index`,
-`directly_connected`, `next_hop_mac`, `reachability` (`"Reachable"`, `"Busy"`,
-or `"Unreachable"`), `last_seen_age_s`, `busy_remaining_s`, `flap_count`, and
-`last_port_change_age_s`. Health and route methods preserve their final snapshot
-after `stop()`; before a successful start they return an empty list.
-
-The reconciled 0.12 binding exposes `BACnetRouter.from_ports()` rather than the
-superseded fork-only virtual-network constructor. Its optional positive,
-finite `announce_interval_s` keyword repeats I-Am-Router-To-Network
-advertisements; `None` retains startup-only periodic behavior. A port recovery
-to `Up` re-announces on that port even when no interval is configured.
-Oversize-NPDU rejection is active in the native router, while its
-`oversize_drops` counter is not yet part of the Python surface.
-
-This is an intentional pre-1.0 API removal. Code using
-`BACnetRouter(bip_network, virtual_ports, ...)`, `RouterVirtualPort`, or the
-old per-port forwarding counters must migrate to `from_ports()` with
-`RouterBipPort` and `RouterScPort`, then use `port_health()` and
-`routing_table()` for operational state. No compatibility constructor is
-provided on the 0.12 line.
-
-BACnet/SC Data Options are carried on SC-capable sends. At an SC-to-B/IP router
-boundary they are intentionally ignored by the B/IP egress transport because
-Annex J framing has no equivalent field; the NPDU itself is still forwarded.
-The current Rust mixed-transport tests do not turn that boundary behavior into
-a broader Data Options conformance claim. Installed-wheel coverage in
-`crates/rusty-bacnet/tests/test_sc_ip_router.py` exercises the routed read and
-hub-restart recovery path; W14 repeats that test from an installed Linux arm64
-wheel.
-
-The reconciliation runtime benchmark compares six sequential Python client
-reads with one six-property runtime batch using the same installed-wheel
-fixture. On the retained matched Linux arm64 runs, the old-local baseline and
-reconciled candidate show about 4.8x and 5.0x coarse-boundary advantages,
-respectively. Candidate throughput was 0.92% lower for sequential reads, 0.11%
-higher for gathered reads, and 2.69% higher for the coarse batch. These small
-descriptive differences do not establish improvement or equivalence. Raw
-artifacts, provenance, variance, cancellation, and resource observations are
-recorded in the upstream reconciliation evidence ledger.
-
----
+`port_health()` deliberately exposes only state upstream owns. A bound B/IP
+port is `Up`; SC maps its connection state to `Down`, `Connecting`, or `Up`.
+Legacy detail, active-hub, error, attempt, and elapsed fields remain empty for
+compatibility and are not retry telemetry. `routing_table()` returns detached,
+sorted route snapshots, so it never lends the live router lock to Python. After
+`stop()`, both methods return their last pre-stop snapshot; in particular, an
+`Up` health value is historical and does not assert that a stopped link remains
+available.
 
 ## BACnetServer
 
 The full server constructs its owned
 Device with the selected transport's stable local receive capacity: 1476 for
-B/IP, B/IPv6 and SC, or 480 for MS/TP. Device
+B/IP, B/IPv6 and SC, or 480 for MS/TP (1476 with `mstp_extended_frames=True`). Device
 `Max_APDU_Length_Accepted` and I-Am therefore match the effective server
 acceptance; negotiated SC egress does not change that declaration. This adds no
 Python capacity argument and does not rewrite application-owned Rust Devices.
@@ -2019,8 +2208,10 @@ server = BACnetServer(
     interface="0.0.0.0",
     port=47808,
     broadcast_address="255.255.255.255",
-    transport="bip",             # "bip", "ipv6", or "sc"
+    transport="bip",             # "bip", "ipv6", "sc" or "mstp"
     share_port_by_address=False, # keyword-only; B/IP, see "Sharing a port by address"
+    bbmd=None,                   # keyword-only; B/IP, see "BBMD and foreign-device modes"
+    foreign_device=None,         # keyword-only; B/IP; not with bbmd
     segmentation_supported=Segmentation.NONE, # keyword-only; full-server capabilities
     apdu_segment_timeout_ms=5000, # keyword-only; shared Device/runtime segment timeout
     # SC options same as BACnetClient
@@ -2481,8 +2672,8 @@ finally:
   **direct configured B/IP** Device binding, only on a `transport="bip"` server.
   It reuses the client address parser but requires exactly six bytes: four IPv4
   octets followed by two big-endian UDP port octets. IPv4 `"127.0.0.1:47808"` and
-  its equivalent colon-separated hex `"7f:00:00:01:ba:c0"` are accepted. IPv6
-  (18 bytes), MS/TP (one byte), and other incompatible lengths raise `ValueError`
+  its equivalent colon-separated hex `"7f:00:00:01:ba:c0"` are accepted. A
+  B/IPv6 VMAC (3 bytes), MS/TP (one byte), and other incompatible lengths raise `ValueError`
   before retaining a binding. Non-B/IP servers also raise `ValueError`, even for
   six-byte input. The shared parser's broader IPv6/hex/MS/TP grammar remains used
   by other APIs; it does not imply forwarding support here. Parsing is not
@@ -3433,25 +3624,31 @@ raw `add_network_port(network_type=...)` API is removed.
 
 ### Registered B/IP Network Port
 
-This receiving-port association remains a bounded single NORMAL B/IP profile. Local Network Number behavior is described below; complete Network Port conformance, BBMD/foreign-device registration authority and multiport routing remain outside this registration contract.
+A registered port follows its owner's B/IP mode (#939): `BACnet_IP_Mode` reads
+0 for a normal node, 1 for a foreign device and 2 for a BBMD (`bbmd=` and
+`foreign_device=`, see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes)),
+and a BBMD's port serves its live BDT and FDT, a foreign device's its BBMD and
+time-to-live. Local Network Number behavior is described below; complete
+Network Port conformance and multiport routing remain outside this
+registration contract.
 
 ### Local Network Number controls
 
-Three Python owners consume the two local nonrouter controls automatically, one per transport: `BACnetServer`, the endpoint classes and `BACnetClient`. `BACnetServer` and `BACnetClient` own them with `transport="bip"` (NORMAL B/IP), `"ipv6"` (normal multicast B/IPv6), `"sc"` and `"mstp"`; `BipEndpoint`, `ScEndpoint` and `MstpEndpoint` own them on their links. Python has no BBMD, foreign-device or Ethernet constructor, so the B/IP BBMD/foreign-device, B/IPv6 foreign-device and Ethernet paragraphs below describe Rust-only modes. A valid local unicast or broadcast What-Is-Network-Number receives a local-broadcast Network-Number-Is when the owner knows its number (Clauses 6.4.19–6.4.20). There is no proactive startup announcement: the Standard asks that of configured routers, not of every nonrouter node. An explicit registered Network Port with a nonzero configured number reports `CONFIGURED` and never replaces that number from an announcement. Zero starts `UNKNOWN`; an owner without registration also starts unknown, regardless of other declared objects.
+Three Python owners consume the two local nonrouter controls automatically, one per transport: `BACnetServer`, the endpoint classes and `BACnetClient`. `BACnetServer` and `BACnetClient` own them with `transport="bip"` (NORMAL B/IP), `"ipv6"` (normal multicast B/IPv6), `"sc"` and `"mstp"`; `BipEndpoint`, `ScEndpoint` and `MstpEndpoint` own them on their links. Python's B/IP owners take `bbmd=` and `foreign_device=` for those two modes; the B/IPv6 foreign-device and Ethernet paragraphs below describe Rust-only modes. A valid local unicast or broadcast What-Is-Network-Number receives a local-broadcast Network-Number-Is when the owner knows its number (Clauses 6.4.19–6.4.20). There is no proactive startup announcement: the Standard asks that of configured routers, not of every nonrouter node. An explicit registered Network Port with a nonzero configured number reports `CONFIGURED` and never replaces that number from an announcement. Zero starts `UNKNOWN`; an owner without registration also starts unknown, regardless of other declared objects.
 
 A valid local-broadcast announcement with flag zero updates an unknown/learned owner to `LEARNED`. Flag one sets `LEARNED_CONFIGURED` and takes precedence over all subsequent flag-zero announcements. Further flag-one announcements may replace that learned value, including conflicts; an equal value still upgrades its quality. Both learned qualities transmit flag zero in their own responses. Selected-object `Network_Number` and `Network_Number_Quality` reads use the same database-owned state. Configuration remains immutable, so a new registration resets the pair from configured provenance; a new unregistered runtime starts unknown. There is no persistence of learned state across constructing a new runtime. After stop, the object retains the last observed pair until reconstruction or a new registration.
 
 Routed controls, malformed payloads and unicast Network-Number-Is are ignored. A BBMD Forwarded-NPDU is a logical broadcast even when its UDP hop is unicast and remains eligible. Ignoring number zero, 65535 and flags outside zero/one is this implementation's validation policy, rather than an additional quoted Standard mandate. Conflicting announcements against a locally configured number produce a debug diagnostic without changing configuration.
 
-Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no Python foreign-device API, configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, alternate-sender compatibility, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. Rust MS/TP LoopbackSerial tests also cover the standalone client in both execution modes; see the MS/TP paragraph below.
+Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no Python B/IPv6 foreign-device API, configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, the refusal of another sender's Forwarded-NPDU in foreign mode, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. Rust MS/TP LoopbackSerial tests also cover the standalone client in both execution modes; see the MS/TP paragraph below.
 
 Once `BACnetClient` has learned its network's number, a device its table holds as routed through a network with that number is on the client's own network (#1358). `read_property_from_device`, `write_property_to_device` and the other `_from_device` and `_to_device` methods send to it as a local request: a unicast to the device's own address with no DNET, not through the router it was heard through. An answer from that address completes the request, and so does one a router relays back with that number as its SNET and that address as its SADR (#1465): network numbers are unique, so both name the same device. While the number is unknown, these requests go through the router as before.
 
 SC starts UNKNOWN with no configured SC Network Port API; unrelated configured objects provide no authority. SC logical broadcast is the BVLC broadcast destination VMAC. A direct unicast What-Is is valid, but its Number reply uses the Hub broadcast path, never the saved original-direct APDU response capability. Hub-relayed controls do not identify an originating TLS leaf; SC control-origin authorization remains separate (#518). A message from a direct-connection peer is never a logical broadcast, so it can ask but cannot teach.
 
-B/IP BBMD and configured foreign modes start UNKNOWN with no registered Network Port authority. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts structurally valid Forwarded-NPDU from alternate UDP senders under its existing compatibility policy and answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the existing periodic registration loop continues. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly alternate forwarding and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop. Broader shared-endpoint BBMD/foreign behavior remains experimental; these modes add no configured Network Port authority.
+B/IP BBMD and configured foreign-mode owners without a registered Network Port start UNKNOWN; a registered port in either mode reports its configured number as above. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop.
 
-B/IPv6 starts UNKNOWN with no configured IPv6 Network Port authority. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python foreign-device API.
+B/IPv6 starts UNKNOWN with no configured IPv6 Network Port authority. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python B/IPv6 foreign-device API.
 
 Linux Ethernet full servers and standalone Rust clients start UNKNOWN with no configured Ethernet Network Port authority. The AF_PACKET receive path admits only the bound MAC and all-FF broadcast, before UI, XID or TEST handling; only all-FF is a logical group. This is the local single-link admission policy, not an additional quoted Clause 7 mandate. Existing self-source refusal remains. Actual isolated Docker Ethernet tests independently inspect destination/source, 802.3 length, LLC bytes, exact learned reply flag zero and padding, and verify stop/drop raw-FD release plus canceled transport-stop resumption. No privileged host interface or physical LAN is involved. The [opt-in fixture](../crates/bacnet-integration-tests/tests/ethernet_network_numbers/README.md) requires Linux and CAP_NET_RAW and is excluded from ordinary CI. There is no Ethernet endpoint builder or Python Ethernet API in this slice.
 
@@ -3463,7 +3660,8 @@ Tests cover actual inbound BVLL controls through both B/IP owners and outgoing N
 
 
 `BipEndpoint(..., network_port_instance=2, registered_network_port=2)` explicitly
-associates its declared port 2 with one owned NORMAL B/IP transport. Omitting
+associates its declared port 2 with one owned B/IP transport, in normal mode or with
+`foreign_device=` or `bbmd=`. Omitting
 `registered_network_port` leaves the declaration unbound. Selection requires a
 concrete unicast `interface`, matching declared instances 1–255 and a matching
 configured IP/UDP snapshot; `port=0` is supported. The full server accepts the same
@@ -3473,8 +3671,8 @@ start. Declaring or adding an object alone never selects a live port.
 
 Successful start publishes actual announced IP/UDP/derived MAC and `APDU_Length` (399) = 1476.
 The selected configuration and Out_Of_Service are read-only while its lifetime
-lease survives; pending activation, BBMD/foreign modes, rebind and same-device
-multiport routing remain unsupported. Other configured rows remain unbound.
+lease survives; pending activation, rebind and same-device multiport routing
+remain unsupported. Other configured rows remain unbound.
 
 `BipEndpoint.local_address()` and `status()["local_address"]` report the same
 active announced address and actual ephemeral port for **all** active B/IP
@@ -3815,7 +4013,10 @@ counters[1]["failed_saves"]  # refused saves of forwarder 1's lists
 
 #### `local_address() -> str`
 
-Get the server's bound address after start.
+Get the server's bound address after start: `"ip:port"` on B/IP, the station
+on MS/TP and the colon-hex VMAC on SC. On B/IPv6 it is the VMAC peers address
+the server by, which is its device instance: `"bip6:0x0004D2"` for
+`device_instance=1234` (see [BACnet/IPv6](#bacnetipv6)).
 
 ```python
 addr = await server.local_address()  # "0.0.0.0:47808"
@@ -3983,7 +4184,9 @@ async with endpoint:
 
 `await endpoint.status()` returns a redacted snapshot (`is_running`,
 `device_instance`, `vendor_id`, `max_apdu`, `transport`, `local_address`,
-`active_leases`, plus policy counters). `local_address()` is `"ip:port"`
+`active_leases`, plus policy counters). `BipEndpoint` also takes `bbmd=` and
+`foreign_device=`, and reports a registration with `foreign_registration()`
+(see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes)). `local_address()` is `"ip:port"`
 (BIP), VMAC hex (SC), or station string (MS/TP). Roles expose no callbacks;
 the client initiates `read_property`, `read_range` and `read_property_multiple`; concurrent use is
 `asyncio.gather` over these reads plus
@@ -4217,8 +4420,6 @@ hub = ScHub(
     probe_scan_interval_ms=30000, probe_idle_age_ms=60000,
     probe_ack_age_ms=5000, probe_send_budget_ms=5000,
     relay_send_budget_ms=5000,            # each transit relay acquisition + send
-    max_npdu_length=1497,                 # advertised/enforced receive NPDU
-    max_bvlc_length=5705,                 # header + NPDU + routed Data Options
     broadcast_sender_burst=1024, broadcast_sender_per_second=128,
     broadcast_global_burst=4096, broadcast_global_per_second=512,
 )
@@ -4257,12 +4458,6 @@ retract buffered bytes. Healthy broadcast recipients progress independently.
 Probe, control, cleanup and graceful-shutdown policies remain separate. The
 pre-1.0 unicast-only keyword is removed without an alias; use `relay_send_budget_ms`.
 Outcome counters retain their documented unicast-only scope.
-
-`max_npdu_length` and `max_bvlc_length` are advertised in Connect-Accept and
-also bound WebSocket/BVLC and NPDU ingress. The NPDU value must be in
-`1497..=61327`; the BVLC value must be at least `max_npdu_length + 4208` so an
-SC router can forward the standard's minimum 4192-byte Data Options field.
-The same defaults and validation apply to `RouterScPort`.
 
 Probe and relay values are positive integers in milliseconds, at most
 `2**63 - 1` with platform monotonic representability also checked. Zero/excessive
@@ -4510,21 +4705,39 @@ frames. Incoming packets must belong to that interface and the selected unicast
 address or BACnet multicast group before they can populate the VMAC table or
 reach the application. Link-local addresses retain the interface zone internally;
 multicast scope does not make them routable beyond their link. There is no Python
-foreign-device entry point in this change.
+B/IPv6 foreign-device entry point in this change.
 
 Fresh installed Linux tests cover default and explicit ULA server Who-Is/I-Am and
 client discovery. macOS loopback covers transport multicast intake and
 unicast/control source preservation; Windows has compile evidence only. Full
 Annex U conformance and deployment-network reachability remain unqualified.
 
-```python
-# Client
-client = BACnetClient(
-    transport="ipv6",
-    ipv6_interface="::",
-    port=47808,
-)
+**Peers are named by VMAC.** On B/IPv6 the network and application layers
+address a node by its 3-octet VMAC, not its IPv6 address (Clause U.1.3), and a
+device's VMAC is its device instance (Clause H.7.2). So every `address`
+parameter takes `"bip6:1234"` (the VMAC of device 1234), `"bip6:0x40ABCD"` (any
+VMAC, such as a client's random one) or the raw hex `"00:04:d2"`, and
+`DiscoveredDevice.mac_address` and a COV notification's source MAC hold the
+3-octet VMAC. A bracketed `"[ip]:port"` raises `ValueError`; turn it into a
+VMAC once with [`resolve_vmac`](#resolve_vmacaddress---str). A `bip6:` address
+given to a client on another transport raises `ValueError` too. A send to a
+VMAC the client hasn't heard from yet first asks the link who has it, and
+fails after three seconds when nobody answers.
 
+**A server's VMAC is its `device_instance`**, so `local_address()` returns
+`"bip6:0x0004D2"` for instance 1234. The server checks at startup that no
+other node on its link and port answers for that VMAC, and `start()` fails if
+one does.
+
+**A client's VMAC comes from `ipv6_device_instance`** when you give it one.
+Give a client an instance to get a stable VMAC; without one it picks a random
+VMAC at each start, and that needs a multicast-capable link at start: the
+client must ask the link whether another node already has the random VMAC,
+and Linux loopback (`::1`) carries no multicast, so there `__aenter__` fails.
+A client with an instance, like a server, still checks for a duplicate where
+multicast works, but starts where it doesn't.
+
+```python
 # Server
 server = BACnetServer(
     device_instance=1234,
@@ -4533,7 +4746,25 @@ server = BACnetServer(
     ipv6_interface="::",
     port=47808,
 )
+await server.start()
+await server.local_address()  # "bip6:0x0004D2"
+
+# Client
+async with BACnetClient(transport="ipv6", ipv6_interface="::", port=47809,
+                        ipv6_device_instance=4321) as client:
+    vmac = await client.resolve_vmac("[2001:db8::10]:47808")  # "bip6:0x0004D2"
+    await client.read_property(vmac, device, PropertyIdentifier.OBJECT_NAME)
+    await client.read_property("bip6:1234", device, PropertyIdentifier.OBJECT_NAME)
 ```
+
+**Migrating from 0.12:** replace `"[ip]:port"` strings with a `bip6:` form or a
+`resolve_vmac` result, read `"bip6:0x…"` from an ipv6 server's
+`local_address()`, and rewrite stored 18-octet B/IPv6 MACs (recipients, COV
+subscriptions) as the peer's VMAC. `DiscoveredDevice.mac_address` and COV
+source MACs are now 3 octets on B/IPv6. Give each ipv6 server a device
+instance no other node on its link and port uses, since `start()` now fails
+on a duplicate, and give an ipv6 client `ipv6_device_instance` where the link
+has no multicast.
 
 ### BACnet/SC (Secure Connect)
 

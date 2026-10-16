@@ -140,7 +140,7 @@ impl Owner {
         let identity = identity();
         let db = identity.build_database().unwrap();
         if full {
-            let mut config = identity.server_config();
+            let mut config = crate::identity::server_config(&identity);
             config.registered_network_port = registered.then_some(port());
             Self::Server(Box::new(
                 bacnet_server::server::BACnetServer::start(
@@ -155,7 +155,7 @@ impl Owner {
             let mut builder =
                 crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
                     .role(SessionRole::ServerOnly)
-                    .identity(identity)
+                    .device(identity)
                     .database(db)
                     .device_writes(Arc::new(|_| true));
             if registered {
@@ -506,7 +506,7 @@ async fn registered_port_successful_audit_uses_concrete_targets_per_property() {
     reporter.set_auditable_operations(operations).unwrap();
     let reporter_oid = reporter.object_identifier();
     db.add(Box::new(reporter)).unwrap();
-    let mut config = id.server_config();
+    let mut config = crate::identity::server_config(&id);
     config.registered_network_port = Some(port());
     config.audit_reporters = Some(bacnet_server::server::AuditReportersConfig {
         reporters: vec![reporter_oid],

@@ -58,7 +58,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// [`MstpCounters::expired_requests`].
     ///
     /// A data answer longer than this station sends
-    /// ([`MstpCoreConfig::max_npdu_length`]) is refused with
+    /// ([`MstpCoreConfig::max_npdu`]) is refused with
     /// [`CoreError::ReplyOversize`]. With extended frames on, one of 502
     /// octets or more goes out as BACnet Extended Data Not Expecting Reply
     /// (Type 33), whatever the type of the request.
@@ -68,7 +68,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         decision: ReplyDecision<'_>,
         now: Instant,
     ) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         let request = self.pending_request.ok_or(CoreError::NoPendingRequest)?;
         if request.id != id {
             return Err(CoreError::StaleRequest);
@@ -81,19 +81,17 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             ReplyDecision::Data(_) if now >= request.decide_by => {
                 return Err(CoreError::RequestExpired);
             }
-            ReplyDecision::Data(data) if data.len() > self.config.max_npdu_length() => {
+            ReplyDecision::Data(data) if data.len() > self.config.max_npdu() => {
                 return Err(CoreError::ReplyOversize {
                     length: data.len(),
-                    maximum: self.config.max_npdu_length(),
+                    maximum: self.config.max_npdu(),
                 });
             }
             ReplyDecision::Data(data) if data.len() > MAX_STANDARD_MPDU_DATA => {
-                (FrameType::BACnetExtendedDataNotExpectingReply, data)
+                (FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY, data)
             }
-            ReplyDecision::Data(data) => (FrameType::BACnetDataNotExpectingReply, data),
-            ReplyDecision::Postponed | ReplyDecision::Cancelled => {
-                (FrameType::ReplyPostponed, &[][..])
-            }
+            ReplyDecision::Data(data) => (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, data),
+            ReplyDecision::Postponed => (FrameType::REPLY_POSTPONED, &[][..]),
             ReplyDecision::Abandoned => {
                 self.pending_request = None;
                 return self.enter_idle(now);

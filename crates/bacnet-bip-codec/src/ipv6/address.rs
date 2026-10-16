@@ -36,11 +36,13 @@ pub struct Bip6Address {
 
 impl Bip6Address {
     /// Construct an address.
+    #[must_use]
     pub const fn new(ip: Ipv6Addr, port: u16) -> Self {
         Self { ip, port }
     }
 
     /// The address's 18 wire octets: the IPv6 address, then the port.
+    #[must_use]
     pub const fn to_octets(self) -> [u8; BIP6_ADDRESS_LENGTH] {
         let mut octets = [0; BIP6_ADDRESS_LENGTH];
         let (ip, port) = octets.split_at_mut(IPV6_LENGTH);
@@ -50,6 +52,7 @@ impl Bip6Address {
     }
 
     /// The address 18 wire octets hold.
+    #[must_use]
     pub const fn from_octets(octets: [u8; BIP6_ADDRESS_LENGTH]) -> Self {
         let mut ip = [0; IPV6_LENGTH];
         ip.copy_from_slice(octets.split_at(IPV6_LENGTH).0);
@@ -112,11 +115,13 @@ pub struct Bip6Vmac([u8; VMAC_LENGTH]);
 
 impl Bip6Vmac {
     /// The VMAC these three octets spell.
+    #[must_use]
     pub const fn new(octets: [u8; VMAC_LENGTH]) -> Self {
         Self(octets)
     }
 
     /// The three wire octets.
+    #[must_use]
     pub const fn octets(self) -> [u8; VMAC_LENGTH] {
         self.0
     }

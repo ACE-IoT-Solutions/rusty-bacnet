@@ -7,6 +7,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         &self.local_mac
     }
 
+    /// The transport the server's network layer runs on, for its
+    /// transport-specific state: a B/IPv6 server's `local_address()`, which
+    /// a peer turns into this server's VMAC with `resolve_virtual_address`,
+    /// or a transport's counters. `None` once the server no longer holds its
+    /// network layer.
+    pub fn transport(&self) -> Option<&T> {
+        self.network.as_deref().map(NetworkLayer::transport)
+    }
+
     /// Get a reference to the shared object database.
     ///
     /// Objects read through this handle return raw standalone data. A built-in
@@ -28,9 +37,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
     /// Read one local property through the server's ReadProperty evaluator.
     ///
-    /// With multiple Device objects, the lowest instance is selected for Device
-    /// wildcard reads and the live COV lists, independent of insertion order.
-    /// Other Device objects receive empty COV lists. Every served Device uses
+    /// Device wildcard reads target the configured identity; removal returns
+    /// UNKNOWN_OBJECT even if another Device is present. The database's lowest
+    /// Device instance still owns the live COV lists, independent of insertion
+    /// order; other Device objects receive empty lists. Every served Device uses
     /// the executor's services, COV presence and property definitions, even after
     /// public profile mutation, replacement or custom object installation.
     ///
@@ -65,16 +75,21 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
         let db = self.db.read().await;
-        let lookup_oid =
-            handlers::resolve_read_target(&db, oid, self.config.registered_network_port);
         let view = crate::device_view::DeviceReadContext::new(
             &db,
             crate::device_view::DeviceExecution::FullServer,
         )
+        .with_identity(Some(&self.config.device))
         .with_work_limit(
             self.config
                 .read_property_multiple_budget
                 .max_result_elements,
+        );
+        let lookup_oid = handlers::resolve_read_target(
+            &db,
+            oid,
+            self.config.registered_network_port,
+            view.device_oid(),
         );
         let plan =
             handlers::plan_read_property(&db, Some(&view), lookup_oid, property, array_index)
@@ -170,6 +185,23 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         crate::pics::PicsGenerator::new(&db, &self.config, pics_config)
             .for_server()
             .generate()
+    }
+}
+
+impl<T: TransportPort + bacnet_transport::bip::AsBip + 'static> BACnetServer<T> {
+    /// How this server's foreign-device registration is going (#938):
+    /// whether it holds a live lease, the time left on it, and the last
+    /// attempt's result and outcome, a BBMD's refusal included. It reads
+    /// [`BipTransport::bvlc_client_snapshot`] and sends nothing. Fails on a
+    /// transport that isn't B/IP, and once the server has stopped.
+    pub fn foreign_registration(
+        &self,
+    ) -> Result<bacnet_transport::bip::ForeignRegistrationSnapshot, Error> {
+        let transport = self.transport().ok_or_else(broadcaster::stopped)?;
+        Ok(transport
+            .as_bip()?
+            .bvlc_client_snapshot()
+            .foreign_registration)
     }
 }
 

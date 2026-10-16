@@ -97,8 +97,9 @@ FEATURES="$FEATURES,bacnet-client/sc-tls,bacnet-client/ipv6"
 FEATURES="$FEATURES,bacnet-server/sc-tls"
 FEATURES="$FEATURES,bacnet-cli/sc-tls,bacnet-cli/tui"
 FEATURES="$FEATURES,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless"
-FEATURES="$FEATURES,bacnet-mstp-core/alloc,bacnet-mstp-core/heapless"
+FEATURES="$FEATURES,bacnet-mstp-core/alloc"
 FEATURES="$FEATURES,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless"
+FEATURES="$FEATURES,bacnet-router-core/bip,bacnet-router-core/mstp"
 
 # The no_std builds (std off, alloc on) of the crates that have one (#1613).
 # In the run above, the hosted crates turn std back on for them, so these get

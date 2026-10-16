@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 
 use bacnet_client::client::BACnetClient;
-use bacnet_transport::bip::BipTransport;
+use bacnet_transport::bip::{BipMode, BipTransport, ForeignDeviceConfig};
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_types::error::Error;
 
@@ -25,6 +25,8 @@ pub struct TransportArgs {
     pub ipv6: bool,
     pub ipv6_interface: Option<Ipv6Addr>,
     pub device_instance: Option<u32>,
+    /// `--foreign-bbmd`, with `--ttl` and `--renewal` (#938).
+    pub foreign_device: Option<ForeignDeviceConfig>,
 }
 
 impl TransportArgs {
@@ -43,6 +45,11 @@ impl TransportArgs {
                     .map_err(|e| format!("invalid --ipv6-interface address '{s}': {e}"))
             })
             .transpose()?;
+        if cli.foreign_bbmd.is_some() && (cli.sc || cli.ipv6) {
+            return Err(
+                "--foreign-bbmd requires BACnet/IP transport (do not use --sc or --ipv6)".into(),
+            );
+        }
         Ok(Self {
             interface,
             port: cli.port,
@@ -59,6 +66,7 @@ impl TransportArgs {
             ipv6: cli.ipv6,
             ipv6_interface,
             device_instance: cli.device_instance,
+            foreign_device: crate::foreign::config(cli.foreign_bbmd, cli.ttl, cli.renewal),
         })
     }
 }
@@ -121,6 +129,11 @@ pub async fn build_bip_client(args: &TransportArgs) -> Result<BACnetClient<BipTr
         .broadcast_address(args.broadcast)
         .apdu_timeout_ms(args.timeout_ms)
         .min_request_interval_ms(args.min_interval_ms)
+        .mode(
+            args.foreign_device
+                .clone()
+                .map_or(BipMode::Normal, BipMode::Foreign),
+        )
         .build()
         .await
 }
@@ -136,10 +149,11 @@ pub async fn build_sc_client(
     BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>,
     Error,
 > {
+    use bacnet_transport::sc_tls::pem;
     use bacnet_transport::sc_tls::ScNodeTlsConfig;
     use rustls::RootCertStore;
-    use rustls_pki_types::pem::PemObject;
-    use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+    use rustls_pki_types::pem::Error as PemError;
+    use std::fs::File;
 
     let cert_path = args
         .sc_cert
@@ -168,8 +182,9 @@ pub async fn build_sc_client(
         })?;
 
     let mut root_store = RootCertStore::empty();
-    let ca_iter = CertificateDer::pem_file_iter(ca_path)
-        .map_err(|e| Error::Encoding(format!("failed to read --sc-ca PEM: {e}")))?;
+    let ca_file = File::open(ca_path)
+        .map_err(|e| Error::Encoding(format!("failed to read --sc-ca PEM: {}", PemError::Io(e))))?;
+    let ca_iter = pem::certificate_reader(ca_file);
     let mut ca_certs = Vec::new();
     // Preserve CA error precedence before identity file I/O. The factory below
     // owns the actual TLS policy; this store only validates the loaded input.
@@ -188,11 +203,14 @@ pub async fn build_sc_client(
         ));
     }
 
-    let certs = CertificateDer::pem_file_iter(cert_path)
-        .map_err(|e| Error::Encoding(format!("failed to read cert PEM: {e}")))?
+    let cert_file = File::open(cert_path)
+        .map_err(|e| Error::Encoding(format!("failed to read cert PEM: {}", PemError::Io(e))))?;
+    let certs = pem::certificate_reader(cert_file)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| Error::Encoding(format!("failed to parse cert PEM: {e}")))?;
-    let key = PrivateKeyDer::from_pem_file(key_path)
+    let key = File::open(key_path)
+        .map_err(PemError::Io)
+        .and_then(pem::private_key_reader)
         .map_err(|e| Error::Encoding(format!("failed to read key PEM: {e}")))?;
 
     let tls_config = ScNodeTlsConfig::from_der(ca_certs, certs, key)
@@ -248,6 +266,7 @@ mod tests {
             ipv6: false,
             ipv6_interface: None,
             device_instance: None,
+            foreign_device: None,
         }
     }
 

@@ -4,7 +4,10 @@
 //! that file into the 700-LOC cap enforced by `scripts/ci/check-file-size.sh`.
 //! Dispatch stays in `main.rs`; this module is the clap surface only.
 
-use std::{net::Ipv4Addr, path::PathBuf};
+use std::{
+    net::{Ipv4Addr, SocketAddrV4},
+    path::PathBuf,
+};
 
 use bacnet_types::primitives::BACnetTimeStamp;
 use clap::builder::{OsStringValueParser, TypedValueParser};
@@ -48,6 +51,24 @@ pub(crate) struct Cli {
     )]
     pub(crate) min_interval_ms: u64,
 
+    /// Run as a foreign device registered with this BBMD (IP or IP:port), so
+    /// broadcasts such as discover reach its network. A one-shot command
+    /// waits for the registration first; it is renewed while the CLI runs.
+    /// BACnet/IP only.
+    #[arg(long, global = true, value_name = "ADDR", value_parser = crate::foreign::parse_bbmd_arg)]
+    pub(crate) foreign_bbmd: Option<SocketAddrV4>,
+
+    /// Time-to-live in seconds of a foreign-device registration: with
+    /// --foreign-bbmd, register and discover --bbmd.
+    #[arg(long, global = true, default_value_t = 300)]
+    pub(crate) ttl: u16,
+
+    /// Seconds between --foreign-bbmd registrations, less than --ttl
+    /// (default: half the TTL). Behind NAT, renew often so the mapping the
+    /// BBMD's replies use stays open.
+    #[arg(long, global = true, value_name = "SECS", requires = "foreign_bbmd")]
+    pub(crate) renewal: Option<u64>,
+
     /// Use BACnet/IPv6 transport.
     #[arg(long, global = true)]
     pub(crate) ipv6: bool,
@@ -56,7 +77,9 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) ipv6_interface: Option<String>,
 
-    /// Device instance for BIP6 VMAC derivation.
+    /// Device instance whose VMAC the CLI uses on --ipv6. Without it the CLI
+    /// picks a random VMAC, which needs a multicast-capable link at start
+    /// (Linux loopback has none).
     #[arg(long, global = true)]
     pub(crate) device_instance: Option<u32>,
 
@@ -108,6 +131,16 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Inspect local SC credential files offline; no hub or transport identity is needed.
+    ///
+    /// Requires --sc-cert; --sc-ca and --sc-key are optional. This advisory
+    /// inventory does not establish TLS acceptance or change connection policy.
+    ScCheck {
+        /// Inspect at this signed Unix second instead of sampling the clock.
+        #[arg(long, value_name = "SECONDS", allow_hyphen_values = true)]
+        at_unix: Option<i64>,
+    },
+
     /// Launch interactive shell.
     Shell,
 
@@ -136,12 +169,11 @@ pub(crate) enum Command {
         /// Send directed WhoIs to a specific address instead of broadcasting.
         #[arg(long, conflicts_with = "dnet")]
         target: Option<String>,
-        /// Register as foreign device with a BBMD before discovering.
+        /// Register as foreign device with a BBMD before discovering, once
+        /// (for --ttl seconds). --foreign-bbmd also renews and sends the
+        /// Who-Is through the BBMD.
         #[arg(long)]
         bbmd: Option<String>,
-        /// TTL in seconds for BBMD foreign device registration.
-        #[arg(long, default_value_t = 300)]
-        ttl: u16,
         /// Target a specific remote network number.
         #[arg(long)]
         dnet: Option<u16>,
@@ -289,13 +321,10 @@ pub(crate) enum Command {
         target: String,
     },
 
-    /// Register as foreign device with BBMD.
+    /// Register as foreign device with BBMD, once, for --ttl seconds.
     Register {
         /// Target device.
         target: String,
-        /// Time-to-live in seconds.
-        #[arg(long, default_value_t = 300)]
-        ttl: u16,
     },
 
     /// Unregister from BBMD.
@@ -407,6 +436,51 @@ mod tests {
     // so parse where `main` does: on a thread with a larger stack (#953).
     fn parse<const N: usize>(args: [&'static str; N]) -> Result<Cli, clap::Error> {
         crate::parse_on_large_stack(move || Cli::try_parse_from(args))
+    }
+
+    /// `--foreign-bbmd`, `--ttl` and `--renewal` reach the transport's
+    /// foreign-device configuration (#938); `--ttl` also serves `register`,
+    /// given before or after it.
+    #[test]
+    fn the_foreign_device_flags_reach_the_transport() {
+        let cli = parse([
+            "bacnet",
+            "--foreign-bbmd",
+            "192.0.2.10",
+            "--renewal",
+            "20",
+            "devices",
+            "--ttl",
+            "60",
+        ])
+        .unwrap();
+        let args = crate::transport::TransportArgs::from_cli(
+            &cli,
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::BROADCAST,
+        )
+        .unwrap();
+        let foreign = args.foreign_device.unwrap();
+        assert_eq!(
+            (foreign.bbmd_ip, foreign.bbmd_port, foreign.ttl),
+            (Ipv4Addr::new(192, 0, 2, 10), 0xBAC0, 60)
+        );
+        assert_eq!(
+            foreign.renewal_interval,
+            Some(std::time::Duration::from_secs(20))
+        );
+
+        let cli = parse(["bacnet", "register", "192.0.2.10"]).unwrap();
+        assert_eq!((cli.ttl, cli.foreign_bbmd), (300, None));
+        let args = crate::transport::TransportArgs::from_cli(
+            &cli,
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::BROADCAST,
+        )
+        .unwrap();
+        assert!(args.foreign_device.is_none());
+        let cli = parse(["bacnet", "register", "192.0.2.10", "--ttl", "45"]).unwrap();
+        assert_eq!(cli.ttl, 45);
     }
 
     #[test]

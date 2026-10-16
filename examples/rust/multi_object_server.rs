@@ -29,14 +29,15 @@ use std::net::Ipv4Addr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let identity = bacnet_objects::DeviceIdentity::new(5000, 555)
+        .expect("valid Device identity")
+        .with_name("HVAC AHU-1");
     let mut db = ObjectDatabase::new();
 
     // Device object
     db.add(Box::new(DeviceObject::new(DeviceConfig {
-        instance: 5000,
-        name: "HVAC AHU-1".into(),
+        identity: identity.clone(),
         vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
         model_name: "AHU Controller".into(),
         ..DeviceConfig::default()
     })?))?;
@@ -78,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start server
     let server = BACnetServer::bip_builder()
+        .device(identity)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(Ipv4Addr::LOCALHOST)

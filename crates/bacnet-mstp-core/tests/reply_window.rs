@@ -2,8 +2,6 @@
 //! deadline keeps a transmit margin inside T_reply_delay, and a late deadline
 //! call or transmit start still answers with Reply Postponed (Clause 9.5.6.9).
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,
@@ -24,17 +22,16 @@ const SEND_BY: Instant = Instant::from_micros(251_000);
 const GIVE_UP: Instant = Instant::from_micros(1_000 + 255_000 - 1_042 - 1_000);
 
 fn config() -> MstpCoreConfig {
-    MstpCoreConfig {
-        station: 1,
-        max_master: 3,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = 1;
+    config.max_master = 3;
+    config
 }
 
 /// Deliver a request from station 7 and return its identifier.
 fn receive_request(core: &mut MasterCore<'_, Queues>) -> RequestId {
     core.on_validated_frame(
-        Frame::new(FrameType::BACnetDataExpectingReply, 1, 7, &[1, 0x04]),
+        Frame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[1, 0x04]),
         REQUEST_AT,
     )
     .unwrap();
@@ -58,7 +55,7 @@ fn take_postponed(core: &mut MasterCore<'_, Queues>) -> TransmitId {
             let header = decode_frame(frame).unwrap().0.header;
             assert_eq!(
                 (header.frame_type, header.destination),
-                (FrameType::ReplyPostponed, 7)
+                (FrameType::REPLY_POSTPONED, 7)
             );
             id
         }
@@ -101,10 +98,8 @@ fn decision_deadline_leaves_the_transmit_margin() {
     // The margin is configurable.
     let mut rx = [0; 64];
     let mut actions = Actions::new();
-    let config = MstpCoreConfig {
-        reply_transmit_margin: Duration::from_millis(50),
-        ..config()
-    };
+    let mut config = config();
+    config.reply_transmit_margin = Duration::from_millis(50);
     let mut core =
         MasterCore::new(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     receive_request(&mut core);
@@ -288,7 +283,7 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
             reply.header.destination,
             reply.data
         ),
-        (FrameType::BACnetDataNotExpectingReply, 7, &[9][..])
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 7, &[9][..])
     );
     assert_eq!(core.counters().cancelled_sends, 0);
 
@@ -311,7 +306,7 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
         REQUEST_AT + Duration::from_micros(500),
     )
     .unwrap();
-    core.on_validated_frame(Frame::new(FrameType::PollForMaster, 1, 5, &[]), noise)
+    core.on_validated_frame(Frame::new(FrameType::POLL_FOR_MASTER, 1, 5, &[]), noise)
         .unwrap();
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
@@ -325,6 +320,6 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
     let reply = decode_frame(frame).unwrap().0.header;
     assert_eq!(
         (reply.frame_type, reply.destination),
-        (FrameType::BACnetDataNotExpectingReply, 7)
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 7)
     );
 }

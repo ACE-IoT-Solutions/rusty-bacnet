@@ -23,14 +23,16 @@ async fn local_write_fires_cov_notification() {
     let ao_oid = ao.object_identifier();
     db.add(Box::new(ao)).unwrap();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Local-COV-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Local-COV-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(db)
@@ -118,14 +120,16 @@ async fn local_object_name_write_refreshes_name_index() {
     let ao_oid = ao.object_identifier();
     db.add(Box::new(ao)).unwrap();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Local-Name-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Local-Name-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(db)

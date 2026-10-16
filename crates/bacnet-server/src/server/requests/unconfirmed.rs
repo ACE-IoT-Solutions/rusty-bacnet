@@ -89,12 +89,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             };
 
             let db = db.read().await;
-            let Ok(device_oid) =
-                crate::local_device::validate_apdu_declaration(&db, config.max_apdu_length)
-            else {
-                warn!("I-Am refused: selected Device declaration differs from local acceptance");
-                return;
-            };
+            let device_oid = crate::local_device::announcement_device(&db, &config.device);
 
             if let Some(device_oid) = device_oid {
                 let instance = device_oid.instance_number();
@@ -102,12 +97,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 let in_range = who_is.range.is_none_or(|range| range.contains(instance));
 
                 if in_range {
-                    let i_am = IAmRequest {
-                        object_identifier: device_oid,
-                        max_apdu_length: config.max_apdu_length,
-                        segmentation_supported: config.segmentation_supported,
-                        vendor_id: config.vendor_id,
-                    };
+                    let i_am = super::super::discovery::iam_request_for(config);
 
                     let mut service_buf = BytesMut::new();
                     i_am.encode(&mut service_buf);
@@ -350,7 +340,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     network,
                     notification_transactions,
                     device_bindings,
-                    config.max_apdu_length,
+                    u32::from(config.device.max_apdu_length()),
                 ),
                 Ok(None) => {}
                 Err(error) => debug!(%error, "Ignoring UnconfirmedAuditNotification request"),

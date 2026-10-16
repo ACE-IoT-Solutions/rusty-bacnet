@@ -21,10 +21,13 @@ pub struct MstpFrame {
     pub data: Bytes,
 }
 
-/// Decode one frame from the start of `wire`, with the octets it took.
+/// Decode one frame from the start of `wire`, with the octets it took. An
+/// extended frame (Types 32 and 33) decodes too: its data is COBS-decoded
+/// in a copy.
 pub fn decode_frame(wire: &[u8]) -> Result<(MstpFrame, usize), Error> {
-    let (frame, consumed) =
-        codec::decode_frame(wire).map_err(|error| Error::Encoding(error.to_string()))?;
+    let mut copy = wire.to_vec();
+    let (frame, consumed) = codec::decode_frame_in_place(&mut copy)
+        .map_err(|error| Error::Encoding(error.to_string()))?;
     Ok((
         MstpFrame {
             frame_type: frame.header.frame_type,
@@ -62,15 +65,15 @@ fn empty(frame_type: FrameType, destination: u8, source: u8) -> MstpFrame {
 
 /// A Token from `source` to `destination`.
 pub fn token_frame(destination: u8, source: u8) -> MstpFrame {
-    empty(FrameType::Token, destination, source)
+    empty(FrameType::TOKEN, destination, source)
 }
 
 /// A `PollForMaster` frame from `source` to `destination`.
 pub fn pfm_frame(destination: u8, source: u8) -> MstpFrame {
-    empty(FrameType::PollForMaster, destination, source)
+    empty(FrameType::POLL_FOR_MASTER, destination, source)
 }
 
 /// Builds the `ReplyToPollForMaster` that `source` sends to `destination`.
 pub fn reply_to_poll(destination: u8, source: u8) -> MstpFrame {
-    empty(FrameType::ReplyToPollForMaster, destination, source)
+    empty(FrameType::REPLY_TO_POLL_FOR_MASTER, destination, source)
 }

@@ -188,7 +188,7 @@ impl<T: TransportPort + 'static> CommandRunner<T> {
             comm_state: &self.comm_state,
             timeout: Duration::from_millis(self.config.cov_retry_timeout_ms),
             retries: DEFAULT_APDU_RETRIES,
-            max_apdu: self.config.max_apdu_length,
+            max_apdu: u32::from(self.config.device.max_apdu_length()),
         }
     }
 

@@ -48,7 +48,7 @@ async fn a_forwarded_address_resolution_from_the_bbmd_is_answered_at_the_asker()
         .await,
         Some(ack_to(asker()))
     );
-    assert_eq!(receiver.vmac_table.lookup(&ASKER_VMAC).await, Some(asker()));
+    assert_eq!(receiver.neighbours.lookup(ASKER_VMAC), Some(asker()));
 }
 
 /// U.4.4, U.5: a BBMD multicasts the request into its own domain, and a
@@ -77,7 +77,7 @@ async fn a_multicast_forwarded_address_resolution_is_answered_in_normal_mode() {
                 Some(ack_to(asker())),
                 "from {source} on {group}"
             );
-            assert_eq!(receiver.vmac_table.lookup(&ASKER_VMAC).await, Some(asker()));
+            assert_eq!(receiver.neighbours.lookup(ASKER_VMAC), Some(asker()));
         }
     }
 }
@@ -110,7 +110,7 @@ async fn forwarded_address_resolutions_from_an_untrusted_path_are_dropped() {
         None,
         "foreign, to its own address but flagged by the OS as a group delivery"
     );
-    assert_eq!(foreign.vmac_table.lookup(&ASKER_VMAC).await, None);
+    assert_eq!(foreign.neighbours.lookup(ASKER_VMAC), None);
 
     let normal = receiver(false).await;
     assert_eq!(
@@ -138,7 +138,7 @@ async fn forwarded_address_resolutions_from_an_untrusted_path_are_dropped() {
             "normal, from {source}"
         );
     }
-    assert_eq!(normal.vmac_table.lookup(&ASKER_VMAC).await, None);
+    assert_eq!(normal.neighbours.lookup(ASKER_VMAC), None);
 }
 
 /// On a trusted path, a Forwarded-Address-Resolution for another VMAC, or
@@ -172,7 +172,7 @@ async fn trusted_forwarded_address_resolutions_that_are_not_answered() {
                 "asker {unusable}, foreign={foreign}"
             );
         }
-        assert_eq!(receiver.vmac_table.lookup(&ASKER_VMAC).await, None);
+        assert_eq!(receiver.neighbours.lookup(ASKER_VMAC), None);
         // The same path with this node's VMAC and a usable asker is
         // answered: each refusal above was for the reason it names.
         assert_eq!(
@@ -238,6 +238,6 @@ async fn forwarded_address_resolution_answers_stop_at_their_quota() {
             original_address: late.into(),
         };
         assert_eq!(reply(&receiver, held_back, peer, destination).await, None);
-        assert_eq!(receiver.vmac_table.lookup(&late_vmac).await, Some(late));
+        assert_eq!(receiver.neighbours.lookup(late_vmac), Some(late));
     }
 }

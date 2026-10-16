@@ -63,7 +63,7 @@ impl ScEndpointConfig {
             .min_request_interval_ms(config.min_request_interval_ms)
             .heartbeat(config.heartbeat_interval_ms, config.heartbeat_timeout_ms)
             .database(db)
-            .identity(config.identity.clone())
+            .device(config.identity.clone())
             .build_hub_session(ws)
             .map_err(to_py_err)?;
         Ok(session)
@@ -121,7 +121,8 @@ impl PyScEndpoint {
     ///     network_number / network_port_instance: SC port entry (instance 2
     ///         by convention, VIRTUAL type).
     ///     max_apdu / segmentation / services / device name: Identity knobs
-    ///         (same narrow defaults as BIP).
+    ///         (same narrow defaults as BIP). The raw receive ceiling resolves
+    ///         against the SC link before Device construction or dialing.
     ///     queue_capacity: Bounded queue capacity (must be >0). Client timers
     ///         stay at the session default; the SC builder exposes no timer
     ///         override by design.
@@ -224,7 +225,13 @@ impl PyScEndpoint {
             segmentation,
             &service_list,
             uuid,
-        )?;
+        )?
+        .resolve(
+            bacnet_transport::sc::ScTransport::<
+                bacnet_transport::sc_tls::TlsWebSocket,
+            >::LOCAL_RECEIVE_APDU_CAPACITY,
+        )
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let identity = with_sc_port(identity, network_port_instance, network_number, vmac)?;
         Ok(Self {
             lifecycle: Lifecycle::new(),

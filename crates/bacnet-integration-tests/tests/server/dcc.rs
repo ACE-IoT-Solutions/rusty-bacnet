@@ -89,14 +89,16 @@ async fn dcc_disable_initiation_allows_rp_blocks_cov() {
     let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
     db.add(Box::new(ao)).unwrap();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "DCC-Test-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("DCC-Test-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .dcc_policy(bacnet_server::server::DccPolicy::LegacyPermissive)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
@@ -203,14 +205,16 @@ async fn dcc_enable_restores_normal_operation() {
     let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
     db.add(Box::new(ao)).unwrap();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "DCC-Restore-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("DCC-Restore-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .dcc_policy(bacnet_server::server::DccPolicy::LegacyPermissive)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)

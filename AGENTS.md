@@ -2,7 +2,7 @@
 
 This repository uses focused skills and subagents for research and review. Prefer the installed skills under `.agents/skills/` and configured agents when available; use the running harness's advertised agent and model controls when repository-local agent definitions are absent.
 
-Use `codex-id.json` as the local Aionforge Memory identity when it exists. Read and write memory with the `rusty-bacnet-team` team asserted, and keep durable work items current for long-running compliance work.
+Use local Codebase Memory as the first structural code-intelligence layer. The canonical project is `Users-justin-Development-rusty-bacnet`, rooted at `/Users/justin/Development/rusty-bacnet`; verify it once with `list_projects` and `index_status` when entering a fresh repository source context, then use focused graph tools and check coverage for cited scopes. Codebase Memory is not a durable work ledger. Long-running compliance continuity lives in the ignored `_spec/rusty-bacnet-compliance-execution-plan/{Handoff.md,CURRENT_STATUS.md,NEXT_HANDOFF.md}` documents, with `codex-overnight-status.md` retained as an additional local historical log. Refresh live Git/GitHub state before acting on those snapshots. No external memory service, agent identity, namespace, or team assertion is a prerequisite.
 
 ## Repository hosting
 
@@ -15,16 +15,12 @@ Use `codex-id.json` as the local Aionforge Memory identity when it exists. Read 
 Default behavior:
 
 - Use read-only exploration first.
-- Spawn subagents only for complex, parallel, or verification-heavy work.
+- Delegate independent research or verification questions in parallel when they materially improve speed or confidence and useful root work can proceed. Handle small, coupled tasks locally; the available roles are a menu, not a required panel.
 - Keep subagent prompts scoped and evidence-led.
+- Reuse a completed review for its exact immutable target. If the head changes, follow `pr-gate-loop`: both required reviewers acknowledge the new target in the permitted final cycle, reusing unchanged evidence and focusing inspection on repair impact. A clean informational review does not reopen a stopped delivery gate.
 - Synthesize findings into a single decision or plan.
 - Record commands, files, symbols, and sources used as evidence.
 - Keep PRs small: one BACnet layer, state-machine family, or measured hotspot per PR.
-- Treat 700 non-empty, non-comment lines as this repository's enforced Rust
-  source-file cap, matching `.github/scripts/check-file-size.sh` and CI. Prefer
-  comfortable headroom and cohesive splits before a file reaches the cap; the
-  approximate 500-line convention used by some sibling projects is not a gate
-  for this repository.
 - Do not add new CI unless explicitly requested.
 - Do not broaden README or public support claims without tests and evidence.
 - Use `_spec/rusty-bacnet-compliance-execution-plan/` for the current roadmap: read the current block of `NEXT_HANDOFF.md`, then relevant `CURRENT_STATUS.md`, `WORK_QUEUE.md`, `DECISIONS.md`, and packet/gate files. Historical blocks preserve evidence, not current instructions. The older `_spec/rusty_bacnet_compliance_specs_v1/` path is absent in this checkout. Locate the licensed Standard through `STANDARD_NAVIGATION.md` before protocol work; never infer a missing source.

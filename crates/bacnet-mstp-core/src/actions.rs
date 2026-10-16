@@ -11,13 +11,15 @@
 //!   [`ActionBuffers`], first in, first out. Their payloads are copied in when
 //!   they are queued, because the stream decoder reuses its receive buffer.
 
+use core::fmt;
+
 use bacnet_mstp_codec::{
     Frame, FrameError, FrameHeader, FrameType, HEADER_LENGTH, MAX_EXTENDED_FRAME_LENGTH,
     MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
 };
 
 /// The physical direction requested for the serial transceiver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     /// Receive bytes from the bus: the line driver is off.
     Receive,
@@ -42,17 +44,14 @@ pub struct RequestId(u32);
 
 impl RequestId {
     /// Construct an identifier from a generation value.
+    #[must_use]
     pub const fn new(generation: u32) -> Self {
         Self(generation)
     }
 
     /// Return the generation represented by this identifier.
+    #[must_use]
     pub const fn generation(self) -> u32 {
-        self.0
-    }
-
-    /// Return the raw generation value.
-    pub const fn raw(self) -> u32 {
         self.0
     }
 }
@@ -63,17 +62,14 @@ pub struct TransmitId(u32);
 
 impl TransmitId {
     /// Construct an identifier from a generation value.
+    #[must_use]
     pub const fn new(generation: u32) -> Self {
         Self(generation)
     }
 
     /// Return the generation represented by this identifier.
+    #[must_use]
     pub const fn generation(self) -> u32 {
-        self.0
-    }
-
-    /// Return the raw generation value.
-    pub const fn raw(self) -> u32 {
         self.0
     }
 }
@@ -84,6 +80,7 @@ impl TransmitId {
 /// small, allocation-free reasons let the driver report the protocol-relevant
 /// distinction without coupling the core to an operating-system error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TransmitFailure {
     /// The driver stopped the transfer before the final stop bit was sent.
     Aborted,
@@ -101,6 +98,7 @@ pub enum TransmitFailure {
 /// mutably. A platform should copy a transmit frame into its UART/DMA storage
 /// before polling the next action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "an action the adapter doesn't carry out is lost: a frame unsent, an NPDU undelivered"]
 pub enum Action<'a> {
     /// Change the serial transceiver direction.
     SetDirection(Direction),
@@ -154,8 +152,8 @@ pub enum Action<'a> {
     /// broadcast one of a type that expects a reply: Clause 9.5.6.2 counts
     /// both as unwanted (ReceivedUnwantedFrame, cases (c) and (b)).
     DeliverFrame {
-        /// [`FrameType::TestResponse`], or a proprietary
-        /// [`FrameType::Unknown`] type.
+        /// [`FrameType::TEST_RESPONSE`], or a proprietary type (128-255),
+        /// which no [`FrameType`] constant names.
         frame_type: FrameType,
         /// Source MS/TP station.
         source: u8,
@@ -202,11 +200,10 @@ pub const DEFAULT_DELIVERY_SLOTS: usize = 8;
 /// [`MstpCoreConfig::extended_frames`](crate::MstpCoreConfig::extended_frames)
 /// on needs room for extended frames, [`ExtendedActionBuffers`]: `NPDU`
 /// [`MAX_EXTENDED_MPDU_DATA`] and `FRAME` [`MAX_EXTENDED_FRAME_LENGTH`].
-/// `NPDU` also sizes the core's own scratch for a queued NPDU, on the stack
-/// of the call that sends it, which is why the core carries it as its own
-/// parameter. `FRAME` must hold any standard frame and, when `NPDU` is more
-/// than 501, an extended frame carrying `NPDU` octets, or [`Self::new`]
-/// fails to compile.
+/// `NPDU` is also the longest queued NPDU the core sends, which is why the
+/// core carries it as its own parameter. `FRAME` must hold any standard
+/// frame and, when `NPDU` is more than 501, an extended frame carrying
+/// `NPDU` octets, or [`Self::new`] fails to compile.
 pub struct ActionBuffers<
     const DELIVERIES: usize = DEFAULT_DELIVERY_SLOTS,
     const NPDU: usize = MAX_STANDARD_MPDU_DATA,
@@ -251,6 +248,20 @@ impl<const DELIVERIES: usize, const NPDU: usize, const FRAME: usize> Default
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The sizes, not the octets: the core overwrites the buffers before it
+/// reads them.
+impl<const DELIVERIES: usize, const NPDU: usize, const FRAME: usize> fmt::Debug
+    for ActionBuffers<DELIVERIES, NPDU, FRAME>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActionBuffers")
+            .field("deliveries", &DELIVERIES)
+            .field("npdu", &NPDU)
+            .field("frame", &FRAME)
+            .finish()
     }
 }
 
@@ -336,6 +347,18 @@ pub(crate) struct ActionQueue<'b, const NPDU: usize> {
     head: usize,
     /// How many deliveries wait.
     waiting: usize,
+}
+
+/// What waits to be polled, not the octets.
+impl<const NPDU: usize> fmt::Debug for ActionQueue<'_, NPDU> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActionQueue")
+            .field("receive", &self.receive)
+            .field("transmit", &self.transmit)
+            .field("frame_length", &self.frame_length)
+            .field("deliveries", &self.waiting)
+            .finish()
+    }
 }
 
 impl<'b, const NPDU: usize> ActionQueue<'b, NPDU> {
@@ -474,10 +497,10 @@ impl<'b, const NPDU: usize> ActionQueue<'b, NPDU> {
 pub(crate) const fn carries_npdu(frame_type: FrameType) -> bool {
     matches!(
         frame_type,
-        FrameType::BACnetDataExpectingReply
-            | FrameType::BACnetDataNotExpectingReply
-            | FrameType::BACnetExtendedDataExpectingReply
-            | FrameType::BACnetExtendedDataNotExpectingReply
+        FrameType::BACNET_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
     )
 }
 
@@ -495,7 +518,7 @@ fn wrap(index: usize, length: usize) -> usize {
 mod tests {
     use super::*;
 
-    const NPDU: FrameType = FrameType::BACnetDataNotExpectingReply;
+    const NPDU: FrameType = FrameType::BACNET_DATA_NOT_EXPECTING_REPLY;
 
     fn header(frame_type: FrameType, source: u8, destination: u8) -> FrameHeader {
         FrameHeader::new(frame_type, destination, source)
@@ -504,7 +527,7 @@ mod tests {
     /// Encode a one-octet test frame and queue it as transmit `id`.
     fn queue_frame(actions: &mut ActionQueue<'_, MAX_STANDARD_MPDU_DATA>, id: u32, octet: u8) {
         actions
-            .encode_frame(Frame::new(FrameType::TestRequest, 2, 1, &[octet]))
+            .encode_frame(Frame::new(FrameType::TEST_REQUEST, 2, 1, &[octet]))
             .unwrap();
         actions.queue_transmit(TransmitId::new(id));
     }
@@ -525,7 +548,7 @@ mod tests {
             .unwrap();
         queue_frame(&mut actions, 9, 0xA5);
         let request = Some(RequestId::new(7));
-        let expecting = FrameType::BACnetDataExpectingReply;
+        let expecting = FrameType::BACNET_DATA_EXPECTING_REPLY;
         actions
             .enqueue_delivery(header(expecting, 3, 4), &[2], request)
             .unwrap();
@@ -586,7 +609,7 @@ mod tests {
 
         // A polled frame is no longer queued.
         queue_frame(&mut actions, 5, 0x77);
-        actions.poll();
+        assert_eq!(actions.poll(), Action::SetDirection(Direction::Transmit));
         assert_eq!(polled_frame(&mut actions), (TransmitId::new(5), 0x77));
         assert!(!actions.transmit_queued(TransmitId::new(5)));
     }
@@ -595,9 +618,9 @@ mod tests {
     fn whole_frames_go_up_as_frames() {
         let mut buffers = ActionBuffers::<2>::new();
         let mut actions = ActionQueue::new(&mut buffers);
-        let proprietary = FrameType::Unknown(0x80);
+        let proprietary = FrameType::from_raw(0x80);
         actions
-            .enqueue_delivery(header(FrameType::TestResponse, 5, 1), &[9, 9], None)
+            .enqueue_delivery(header(FrameType::TEST_RESPONSE, 5, 1), &[9, 9], None)
             .unwrap();
         actions
             .enqueue_delivery(header(proprietary, 6, 0xFF), &[0x01, 0x04, 3], None)
@@ -605,7 +628,7 @@ mod tests {
         assert_eq!(
             actions.poll(),
             Action::DeliverFrame {
-                frame_type: FrameType::TestResponse,
+                frame_type: FrameType::TEST_RESPONSE,
                 source: 5,
                 destination: 1,
                 data: &[9, 9],

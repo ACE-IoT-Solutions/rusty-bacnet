@@ -21,14 +21,16 @@ async fn cov_subscribe_and_notification() {
 
     // Add a device object so COV notifications have an initiating-device-identifier
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Test-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Test-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(db)

@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, port, Ipv4Addr::LOCALHOST)
         .role(SessionRole::ServerOnly)
         .database(db)
-        .identity(identity.clone())
+        .device(identity.clone())
         .build_session()?;
     endpoint.start().await?;
     assert!(endpoint.server().is_some());

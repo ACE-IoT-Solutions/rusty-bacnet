@@ -226,23 +226,11 @@ pub(super) fn remove_matching_reassemblies(
 }
 
 /// Validate the active timing/declaration contract before starting network I/O.
-pub(super) fn validate_segment_timeout(
-    config: &ServerConfig,
-    db: &ObjectDatabase,
-) -> Result<Duration, Error> {
-    if config.segmentation_supported.to_raw() > Segmentation::NONE.to_raw() {
-        return Err(Error::Encoding(
-            "invalid server segmentation support".into(),
-        ));
-    }
-    let active = config.segmentation_supported != Segmentation::NONE;
-    if active && config.apdu_segment_timeout_ms == 0 {
-        return Err(Error::Encoding(
-            "APDU segment timeout must be positive".into(),
-        ));
-    }
+pub(super) fn validate_segment_timeout(config: &ServerConfig) -> Result<Duration, Error> {
+    config.device.validate()?;
     let milliseconds = config
-        .apdu_segment_timeout_ms
+        .device
+        .apdu_segment_timeout_ms()
         .checked_mul(4)
         .ok_or_else(|| Error::Encoding("receive segment timeout overflows milliseconds".into()))?;
     let receive_timeout = Duration::from_millis(milliseconds);
@@ -250,24 +238,6 @@ pub(super) fn validate_segment_timeout(
         .checked_add(receive_timeout)
         .and_then(|deadline| deadline.checked_add(Duration::from_nanos(1)))
         .ok_or_else(|| Error::Encoding("receive segment deadline is not representable".into()))?;
-    if let Some(oid) = db.selected_device() {
-        let device = db.get(&oid).expect("selected under same database guard");
-        let declared = device.read_property(PropertyIdentifier::SEGMENTATION_SUPPORTED, None)?;
-        if declared != PropertyValue::Enumerated(u32::from(config.segmentation_supported.to_raw()))
-        {
-            return Err(Error::Encoding(
-                "selected Device Segmentation_Supported must match server configuration".into(),
-            ));
-        }
-        if active
-            && device.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None)?
-                != PropertyValue::Unsigned(config.apdu_segment_timeout_ms)
-        {
-            return Err(Error::Encoding(
-                "selected Device APDU_Segment_Timeout must match server configuration".into(),
-            ));
-        }
-    }
     Ok(receive_timeout)
 }
 

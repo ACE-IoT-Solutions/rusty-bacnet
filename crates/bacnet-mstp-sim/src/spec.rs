@@ -19,8 +19,9 @@ pub struct AdapterSpec {
     /// exactly when it falls due.
     pub deadline_lateness: Duration,
     /// Further lateness drawn per deadline, uniformly from zero to this, from
-    /// the run's seeded generator: the granularity of a tick-driven timer.
-    /// Below the core's `LATE_DEADLINE` (1 ms) it is not a miss. Without
+    /// the run's seeded generator, in whole microseconds: the granularity of
+    /// a tick-driven timer. Below the core's `LATE_DEADLINE` (1 ms) it is not
+    /// a miss. Without
     /// any, two masters that start in step can stay in step for ever.
     pub deadline_jitter: Duration,
 }
@@ -105,11 +106,9 @@ impl MasterSpec {
     /// If the resulting configuration is invalid.
     #[must_use]
     pub fn new(station: u8, max_master: u8, baud: u32) -> Self {
-        let config = MstpCoreConfig {
-            station,
-            max_master,
-            ..MstpCoreConfig::for_baud_rate(baud).expect("a standard baud rate")
-        };
+        let mut config = MstpCoreConfig::for_baud_rate(baud).expect("a standard baud rate");
+        config.station = station;
+        config.max_master = max_master;
         config.validate().expect("a valid master configuration");
         Self {
             config,

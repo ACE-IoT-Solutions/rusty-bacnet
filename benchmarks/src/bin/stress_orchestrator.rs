@@ -60,7 +60,20 @@ async fn wait_for_device(
     false
 }
 
-/// Run continuous RP against a target, returning a DegradationPoint.
+/// A BACnet router to send through: its B/IP address on the client's
+/// network, and the network the target is on.
+#[derive(Clone, Copy)]
+struct Via {
+    router_ip: [u8; 4],
+    router_port: u16,
+    network: u16,
+}
+
+/// Run continuous RP against a target, returning a DegradationPoint. With
+/// `via`, each request names the target's network and MAC and goes to the
+/// router, which forwards it (Docker's bridge networks don't route IP
+/// between each other, so only a BACnet router joins them).
+#[allow(clippy::too_many_arguments)] // one call site per scenario, each spelling out its addresses
 async fn run_rp_scenario(
     label: &str,
     param: u64,
@@ -68,6 +81,7 @@ async fn run_rp_scenario(
     broadcast: Ipv4Addr,
     target_ip: [u8; 4],
     target_port: u16,
+    via: Option<Via>,
     duration_secs: u64,
 ) -> DegradationPoint {
     let client = BACnetClient::bip_builder()
@@ -88,9 +102,16 @@ async fn run_rp_scenario(
 
     while Instant::now() < deadline {
         let t0 = Instant::now();
-        let result = client
-            .read_property(&mac, oid, PropertyIdentifier::PRESENT_VALUE, None)
-            .await;
+        let property = PropertyIdentifier::PRESENT_VALUE;
+        let result = match via {
+            None => client.read_property(&mac, oid, property, None).await,
+            Some(via) => {
+                let router = bacnet_transport::bvll::encode_bip_mac(via.router_ip, via.router_port);
+                client
+                    .read_property_routed(&router, via.network, &mac, oid, property, None)
+                    .await
+            }
+        };
         match result {
             Ok(_) => recorder.record_success(t0),
             Err(_) => recorder.record_failure(),
@@ -162,7 +183,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut all_points = Vec::new();
 
-    // Scenario 1: Router hop — client on subnet A reads from server-b on subnet B
+    // Scenario 1: Router hop — client on subnet A (network 1) reads from
+    // server-b on subnet B (network 2) through the router service.
     if !skip.contains(&"router".to_string()) {
         eprintln!("\n=== Router Hop Latency ===");
         let dp = run_rp_scenario(
@@ -172,6 +194,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ipv4Addr::new(172, 20, 0, 255),
             [172, 20, 1, 10],
             47808,
+            Some(Via {
+                router_ip: [172, 20, 0, 1],
+                router_port: 47808,
+                network: 2,
+            }),
             args.duration,
         )
         .await;
@@ -188,6 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ipv4Addr::new(172, 20, 0, 255),
             [172, 20, 0, 10],
             47808,
+            None,
             args.duration,
         )
         .await;
@@ -204,6 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ipv4Addr::new(172, 20, 4, 255),
             [172, 20, 0, 10],
             47808,
+            None,
             args.duration,
         )
         .await;

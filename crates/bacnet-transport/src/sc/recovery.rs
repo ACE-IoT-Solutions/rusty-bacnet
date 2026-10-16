@@ -1,25 +1,7 @@
 //! Reconnect policy and bounded ownership of retired node sockets.
 
-use super::connector::{dial_failover_ws_result, dial_reconnect_ws};
+use super::connector::dial_reconnect_ws;
 use super::*;
-use crate::port::{TransportHealth, TransportHealthState};
-
-async fn publish_connected_ws<W: WebSocketPort>(
-    conn: &Arc<Mutex<ScConnection>>,
-    active_ws: &Arc<Mutex<Arc<W>>>,
-    ws: &Arc<W>,
-    probe_conn: &Arc<Mutex<ScConnection>>,
-    state_tx: &watch::Sender<ScConnectionState>,
-    effective_max_apdu_length: &AtomicU16,
-) {
-    let restored = probe_conn.lock().await.clone();
-    let mut current = active_ws.lock().await;
-    let mut connection = conn.lock().await;
-    *connection = restored;
-    *current = ws.clone();
-    publish_effective_max_apdu_length(effective_max_apdu_length, &connection);
-    state_tx.send_replace(connection.state);
-}
 
 async fn connect_probe_from(conn: &Arc<Mutex<ScConnection>>) -> Arc<Mutex<ScConnection>> {
     Arc::new(Mutex::new(conn.lock().await.connect_probe()))
@@ -96,9 +78,8 @@ pub(super) struct Recovery<'a, W: WebSocketPort> {
     pub conn: &'a Arc<Mutex<ScConnection>>,
     pub active_ws: &'a Arc<Mutex<Arc<W>>>,
     pub state_tx: &'a watch::Sender<ScConnectionState>,
-    pub health_tx: &'a watch::Sender<TransportHealth>,
     pub connect_timeout_ms: u64,
-    pub effective_max_apdu_length: &'a AtomicU16,
+    pub hub_limits: &'a HubLimits,
 }
 
 impl<W: WebSocketPort> Recovery<'_, W> {
@@ -112,42 +93,12 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         let initial_backoff = Duration::from_millis(self.config.initial_delay_ms);
         let mut backoff = initial_backoff;
         let max_backoff = Duration::from_millis(self.config.max_delay_ms);
-        let mut attempt = 0u64;
-        let alternate_available = match active_hub {
-            ActiveHub::Primary => self.failover_connector.is_some() || self.failover_ws.is_some(),
-            ActiveHub::Failover => self.primary_connector.is_some(),
-        };
-        loop {
-            if !self.config.retry_forever && attempt >= u64::from(self.config.max_retries) {
-                break;
-            }
-            attempt += 1;
-            let target_hub =
-                if self.config.retry_forever && alternate_available && attempt.is_multiple_of(2) {
-                    match active_hub {
-                        ActiveHub::Primary => ActiveHub::Failover,
-                        ActiveHub::Failover => ActiveHub::Primary,
-                    }
-                } else {
-                    active_hub
-                };
-            let last_error = self.health_tx.borrow().last_error.clone();
-            self.health_tx.send_replace(TransportHealth {
-                state: TransportHealthState::Reconnecting,
-                detail: Some("reconnecting".into()),
-                active_hub: Some(target_hub.label().into()),
-                last_error,
-                attempt,
-                since: None,
-            });
+        for attempt in 1..=self.config.max_retries {
             tokio::time::sleep(jittered_backoff(backoff, initial_backoff, max_backoff)).await;
             if !self.conn.lock().await.connect_retry_allowed {
                 if let Some(suppressed) = self.retry_diagnostic() {
                     warn!(attempt, suppressed, "SC reconnection skipped without retry eligibility (suppressed {suppressed} reconnect diagnostics)");
                 }
-                self.health_tx.send_modify(|health| {
-                    health.last_error = Some("hub response forbids reconnect".into());
-                });
                 break;
             }
             {
@@ -155,38 +106,19 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                 c.reset_for_connect_retry();
                 self.state_tx.send_replace(c.state);
             }
-            let dialed = if target_hub == ActiveHub::Failover && target_hub != active_hub {
-                dial_failover_ws_result(
-                    self.failover_connector,
-                    self.failover_ws,
-                    self.connect_timeout_ms,
-                )
-                .await
-            } else {
-                dial_reconnect_ws(
-                    target_hub,
-                    self.primary_connector,
-                    self.failover_connector,
-                    self.connect_timeout_ms,
-                )
-                .await
-            };
-            let reconnect_ws = match dialed {
+            let reconnect_ws = match dial_reconnect_ws(
+                active_hub,
+                self.primary_connector,
+                self.failover_connector,
+                self.connect_timeout_ms,
+            )
+            .await
+            {
                 Ok(Some(ws)) => ws,
-                Ok(None) if target_hub == active_hub && current_reusable => current_ws.clone(),
+                Ok(None) if current_reusable => current_ws.clone(),
                 Ok(None) => {
                     if let Some(suppressed) = self.retry_diagnostic() {
                         warn!(suppressed, "SC retired socket cannot be reused without a fresh connector (suppressed {suppressed} reconnect diagnostics)");
-                    }
-                    self.health_tx.send_modify(|health| {
-                        health.last_error = Some(format!(
-                            "SC {} hub has no fresh connector",
-                            target_hub.label()
-                        ));
-                    });
-                    if self.config.retry_forever {
-                        backoff = (backoff * 2).min(max_backoff);
-                        continue;
                     }
                     break;
                 }
@@ -194,8 +126,6 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                     if let Some(suppressed) = self.retry_diagnostic() {
                         warn!(%e, attempt, suppressed, "SC reconnection redial failed (suppressed {suppressed} reconnect diagnostics)");
                     }
-                    self.health_tx
-                        .send_modify(|health| health.last_error = Some(e.to_string()));
                     backoff = (backoff * 2).min(max_backoff);
                     continue;
                 }
@@ -206,22 +136,12 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             {
                 Ok(()) => {
                     self.publish(&reconnect_ws, &probe_conn).await;
-                    self.health_tx.send_replace(TransportHealth {
-                        state: TransportHealthState::Up,
-                        detail: Some("connected".into()),
-                        active_hub: Some(target_hub.label().into()),
-                        last_error: None,
-                        attempt,
-                        since: Some(Instant::now()),
-                    });
                     let suppressed = self.diagnostic_throttle.take_suppressed();
                     info!(attempt, suppressed, "SC reconnected after backoff (suppressed {suppressed} reconnect diagnostics)");
-                    return Some((reconnect_ws, target_hub));
+                    return Some((reconnect_ws, active_hub));
                 }
                 Err(e) => {
                     absorb_failed_connect_probe(self.conn, &probe_conn).await;
-                    self.health_tx
-                        .send_modify(|health| health.last_error = Some(e.to_string()));
                     if !self.conn.lock().await.connect_retry_allowed {
                         if let Some(suppressed) = self.retry_diagnostic() {
                             warn!(%e, attempt, suppressed, "SC reconnection failed without retry eligibility (suppressed {suppressed} reconnect diagnostics)");
@@ -238,10 +158,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         // Preserve the existing order: only primary exhaustion tries failover.
         // An untouched preconfigured failover is consumed once, never poisoned
         // merely because a different (primary) socket was retired.
-        if !self.config.retry_forever
-            && active_hub == ActiveHub::Primary
-            && self.conn.lock().await.connect_retry_allowed
-        {
+        if active_hub == ActiveHub::Primary && self.conn.lock().await.connect_retry_allowed {
             if let Some(failover) = dial_failover_ws(
                 self.failover_connector,
                 self.failover_ws,
@@ -261,14 +178,6 @@ impl<W: WebSocketPort> Recovery<'_, W> {
                 {
                     Ok(()) => {
                         self.publish(&failover, &probe_conn).await;
-                        self.health_tx.send_replace(TransportHealth {
-                            state: TransportHealthState::Up,
-                            detail: Some("connected".into()),
-                            active_hub: Some(ActiveHub::Failover.label().into()),
-                            last_error: None,
-                            attempt: attempt.saturating_add(1),
-                            since: Some(Instant::now()),
-                        });
                         let suppressed = self.diagnostic_throttle.take_suppressed();
                         info!(suppressed, "SC connected to failover hub after primary reconnect exhaustion (suppressed {suppressed} reconnect diagnostics)");
                         return Some((failover, ActiveHub::Failover));
@@ -310,7 +219,7 @@ impl<W: WebSocketPort> Recovery<'_, W> {
             ws,
             probe,
             self.state_tx,
-            self.effective_max_apdu_length,
+            self.hub_limits,
         )
         .await;
     }
@@ -361,7 +270,6 @@ mod tests {
                 initial_delay_ms,
                 max_delay_ms,
                 max_retries: 10,
-                retry_forever: false,
             };
             config.validate().unwrap();
             let initial = Duration::from_millis(initial_delay_ms);

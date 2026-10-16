@@ -35,13 +35,6 @@ class HubIdentityTests(unittest.TestCase):
             # nonexistent credentials: constructors must not read files or bind.
             for uuid in (b"\0" * 15 + b"\1", bytearray(b"\1" * 16)):
                 ScHub(*args, device_uuid=uuid)
-            for limits in (
-                {"max_npdu_length": 1496},
-                {"max_bvlc_length": 5704},
-                {"max_npdu_length": 61328, "max_bvlc_length": 65535},
-            ):
-                with self.subTest(limits=limits), self.assertRaisesRegex(ValueError, "max (NPDU|BVLC)"):
-                    ScHub(*args, device_uuid=b"\1" * 16, **limits)
             with self.assertRaises(TypeError):
                 ScHub(*args, b"\1" * 16)  # type: ignore[call-arg]  # No sixth positional slot.
 
@@ -56,7 +49,7 @@ class HubIdentityTests(unittest.TestCase):
                   "graceful_disconnect_ack_ms", "graceful_ws_close_ms", "graceful_overall_ms",
                   "handshake_tls_ms", "handshake_websocket_upgrade_ms",
                   "handshake_connect_request_ms",
-                  'probe_scan_interval_ms', 'probe_idle_age_ms', 'probe_ack_age_ms', 'probe_send_budget_ms', 'broadcast_sender_burst', 'broadcast_sender_per_second', 'broadcast_global_burst', 'broadcast_global_per_second', 'relay_send_budget_ms', 'max_npdu_length', 'max_bvlc_length', 'certificate_bindings']
+                  'probe_scan_interval_ms', 'probe_idle_age_ms', 'probe_ack_age_ms', 'probe_send_budget_ms', 'broadcast_sender_burst', 'broadcast_sender_per_second', 'broadcast_global_burst', 'broadcast_global_per_second', 'relay_send_budget_ms', 'certificate_bindings']
         self.assertEqual([arg.arg for arg in init.args.kwonlyargs], kwonly)
         defaults = {arg.arg: default for arg, default in
                     zip(init.args.kwonlyargs, init.args.kw_defaults)}
@@ -69,7 +62,7 @@ class HubIdentityTests(unittest.TestCase):
              "graceful_disconnect_ack_ms": 5000, "graceful_ws_close_ms": 5000,
              "graceful_overall_ms": 15000, "handshake_tls_ms": 10000,
              "handshake_websocket_upgrade_ms": 10000, "handshake_connect_request_ms": 10000,
-             'probe_scan_interval_ms': 30000, 'probe_idle_age_ms': 60000, 'probe_ack_age_ms': 5000, 'probe_send_budget_ms': 5000, 'broadcast_sender_burst': 1024, 'broadcast_sender_per_second': 128, 'broadcast_global_burst': 4096, 'broadcast_global_per_second': 512, 'relay_send_budget_ms': 5000, 'max_npdu_length': 1497, 'max_bvlc_length': 5705, 'certificate_bindings': None})
+             'probe_scan_interval_ms': 30000, 'probe_idle_age_ms': 60000, 'probe_ack_age_ms': 5000, 'probe_send_budget_ms': 5000, 'broadcast_sender_burst': 1024, 'broadcast_sender_per_second': 128, 'broadcast_global_burst': 4096, 'broadcast_global_per_second': 512, 'relay_send_budget_ms': 5000, 'certificate_bindings': None})
         uuid_type = init.args.kwonlyargs[0].annotation
         assert uuid_type is not None
         annotation = ast.unparse(uuid_type)

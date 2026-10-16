@@ -40,6 +40,7 @@ set -euo pipefail
 # One line each: the crate, then its features as a comma-separated list, or
 # `-` for none. Every line builds with --no-default-features.
 checks=(
+  "bacnet-time -"
   "bacnet-mstp-codec -"
   "bacnet-mstp-codec alloc"
   "bacnet-mstp-codec heapless"
@@ -47,12 +48,15 @@ checks=(
   "bacnet-mstp-codec crc32k-table"
   "bacnet-mstp-core -"
   "bacnet-mstp-core alloc"
-  "bacnet-mstp-core heapless"
-  "bacnet-mstp-core alloc,heapless"
   "bacnet-bip-codec -"
   "bacnet-bip-codec alloc"
   "bacnet-bip-codec heapless"
   "bacnet-bip-codec bytes,heapless"
+  "bacnet-bip-core -"
+  "bacnet-router-core -"
+  "bacnet-router-core bip"
+  "bacnet-router-core mstp"
+  "bacnet-router-core bip,mstp"
   "bacnet-types alloc"
   "bacnet-types serde"
   "bacnet-encoding alloc"

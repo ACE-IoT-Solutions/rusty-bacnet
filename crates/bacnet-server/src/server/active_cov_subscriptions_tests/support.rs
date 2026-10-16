@@ -258,8 +258,9 @@ impl Wire {
         for &instance in instances {
             db.add(Box::new(
                 DeviceObject::new(DeviceConfig {
-                    instance,
-                    name: format!("Active COV Device {instance}"),
+                    identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+                        .expect("valid Device identity")
+                        .with_name(format!("Active COV Device {instance}")),
                     ..DeviceConfig::default()
                 })
                 .unwrap(),
@@ -274,7 +275,13 @@ impl Wire {
         Self::start_with_database(config, db).await
     }
 
-    pub(super) async fn start_with_database(config: ServerConfig, db: ObjectDatabase) -> Self {
+    pub(super) async fn start_with_database(mut config: ServerConfig, db: ObjectDatabase) -> Self {
+        config.device = bacnet_objects::DeviceIdentity::new(
+            db.selected_device()
+                .map_or(DEVICE_INSTANCE, |oid| oid.instance_number()),
+            0,
+        )
+        .unwrap();
         let (tx, rx) = mpsc::channel(16);
         let transport = TestTransport::builder()
             .local_mac(&[0x0A, 0, 0, 2, 0xBA, 0xC0])

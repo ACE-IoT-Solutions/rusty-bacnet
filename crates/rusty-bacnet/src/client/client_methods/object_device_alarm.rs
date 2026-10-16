@@ -33,16 +33,12 @@ impl BACnetClient {
         object_id: PyObjectIdentifier,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let oid = object_id.to_rust();
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             c.delete_object(&mac, oid).await.map_err(to_py_err)?;
             Ok(())
         };
@@ -63,6 +59,7 @@ impl BACnetClient {
         initial_values: Option<Vec<PyPropertyWrite>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
 
         // Determine specifier type
         let specifier = if let Ok(ot) = object_specifier.extract::<PyObjectType>() {
@@ -91,13 +88,8 @@ impl BACnetClient {
             .collect();
 
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let raw = c
                 .create_object(&mac, specifier, init_vals)
                 .await
@@ -121,16 +113,12 @@ impl BACnetClient {
         password: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let ed = enable_disable.to_rust();
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             c.device_communication_control(&mac, ed, time_duration, password)
                 .await
                 .map_err(to_py_err)?;
@@ -149,16 +137,12 @@ impl BACnetClient {
         password: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let state = reinitialized_state.to_rust();
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             c.reinitialize_device(&mac, state, password)
                 .await
                 .map_err(to_py_err)?;
@@ -188,7 +172,8 @@ impl BACnetClient {
         time_of_acknowledgment: PyBACnetTimeStamp,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        let mac = parse_address(&address)?;
+        let peers = PeerAddresses::for_transport(&self.transport_type);
+        let mac = peers.parse(&address)?;
         let request = build_acknowledge_alarm_request(
             acknowledging_process_identifier,
             event_object_identifier.to_rust(),
@@ -199,12 +184,7 @@ impl BACnetClient {
         );
 
         let future = async move {
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let c = started(&inner).await?;
             c.acknowledge_alarm_request(&mac, &request)
                 .await
                 .map_err(to_py_err)?;
@@ -235,17 +215,13 @@ impl BACnetClient {
             2,
         )?;
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let oid = event_object_identifier.to_rust();
         let event_state_acknowledged = event_state_acknowledged.to_rust();
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             c.acknowledge_alarm(
                 &mac,
                 acknowledging_process_identifier,
@@ -269,16 +245,12 @@ impl BACnetClient {
         last_received_object_identifier: Option<PyObjectIdentifier>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let last_oid = last_received_object_identifier.map(|o| o.to_rust());
 
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let raw = c
                 .get_event_information(&mac, last_oid)
                 .await

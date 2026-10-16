@@ -199,8 +199,8 @@ mod tests {
         }
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 1,
-                name: "Timestamp-Policy-Device".into(),
+                identity: bacnet_objects::DeviceIdentity::default()
+                    .with_name("Timestamp-Policy-Device"),
                 ..DeviceConfig::default()
             })
             .unwrap(),

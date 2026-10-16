@@ -1,20 +1,23 @@
 //! Clause 9.5.6 master state machine.
 
+use core::fmt;
+
 use bacnet_mstp_codec::{
     DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, StreamPhase, BROADCAST_MAC,
     HEADER_LENGTH, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA,
     PREAMBLE,
 };
+use bacnet_time::{Duration, Instant};
 
 use crate::actions::{
     carries_npdu, Action, ActionBuffers, ActionQueue, RequestId, TransmitFailure, TransmitId,
 };
-use crate::clock::{Duration, Instant};
 use crate::config::{
-    ConfigError, CoreBuffer, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT,
+    ConfigError, CoreBuffer, MstpCoreConfig, MIN_REPLY_TIMEOUT, MIN_USAGE_TIMEOUT, N_MIN_OCTETS,
+    N_POLL, N_RETRY_TOKEN, T_NO_TOKEN, T_SLOT,
 };
 use crate::counters::{MstpCounters, QueueCounters};
-use crate::queue::{NetworkPriority, QueueKind, QueueRejectReason, QueueStorage};
+use crate::queue::{NetworkPriority, QueueKind, QueueRefusal, QueueStorage};
 
 mod input;
 mod pending;
@@ -35,7 +38,7 @@ pub const MIN_RX_STORAGE: usize = PREAMBLE.len() + HEADER_LENGTH;
 pub const LATE_DEADLINE: Duration = Duration::from_millis(1);
 
 /// Token-passing master state names from Clause 9.5.6.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MasterState {
     /// Waiting for a frame or token-loss timeout.
     Idle,
@@ -58,6 +61,7 @@ pub enum MasterState {
 
 /// UART receive failures that count as bus activity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReceiveError {
     /// Character framing failure.
     Framing,
@@ -76,24 +80,16 @@ pub enum ReplyDecision<'a> {
     Data(&'a [u8]),
     /// Tell the requester that the response will be sent later with a token.
     Postponed,
-    /// The application abandoned or cancelled the bound request.
-    Cancelled,
     /// Abandon the bound request without emitting a wire response.
     Abandoned,
 }
 
 /// A core event was rejected without performing the requested operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CoreError {
     /// Invalid core configuration.
     Config(ConfigError),
-    /// The caller supplied a timestamp older than the previous event.
-    ClockRegression {
-        /// Timestamp accepted for the preceding event.
-        previous: Instant,
-        /// Regressing timestamp supplied by the caller.
-        supplied: Instant,
-    },
     /// A frame could not be encoded, or a frame handed to
     /// [`MasterCore::on_validated_frame`] is not a standard frame.
     Frame(FrameError),
@@ -141,6 +137,37 @@ pub enum CoreError {
     },
 }
 
+impl fmt::Display for CoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(error) => write!(f, "invalid configuration: {error}"),
+            Self::Frame(error) => write!(f, "frame refused: {error}"),
+            Self::NoPendingRequest => f.write_str("no request is waiting for an answer"),
+            Self::StaleRequest => f.write_str("the request id is not the waiting request's"),
+            Self::RequestExpired => f.write_str("too late to answer the request"),
+            Self::ReplyOversize { length, maximum } => {
+                write!(
+                    f,
+                    "a reply of {length} octets is over the {maximum} this station sends"
+                )
+            }
+            Self::StaleTransmit => f.write_str("the transmit id is not the active transmit's"),
+            Self::TransmitDeferred => {
+                f.write_str("the line was active within T_turnaround; the frame waits again")
+            }
+            Self::TransmitAlreadyStarted => f.write_str("the transmit was already started"),
+            Self::TransmitNotPolled => f.write_str("the transmit has not been polled yet"),
+            Self::TransmitNotStarted => f.write_str("the transmit was never started"),
+            Self::ReceiveStorageTooSmall { length, minimum } => write!(
+                f,
+                "receive storage of {length} octets is under the {minimum} of the shortest frame"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for CoreError {}
+
 impl From<ConfigError> for CoreError {
     fn from(error: ConfigError) -> Self {
         Self::Config(error)
@@ -155,6 +182,7 @@ impl From<FrameError> for CoreError {
 
 /// Copyable state for diagnostics without exposing mutable internals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MasterSnapshot {
     /// Current Clause 9.5.6 state.
     pub state: MasterState,
@@ -263,9 +291,11 @@ struct ActiveTransmit {
 /// stack; the crate docs show the pattern.
 ///
 /// `NPDU` is the size of the [`ActionBuffers`] delivery slots, which the
-/// core takes from them, and of the scratch it copies a queued NPDU into on
-/// the stack to send it. It defaults to a standard frame's 501 octets, so a
-/// core without extended frames costs what it always did; one with
+/// core takes from them, and the longest queued NPDU it sends; the queue
+/// drops a longer one. A queued NPDU is never copied onto the stack: the
+/// queue lends it, and the core encodes its frame from there. `NPDU`
+/// defaults to a standard frame's 501 octets, so a core without extended
+/// frames costs what it always did; one with
 /// [`MstpCoreConfig::extended_frames`] on needs
 /// [`MAX_EXTENDED_MPDU_DATA`]
 /// (see [`ExtendedActionBuffers`](crate::ExtendedActionBuffers)).
@@ -282,7 +312,7 @@ struct ActiveTransmit {
 /// [`MstpCounters::missed_generation_slots`]. It departs from the clause only
 /// when the deadline is serviced after the slot has closed; on time, the
 /// first slot is used.
-pub struct MasterCore<'rx, Q: QueueStorage, const NPDU: usize = MAX_STANDARD_MPDU_DATA> {
+pub struct MasterCore<'rx, Q, const NPDU: usize = MAX_STANDARD_MPDU_DATA> {
     config: MstpCoreConfig,
     queues: Q,
     decoder: StreamDecoder<'rx>,
@@ -312,6 +342,37 @@ pub struct MasterCore<'rx, Q: QueueStorage, const NPDU: usize = MAX_STANDARD_MPD
     counters: MstpCounters,
 }
 
+/// The core's state, not its buffers: its configuration, the Clause 9.5.6
+/// state and variables, what it waits for and until when, the actions and
+/// queued NPDUs waiting, and the counters since they were last taken.
+impl<Q: QueueStorage, const NPDU: usize> fmt::Debug for MasterCore<'_, Q, NPDU> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MasterCore")
+            .field("config", &self.config)
+            .field("state", &self.state)
+            .field("next_station", &self.next_station)
+            .field("poll_station", &self.poll_station)
+            .field("token_count", &self.token_count)
+            .field("frame_count", &self.frame_count)
+            .field("retry_token_count", &self.retry_token_count)
+            .field("event_count", &self.event_count)
+            .field("sole_master", &self.sole_master)
+            .field("pending_token", &self.pending_token)
+            .field("pending_request", &self.pending_request)
+            .field("active_transmit", &self.active_transmit)
+            .field("pending_send", &self.pending_send)
+            .field("next_deadline", &self.next_deadline())
+            .field("last_activity", &self.last_activity)
+            .field("last_now", &self.last_now)
+            .field("decoder", &self.decoder)
+            .field("actions", &self.actions)
+            .field("unicast_queued", &self.queues.depth(QueueKind::Unicast))
+            .field("broadcast_queued", &self.queues.depth(QueueKind::Broadcast))
+            .field("counters", &self.counters())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Construct a core over caller-owned storage.
     ///
@@ -335,7 +396,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// With [`MstpCoreConfig::extended_frames`] on, every buffer must hold
     /// what an extended frame needs: the receive storage and the action
     /// buffers' frame [`MAX_EXTENDED_FRAME_LENGTH`] octets, and a delivery
-    /// slot and a queue slot ([`QueueStorage::max_npdu_length`])
+    /// slot and a queue slot ([`QueueStorage::max_npdu`])
     /// [`MAX_EXTENDED_MPDU_DATA`]. A smaller one is refused with
     /// [`ConfigError::ExtendedStorageTooSmall`], naming it.
     pub fn new<const DELIVERIES: usize, const FRAME: usize>(
@@ -363,7 +424,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 (CoreBuffer::DeliverySlot, NPDU, MAX_EXTENDED_MPDU_DATA),
                 (
                     CoreBuffer::QueueSlot,
-                    queues.max_npdu_length(),
+                    queues.max_npdu(),
                     MAX_EXTENDED_MPDU_DATA,
                 ),
             ] {
@@ -392,7 +453,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             state: MasterState::Idle,
             next_station: config.station,
             poll_station: config.station,
-            token_count: config.n_poll,
+            token_count: N_POLL,
             frame_count: 0,
             retry_token_count: 0,
             event_count: 0,
@@ -403,7 +464,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             active_transmit: None,
             pending_send: None,
             next_transmit_generation: 0,
-            protocol_deadline: Some(now + config.t_no_token),
+            protocol_deadline: Some(now + T_NO_TOKEN),
             last_activity: now,
             last_octet: None,
             parser_partial: false,
@@ -414,16 +475,19 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     }
 
     /// Return the current state.
+    #[must_use]
     pub const fn state(&self) -> MasterState {
         self.state
     }
 
     /// Return the validated configuration.
+    #[must_use]
     pub const fn config(&self) -> &MstpCoreConfig {
         &self.config
     }
 
     /// Return a copyable diagnostic snapshot.
+    #[must_use]
     pub fn snapshot(&self) -> MasterSnapshot {
         MasterSnapshot {
             state: self.state,
@@ -437,55 +501,67 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         }
     }
 
-    /// Return the counters snapshot, including current queue statistics.
+    /// The counts since the counters were last taken, which then start
+    /// again from zero ([`MstpCounters`]): add them to your own totals, as
+    /// wide as you need. Each count is a `u32` that saturates between takes.
     ///
-    /// The queue counters come from the queue storage, plus the NPDUs the
-    /// core itself refused or dropped as too long to send
-    /// ([`MstpCoreConfig::max_npdu_length`]).
+    /// The queue counters are the queue storage's, taken with these
+    /// ([`QueueStorage::take_counters`]), plus the NPDUs the core itself
+    /// refused or dropped as too long to send ([`MstpCoreConfig::max_npdu`]).
+    #[must_use = "the counts are gone once taken; add them to your totals"]
+    pub fn take_counters(&mut self) -> MstpCounters {
+        let core = core::mem::take(&mut self.counters);
+        let unicast = self.queues.take_counters(QueueKind::Unicast);
+        let broadcast = self.queues.take_counters(QueueKind::Broadcast);
+        merge_queues(core, unicast, broadcast)
+    }
+
+    /// The counts since the counters were last taken, as
+    /// [`Self::take_counters`] would return them, without taking them: for
+    /// a look between takes. A core whose counters are never taken counts
+    /// from its start.
+    #[must_use]
     pub fn counters(&self) -> MstpCounters {
-        let merge = |queue: QueueCounters, core: QueueCounters| QueueCounters {
-            drops_oversize: queue.drops_oversize.saturating_add(core.drops_oversize),
-            ..queue
-        };
-        let mut counters = self.counters;
-        counters.unicast = merge(self.queues.stats(QueueKind::Unicast), self.counters.unicast);
-        counters.broadcast = merge(
-            self.queues.stats(QueueKind::Broadcast),
-            self.counters.broadcast,
-        );
-        counters
+        merge_queues(
+            self.counters,
+            self.queues.counters(QueueKind::Unicast),
+            self.queues.counters(QueueKind::Broadcast),
+        )
     }
 
     /// Queue an NPDU with an absolute expiry derived from configuration.
     ///
     /// An NPDU longer than this station sends
-    /// ([`MstpCoreConfig::max_npdu_length`]: 501 octets, or 1497 with
-    /// extended frames on) is refused with [`QueueRejectReason::Oversize`]
+    /// ([`MstpCoreConfig::max_npdu`]: 501 octets, or 1497 with
+    /// extended frames on) is refused with [`QueueRefusal::Oversize`]
     /// and counted in its queue's `drops_oversize`, whatever the queue
     /// storage could hold. With extended frames on, one of 502 octets or
     /// more goes out in an extended frame.
+    ///
+    /// A `now` earlier than the latest time the core was given is taken as
+    /// that time, as every call takes it (see the crate docs, "Time"); a
+    /// later one doesn't move the core's clock.
     pub fn enqueue_npdu(
         &mut self,
         destination: u8,
         npdu: &[u8],
         priority: NetworkPriority,
         now: Instant,
-    ) -> Result<(), QueueRejectReason> {
-        if now < self.last_now {
-            return Err(QueueRejectReason::Expired);
-        }
-        if npdu.len() > self.config.max_npdu_length() {
+    ) -> Result<(), QueueRefusal> {
+        // Taken as every call takes its time, but without moving the clock.
+        let now = now.max(self.last_now);
+        if npdu.len() > self.config.max_npdu() {
             self.record_oversize_npdu(QueueKind::from_destination(destination));
-            return Err(QueueRejectReason::Oversize);
+            return Err(QueueRefusal::Oversize);
         }
-        let expires = now.saturating_add(self.config.queue_max_age).as_micros();
+        let expires = now.saturating_add(self.config.queue_max_age);
         self.queues
-            .enqueue_npdu(destination, npdu, priority, now.as_micros(), Some(expires))
+            .enqueue_npdu(destination, npdu, priority, now, Some(expires))
     }
 
     /// Service the current absolute deadline. Early/stale callbacks are no-ops.
     pub fn on_deadline(&mut self, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         if self.abort_partial_if_late(now) {
             self.invalid_frame_event(now)?;
         }
@@ -534,10 +610,16 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     }
 
     /// Return the earliest parser, protocol, or transmit-watchdog deadline.
+    #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         let mut deadline = self.protocol_deadline;
         if self.parser_partial {
             if let Some(last_octet) = self.last_octet {
+                // A partial frame is dropped once the silence is longer than
+                // T_frame_abort, so the deadline falls just past it: a whole
+                // microsecond, the value it had when the core counted
+                // microseconds, which keeps it on the whole-microsecond
+                // timeline the simulator and the fuzz model check.
                 let parser = last_octet + self.config.t_frame_abort + Duration::from_micros(1);
                 deadline = minimum(deadline, Some(parser));
             }
@@ -551,15 +633,11 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         deadline
     }
 
-    fn observe_time(&mut self, now: Instant) -> Result<(), CoreError> {
-        if now < self.last_now {
-            return Err(CoreError::ClockRegression {
-                previous: self.last_now,
-                supplied: now,
-            });
-        }
-        self.last_now = now;
-        Ok(())
+    /// The time a call is taken at: `now`, or the latest time passed in
+    /// when `now` is earlier (see the crate docs, "Time").
+    fn observe_time(&mut self, now: Instant) -> Instant {
+        self.last_now = self.last_now.max(now);
+        self.last_now
     }
 
     /// Line activity that is not this station's own echo, worth `events`
@@ -575,13 +653,13 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         match self.state {
             MasterState::NoToken => {
                 self.set_state(MasterState::Idle);
-                self.protocol_deadline = Some(now + self.config.t_no_token);
+                self.protocol_deadline = Some(now + T_NO_TOKEN);
             }
-            MasterState::Idle => self.protocol_deadline = Some(now + self.config.t_no_token),
+            MasterState::Idle => self.protocol_deadline = Some(now + T_NO_TOKEN),
             MasterState::PassToken => {
-                if self.event_count > u32::from(self.config.n_min_octets) {
+                if self.event_count > u32::from(N_MIN_OCTETS) {
                     self.set_state(MasterState::Idle);
-                    self.protocol_deadline = Some(now + self.config.t_no_token);
+                    self.protocol_deadline = Some(now + T_NO_TOKEN);
                 } else {
                     self.protocol_deadline = Some(now + self.config.t_usage_timeout);
                 }
@@ -603,7 +681,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// this station was answering a request.
     fn enter_idle(&mut self, now: Instant) -> Result<(), CoreError> {
         self.set_state(MasterState::Idle);
-        self.protocol_deadline = Some(self.last_activity + self.config.t_no_token);
+        self.protocol_deadline = Some(self.last_activity + T_NO_TOKEN);
         self.take_pending_token(now)
     }
 
@@ -634,12 +712,37 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     }
 }
 
+/// The address after `current`: (current + 1) modulo (Max_Master + 1), as
+/// Clause 9.5.6 computes it.
 fn next_addr(current: u8, max_master: u8) -> u8 {
-    if current >= max_master {
-        0
-    } else {
-        current + 1
+    match current.cmp(&max_master) {
+        core::cmp::Ordering::Less => current + 1,
+        core::cmp::Ordering::Equal => 0,
+        // A successor above Max_Master, which a station outside the master
+        // range becomes by answering a poll, and whose failure the next
+        // search starts after (FindNewSuccessor, Clause 9.5.6.6).
+        core::cmp::Ordering::Greater => {
+            ((u32::from(current) + 1) % (u32::from(max_master) + 1)) as u8
+        }
     }
+}
+
+/// The core's own counters with the queues' in place of its queue counters,
+/// which hold only the NPDUs the core refused or dropped as too long, added
+/// to the queues' own.
+fn merge_queues(
+    core: MstpCounters,
+    unicast: QueueCounters,
+    broadcast: QueueCounters,
+) -> MstpCounters {
+    let merge = |mut queue: QueueCounters, own: QueueCounters| {
+        queue.drops_oversize = queue.drops_oversize.saturating_add(own.drops_oversize);
+        queue
+    };
+    let mut counters = core;
+    counters.unicast = merge(unicast, core.unicast);
+    counters.broadcast = merge(broadcast, core.broadcast);
+    counters
 }
 
 fn minimum(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
@@ -648,8 +751,4 @@ fn minimum(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     }
-}
-
-fn scale(duration: Duration, count: u64) -> Duration {
-    Duration::from_micros(duration.as_micros().saturating_mul(count))
 }

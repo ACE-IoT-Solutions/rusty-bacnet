@@ -1,8 +1,6 @@
 //! The adapter's side of the transmit contract, and the receive storage the
 //! core needs.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{Frame, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, HeaplessQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
@@ -13,11 +11,10 @@ type Queues = HeaplessQueues<4, 4>;
 type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn config() -> MstpCoreConfig {
-    MstpCoreConfig {
-        station: 1,
-        max_master: 2,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = 1;
+    config.max_master = 2;
+    config
 }
 
 /// Take the token with one NPDU queued and wait out the turnaround, so a
@@ -25,7 +22,7 @@ fn config() -> MstpCoreConfig {
 fn queue_a_transmit(core: &mut MasterCore<'_, Queues>) -> Instant {
     core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
-    core.on_validated_frame(Frame::new(FrameType::Token, 1, 2, &[]), Instant::ZERO)
+    core.on_validated_frame(Frame::new(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
         .unwrap();
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();

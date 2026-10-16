@@ -108,6 +108,20 @@ async fn loopback_serial_pair_and_echo() {
     assert!(a.read(&mut buf).await.is_err());
 }
 
+/// An empty write puts nothing on the line: the peer's next read returns
+/// the next octets written, never nothing, which would mean end of file.
+#[tokio::test]
+async fn loopback_serial_reads_never_return_nothing() {
+    let (a, b) = LoopbackSerial::pair();
+    let a = a.with_echo(Echo::full());
+    a.write(&[]).await.unwrap();
+    a.write(&[7]).await.unwrap();
+    let mut buf = [0u8; 4];
+    assert_eq!(b.read(&mut buf).await.unwrap(), 1);
+    assert_eq!(buf[0], 7);
+    assert_eq!(a.read(&mut buf).await.unwrap(), 1, "the echo too");
+}
+
 #[tokio::test]
 async fn transport_start_stop_and_sends_outside_a_run() {
     let (serial_a, _serial_b) = LoopbackSerial::pair();
@@ -136,6 +150,95 @@ async fn a_failed_read_ends_the_task_and_later_sends() {
     );
 }
 
+/// A port whose reads return nothing has reached its end of file: the third
+/// such read in a row ends the task as a read error does, counted, the NPDU
+/// channel closes, later sends are refused, and stopping returns.
+#[tokio::test]
+async fn three_empty_reads_in_a_row_are_the_end_of_the_port() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct Closed(Arc<AtomicUsize>);
+
+    impl SerialPort for Closed {
+        async fn write(&self, _data: &[u8]) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn read(&self, _buf: &mut [u8]) -> Result<usize, Error> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(0)
+        }
+    }
+
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mut transport = MstpTransport::new(Closed(reads.clone()), config(0, 127));
+    let diagnostics = transport.diagnostics();
+    let mut npdus = transport.start().await.unwrap();
+    assert!(npdus.recv().await.is_none(), "the task ended");
+    assert_eq!(reads.load(Ordering::SeqCst), 3);
+    assert_eq!(diagnostics.snapshot().serial_read_errors, 1);
+    let error = transport.send_broadcast(&[1, 0]).await.unwrap_err();
+    assert!(
+        matches!(error, Error::Transport(ref io) if io.kind() == std::io::ErrorKind::NotConnected)
+    );
+    tokio::time::timeout(Duration::from_secs(2), transport.stop())
+        .await
+        .expect("stop hung")
+        .unwrap();
+}
+
+/// Empty reads short of three in a row are not the end of the port, and
+/// octets read between them start the count again: a port that returns
+/// nothing twice before each frame keeps running and delivers every frame.
+#[tokio::test]
+async fn empty_reads_between_frames_are_not_the_end_of_the_port() {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// Returns its chunks in turn, an empty one as an empty read, then
+    /// waits for ever.
+    struct Scripted(Mutex<VecDeque<Vec<u8>>>);
+
+    impl SerialPort for Scripted {
+        async fn write(&self, _data: &[u8]) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn read(&self, buf: &mut [u8]) -> Result<usize, Error> {
+            let Some(chunk) = self.0.lock().unwrap().pop_front() else {
+                return std::future::pending().await;
+            };
+            buf[..chunk.len()].copy_from_slice(&chunk);
+            Ok(chunk.len())
+        }
+    }
+
+    let fills = [0x10u8, 0x20, 0x30];
+    let mut script = VecDeque::new();
+    for fill in fills {
+        script.extend([Vec::new(), Vec::new()]);
+        script.push_back(encode(
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+            3,
+            7,
+            &[1, 0, fill],
+        ));
+    }
+    let mut transport = MstpTransport::new(Scripted(Mutex::new(script)), config(3, 127));
+    let diagnostics = transport.diagnostics();
+    let mut npdus = transport.start().await.unwrap();
+    for fill in fills {
+        let npdu = tokio::time::timeout(Duration::from_secs(2), npdus.recv())
+            .await
+            .expect("the frame was delivered")
+            .expect("the task runs");
+        assert_eq!(npdu.npdu.as_ref(), &[1, 0, fill]);
+    }
+    assert_eq!(diagnostics.snapshot().serial_read_errors, 0);
+    transport.stop().await.unwrap();
+}
+
 /// A unicast NPDU whose control octet asks for a reply goes out as Data
 /// Expecting Reply; one that does not, and every broadcast, as Data Not
 /// Expecting Reply.
@@ -155,15 +258,24 @@ async fn frame_type_follows_the_npdu_and_destination() {
     let first = bus.next().await;
     assert_eq!(
         (first.frame_type, first.destination, first.data.as_slice()),
-        (FrameType::BACnetDataExpectingReply, 4, &[1, 0x04, 0xA1][..])
+        (
+            FrameType::BACNET_DATA_EXPECTING_REPLY,
+            4,
+            &[1, 0x04, 0xA1][..]
+        )
     );
     // Answer it, then check the not-expecting unicast and the broadcast.
     bus.until(first.end + bus.turnaround).await;
-    bus.send(FrameType::BACnetDataNotExpectingReply, 3, 4, &[1, 0, 0xB1]);
+    bus.send(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        3,
+        4,
+        &[1, 0, 0xB1],
+    );
     let reply = bus.npdus.recv().await.unwrap();
     assert_eq!(reply.npdu.as_ref(), &[1, 0, 0xB1]);
     let token = bus.next().await;
-    assert_eq!(token.frame_type, FrameType::Token);
+    assert_eq!(token.frame_type, FrameType::TOKEN);
 
     bus.transport
         .send_unicast(&[1, 0, 0xA2], &[4])
@@ -183,9 +295,13 @@ async fn frame_type_follows_the_npdu_and_destination() {
     assert_eq!(
         kinds,
         [
-            (FrameType::BACnetDataNotExpectingReply, 4, vec![1, 0, 0xA2]),
             (
-                FrameType::BACnetDataNotExpectingReply,
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+                4,
+                vec![1, 0, 0xA2]
+            ),
+            (
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
                 BROADCAST_MAC,
                 vec![1, 0x04, 0xA3]
             ),
@@ -250,14 +366,14 @@ async fn coalesced_frames_and_noise_in_one_read_are_all_delivered() {
     let mut chunk = vec![0x00, 0x55, 0x13];
     for fill in [0x10u8, 0x20, 0x30] {
         chunk.extend(encode(
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             3,
             7,
             &[1, 0, fill],
         ));
     }
     chunk.extend(encode(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         3,
         7,
         &[1; 501],
@@ -281,7 +397,12 @@ async fn coalesced_frames_and_noise_in_one_read_are_all_delivered() {
 #[tokio::test(start_paused = true)]
 async fn a_late_tail_completes_its_frame_within_the_host_frame_abort() {
     let mut bus = Bus::start(config(3, 127)).await;
-    let frame = encode(FrameType::BACnetDataNotExpectingReply, 3, 7, &[1, 0, 0x44]);
+    let frame = encode(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        3,
+        7,
+        &[1, 0, 0x44],
+    );
     let split = frame.len() - 1;
     for (gap, delivered) in [(40, true), (HOST_FRAME_ABORT_MS + 1, false)] {
         bus.send_raw(&frame[..split]);
@@ -301,14 +422,14 @@ async fn a_late_tail_completes_its_frame_within_the_host_frame_abort() {
 #[tokio::test(start_paused = true)]
 async fn turnaround_counts_from_the_last_chunk_read() {
     let mut bus = Bus::start(config(3, 127)).await;
-    let frame = encode(FrameType::PollForMaster, 3, 7, &[]);
+    let frame = encode(FrameType::POLL_FOR_MASTER, 3, 7, &[]);
     bus.send_raw(&frame[..4]);
     tokio::time::sleep(Duration::from_millis(30)).await;
     let tail = bus.send_raw(&frame[4..]);
     let reply = bus.next().await;
     assert_eq!(
         (reply.frame_type, reply.destination),
-        (FrameType::ReplyToPollForMaster, 7)
+        (FrameType::REPLY_TO_POLL_FOR_MASTER, 7)
     );
     assert!(reply.start >= tail + bus.turnaround);
     assert!(reply.start < tail + bus.turnaround + Duration::from_millis(2));

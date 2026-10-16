@@ -18,7 +18,6 @@ pub(super) struct IngressTransport {
     incoming: Option<mpsc::Receiver<ReceivedNpdu>>,
     outgoing: mpsc::Sender<SendRequest>,
     mac: [u8; 1],
-    max_npdu_length: Option<usize>,
 }
 
 impl TransportPort for IngressTransport {
@@ -72,10 +71,6 @@ impl TransportPort for IngressTransport {
         1476
     }
 
-    fn max_npdu_length(&self) -> Option<usize> {
-        self.max_npdu_length
-    }
-
     fn local_mac(&self) -> &[u8] {
         &self.mac
     }
@@ -92,13 +87,6 @@ pub(super) fn network(port: usize) -> u16 {
 }
 
 pub(super) fn fixture(count: usize) -> (Vec<RouterPort<IngressTransport>>, Vec<Peer>) {
-    fixture_with_limits(vec![None; count])
-}
-
-pub(super) fn fixture_with_limits(
-    limits: Vec<Option<usize>>,
-) -> (Vec<RouterPort<IngressTransport>>, Vec<Peer>) {
-    let count = limits.len();
     (0..count)
         .map(|port| {
             // Only injected transport backlog is larger than the production
@@ -111,7 +99,6 @@ pub(super) fn fixture_with_limits(
                         incoming: Some(rx),
                         outgoing,
                         mac: [port as u8 + 1],
-                        max_npdu_length: limits[port],
                     },
                     network_number: network(port),
                 },
@@ -209,15 +196,30 @@ pub(super) async fn wire(peer: &mut Peer) -> SendRequest {
         .expect("wire closed")
 }
 
+/// Take the startup announcements off each peer's wire, in order: the
+/// port's Network-Number-Is, configured (R3), then, with another port, its
+/// I-Am-Router.
 pub(super) async fn drain_announcements(peers: &mut [Peer]) {
-    for peer in peers {
-        let SendRequest::Broadcast { npdu, .. } = wire(peer).await else {
-            panic!("expected startup announcement")
-        };
-        assert_eq!(
-            decode_npdu(npdu).unwrap().message_type,
-            Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw())
-        );
+    let ports = peers.len();
+    for (port, peer) in peers.iter_mut().enumerate() {
+        let mut number = network(port).to_be_bytes().to_vec();
+        number.push(1);
+        let mut expected = vec![(NetworkMessageType::NETWORK_NUMBER_IS, number)];
+        if ports > 1 {
+            let beyond = (0..ports)
+                .filter(|&other| other != port)
+                .flat_map(|other| network(other).to_be_bytes())
+                .collect();
+            expected.push((NetworkMessageType::I_AM_ROUTER_TO_NETWORK, beyond));
+        }
+        for (message_type, data) in expected {
+            let SendRequest::Broadcast { npdu, .. } = wire(peer).await else {
+                panic!("expected startup announcement")
+            };
+            let npdu = decode_npdu(npdu).unwrap();
+            assert_eq!(npdu.message_type, Some(message_type.to_raw()));
+            assert_eq!(npdu.payload[..], data[..]);
+        }
     }
 }
 

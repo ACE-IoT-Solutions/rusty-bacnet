@@ -96,7 +96,7 @@ class EndpointStubParityTests(unittest.TestCase):
                            "services", "device_uuid", "queue_capacity",
                            "apdu_timeout_ms", "apdu_retries", "registered_network_port",
                            "read_work_limit", "share_port_by_address",
-                           "min_request_interval_ms"]),
+                           "min_request_interval_ms", "bbmd", "foreign_device"]),
             (ScEndpoint, ["device_instance", "sc_hub", "sc_vmac", "sc_ca_cert",
                           "sc_client_cert", "sc_client_key", "sc_device_uuid",
                           "device_name", "vendor_id", "sc_heartbeat_interval_ms",
@@ -109,7 +109,10 @@ class EndpointStubParityTests(unittest.TestCase):
                             "mstp_max_info_frames", "max_apdu", "segmentation",
                             "services", "device_uuid", "queue_capacity",
                             "apdu_timeout_ms", "apdu_retries", "read_work_limit",
-                            "min_request_interval_ms"]),
+                            "min_request_interval_ms", "mstp_extended_frames",
+                            "mstp_echo", "mstp_echo_grace_ms",
+                            "mstp_transmit_latency_pad_ms", "mstp_usage_timeout_ms",
+                            "mstp_reply_timeout_ms"]),
         ]
         for cls, expected in cases:
             with self.subTest(cls=cls.__name__):
@@ -132,7 +135,7 @@ class EndpointStubParityTests(unittest.TestCase):
         # Native Future-returning owner methods.
         for cls, methods in (
             (BipEndpoint, ["start", "close", "client", "server", "local_address",
-                           "status", "broadcast_i_am"]),
+                           "status", "foreign_registration", "broadcast_i_am"]),
             (ScEndpoint, ["start", "close", "client", "server", "local_address",
                           "status", "broadcast_i_am"]),
             (MstpEndpoint, ["start", "close", "client", "server", "local_address",

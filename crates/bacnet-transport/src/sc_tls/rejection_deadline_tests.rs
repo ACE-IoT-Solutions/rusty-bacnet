@@ -117,7 +117,7 @@ async fn exercise(wire: Vec<u8>) {
         .with_device_uuid([1; 16])
         // Public production timing, no clock replacement or private override.
         .with_heartbeat_interval_ms(3000).with_heartbeat_timeout_ms(3400)
-        .with_reconnect(ScReconnectConfig { initial_delay_ms: 20, max_delay_ms: 20, max_retries: 1, retry_forever: false });
+        .with_reconnect(ScReconnectConfig { initial_delay_ms: 20, max_delay_ms: 20, max_retries: 1 });
     let accept = async {
         let request = peer.next().await.unwrap().unwrap().into_data();
         assert_eq!(&request[..4], &[6, 0, 0, 1]);
@@ -131,10 +131,7 @@ async fn exercise(wire: Vec<u8>) {
     let mut rx = rx.unwrap();
     let started = std::time::Instant::now();
     let mut states = transport.connection_state_changes();
-    let TlsWebSocketInner::Connected { write, .. } = &ws.inner else {
-        panic!("connected TLS WebSocket expected");
-    };
-    let write = write.lock().await; // Gate the real production write lock.
+    let write = ws.write.lock().await; // Gate the real production write lock.
     peer.send(Message::Binary(wire.into())).await.unwrap();
     while counts.nak_entered.load(Ordering::SeqCst) == 0 {
         tokio::task::yield_now().await;

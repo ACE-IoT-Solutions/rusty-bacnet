@@ -6,7 +6,6 @@ use tokio::net::UdpSocket;
 
 use super::frame::encoded;
 use super::ingress::{destination_vmac_matches, original_destination_matches, LocalBinding};
-use super::vmac_table::derive_vmac_from_device_instance;
 use super::*;
 use crate::port::TransportPort;
 
@@ -207,108 +206,12 @@ fn destination_vmac_filter_admits_only_this_nodes_vmac() {
 }
 
 #[tokio::test]
-async fn vmac_table_preserves_scope_and_replaces_address_owner() {
-    let table = super::vmac_table::VmacTable::new();
-    let ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-    let first = SocketAddrV6::new(ip, 47808, 0, 4);
-    let replacement = SocketAddrV6::new(ip, 47808, 0, 4);
-
-    table.learn(vmac([1, 2, 3]), first).await;
-    assert_eq!(
-        table.resolve_by_addr(ip, 47808).await,
-        Some((vmac([1, 2, 3]), first))
-    );
-
-    table.learn(vmac([4, 5, 6]), replacement).await;
-    assert_eq!(table.lookup(&vmac([1, 2, 3])).await, None);
-    assert_eq!(
-        table.resolve_by_addr(ip, 47808).await,
-        Some((vmac([4, 5, 6]), replacement))
-    );
-}
-
-#[tokio::test]
-async fn vmac_table_fails_closed_for_ambiguous_scope() {
-    let table = super::vmac_table::VmacTable::new();
-    let ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-
-    table
-        .learn(vmac([1, 2, 3]), SocketAddrV6::new(ip, 47808, 0, 4))
-        .await;
-    table
-        .learn(vmac([4, 5, 6]), SocketAddrV6::new(ip, 47808, 0, 7))
-        .await;
-
-    assert_eq!(table.resolve_by_addr(ip, 47808).await, None);
-}
-
-#[tokio::test]
-async fn vmac_table_is_bounded() {
-    let table = super::vmac_table::VmacTable::new();
-    for index in 0..super::vmac_table::MAX_VMAC_TABLE_ENTRIES {
-        let octets = [
-            ((index >> 16) & 0xFF) as u8,
-            ((index >> 8) & 0xFF) as u8,
-            (index & 0xFF) as u8,
-        ];
-        table
-            .learn(
-                vmac(octets),
-                SocketAddrV6::new(Ipv6Addr::LOCALHOST, 10_000 + index as u16, 0, 0),
-            )
-            .await;
-    }
-    table
-        .learn(
-            vmac([0xFE, 0xFE, 0xFE]),
-            SocketAddrV6::new(Ipv6Addr::LOCALHOST, 9999, 0, 0),
-        )
-        .await;
-
-    assert_eq!(table.len().await, super::vmac_table::MAX_VMAC_TABLE_ENTRIES);
-    assert_eq!(table.lookup(&vmac([0xFE, 0xFE, 0xFE])).await, None);
-
-    table
-        .learn(
-            vmac([0xFD, 0xFD, 0xFD]),
-            SocketAddrV6::new(Ipv6Addr::LOCALHOST, 10_000, 0, 0),
-        )
-        .await;
-    assert_eq!(table.len().await, super::vmac_table::MAX_VMAC_TABLE_ENTRIES);
-    assert_eq!(table.lookup(&vmac([0, 0, 0])).await, None);
-    assert!(table.lookup(&vmac([0xFD, 0xFD, 0xFD])).await.is_some());
-}
-
-#[tokio::test]
-async fn vmac_table_does_not_retain_ambiguous_reverse_entries() {
-    let table = super::vmac_table::VmacTable::new();
-    let ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-
-    for port in 10_000..10_100 {
-        table
-            .learn(vmac([1, 2, 3]), SocketAddrV6::new(ip, port, 0, 4))
-            .await;
-        table
-            .learn(vmac([4, 5, 6]), SocketAddrV6::new(ip, port, 0, 7))
-            .await;
-        assert_eq!(table.resolve_by_addr(ip, port).await, None);
-    }
-
-    assert_eq!(table.len().await, 2);
-    assert_eq!(table.resolve_by_addr(ip, 10_000).await, None);
-}
-
-#[tokio::test]
 async fn wrong_destination_vmac_ack_is_not_learned() {
     let mut transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(42));
     let _rx = transport.start().await.unwrap();
-    let (_, transport_port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let transport_port = transport.local_address().unwrap().port();
     let destination = SocketAddrV6::new(Ipv6Addr::LOCALHOST, transport_port, 0, 0);
     let sender = UdpSocket::bind("[::1]:0").await.unwrap();
-    let sender_addr = match sender.local_addr().unwrap() {
-        std::net::SocketAddr::V6(address) => address,
-        _ => unreachable!(),
-    };
     let foreign_destination = vmac([9, 9, 9]);
 
     let ar_source = vmac([1, 2, 3]);
@@ -335,15 +238,8 @@ async fn wrong_destination_vmac_ack_is_not_learned() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    assert_eq!(transport.vmac_table.lookup(&ar_source).await, None);
-    assert_eq!(transport.vmac_table.lookup(&var_source).await, None);
-    assert_eq!(
-        transport
-            .vmac_table
-            .resolve_by_addr(*sender_addr.ip(), sender_addr.port())
-            .await,
-        None
-    );
+    assert_eq!(transport.lookup_vmac(ar_source), None);
+    assert_eq!(transport.lookup_vmac(var_source), None);
 
     transport.stop().await.unwrap();
 }
@@ -360,48 +256,61 @@ async fn bip6_start_stop() {
     let mut transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(1));
     let _rx = transport.start().await.unwrap();
     assert!(transport.socket.is_some());
-    assert_eq!(transport.local_mac().len(), 18);
+    // The MAC is the VMAC device instance 1 gives (U.1.3, H.7.2).
+    assert_eq!(transport.local_mac(), [0x00, 0x00, 0x01]);
+    assert_eq!(transport.local_vmac(), Some(vmac([0x00, 0x00, 0x01])));
+    let address = transport.local_address().unwrap();
+    assert_eq!(*address.ip(), Ipv6Addr::LOCALHOST);
+    assert_ne!(address.port(), 0);
     transport.stop().await.unwrap();
     assert!(transport.socket.is_none());
+    assert_eq!(transport.local_mac(), [0; 3]);
+    assert_eq!(
+        (transport.local_vmac(), transport.local_address()),
+        (None, None)
+    );
 }
 
+/// The MAC is the 3-octet VMAC (U.1.3): a node that found its peer's VMAC
+/// from the peer's address sends to that VMAC, the frame arrives with the
+/// sender's VMAC as its source MAC, and the peer answers that VMAC at once,
+/// having learned it from the frame (U.5).
 #[tokio::test]
 async fn bip6_unicast_loopback() {
     let mut transport_a = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(2));
     let mut transport_b = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(3));
 
-    let _rx_a = transport_a.start().await.unwrap();
+    let mut rx_a = transport_a.start().await.unwrap();
     let mut rx_b = transport_b.start().await.unwrap();
 
-    let test_npdu = vec![0x01, 0x00, 0xDE, 0xAD];
-
-    let error = transport_a
-        .send_unicast(&test_npdu, transport_b.local_mac())
+    let found = transport_a
+        .resolve_virtual_address(transport_b.local_address().unwrap())
         .await
-        .unwrap_err();
-    assert!(error.to_string().contains("destination VMAC is unknown"));
+        .unwrap();
+    assert_eq!(found.octets(), transport_b.local_mac());
 
-    let (peer_ip, peer_port) = decode_bip6_mac(transport_b.local_mac()).unwrap();
-    transport_a
-        .vmac_table
-        .learn(
-            transport_b.source_vmac,
-            SocketAddrV6::new(peer_ip, peer_port, 0, 0),
-        )
-        .await;
-
+    let test_npdu = vec![0x01, 0x00, 0xDE, 0xAD];
     transport_a
         .send_unicast(&test_npdu, transport_b.local_mac())
         .await
         .unwrap();
-
-    let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx_b.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
         .await
         .expect("timeout")
         .expect("channel closed");
-
     assert_eq!(received.npdu, test_npdu);
-    assert_eq!(received.source_mac.as_slice(), transport_a.local_mac());
+    assert_eq!(received.source_mac.as_slice(), [0x00, 0x00, 0x02]);
+
+    transport_b
+        .send_unicast(&test_npdu, &received.source_mac)
+        .await
+        .unwrap();
+    let answer = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+        .await
+        .expect("timeout")
+        .expect("channel closed");
+    assert_eq!(answer.source_mac.as_slice(), transport_b.local_mac());
+    assert_eq!(transport_a.resolution_counters().resolutions_started, 0);
 
     transport_a.stop().await.unwrap();
     transport_b.stop().await.unwrap();
@@ -409,12 +318,13 @@ async fn bip6_unicast_loopback() {
 
 #[test]
 fn vmac_from_valid_device_instance_uses_all_22_bits() {
-    let vmac = derive_vmac_from_device_instance(0x123456);
+    let vmac = vmac_from_device_instance(0x123456).unwrap();
     assert_eq!(vmac.octets(), [0x12, 0x34, 0x56]);
     assert_eq!(
-        derive_vmac_from_device_instance(0x3F_FFFF).octets(),
+        vmac_from_device_instance(0x3F_FFFF).unwrap().octets(),
         [0x3F, 0xFF, 0xFF]
     );
+    assert!(vmac_from_device_instance(0x40_0000).is_err());
 }
 
 #[tokio::test]
@@ -448,14 +358,14 @@ async fn bip6_forwarded_npdu_delivered() {
     };
     let buf = forwarded(originating_vmac, origin_addr, &test_npdu);
 
-    let (_, transport_port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let transport_port = transport.local_address().unwrap().port();
     let dest = SocketAddrV6::new(Ipv6Addr::LOCALHOST, transport_port, 0, 0);
 
     let malformed_vmac = vmac([0x41, 0x00, 0x01]);
     let malformed = forwarded(malformed_vmac, origin_addr, &[0]);
     sender.send_to(&malformed, dest).await.unwrap();
     tokio::time::sleep(Duration::from_millis(25)).await;
-    assert_eq!(transport.vmac_table.lookup(&malformed_vmac).await, None);
+    assert_eq!(transport.lookup_vmac(malformed_vmac), None);
 
     let invalid_origins = [
         (
@@ -490,7 +400,7 @@ async fn bip6_forwarded_npdu_delivered() {
     }
     tokio::time::sleep(Duration::from_millis(25)).await;
     for (vmac, _) in invalid_origins {
-        assert_eq!(transport.vmac_table.lookup(&vmac).await, None);
+        assert_eq!(transport.lookup_vmac(vmac), None);
     }
 
     sender.send_to(&buf, dest).await.unwrap();
@@ -501,16 +411,11 @@ async fn bip6_forwarded_npdu_delivered() {
         .expect("channel closed");
 
     assert_eq!(received.npdu, test_npdu);
-    assert_eq!(
-        received.source_mac.as_slice(),
-        &encode_bip6_mac(*origin_addr.ip(), origin_addr.port())
-    );
+    // The origin's VMAC is the NPDU's source MAC.
+    assert_eq!(received.source_mac.as_slice(), originating_vmac.octets());
     assert!(received.link_layer_group);
 
-    assert_eq!(
-        transport.vmac_table.lookup(&originating_vmac).await,
-        Some(origin_addr)
-    );
+    assert_eq!(transport.lookup_vmac(originating_vmac), Some(origin_addr));
 
     transport.stop().await.unwrap();
 }
@@ -529,7 +434,7 @@ async fn bip6_var_response() {
 
     // Send VAR to the transport
     let checker = UdpSocket::bind("[::1]:0").await.unwrap();
-    let (_, transport_port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let transport_port = transport.local_address().unwrap().port();
     let dest = SocketAddrV6::new(Ipv6Addr::LOCALHOST, transport_port, 0, 0);
     checker.send_to(&buf, dest).await.unwrap();
 

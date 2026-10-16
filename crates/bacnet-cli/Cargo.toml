@@ -36,6 +36,7 @@ rustyline = "18"
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-pki-types = { version = "1", optional = true }
+time = { version = "0.3.54", features = ["formatting"], optional = true }
 
 # Pcap optional deps
 pcap = { version = "2", optional = true }
@@ -64,7 +65,7 @@ tokio = { workspace = true, features = ["test-util"] }
 [features]
 default = []
 # The full-screen terminal UI (`bacnet tui`). Opt-in until the TUI epic ships in
-# 0.13.0 (#975): release builds and a plain `cargo install` leave it out.
+# 0.14.0 (#975): release builds and a plain `cargo install` leave it out.
 tui = ["dep:ratatui", "dep:crossterm", "dep:futures-util"]
 sc-tls = [
     "bacnet-client/sc-tls",
@@ -72,6 +73,7 @@ sc-tls = [
     "dep:tokio-rustls",
     "dep:rustls",
     "dep:rustls-pki-types",
+    "dep:time",
 ]
 pcap = ["dep:pcap", "dep:ctrlc", "dep:libc"]
 

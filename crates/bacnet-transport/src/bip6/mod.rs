@@ -2,10 +2,14 @@
 //!
 //! All B/IPv6 BVLL parsing and encoding lives in
 //! [`bacnet_bip_codec::ipv6`]. This module holds the transport around it:
-//! the socket, multicast groups, the VMAC table, foreign-device
+//! the socket, multicast groups, the neighbour table that maps VMACs to
+//! B/IPv6 addresses and resolves the ones it lacks (U.5), foreign-device
 //! registration, and [`decode_bvll6`], [`encode_bvll6`] and
 //! [`bvll6_error`], which use the transport's
 //! [`Error`](bacnet_types::error::Error).
+//!
+//! The transport's network-layer MAC is the node's 3-octet VMAC (U.1.3):
+//! see [`Bip6Transport`].
 //!
 //! Every codec item that a public transport signature names is re-exported
 //! here under its codec name, so a crate that depends on the transport can
@@ -49,6 +53,7 @@ pub use bacnet_bip_codec::{BvllSink, PayloadShape, SinkFull, HEADER_LENGTH, MAX_
 /// Maximum number of random VMAC regenerations before startup fails (Annex U.5/H.7.2).
 pub const MAX_VMAC_RETRIES: u32 = 3;
 
+mod addressing;
 mod collision_probe;
 mod frame;
 pub use frame::{bvll6_error, decode_bvll6, encode_bvll6};
@@ -58,25 +63,41 @@ mod port;
 mod receive;
 mod receive_counters;
 mod reply_limit;
+mod resolve;
+mod resolve_counters;
+mod resolver;
 mod send;
 mod socket;
 mod vmac_table;
 pub use port::{
-    decode_bip6_mac, encode_bip6_mac, Bip6BroadcastScope, Bip6ForeignDeviceConfig, Bip6Transport,
-    BACNET_IPV6_MULTICAST, BACNET_IPV6_MULTICAST_LINK_LOCAL, BACNET_IPV6_MULTICAST_ORG_LOCAL,
+    Bip6BroadcastScope, Bip6ForeignDeviceConfig, Bip6Transport, BACNET_IPV6_MULTICAST,
+    BACNET_IPV6_MULTICAST_LINK_LOCAL, BACNET_IPV6_MULTICAST_ORG_LOCAL,
     BACNET_IPV6_MULTICAST_SITE_LOCAL, DEFAULT_BACNET6_PORT,
 };
 pub use receive_counters::Bip6ReceiveCounters;
-pub use vmac_table::generate_random_vmac;
+pub use resolve_counters::Bip6ResolutionCounters;
+pub use resolver::UnresolvedSend;
+pub use vmac_table::{
+    format_vmac_text, generate_random_vmac, parse_vmac_text, vmac_from_device_instance,
+    VMAC_TEXT_PREFIX,
+};
 
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
 mod group_delivery_tests;
+#[cfg(all(test, unix))]
+mod multicast_resolution_tests;
 #[cfg(test)]
 mod receive_counters_tests;
 #[cfg(test)]
 mod reply_tests;
+#[cfg(test)]
+mod resolve_tests;
+#[cfg(test)]
+mod resolver_tests;
+#[cfg(test)]
+mod revalidation_tests;
 #[cfg(test)]
 mod safety_tests;
 #[cfg(test)]

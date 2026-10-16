@@ -7,6 +7,10 @@
 //! [`std::sync::Mutex`], which the core locks through [`QueueStorage`] for
 //! each queue operation and a send locks for one enqueue. Neither side holds
 //! it across an await.
+//!
+//! The core's handle, [`CoreQueues`], has one buffer of its own: a dequeue
+//! lends the NPDU, which can't stay borrowed from inside the lock, so it is
+//! copied there under the lock and lent from there.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -14,7 +18,7 @@ use bacnet_mstp_codec::{MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA};
 
 use bacnet_mstp_core::{
     AllocQueues, DequeuedNpdu, Duration as CoreDuration, Instant as CoreInstant, NetworkPriority,
-    QueueCounters, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
+    QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
 };
 
 /// Room in each queue, unicast and broadcast: the host transport's limit
@@ -41,7 +45,7 @@ pub(super) enum EnqueueError {
     /// The transport's task has ended.
     Closed,
     /// The queue refused it.
-    Rejected(QueueRejectReason),
+    Rejected(QueueRefusal),
 }
 
 impl SharedQueues {
@@ -97,22 +101,26 @@ impl SharedQueues {
         }
         shared
             .queues
-            .enqueue_npdu(
-                destination,
-                npdu,
-                npdu_priority(npdu),
-                now.as_micros(),
-                Some(expires.as_micros()),
-            )
+            .enqueue_npdu(destination, npdu, npdu_priority(npdu), now, Some(expires))
             .map_err(EnqueueError::Rejected)
     }
 
-    /// The unicast and broadcast queue counters.
-    pub(super) fn stats(&self) -> (QueueCounters, QueueCounters) {
-        let shared = self.lock();
+    /// The core's handle on these queues.
+    pub(super) fn for_core(&self) -> CoreQueues {
+        let longest = self.lock().queues.max_npdu();
+        CoreQueues {
+            shared: self.clone(),
+            lent: vec![0; longest].into_boxed_slice(),
+        }
+    }
+
+    /// Take the unicast and broadcast queue counters, which then start
+    /// again (see [`QueueStorage::take_counters`]).
+    pub(super) fn take_counters(&self) -> (QueueCounters, QueueCounters) {
+        let mut shared = self.lock();
         (
-            shared.queues.stats(QueueKind::Unicast),
-            shared.queues.stats(QueueKind::Broadcast),
+            shared.queues.take_counters(QueueKind::Unicast),
+            shared.queues.take_counters(QueueKind::Broadcast),
         )
     }
 }
@@ -122,17 +130,31 @@ impl SharedQueues {
 /// short to carry one.
 pub(super) fn npdu_priority(npdu: &[u8]) -> NetworkPriority {
     npdu.get(1)
-        .and_then(|control| NetworkPriority::from_u8(control & 0x03))
+        .and_then(|control| NetworkPriority::try_from(control & 0x03).ok())
         .unwrap_or(NetworkPriority::Normal)
 }
 
-impl QueueStorage for SharedQueues {
+/// The core's handle on the [`SharedQueues`], from
+/// [`SharedQueues::for_core`]: the queues, and a buffer as long as their
+/// slots, allocated once, that a dequeued NPDU is lent from.
+pub(super) struct CoreQueues {
+    shared: SharedQueues,
+    lent: Box<[u8]>,
+}
+
+impl CoreQueues {
+    fn lock(&self) -> MutexGuard<'_, Shared> {
+        self.shared.lock()
+    }
+}
+
+impl QueueStorage for CoreQueues {
     fn set_starvation_limit(&mut self, limit: u8) {
         self.lock().queues.set_starvation_limit(limit);
     }
 
-    fn max_npdu_length(&self) -> usize {
-        self.lock().queues.max_npdu_length()
+    fn max_npdu(&self) -> usize {
+        self.lock().queues.max_npdu()
     }
 
     fn enqueue_npdu(
@@ -140,47 +162,78 @@ impl QueueStorage for SharedQueues {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
+        now: CoreInstant,
+        expires_at: Option<CoreInstant>,
+    ) -> Result<(), QueueRefusal> {
         self.lock()
             .queues
             .enqueue_npdu(destination, payload, priority, now, expires_at)
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: CoreInstant) -> usize {
         self.lock().queues.expire(now)
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: CoreInstant) -> Option<QueueItemInfo> {
         self.lock().queues.peek(now)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: CoreInstant) -> Option<QueueItemInfo> {
         self.lock().queues.peek_kind(kind, now)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        self.lock().queues.dequeue_kind_into(kind, now, scratch)
+        now: CoreInstant,
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
+        let mut shared = self.shared.lock();
+        let Some(item) = shared.queues.dequeue_kind(kind, now, max_len)? else {
+            return Ok(None);
+        };
+        let len = item.npdu.len();
+        // The buffer is as long as the queues' slots and a queue lends at
+        // most a slot, so the else branch never runs. If it did, the item,
+        // already off its queue, would be lost without a count: a debug
+        // build stops first.
+        debug_assert!(
+            len <= self.lent.len(),
+            "a queue lent {len} octets, more than its {}-octet slots",
+            self.lent.len()
+        );
+        let Some(lent) = self.lent.get_mut(..len) else {
+            return Err(QueueRefusal::Oversize);
+        };
+        lent.copy_from_slice(item.npdu);
+        let (destination, kind, priority, sequence) =
+            (item.destination, item.kind, item.priority, item.sequence);
+        drop(shared);
+        Ok(Some(DequeuedNpdu::new(
+            destination,
+            kind,
+            priority,
+            sequence,
+            &self.lent[..len],
+        )))
     }
 
     fn depth(&self, kind: QueueKind) -> usize {
         self.lock().queues.depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        self.lock().queues.stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.lock().queues.counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.lock().queues.take_counters(kind)
     }
 }
 
-/// Tokio time mapped onto the core's microsecond clock from a fixed origin,
-/// the moment the transport started. Both the task and the send calls use
-/// it, so queue times and core events share one clock.
+/// Tokio time mapped onto the core's nanosecond timeline from a fixed
+/// origin, the moment the transport started. Both the task and the send
+/// calls use it, so queue times and core events share one clock.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CoreClock {
     origin: tokio::time::Instant,
@@ -198,16 +251,17 @@ impl CoreClock {
         self.at(tokio::time::Instant::now())
     }
 
-    /// The core's time at `instant`, rounded down to the microsecond.
+    /// The core's time at `instant`, exactly (saturating some 584 years
+    /// after the origin).
     pub(super) fn at(&self, instant: tokio::time::Instant) -> CoreInstant {
-        let elapsed = instant.saturating_duration_since(self.origin).as_micros();
-        CoreInstant::from_micros(u64::try_from(elapsed).unwrap_or(u64::MAX))
+        let elapsed = instant.saturating_duration_since(self.origin);
+        CoreInstant::ZERO + CoreDuration::saturating_from_core(elapsed)
     }
 
-    /// The Tokio instant of a core time. Rounding [`Self::at`] down means a
-    /// timer set here never wakes before the core's deadline is due.
+    /// The Tokio instant of a core time. Both ways are exact, so a timer set
+    /// here never wakes before the core's deadline is due.
     pub(super) fn instant(&self, at: CoreInstant) -> tokio::time::Instant {
-        let offset = std::time::Duration::from_micros(at.as_micros());
+        let offset = std::time::Duration::from_nanos(at.as_nanos());
         self.origin
             .checked_add(offset)
             .unwrap_or_else(|| self.origin + std::time::Duration::from_secs(86_400 * 365))
@@ -241,7 +295,37 @@ mod tests {
             queues.enqueue(5, &[1, 0], now, age),
             Err(EnqueueError::Closed)
         );
-        assert_eq!(queues.stats().0.enqueued, 1);
+        assert_eq!(queues.take_counters().0.enqueued, 1);
+    }
+
+    #[test]
+    fn the_core_handle_lends_what_the_sends_queued() {
+        let queues = SharedQueues::new(true);
+        let mut core = queues.for_core();
+        let now = CoreInstant::ZERO;
+        let age = CoreDuration::from_secs(1);
+        // Normal priority (its control octet is 0), then an urgent one.
+        let mut long: Vec<u8> = (0..MAX_EXTENDED_MPDU_DATA).map(|i| i as u8).collect();
+        long[1] = 0;
+        let urgent = [1, 0x01, 9];
+        queues.enqueue(5, &long, now, age).unwrap();
+        queues.enqueue(5, &urgent, now, age).unwrap();
+        queues.enqueue(6, &[1, 0], now, age).unwrap();
+        let first = core.dequeue(now, MAX_EXTENDED_MPDU_DATA).unwrap().unwrap();
+        assert_eq!(
+            (first.destination, first.priority, first.npdu),
+            (5, NetworkPriority::Urgent, &urgent[..])
+        );
+        let second = core.dequeue(now, MAX_EXTENDED_MPDU_DATA).unwrap().unwrap();
+        assert_eq!((second.destination, second.npdu), (5, &long[..]));
+        // Longer than the core takes: dropped and counted.
+        assert_eq!(core.dequeue(now, 1), Err(QueueRefusal::Oversize));
+        assert_eq!(core.dequeue(now, MAX_EXTENDED_MPDU_DATA), Ok(None));
+        let (unicast, _) = queues.take_counters();
+        assert_eq!(
+            (unicast.depth, unicast.dequeued, unicast.drops_oversize),
+            (0, 3, 1)
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -249,9 +333,9 @@ mod tests {
         let clock = CoreClock::new();
         tokio::time::advance(std::time::Duration::from_nanos(2_500)).await;
         let now = clock.now();
-        assert_eq!(now, CoreInstant::from_micros(2));
-        assert!(clock.instant(now) <= tokio::time::Instant::now());
-        let deadline = CoreInstant::from_micros(10);
+        assert_eq!(now, CoreInstant::from_nanos(2_500));
+        assert_eq!(clock.instant(now), tokio::time::Instant::now());
+        let deadline = CoreInstant::from_nanos(10_001);
         assert_eq!(clock.at(clock.instant(deadline)), deadline);
     }
 }

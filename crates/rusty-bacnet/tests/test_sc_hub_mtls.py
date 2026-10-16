@@ -226,7 +226,7 @@ class HubMtlsTests(MtlsFixture):
                                             "graceful_overall_ms", "handshake_tls_ms",
                                             "handshake_websocket_upgrade_ms",
                                             "handshake_connect_request_ms",
-                  'probe_scan_interval_ms', 'probe_idle_age_ms', 'probe_ack_age_ms', 'probe_send_budget_ms', 'broadcast_sender_burst', 'broadcast_sender_per_second', 'broadcast_global_burst', 'broadcast_global_per_second', 'relay_send_budget_ms', 'max_npdu_length', 'max_bvlc_length', 'certificate_bindings'])
+                  'probe_scan_interval_ms', 'probe_idle_age_ms', 'probe_ack_age_ms', 'probe_send_budget_ms', 'broadcast_sender_burst', 'broadcast_sender_per_second', 'broadcast_global_burst', 'broadcast_global_per_second', 'relay_send_budget_ms', 'certificate_bindings'])
         self.assertIsNone(parameters["ca_cert"].default)
         self.assertEqual(parameters["ca_cert"].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         self.assertIsNone(parameters["device_uuid"].default)
@@ -238,7 +238,7 @@ class HubMtlsTests(MtlsFixture):
                               ("handshake_tls_ms", 10000),
                               ("handshake_websocket_upgrade_ms", 10000),
                               ("handshake_connect_request_ms", 10000),
-                              ('probe_scan_interval_ms', 30000), ('probe_idle_age_ms', 60000), ('probe_ack_age_ms', 5000), ('probe_send_budget_ms', 5000), ('broadcast_sender_burst', 1024), ('broadcast_sender_per_second', 128), ('broadcast_global_burst', 4096), ('broadcast_global_per_second', 512), ('relay_send_budget_ms', 5000), ('max_npdu_length', 1497), ('max_bvlc_length', 5705), ('certificate_bindings', None)]:
+                              ('probe_scan_interval_ms', 30000), ('probe_idle_age_ms', 60000), ('probe_ack_age_ms', 5000), ('probe_send_budget_ms', 5000), ('broadcast_sender_burst', 1024), ('broadcast_sender_per_second', 128), ('broadcast_global_burst', 4096), ('broadcast_global_per_second', 512), ('relay_send_budget_ms', 5000), ('certificate_bindings', None)]:
             with self.subTest(name=name):
                 self.assertEqual(parameters[name].default, default)
                 self.assertEqual(parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
@@ -595,7 +595,7 @@ class NodeIdentityMtlsTests(MtlsFixture):
                     self.assertEqual(connect[:4], b"\x06\0\0\1")
                     self.assertEqual(connect[4:10], vmac)
                     self.assertEqual(connect[10:26], uuid)
-                    self.assertEqual(connect[26:], b"\x16\x49\x05\xd9")
+                    self.assertEqual(connect[26:], b"\x16\x49\x05\xc6")
                     observed.append(connect[10:26])
                     await self.send_frame(writer, b"\x07\0\0\1" + b"\x02\0\0\0\0\x09" +
                                           bytes.fromhex("4a015cf2ec394d58ac2d11e1761ce86d") + b"\x05\xc4\x05\xc4")

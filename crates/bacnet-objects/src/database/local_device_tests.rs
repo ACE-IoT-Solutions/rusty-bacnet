@@ -15,8 +15,9 @@ fn database(instances: &[u32]) -> ObjectDatabase {
     for &instance in instances {
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance,
-                name: format!("Device-{instance}"),
+                identity: crate::DeviceIdentity::new(instance, 0)
+                    .expect("valid Device identity")
+                    .with_name(format!("Device-{instance}")),
                 ..DeviceConfig::default()
             })
             .unwrap(),

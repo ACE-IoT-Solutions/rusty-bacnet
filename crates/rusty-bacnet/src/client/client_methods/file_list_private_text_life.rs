@@ -22,6 +22,7 @@ impl BACnetClient {
         requested_record_count: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let fid = file_identifier.to_rust();
 
         let access = match access_method.as_str() {
@@ -41,13 +42,8 @@ impl BACnetClient {
         };
 
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let raw = c
                 .atomic_read_file(&mac, fid, access)
                 .await
@@ -73,6 +69,7 @@ impl BACnetClient {
         file_record_data: Option<Vec<Vec<u8>>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let fid = file_identifier.to_rust();
 
         let access = match access_method.as_str() {
@@ -93,13 +90,8 @@ impl BACnetClient {
         };
 
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let raw = c
                 .atomic_write_file(&mac, fid, access)
                 .await
@@ -124,6 +116,7 @@ impl BACnetClient {
         array_index: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let request = bacnet_services::list_manipulation::ListElementRequest {
             object_identifier: object_id.to_rust(),
             property_identifier: property_id.to_rust(),
@@ -135,13 +128,8 @@ impl BACnetClient {
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             c.add_list_element(
                 &mac,
                 request.object_identifier,
@@ -168,6 +156,7 @@ impl BACnetClient {
         array_index: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let request = bacnet_services::list_manipulation::ListElementRequest {
             object_identifier: object_id.to_rust(),
             property_identifier: property_id.to_rust(),
@@ -179,13 +168,8 @@ impl BACnetClient {
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             c.remove_list_element(
                 &mac,
                 request.object_identifier,
@@ -217,14 +201,10 @@ impl BACnetClient {
         service_parameters: Option<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         crate::py_async::future_into_py(py, async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let req = PrivateTransferRequest {
                 vendor_id,
                 service_number,
@@ -269,14 +249,10 @@ impl BACnetClient {
         service_parameters: Option<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let req = PrivateTransferRequest {
                 vendor_id,
                 service_number,
@@ -316,18 +292,14 @@ impl BACnetClient {
         message_class_value: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let src = source_device.to_rust();
         let priority = message_priority.to_rust();
         let mc = build_message_class(message_class_type, message_class_value)?;
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let req = TextMessageRequest {
                 source_device: src,
                 message_class: mc,
@@ -357,18 +329,14 @@ impl BACnetClient {
         message_class_value: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let src = source_device.to_rust();
         let priority = message_priority.to_rust();
         let mc = build_message_class(message_class_type, message_class_value)?;
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let req = TextMessageRequest {
                 source_device: src,
                 message_class: mc,
@@ -405,17 +373,13 @@ impl BACnetClient {
         object_identifier: Option<PyObjectIdentifier>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let peers = PeerAddresses::for_transport(&self.transport_type);
         let op = operation.to_rust();
         let oid = object_identifier.map(|o| o.to_rust());
 
         let future = async move {
-            let mac = parse_address(&address)?;
-            let c = {
-                let guard = inner.lock().await;
-                Arc::clone(guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err("client not started — use 'async with'")
-                })?)
-            };
+            let mac = peers.parse(&address)?;
+            let c = started(&inner).await?;
             let req = LifeSafetyOperationRequest {
                 requesting_process_identifier,
                 requesting_source,

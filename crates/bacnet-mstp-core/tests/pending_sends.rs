@@ -2,8 +2,6 @@
 //! of the table in the core's `pending` module. Line activity only delays
 //! it; the evidence its sending state watches for, or its limit, drops it.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
@@ -23,7 +21,7 @@ fn a_data_frame_waits_out_activity_from_every_ingress() {
         let mut actions = Actions::new();
         let mut core = new_core(&mut rx, &mut actions);
         enqueue(&mut core, false, ms(1));
-        validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
+        validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
         assert_eq!(core.next_deadline(), Some(ms(10) + turnaround(&core)));
         let activity = ms(12);
         match ingress {
@@ -34,7 +32,7 @@ fn a_data_frame_waits_out_activity_from_every_ingress() {
             2 => core.on_host_activity(3, activity).unwrap(),
             _ => validated(
                 &mut core,
-                FrameType::BACnetDataNotExpectingReply,
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
                 BROADCAST_MAC,
                 3,
                 &[1, 0, 7],
@@ -49,7 +47,7 @@ fn a_data_frame_waits_out_activity_from_every_ingress() {
         }
         core.on_deadline(due).unwrap();
         let (_, header) = handed_over(&mut core);
-        assert!(is(header, FrameType::BACnetDataNotExpectingReply, PEER));
+        assert!(is(header, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, PEER));
         assert_eq!(core.counters().cancelled_sends, 0);
     }
 }
@@ -63,7 +61,7 @@ fn a_data_frame_kept_waiting_for_t_no_token_is_dropped() {
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
     enqueue(&mut core, false, ms(1));
-    validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
+    validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
     let mut at = ms(10);
     while at < ms(506) {
         at += Duration::from_millis(4);
@@ -91,16 +89,16 @@ fn frames_that_complete_while_a_holder_frame_waits() {
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
     enqueue(&mut core, false, ms(1));
-    validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
+    validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
     let frames = [
-        (FrameType::BACnetDataNotExpectingReply, BROADCAST_MAC),
-        (FrameType::Token, STATION),
-        (FrameType::PollForMaster, STATION),
-        (FrameType::BACnetDataExpectingReply, STATION),
-        (FrameType::TestRequest, STATION),
-        (FrameType::BACnetDataExpectingReply, BROADCAST_MAC),
-        (FrameType::ReplyToPollForMaster, STATION),
-        (FrameType::Token, 0),
+        (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, BROADCAST_MAC),
+        (FrameType::TOKEN, STATION),
+        (FrameType::POLL_FOR_MASTER, STATION),
+        (FrameType::BACNET_DATA_EXPECTING_REPLY, STATION),
+        (FrameType::TEST_REQUEST, STATION),
+        (FrameType::BACNET_DATA_EXPECTING_REPLY, BROADCAST_MAC),
+        (FrameType::REPLY_TO_POLL_FOR_MASTER, STATION),
+        (FrameType::TOKEN, 0),
     ];
     let mut at = ms(10);
     for (kind, destination) in frames {
@@ -123,10 +121,10 @@ fn frames_that_complete_while_a_holder_frame_waits() {
     assert_eq!(core.next_deadline(), Some(due));
     core.on_deadline(due).unwrap();
     let header = send(&mut core, due);
-    assert!(is(header, FrameType::BACnetDataNotExpectingReply, PEER));
+    assert!(is(header, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, PEER));
     // The token use goes on: no successor is known, so the station polls.
     let (_, header) = send_next(&mut core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
 }
 
 /// Row "Token" (Clauses 9.5.6.4 and 9.5.6.5), the case #1618 reproduced: a
@@ -142,7 +140,7 @@ fn the_token_pass_after_an_invalid_reply_waits_for_its_tail() {
     let used = passed + Duration::from_millis(5);
     validated(
         &mut core,
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         BROADCAST_MAC,
         PEER,
         &[1, 0, 7],
@@ -152,18 +150,18 @@ fn the_token_pass_after_an_invalid_reply_waits_for_its_tail() {
     enqueue(&mut core, true, used);
     validated(
         &mut core,
-        FrameType::Token,
+        FrameType::TOKEN,
         STATION,
         PEER,
         &[],
         used + us(100),
     );
     let (_, header) = send_next(&mut core);
-    assert!(is(header, FrameType::BACnetDataExpectingReply, PEER));
+    assert!(is(header, FrameType::BACNET_DATA_EXPECTING_REPLY, PEER));
     assert_eq!(core.state(), MasterState::WaitForReply);
 
     let mut reply = encode(
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         STATION,
         PEER,
         &[1, 0, 9],
@@ -179,7 +177,7 @@ fn the_token_pass_after_an_invalid_reply_waits_for_its_tail() {
     assert_eq!(core.next_deadline(), Some(due));
     core.on_deadline(due).unwrap();
     let (_, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::Token, PEER));
+    assert!(is(header, FrameType::TOKEN, PEER));
     assert_eq!(core.counters().cancelled_sends, 0);
 }
 
@@ -197,7 +195,7 @@ fn a_poll_waits_out_noise_in_its_turnaround() {
     assert_eq!(core.next_deadline(), Some(due));
     core.on_deadline(due).unwrap();
     let (_, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     assert_eq!(core.counters().cancelled_sends, 0);
 }
 
@@ -209,18 +207,18 @@ fn a_test_response_waits_within_the_reply_window() {
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
-    validated(&mut core, FrameType::TestRequest, STATION, 7, &[5], ms(1));
+    validated(&mut core, FrameType::TEST_REQUEST, STATION, 7, &[5], ms(1));
     core.on_octet(0x00, ms(2)).unwrap();
     let due = ms(2) + turnaround(&core);
     assert_eq!(core.next_deadline(), Some(due));
     core.on_deadline(due).unwrap();
     let (_, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::TestResponse, 7));
+    assert!(is(header, FrameType::TEST_RESPONSE, 7));
 
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
-    validated(&mut core, FrameType::TestRequest, STATION, 7, &[5], ms(1));
+    validated(&mut core, FrameType::TEST_REQUEST, STATION, 7, &[5], ms(1));
     let give_up = ms(1) + us(255_000 - 1_042 - 1_000);
     let mut at = ms(1);
     while at + Duration::from_millis(4) < give_up {
@@ -245,13 +243,20 @@ fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
-    validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
+    validated(
+        &mut core,
+        FrameType::POLL_FOR_MASTER,
+        STATION,
+        7,
+        &[],
+        ms(1),
+    );
     core.on_octet(0x00, ms(2)).unwrap();
     let due = ms(2) + turnaround(&core);
     assert_eq!(core.next_deadline(), Some(due));
     core.on_deadline(due).unwrap();
     let (id, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::ReplyToPollForMaster, 7));
+    assert!(is(header, FrameType::REPLY_TO_POLL_FOR_MASTER, 7));
     core.on_transmit_started(id, ms(16)).unwrap();
     assert_eq!(core.counters().late_replies, 0);
 
@@ -259,7 +264,14 @@ fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
-    validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
+    validated(
+        &mut core,
+        FrameType::POLL_FOR_MASTER,
+        STATION,
+        7,
+        &[],
+        ms(1),
+    );
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
     let (id, _) = handed_over(&mut core);
@@ -270,7 +282,14 @@ fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
-    validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
+    validated(
+        &mut core,
+        FrameType::POLL_FOR_MASTER,
+        STATION,
+        7,
+        &[],
+        ms(1),
+    );
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
     let (id, _) = handed_over(&mut core);
@@ -285,7 +304,14 @@ fn a_reply_to_a_poll_waits_within_the_pollers_patience() {
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
-    validated(&mut core, FrameType::PollForMaster, STATION, 7, &[], ms(1));
+    validated(
+        &mut core,
+        FrameType::POLL_FOR_MASTER,
+        STATION,
+        7,
+        &[],
+        ms(1),
+    );
     for at in [2, 6, 10, 14, 18] {
         core.on_octet(0x00, ms(at)).unwrap();
     }
@@ -318,7 +344,7 @@ fn a_token_retry_yields_to_a_successor_that_uses_the_token() {
             assert_eq!(core.next_deadline(), Some(due));
             core.on_deadline(due).unwrap();
             let (again, header) = handed_over(&mut core);
-            assert!(is(header, FrameType::Token, PEER));
+            assert!(is(header, FrameType::TOKEN, PEER));
             assert_ne!(again, id);
             core.on_transmit_started(again, due).unwrap();
             assert_eq!(core.counters().cancelled_sends, 0);
@@ -348,7 +374,7 @@ fn a_valid_frame_ends_a_waiting_token_retry() {
     let (handed, id) = retry_handed_over(&mut core);
     validated(
         &mut core,
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         BROADCAST_MAC,
         PEER,
         &[1, 0, 7],
@@ -369,10 +395,8 @@ fn a_valid_frame_ends_a_waiting_token_retry() {
 /// and it is dropped.
 #[test]
 fn a_token_retry_kept_waiting_past_t_usage_timeout_is_dropped() {
-    let config = bacnet_mstp_core::MstpCoreConfig {
-        t_turnaround: Duration::from_millis(15),
-        ..config()
-    };
+    let mut config = config();
+    config.t_turnaround = Duration::from_millis(15);
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = Core::new(config, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
@@ -424,7 +448,7 @@ fn a_generating_poll_yields_to_another_active_station() {
             let due = last + turnaround(&core);
             core.on_deadline(due).unwrap();
             let (again, header) = handed_over(&mut core);
-            assert!(is(header, FrameType::PollForMaster, PEER));
+            assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
             core.on_transmit_started(again, due).unwrap();
             assert_eq!(core.counters().cancelled_sends, 0);
         } else {
@@ -447,7 +471,7 @@ fn a_valid_frame_ends_a_waiting_generating_poll() {
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
     let id = generation_handed_over(&mut core);
-    validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(511));
+    validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], ms(511));
     assert_eq!(core.counters().cancelled_sends, 1);
     assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
     // The Token is used: with no successor known, a poll waits its turn.
@@ -481,7 +505,7 @@ fn a_new_successor_poll_yields_to_a_successor_that_uses_the_token() {
         assert_eq!(core.next_deadline(), Some(timeout));
         core.on_deadline(timeout).unwrap();
         let (poll, header) = handed_over(&mut core);
-        assert!(is(header, FrameType::PollForMaster, 3));
+        assert!(is(header, FrameType::POLL_FOR_MASTER, 3));
         let last = feed(&mut core, &vec![0x00; later], timeout + us(500));
         if dropped {
             assert_eq!(core.state(), MasterState::Idle);
@@ -514,7 +538,7 @@ fn a_token_retry_counts_events_from_when_it_is_made() {
     assert_eq!(core.next_deadline(), Some(timeout));
     core.on_deadline(timeout).unwrap();
     let (retry, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::Token, PEER));
+    assert!(is(header, FrameType::TOKEN, PEER));
     let last = feed(&mut core, &[0x00; 4], timeout + us(500));
     assert_eq!(
         core.on_transmit_started(retry, last + us(500)),
@@ -532,7 +556,7 @@ fn a_generating_poll_counts_events_from_no_token() {
     let mut rx = [0; 64];
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
-    let heard = feed(&mut core, &encode(FrameType::Token, 3, 0, &[]), ms(1));
+    let heard = feed(&mut core, &encode(FrameType::TOKEN, 3, 0, &[]), ms(1));
     let silent = heard + Duration::from_millis(500);
     assert_eq!(core.next_deadline(), Some(silent));
     core.on_deadline(silent).unwrap();
@@ -540,7 +564,7 @@ fn a_generating_poll_counts_events_from_no_token() {
     let slot = silent + Duration::from_millis(10);
     core.on_deadline(slot).unwrap();
     let (id, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     core.on_octet(0x00, slot + us(500)).unwrap();
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert_eq!(
@@ -581,7 +605,7 @@ fn an_invalid_frame_while_a_poll_waits_only_delays_it() {
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
     poll_waiting(&mut core);
-    let mut bad = encode(FrameType::ReplyToPollForMaster, STATION, 3, &[]);
+    let mut bad = encode(FrameType::REPLY_TO_POLL_FOR_MASTER, STATION, 3, &[]);
     bad[7] ^= 0x01;
     let last = feed(&mut core, &bad, ms(11));
     assert_eq!(core.counters().parser_errors, 1);
@@ -590,7 +614,7 @@ fn an_invalid_frame_while_a_poll_waits_only_delays_it() {
     assert_eq!(core.next_deadline(), Some(due));
     core.on_deadline(due).unwrap();
     let (_, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
 }
 
 /// Row "token-generation poll", its limit at a refused start: a start the

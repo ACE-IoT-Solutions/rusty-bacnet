@@ -160,9 +160,9 @@ pub struct SessionConfig {
     ///
     /// Standalone default is 480. Composing a
     /// [`DeviceIdentity`](crate::identity::DeviceIdentity) via
-    /// [`with_identity`](EndpointSession::with_identity) overrides this with
-    /// the identity value; the MS/TP builder additionally rejects identities
-    /// above its 480 transport bound at build time.
+    /// [`device`](EndpointSession::device) overrides this at start with the
+    /// identity's ceiling resolved against the transport's stable local
+    /// receive capacity (480 for standard MS/TP, 1476 for extended MS/TP).
     pub max_apdu_length: u16,
     /// Result rows one ReadProperty served by the server role may expand
     /// (default 256).
@@ -244,7 +244,7 @@ struct SessionShared {
 ///
 /// An optional [`DeviceIdentity`](crate::identity::DeviceIdentity) is the
 /// single source for I-Am + Device readback + role limits when composed via
-/// [`with_identity`](Self::with_identity). Standalone sessions without an
+/// [`device`](Self::device). Standalone sessions without an
 /// identity keep the `SessionConfig` 480 default untouched.
 ///
 /// ```no_run
@@ -288,6 +288,7 @@ pub struct EndpointSession<T: TransportPort + 'static> {
     durable_settlement: Option<JoinHandle<()>>,
     ingress_stopped: bool,
     identity: Option<crate::identity::DeviceIdentity>,
+    local_receive_capacity: u16,
     bip_local_address: Option<std::net::SocketAddrV4>,
     registered_network_port: Option<ObjectIdentifier>,
     registered_port_lease: std::sync::Weak<()>,
@@ -295,6 +296,8 @@ pub struct EndpointSession<T: TransportPort + 'static> {
     pub(crate) reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
     pub(crate) reinit_password: Option<String>,
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,
+    /// The B/IP transport's own exchanges, when the B/IP builder built it.
+    pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
 }
 
 /// Terminal state of the session dispatch task.
@@ -360,7 +363,9 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             min_request_interval_ms: interval,
             ..ClientConfig::default()
         };
+        let local_receive_capacity = transport.local_receive_apdu_capacity();
         Ok(Self {
+            local_receive_capacity,
             shared: Arc::new(SessionShared {
                 token,
                 counters: Mutex::new(PolicyCounters {
@@ -401,17 +406,18 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             reinitialize: None,
             reinit_password: None,
             egress: None,
+            bip_status: None,
         })
     }
 
     /// Attaches the local object database (before start).
     ///
     /// Must be called before [`start`](Self::start); when the server role is
-    /// composed without a database, an empty one is used. When a
-    /// [`DeviceIdentity`](crate::identity::DeviceIdentity) is also composed,
-    /// build the database from that same identity (see
-    /// [`DeviceIdentity::build_database`](crate::identity::DeviceIdentity::build_database))
-    /// so Device readback agrees with I-Am. The selected Device must declare
+    /// composed without an identity or database, an empty one is used. With a
+    /// [`DeviceIdentity`](crate::identity::DeviceIdentity), omitting the database
+    /// requests stock generation after receive-capacity resolution. Explicitly
+    /// supplied databases, including empty ones, are preserved. Their selected
+    /// Device must match the resolved identity and declare
     /// segmentation NONE, matching the narrow endpoint roles.
     /// The session retains ownership even in `ClientOnly` mode and shares this
     /// same database with the responder in `Both` mode.
@@ -464,7 +470,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// let reporter_oid = reporter.object_identifier();
     /// db.add(Box::new(reporter))?;
     /// let mut session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
-    ///     .role(SessionRole::ClientOnly).database(db).identity(identity)
+    ///     .role(SessionRole::ClientOnly).database(db).device(identity)
     ///     .source_audit_device_binding(logger, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 47808))
     ///     .build_session()?.with_source_audit_reporter(reporter_oid);
     /// session.start().await?; // Startup emits no audit traffic.
@@ -485,16 +491,16 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     ///
     /// Truth direction: identity overrides the standalone `SessionConfig`
     /// 480 default for the client role max-APDU; timers/retries stay from
-    /// `SessionConfig`. The database should already be built from the same
-    /// identity (see `DeviceIdentity::build_database`) so I-Am vs
-    /// ReadProperty vs role limits agree. No existing-test churn: sessions
-    /// without an identity keep the 480 default.
+    /// `SessionConfig`. Startup resolves the ceiling against the owned link.
+    /// An absent database requests stock generation; an explicitly supplied
+    /// database is preserved and its selected Device must match the resolved
+    /// identity. Sessions without an identity keep the 480 default.
     ///
     /// # Panics
     /// Panics if startup has already consumed the session configuration.
-    pub fn with_identity(mut self, identity: crate::identity::DeviceIdentity) -> Self {
+    pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.assert_configurable();
-        identity.apply_to_client_config(&mut self.client_config);
+        self.client_config.max_apdu_length = identity.max_apdu_length();
         self.config.max_apdu_length = identity.max_apdu_length();
         self.identity = Some(identity);
         self
@@ -524,11 +530,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 "endpoint session cannot be started more than once".into(),
             ));
         }
-        self.validate_segmentation().await?;
-        let device_target = self.validate_device_execution()?;
-        let source_routes = self.prepare_source_audit_reporter()?;
-        self.prepare_registered_port().await?;
-        self.commit_device_profile(device_target);
+        let (device_target, source_routes) = self.prepare_start().await?;
         if self.lifecycle.compare_exchange(
             Lifecycle::Ready as u8,
             Lifecycle::Running as u8,
@@ -756,6 +758,20 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             .flatten()
     }
 
+    /// How the transport's foreign-device registration is going (#938):
+    /// whether it holds a live lease, the time left on it, and the last
+    /// attempt's result and outcome, a BBMD's refusal included. It is there
+    /// for a session [`BipEndpointBuilder`](crate::bip::BipEndpointBuilder)
+    /// built, in any mode and after stop, and `None` for any other: take a
+    /// [`BipTransport::bvlc_client_status`](bacnet_transport::bip::BipTransport::bvlc_client_status)
+    /// before handing a transport to [`Self::new`].
+    pub fn foreign_registration(
+        &self,
+    ) -> Option<bacnet_transport::bip::ForeignRegistrationSnapshot> {
+        let status = self.bip_status.as_ref()?;
+        Some(status.snapshot().foreign_registration)
+    }
+
     /// Returns the composed session role (narrow admin).
     pub fn session_role(&self) -> SessionRole {
         self.role
@@ -769,10 +785,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// Broadcasts an I-Am consistent with the composed identity.
     ///
     /// Missing-identity path: errors without sending (no invented device).
-    /// Present-identity path: encodes [`DeviceIdentity::encode_iam_apdu`](crate::identity::DeviceIdentity::encode_iam_apdu)
+    /// Present-identity path: encodes [`encode_iam_apdu`](crate::identity::encode_iam_apdu)
     /// and sends one local-broadcast Unconfirmed-Request via the session
     /// egress. Field-for-field identical to the server discovery I-Am built
-    /// from [`DeviceIdentity::server_config`](crate::identity::DeviceIdentity::server_config).
+    /// from [`server_config`](crate::identity::server_config).
     /// Transport-dependent: B/IP reaches the local subnet broadcast; SC
     /// relays via the hub as a broadcast NPDU. Fails when the session is not
     /// running.
@@ -788,7 +804,18 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         if !self.is_running() {
             return Err(Error::Encoding("endpoint session is not running".into()));
         }
-        let apdu = identity.encode_iam_apdu()?;
+        let database = self
+            .database
+            .as_ref()
+            .ok_or_else(|| Error::Encoding("endpoint I-Am has no Device database".into()))?;
+        let database = database.read().await;
+        if !database
+            .get(&identity.device_oid())
+            .is_some_and(|object| object.object_identifier() == identity.device_oid())
+        {
+            return Err(Error::Encoding("endpoint I-Am Device is absent".into()));
+        }
+        let apdu = crate::identity::encode_iam_apdu(identity)?;
         egress
             .send_apdu(
                 apdu,
@@ -1062,3 +1089,6 @@ mod read_work_limit_tests;
 #[cfg(test)]
 #[path = "client_pacing_tests.rs"]
 mod client_pacing_tests;
+
+#[path = "device_identity.rs"]
+mod device_identity;

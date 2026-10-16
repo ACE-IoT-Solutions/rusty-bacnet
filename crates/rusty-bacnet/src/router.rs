@@ -1,21 +1,19 @@
-//! Python-composable mixed BACnet/IP and BACnet/SC router.
+//! Python-composable BACnet/IP and BACnet/SC router.
 
-#[cfg(test)]
-use std::future::Future;
-use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use bacnet_network::router::{
-    BACnetRouter as NativeRouter, RouterConfig, RouterOptions, RouterPort, StartedRouter,
+    BACnetRouter as NativeRouter, RouterOptions, RouterPort, StartedRouter,
 };
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
-use bacnet_transport::sc::ScReconnectConfig;
+use bacnet_transport::sc::{ScConnectionState, ScReconnectConfig, ScTransport};
+use bacnet_transport::sc_tls::TlsWebSocket;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{watch, Mutex};
+use tokio::task::JoinHandle;
 
 use crate::errors::to_py_err;
 
@@ -27,67 +25,62 @@ pub use config::{PyRouterBipPort, PyRouterScPort};
 pub use snapshots::{PyRouterPortHealth, PyRouterRouteEntry};
 
 type MixedTransport = AnyTransport<crate::mstp_py::PySerial>;
-const SC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SC_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
-struct StartReservation {
-    started: Arc<AtomicBool>,
-    generation: Arc<AtomicU64>,
-    token: u64,
-    committed: bool,
+#[derive(Clone)]
+enum HealthSource {
+    Bip {
+        identity: String,
+    },
+    Sc {
+        identity: String,
+        state: watch::Receiver<ScConnectionState>,
+    },
 }
 
-impl Drop for StartReservation {
-    fn drop(&mut self) {
-        if !self.committed && self.generation.load(Ordering::Acquire) == self.token {
-            self.started.store(false, Ordering::Release);
+impl HealthSource {
+    fn snapshot(&self, config_index: usize, network_number: u16) -> PyRouterPortHealth {
+        match self {
+            Self::Bip { identity } => {
+                snapshots::port_health(config_index, network_number, "bip", identity, None)
+            }
+            Self::Sc { identity, state } => snapshots::port_health(
+                config_index,
+                network_number,
+                "sc",
+                identity,
+                Some(*state.borrow()),
+            ),
         }
     }
 }
 
-struct RestartReservation {
-    reserved: Arc<AtomicBool>,
-    committed: bool,
+struct BuiltPort {
+    port: RouterPort<MixedTransport>,
+    health: HealthSource,
 }
 
-impl Drop for RestartReservation {
+struct RunningRouter {
+    router: Arc<Mutex<NativeRouter>>,
+    background: Vec<JoinHandle<()>>,
+    health: Vec<(u16, HealthSource)>,
+}
+
+impl Drop for RunningRouter {
     fn drop(&mut self) {
-        if !self.committed {
-            self.reserved.store(false, Ordering::Release);
+        for task in &self.background {
+            task.abort();
         }
-    }
-}
-
-struct StopCompletion {
-    started: Arc<AtomicBool>,
-    generation: Arc<AtomicU64>,
-    token: u64,
-    stopping: Arc<AtomicBool>,
-    notify: Arc<Notify>,
-}
-
-impl Drop for StopCompletion {
-    fn drop(&mut self) {
-        if self.generation.load(Ordering::Acquire) == self.token {
-            self.started.store(false, Ordering::Release);
-        }
-        self.stopping.store(false, Ordering::Release);
-        self.notify.notify_waiters();
     }
 }
 
 /// A mixed BACnet/IP and BACnet/SC router.
 #[pyclass(name = "BACnetRouter", module = "rusty_bacnet")]
 pub struct PyBACnetRouter {
-    inner: Arc<Mutex<Option<NativeRouter>>>,
-    configured_ports: Vec<PyRouterPortConfig>,
-    router_config: RouterConfig,
-    bip_config_index: Option<usize>,
-    started: Arc<AtomicBool>,
-    generation: Arc<AtomicU64>,
-    stopping: Arc<AtomicBool>,
-    restart_reserved: Arc<AtomicBool>,
-    stop_notify: Arc<Notify>,
+    inner: Arc<Mutex<Option<RunningRouter>>>,
     lifecycle: Arc<Mutex<()>>,
+    configured_ports: Vec<PyRouterPortConfig>,
+    announce_interval: Option<Duration>,
     last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
     last_routes: Arc<StdMutex<Vec<PyRouterRouteEntry>>>,
 }
@@ -112,381 +105,302 @@ impl PyBACnetRouter {
                 })
             })
             .transpose()?;
-        if announce_interval == Some(Duration::ZERO) {
+        if announce_interval.is_some_and(|interval| interval < Duration::from_secs(1)) {
             return Err(PyValueError::new_err(
-                "announce_interval_s must be a finite number greater than zero",
+                "announce_interval_s must be a finite number of at least 1 second",
             ));
         }
-        let bip_config_index = ports
-            .iter()
-            .position(|port| matches!(port, PyRouterPortConfig::Bip(_)));
         Ok(Self {
             inner: Arc::new(Mutex::new(None)),
-            configured_ports: ports,
-            router_config: RouterConfig { announce_interval },
-            bip_config_index,
-            started: Arc::new(AtomicBool::new(false)),
-            generation: Arc::new(AtomicU64::new(0)),
-            stopping: Arc::new(AtomicBool::new(false)),
-            restart_reserved: Arc::new(AtomicBool::new(false)),
-            stop_notify: Arc::new(Notify::new()),
             lifecycle: Arc::new(Mutex::new(())),
+            configured_ports: ports,
+            announce_interval,
             last_health: Arc::new(StdMutex::new(Vec::new())),
             last_routes: Arc::new(StdMutex::new(Vec::new())),
         })
     }
 
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let waiting_for_stop = if self.stopping.load(Ordering::Acquire) {
-            self.restart_reserved
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .map(|_| true)
-                .map_err(|_| ())
-        } else if self.restart_reserved.load(Ordering::Acquire) {
-            Err(())
-        } else if self
-            .started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            Ok(false)
-        } else if self.stopping.load(Ordering::Acquire) {
-            self.restart_reserved
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .map(|_| true)
-                .map_err(|_| ())
-        } else {
-            Err(())
-        };
-        let waiting_for_stop = waiting_for_stop
-            .map_err(|_| PyRuntimeError::new_err("router is already starting or running"))?;
         let inner = Arc::clone(&self.inner);
         let lifecycle = Arc::clone(&self.lifecycle);
-        let started = Arc::clone(&self.started);
-        let generation = Arc::clone(&self.generation);
-        let stopping = Arc::clone(&self.stopping);
-        let restart_reserved = Arc::clone(&self.restart_reserved);
-        let stop_notify = Arc::clone(&self.stop_notify);
-        let configured_ports = self.configured_ports.clone();
-        let router_config = self.router_config;
-        let initial_start_reservation = (!waiting_for_stop).then(|| {
-            let token = generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
-            StartReservation {
-                started: Arc::clone(&started),
-                generation: Arc::clone(&generation),
-                token,
-                committed: false,
-            }
-        });
-        let initial_restart_reservation = waiting_for_stop.then(|| RestartReservation {
-            reserved: Arc::clone(&restart_reserved),
-            committed: false,
-        });
-        crate::py_async::future_into_py(py, async move {
-            let mut reservation = initial_start_reservation;
-            let mut restart_reservation = initial_restart_reservation;
-            if waiting_for_stop {
-                while stopping.load(Ordering::Acquire) {
-                    let notified = stop_notify.notified();
-                    if !stopping.load(Ordering::Acquire) {
-                        break;
+        let configured = self.configured_ports.clone();
+        let announce_interval = self.announce_interval;
+        crate::py_async::future_into_py(
+            py,
+            crate::unit_result(async move {
+                let _lifecycle = lifecycle.lock().await;
+                if inner.lock().await.is_some() {
+                    return Err(PyRuntimeError::new_err(
+                        "router is already starting or running",
+                    ));
+                }
+                let mut built = Vec::with_capacity(configured.len());
+                for (index, port) in configured.into_iter().enumerate() {
+                    built.push(build_router_port(index, port).await?);
+                }
+                let mut ports = Vec::with_capacity(built.len());
+                let mut health = Vec::with_capacity(built.len());
+                for built in built {
+                    health.push((built.port.network_number, built.health));
+                    ports.push(built.port);
+                }
+                let StartedRouter { router, .. } = NativeRouter::start(ports, RouterOptions::new())
+                    .await
+                    .map_err(to_py_err)?;
+                for (index, (_, source)) in health.iter_mut().enumerate() {
+                    if let HealthSource::Bip { identity } = source {
+                        if let Some(endpoint) = router.bip_endpoint(index) {
+                            *identity = endpoint.to_string();
+                        }
                     }
-                    notified.await;
                 }
-                started
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .map_err(|_| PyRuntimeError::new_err("router restart reservation was lost"))?;
-                restart_reserved.store(false, Ordering::Release);
-                if let Some(reservation) = restart_reservation.as_mut() {
-                    reservation.committed = true;
-                }
-                let token = generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
-                reservation = Some(StartReservation {
-                    started: Arc::clone(&started),
-                    generation: Arc::clone(&generation),
-                    token,
-                    committed: false,
-                });
-            }
-            let _lifecycle = lifecycle.lock().await;
-            let start_token = reservation
-                .as_ref()
-                .expect("start reservation exists")
-                .token;
-            if generation.load(Ordering::Acquire) != start_token {
-                return Err(PyRuntimeError::new_err(
-                    "router start was cancelled by stop",
-                ));
-            }
-            let result: PyResult<()> = async {
-                let mut ports = Vec::with_capacity(configured_ports.len());
-                for (config_index, configured) in configured_ports.into_iter().enumerate() {
-                    ports.push(build_router_port(config_index, configured).await?);
-                }
-                let StartedRouter { router, .. } =
-                    NativeRouter::start_with_config(ports, RouterOptions::new(), router_config)
-                        .await
-                        .map_err(to_py_err)?;
-                *inner.lock().await = Some(router);
+                let router = Arc::new(Mutex::new(router));
+                let background = spawn_background(&router, &health, announce_interval);
+                let active = RunningRouter {
+                    router,
+                    background,
+                    health,
+                };
+                *inner.lock().await = Some(active);
                 Ok(())
-            }
-            .await;
-            if result.is_ok() {
-                reservation
-                    .as_mut()
-                    .expect("start reservation exists")
-                    .committed = true;
-            }
-            result
-        })
+            }),
+        )
     }
 
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         let lifecycle = Arc::clone(&self.lifecycle);
-        let started = Arc::clone(&self.started);
-        let generation = Arc::clone(&self.generation);
-        let stopping = Arc::clone(&self.stopping);
-        let stop_notify = Arc::clone(&self.stop_notify);
         let last_health = Arc::clone(&self.last_health);
         let last_routes = Arc::clone(&self.last_routes);
-        if stopping.swap(true, Ordering::AcqRel) {
-            return crate::py_async::future_into_py(py, async move {
-                while stopping.load(Ordering::Acquire) {
-                    let notified = stop_notify.notified();
-                    if !stopping.load(Ordering::Acquire) {
-                        break;
-                    }
-                    notified.await;
+        crate::py_async::future_into_py(
+            py,
+            crate::unit_result(async move {
+                let _lifecycle = lifecycle.lock().await;
+                let mut inner = inner.lock().await;
+                let Some(active) = inner.as_mut() else {
+                    return Ok(());
+                };
+                for task in &active.background {
+                    task.abort();
                 }
-                Ok(())
-            });
-        }
-        let stop_token = generation.load(Ordering::Acquire);
-        crate::py_async::future_into_py(py, async move {
-            let _completion = StopCompletion {
-                started: Arc::clone(&started),
-                generation: Arc::clone(&generation),
-                token: stop_token,
-                stopping,
-                notify: stop_notify,
-            };
-            let _lifecycle = lifecycle.lock().await;
-            if generation.load(Ordering::Acquire) != stop_token {
-                return Ok(());
-            }
-            let mut guard = inner.lock().await;
-            if let Some(mut router) = guard.take() {
-                drop(guard);
-                let health_snapshot = router.port_health().into_iter().map(Into::into).collect();
-                let route_snapshot = router
-                    .routing_table()
-                    .await
-                    .into_iter()
-                    .map(Into::into)
-                    .collect();
+                for task in active.background.drain(..) {
+                    let _ = task.await;
+                }
+                let health = health_snapshot(&active.health);
+                let mut router = active.router.lock().await;
+                let routes = route_snapshot(&router);
                 router.stop().await;
                 *last_health
                     .lock()
-                    .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))? =
-                    health_snapshot;
+                    .map_err(|_| PyRuntimeError::new_err("internal health lock poisoned"))? =
+                    health;
                 *last_routes
                     .lock()
-                    .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))? =
-                    route_snapshot;
-            } else if started.load(Ordering::Acquire) {
-                generation.store(stop_token.wrapping_add(1), Ordering::Release);
-                started.store(false, Ordering::Release);
-            }
-            Ok(())
-        })
+                    .map_err(|_| PyRuntimeError::new_err("internal route lock poisoned"))? = routes;
+                drop(router);
+                *inner = None;
+                Ok(())
+            }),
+        )
     }
 
     fn local_address<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        let bip_config_index = self.bip_config_index;
         crate::py_async::future_into_py(py, async move {
             let guard = inner.lock().await;
-            let router = guard
+            let active = guard
                 .as_ref()
                 .ok_or_else(|| PyRuntimeError::new_err("router not started"))?;
-            router
-                .port_health()
-                .into_iter()
-                .find(|port| Some(port.config_index) == bip_config_index)
-                .and_then(|port| bip_identity_to_address(&port.identity))
+            let router = active.router.lock().await;
+            (0..active.health.len())
+                .find_map(|index| router.bip_endpoint(index))
+                .map(|address| address.to_string())
                 .ok_or_else(|| PyRuntimeError::new_err("router B/IP port is unavailable"))
         })
     }
 
     fn port_health<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        let stopping = Arc::clone(&self.stopping);
-        let stop_notify = Arc::clone(&self.stop_notify);
-        let last_health = Arc::clone(&self.last_health);
+        let last = Arc::clone(&self.last_health);
         crate::py_async::future_into_py(py, async move {
-            if let Some(router) = inner.lock().await.as_ref() {
-                return Ok(router.port_health().into_iter().map(Into::into).collect());
+            if let Some(active) = inner.lock().await.as_ref() {
+                return Ok(health_snapshot(&active.health));
             }
-            while stopping.load(Ordering::Acquire) {
-                let notified = stop_notify.notified();
-                if !stopping.load(Ordering::Acquire) {
-                    break;
-                }
-                notified.await;
-            }
-            Ok(last_health
+            Ok(last
                 .lock()
-                .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))?
+                .map_err(|_| PyRuntimeError::new_err("internal health lock poisoned"))?
                 .clone())
         })
     }
 
     fn routing_table<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        let stopping = Arc::clone(&self.stopping);
-        let stop_notify = Arc::clone(&self.stop_notify);
-        let last_routes = Arc::clone(&self.last_routes);
+        let last = Arc::clone(&self.last_routes);
         crate::py_async::future_into_py(py, async move {
-            if let Some(router) = inner.lock().await.as_ref() {
-                return Ok(router
-                    .routing_table()
-                    .await
-                    .into_iter()
-                    .map(Into::into)
-                    .collect());
+            if let Some(active) = inner.lock().await.as_ref() {
+                let router = active.router.lock().await;
+                return Ok(route_snapshot(&router));
             }
-            while stopping.load(Ordering::Acquire) {
-                let notified = stop_notify.notified();
-                if !stopping.load(Ordering::Acquire) {
-                    break;
-                }
-                notified.await;
-            }
-            Ok(last_routes
+            Ok(last
                 .lock()
-                .map_err(|_| PyRuntimeError::new_err("internal lock poisoned"))?
+                .map_err(|_| PyRuntimeError::new_err("internal route lock poisoned"))?
                 .clone())
         })
     }
 }
 
+fn spawn_background(
+    router: &Arc<Mutex<NativeRouter>>,
+    health: &[(u16, HealthSource)],
+    announce_interval: Option<Duration>,
+) -> Vec<JoinHandle<()>> {
+    let mut tasks = Vec::new();
+    for (index, (_, source)) in health.iter().enumerate() {
+        let HealthSource::Sc { state, .. } = source else {
+            continue;
+        };
+        let mut state = state.clone();
+        let router = Arc::clone(router);
+        tasks.push(tokio::spawn(async move {
+            state.borrow_and_update();
+            while state.changed().await.is_ok() {
+                let current = *state.borrow_and_update();
+                // `watch` coalesces rapid Disconnected -> Connected updates.
+                // Every post-start notification whose latest state is
+                // Connected therefore means the port may have recovered.
+                if current == ScConnectionState::Connected {
+                    let _ = router.lock().await.reannounce_port(index);
+                }
+            }
+        }));
+    }
+    if let Some(interval) = announce_interval {
+        let router = Arc::clone(router);
+        let ports = health.len();
+        tasks.push(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // Startup already announced every port.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let router = router.lock().await;
+                for index in 0..ports {
+                    let _ = router.reannounce_port(index);
+                }
+            }
+        }));
+    }
+    tasks
+}
+
+fn health_snapshot(health: &[(u16, HealthSource)]) -> Vec<PyRouterPortHealth> {
+    health
+        .iter()
+        .enumerate()
+        .map(|(index, (network, source))| source.snapshot(index, *network))
+        .collect()
+}
+
+fn route_snapshot(router: &NativeRouter) -> Vec<PyRouterRouteEntry> {
+    let now = router.now();
+    let table = router.table();
+    table
+        .routes()
+        .map(|(network, route)| snapshots::route_entry(network, route, now))
+        .collect()
+}
+
 async fn build_router_port(
-    config_index: usize,
+    _config_index: usize,
     configured: PyRouterPortConfig,
-) -> PyResult<RouterPort<MixedTransport>> {
+) -> PyResult<BuiltPort> {
     let network_number = configured.network_number();
-    let transport = match configured {
+    match configured {
         PyRouterPortConfig::Bip(config) => {
             let interface = config.interface.parse().expect("validated B/IP interface");
             let broadcast = config
                 .broadcast_address
                 .parse()
                 .expect("validated B/IP broadcast address");
-            // Kept in the Python configuration for 0.11 adaptor compatibility.
-            // In 0.12, BipTransport enables OS port sharing for every explicit
-            // nonzero port, so there is no longer a per-instance toggle to set.
-            let _reuse_port = config.reuse_port;
-            let transport = BipTransport::new(interface, config.port, broadcast);
-            MixedTransport::Bip(Box::new(transport))
+            let mut transport = BipTransport::new(interface, config.port, broadcast);
+            transport.set_share_port_by_address(config.reuse_port);
+            Ok(BuiltPort {
+                port: RouterPort {
+                    transport: MixedTransport::Bip(Box::new(transport)),
+                    network_number,
+                },
+                health: HealthSource::Bip {
+                    identity: format!("{}:{}", config.interface, config.port),
+                },
+            })
         }
         PyRouterPortConfig::Sc(config) => {
+            if config.max_npdu_length != 1497 || config.max_bvlc_length != 5705 {
+                return Err(PyValueError::new_err(
+                    "upstream 0.13 SC router ports use fixed receive limits of 1497 NPDU / 5705 BVLC",
+                ));
+            }
             let tls = crate::tls::build_client_tls_config(
                 Some(&config.ca_cert),
                 Some(&config.client_cert),
                 Some(&config.client_key),
             )
-            .map_err(|error| {
-                PyRuntimeError::new_err(format!(
-                    "router port {config_index} SC TLS configuration for {} failed: {error}",
-                    config.primary_hub
-                ))
-            })?;
-            let primary_url = config.primary_hub.clone();
+            .map_err(|error| PyRuntimeError::new_err(format!("TLS config error: {error}")))?;
+            let primary = config.primary_hub.clone();
+            let ws = tokio::time::timeout(
+                SC_DIAL_TIMEOUT,
+                TlsWebSocket::connect(&primary, tls.clone()),
+            )
+            .await
+            .map_err(|_| PyRuntimeError::new_err("SC primary hub dial timed out"))?
+            .map_err(to_py_err)?;
             let mut vmac = [0; 6];
             vmac.copy_from_slice(&config.local_vmac);
-            let mut device_uuid = [0; 16];
-            device_uuid.copy_from_slice(&config.device_uuid);
-            let transport_config = bacnet_transport::sc_tls::ScTlsTransportConfig::new(
-                &primary_url,
-                vmac,
-                device_uuid,
-            )
-            .with_failover_hub(config.failover_hub.clone())
-            .with_receive_limits(config.max_npdu_length, config.max_bvlc_length)
-            .with_heartbeat(config.heartbeat_interval_ms, config.heartbeat_timeout_ms)
-            .with_reconnect(Some(ScReconnectConfig {
-                initial_delay_ms: config.reconnect_initial_delay_ms,
-                max_delay_ms: config.reconnect_max_delay_ms,
-                max_retries: config.reconnect_max_retries,
-                retry_forever: config.reconnect_forever,
-            }))
-            .with_initial_dial_timeout(Some(SC_CONNECT_TIMEOUT));
-            let transport = bacnet_transport::sc_tls::connect_sc_transport(transport_config, tls)
-                .await
-                .map_err(|error| {
-                    PyRuntimeError::new_err(format!(
-                        "router port {config_index} SC hub {primary_url} connection failed: {error}"
-                    ))
-                })?;
-            MixedTransport::Sc(Box::new(transport))
+            let mut uuid = [0; 16];
+            uuid.copy_from_slice(&config.device_uuid);
+            let connector_url = primary.clone();
+            let connector_tls = tls.clone();
+            let retries = if config.reconnect_forever {
+                u32::MAX
+            } else {
+                config.reconnect_max_retries
+            };
+            let transport = ScTransport::new(ws, vmac)
+                .with_device_uuid(uuid)
+                .with_connect_timeout_ms(SC_DIAL_TIMEOUT.as_millis() as u64)
+                .with_heartbeat_interval_ms(config.heartbeat_interval_ms)
+                .with_heartbeat_timeout_ms(config.heartbeat_timeout_ms)
+                .with_connector(move || {
+                    let url = connector_url.clone();
+                    let tls = connector_tls.clone();
+                    async move { TlsWebSocket::connect(&url, tls).await }
+                })
+                .with_reconnect(ScReconnectConfig {
+                    initial_delay_ms: config.reconnect_initial_delay_ms,
+                    max_delay_ms: config.reconnect_max_delay_ms,
+                    max_retries: retries,
+                });
+            let state = transport.connection_state_changes();
+            Ok(BuiltPort {
+                port: RouterPort {
+                    transport: MixedTransport::Sc(Box::new(transport)),
+                    network_number,
+                },
+                health: HealthSource::Sc {
+                    identity: primary,
+                    state,
+                },
+            })
         }
-    };
-    Ok(RouterPort {
-        transport,
-        network_number,
-    })
-}
-
-#[cfg(test)]
-async fn sc_dial_with_timeout<T, F>(
-    timeout: Duration,
-    dial: F,
-) -> Result<T, bacnet_types::error::Error>
-where
-    F: Future<Output = Result<T, bacnet_types::error::Error>>,
-{
-    tokio::time::timeout(timeout, dial)
-        .await
-        .unwrap_or_else(|_| Err(bacnet_types::error::Error::Timeout(timeout)))
+    }
 }
 
 fn validate_network_number(network: u16) -> PyResult<()> {
-    if network == 0 || network == u16::MAX {
+    if matches!(network, 0 | u16::MAX) {
         Err(PyValueError::new_err(format!(
             "router network number {network} is reserved"
         )))
     } else {
         Ok(())
-    }
-}
-
-fn bip_identity_to_address(identity: &str) -> Option<String> {
-    if let Ok(address) = identity.parse::<std::net::SocketAddrV4>() {
-        return Some(address.to_string());
-    }
-    let octets = identity
-        .split(':')
-        .map(|part| u8::from_str_radix(part, 16))
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    (octets.len() == 6).then(|| {
-        let ip = Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
-        let port = u16::from_be_bytes([octets[4], octets[5]]);
-        format!("{ip}:{port}")
-    })
-}
-
-#[cfg(test)]
-mod unit_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn stalled_initial_sc_dial_is_bounded() {
-        let timeout = Duration::from_millis(25);
-        let result = sc_dial_with_timeout::<(), _>(timeout, std::future::pending()).await;
-        assert!(
-            matches!(result, Err(bacnet_types::error::Error::Timeout(value)) if value == timeout)
-        );
     }
 }

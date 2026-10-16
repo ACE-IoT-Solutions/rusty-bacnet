@@ -316,7 +316,7 @@ fn rpm_migrated_metadata_device_wildcard_and_index_legacy_parity() {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 123,
+            identity: bacnet_objects::DeviceIdentity::new(123, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap(),
@@ -371,7 +371,8 @@ fn rpm_device_result_identity_errors_and_exact_byte_budget() {
         let mut db = ObjectDatabase::new();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance,
+                identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+                    .expect("valid Device identity"),
                 ..Default::default()
             })
             .unwrap(),

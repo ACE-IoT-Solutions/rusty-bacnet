@@ -194,8 +194,9 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
     let mut db = clocked_test_database();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1426,
-            name: "Staged release".into(),
+            identity: bacnet_objects::DeviceIdentity::new(1426, 0)
+                .expect("valid Device identity")
+                .with_name("Staged release"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -203,6 +204,7 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
     .unwrap();
     db.add(Box::new(IndexBlind(forwarder))).unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1426, 0).unwrap())
         .transport(TestTransport::new())
         .database(db)
         .enable_event_enrollment(false)

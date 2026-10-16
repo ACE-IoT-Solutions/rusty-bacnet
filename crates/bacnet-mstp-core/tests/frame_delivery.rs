@@ -2,8 +2,6 @@
 //! `Action::DeliverFrame`, where Clause 9.5.6 passes them to the layers
 //! above.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
@@ -11,7 +9,7 @@ use bacnet_mstp_core::{Action, Duration, MasterState, ReplyDecision};
 
 use support::*;
 
-const PROPRIETARY: FrameType = FrameType::Unknown(0x80);
+const PROPRIETARY: FrameType = FrameType::from_raw(0x80);
 
 fn whole(frame_type: FrameType, source: u8, destination: u8, data: &[u8]) -> Action<'_> {
     Action::DeliverFrame {
@@ -29,11 +27,16 @@ fn whole(frame_type: FrameType, source: u8, destination: u8, data: &[u8]) -> Act
 #[test]
 fn test_responses_and_proprietary_frames_go_up_from_idle() {
     let cases: [(FrameType, u8, &[u8], bool); 8] = [
-        (FrameType::TestResponse, STATION, &[7, 7], true),
-        (FrameType::TestResponse, BROADCAST_MAC, &[], true),
-        (FrameType::TestResponse, 3, &[7], false),
+        (FrameType::TEST_RESPONSE, STATION, &[7, 7], true),
+        (FrameType::TEST_RESPONSE, BROADCAST_MAC, &[], true),
+        (FrameType::TEST_RESPONSE, 3, &[7], false),
         (PROPRIETARY, STATION, &[0x01, 0x04, 9], true),
-        (FrameType::Unknown(0xFF), BROADCAST_MAC, &[0x01, 0x04], true),
+        (
+            FrameType::from_raw(0xFF),
+            BROADCAST_MAC,
+            &[0x01, 0x04],
+            true,
+        ),
         (PROPRIETARY, 3, &[0x01, 0x04], false),
         (PROPRIETARY, STATION, &[0x01], false),
         (PROPRIETARY, STATION, &[], false),
@@ -80,7 +83,7 @@ fn a_test_response_that_ends_a_wait_goes_up() {
     let replied = waiting + Duration::from_millis(5);
     validated(
         &mut core,
-        FrameType::TestResponse,
+        FrameType::TEST_RESPONSE,
         STATION,
         3,
         &[4, 2],
@@ -88,7 +91,7 @@ fn a_test_response_that_ends_a_wait_goes_up() {
     );
     assert_eq!(
         core.poll_action(),
-        whole(FrameType::TestResponse, 3, STATION, &[4, 2])
+        whole(FrameType::TEST_RESPONSE, 3, STATION, &[4, 2])
     );
     // DONE_WITH_TOKEN, which polls for a successor here.
     assert_eq!(core.state(), MasterState::PollForMaster);
@@ -103,7 +106,7 @@ fn a_test_response_that_ends_a_wait_goes_up() {
 fn a_frame_that_is_not_the_reply_does_not_go_up_while_waiting() {
     for (frame_type, destination, data) in [
         (PROPRIETARY, STATION, &[0x01, 0x04][..]),
-        (FrameType::TestResponse, BROADCAST_MAC, &[][..]),
+        (FrameType::TEST_RESPONSE, BROADCAST_MAC, &[][..]),
     ] {
         let mut rx = [0; 64];
         let mut actions = Actions::new();
@@ -127,7 +130,7 @@ fn nothing_goes_up_while_a_poll_waits_for_its_answer() {
     poll_waiting(&mut core);
     let (sent, _) = send_next(&mut core);
     let heard = sent + Duration::from_millis(5);
-    validated(&mut core, FrameType::TestResponse, STATION, 3, &[], heard);
+    validated(&mut core, FrameType::TEST_RESPONSE, STATION, 3, &[], heard);
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.poll_action(), Action::Idle);
 }
@@ -143,7 +146,7 @@ fn frames_that_need_no_reply_go_up_while_the_station_is_busy() {
     let mut core = new_core(&mut rx, &mut actions);
     validated(
         &mut core,
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         STATION,
         PEER,
         &[1, 4, 7],
@@ -171,16 +174,16 @@ fn frames_that_need_no_reply_go_up_while_the_station_is_busy() {
     let mut actions = Actions::new();
     let mut core = new_core(&mut rx, &mut actions);
     enqueue(&mut core, false, ms(0));
-    validated(&mut core, FrameType::Token, STATION, PEER, &[], ms(10));
+    validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
     assert_eq!(core.state(), MasterState::UseToken);
     let heard = ms(10) + us(1_000);
-    validated(&mut core, FrameType::TestResponse, STATION, 3, &[5], heard);
+    validated(&mut core, FrameType::TEST_RESPONSE, STATION, 3, &[5], heard);
     assert_eq!(
         core.poll_action(),
-        whole(FrameType::TestResponse, 3, STATION, &[5])
+        whole(FrameType::TEST_RESPONSE, 3, STATION, &[5])
     );
     assert_eq!(core.next_deadline(), Some(heard + turnaround(&core)));
     let (_, header) = send_next(&mut core);
-    assert!(is(header, FrameType::BACnetDataNotExpectingReply, PEER));
+    assert!(is(header, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, PEER));
     assert_eq!(core.counters().cancelled_sends, 0);
 }

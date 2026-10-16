@@ -2,15 +2,17 @@
 //!
 //! MAC addresses are opaque byte slices whose format depends on the transport:
 //! - BACnet/IP (Annex J): 6 bytes (4-byte IPv4 + 2-byte port, big-endian)
+//! - BACnet/IPv6 (Annex U): 3 bytes, the node's VMAC (U.1.3); the transport
+//!   maps it to the IPv6 address and port itself
 //! - BACnet/Ethernet (Clause 7): 6 bytes (IEEE 802 MAC)
 //! - MS/TP (Clause 9): 1 byte (station address 0-254)
+//! - BACnet/SC (Annex AB): 6 bytes, the node's VMAC
 
 pub use crate::direct_response::{DirectResponse, DirectResponseScope};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// An owned copy of a link's group-destination rule
@@ -19,51 +21,6 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// any state for the send (#1479). Clones share one rule.
 #[derive(Clone, Default)]
 pub struct GroupDestinations(Option<Arc<GroupRule>>);
-/// Coarse transport lifecycle state for operational monitoring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TransportHealthState {
-    /// The transport is not currently carrying traffic.
-    #[default]
-    Down,
-    /// A connection attempt is in progress.
-    Connecting,
-    /// A previously active transport is attempting recovery.
-    Reconnecting,
-    /// The transport is operational.
-    Up,
-    /// Background processing terminated and requires operator attention.
-    Failed,
-}
-
-/// Current operational health of a transport port.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransportHealth {
-    /// Coarse lifecycle state.
-    pub state: TransportHealthState,
-    /// Human-readable current activity.
-    pub detail: Option<String>,
-    /// Active endpoint role for failover-capable transports.
-    pub active_hub: Option<String>,
-    /// Most recent operational error.
-    pub last_error: Option<String>,
-    /// Current reconnect attempt number, or zero outside recovery.
-    pub attempt: u64,
-    /// Instant at which the current operational connection became active.
-    pub since: Option<Instant>,
-}
-
-impl Default for TransportHealth {
-    fn default() -> Self {
-        Self {
-            state: TransportHealthState::Down,
-            detail: None,
-            active_hub: None,
-            last_error: None,
-            attempt: 0,
-            since: None,
-        }
-    }
-}
 
 /// The predicate inside a [`GroupDestinations`].
 type GroupRule = dyn Fn(&[u8]) -> bool + Send + Sync;
@@ -76,7 +33,7 @@ impl GroupDestinations {
 
     /// No rule: nothing matches. A sender holding this leaves the check to the
     /// send path, which asks the transport itself.
-    pub fn unknown() -> Self {
+    pub const fn unknown() -> Self {
         Self(None)
     }
 
@@ -107,20 +64,6 @@ pub struct DataAttribute {
     pub must_understand: bool,
     /// Attribute payload bytes, if any.
     pub data: Vec<u8>,
-}
-
-/// Transport-specific ingress details that are useful to raw observers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TransportMetadata {
-    /// BACnet/IP BVLC envelope and UDP peer details.
-    Bip {
-        /// Raw BVLC function code.
-        bvlc_function: u8,
-        /// UDP datagram sender, which may be a BBMD rather than the NPDU origin.
-        udp_source: ([u8; 4], u16),
-        /// Embedded origin from a Forwarded-NPDU envelope.
-        forwarded_from: Option<([u8; 4], u16)>,
-    },
 }
 
 /// Verified immediate direct-SC peer and connection incarnation.
@@ -193,7 +136,6 @@ impl std::fmt::Debug for DirectScIdentity {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TransportProvenance {
     kind: ProvenanceKind,
-    metadata: Option<TransportMetadata>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -211,23 +153,6 @@ impl TransportProvenance {
     pub fn unverified() -> Self {
         Self {
             kind: ProvenanceKind::Unverified,
-            metadata: None,
-        }
-    }
-
-    /// Unverified BACnet/IP origin with the observed BVLC and UDP envelope.
-    pub(crate) fn unverified_bip(
-        bvlc_function: u8,
-        udp_source: ([u8; 4], u16),
-        forwarded_from: Option<([u8; 4], u16)>,
-    ) -> Self {
-        Self {
-            kind: ProvenanceKind::Unverified,
-            metadata: Some(TransportMetadata::Bip {
-                bvlc_function,
-                udp_source,
-                forwarded_from,
-            }),
         }
     }
 
@@ -236,7 +161,6 @@ impl TransportProvenance {
     pub(crate) fn verified_direct_peer(identity: DirectScIdentity) -> Self {
         Self {
             kind: ProvenanceKind::DirectPeer(identity),
-            metadata: None,
         }
     }
 
@@ -246,20 +170,13 @@ impl TransportProvenance {
     pub(crate) fn verified_hub_channel() -> Self {
         Self {
             kind: ProvenanceKind::HubChannel,
-            metadata: None,
         }
     }
 
     pub(crate) fn verified_relayed_origin() -> Self {
         Self {
             kind: ProvenanceKind::RelayedOrigin,
-            metadata: None,
         }
-    }
-
-    /// Transport-specific raw ingress details, when the built-in transport supplies them.
-    pub fn transport_metadata(self) -> Option<TransportMetadata> {
-        self.metadata
     }
 
     /// Verified direct identity, absent on unverified and both Hub scopes.
@@ -417,34 +334,42 @@ pub struct BipPort {
     pub mode: bacnet_types::bip_port::BipPortMode,
 }
 
+/// The longest NPDU a link carries, in octets, to one node and to every
+/// node on it ([`TransportPort::max_npdu`]; Table 6-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NpduLimits {
+    /// To one node.
+    pub unicast: u16,
+    /// To every node on the link.
+    pub broadcast: u16,
+}
+
+impl NpduLimits {
+    /// 1,497 octets each way: what B/IP, B/IPv6, Ethernet and MS/TP with
+    /// extended frames carry (Table 6-1).
+    pub const STANDARD: Self = Self::both(1497);
+
+    /// The same limit both ways.
+    pub const fn both(octets: u16) -> Self {
+        Self {
+            unicast: octets,
+            broadcast: octets,
+        }
+    }
+}
+
+/// [`NpduLimits::STANDARD`].
+impl Default for NpduLimits {
+    fn default() -> Self {
+        Self::STANDARD
+    }
+}
+
 /// Trait for BACnet data-link transports.
 ///
 /// Implementations handle the data-link framing (e.g., BVLL for BACnet/IP)
 /// and expose a simple send/receive interface for NPDU bytes.
 pub trait TransportPort: Send + Sync {
-    /// Stable, human-readable transport kind.
-    fn transport_kind(&self) -> &'static str {
-        std::any::type_name::<Self>()
-    }
-
-    /// Optional identity of the data-link segment attached to this port.
-    fn topology_id(&self) -> Option<String> {
-        None
-    }
-
-    /// Current health snapshot. Stateless transports are considered up.
-    fn health(&self) -> TransportHealth {
-        TransportHealth {
-            state: TransportHealthState::Up,
-            ..TransportHealth::default()
-        }
-    }
-
-    /// Subscribe to health changes when the transport maintains a live signal.
-    fn health_changes(&self) -> Option<watch::Receiver<TransportHealth>> {
-        None
-    }
-
     /// Configured broadcast endpoint when this link uses IPv4 BACnet/IP.
     /// `None` means the link does not expose that capability. Wrappers must
     /// forward the underlying value. After `start`, the port is the actual
@@ -525,6 +450,13 @@ pub trait TransportPort: Send + Sync {
     fn abort(&mut self) {}
 
     /// Send NPDU bytes to a specific MAC address (unicast).
+    ///
+    /// B/IP refuses a MAC that is one of its group addresses
+    /// ([`Self::is_group_destination`]) with an error, sending nothing
+    /// (#1677): its receivers drop an Original-Unicast-NPDU that wasn't sent
+    /// to their own address. Send a local broadcast with
+    /// [`Self::send_broadcast`] instead, as `NetworkLayer::send_apdu` and
+    /// `BACnetRouter` do for an Unconfirmed-Request.
     fn send_unicast(
         &self,
         npdu: &[u8],
@@ -577,12 +509,52 @@ pub trait TransportPort: Send + Sync {
         1476
     }
 
-    /// Current encoded-NPDU limit for this transport's ordinary send path.
+    /// The longest NPDU this link sends, to one node and to every node.
     ///
-    /// `None` means the transport does not expose a useful dispatch-time
-    /// bound. Connected transports may update this value after negotiation;
-    /// wrappers must delegate it when they preserve the underlying send path.
-    fn max_npdu_length(&self) -> Option<usize> {
+    /// `bacnet_network`'s `BACnetRouter` reads it when it starts the port,
+    /// and follows it after that through [`Self::max_npdu_changes`]. It
+    /// answers an NPDU it would route here that is longer than that with a
+    /// reject (reason 4, Clause 6.4.4, #1665), where it used to hand it to a
+    /// send that failed. The default, [`NpduLimits::STANDARD`], is what
+    /// B/IPv6 and Ethernet carry; a link that carries less must override
+    /// it, or a router assumes 1,497 octets. MS/TP reports 501 octets
+    /// without extended frames, and B/IP its node's budget for each kind of
+    /// send.
+    ///
+    /// BACnet/SC reports, once started, what its hub connection carries
+    /// with no data options: the hub's Max-NPDU-Length within its
+    /// Max-BVLC-Length less the encapsulation. Data attributes a router
+    /// forwards with an NPDU (Table 6-1, note 1) take more of the BVLC, so
+    /// one at this limit with attributes can still fail the transport's
+    /// Max-BVLC-Length check. A failover or reconnect can change it, which
+    /// [`Self::max_npdu_changes`] publishes (#1696). A direct connection's
+    /// own limit isn't part of it.
+    ///
+    /// Wrappers must delegate.
+    fn max_npdu(&self) -> NpduLimits {
+        NpduLimits::default()
+    }
+
+    /// The changes to [`Self::max_npdu`] while the transport runs, for a
+    /// link whose limit can change after start, or `None`, the default,
+    /// when it never does.
+    ///
+    /// The receiver holds the limit `max_npdu` reports once started, and
+    /// changes only when that limit does. `BACnetRouter` takes one for each
+    /// port after starting it, and gives the port each new limit as soon as
+    /// it is published: every frame it routes after that goes by it, so an
+    /// NPDU too long for the new limit draws reason 4. A send already on
+    /// the port's queue when the limit falls can still be refused by the
+    /// transport as too long; the router counts that refusal as
+    /// `egress_too_long` too.
+    ///
+    /// BACnet/SC returns one: its limit comes from the hub connection, and
+    /// it publishes the new one whenever it connects to a hub that carries
+    /// more or less, the first time, on failover to the other hub, and on
+    /// reconnect. The other built-in transports keep the default.
+    ///
+    /// Wrappers must delegate.
+    fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>> {
         None
     }
 
@@ -603,10 +575,11 @@ pub trait TransportPort: Send + Sync {
     /// Whether a send to `mac` with no DNET reaches a group of nodes rather
     /// than one: this link's broadcast MAC, or any other broadcast or
     /// multicast address the medium carries, such as a B/IP limited
-    /// broadcast, an IPv6 multicast group or an Ethernet multicast MAC
-    /// (#1493). Such a send is a local broadcast, which may carry only an
-    /// Unconfirmed-Request (Clause 6.3), so a sender that takes a
-    /// caller-chosen MAC refuses anything else to it (#1479). The server binds
+    /// broadcast or an Ethernet multicast MAC (#1493). A B/IPv6 MAC is a
+    /// 3-octet VMAC, which never names a group. Such a send is a local
+    /// broadcast, which may carry only an Unconfirmed-Request (Clause 6.3),
+    /// so a sender that takes a caller-chosen MAC refuses anything else to it
+    /// (#1479). The server binds
     /// no device to one, and the confirmed requests it starts itself, to
     /// event recipients, Channel and Command targets, audit recipients and
     /// bound devices, never go to one (#1493). Its replies and COV
@@ -616,7 +589,15 @@ pub trait TransportPort: Send + Sync {
     /// routed request's SADR names a node on another network, which this
     /// link can't judge: a reply to a group SADR is dropped only where the
     /// final router is a `BACnetRouter`, which delivers only an
-    /// Unconfirmed-Request to a DADR that is a group on its delivery port.
+    /// Unconfirmed-Request to a DADR that is a group on its delivery port,
+    /// as that port's local broadcast when it is one of
+    /// [`Self::local_broadcast_destinations`], and drops anything else,
+    /// network messages included.
+    ///
+    /// B/IP refuses [`Self::send_unicast`] to a group address (#1677), so a
+    /// sender must broadcast there: `NetworkLayer::send_apdu` sends an
+    /// Unconfirmed-Request for one of [`Self::local_broadcast_destinations`]
+    /// through [`Self::send_broadcast`] itself.
     ///
     /// [`Self::is_broadcast_mac`] keeps its narrower meaning, this link's own
     /// broadcast, which routing and recipient checks rely on. The default is
@@ -631,5 +612,16 @@ pub trait TransportPort: Send + Sync {
     /// [`GroupDestinations::unknown`], which leaves the check to the send path.
     fn group_destinations(&self) -> GroupDestinations {
         GroupDestinations::unknown()
+    }
+
+    /// The group destinations a send with no DNET may reach as this link's
+    /// local broadcast instead: `NetworkLayer::send_apdu` and `BACnetRouter`
+    /// send an Unconfirmed-Request for one through [`Self::send_broadcast`]
+    /// (#1677). It is a part of [`Self::group_destinations`], and the default
+    /// is all of it. B/IP keeps the groups at the link's own UDP port: one
+    /// at another port belongs to another B/IP network, so a send there is
+    /// refused, not turned into this one's broadcast.
+    fn local_broadcast_destinations(&self) -> GroupDestinations {
+        self.group_destinations()
     }
 }

@@ -125,11 +125,13 @@ async fn loopback_broadcast_is_delivered() -> bool {
 }
 
 async fn server() -> BACnetServer<BipTransport> {
+    let identity = bacnet_objects::DeviceIdentity::new(DEVICE, 0)
+        .expect("valid Device identity")
+        .with_name("B/IP server");
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: DEVICE,
-            name: "B/IP server".into(),
+            identity: identity.clone(),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -141,6 +143,7 @@ async fn server() -> BACnetServer<BipTransport> {
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(LOOPBACK_BROADCAST)
+        .device(identity)
         .database(db)
         .build()
         .await

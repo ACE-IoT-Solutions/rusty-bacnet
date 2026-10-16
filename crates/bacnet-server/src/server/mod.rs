@@ -40,7 +40,7 @@ use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
-use bacnet_transport::bip::BipTransport;
+use bacnet_transport::bip::{BipMode, BipTransport};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation,
@@ -151,15 +151,22 @@ mod audit_reporter_tests;
 /// Generic builder for BACnetServer with a pre-built transport.
 pub struct ServerBuilder<T: TransportPort> {
     config: ServerConfig,
-    db: ObjectDatabase,
+    db: Option<ObjectDatabase>,
     transport: Option<T>,
     configured_device_bindings: Vec<DeviceBinding>,
 }
 
 impl<T: TransportPort + 'static> ServerBuilder<T> {
+    /// Set the one Device identity. With no supplied database, startup creates
+    /// a stock Device after resolving the owned transport's receive capacity.
+    pub fn device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {
+        self.config.device = identity;
+        self
+    }
+
     /// Set the object database (transfers ownership).
     pub fn database(mut self, db: ObjectDatabase) -> Self {
-        self.db = db;
+        self.db = Some(db);
         self
     }
 
@@ -233,23 +240,6 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
         self
     }
 
-    /// Set the segmentation support this device advertises and enforces.
-    ///
-    /// The dispatch loop honors the advertisement (Clause 5.4.5.1): inbound
-    /// segmented requests are reassembled only under `BOTH` or `RECEIVE`, and
-    /// draw a SEGMENTATION_NOT_SUPPORTED Abort otherwise. The default is
-    /// `NONE`.
-    pub fn segmentation_supported(mut self, segmentation: Segmentation) -> Self {
-        self.config.segmentation_supported = segmentation;
-        self
-    }
-
-    /// Set the vendor identifier (used in IAm responses and protocol operations).
-    pub fn vendor_id(mut self, id: u16) -> Self {
-        self.config.vendor_id = id;
-        self
-    }
-
     /// Set the discovery rate-limiting and duplicate suppression policy.
     pub fn discovery_policy(mut self, policy: DiscoveryPolicy) -> Self {
         self.config.discovery_policy = policy;
@@ -264,13 +254,18 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
     }
 
     /// Build and start the server.
-    pub async fn build(self) -> Result<BACnetServer<T>, Error> {
+    pub async fn build(mut self) -> Result<BACnetServer<T>, Error> {
         let transport = self
             .transport
             .ok_or_else(|| Error::Encoding("transport not set on ServerBuilder".into()))?;
+        let db = crate::local_device::prepare_database(
+            &mut self.config,
+            self.db,
+            transport.local_receive_apdu_capacity(),
+        )?;
         BACnetServer::start_with_clock_mode_and_bindings(
             self.config,
-            self.db,
+            db,
             transport,
             Some(ClockConfig::default()),
             self.configured_device_bindings,
@@ -282,8 +277,9 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
 /// BIP-specific builder that constructs `BipTransport` from interface/port/broadcast fields.
 pub struct BipServerBuilder {
     config: ServerConfig,
-    db: ObjectDatabase,
+    db: Option<ObjectDatabase>,
     configured_device_bindings: Vec<DeviceBinding>,
+    mode: BipMode,
 }
 
 impl BipServerBuilder {
@@ -305,9 +301,16 @@ impl BipServerBuilder {
         self
     }
 
+    /// Set the one Device identity. With no supplied database, startup creates
+    /// a stock Device after resolving the owned transport's receive capacity.
+    pub fn device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {
+        self.config.device = identity;
+        self
+    }
+
     /// Set the object database (transfers ownership).
     pub fn database(mut self, db: ObjectDatabase) -> Self {
-        self.db = db;
+        self.db = Some(db);
         self
     }
 
@@ -375,23 +378,6 @@ impl BipServerBuilder {
         self
     }
 
-    /// Set the segmentation support this device advertises and enforces.
-    ///
-    /// The dispatch loop honors the advertisement (Clause 5.4.5.1): inbound
-    /// segmented requests are reassembled only under `BOTH` or `RECEIVE`, and
-    /// draw a SEGMENTATION_NOT_SUPPORTED Abort otherwise. The default is
-    /// `NONE`.
-    pub fn segmentation_supported(mut self, segmentation: Segmentation) -> Self {
-        self.config.segmentation_supported = segmentation;
-        self
-    }
-
-    /// Set the vendor identifier advertised in I-Am responses.
-    pub fn vendor_id(mut self, id: u16) -> Self {
-        self.config.vendor_id = id;
-        self
-    }
-
     /// Set the discovery rate-limiting and duplicate suppression policy.
     pub fn discovery_policy(mut self, policy: DiscoveryPolicy) -> Self {
         self.config.discovery_policy = policy;
@@ -406,14 +392,20 @@ impl BipServerBuilder {
     }
 
     /// Build and start the server, constructing a BipTransport from the config.
-    pub async fn build(self) -> Result<BACnetServer<BipTransport>, Error> {
+    pub async fn build(mut self) -> Result<BACnetServer<BipTransport>, Error> {
         let config = &self.config;
         let mut transport =
             BipTransport::new(config.interface, config.port, config.broadcast_address);
         transport.set_share_port_by_address(config.share_port_by_address);
+        transport.set_mode(self.mode);
+        let db = crate::local_device::prepare_database(
+            &mut self.config,
+            self.db,
+            transport.local_receive_apdu_capacity(),
+        )?;
         BACnetServer::start_with_clock_mode_and_bindings(
             self.config,
-            self.db,
+            db,
             transport,
             Some(ClockConfig::default()),
             self.configured_device_bindings,
@@ -514,8 +506,9 @@ impl BACnetServer<BipTransport> {
     pub fn bip_builder() -> BipServerBuilder {
         BipServerBuilder {
             config: ServerConfig::default(),
-            db: ObjectDatabase::new(),
+            db: None,
             configured_device_bindings: Vec::new(),
+            mode: BipMode::Normal,
         }
     }
 }
@@ -846,17 +839,6 @@ mod value_cov_increment_tests;
 mod value_source_local_tests;
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
-    /// Start a server builder for a caller-supplied transport type, with default configuration and
-    /// an empty object database.
-    pub fn generic_builder() -> ServerBuilder<T> {
-        ServerBuilder {
-            config: ServerConfig::default(),
-            db: ObjectDatabase::new(),
-            transport: None,
-            configured_device_bindings: Vec::new(),
-        }
-    }
-
     /// Get a snapshot of discovery rate-limiting counters.
     pub fn discovery_counters(&self) -> DiscoveryCounters {
         self.discovery_limiter.counters()

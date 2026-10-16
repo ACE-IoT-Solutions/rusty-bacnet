@@ -1,20 +1,20 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/bacnet-time",
     "crates/bacnet-types",
     "crates/bacnet-encoding",
     "crates/bacnet-services",
     "crates/bacnet-mstp-codec",
     "crates/bacnet-mstp-core",
     "crates/bacnet-mstp-sim",
-    "crates/bacnet-router-core",
-    "crates/bacnet-router-adapters",
     "crates/bacnet-bip-codec",
+    "crates/bacnet-bip-core",
+    "crates/bacnet-router-core",
     "crates/bacnet-transport",
     "crates/bacnet-network",
     "crates/bacnet-endpoint-core",
     "crates/bacnet-client",
-    "crates/bacnet-runtime",
     "crates/bacnet-objects",
     "crates/bacnet-server",
     "crates/bacnet-endpoint",
@@ -45,20 +45,20 @@ members = [
 # and the no_std harness are left out too: `--workspace` runs build them, and
 # `-p` picks one.
 default-members = [
+    "crates/bacnet-time",
     "crates/bacnet-types",
     "crates/bacnet-encoding",
     "crates/bacnet-services",
     "crates/bacnet-mstp-codec",
     "crates/bacnet-mstp-core",
     "crates/bacnet-mstp-sim",
-    "crates/bacnet-router-core",
-    "crates/bacnet-router-adapters",
     "crates/bacnet-bip-codec",
+    "crates/bacnet-bip-core",
+    "crates/bacnet-router-core",
     "crates/bacnet-transport",
     "crates/bacnet-network",
     "crates/bacnet-endpoint-core",
     "crates/bacnet-client",
-    "crates/bacnet-runtime",
     "crates/bacnet-objects",
     "crates/bacnet-server",
     "crates/bacnet-endpoint",
@@ -67,7 +67,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 rust-version = "1.93"
 license = "MIT"
@@ -84,22 +84,22 @@ categories = ["network-programming", "embedded"]
 # edge, so only the entry can. Hosted crates turn std back on with
 # `features = ["std"]` on each edge. tracing keeps its defaults: only
 # bacnet-encoding's `std` feature brings it into a no_std crate.
-bacnet-types = { version = "0.12.0", path = "crates/bacnet-types", default-features = false }
-bacnet-encoding = { version = "0.12.0", path = "crates/bacnet-encoding", default-features = false }
-bacnet-services = { version = "0.12.0", path = "crates/bacnet-services", default-features = false }
-bacnet-mstp-codec = { version = "0.12.0", path = "crates/bacnet-mstp-codec", default-features = false }
-bacnet-mstp-core = { version = "0.12.0", path = "crates/bacnet-mstp-core", default-features = false }
-bacnet-router-core = { version = "0.12.0", path = "crates/bacnet-router-core", default-features = false }
-bacnet-router-adapters = { version = "0.12.0", path = "crates/bacnet-router-adapters", default-features = false }
-bacnet-bip-codec = { version = "0.12.0", path = "crates/bacnet-bip-codec", default-features = false }
-bacnet-transport = { version = "0.12.0", path = "crates/bacnet-transport" }
-bacnet-network = { version = "0.12.0", path = "crates/bacnet-network" }
-bacnet-endpoint-core = { version = "0.12.0", path = "crates/bacnet-endpoint-core" }
-bacnet-client = { version = "0.12.0", path = "crates/bacnet-client" }
-bacnet-runtime = { version = "0.12.0", path = "crates/bacnet-runtime" }
-bacnet-objects = { version = "0.12.0", path = "crates/bacnet-objects" }
-bacnet-server = { version = "0.12.0", path = "crates/bacnet-server" }
-bacnet-endpoint = { version = "0.12.0", path = "crates/bacnet-endpoint" }
+bacnet-time = { version = "0.13.0", path = "crates/bacnet-time" }
+bacnet-types = { version = "0.13.0", path = "crates/bacnet-types", default-features = false }
+bacnet-encoding = { version = "0.13.0", path = "crates/bacnet-encoding", default-features = false }
+bacnet-services = { version = "0.13.0", path = "crates/bacnet-services", default-features = false }
+bacnet-mstp-codec = { version = "0.13.0", path = "crates/bacnet-mstp-codec", default-features = false }
+bacnet-mstp-core = { version = "0.13.0", path = "crates/bacnet-mstp-core", default-features = false }
+bacnet-bip-codec = { version = "0.13.0", path = "crates/bacnet-bip-codec", default-features = false }
+bacnet-bip-core = { version = "0.13.0", path = "crates/bacnet-bip-core" }
+bacnet-router-core = { version = "0.13.0", path = "crates/bacnet-router-core" }
+bacnet-transport = { version = "0.13.0", path = "crates/bacnet-transport" }
+bacnet-network = { version = "0.13.0", path = "crates/bacnet-network" }
+bacnet-endpoint-core = { version = "0.13.0", path = "crates/bacnet-endpoint-core" }
+bacnet-client = { version = "0.13.0", path = "crates/bacnet-client" }
+bacnet-objects = { version = "0.13.0", path = "crates/bacnet-objects" }
+bacnet-server = { version = "0.13.0", path = "crates/bacnet-server" }
+bacnet-endpoint = { version = "0.13.0", path = "crates/bacnet-endpoint" }
 thiserror = { version = "2", default-features = false }
 bitflags = "2"
 bytes = { version = "1", default-features = false }
@@ -115,13 +115,12 @@ pyo3 = { version = "0.29", features = ["multiple-pymethods"] }
 # framework on macOS and so stops the zig cross-build of the release (#944).
 tokio-tungstenite = "0.29"
 tokio-rustls = "0.26"
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "logging", "std"] }
 futures-util = "0.3"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 smallvec = "1"
 serde = { version = "1", default-features = false }
 serde_json = "1"
-sha2 = "0.10"
 criterion = { version = "0.8", features = ["async_tokio"] }
 sysinfo = "0.39"
 libc = "0.2"

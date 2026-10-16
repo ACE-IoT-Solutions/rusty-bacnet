@@ -99,8 +99,9 @@ pub(super) fn database() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: DEVICE,
-            name: "DEV".into(),
+            identity: crate::DeviceIdentity::new(DEVICE, 0)
+                .expect("valid Device identity")
+                .with_name("DEV"),
             ..DeviceConfig::default()
         })
         .unwrap(),

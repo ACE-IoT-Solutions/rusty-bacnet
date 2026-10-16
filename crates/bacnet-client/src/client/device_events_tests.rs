@@ -6,7 +6,6 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, Segmentation};
 use bacnet_types::primitives::ObjectIdentifier;
-use std::time::Instant;
 
 fn i_am_npdu(instance: u32, vendor_id: u16) -> BytesMut {
     i_am_npdu_with_capabilities(instance, vendor_id, 1476, Segmentation::NONE)

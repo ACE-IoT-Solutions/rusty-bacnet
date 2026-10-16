@@ -215,7 +215,7 @@ async fn sc_one_node_bidirectional_with_provenance_and_admin() {
     let mut endpoint = ScEndpointBuilder::new(node_vmac, node_uuid)
         .role(SessionRole::Both)
         .database(db)
-        .identity(id.clone())
+        .device(id.clone())
         .build_hub_session(ws)
         .expect("hub session must build");
     endpoint.start().await.unwrap();
@@ -371,7 +371,7 @@ async fn sc_kill_reconnect_preserves_vmac_uuid_vs_transient() {
     let mut s1 = ScEndpointBuilder::new(vmac, uuid)
         .role(SessionRole::Both)
         .database(db_with_analog(&id, 1, 1.0))
-        .identity(id.clone())
+        .device(id.clone())
         .build_hub_session(ws1)
         .unwrap();
     s1.start().await.unwrap();
@@ -403,12 +403,11 @@ async fn sc_kill_reconnect_preserves_vmac_uuid_vs_transient() {
     let mut s2 = ScEndpointBuilder::new(vmac, uuid)
         .role(SessionRole::Both)
         .database(db_with_analog(&id, 1, 2.0))
-        .identity(id.clone())
+        .device(id.clone())
         .reconnect(ScReconnectConfig {
             initial_delay_ms: 100,
             max_delay_ms: 1_000,
             max_retries: 3,
-            retry_forever: false,
         })
         .build_hub_session(ws2)
         .unwrap();
@@ -444,7 +443,7 @@ async fn sc_kill_reconnect_preserves_vmac_uuid_vs_transient() {
     let mut s3 = ScEndpointBuilder::new(transient_vmac, transient_uuid)
         .role(SessionRole::ClientOnly)
         .database(db_with_analog(&transient_id, 1, 3.0))
-        .identity(transient_id)
+        .device(transient_id)
         .build_hub_session(ws3)
         .unwrap();
     s3.start().await.unwrap();
@@ -478,7 +477,7 @@ async fn sc_kill_reconnect_preserves_vmac_uuid_vs_transient() {
         .with_device_uuid([0x99; 16]);
     let ws_bad = dial_node(hub_port, ca.node_tls.clone()).await;
     assert!(ScEndpointBuilder::new([0x07; 6], [0x77; 16])
-        .identity(bad_id)
+        .device(bad_id)
         .build_hub_session(ws_bad)
         .is_err());
 

@@ -4,5 +4,4 @@
 [toolchain]
 channel = "1.99.0"
 components = ["rustfmt", "clippy"]
-targets = ["thumbv7em-none-eabi", "riscv32imac-unknown-none-elf"]
 profile = "default"

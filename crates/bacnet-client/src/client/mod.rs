@@ -12,6 +12,8 @@ use std::net::Ipv4Addr;
 #[cfg(feature = "ipv6")]
 use std::net::Ipv6Addr;
 use std::sync::Arc;
+#[cfg(test)]
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
@@ -29,7 +31,7 @@ use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
 use bacnet_endpoint_core::coordinator::{CanonicalPeer, OutboundTransactionCoordinator};
 use bacnet_network::layer::NetworkLayer;
 use bacnet_services::cov::COVNotificationRequest;
-use bacnet_transport::bip::{BipTransport, ForeignDeviceConfig};
+use bacnet_transport::bip::{BipMode, BipTransport};
 #[cfg(feature = "ipv6")]
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::port::{TransportPort, TransportProvenance};
@@ -39,9 +41,7 @@ use bacnet_types::enums::{
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 
-use crate::discovery::{
-    DeviceTable, DeviceUpsertResult, DiscoveredDevice, IAmEvent, RoutedDeviceConfig,
-};
+use crate::discovery::{DeviceTable, DeviceUpsertResult, DiscoveredDevice, RoutedDeviceConfig};
 use crate::segmentation::{
     duplicate_in_window, max_segment_payload, split_payload, SegmentReceiver, SegmentedPduType,
 };
@@ -61,9 +61,6 @@ pub const MAX_COV_CHANNEL_CAPACITY: usize = 65_536;
 
 /// Device discovery event broadcast channel capacity.
 pub const DEVICE_EVENT_CHANNEL_CAPACITY: usize = 64;
-
-/// Raw I-Am observation broadcast channel capacity.
-pub const IAM_EVENT_CHANNEL_CAPACITY: usize = 64;
 
 /// Type of change observed in the device discovery table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,8 +150,6 @@ pub struct ClientOptions {
     /// Capacity of the independent event notification broadcast channel (default 64).
     /// Slow receivers observe lag; valid confirmed notifications are still acknowledged.
     pub event_channel_capacity: usize,
-    /// Reserve startup COV and I-Am receivers before dispatch begins.
-    pub reserve_initial_observers: bool,
     confirmed_cov_notification_ack_policy: ConfirmedCOVNotificationAckPolicy,
 }
 
@@ -181,7 +176,6 @@ impl Default for ClientOptions {
         Self {
             cov_channel_capacity: DEFAULT_COV_CHANNEL_CAPACITY,
             event_channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
-            reserve_initial_observers: false,
             confirmed_cov_notification_ack_policy:
                 cov_notifications::default_confirmed_cov_notification_ack_policy(),
         }
@@ -200,6 +194,21 @@ pub(crate) fn new_coordinated_tsm(
         },
         coordinator,
     )
+}
+
+pub(crate) fn confirmed_response_result(response: TsmResponse) -> Result<Bytes, Error> {
+    match response {
+        TsmResponse::SimpleAck => Ok(Bytes::new()),
+        TsmResponse::ComplexAck { service_data } => Ok(service_data),
+        TsmResponse::Error {
+            class,
+            code,
+            detail,
+        } => Err(Error::protocol(class, code, detail)),
+        TsmResponse::Reject { reason } => Err(Error::Reject { reason }),
+        TsmResponse::Abort { reason } => Err(Error::Abort { reason }),
+        TsmResponse::NetworkPathTooLong { dnet } => Err(Error::RoutedPathTooLong { dnet }),
+    }
 }
 
 impl ClientOptions {
@@ -271,35 +280,37 @@ impl<T: TransportPort + 'static> ClientBuilder<T> {
 pub struct BipClientBuilder {
     config: ClientConfig,
     options: ClientOptions,
-    foreign_device: Option<ForeignDeviceConfig>,
+    mode: BipMode,
 }
 
 impl BipClientBuilder {
-    /// Enable automatic foreign-device registration and DBTN broadcasts to
-    /// this BBMD. `build()` starts locally; it does not wait for BBMD acceptance.
-    /// Poll `client.transport().bvlc_client_snapshot()` for matched outcomes.
-    /// Invalid TTL/renewal settings fail before transport I/O.
+    /// Set the B/IP mode: a normal node (the default), a foreign device or
+    /// a BBMD (#938). `build()` starts the client locally; a foreign device
+    /// doesn't wait for its BBMD to accept the registration. Poll
+    /// [`BACnetClient::foreign_registration`] for how it went: `registered`,
+    /// and the last attempt's outcome, a refusal included. Invalid TTL or
+    /// renewal settings fail `build()` before any I/O.
     ///
     /// ```no_run
     /// use bacnet_client::client::BACnetClient;
-    /// use bacnet_transport::bip::ForeignDeviceConfig;
+    /// use bacnet_transport::bip::{BipMode, ForeignDeviceConfig};
     /// use std::{net::Ipv4Addr, time::Duration};
     /// # async fn example() -> Result<(), bacnet_types::error::Error> {
     /// let mut client = BACnetClient::bip_builder()
     ///     .port(0)
-    ///     .foreign_device(ForeignDeviceConfig {
+    ///     .mode(BipMode::Foreign(ForeignDeviceConfig {
     ///         bbmd_ip: Ipv4Addr::new(192, 0, 2, 10), bbmd_port: 47808,
     ///         ttl: 60, renewal_interval: Some(Duration::from_secs(20)),
-    ///     })
+    ///     }))
     ///     .build().await?;
-    /// let observed = client.transport().bvlc_client_snapshot();
     /// // A successful local start alone does not establish registration.
-    /// let last_attempt = observed.foreign_registration.last_outcome;
+    /// let registration = client.foreign_registration()?;
+    /// let (registered, last_attempt) = (registration.registered, registration.last_outcome);
     /// client.stop().await?;
     /// # Ok(()) }
     /// ```
-    pub fn foreign_device(mut self, config: ForeignDeviceConfig) -> Self {
-        self.foreign_device = Some(config);
+    pub fn mode(mut self, mode: BipMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -348,18 +359,6 @@ impl BipClientBuilder {
     pub fn cov_channel_capacity(mut self, capacity: usize) -> Self {
         self.options.cov_channel_capacity = capacity;
         self
-    }
-
-    /// Build and start the client, constructing a BipTransport from the config.
-    pub async fn build(self) -> Result<BACnetClient<BipTransport>, Error> {
-        let config = &self.config;
-        let mut transport =
-            BipTransport::new(config.interface, config.port, config.broadcast_address);
-        transport.set_share_port_by_address(config.share_port_by_address);
-        if let Some(foreign) = self.foreign_device {
-            transport.register_as_foreign_device(foreign);
-        }
-        BACnetClient::start_with_options(self.config, transport, self.options).await
     }
 }
 
@@ -519,16 +518,10 @@ pub struct BACnetClient<T: TransportPort> {
     network: Arc<NetworkLayer<T>>,
     tsm: Arc<Mutex<Tsm>>,
     device_table: Arc<Mutex<DeviceTable>>,
-    network_control_tx: broadcast::Sender<bacnet_network::layer::ReceivedNetworkControl>,
-    router_snapshot: Arc<Mutex<Vec<RouterInfo>>>,
-    router_discovery_lock: Arc<Mutex<()>>,
     cov_tx: broadcast::Sender<ReceivedCOVNotification>,
-    initial_cov_rx: Option<broadcast::Receiver<ReceivedCOVNotification>>,
     event_tx: broadcast::Sender<ReceivedEventNotification>,
     device_tx: broadcast::Sender<DeviceEvent>,
     device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
-    iam_tx: broadcast::Sender<IAmEvent>,
-    initial_iam_rx: Option<broadcast::Receiver<IAmEvent>>,
     dispatch_task: Option<JoinHandle<()>>,
     network_number_task: Option<JoinHandle<()>>,
     /// Owner-qualified channels feeding SegmentACKs to in-flight segmented sends.
@@ -555,7 +548,7 @@ impl BACnetClient<BipTransport> {
         BipClientBuilder {
             config: ClientConfig::default(),
             options: ClientOptions::default(),
-            foreign_device: None,
+            mode: BipMode::Normal,
         }
     }
 }
@@ -618,12 +611,6 @@ impl Bip6ClientBuilder {
     pub fn cov_channel_capacity(mut self, capacity: usize) -> Self {
         self.options.cov_channel_capacity = capacity;
         self
-    }
-
-    /// Build and start the client, constructing a Bip6Transport from the config.
-    pub async fn build(self) -> Result<BACnetClient<Bip6Transport>, Error> {
-        let transport = Bip6Transport::new(self.interface, self.config.port, self.device_instance);
-        BACnetClient::start_with_options(self.config, transport, self.options).await
     }
 }
 
@@ -748,7 +735,6 @@ impl ScClientBuilder {
         }
     }
 
-    #[cfg(test)]
     fn sc_transport<W: bacnet_transport::sc::WebSocketPort>(
         &self,
         ws: W,
@@ -766,79 +752,8 @@ impl ScClientBuilder {
         self,
         ws: W,
     ) -> Result<BACnetClient<bacnet_transport::sc::ScTransport<W>>, Error> {
-        if let Some(config) = &self.reconnect {
-            config.validate()?;
-        }
-        self.validate_identity()?;
-        self.options.validate()?;
-        validate_max_segments(self.config.max_segments)?;
-        pacing::validate_interval_ms(self.config.min_request_interval_ms)?;
+        self.validate()?;
         let transport = self.sc_transport(ws);
-        BACnetClient::start_with_options(self.config, transport, self.options).await
-    }
-
-    /// Connect to the hub and start the client.
-    ///
-    /// Reconnect configuration is validated before TLS lookup or dialing, and
-    /// again when the transport starts. An error still consumes this builder
-    /// and drops its inputs; this does not promise generic endpoint rollback.
-    ///
-    /// The client's [`transport()`](BACnetClient::transport) lends the hub
-    /// connection-state watch and the NPDU drop counts:
-    ///
-    /// ```no_run
-    /// use bacnet_client::client::BACnetClient;
-    /// use bacnet_transport::sc::ScConnectionState;
-    /// use bacnet_transport::sc_tls::ScNodeTlsConfig;
-    ///
-    /// async fn watch_hub(tls: ScNodeTlsConfig) -> Result<(), bacnet_types::error::Error> {
-    ///     let client = BACnetClient::sc_builder()
-    ///         .hub_url("wss://hub.example.com/bacnet")
-    ///         .tls_config(tls)
-    ///         .vmac([0x02, 0, 0, 0, 0, 0x01])
-    ///         .device_uuid([0x42; 16])
-    ///         .build()
-    ///         .await?;
-    ///     // An owned receiver: it can live in its own task.
-    ///     let mut state = client.transport().connection_state_changes();
-    ///     tokio::spawn(async move {
-    ///         while state.changed().await.is_ok() {
-    ///             let _connected = *state.borrow_and_update() == ScConnectionState::Connected;
-    ///         }
-    ///     });
-    ///     // A snapshot: poll it as often as needed.
-    ///     let _full_queue_drops = client.transport().npdu_drop_counts().full_drops;
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn build(
-        self,
-    ) -> Result<
-        BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>,
-        Error,
-    > {
-        if let Some(config) = &self.reconnect {
-            config.validate()?;
-        }
-        self.validate_identity()?;
-        self.options.validate()?;
-        validate_max_segments(self.config.max_segments)?;
-        pacing::validate_interval_ms(self.config.min_request_interval_ms)?;
-        let tls_config =
-            self.tls_config.as_ref().cloned().ok_or_else(|| {
-                Error::Encoding("SC client builder: tls_config is required".into())
-            })?;
-
-        let sc_config = bacnet_transport::sc_tls::ScTlsTransportConfig::new(
-            self.hub_url,
-            self.vmac,
-            self.device_uuid,
-        )
-        .with_heartbeat(self.heartbeat_interval_ms, self.heartbeat_timeout_ms)
-        .with_reconnect(self.reconnect);
-        let transport =
-            bacnet_transport::sc_tls::connect_sc_transport(sc_config, tls_config).await?;
-
         BACnetClient::start_with_options(self.config, transport, self.options).await
     }
 }
@@ -881,6 +796,7 @@ fn cap_max_apdu_to_transport(configured: u16, transport_limit: u16) -> Result<u1
 }
 
 mod audit;
+mod builder_build;
 mod builder_options;
 mod cov;
 mod cov_notifications;
@@ -901,15 +817,11 @@ mod property;
 mod read_range;
 mod requests;
 mod response_admission;
-mod response_result;
-pub(crate) use response_result::confirmed_response_result;
 mod routed_path_limits;
-mod router_discovery;
 mod segmentation;
 mod segmentation_abort;
 mod segmentation_context;
 mod segmented_request;
-mod startup_observers;
 mod transaction_cleanup;
 mod transaction_peer;
 mod transport_access;
@@ -933,7 +845,6 @@ pub use event_notifications::{
     MAX_EVENT_CHANNEL_CAPACITY,
 };
 pub use pacing::MAX_MIN_REQUEST_INTERVAL_MS;
-pub use router_discovery::RouterInfo;
 pub use write_group::WriteGroupDestination;
 
 #[cfg(test)]
@@ -1020,7 +931,33 @@ mod wpm_validation_tests;
 mod write_priority_tests;
 
 impl<T: TransportPort + 'static> BACnetClient<T> {
-    /// Create a generic builder that accepts a pre-built transport.
+    /// Create a generic builder that accepts a pre-built transport, such as
+    /// an MS/TP port. A serial port opened with `TokioSerialPort::open` (the
+    /// `serial` feature) takes the place of the in-memory line here; give
+    /// the [`MstpConfig`](bacnet_transport::mstp::MstpConfig) the port's
+    /// baud rate, which its timers follow.
+    ///
+    /// ```
+    /// use bacnet_client::client::BACnetClient;
+    /// use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), bacnet_types::error::Error> {
+    /// let (serial, _line) = LoopbackSerial::pair();
+    /// let config = MstpConfig {
+    ///     this_station: 1,
+    ///     max_master: 127,
+    ///     baud_rate: 76_800,
+    ///     ..MstpConfig::default()
+    /// };
+    /// let mut client = BACnetClient::generic_builder()
+    ///     .transport(MstpTransport::new(serial, config))
+    ///     .build()
+    ///     .await?;
+    /// client.stop().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn generic_builder() -> ClientBuilder<T> {
         ClientBuilder {
             config: ClientConfig::default(),

@@ -30,21 +30,25 @@ fn cold_start_forms_the_ring_and_every_master_gets_the_token() {
 
     // Station 0's slot is the first: Tno_token + Tslot x 0.
     let first = &frames[0];
-    assert!(first.is(FrameType::PollForMaster, 0, 1), "{}", log(frames));
+    assert!(
+        first.is(FrameType::POLL_FOR_MASTER, 0, 1),
+        "{}",
+        log(frames)
+    );
     assert!(first.generation);
     assert_eq!(first.start, ms(500));
 
     // Polls of absent stations 1 and 2 each wait Tusage_timeout of silence.
-    let polls = sent_by(frames, 0, FrameType::PollForMaster);
+    let polls = sent_by(frames, 0, FrameType::POLL_FOR_MASTER);
     assert_eq!(polls[1].start, polls[0].end + usage_timeout);
     assert_eq!(polls[2].start, polls[1].end + usage_timeout);
     assert_eq!(polls[2].destination(), Some(3));
     // Station 3 answers after Tturnaround, and gets the token as quickly.
     let reply = &frames[3];
-    assert!(reply.is(FrameType::ReplyToPollForMaster, 3, 0));
+    assert!(reply.is(FrameType::REPLY_TO_POLL_FOR_MASTER, 3, 0));
     assert_eq!(reply.start, polls[2].end + turnaround);
     let pass = &frames[4];
-    assert!(pass.is(FrameType::Token, 0, 3));
+    assert!(pass.is(FrameType::TOKEN, 0, 3));
     assert_eq!(pass.start, reply.end + turnaround);
     assert_eq!(pass.end - pass.start, octet8);
 
@@ -67,7 +71,7 @@ fn cold_start_forms_the_ring_and_every_master_gets_the_token() {
         ]
     );
     let sweep = |station: u8, length: usize| -> Vec<u8> {
-        sent_by(frames, station, FrameType::PollForMaster)
+        sent_by(frames, station, FrameType::POLL_FOR_MASTER)
             .into_iter()
             .take(length)
             .filter_map(|poll| poll.destination())
@@ -94,7 +98,7 @@ fn cold_start_at_9600_baud_starts_from_the_lowest_slot_present() {
     sim.run_until(ms(3_000));
     let frames = sim.frames();
     assert!(
-        frames[0].is(FrameType::PollForMaster, 4, 5),
+        frames[0].is(FrameType::POLL_FOR_MASTER, 4, 5),
         "{}",
         log(frames)
     );
@@ -129,7 +133,7 @@ fn a_lone_master_becomes_sole_master_and_still_finds_a_newcomer() {
     }
     sim.run_until(ms(1_500));
     let frames = sim.frames();
-    let sweep: Vec<u8> = sent_by(frames, 5, FrameType::PollForMaster)
+    let sweep: Vec<u8> = sent_by(frames, 5, FrameType::POLL_FOR_MASTER)
         .into_iter()
         .take(7)
         .filter_map(|poll| poll.destination())
@@ -138,7 +142,7 @@ fn a_lone_master_becomes_sole_master_and_still_finds_a_newcomer() {
     assert!(sim.core(5).unwrap().snapshot().sole_master);
     // The queued data goes out with no Token on the wire.
     assert_eq!(
-        sent_by(frames, 5, FrameType::BACnetDataNotExpectingReply).len(),
+        sent_by(frames, 5, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY).len(),
         3
     );
     assert!(token_passes(frames).is_empty(), "{}", log(frames));
@@ -147,7 +151,7 @@ fn a_lone_master_becomes_sole_master_and_still_finds_a_newcomer() {
     sim.run_until(ms(4_000));
     let frames = sim.frames();
     let reply = first_after(frames, ms(1_600), |frame| {
-        frame.frame_type() == Some(FrameType::ReplyToPollForMaster)
+        frame.frame_type() == Some(FrameType::REPLY_TO_POLL_FOR_MASTER)
     })
     .expect("the newcomer answers a maintenance poll");
     assert_eq!(reply.source(), Some(2));

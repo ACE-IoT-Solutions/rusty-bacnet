@@ -1,3 +1,4 @@
+use super::super::envelope_harness::Harness;
 use super::*;
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_transport::sc::{LoopbackWebSocket, ScTransport, WebSocketPort};
@@ -7,6 +8,17 @@ use bacnet_transport::sc_frame::{
 use tokio::time::{timeout, Duration};
 
 async fn sc_hub_accept(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
+    sc_hub_accept_with_limits(ws_hub, hub_vmac, 1476, 1476).await;
+}
+
+/// Act as a hub: take the node's Connect-Request and accept it with the
+/// hub's Max-BVLC-Length and Max-NPDU-Length.
+pub(super) async fn sc_hub_accept_with_limits(
+    ws_hub: &LoopbackWebSocket,
+    hub_vmac: Vmac,
+    max_bvlc: u16,
+    max_npdu: u16,
+) {
     let data = ws_hub.recv().await.unwrap();
     let req = decode_sc_message(&data).unwrap();
     assert_eq!(req.function, ScFunction::ConnectRequest);
@@ -14,8 +26,8 @@ async fn sc_hub_accept(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
     let mut accept_payload = Vec::with_capacity(26);
     accept_payload.extend_from_slice(&hub_vmac);
     accept_payload.extend_from_slice(&[0x33; 16]);
-    accept_payload.extend_from_slice(&1476u16.to_be_bytes());
-    accept_payload.extend_from_slice(&1476u16.to_be_bytes());
+    accept_payload.extend_from_slice(&max_bvlc.to_be_bytes());
+    accept_payload.extend_from_slice(&max_npdu.to_be_bytes());
 
     let accept = ScMessage {
         function: ScFunction::ConnectAccept,
@@ -31,24 +43,9 @@ async fn sc_hub_accept(ws_hub: &LoopbackWebSocket, hub_vmac: Vmac) {
     ws_hub.send(&buf).await.unwrap();
 }
 
-#[test]
-fn forward_unicast_preserves_data_attributes() {
-    let (tx_a, _rx_a) = mpsc::channel::<SendRequest>(256);
-    let (tx_b, mut rx_b) = mpsc::channel::<SendRequest>(256);
-    let send_txs = vec![tx_a, tx_b];
-
-    let route = crate::router_table::RouteEntry {
-        port_index: 1,
-        directly_connected: true,
-        next_hop_mac: MacAddr::new(),
-        last_seen: None,
-        last_used: None,
-        reachability: crate::router_table::ReachabilityStatus::Reachable,
-        busy_until: None,
-        flap_count: 0,
-        last_port_change: None,
-    };
-
+#[tokio::test]
+async fn forward_unicast_preserves_data_attributes() {
+    let mut h = Harness::two_port();
     let npdu = Npdu {
         is_network_message: false,
         expecting_reply: false,
@@ -74,18 +71,11 @@ fn forward_unicast_preserves_data_attributes() {
             data: vec![0x12, 0x34, 0x56],
         },
     ];
+    let mut ctx = h.ctx(0, &[0x0A], npdu);
+    ctx.data_attributes = data_attributes.clone();
+    h.dispatch(ctx).await;
 
-    forward_unicast(
-        &send_txs,
-        &route,
-        1000,
-        &[0x0A],
-        npdu,
-        &data_attributes,
-        None,
-    );
-
-    match rx_b.try_recv().unwrap() {
+    match h.rxs[1].try_recv().unwrap() {
         SendRequest::Unicast {
             npdu: data,
             data_attributes: sent_attributes,
@@ -100,13 +90,9 @@ fn forward_unicast_preserves_data_attributes() {
     }
 }
 
-#[test]
-fn forward_broadcast_preserves_data_attributes_on_each_output_port() {
-    let (tx_a, mut rx_a) = mpsc::channel::<SendRequest>(256);
-    let (tx_b, mut rx_b) = mpsc::channel::<SendRequest>(256);
-    let (tx_c, mut rx_c) = mpsc::channel::<SendRequest>(256);
-    let send_txs = vec![tx_a, tx_b, tx_c];
-
+#[tokio::test]
+async fn forward_broadcast_preserves_data_attributes_on_each_output_port() {
+    let mut h = Harness::with_networks(&[1000, 2000, 3000]);
     let npdu = Npdu {
         is_network_message: false,
         expecting_reply: false,
@@ -125,11 +111,12 @@ fn forward_broadcast_preserves_data_attributes_on_each_output_port() {
         must_understand: true,
         data: vec![0xAA],
     }];
+    let mut ctx = h.ctx(1, &[0x0A], npdu);
+    ctx.data_attributes = data_attributes.clone();
+    h.dispatch(ctx).await;
 
-    forward_broadcast(&send_txs, 1, 1000, &[0x0A], &npdu, &data_attributes);
-
-    for sent in [rx_a.try_recv().unwrap(), rx_c.try_recv().unwrap()] {
-        match sent {
+    for port in [0, 2] {
+        match h.rxs[port].try_recv().unwrap() {
             SendRequest::Broadcast {
                 npdu: data,
                 data_attributes: sent_attributes,
@@ -142,7 +129,7 @@ fn forward_broadcast_preserves_data_attributes_on_each_output_port() {
             SendRequest::Unicast { .. } => panic!("expected forwarded broadcast"),
         }
     }
-    assert!(rx_b.try_recv().is_err());
+    h.assert_quiet();
 }
 
 #[tokio::test]

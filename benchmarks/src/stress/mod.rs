@@ -4,6 +4,7 @@ pub mod clients;
 pub mod cov;
 pub mod harness;
 pub mod mixed;
+pub mod mstp;
 pub mod objects;
 pub mod output;
 pub mod router;

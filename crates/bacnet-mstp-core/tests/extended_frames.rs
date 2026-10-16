@@ -4,17 +4,16 @@
 //! 9.3.9, 9.3.10, 9.5.4.9, 9.5.6). The flag-off path is the rest of the
 //! suite, unchanged.
 
-#![cfg(feature = "heapless")]
-
+use bacnet_mstp_codec::crc::crc8;
 use bacnet_mstp_codec::{
-    crc8, decode_frame_in_place, Frame, FrameType, BROADCAST_MAC, MAX_COBS_FRAME_LENGTH,
+    decode_frame_in_place, Frame, FrameType, BROADCAST_MAC, MAX_COBS_FRAME_LENGTH,
     MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH,
     MAX_STANDARD_MPDU_DATA,
 };
 use bacnet_mstp_core::{
     Action, ActionBuffers, ConfigError, CoreBuffer, CoreError, DequeuedNpdu, Direction, Duration,
     ExtendedActionBuffers, HeaplessQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    NetworkPriority, QueueCounters, QueueItemInfo, QueueKind, QueueRejectReason, QueueStorage,
+    NetworkPriority, QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
     ReplyDecision, RequestId,
 };
 
@@ -28,11 +27,9 @@ const PEER: u8 = 2;
 const OTHER: u8 = 9;
 
 fn config(extended: bool) -> MstpCoreConfig {
-    let config = MstpCoreConfig {
-        station: STATION,
-        max_master: 3,
-        ..MstpCoreConfig::default()
-    };
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 3;
     if extended {
         config.with_extended_frames()
     } else {
@@ -78,7 +75,7 @@ fn encode(frame: Frame<'_>) -> Vec<u8> {
 /// same for every COBS type.
 fn reserved(raw: u8, destination: u8, data: &[u8]) -> Vec<u8> {
     let mut wire = encode(Frame::new(
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
         destination,
         PEER,
         data,
@@ -164,7 +161,7 @@ fn take_token_and_send(core: &mut Core<'_>, queued: &[u8]) -> (Instant, Vec<u8>)
     core.enqueue_npdu(PEER, queued, NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
     core.on_validated_frame(
-        Frame::new(FrameType::Token, STATION, PEER, &[]),
+        Frame::new(FrameType::TOKEN, STATION, PEER, &[]),
         Instant::from_micros(10_000),
     )
     .unwrap();
@@ -269,12 +266,12 @@ fn extended_frames_need_extended_buffers() {
         Instant::ZERO,
     )
     .is_ok());
-    assert_eq!(config(false).max_npdu_length(), MAX_STANDARD_MPDU_DATA);
-    assert_eq!(config(true).max_npdu_length(), MAX_EXTENDED_MPDU_DATA);
+    assert_eq!(config(false).max_npdu(), MAX_STANDARD_MPDU_DATA);
+    assert_eq!(config(true).max_npdu(), MAX_EXTENDED_MPDU_DATA);
 }
 
 /// Queues with extended slots behind a storage type that doesn't override
-/// `QueueStorage::max_npdu_length`, so it reports the default.
+/// `QueueStorage::max_npdu`, so it reports the default.
 struct Unsized(Queues);
 
 impl QueueStorage for Unsized {
@@ -287,40 +284,44 @@ impl QueueStorage for Unsized {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
+        now: Instant,
+        expires_at: Option<Instant>,
+    ) -> Result<(), QueueRefusal> {
         self.0
             .enqueue_npdu(destination, payload, priority, now, expires_at)
     }
 
-    fn expire(&mut self, now: u64) -> usize {
+    fn expire(&mut self, now: Instant) -> usize {
         self.0.expire(now)
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         self.0.peek(now)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
         self.0.peek_kind(kind, now)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
-        self.0.dequeue_kind_into(kind, now, scratch)
+        now: Instant,
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
+        self.0.dequeue_kind(kind, now, max_len)
     }
 
     fn depth(&self, kind: QueueKind) -> usize {
         self.0.depth(kind)
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        self.0.stats(kind)
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.0.counters(kind)
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.0.take_counters(kind)
     }
 }
 
@@ -332,7 +333,7 @@ fn queue_storage_that_does_not_say_is_refused_for_extended_frames() {
     let mut rx = vec![0u8; MAX_EXTENDED_FRAME_LENGTH];
     let mut actions: Box<Actions> = Box::default();
     let unsized_queues = Unsized(Queues::new());
-    assert_eq!(unsized_queues.max_npdu_length(), MAX_STANDARD_MPDU_DATA);
+    assert_eq!(unsized_queues.max_npdu(), MAX_STANDARD_MPDU_DATA);
     let result = MasterCore::new(
         config(true),
         unsized_queues,
@@ -348,7 +349,7 @@ fn queue_storage_that_does_not_say_is_refused_for_extended_frames() {
             minimum: MAX_EXTENDED_MPDU_DATA,
         }))
     );
-    assert_eq!(Queues::new().max_npdu_length(), MAX_EXTENDED_MPDU_DATA);
+    assert_eq!(Queues::new().max_npdu(), MAX_EXTENDED_MPDU_DATA);
 }
 
 /// Clauses 9.3.9, 9.3.10 and 9.5.6.3 (SendAndWait, SendNoWait): with the
@@ -363,7 +364,11 @@ fn long_npdus_go_out_in_extended_frames() {
     let (_, octets) = take_token_and_send(&mut core, &request);
     assert_eq!(
         decoded(&octets),
-        (FrameType::BACnetExtendedDataExpectingReply, PEER, request)
+        (
+            FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
+            PEER,
+            request
+        )
     );
     assert_eq!(core.state(), MasterState::WaitForReply);
     assert_eq!(
@@ -373,7 +378,7 @@ fn long_npdus_go_out_in_extended_frames() {
             NetworkPriority::Normal,
             Instant::from_micros(20_000),
         ),
-        Err(QueueRejectReason::Oversize)
+        Err(QueueRefusal::Oversize)
     );
     assert_eq!(core.counters().unicast.drops_oversize, 1);
 
@@ -383,7 +388,11 @@ fn long_npdus_go_out_in_extended_frames() {
     let (_, octets) = take_token_and_send(&mut core, &data);
     assert_eq!(
         decoded(&octets),
-        (FrameType::BACnetExtendedDataNotExpectingReply, PEER, data)
+        (
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
+            PEER,
+            data
+        )
     );
     // The token use goes on: no reply is awaited.
     assert_ne!(core.state(), MasterState::WaitForReply);
@@ -395,7 +404,7 @@ fn long_npdus_go_out_in_extended_frames() {
     let (_, octets) = take_token_and_send(&mut core, &data);
     assert_eq!(
         decoded(&octets),
-        (FrameType::BACnetDataExpectingReply, PEER, data)
+        (FrameType::BACNET_DATA_EXPECTING_REPLY, PEER, data)
     );
 
     let mut storage = Storage::new();
@@ -407,7 +416,7 @@ fn long_npdus_go_out_in_extended_frames() {
             NetworkPriority::Normal,
             Instant::ZERO,
         ),
-        Err(QueueRejectReason::Oversize)
+        Err(QueueRefusal::Oversize)
     );
 }
 
@@ -421,17 +430,17 @@ fn idle_takes_extended_data_that_needs_no_reply() {
     let asking = npdu(700, true);
     let frames = [
         (
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             STATION,
             &long,
         ),
         (
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             BROADCAST_MAC,
             &long,
         ),
         (
-            FrameType::BACnetExtendedDataExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
             BROADCAST_MAC,
             &asking,
         ),
@@ -467,8 +476,8 @@ fn idle_takes_extended_data_that_needs_no_reply() {
 #[test]
 fn a_type_32_request_is_answered() {
     for (answer_length, answer_type) in [
-        (1200, FrameType::BACnetExtendedDataNotExpectingReply),
-        (40, FrameType::BACnetDataNotExpectingReply),
+        (1200, FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY),
+        (40, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY),
     ] {
         let mut storage = Storage::new();
         let mut core = storage.core(true);
@@ -476,7 +485,7 @@ fn a_type_32_request_is_answered() {
         let last = feed(
             &mut core,
             &encode(Frame::new(
-                FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                 STATION,
                 PEER,
                 &request,
@@ -520,7 +529,7 @@ fn a_postponed_type_32_request_is_answered_with_the_token() {
     let last = feed(
         &mut core,
         &encode(Frame::new(
-            FrameType::BACnetExtendedDataExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
             STATION,
             PEER,
             &npdu(800, true),
@@ -534,20 +543,24 @@ fn a_postponed_type_32_request_is_answered_with_the_token() {
     let (sent, octets) = send_handed_over(&mut core, decided);
     assert_eq!(
         decoded(&octets),
-        (FrameType::ReplyPostponed, PEER, Vec::new())
+        (FrameType::REPLY_POSTPONED, PEER, Vec::new())
     );
     let answer = npdu(1300, false);
     core.enqueue_npdu(PEER, &answer, NetworkPriority::Normal, sent)
         .unwrap();
     core.on_validated_frame(
-        Frame::new(FrameType::Token, STATION, PEER, &[]),
+        Frame::new(FrameType::TOKEN, STATION, PEER, &[]),
         sent + Duration::from_millis(30),
     )
     .unwrap();
     let (_, octets) = send_next(&mut core);
     assert_eq!(
         decoded(&octets),
-        (FrameType::BACnetExtendedDataNotExpectingReply, PEER, answer)
+        (
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
+            PEER,
+            answer
+        )
     );
 }
 
@@ -565,7 +578,7 @@ fn a_type_32_for_a_station_answering_a_request_is_discarded() {
         let last = feed(
             &mut core,
             &encode(Frame::new(
-                FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                 STATION,
                 PEER,
                 &first,
@@ -578,17 +591,17 @@ fn a_type_32_for_a_station_answering_a_request_is_discarded() {
         let more = npdu(600, false);
         let frames = [
             (
-                FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                 STATION,
                 &second,
             ),
             (
-                FrameType::BACnetExtendedDataNotExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
                 STATION,
                 &more,
             ),
             (
-                FrameType::BACnetExtendedDataExpectingReply,
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
                 BROADCAST_MAC,
                 &second,
             ),
@@ -622,17 +635,17 @@ fn a_type_32_for_a_station_answering_a_request_is_discarded() {
 fn wait_for_reply_takes_a_type_33() {
     for (frame_type, source, ends_as) in [
         (
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             PEER,
             MasterState::PollForMaster,
         ),
         (
-            FrameType::BACnetExtendedDataNotExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
             OTHER,
             MasterState::PollForMaster,
         ),
         (
-            FrameType::BACnetExtendedDataExpectingReply,
+            FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
             PEER,
             MasterState::Idle,
         ),
@@ -701,7 +714,7 @@ fn reserved_cobs_types_are_checked_with_the_flag() {
     let mut storage = Storage::new();
     let mut core = storage.core(true);
     let (sent, _) = take_token_and_send(&mut core, &npdu(10, true));
-    let frame = Frame::new(FrameType::Unknown(0x40), STATION, PEER, &data);
+    let frame = Frame::new(FrameType::from_raw(0x40), STATION, PEER, &data);
     core.on_validated_frame(frame, sent + Duration::from_millis(5))
         .unwrap();
     assert_eq!(core.state(), MasterState::Idle);
@@ -716,7 +729,7 @@ fn validated_extended_frames_follow_the_flag() {
     let mut storage = Storage::new();
     let mut core = storage.core(false);
     let frame = Frame::new(
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
         STATION,
         PEER,
         &long[..600],
@@ -724,7 +737,7 @@ fn validated_extended_frames_follow_the_flag() {
     assert!(core
         .on_validated_frame(frame, Instant::from_micros(1))
         .is_err());
-    let small = Frame::new(FrameType::Unknown(0x22), STATION, PEER, &long[..10]);
+    let small = Frame::new(FrameType::from_raw(0x22), STATION, PEER, &long[..10]);
     assert!(core
         .on_validated_frame(small, Instant::from_micros(1))
         .is_err());
@@ -733,7 +746,7 @@ fn validated_extended_frames_follow_the_flag() {
     let mut storage = Storage::new();
     let mut core = storage.core(true);
     let frame = Frame::new(
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
         STATION,
         PEER,
         &long,

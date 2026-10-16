@@ -3,8 +3,9 @@
 //! and takes a good one as a valid frame of a type it doesn't know (Clause
 //! 9.5.4.9). Without the mode the decoder skips them by count, as before.
 
+use bacnet_mstp_codec::crc::crc8;
 use bacnet_mstp_codec::{
-    crc8, DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, MAX_COBS_FRAME_LENGTH,
+    DecodeEvent, Frame, FrameError, FrameType, StreamDecoder, MAX_COBS_FRAME_LENGTH,
     MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH,
 };
 use proptest::prelude::*;
@@ -30,7 +31,7 @@ fn encode(frame: Frame<'_>) -> Vec<u8> {
 /// COBS type (Clause 9.10).
 fn reserved(raw: u8, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
     let mut wire = encode(Frame::new(
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
         destination,
         source,
         data,
@@ -41,11 +42,11 @@ fn reserved(raw: u8, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
 }
 
 fn token(destination: u8, source: u8) -> Vec<u8> {
-    encode(Frame::new(FrameType::Token, destination, source, &[]))
+    encode(Frame::new(FrameType::TOKEN, destination, source, &[]))
 }
 
 fn token_seen(destination: u8, source: u8) -> Seen {
-    Seen::Frame(FrameType::Token, destination, source, Vec::new())
+    Seen::Frame(FrameType::TOKEN, destination, source, Vec::new())
 }
 
 /// Push `wire` one octet at a time, draining after each, and collect
@@ -102,7 +103,7 @@ fn a_good_reserved_frame_comes_out_only_in_the_mode() {
     assert_eq!(
         decode(MAX_STANDARD_FRAME_LENGTH, true, &wire),
         [
-            Seen::Frame(FrameType::Unknown(0x22), 9, 5, data),
+            Seen::Frame(FrameType::from_raw(0x22), 9, 5, data),
             token_seen(1, 2)
         ]
     );
@@ -171,8 +172,8 @@ fn a_reserved_frame_too_long_for_the_storage_is_skipped() {
 fn the_mode_leaves_other_frames_alone() {
     let npdu = [0x01, 0x00, 0x10, 0x08];
     for frame_type in [
-        FrameType::BACnetExtendedDataExpectingReply,
-        FrameType::BACnetExtendedDataNotExpectingReply,
+        FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
     ] {
         let wire = encode(Frame::new(frame_type, 4, 6, &npdu));
         for checking in [false, true] {
@@ -209,7 +210,7 @@ proptest! {
         prop_assert_eq!(
             decode(MAX_EXTENDED_FRAME_LENGTH, true, &wire),
             vec![
-                Seen::Frame(FrameType::Unknown(raw), destination, source, data),
+                Seen::Frame(FrameType::from_raw(raw), destination, source, data),
                 token_seen(1, 2),
             ]
         );

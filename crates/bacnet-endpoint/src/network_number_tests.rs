@@ -133,7 +133,7 @@ impl Fixture {
             input_override,
         };
         let owner = if full {
-            let mut config = identity.server_config();
+            let mut config = crate::identity::server_config(&identity);
             config.registered_network_port = registered.then_some(selected());
             Owner::Server(
                 bacnet_server::server::BACnetServer::start(config, db, transport)
@@ -145,7 +145,7 @@ impl Fixture {
                 EndpointSession::new(transport, SessionRole::Both, SessionConfig::default())
                     .unwrap()
                     .with_database(db)
-                    .with_identity(identity);
+                    .device(identity);
             if registered {
                 session = session.with_registered_network_port(selected());
             }

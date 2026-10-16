@@ -20,8 +20,6 @@ pub(super) struct DispatchContext<'a, T: TransportPort + 'static> {
     pub(super) device_tx: &'a broadcast::Sender<DeviceEvent>,
     /// Broadcast channel for device address collision events.
     pub(super) device_collision_tx: &'a broadcast::Sender<DeviceCollisionEvent>,
-    /// Broadcast channel for every valid I-Am packet.
-    pub(super) iam_tx: &'a broadcast::Sender<IAmEvent>,
     /// Routes for SegmentAcks awaiting an outgoing segmented request.
     pub(super) seg_ack_senders: &'a Arc<Mutex<HashMap<SegAckKey, SegmentAckRoute>>>,
 }

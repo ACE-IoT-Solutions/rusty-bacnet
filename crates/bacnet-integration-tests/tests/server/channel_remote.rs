@@ -25,8 +25,9 @@ fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
 
 fn device(instance: u32) -> DeviceObject {
     DeviceObject::new(DeviceConfig {
-        instance,
-        name: format!("Device {instance}"),
+        identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+            .expect("valid Device identity")
+            .with_name(format!("Device {instance}")),
         ..DeviceConfig::default()
     })
     .unwrap()
@@ -50,7 +51,11 @@ fn channel(instance: u32, members: Vec<BACnetDeviceObjectPropertyReference>) -> 
 }
 
 async fn start(db: ObjectDatabase, binding: Option<DeviceBinding>) -> BACnetServer<BipTransport> {
+    let identity =
+        bacnet_objects::DeviceIdentity::new(db.selected_device().unwrap().instance_number(), 0)
+            .unwrap();
     let mut builder = BACnetServer::bip_builder()
+        .device(identity)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(Ipv4Addr::LOCALHOST)

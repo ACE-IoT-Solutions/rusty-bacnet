@@ -133,14 +133,16 @@ impl Site {
             let mut db = ObjectDatabase::new();
             db.add(Box::new(
                 DeviceObject::new(DeviceConfig {
-                    instance,
-                    name: format!("Lab device {instance}"),
+                    identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+                        .expect("valid Device identity")
+                        .with_name(format!("Lab device {instance}")),
                     ..Default::default()
                 })
                 .unwrap(),
             ))
             .unwrap();
             let server = BACnetServer::generic_builder()
+                .device(bacnet_objects::DeviceIdentity::new(instance, 0).unwrap())
                 .transport(HubPort::join(&hub, [10, 0, 0, octet]))
                 .database(db);
             servers.push(bounded(Box::pin(server.build())).await.unwrap());

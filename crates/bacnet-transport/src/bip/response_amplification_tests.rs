@@ -63,7 +63,12 @@ fn test_fdt_empty_and_max_response_sizes() {
 
     // Empty FDT payload -> 4-byte BVLC header only
     let mut empty_payload = BytesMut::new();
-    state.encode_fdt(&mut empty_payload);
+    empty_payload.extend(
+        state
+            .fdt_wire_entries()
+            .iter()
+            .flat_map(|row| row.to_octets()),
+    );
     assert_eq!(empty_payload.len(), 0);
     let mut empty_buf = BytesMut::new();
     empty_buf.extend_from_slice(&raw_frame(
@@ -89,7 +94,12 @@ fn test_fdt_empty_and_max_response_sizes() {
     assert_eq!(state.fdt().len(), 128);
 
     let mut max_payload = BytesMut::new();
-    state.encode_fdt(&mut max_payload);
+    max_payload.extend(
+        state
+            .fdt_wire_entries()
+            .iter()
+            .flat_map(|row| row.to_octets()),
+    );
     assert_eq!(max_payload.len(), 128 * FDT_ENTRY_SIZE);
     let mut max_buf = BytesMut::new();
     max_buf.extend_from_slice(&raw_frame(

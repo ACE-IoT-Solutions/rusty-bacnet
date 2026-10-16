@@ -46,7 +46,7 @@ fn a_holder_dying_mid_frame_leaves_the_lowest_station_to_regenerate() {
     sim.run_until(ms(5_000));
     let frames = sim.frames();
     let next = first_after(frames, cut.end, |_| true).expect("a frame after the silence");
-    assert!(next.is(FrameType::PollForMaster, 0, 1), "{next}");
+    assert!(next.is(FrameType::POLL_FOR_MASTER, 0, 1), "{next}");
     assert!(next.generation);
     assert_eq!(next.start, cut.end + millis(500));
     // Nothing at all in between: the line was silent.
@@ -75,7 +75,7 @@ fn regeneration_falls_to_the_lowest_surviving_slot() {
     sim.run_until(ms(5_000));
     let frames = sim.frames();
     let next = first_after(frames, cut.end, |_| true).expect("a frame after the silence");
-    assert!(next.is(FrameType::PollForMaster, 3, 4), "{next}");
+    assert!(next.is(FrameType::POLL_FOR_MASTER, 3, 4), "{next}");
     assert!(next.generation);
     assert_eq!(next.start, cut.end + millis(500) + millis(30));
     assert_eq!(
@@ -194,7 +194,7 @@ fn a_missed_generation_slot_comes_round_again_a_cycle_later() {
     let frames = sim.frames();
     // The slot was 530..540 ms; the next window opens 32 slots later.
     assert!(
-        frames[0].is(FrameType::PollForMaster, 3, 4),
+        frames[0].is(FrameType::POLL_FOR_MASTER, 3, 4),
         "{}",
         frames[0]
     );

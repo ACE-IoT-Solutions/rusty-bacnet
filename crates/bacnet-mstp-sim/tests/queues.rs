@@ -4,7 +4,7 @@
 mod common;
 
 use bacnet_mstp_codec::{FrameType, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA};
-use bacnet_mstp_core::QueueRejectReason;
+use bacnet_mstp_core::QueueRefusal;
 use bacnet_mstp_sim::analysis::{holds, token_users};
 use bacnet_mstp_sim::{MasterSpec, Sim, SimConfig};
 
@@ -33,9 +33,9 @@ fn a_full_queue_refuses_npdus_and_the_token_keeps_moving() {
     assert_eq!(rejects.len(), 16);
     assert!(rejects
         .iter()
-        .all(|&(_, reason)| reason == QueueRejectReason::Full));
+        .all(|&(_, reason)| reason == QueueRefusal::Full));
     assert_eq!(
-        sent_by(sim.frames(), 3, FrameType::BACnetDataNotExpectingReply).len(),
+        sent_by(sim.frames(), 3, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY).len(),
         4
     );
     let counters = sim.core(3).unwrap().counters();
@@ -64,8 +64,8 @@ fn an_oversized_npdu_is_refused_and_the_token_keeps_moving() {
     sim.enqueue(ms(1_500), 3, 10, &too_long)
         .enqueue(ms(1_500), 3, 10, &largest);
     sim.run_until(ms(3_000));
-    assert_eq!(sim.rejects(3), [(ms(1_500), QueueRejectReason::Oversize)]);
-    let sent = sent_by(sim.frames(), 3, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(sim.rejects(3), [(ms(1_500), QueueRefusal::Oversize)]);
+    let sent = sent_by(sim.frames(), 3, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].octets.len(), MAX_STANDARD_FRAME_LENGTH);
     assert!(sim
@@ -102,12 +102,12 @@ fn a_high_max_info_frames_does_not_hold_the_token_on_an_empty_queue() {
         .collect();
     assert_eq!(busy.len(), 1);
     assert_eq!(busy[0].info_frames, 2);
-    let second = sent_by(frames, 3, FrameType::BACnetDataNotExpectingReply)[1];
+    let second = sent_by(frames, 3, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY)[1];
     let next = first_after(frames, second.end, |_| true).expect("the token goes on");
     assert_eq!(next.source(), Some(3));
     assert_ne!(
         next.frame_type(),
-        Some(FrameType::BACnetDataNotExpectingReply)
+        Some(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY)
     );
     assert_eq!(next.start, second.end + sim.timing().bits(40));
     sim.assert_no_violations();
@@ -129,7 +129,7 @@ fn the_largest_standard_frame_goes_out_whole_at_4800_baud() {
     largest[1] = 0x00;
     sim.enqueue(ms(1_500), 3, 0, &largest);
     sim.run_until(ms(8_000));
-    let sent = sent_by(sim.frames(), 3, FrameType::BACnetDataNotExpectingReply);
+    let sent = sent_by(sim.frames(), 3, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].octets.len(), MAX_STANDARD_FRAME_LENGTH);
     assert!(sent[0].end - sent[0].start > millis(1_000));

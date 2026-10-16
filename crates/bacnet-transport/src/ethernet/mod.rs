@@ -327,7 +327,7 @@ mod transport {
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     name_bytes.as_ptr(),
-                    ifr.ifr_name.as_mut_ptr() as *mut u8,
+                    ifr.ifr_name.as_mut_ptr().cast::<u8>(),
                     name_bytes.len(),
                 );
             }
@@ -358,7 +358,7 @@ mod transport {
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     name_bytes.as_ptr(),
-                    ifr.ifr_name.as_mut_ptr() as *mut u8,
+                    ifr.ifr_name.as_mut_ptr().cast::<u8>(),
                     name_bytes.len(),
                 );
             }
@@ -566,14 +566,6 @@ mod transport {
     impl TransportPort for EthernetTransport {
         fn supports_local_nonrouter_number_controls(&self) -> bool {
             true
-        }
-
-        fn transport_kind(&self) -> &'static str {
-            "ethernet"
-        }
-
-        fn topology_id(&self) -> Option<String> {
-            Some(self.interface_name.clone())
         }
 
         fn abort(&mut self) {

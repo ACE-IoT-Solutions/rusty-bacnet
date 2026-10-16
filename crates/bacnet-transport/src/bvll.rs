@@ -70,7 +70,8 @@ pub use bacnet_bip_codec::{
 /// Decode failures become [`Error::Decoding`] at the offset of the field at
 /// fault: 0 for the datagram as a whole, its type octet or a B/IP address,
 /// 1 for the function, 2 for the Length field, 4 for the payload. Encode
-/// failures become [`Error::Encoding`].
+/// failures become [`Error::Encoding`], and so does an error the codec adds
+/// later, until it is placed here.
 pub fn bvll_error(error: BvllError) -> Error {
     let offset = match error {
         BvllError::TooShort { .. }
@@ -83,6 +84,7 @@ pub fn bvll_error(error: BvllError) -> Error {
         BvllError::TooLong { .. }
         | BvllError::UndefinedResultCode { .. }
         | BvllError::BufferExhausted { .. } => return Error::Encoding(error.to_string()),
+        _ => return Error::Encoding(error.to_string()),
     };
     Error::decoding(offset, error.to_string())
 }

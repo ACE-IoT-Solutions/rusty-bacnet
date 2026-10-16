@@ -188,8 +188,7 @@ fn atomic_history_database(
     .unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "History Device".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("History Device"),
             ..DeviceConfig::default()
         })
         .unwrap(),

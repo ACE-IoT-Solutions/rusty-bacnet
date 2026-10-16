@@ -25,6 +25,9 @@ pub(super) enum DrainMode {
     Immediate,
     /// `drain` is unsupported, as for a custom backend that has none.
     Unsupported,
+    /// `drain` fails with a transport error other than unsupported, as a
+    /// port whose transmit completion is unknown does.
+    Fails,
 }
 
 /// The station's end of the line.
@@ -80,6 +83,9 @@ impl SerialPort for WireSerial {
                 std::io::ErrorKind::Unsupported,
                 "no drain",
             ))),
+            DrainMode::Fails => Err(Error::Transport(std::io::Error::other(
+                "simulated drain failure",
+            ))),
         }
     }
 
@@ -93,10 +99,17 @@ impl SerialPort for WireSerial {
                 return Ok(count);
             }
         }
-        let chunk = self.rx.lock().await.recv().await;
-        let Some(chunk) = chunk else {
-            return Err(Error::Transport(std::io::Error::other("line closed")));
+        let mut rx = self.rx.lock().await;
+        // An empty chunk carries nothing; a read that returned nothing would
+        // be the end of the line.
+        let chunk = loop {
+            match rx.recv().await {
+                Some(chunk) if chunk.is_empty() => {}
+                Some(chunk) => break chunk,
+                None => return Err(Error::Transport(std::io::Error::other("line closed"))),
+            }
         };
+        drop(rx);
         let count = chunk.len().min(buf.len());
         buf[..count].copy_from_slice(&chunk[..count]);
         self.leftover
@@ -234,20 +247,20 @@ impl Bus {
     /// give it the token, let it poll up to `peer`, answer as `peer`, and
     /// take the token it passes. Returns that Token.
     pub(super) async fn join(&mut self, peer: u8) -> Sent {
-        self.send(FrameType::Token, self.station, peer, &[]);
+        self.send(FrameType::TOKEN, self.station, peer, &[]);
         loop {
             let poll = self.next().await;
-            assert_eq!(poll.frame_type, FrameType::PollForMaster, "{poll:?}");
+            assert_eq!(poll.frame_type, FrameType::POLL_FOR_MASTER, "{poll:?}");
             if poll.destination == peer {
                 self.until(poll.end + self.turnaround).await;
-                self.send(FrameType::ReplyToPollForMaster, self.station, peer, &[]);
+                self.send(FrameType::REPLY_TO_POLL_FOR_MASTER, self.station, peer, &[]);
                 break;
             }
         }
         let token = self.next().await;
         assert_eq!(
             (token.frame_type, token.destination),
-            (FrameType::Token, peer),
+            (FrameType::TOKEN, peer),
             "{token:?}"
         );
         token
@@ -257,7 +270,7 @@ impl Bus {
     /// T_turnaround, which shows the station its successor took it.
     pub(super) async fn return_token(&mut self, token: &Sent, peer: u8) -> Instant {
         self.until(token.end + self.turnaround).await;
-        self.send(FrameType::Token, self.station, peer, &[])
+        self.send(FrameType::TOKEN, self.station, peer, &[])
     }
 
     /// Stop the station.
@@ -266,7 +279,9 @@ impl Bus {
     }
 }
 
-/// A station at 9600 baud with addresses `station` and `max_master`.
+/// A station at 9600 baud with addresses `station` and `max_master`, the
+/// host's timeouts, and no transmit-latency pad on any platform, so a port
+/// without a drain is timed by the wire alone unless a test sets one.
 pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
     MstpConfig {
         this_station: station,
@@ -274,5 +289,13 @@ pub(super) fn config(station: u8, max_master: u8) -> MstpConfig {
         max_info_frames: 1,
         baud_rate: 9600,
         extended_frames: false,
+        transmit_latency_pad: Duration::ZERO,
+        ..MstpConfig::default()
     }
 }
+
+/// T_usage_timeout as [`config`] sets it: the host's 35 ms.
+pub(super) const T_USAGE_TIMEOUT: Duration = super::HOST_USAGE_TIMEOUT;
+
+/// T_reply_timeout as [`config`] sets it: the host's 300 ms.
+pub(super) const T_REPLY_TIMEOUT: Duration = super::HOST_REPLY_TIMEOUT;

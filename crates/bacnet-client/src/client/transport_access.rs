@@ -1,7 +1,7 @@
 //! The transport of a built client, and the BBMD helpers that reach through it.
 
 use bacnet_transport::bbmd::{BdtEntry, FdtEntryWire};
-use bacnet_transport::bip::AsBip;
+use bacnet_transport::bip::{AsBip, ForeignRegistrationSnapshot};
 use bacnet_transport::bvll::BvlcResultCode;
 
 use super::*;
@@ -22,8 +22,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// - BACnet/SC: the `connection_state_changes()` watch and
     ///   `npdu_drop_counts()`.
     /// - B/IP: `management_counters()`, `fdt_counters()`,
-    ///   `fanout_counters()`, `receive_counters()`, and `bbmd_state()` for a
-    ///   brief read of the BBMD tables.
+    ///   `fanout_counters()`, `receive_counters()`, `send_counters()`, and
+    ///   `bbmd_state()` for a brief read of the BBMD tables.
     /// - MS/TP: the
     ///   [`diagnostics()`](bacnet_transport::mstp::MstpTransport::diagnostics)
     ///   handle.
@@ -130,6 +130,19 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 /// # }
 /// ```
 impl<T: TransportPort + AsBip + 'static> BACnetClient<T> {
+    /// How this client's foreign-device registration is going (#938): whether
+    /// it holds a live lease, the time left on it, and the last attempt's
+    /// result and outcome, a BBMD's refusal included. Outside
+    /// [`BipMode::Foreign`] only manual registrations show. It reads
+    /// [`BipTransport::bvlc_client_snapshot`] and sends nothing.
+    pub fn foreign_registration(&self) -> Result<ForeignRegistrationSnapshot, Error> {
+        Ok(self
+            .transport()
+            .as_bip()?
+            .bvlc_client_snapshot()
+            .foreign_registration)
+    }
+
     /// Read the Broadcast Distribution Table from a BBMD.
     pub async fn read_bdt(&self, target: &[u8]) -> Result<Vec<BdtEntry>, Error> {
         self.transport().as_bip()?.read_bdt(target).await

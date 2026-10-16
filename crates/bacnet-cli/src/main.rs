@@ -10,16 +10,18 @@ use std::{io::IsTerminal, net::Ipv4Addr};
 
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::{bip::BipTransport, port::TransportPort};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 mod args;
 mod commands;
 mod core;
 #[allow(dead_code)] // Public API consumed by capture command handler (Task 4).
 mod decode;
+mod foreign;
 mod output;
 mod parse;
 mod resolve;
+mod sc_check;
 mod session;
 mod shell;
 mod timestamp;
@@ -31,7 +33,7 @@ use crate::core::range::parse_discover_range;
 use args::{Cli, Command};
 use output::OutputFormat;
 
-fn setup_tracing(verbosity: u8, sc: bool) {
+fn setup_tracing(verbosity: u8, to_stderr: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = match verbosity {
         0 => "warn",
@@ -42,8 +44,9 @@ fn setup_tracing(verbosity: u8, sc: bool) {
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(filter))
         .with_target(false);
-    if sc {
-        // SC close/handshake diagnostics must not corrupt a JSON result.
+    if to_stderr {
+        // SC close/handshake diagnostics, and a foreign device's refused or
+        // lapsed registration, must not corrupt a JSON result.
         subscriber.with_writer(std::io::stderr).init();
     } else {
         subscriber.init();
@@ -68,13 +71,15 @@ fn resolve_format(cli: &Cli) -> OutputFormat {
 }
 
 /// Resolve a target string to a MAC address, looking up device instances from
-/// the client's discovered device table.
+/// the client's discovered device table and B/IPv6 addresses with
+/// Virtual-Address-Resolution.
 async fn resolve_target_mac<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    match resolve::parse_target(target_str)? {
+    match resolve::parse_target_on(client.transport(), target_str)? {
         resolve::Target::Mac(mac) => Ok(mac),
+        resolve::Target::Bip6(peer) => Ok(resolve::bip6_vmac(client.transport(), peer).await?),
         resolve::Target::Instance(n) => match client.get_device(n).await {
             Some(d) => Ok(d.mac_address.to_vec()),
             None => Err(format!(
@@ -100,7 +105,7 @@ async fn execute_command<T: TransportPort + 'static>(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Command::Shell | Command::Tui { .. } => unreachable!(),
+        Command::Shell | Command::Tui { .. } | Command::ScCheck { .. } => unreachable!(),
         Command::Discover {
             range,
             wait,
@@ -116,12 +121,12 @@ async fn execute_command<T: TransportPort + 'static>(
             }
             let range = parse_discover_range(range.as_deref())?;
             if let Some(target_str) = target {
-                let mac = resolve::parse_target(target_str)
-                    .and_then(|t| match t {
-                        resolve::Target::Mac(m) => Ok(m),
-                        _ => Err("--target requires an IP address, not a device instance or routed address".into()),
-                    })
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                let mac = resolve::address_mac(
+                    client.transport(),
+                    target_str,
+                    resolve::TARGET_NOT_AN_ADDRESS,
+                )
+                .await?;
                 commands::discover::discover_directed(client, &mac, range, *wait, format).await?;
             } else if let Some(network) = dnet {
                 commands::discover::discover_network(client, *network, range, *wait, format)
@@ -355,6 +360,7 @@ async fn execute_command<T: TransportPort + 'static>(
 async fn execute_bip_command(
     client: &BACnetClient<BipTransport>,
     cmd: &Command,
+    ttl: u16,
     format: OutputFormat,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     match cmd {
@@ -363,27 +369,26 @@ async fn execute_bip_command(
             wait,
             target,
             bbmd: Some(bbmd_addr),
-            ttl,
             dnet,
         } => {
-            let bbmd_mac = resolve::parse_target(bbmd_addr)
-                .and_then(|t| match t {
-                    resolve::Target::Mac(m) => Ok(m),
-                    _ => Err("--bbmd requires an IP address, not a device instance".into()),
-                })
-                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            let result = client.register_foreign_device_bvlc(&bbmd_mac, *ttl).await?;
+            let bbmd_mac = resolve::address_mac(
+                client.transport(),
+                bbmd_addr,
+                "--bbmd requires an IP address, not a device instance",
+            )
+            .await?;
+            let result = client.register_foreign_device_bvlc(&bbmd_mac, ttl).await?;
             eprintln!("Registered as foreign device with BBMD: {result:?}");
             // Brief pause to allow registration to propagate.
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let range = parse_discover_range(range.as_deref())?;
             if let Some(target_str) = target {
-                let mac = resolve::parse_target(target_str)
-                    .and_then(|t| match t {
-                        resolve::Target::Mac(m) => Ok(m),
-                        _ => Err("--target requires an IP address, not a device instance or routed address".into()),
-                    })
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                let mac = resolve::address_mac(
+                    client.transport(),
+                    target_str,
+                    resolve::TARGET_NOT_AN_ADDRESS,
+                )
+                .await?;
                 commands::discover::discover_directed(client, &mac, range, *wait, format).await?;
             } else if let Some(network) = dnet {
                 commands::discover::discover_network(client, *network, range, *wait, format)
@@ -400,9 +405,9 @@ async fn execute_bip_command(
             let mac = resolve_target_mac(client, target).await?;
             commands::router::fdt_cmd(client, &mac, format).await?;
         }
-        Command::Register { target, ttl } => {
+        Command::Register { target } => {
             let mac = resolve_target_mac(client, target).await?;
-            commands::router::register_cmd(client, &mac, *ttl, format).await?;
+            commands::router::register_cmd(client, &mac, ttl, format).await?;
         }
         Command::Unregister { target } => {
             let mac = resolve_target_mac(client, target).await?;
@@ -450,13 +455,39 @@ type CliResult = Result<(), Box<dyn std::error::Error>>;
 // subcommand's arguments inline). So the command line is parsed on a thread of
 // its own (#953). A read or a discover then needs about 240 KiB of the main
 // thread's stack in a debug build, where it needed 860 KiB before.
-fn main() -> CliResult {
-    let cli = parse_on_large_stack(Cli::parse);
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("Failed building the Runtime")
-        .block_on(boxed_cli_main(cli))
+fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
+    let cli = parse_on_large_stack(|| {
+        let mut matches = Cli::command().get_matches();
+        // Capture provenance before FromArgMatches removes argument values.
+        sc_check::validate(&matches).unwrap_or_else(|error| error.exit());
+        Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|error| error.exit())
+    });
+    dispatch(cli, |cli| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed building the Runtime")
+            .block_on(boxed_cli_main(cli))
+    })
+}
+
+/// The network path owns runtime/tracing/transport initialization. Keeping it
+/// behind this boundary makes offline dispatch testable without any of them.
+fn dispatch(
+    cli: Cli,
+    network: impl FnOnce(Cli) -> CliResult,
+) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
+    if let Some(Command::ScCheck { at_unix }) = cli.command {
+        let status = sc_check::execute(
+            &cli,
+            at_unix,
+            resolve_format(&cli),
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        );
+        return Ok(std::process::ExitCode::from(status));
+    }
+    network(cli).map(|()| std::process::ExitCode::SUCCESS)
 }
 
 /// Stack for the thread that parses the command line; see `main`.
@@ -490,7 +521,7 @@ async fn cli_main(cli: Cli) -> CliResult {
         // while it is in raw mode. Boxed so its state stays out of this future.
         return Box::pin(run_tui(cli)).await;
     }
-    setup_tracing(cli.verbose, cli.sc);
+    setup_tracing(cli.verbose, cli.sc || cli.foreign_bbmd.is_some());
     let format = resolve_format(&cli);
 
     let mut args = transport::TransportArgs::from_cli(&cli, Ipv4Addr::UNSPECIFIED, cli.broadcast)?;
@@ -564,10 +595,22 @@ async fn cli_main(cli: Cli) -> CliResult {
         let mut client = transport::build_bip_client(&args).await?;
         match &cli.command {
             None | Some(Command::Shell) => {
-                shell::run_bip_shell(client, format).await?;
+                shell::run_bip_shell(client, cli.foreign_bbmd, format).await?;
             }
             Some(cmd) => {
-                if !execute_bip_command(&client, cmd, format).await? {
+                // Broadcasts reach the remote network once the BBMD has
+                // taken the registration (#938).
+                if let Some(bbmd) = cli.foreign_bbmd {
+                    if let Err(e) = foreign::await_registration(&client, bbmd).await {
+                        // The registration's failure is the error to report.
+                        return Err(match client.stop().await {
+                            Ok(()) => e,
+                            Err(stop) => format!("{e}; stopping the client also failed: {stop}"),
+                        }
+                        .into());
+                    }
+                }
+                if !execute_bip_command(&client, cmd, cli.ttl, format).await? {
                     execute_command(&client, cmd, format).await?;
                 }
                 client.stop().await?;
@@ -589,5 +632,76 @@ async fn run_tui(cli: Cli) -> CliResult {
         let _ = cli;
         eprintln!("Error: The terminal UI requires the 'tui' feature. Rebuild with:\n  cargo install bacnet-cli --features tui");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv6Addr;
+
+    use bacnet_transport::bip6::Bip6Transport;
+
+    use super::*;
+
+    #[test]
+    fn sc_check_never_invokes_runtime_or_network_initialization() {
+        use clap::Parser;
+        let cli = parse_on_large_stack(|| {
+            Cli::parse_from([
+                "bacnet",
+                "sc-check",
+                "--sc-cert",
+                "missing-offline-input",
+                "--json",
+            ])
+        });
+        let result = dispatch(cli, |_| {
+            panic!("offline command entered network initialization")
+        });
+        assert_eq!(result.unwrap(), std::process::ExitCode::from(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sc_check_parser_preserves_non_utf8_credential_bytes() {
+        use clap::Parser;
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let cli = parse_on_large_stack(|| {
+            let mut arguments = ["bacnet", "sc-check", "--sc-cert"]
+                .map(std::ffi::OsString::from)
+                .to_vec();
+            arguments.push(std::ffi::OsString::from_vec(b"identity-\xff.pem".to_vec()));
+            Cli::parse_from(arguments)
+        });
+        assert_eq!(
+            cli.sc_cert.unwrap().as_os_str().as_bytes(),
+            b"identity-\xff.pem"
+        );
+    }
+
+    /// A one-shot command's `[ip]:port` target is the VMAC of the node
+    /// there, found with a Virtual-Address-Resolution before the command
+    /// runs (Clause U.5); `bip6:1234` names the same VMAC directly.
+    #[tokio::test]
+    async fn a_bip6_address_target_resolves_to_the_vmac_there() {
+        let mut server = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(1234));
+        let _server_rx = server.start().await.unwrap();
+        let port = server.local_address().unwrap().port();
+        let mut client = BACnetClient::bip6_builder()
+            .interface(Ipv6Addr::LOCALHOST)
+            .port(0)
+            // An instance VMAC: a random one needs a multicast probe at start,
+            // which Linux loopback can't carry.
+            .device_instance(4321)
+            .build()
+            .await
+            .unwrap();
+        let target = format!("[::1]:{port}");
+        let mac = resolve_target_mac(&client, &target).await.unwrap();
+        assert_eq!(mac, [0x00, 0x04, 0xD2]);
+        let mac = resolve_target_mac(&client, "bip6:1234").await.unwrap();
+        assert_eq!(mac, [0x00, 0x04, 0xD2]);
+        client.stop().await.unwrap();
+        server.stop().await.unwrap();
     }
 }

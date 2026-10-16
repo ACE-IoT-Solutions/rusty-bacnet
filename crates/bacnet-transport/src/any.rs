@@ -12,7 +12,7 @@ use crate::bip::{AsBip, BipTransport};
 use crate::bip6::Bip6Transport;
 use crate::loopback::LoopbackTransport;
 use crate::mstp::{MstpTransport, SerialPort};
-use crate::port::{DataAttribute, ReceivedNpdu, TransportHealth, TransportPort};
+use crate::port::{DataAttribute, ReceivedNpdu, TransportPort};
 
 #[cfg(all(feature = "ethernet", target_os = "linux"))]
 use crate::ethernet::EthernetTransport;
@@ -45,62 +45,6 @@ pub enum AnyTransport<S: SerialPort + 'static> {
 }
 
 impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
-    fn transport_kind(&self) -> &'static str {
-        match self {
-            Self::Bip(t) => t.transport_kind(),
-            Self::Mstp(t) => t.transport_kind(),
-            #[cfg(feature = "ipv6")]
-            Self::Bip6(t) => t.transport_kind(),
-            #[cfg(all(feature = "ethernet", target_os = "linux"))]
-            Self::Ethernet(t) => t.transport_kind(),
-            #[cfg(feature = "sc-tls")]
-            Self::Sc(t) => t.transport_kind(),
-            Self::Loopback(t) => t.transport_kind(),
-        }
-    }
-
-    fn topology_id(&self) -> Option<String> {
-        match self {
-            Self::Bip(t) => t.topology_id(),
-            Self::Mstp(t) => t.topology_id(),
-            #[cfg(feature = "ipv6")]
-            Self::Bip6(t) => t.topology_id(),
-            #[cfg(all(feature = "ethernet", target_os = "linux"))]
-            Self::Ethernet(t) => t.topology_id(),
-            #[cfg(feature = "sc-tls")]
-            Self::Sc(t) => t.topology_id(),
-            Self::Loopback(t) => t.topology_id(),
-        }
-    }
-
-    fn health(&self) -> TransportHealth {
-        match self {
-            Self::Bip(t) => t.health(),
-            Self::Mstp(t) => t.health(),
-            #[cfg(feature = "ipv6")]
-            Self::Bip6(t) => t.health(),
-            #[cfg(all(feature = "ethernet", target_os = "linux"))]
-            Self::Ethernet(t) => t.health(),
-            #[cfg(feature = "sc-tls")]
-            Self::Sc(t) => t.health(),
-            Self::Loopback(t) => t.health(),
-        }
-    }
-
-    fn health_changes(&self) -> Option<tokio::sync::watch::Receiver<TransportHealth>> {
-        match self {
-            Self::Bip(t) => t.health_changes(),
-            Self::Mstp(t) => t.health_changes(),
-            #[cfg(feature = "ipv6")]
-            Self::Bip6(t) => t.health_changes(),
-            #[cfg(all(feature = "ethernet", target_os = "linux"))]
-            Self::Ethernet(t) => t.health_changes(),
-            #[cfg(feature = "sc-tls")]
-            Self::Sc(t) => t.health_changes(),
-            Self::Loopback(t) => t.health_changes(),
-        }
-    }
-
     fn supports_local_nonrouter_number_controls(&self) -> bool {
         match self {
             Self::Bip(t) => t.supports_local_nonrouter_number_controls(),
@@ -334,17 +278,31 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
         }
     }
 
-    fn max_npdu_length(&self) -> Option<usize> {
+    fn max_npdu(&self) -> crate::port::NpduLimits {
         match self {
-            Self::Bip(t) => t.max_npdu_length(),
-            Self::Mstp(t) => Some(t.max_npdu_length()),
+            Self::Bip(t) => t.max_npdu(),
+            Self::Mstp(t) => t.max_npdu(),
             #[cfg(feature = "ipv6")]
-            Self::Bip6(t) => t.max_npdu_length(),
+            Self::Bip6(t) => t.max_npdu(),
             #[cfg(all(feature = "ethernet", target_os = "linux"))]
-            Self::Ethernet(t) => t.max_npdu_length(),
+            Self::Ethernet(t) => t.max_npdu(),
             #[cfg(feature = "sc-tls")]
-            Self::Sc(t) => t.max_npdu_length(),
-            Self::Loopback(t) => t.max_npdu_length(),
+            Self::Sc(t) => t.max_npdu(),
+            Self::Loopback(t) => t.max_npdu(),
+        }
+    }
+
+    fn max_npdu_changes(&self) -> Option<tokio::sync::watch::Receiver<crate::port::NpduLimits>> {
+        match self {
+            Self::Bip(t) => t.max_npdu_changes(),
+            Self::Mstp(t) => t.max_npdu_changes(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.max_npdu_changes(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.max_npdu_changes(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.max_npdu_changes(),
+            Self::Loopback(t) => t.max_npdu_changes(),
         }
     }
 
@@ -373,6 +331,20 @@ impl<S: SerialPort + 'static> TransportPort for AnyTransport<S> {
             #[cfg(feature = "sc-tls")]
             Self::Sc(t) => t.is_group_destination(mac),
             Self::Loopback(t) => t.is_group_destination(mac),
+        }
+    }
+
+    fn local_broadcast_destinations(&self) -> crate::port::GroupDestinations {
+        match self {
+            Self::Bip(t) => t.local_broadcast_destinations(),
+            Self::Mstp(t) => t.local_broadcast_destinations(),
+            #[cfg(feature = "ipv6")]
+            Self::Bip6(t) => t.local_broadcast_destinations(),
+            #[cfg(all(feature = "ethernet", target_os = "linux"))]
+            Self::Ethernet(t) => t.local_broadcast_destinations(),
+            #[cfg(feature = "sc-tls")]
+            Self::Sc(t) => t.local_broadcast_destinations(),
+            Self::Loopback(t) => t.local_broadcast_destinations(),
         }
     }
 
@@ -477,8 +449,6 @@ mod tests {
         let any: AnyTransport<LoopbackSerial> = AnyTransport::Bip(Box::new(bip));
         assert_eq!(any.local_mac().len(), 6);
         assert!(any.supports_local_nonrouter_number_controls());
-        assert_eq!(any.transport_kind(), "bip");
-        assert_eq!(any.topology_id().as_deref(), Some("127.0.0.1:47808"));
     }
 
     #[test]
@@ -497,15 +467,13 @@ mod tests {
             max_master: 127,
             max_info_frames: 1,
             baud_rate: 9600,
-            extended_frames: false,
+            ..MstpConfig::default()
         };
         let mstp = MstpTransport::new(serial, config);
         let any: AnyTransport<LoopbackSerial> = AnyTransport::Mstp(mstp);
         assert_eq!(any.local_mac(), &[42]);
         assert!(any.supports_local_nonrouter_number_controls());
         assert!(any.bip_port().is_none());
-        assert_eq!(any.transport_kind(), "mstp");
-        assert!(any.topology_id().is_none());
     }
 
     #[test]
@@ -515,6 +483,26 @@ mod tests {
         let any: AnyTransport<LoopbackSerial> = AnyTransport::Mstp(mstp);
         assert_eq!(any.egress_apdu_limit(), 480);
         assert_eq!(any.local_receive_apdu_capacity(), 480);
+    }
+
+    /// The NPDU limits a router reads come through the wrapper: MS/TP's
+    /// 501 octets without extended frames, and 1497 once a router has
+    /// prepared it (#1665); B/IP's 1497 both ways.
+    #[test]
+    fn any_transport_reports_its_variants_npdu_limits() {
+        use crate::port::NpduLimits;
+        let (serial, _) = LoopbackSerial::pair();
+        let mstp = MstpTransport::new(serial, MstpConfig::default());
+        let mut any: AnyTransport<LoopbackSerial> = mstp.into();
+        assert_eq!(any.max_npdu(), NpduLimits::both(501));
+        any.prepare_for_routing();
+        assert_eq!(any.max_npdu(), NpduLimits::both(1497));
+        // Neither limit changes once started (#1696).
+        assert!(any.max_npdu_changes().is_none());
+        let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 47808, Ipv4Addr::BROADCAST);
+        let any: AnyTransport<LoopbackSerial> = bip.into();
+        assert_eq!(any.max_npdu(), NpduLimits::STANDARD);
+        assert!(any.max_npdu_changes().is_none());
     }
 
     #[test]
@@ -575,10 +563,23 @@ mod tests {
     #[cfg(feature = "ipv6")]
     #[test]
     fn any_transport_bip6_local_mac() {
+        use crate::bip6::UnresolvedSend;
         let bip6 = crate::bip6::Bip6Transport::new(std::net::Ipv6Addr::LOCALHOST, 47808, None);
-        let any: AnyTransport<LoopbackSerial> = AnyTransport::Bip6(bip6);
-        assert_eq!(any.local_mac().len(), 18);
+        let mut any: AnyTransport<LoopbackSerial> = AnyTransport::Bip6(bip6);
+        // The MAC is the 3-octet VMAC (U.1.3), zero until the transport starts.
+        assert_eq!(any.local_mac(), [0; 3]);
         assert!(any.supports_local_nonrouter_number_controls());
+        // A router's B/IPv6 port queues an NPDU for an unresolved VMAC
+        // instead of waiting on it, through the wrapper too.
+        let AnyTransport::Bip6(bip6) = &any else {
+            unreachable!("built as B/IPv6");
+        };
+        assert_eq!(bip6.unresolved_send(), UnresolvedSend::Wait);
+        any.prepare_for_routing();
+        let AnyTransport::Bip6(bip6) = &any else {
+            unreachable!("built as B/IPv6");
+        };
+        assert_eq!(bip6.unresolved_send(), UnresolvedSend::Queue);
     }
 
     #[cfg(feature = "ipv6")]

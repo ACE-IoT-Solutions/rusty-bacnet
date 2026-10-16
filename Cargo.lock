@@ -236,10 +236,13 @@ dependencies = [
 name = "bacnet-benchmarks"
 version = "0.9.0"
 dependencies = [
+ "bacnet-bip-codec",
  "bacnet-client",
  "bacnet-encoding",
+ "bacnet-mstp-codec",
  "bacnet-network",
  "bacnet-objects",
+ "bacnet-router-core",
  "bacnet-server",
  "bacnet-services",
  "bacnet-transport",
@@ -264,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-bip-codec"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytes",
  "heapless",
@@ -272,8 +275,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-bip-core"
+version = "0.13.0"
+dependencies = [
+ "bacnet-bip-codec",
+ "bacnet-time",
+ "proptest",
+]
+
+[[package]]
 name = "bacnet-cli"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -301,6 +313,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "time",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -309,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-client"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-endpoint-core",
@@ -320,6 +333,7 @@ dependencies = [
  "bacnet-types",
  "bytes",
  "futures-util",
+ "rcgen",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -327,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-encoding"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-types",
  "bytes",
@@ -336,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-endpoint"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -360,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-endpoint-core"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-network",
@@ -372,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-integration-tests"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -391,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mstp-codec"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytes",
  "heapless",
@@ -400,16 +414,16 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mstp-core"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-mstp-codec",
- "heapless",
+ "bacnet-time",
  "proptest",
 ]
 
 [[package]]
 name = "bacnet-mstp-sim"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
@@ -417,9 +431,10 @@ dependencies = [
 
 [[package]]
 name = "bacnet-network"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-encoding",
+ "bacnet-router-core",
  "bacnet-transport",
  "bacnet-types",
  "bytes",
@@ -429,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-objects"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -439,42 +454,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "bacnet-router-adapters"
-version = "0.12.0"
-dependencies = [
- "bacnet-mstp-codec",
- "bacnet-mstp-core",
- "bacnet-router-core",
-]
-
-[[package]]
 name = "bacnet-router-core"
-version = "0.12.0"
-
-[[package]]
-name = "bacnet-runtime"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-bip-codec",
- "bacnet-client",
+ "bacnet-bip-core",
  "bacnet-encoding",
- "bacnet-network",
- "bacnet-services",
- "bacnet-transport",
+ "bacnet-mstp-codec",
+ "bacnet-mstp-core",
+ "bacnet-time",
  "bacnet-types",
  "bytes",
- "futures-util",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "tokio-rustls",
+ "proptest",
 ]
 
 [[package]]
 name = "bacnet-server"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -494,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-services"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -502,11 +498,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-time"
+version = "0.13.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "bacnet-transport"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "aws-lc-rs",
  "bacnet-bip-codec",
+ "bacnet-bip-core",
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
@@ -525,11 +529,12 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "windows-sys 0.61.2",
+ "x509-parser",
 ]
 
 [[package]]
 name = "bacnet-types"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bitflags 2.13.1",
  "serde",
@@ -1314,12 +1319,14 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "firmware-link"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-bip-codec",
+ "bacnet-bip-core",
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
+ "bacnet-router-core",
  "bacnet-services",
  "bacnet-types",
  "bytes",
@@ -2065,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "nostd-harness"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytes",
  "portable-atomic",
@@ -2891,9 +2898,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -2933,7 +2940,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-bacnet"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -3082,17 +3089,6 @@ name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest",
-]
-
-[[package]]
-name = "sha2"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",

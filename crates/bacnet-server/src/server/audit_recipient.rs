@@ -99,7 +99,7 @@ pub(super) fn validate(
             &status.configuration(),
             device,
             route.as_ref(),
-            config.max_apdu_length,
+            u32::from(config.device.max_apdu_length()),
         )?;
         // Set here, at prepare and finish, only. A local network number learned
         // later can make a routed binding at the link broadcast MAC unusable
@@ -164,7 +164,7 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
             sequence: db.event_sequence_internal(),
             network: Arc::clone(network),
             transactions: Arc::clone(transactions),
-            max_apdu: config.max_apdu_length,
+            max_apdu: u32::from(config.device.max_apdu_length()),
         });
         let sink: Arc<dyn AuditRecipientChangeSink> = runtime.clone();
         db.get_mut(&device)

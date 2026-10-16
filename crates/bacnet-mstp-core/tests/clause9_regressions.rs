@@ -1,11 +1,9 @@
 //! Public-API regressions for Clause 9 transitions and local scheduling.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,
-    MstpCoreConfig, NetworkPriority, ReplyDecision, TransmitId,
+    MstpCoreConfig, NetworkPriority, ReplyDecision, TransmitFailure, TransmitId,
 };
 
 type Queues = HeaplessQueues<16, 16>;
@@ -16,11 +14,10 @@ fn ms(value: u64) -> Instant {
 }
 
 fn config(station: u8, max_master: u8) -> MstpCoreConfig {
-    MstpCoreConfig {
-        station,
-        max_master,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = station;
+    config.max_master = max_master;
+    config
 }
 
 fn validated(
@@ -66,7 +63,14 @@ fn discover_successor_three(core: &mut MasterCore<'_, Queues>) {
     let (poll_three, header) = take_transmit(core, ms(531));
     assert_eq!(header.destination, 3);
     finish(core, poll_three, ms(532));
-    validated(core, FrameType::ReplyToPollForMaster, 1, 3, &[], ms(533));
+    validated(
+        core,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
+        1,
+        3,
+        &[],
+        ms(533),
+    );
     core.on_deadline(ms(538)).unwrap();
 }
 
@@ -87,7 +91,7 @@ fn pass_token_retries_once_then_polls_after_failed_successor() {
     let (token, header) = take_transmit(&mut core, ms(538));
     assert_eq!(
         (header.frame_type, header.destination),
-        (FrameType::Token, 3)
+        (FrameType::TOKEN, 3)
     );
     finish(&mut core, token, ms(539));
 
@@ -95,14 +99,14 @@ fn pass_token_retries_once_then_polls_after_failed_successor() {
     let (retry, header) = take_transmit(&mut core, ms(559));
     assert_eq!(
         (header.frame_type, header.destination),
-        (FrameType::Token, 3)
+        (FrameType::TOKEN, 3)
     );
     finish(&mut core, retry, ms(560));
     assert_eq!(core.counters().token_retries, 1);
 
     core.on_deadline(ms(580)).unwrap();
     let (_poll, header) = take_transmit(&mut core, ms(580));
-    assert_eq!(header.frame_type, FrameType::PollForMaster);
+    assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
     assert_eq!(
         header.destination, 0,
         "failed successor search wraps at Max_Master"
@@ -127,7 +131,7 @@ fn regeneration_forgets_a_stale_successor_and_restarts_at_ts_plus_one() {
     finish(&mut core, token, ms(539));
     validated(
         &mut core,
-        FrameType::BACnetDataNotExpectingReply,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
         0,
         3,
         &[1],
@@ -140,7 +144,7 @@ fn regeneration_forgets_a_stale_successor_and_restarts_at_ts_plus_one() {
     let (_poll, header) = take_transmit(&mut core, ms(1_050));
     assert_eq!(
         (header.frame_type, header.destination),
-        (FrameType::PollForMaster, 2)
+        (FrameType::POLL_FOR_MASTER, 2)
     );
     assert_eq!(core.counters().token_regenerations, 2);
 }
@@ -162,7 +166,7 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     .unwrap();
     validated(
         &mut core,
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         1,
         7,
         &[1, 0],
@@ -184,7 +188,7 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     assert_eq!(core.snapshot().request_id, Some(request));
     core.on_deadline(due).unwrap();
     let (_tx, header) = take_transmit(&mut core, due);
-    assert_eq!(header.frame_type, FrameType::ReplyPostponed);
+    assert_eq!(header.frame_type, FrameType::REPLY_POSTPONED);
     assert_eq!(header.destination, 7);
     assert!(core.counters().state_transitions > 0);
     assert_eq!(core.counters().deadline_misses, 0);
@@ -202,7 +206,7 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     .unwrap();
     validated(
         &mut core,
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         1,
         7,
         &[1, 0],
@@ -235,7 +239,7 @@ fn late_request_data_is_rejected_and_deadline_sends_postponed() {
     .unwrap();
     validated(
         &mut core,
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         1,
         7,
         &[1, 0],
@@ -272,7 +276,7 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
     .unwrap();
     validated(
         &mut core,
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         1,
         7,
         &[1, 0],
@@ -289,13 +293,13 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
     // request, but it also cannot justify a response after Treply_timeout.
     // The Token is kept for when the request ends: then it is used, here to
     // poll for a successor, and no Reply Postponed goes out.
-    validated(&mut core, FrameType::Token, 1, 3, &[], ms(100));
+    validated(&mut core, FrameType::TOKEN, 1, 3, &[], ms(100));
     assert_eq!(core.snapshot().request_id, Some(request));
     core.on_deadline(ms(302)).unwrap();
     assert_eq!(core.snapshot().request_id, None);
     assert_eq!(core.state(), MasterState::PollForMaster);
     let (_poll, header) = take_transmit(&mut core, ms(302));
-    assert_eq!(header.frame_type, FrameType::PollForMaster);
+    assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
     assert_eq!(
         core.complete_request(request, ReplyDecision::Postponed, ms(303)),
         Err(CoreError::NoPendingRequest)
@@ -311,7 +315,7 @@ fn request_ownership_expires_without_a_late_postponed_transmission() {
         MasterCore::new(cfg, Queues::new(), &mut rx, &mut actions, Instant::ZERO).unwrap();
     validated(
         &mut core,
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         1,
         7,
         &[1, 0],
@@ -340,7 +344,7 @@ fn deferred_application_reply_is_not_dispatched_after_its_deadline() {
     .unwrap();
     validated(
         &mut core,
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         1,
         7,
         &[1, 0],
@@ -377,7 +381,7 @@ fn configured_ratios_preserve_max_info_frames_and_weight_broadcasts() {
         core.enqueue_npdu(destination, &[1, 0], NetworkPriority::Normal, Instant::ZERO)
             .unwrap();
     }
-    validated(&mut core, FrameType::Token, 1, 2, &[], Instant::ZERO);
+    validated(&mut core, FrameType::TOKEN, 1, 2, &[], Instant::ZERO);
 
     let mut destinations = [0; 4];
     for destination in &mut destinations {
@@ -385,7 +389,10 @@ fn configured_ratios_preserve_max_info_frames_and_weight_broadcasts() {
         core.on_deadline(due).unwrap();
         let (id, header) = take_transmit(&mut core, due);
         *destination = header.destination;
-        assert_eq!(header.frame_type, FrameType::BACnetDataNotExpectingReply);
+        assert_eq!(
+            header.frame_type,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+        );
         finish(&mut core, id, due + Duration::from_millis(1));
     }
     assert_eq!(destinations, [0xff, 0xff, 2, 2]);
@@ -417,7 +424,7 @@ fn malformed_poll_response_advances_poll_and_sole_master_resumes_queued_work() {
     let (_next_poll, header) = take_transmit(&mut core, due);
     assert_eq!(
         (header.frame_type, header.destination),
-        (FrameType::PollForMaster, 2)
+        (FrameType::POLL_FOR_MASTER, 2)
     );
 
     let mut rx = [0; 1024];
@@ -437,12 +444,15 @@ fn malformed_poll_response_advances_poll_and_sole_master_resumes_queued_work() {
         .unwrap();
     core.on_deadline(ms(521)).unwrap();
     let (data, header) = take_transmit(&mut core, ms(521));
-    assert_eq!(header.frame_type, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(
+        header.frame_type,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+    );
     finish(&mut core, data, ms(522));
     let maintenance_due = core.next_deadline().unwrap();
     core.on_deadline(maintenance_due).unwrap();
     let (maintenance, header) = take_transmit(&mut core, maintenance_due);
-    assert_eq!(header.frame_type, FrameType::PollForMaster);
+    assert_eq!(header.frame_type, FrameType::POLL_FOR_MASTER);
     finish(
         &mut core,
         maintenance,
@@ -458,7 +468,10 @@ fn malformed_poll_response_advances_poll_and_sole_master_resumes_queued_work() {
     let usage_timeout = core.next_deadline().unwrap();
     core.on_deadline(usage_timeout).unwrap();
     let (_data, header) = take_transmit(&mut core, usage_timeout);
-    assert_eq!(header.frame_type, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(
+        header.frame_type,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+    );
     assert!(core.counters().state_transitions > 0);
 }
 
@@ -479,7 +492,7 @@ fn malformed_header_resync_bytes_do_not_create_a_second_invalid_frame() {
     finish(&mut core, poll, ms(501));
 
     let mut bad = [0; 32];
-    let length = Frame::new(FrameType::ReplyToPollForMaster, 0, 1, &[])
+    let length = Frame::new(FrameType::REPLY_TO_POLL_FOR_MASTER, 0, 1, &[])
         .encode_into(&mut bad)
         .unwrap();
     bad[7] ^= 0x01;
@@ -493,7 +506,7 @@ fn malformed_header_resync_bytes_do_not_create_a_second_invalid_frame() {
     let (_next_poll, header) = take_transmit(&mut core, turnaround);
     assert_eq!(
         (header.frame_type, header.destination),
-        (FrameType::PollForMaster, 2)
+        (FrameType::POLL_FOR_MASTER, 2)
     );
     core.on_silence(turnaround + core.config().t_frame_abort + Duration::from_micros(1))
         .unwrap();
@@ -532,18 +545,18 @@ fn reply_timeout_ends_token_use_and_pass_token_event_count_is_strict() {
         .unwrap();
     core.enqueue_npdu(3, &[2, 0], NetworkPriority::Normal, ms(540))
         .unwrap();
-    validated(&mut core, FrameType::Token, 1, 3, &[], ms(541));
+    validated(&mut core, FrameType::TOKEN, 1, 3, &[], ms(541));
     let due = core.next_deadline().unwrap();
     core.on_deadline(due).unwrap();
     let (request, header) = take_transmit(&mut core, due);
-    assert_eq!(header.frame_type, FrameType::BACnetDataExpectingReply);
+    assert_eq!(header.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
     finish(&mut core, request, due + Duration::from_millis(1));
     let reply_timeout = core.next_deadline().unwrap();
     core.on_deadline(reply_timeout).unwrap();
     let (_token, header) = take_transmit(&mut core, reply_timeout);
     assert_eq!(
         (header.frame_type, header.destination),
-        (FrameType::Token, 3)
+        (FrameType::TOKEN, 3)
     );
     assert_eq!(core.counters().unicast.depth, 1);
 }
@@ -562,7 +575,7 @@ fn host_chunk_activity_prevents_retry_during_a_fragmented_successor_frame() {
     .unwrap();
     discover_successor_three(&mut core);
     let (token, header) = take_transmit(&mut core, ms(538));
-    assert_eq!(header.frame_type, FrameType::Token);
+    assert_eq!(header.frame_type, FrameType::TOKEN);
     finish(&mut core, token, ms(539));
     assert_eq!(core.state(), MasterState::PassToken);
 
@@ -572,4 +585,160 @@ fn host_chunk_activity_prevents_retry_during_a_fragmented_successor_frame() {
     core.on_deadline(ms(559)).unwrap();
     assert_eq!(core.poll_action(), Action::Idle);
     assert_eq!(core.next_deadline(), Some(ms(1050)));
+}
+
+/// A frame cut short after its start still drove the line, and each octet it
+/// sent restarted the silence (Clause 9.5.5.1). So the token-generation slot
+/// (Clause 9.5.6.7) counts from the abort, not from the activity before the
+/// frame. Found by the core fuzz target (#1640).
+#[test]
+fn an_aborted_frame_restarts_the_silence_before_token_generation() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(2, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    validated(&mut core, FrameType::POLL_FOR_MASTER, 2, 1, &[], ms(1));
+    core.on_deadline(ms(6)).unwrap();
+    let (reply, header) = take_transmit(&mut core, ms(6));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::REPLY_TO_POLL_FOR_MASTER, 1)
+    );
+    core.on_transmit_aborted(reply, TransmitFailure::Aborted, ms(100))
+        .unwrap();
+    assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
+
+    // T_no_token after the abort the station waits for its own slot, two
+    // slots in, rather than for a window counted from before the frame.
+    core.on_deadline(ms(600)).unwrap();
+    assert_eq!(core.state(), MasterState::NoToken);
+    assert_eq!(core.poll_action(), Action::Idle);
+    assert_eq!(core.next_deadline(), Some(ms(620)));
+    core.on_deadline(ms(620)).unwrap();
+    let (_poll, header) = take_transmit(&mut core, ms(620));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::POLL_FOR_MASTER, 3)
+    );
+    assert_eq!(core.counters().missed_generation_slots, 0);
+}
+
+/// A station above Max_Master that answers a poll becomes the successor
+/// (ReceivedReplyToPFM, Clause 9.5.6.8). When it never uses the token, the
+/// search for a new successor starts at (NS + 1) modulo (Max_Master + 1)
+/// (FindNewSuccessor, Clause 9.5.6.6): 3 for NS 130 and Max_Master 7, not
+/// 0. Found by the core fuzz target (#1640).
+#[test]
+fn a_successor_search_past_one_above_max_master_starts_at_ns_plus_one() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 7),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    core.on_deadline(ms(500)).unwrap();
+    core.on_deadline(ms(510)).unwrap();
+    let (poll, header) = take_transmit(&mut core, ms(510));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::POLL_FOR_MASTER, 2)
+    );
+    finish(&mut core, poll, ms(511));
+    validated(
+        &mut core,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
+        1,
+        130,
+        &[],
+        ms(512),
+    );
+    core.on_deadline(ms(517)).unwrap();
+    let (token, header) = take_transmit(&mut core, ms(517));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::TOKEN, 130)
+    );
+    finish(&mut core, token, ms(518));
+    core.on_deadline(ms(538)).unwrap();
+    let (retry, header) = take_transmit(&mut core, ms(538));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::TOKEN, 130)
+    );
+    finish(&mut core, retry, ms(539));
+
+    core.on_deadline(ms(559)).unwrap();
+    let (_poll, header) = take_transmit(&mut core, ms(559));
+    assert_eq!(
+        (header.frame_type, header.destination),
+        (FrameType::POLL_FOR_MASTER, 3)
+    );
+}
+
+/// With a successor above Max_Master, the address after PS never equals NS,
+/// so the maintenance polls every 50 token uses (Clause 9.5.6.5) would walk
+/// on round to this station itself. They poll every other address, then the
+/// sweep ends as ResetMaintenancePFM ends it. Found in review of the core
+/// fuzz target (#1640).
+#[test]
+fn maintenance_polls_never_reach_this_station_with_a_successor_above_max_master() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        config(1, 3),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        Instant::ZERO,
+    )
+    .unwrap();
+    core.on_deadline(ms(500)).unwrap();
+    core.on_deadline(ms(510)).unwrap();
+    let (poll, _) = take_transmit(&mut core, ms(510));
+    finish(&mut core, poll, ms(511));
+    validated(
+        &mut core,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
+        1,
+        130,
+        &[],
+        ms(512),
+    );
+    core.on_deadline(ms(517)).unwrap();
+    let (token, _) = take_transmit(&mut core, ms(517));
+    finish(&mut core, token, ms(518));
+
+    // Station 130 hands the token straight back, round after round; after a
+    // poll the wait times out and the token goes to 130 again.
+    let mut polls = Vec::new();
+    for round in 0..60u64 {
+        let at = 600 + 100 * round;
+        validated(&mut core, FrameType::TOKEN, 1, 130, &[], ms(at));
+        core.on_deadline(ms(at + 5)).unwrap();
+        let (first, header) = take_transmit(&mut core, ms(at + 5));
+        finish(&mut core, first, ms(at + 6));
+        if header.frame_type == FrameType::POLL_FOR_MASTER {
+            polls.push((round, header.destination));
+            core.on_deadline(ms(at + 26)).unwrap();
+            let (token, header) = take_transmit(&mut core, ms(at + 26));
+            assert_eq!(header.destination, 130);
+            finish(&mut core, token, ms(at + 27));
+        } else {
+            assert_eq!(
+                (header.frame_type, header.destination),
+                (FrameType::TOKEN, 130)
+            );
+        }
+    }
+    assert_eq!(polls, [(50, 2), (51, 3), (52, 0)]);
 }

@@ -7,6 +7,9 @@ as class attributes; vendor-proprietary values are available via ``from_raw()``.
 from __future__ import annotations
 
 import datetime
+import os
+import pathlib
+from collections.abc import Sequence
 from typing import Any, Awaitable, Literal, NotRequired, Optional, TypedDict, Union
 
 UNSPECIFIED: Literal[255]
@@ -1589,7 +1592,10 @@ class DiscoveredDevice:
     def object_identifier(self) -> ObjectIdentifier: ...
 
     @property
-    def mac_address(self) -> bytes: ...
+    def mac_address(self) -> bytes:
+        """The MAC the I-Am came from: IPv4 and port on B/IP, the
+        3-octet VMAC on B/IPv6, the station on MS/TP."""
+        ...
 
     @property
     def max_apdu_length(self) -> int: ...
@@ -1772,6 +1778,12 @@ class BacnetTransportError(BacnetError, OSError):
     """
     errno: int | None
     strerror: str | None
+    sc_untrusted_peer: ScUntrustedPeerInfo | None
+    """Untrusted certificate evidence from the actual failed outbound TLS attempt.
+
+    None when unavailable at the verification observation point. This is not
+    an authenticated peer or a history of background reconnect failures.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -1816,6 +1828,92 @@ def list_serial_ports() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# B/IP modes (#938)
+# ---------------------------------------------------------------------------
+
+class ForeignDevice:
+    """A foreign-device registration, for the ``foreign_device=`` keyword of
+    ``BACnetClient``, ``BACnetServer`` and ``BipEndpoint`` (B/IP only).
+
+    ``bbmd`` is ``"ip"`` or ``"ip:port"`` (port 47808 by default). ``ttl`` is
+    how many seconds the BBMD keeps the entry, 1 to 65535. ``renewal`` is
+    the seconds between registrations, at least 0.1 and less than ``ttl``;
+    ``None`` renews at half the TTL. Behind NAT, renew often so the mapping
+    the BBMD's replies come back on stays open, while the TTL stays long.
+    Invalid values raise ValueError, or OverflowError for an integer out of
+    range.
+
+    The owner registers at start and renews on its own. Its broadcasts go
+    through the BBMD; the first few wait for the first registration to be
+    answered. ``foreign_registration()`` reports how it goes.
+    """
+
+    def __init__(self, bbmd: str, ttl: int = 300, renewal: Optional[float] = None) -> None: ...
+    @property
+    def bbmd(self) -> str: ...
+    @property
+    def ttl(self) -> int: ...
+    @property
+    def renewal(self) -> Optional[float]: ...
+
+class Bbmd:
+    """A BBMD set-up, for the ``bbmd=`` keyword of ``BACnetClient``,
+    ``BACnetServer`` and ``BipEndpoint`` (B/IP only).
+
+    ``bdt`` lists the BBMDs of the other subnets, each ``"ip:port"`` (its
+    broadcasts forwarded by unicast) or ``("ip:port", "mask")``; this BBMD's
+    own row is added when missing. ``accept_foreign_devices`` lets foreign
+    devices register (default False: every registration is refused).
+    ``management_acl`` lists the IPv4 addresses allowed to delete Foreign
+    Device Table entries (default: none). ``bdt_persist_path`` names a file
+    holding a BDT, 10 octets per row, to start with instead of ``bdt`` when
+    it loads. Write-BDT from the network is always refused. Invalid values
+    raise ValueError, or OverflowError for an integer out of range.
+    """
+
+    def __init__(
+        self,
+        bdt: Optional[Sequence[str | tuple[str, str]]] = None,
+        *,
+        accept_foreign_devices: bool = False,
+        management_acl: Optional[Sequence[str]] = None,
+        bdt_persist_path: Optional[str | os.PathLike[str]] = None,
+    ) -> None: ...
+    @property
+    def bdt(self) -> list[tuple[str, str]]: ...
+    @property
+    def accept_foreign_devices(self) -> bool: ...
+    @property
+    def management_acl(self) -> list[str]: ...
+    @property
+    def bdt_persist_path(self) -> Optional[pathlib.Path]: ...
+
+class ForeignRegistrationStatus(TypedDict):
+    """A foreign device's registration, as ``foreign_registration()``
+    reports it. ``registered`` is whether a lease is live; the lease starts
+    at the earliest send a success could answer, so it never outlasts the
+    BBMD's. ``lease_remaining`` and ``next_attempt_in`` are seconds, or None.
+    ``last_bbmd``, ``last_result`` (the BVLC result code, 0x0030 for a
+    refusal) and ``last_outcome`` (``"pending"``, ``"accepted"``,
+    ``"refused"``, ``"timed_out"``, ``"local_error"`` or ``"cancelled"``)
+    describe the latest attempt and clear when the owner stops. The totals
+    survive it: ``lapses`` counts leases that ran out with no newer success,
+    and ``renewal_hints`` the BBMD's Distribute-Broadcast-To-Network NAKs,
+    each of which brings the next attempt forward."""
+    registered: bool
+    lease_remaining: Optional[float]
+    next_attempt_in: Optional[float]
+    last_bbmd: Optional[str]
+    last_result: Optional[int]
+    last_outcome: Optional[str]
+    attempts: int
+    accepted: int
+    refused: int
+    lapses: int
+    renewal_hints: int
+
+
+# ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 
@@ -1837,6 +1935,169 @@ class _DeviceWriteBatchResult(TypedDict):
     device_instance: int
     error: BacnetError | None
 
+
+class ScReconnect:
+    """Frozen SC client retry settings, copied when passed to BACnetClient.
+
+    Delays must be nonzero, initial <= maximum, and maximum <= 86,400,000 ms.
+    Invalid settings raise ValueError; unsigned integer overflow raises
+    OverflowError. Zero retries allows the initial connection and disables
+    active-hub retries after loss. Validation is not deployment qualification.
+    """
+    def __init__(
+        self, *, initial_delay_ms: int = 10000,
+        max_delay_ms: int = 600000, max_retries: int = 10,
+    ) -> None: ...
+    @property
+    def initial_delay_ms(self) -> int: ...
+    @property
+    def max_delay_ms(self) -> int: ...
+    @property
+    def max_retries(self) -> int: ...
+
+
+class ScCertificateMetadata:
+    """Frozen informational metadata; ASCII-escaped fields are at most 1024 bytes."""
+    @property
+    def subject(self) -> str: ...
+    @property
+    def issuer(self) -> str: ...
+    @property
+    def not_before_unix(self) -> int: ...
+    @property
+    def not_after_unix(self) -> int: ...
+    @property
+    def public_key_algorithm_oid(self) -> str: ...
+    @property
+    def signature_algorithm_oid(self) -> str: ...
+    @property
+    def text_truncated(self) -> bool: ...
+
+class ScInspectionFinding:
+    """Frozen local interpretation finding; never a TLS acceptance decision."""
+    @property
+    def area(self) -> Literal["certificate", "san", "key_usage", "extended_key_usage"]: ...
+    @property
+    def kind(self) -> Literal["malformed", "duplicate", "unsupported", "truncated"]: ...
+
+class ScExtensionInspection:
+    """Frozen bounded display. Read certificate findings alongside these values."""
+    @property
+    def assessed(self) -> bool: ...
+    @property
+    def present(self) -> bool: ...
+    @property
+    def values(self) -> tuple[str, ...]: ...
+
+class ScInspectedCertificate:
+    """Frozen exact DER fingerprint and optional interpretation, without retained DER."""
+    @property
+    def role(self) -> Literal["identity", "peer_trust"]: ...
+    @property
+    def index(self) -> int: ...
+    @property
+    def sha256(self) -> bytes: ...
+    @property
+    def metadata(self) -> ScCertificateMetadata | None: ...
+    @property
+    def validity(self) -> Literal["unavailable", "invalid_interval", "not_yet_valid", "expired", "within_interval"]: ...
+    @property
+    def expiry(self) -> Literal["not_assessed", "none", "warning", "alarm"]: ...
+    @property
+    def san(self) -> ScExtensionInspection: ...
+    @property
+    def key_usage(self) -> ScExtensionInspection: ...
+    @property
+    def extended_key_usage(self) -> ScExtensionInspection: ...
+    @property
+    def findings(self) -> tuple[ScInspectionFinding, ...]: ...
+
+class ScKeyFilePermissions:
+    """Frozen Unix read-mode observations from the opened key file; no ACL audit."""
+    @property
+    def group_readable(self) -> bool: ...
+    @property
+    def world_readable(self) -> bool: ...
+
+class ScPemInspection:
+    """Frozen owned offline data. No credential bytes, client or TLS policy is retained."""
+    @property
+    def inspected_at_unix(self) -> int: ...
+    @property
+    def peer_trust_supplied(self) -> bool: ...
+    @property
+    def certificates(self) -> tuple[ScInspectedCertificate, ...]: ...
+    @property
+    def key_consistency(self) -> Literal["not_assessed", "match", "mismatch", "unusable", "unknown"]: ...
+    @property
+    def key_file_permissions(self) -> ScKeyFilePermissions | None: ...
+
+def inspect_sc_pem(
+    identity_pem: bytes | bytearray, *, peer_trust_pem: bytes | bytearray | None = None,
+    private_key_pem: bytes | bytearray | None = None, inspected_at_unix: int | None = None,
+) -> ScPemInspection:
+    """Inspect bounded PEM bytes synchronously. Time is a signed 64-bit integer second.
+
+    ValueError: malformed/empty/oversized supplied PEM. TypeError: wrong input type,
+    including bool time. OverflowError: time outside the signed 64-bit range.
+    DER defects and key/date observations are returned in the report.
+    """
+    ...
+
+def inspect_sc_pem_files(
+    identity_path: str | os.PathLike[str], *, peer_trust_path: str | os.PathLike[str] | None = None,
+    private_key_path: str | os.PathLike[str] | None = None, inspected_at_unix: int | None = None,
+) -> ScPemInspection:
+    """Read selected files once and inspect them without network I/O; OSError retains errno.
+
+    None time samples the clock once. A later connection may read changed files.
+    Same interpretation and input limits as inspect_sc_pem; no chmod or startup gate.
+    """
+    ...
+
+class ScPeerCertificate:
+    """Frozen original DER and optional display interpretation."""
+    @property
+    def der(self) -> bytes: ...
+    @property
+    def metadata(self) -> ScCertificateMetadata | None: ...
+    @property
+    def inspection_error(self) -> Literal["certificate_parse_failed"] | None: ...
+
+class ScUntrustedPeerInfo:
+    """Frozen, owned untrusted certificates from one failed outbound TLS attempt.
+
+    No accepted connection identity or verification result is implied. Missing
+    evidence does not prove that the peer sent no certificates. Metadata is
+    informational; retaining this value owns no network resources.
+    """
+    @property
+    def peer_address(self) -> str: ...
+    @property
+    def server_name(self) -> str: ...
+    @property
+    def certificates(self) -> tuple[ScPeerCertificate, ...]: ...
+
+class ScPeerInfo:
+    """Frozen historical observation; does not retain a client or socket."""
+    @property
+    def connection_id(self) -> int: ...
+    @property
+    def observed_at_unix(self) -> float: ...
+    @property
+    def peer_address(self) -> str: ...
+    @property
+    def server_name(self) -> str: ...
+    @property
+    def handshake_kind(self) -> Literal["full", "resumed", "unknown"]: ...
+    @property
+    def protocol_version(self) -> str | None: ...
+    @property
+    def cipher_suite(self) -> str | None: ...
+    @property
+    def leaf_sha256(self) -> bytes: ...
+    @property
+    def certificates(self) -> tuple[ScPeerCertificate, ...]: ...
 
 class RouterBipPort:
     def __init__(
@@ -1947,6 +2208,15 @@ class BACnetClient:
     lifetime. No generation, persistence, change detection, or version/variant
     enforcement is provided. Non-SC transports ignore this option.
 
+    Keyword-only reconnect=None preserves the default without automatic
+    redial. Supply ScReconnect for SC retries with the same loaded TLS policy,
+    VMAC, UUID and heartbeat settings. Other transports reject this option.
+
+    stop() and context exit refuse new work, drain outstanding native operations
+    and join teardown. Cancelling the close Future leaves shutdown running;
+    await stop() again to join it. Drain duration depends on outstanding requests.
+    Entry is exclusive; entering an already running or closing client fails.
+
     Usage::
 
         async with BACnetClient() as client:
@@ -1958,6 +2228,19 @@ class BACnetClient:
         # MS/TP peer address is a station MAC string ("7" or "mstp:7")
         async with BACnetClient(transport="mstp", serial_port="/dev/ttyUSB0", mstp_mac=3) as client:
             value = await client.read_property("7", oid, pid)
+
+        # A B/IPv6 peer is named by its VMAC: "bip6:1234" for device 1234,
+        # "bip6:0x40ABCD" for any VMAC. resolve_vmac finds it from "[ip]:port".
+        # ipv6_device_instance gives the client a stable VMAC of its own.
+        async with BACnetClient(transport="ipv6", port=0, ipv6_device_instance=4321) as client:
+            vmac = await client.resolve_vmac("[2001:db8::10]:47808")
+            value = await client.read_property(vmac, oid, pid)
+
+    Every ``address`` takes ``"ip:port"`` (B/IP), ``"bip6:<device
+    instance>"`` or ``"bip6:0x<6 hex digits>"`` (a B/IPv6 VMAC, ipv6 only),
+    colon hex such as ``"01:02:03:04:05:06"`` (SC, or ``"00:04:d2"`` for a
+    VMAC), or an MS/TP station. ``"[ip]:port"`` raises ValueError: use
+    ``resolve_vmac``. So does a ``bip6:`` address on any other transport.
     """
 
     def __init__(
@@ -1982,14 +2265,54 @@ class BACnetClient:
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
         mstp_extended_frames: bool = False,
+        mstp_echo: bool = False,
+        mstp_echo_grace_ms: Optional[int] = None,
+        mstp_transmit_latency_pad_ms: Optional[int] = None,
+        mstp_usage_timeout_ms: Optional[int] = None,
+        mstp_reply_timeout_ms: Optional[int] = None,
         sc_device_uuid: Optional[bytes | bytearray] = None,
         share_port_by_address: bool = False,
         min_request_interval_ms: int = 0,
+        ipv6_device_instance: Optional[int] = None,
+        bbmd: Optional[Bbmd] = None,
+        foreign_device: Optional[ForeignDevice] = None,
+        reconnect: Optional[ScReconnect] = None,
     ) -> None:
-        """``mstp_extended_frames`` (MS/TP only, default False): take and send
+        """``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
+        ValueError): run the client as a BBMD, or register it with a BBMD
+        on another subnet as a foreign device, so its Who-Is reaches that
+        subnet (#938). See ``Bbmd`` and ``ForeignDevice``.
+
+        ``ipv6_device_instance`` (B/IPv6 only, default None): the device
+        instance whose VMAC the client uses (Clause H.7.2), 0 to 4194303, so
+        peers know it by a stable VMAC such as ``bip6:0x0010E1``. Give a
+        client an instance to get a stable VMAC; without one it picks a
+        random VMAC at each start, and that needs a multicast-capable link at
+        start, which Linux loopback is not. Another transport, or an instance
+        out of range, raises ValueError.
+
+        ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
         octets, so APDUs of up to 1476; without it MS/TP carries 480-octet
         APDUs and counts an extended frame it hears as invalid.
+
+        ``mstp_echo`` (MS/TP only, default False): the adapter returns every
+        octet this station sends (a transceiver whose receiver stays on while
+        it transmits), so the transport drops that echo rather than take it
+        for line traffic. ``mstp_echo_grace_ms`` (default None, 40 ms; needs
+        ``mstp_echo=True`` and at least 1, else ValueError at start) is how
+        long after a frame its echo may still be arriving. A negative value,
+        or one above 4294967295, raises OverflowError when the client is
+        built.
+
+        ``mstp_transmit_latency_pad_ms``, ``mstp_usage_timeout_ms`` and
+        ``mstp_reply_timeout_ms`` (MS/TP only, default None, the transport's
+        own): the time added to a frame's wire time on a port that can't
+        report its end (4 ms on Windows, where the port has none, 0 elsewhere;
+        at most 15), and T_usage_timeout (20 to 35, default 35) and
+        T_reply_timeout (255 to 300, default 300), in milliseconds. A value
+        outside those ranges raises ValueError at start, before the port
+        opens.
 
         ``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so clients and devices on other addresses
@@ -2233,6 +2556,25 @@ class BACnetClient:
 
     def clear_devices(self) -> Awaitable[None]:
         """Clear the discovered device table."""
+        ...
+
+    def resolve_vmac(self, address: str) -> Awaitable[str]:
+        """Find the VMAC of the B/IPv6 node at ``address``, given as
+        ``"[ip]:port"``, and return it as ``"bip6:0x0004D2"``, the form the
+        other methods take.
+
+        A B/IPv6 node is addressed by its VMAC, not its IPv6 address (Clause
+        U.1.3). This asks the node with a Virtual-Address-Resolution sent by
+        unicast, up to three times a second apart (Clause U.5), unless the
+        client already knows which VMAC is at that address. A link-local
+        address may carry its interface as a numeric zone
+        (``"[fe80::1%3]:47808"``).
+
+        Needs a started client with ``transport="ipv6"``, else RuntimeError.
+        Any other address form raises ValueError. Raises BacnetTransportError
+        (errno ETIMEDOUT) when nothing answers within three seconds, or when
+        the node refuses.
+        """
         ...
 
     def who_am_i(
@@ -2882,8 +3224,27 @@ class BACnetClient:
 
     # --- Lifecycle ---
 
+    def sc_peer_info(self) -> Awaitable[ScPeerInfo | None]:
+        """Observe the accepted active SC Hub without I/O; None while disconnected.
+        RuntimeError for non-SC, stopped or closing clients. Historical results
+        own data only. Observation time is not certificate validation time.
+        """
+        ...
+
+    def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
+        """How the foreign-device registration is going (#938), a refusal
+        included. Sends nothing. Outside ``foreign_device=`` only manual
+        registrations show. RuntimeError before start and after stop; a
+        non-B/IP client raises BacnetError."""
+        ...
+
     def stop(self) -> Awaitable[None]:
-        """Explicitly stop the client and release resources."""
+        """Refuse new work, drain operations, and join native teardown.
+
+        Cancelling this Future leaves shutdown running; call stop() again to
+        join it. Drain duration depends on existing requests. Errors retain
+        closing state for another stop attempt.
+        """
         ...
 
 
@@ -3044,6 +3405,11 @@ class BACnetServer:
         mstp_max_master: int = 127,
         mstp_max_info_frames: int = 1,
         mstp_extended_frames: bool = False,
+        mstp_echo: bool = False,
+        mstp_echo_grace_ms: Optional[int] = None,
+        mstp_transmit_latency_pad_ms: Optional[int] = None,
+        mstp_usage_timeout_ms: Optional[int] = None,
+        mstp_reply_timeout_ms: Optional[int] = None,
         max_confirmed_in_flight: int = 64,
         max_unconfirmed_in_flight: int = 32,
         max_confirmed_in_flight_per_peer: int = 16,
@@ -3074,15 +3440,32 @@ class BACnetServer:
         share_port_by_address: bool = False,
         segmentation_supported: Segmentation = Segmentation.NONE,
         apdu_segment_timeout_ms: int = 5000,
+        bbmd: Optional[Bbmd] = None,
+        foreign_device: Optional[ForeignDevice] = None,
     ) -> None:
         """``share_port_by_address`` (B/IP only, default False): bind the
         interface address itself, so devices on other addresses of this host
         can share the port. Needs an explicit interface and a nonzero port;
         broadcasts and unicast then arrive in no fixed order.
 
+        ``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
+        ValueError): run the device as a BBMD, or register it with a BBMD
+        on another subnet as a foreign device (#938). See ``Bbmd`` and
+        ``ForeignDevice``. A registered Network Port reports the mode in
+        BACnet_IP_Mode (normal 0, foreign 1, BBMD 2).
+
         ``mstp_extended_frames`` (MS/TP only, default False): take and send
         extended frames (Types 32 and 33), which carry NPDUs of up to 1497
-        octets, so the device accepts APDUs of up to 1476 instead of 480."""
+        octets, so the device accepts APDUs of up to 1476 instead of 480.
+
+        ``mstp_echo`` and ``mstp_echo_grace_ms`` (MS/TP only) declare an
+        adapter that returns every octet this station sends, as for
+        ``BACnetClient``; a negative grace, or one above 4294967295, raises
+        OverflowError when the server is built.
+
+        ``mstp_transmit_latency_pad_ms``, ``mstp_usage_timeout_ms`` and
+        ``mstp_reply_timeout_ms`` (MS/TP only) set the transmit-latency pad
+        and the two timeouts, in milliseconds, as for ``BACnetClient``."""
         ...
 
     # --- Analog objects ---
@@ -3900,9 +4283,20 @@ class BACnetServer:
     def local_address(self) -> Awaitable[str]:
         """Get the retained server instance's last bound address snapshot.
 
+        B/IP gives ``"ip:port"``. B/IPv6 gives the VMAC peers address the
+        server by, ``"bip6:0x0004D2"`` for ``device_instance=1234``: an ipv6
+        server's VMAC is its device instance (Clauses U.1.3, H.7.2), and
+        startup fails when another node on the link already uses it. MS/TP
+        gives the station, SC the colon-hex VMAC.
+
         Available during interrupted shutdown; successful stop clears the
         instance and subsequent address queries raise RuntimeError.
         """
+        ...
+
+    def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
+        """How the foreign-device registration is going (#938), as for
+        ``BACnetClient``. RuntimeError before start and after stop."""
         ...
 
     # --- Server-side property access ---
@@ -4359,8 +4753,6 @@ class ScHub:
         broadcast_global_burst: int = 4096,
         broadcast_global_per_second: int = 512,
         relay_send_budget_ms: int = 5000,
-        max_npdu_length: int = 1497,
-        max_bvlc_length: int = 5705,
         certificate_bindings: Sequence[ScHubCertificateBinding] | None = None,
     ) -> None: ...
 
@@ -4642,8 +5034,9 @@ class BipEndpoint:
     """
 
     # network_port_instance declares a snapshot; registered_network_port explicitly
-    # selects it for one concrete-interface NORMAL B/IP bind. None stays unbound.
-    # NORMAL B/IP answers/learns local Network Number controls. Only explicit
+    # selects it for one concrete-interface B/IP bind, in any one mode (normal,
+    # foreign_device= or bbmd=). None stays unbound. Each mode answers/learns
+    # local Network Number controls. Only explicit
     # registration supplies configured provenance; an unregistered owner starts unknown.
 
     def __init__(
@@ -4668,8 +5061,12 @@ class BipEndpoint:
         read_work_limit: int = 256,
         share_port_by_address: bool = False,
         min_request_interval_ms: int = 0,
+        bbmd: Optional[Bbmd] = None,
+        foreign_device: Optional[ForeignDevice] = None,
     ) -> None:
-        """``read_work_limit``: result rows one ReadProperty served by the
+        """``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
+        the endpoint as a BBMD, or register it as a foreign device (#938).
+        ``read_work_limit``: result rows one ReadProperty served by the
         server role may expand, a Group's member rows included; a read past it
         is aborted with OUT_OF_RESOURCES. Zero raises ValueError.
         ``share_port_by_address`` (default False): bind the interface address
@@ -4739,6 +5136,11 @@ class BipEndpoint:
 
     def status(self) -> Awaitable[EndpointStatus]:
         """Bounded snapshot (RuntimeError before start/after close)."""
+        ...
+
+    def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
+        """How the foreign-device registration is going (#938), as for
+        ``BACnetClient``. RuntimeError before start and after close."""
         ...
 
     def broadcast_i_am(self) -> Awaitable[None]:
@@ -4878,9 +5280,32 @@ class MstpEndpoint:
         *,
         read_work_limit: int = 256,
         min_request_interval_ms: int = 0,
+        mstp_extended_frames: bool = False,
+        mstp_echo: bool = False,
+        mstp_echo_grace_ms: Optional[int] = None,
+        mstp_transmit_latency_pad_ms: Optional[int] = None,
+        mstp_usage_timeout_ms: Optional[int] = None,
+        mstp_reply_timeout_ms: Optional[int] = None,
     ) -> None:
         """``read_work_limit`` and ``min_request_interval_ms`` are as for
-        ``BipEndpoint``."""
+        ``BipEndpoint``.
+
+        ``max_apdu`` must fit the link: 480 by default, or 1476 with
+        ``mstp_extended_frames=True``, which turns on extended frames (Types
+        32 and 33, NPDUs of up to 1497 octets) as for ``BACnetClient``.
+        Every node on the link must then take extended frames; each port's
+        transmit queues reserve 768 KiB instead of 272 KiB.
+
+        ``mstp_echo=True`` declares an adapter that returns every octet the
+        station sends, and ``mstp_echo_grace_ms`` how long after a frame its
+        echo may still arrive (None: 40 ms), as for ``BACnetClient``. A grace
+        of 0, or one given without ``mstp_echo=True``, raises ValueError here;
+        a negative grace, or one above 4294967295, raises OverflowError.
+
+        ``mstp_transmit_latency_pad_ms``, ``mstp_usage_timeout_ms`` and
+        ``mstp_reply_timeout_ms`` are as for ``BACnetClient``, but a value
+        out of range raises ValueError here.
+        """
         ...
 
     def add_analog_input(self, instance: int, name: str, units: int = 62, present_value: float = 0.0) -> None: ...

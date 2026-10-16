@@ -190,9 +190,11 @@ async fn dispatch_with_budget(
     let seg_ack_senders = Arc::new(segmented_send::SegmentedSendRegistry::default());
     let confirmed_request_tracker = Arc::new(ConfirmedRequestTracker::default());
     let config = ServerConfig {
+        device: bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(u16::try_from(local_max_apdu).expect("Device APDU fits u16"))
+            .expect("valid Device APDU")
+            .with_segmentation(segmentation),
         get_event_information_budget: budget,
-        max_apdu_length: local_max_apdu,
-        segmentation_supported: segmentation,
         ..ServerConfig::default()
     };
     let source_mac = test_mac(41);

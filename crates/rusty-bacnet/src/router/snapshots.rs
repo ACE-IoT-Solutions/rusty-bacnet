@@ -1,6 +1,5 @@
-use bacnet_network::router::RouterPortHealth;
-use bacnet_network::router_table::{ReachabilityStatus, RouteSnapshot};
-use bacnet_transport::port::TransportHealthState;
+use bacnet_network::router_table::{Duration, Instant, Reachability, Route};
+use bacnet_transport::sc::ScConnectionState;
 use pyo3::prelude::*;
 
 /// Immutable current health for one configured router port.
@@ -35,29 +34,55 @@ pub struct PyRouterPortHealth {
     pub(super) since: Option<f64>,
 }
 
-impl From<RouterPortHealth> for PyRouterPortHealth {
-    fn from(value: RouterPortHealth) -> Self {
-        let health = value.health;
+impl PyRouterPortHealth {
+    /// Build a health snapshot from the configured port and its live SC state.
+    ///
+    /// B/IP is stateless in the upstream transport and is therefore always
+    /// reported as `Up`. SC state is projected without inventing retry/error
+    /// metadata that upstream 0.13 no longer exposes through the router.
+    pub(super) fn from_port(
+        config_index: usize,
+        network_number: u16,
+        transport_kind: &str,
+        identity: String,
+        sc_state: Option<ScConnectionState>,
+    ) -> Self {
+        let state = match sc_state {
+            None => "Up",
+            Some(ScConnectionState::Disconnected | ScConnectionState::Disconnecting) => "Down",
+            Some(ScConnectionState::Connecting) => "Connecting",
+            Some(ScConnectionState::Connected) => "Up",
+        };
         Self {
-            config_index: value.config_index,
-            network_number: value.network_number,
-            transport_kind: value.transport_kind,
-            identity: value.identity,
-            state: match health.state {
-                TransportHealthState::Down => "Down",
-                TransportHealthState::Connecting => "Connecting",
-                TransportHealthState::Reconnecting => "Reconnecting",
-                TransportHealthState::Up => "Up",
-                TransportHealthState::Failed => "Failed",
-            }
-            .to_owned(),
-            detail: health.detail,
-            active_hub: health.active_hub,
-            last_error: health.last_error,
-            attempt: health.attempt,
-            since: health.since.map(|instant| instant.elapsed().as_secs_f64()),
+            config_index,
+            network_number,
+            transport_kind: transport_kind.to_owned(),
+            identity,
+            state: state.to_owned(),
+            detail: None,
+            active_hub: None,
+            last_error: None,
+            attempt: 0,
+            since: None,
         }
     }
+}
+
+/// Build a health snapshot for the parent router's configured health source.
+pub(super) fn port_health(
+    config_index: usize,
+    network_number: u16,
+    transport_kind: &str,
+    identity: &str,
+    sc_state: Option<ScConnectionState>,
+) -> PyRouterPortHealth {
+    PyRouterPortHealth::from_port(
+        config_index,
+        network_number,
+        transport_kind,
+        identity.to_owned(),
+        sc_state,
+    )
 }
 
 /// Immutable routing-table entry detached from the live native router.
@@ -89,25 +114,55 @@ pub struct PyRouterRouteEntry {
     pub(super) last_port_change_age_s: Option<f64>,
 }
 
-impl From<RouteSnapshot> for PyRouterRouteEntry {
-    fn from(value: RouteSnapshot) -> Self {
+impl PyRouterRouteEntry {
+    /// Copy one upstream route row into the Python-facing snapshot contract.
+    pub(super) fn from_route(network_number: u16, route: &Route, now: Instant) -> Self {
+        let reachability = effective_reachability(route, now);
+        let busy_remaining_s = (reachability == Reachability::Busy)
+            .then(|| route.busy_until())
+            .flatten()
+            .and_then(|deadline| deadline.checked_duration_since(now))
+            .map(duration_seconds);
         Self {
-            network_number: value.network_number,
-            port_index: value.port_index,
-            directly_connected: value.directly_connected,
-            next_hop_mac: value.next_hop_mac,
-            reachability: match value.reachability {
-                ReachabilityStatus::Reachable => "Reachable",
-                ReachabilityStatus::Busy => "Busy",
-                ReachabilityStatus::Unreachable => "Unreachable",
-            }
-            .to_owned(),
-            last_seen_age_s: value.last_seen_age.map(|age| age.as_secs_f64()),
-            busy_remaining_s: value
-                .busy_remaining
-                .map(|remaining| remaining.as_secs_f64()),
-            flap_count: value.flap_count,
-            last_port_change_age_s: value.last_port_change_age.map(|age| age.as_secs_f64()),
+            network_number,
+            port_index: usize::from(route.port().0),
+            directly_connected: route.is_direct(),
+            next_hop_mac: route.next_hop().as_slice().to_vec(),
+            reachability: reachability_name(reachability).to_owned(),
+            last_seen_age_s: route
+                .last_seen()
+                .and_then(|stamp| now.checked_duration_since(stamp))
+                .map(duration_seconds),
+            busy_remaining_s,
+            flap_count: route.flap_count(),
+            last_port_change_age_s: route
+                .last_port_change()
+                .and_then(|stamp| now.checked_duration_since(stamp))
+                .map(duration_seconds),
         }
     }
+}
+
+/// Compatibility spelling used by the Python router owner.
+pub(super) fn route_entry(network_number: u16, route: &Route, now: Instant) -> PyRouterRouteEntry {
+    PyRouterRouteEntry::from_route(network_number, route, now)
+}
+
+fn effective_reachability(route: &Route, now: Instant) -> Reachability {
+    match (route.reachability(), route.busy_until()) {
+        (Reachability::Busy, Some(deadline)) if now >= deadline => Reachability::Reachable,
+        (state, _) => state,
+    }
+}
+
+fn reachability_name(value: Reachability) -> &'static str {
+    match value {
+        Reachability::Reachable => "Reachable",
+        Reachability::Busy => "Busy",
+        Reachability::Unreachable => "Unreachable",
+    }
+}
+
+fn duration_seconds(duration: Duration) -> f64 {
+    duration.as_nanos() as f64 / 1_000_000_000.0
 }

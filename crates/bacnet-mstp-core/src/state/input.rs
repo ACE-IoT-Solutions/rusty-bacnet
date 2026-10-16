@@ -52,7 +52,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// station's own echo and ignored until it completes. Before that they
     /// are line activity like any other (see [`Self::on_transmit_started`]).
     pub fn on_octet(&mut self, byte: u8, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         if self.transmitting() {
             return Ok(());
         }
@@ -119,7 +119,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
                 raw_type: header.frame_type.to_raw(),
             }));
         }
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         if self.transmitting() {
             return Ok(());
         }
@@ -150,7 +150,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// ignored as echo between a confirmed transmit start and its
     /// completion.
     pub fn on_invalid_frame(&mut self, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         if self.transmitting() {
             return Ok(());
         }
@@ -169,7 +169,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Like [`Self::on_octet`], it is ignored as echo only once a transmit's
     /// start is confirmed.
     pub fn on_host_activity(&mut self, octets: usize, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         if self.transmitting() || octets == 0 {
             return Ok(());
         }
@@ -184,15 +184,14 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     ///
     /// It is taken for the station's own echo exactly when
     /// [`Self::on_octet`] would be: once a transmit's start is confirmed.
-    pub fn on_receive_error(
-        &mut self,
-        _error: ReceiveError,
-        now: Instant,
-    ) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+    /// Otherwise it counts under its kind, in
+    /// [`MstpCounters::framing_errors`] and the three beside it.
+    pub fn on_receive_error(&mut self, error: ReceiveError, now: Instant) -> Result<(), CoreError> {
+        let now = self.observe_time(now);
         if self.transmitting() {
             return Ok(());
         }
+        self.counters.record_receive_error(error);
         self.note_bus_activity(now, 1)?;
         let invalid_candidate = matches!(
             self.decoder.phase(),
@@ -212,7 +211,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// including a dropped frame being skipped by count, counts as an invalid
     /// frame whatever its destination (Clause 9.5.4).
     pub fn on_silence(&mut self, now: Instant) -> Result<(), CoreError> {
-        self.observe_time(now)?;
+        let now = self.observe_time(now);
         if self.abort_partial_if_late(now) {
             self.invalid_frame_event(now)?;
         }

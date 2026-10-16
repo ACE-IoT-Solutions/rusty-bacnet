@@ -25,7 +25,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             confirmed_cov_ack_policy,
             device_tx,
             device_collision_tx,
-            iam_tx,
             seg_ack_senders,
         } = context;
         let InboundApdu {
@@ -478,36 +477,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 vendor_id: i_am.vendor_id,
                                 last_seen: std::time::Instant::now(),
                                 source_network: src_net,
-                                source_address: src_addr.clone(),
-                            };
-                            let bip_metadata =
-                                provenance
-                                    .transport_metadata()
-                                    .map(|metadata| match metadata {
-                                        bacnet_transport::port::TransportMetadata::Bip {
-                                            bvlc_function,
-                                            udp_source,
-                                            forwarded_from,
-                                        } => (bvlc_function, udp_source, forwarded_from),
-                                    });
-                            let _ = iam_tx.send(IAmEvent {
-                                device_instance: i_am.object_identifier.instance_number(),
-                                object_identifier: i_am.object_identifier,
-                                max_apdu_length: i_am.max_apdu_length,
-                                segmentation_supported: i_am.segmentation_supported,
-                                vendor_id: i_am.vendor_id,
-                                udp_source_ip: bip_metadata.map(|(_, source, _)| source.0),
-                                udp_source_port: bip_metadata.map(|(_, source, _)| source.1),
-                                source_mac: MacAddr::from_slice(source_mac),
-                                source_network: src_net,
                                 source_address: src_addr,
-                                bvlc_function: bip_metadata.map(|(function, _, _)| function),
-                                forwarded_from_ip: bip_metadata
-                                    .and_then(|(_, _, origin)| origin.map(|origin| origin.0)),
-                                forwarded_from_port: bip_metadata
-                                    .and_then(|(_, _, origin)| origin.map(|origin| origin.1)),
-                                timestamp: std::time::Instant::now(),
-                            });
+                            };
                             let status = {
                                 let mut table = device_table.lock().await;
                                 table.upsert_with_result(device.clone())

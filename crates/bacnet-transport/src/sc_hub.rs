@@ -86,10 +86,8 @@ type TlsStream = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
 type WsSink = SplitSink<WebSocketStream<TlsStream>, Message>;
 type DeviceUuid = [u8; 16];
 
-#[cfg(test)]
 const HUB_MAX_BVLC_LENGTH: u16 = crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH;
-#[cfg(test)]
-const HUB_MAX_NPDU_LENGTH: u16 = crate::sc_limits::LOCAL_RECEIVE_NPDU_CAPACITY;
+const HUB_MAX_NPDU_LENGTH: u16 = 1497;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectRequestVmacDisposition {
@@ -277,8 +275,6 @@ impl ScHub {
         admission_limits.validate()?;
         let relay_send_budget = tls_config.relay_send_budget();
         ScHubTlsConfig::validate_relay_send_budget(relay_send_budget)?;
-        let (max_npdu_length, max_bvlc_length) = tls_config.receive_limits();
-        ScHubTlsConfig::validate_receive_limits(max_npdu_length, max_bvlc_length)?;
         let probe_policy = tls_config.probe_policy();
         probe_policy.validate()?;
         let graceful_timeouts = tls_config.graceful_timeouts();
@@ -315,8 +311,6 @@ impl ScHub {
         let tasks = tasks.with_graceful_timeouts(graceful_timeouts);
         let mut tasks = tasks.with_probe_policy(probe_policy);
         tasks.timing.relay_send_budget = relay_send_budget;
-        tasks.timing.max_npdu_length = max_npdu_length;
-        tasks.timing.max_bvlc_length = max_bvlc_length;
         let task = tokio::spawn(connection::accept_loop_with_counter(
             HubListener {
                 listener,

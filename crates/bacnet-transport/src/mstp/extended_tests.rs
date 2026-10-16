@@ -174,17 +174,26 @@ async fn the_echo_of_an_extended_frame_is_stripped_whole() {
     let mut bus = Bus::start_with(config, ECHOING).await;
     let token = bus.join(4).await;
     let long = npdu(MAX_EXTENDED_MPDU_DATA, false, 0x77);
-    let wire = encode(FrameType::BACnetExtendedDataNotExpectingReply, 4, 3, &long);
+    let wire = encode(
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
+        4,
+        3,
+        &long,
+    );
     assert!(wire.len() > 2 * 512, "the echo spans three reads");
     bus.transport.send_unicast(&long, &[4]).await.unwrap();
     bus.return_token(&token, 4).await;
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.destination, &sent.data),
-        (FrameType::BACnetExtendedDataNotExpectingReply, 4, &long)
+        (
+            FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
+            4,
+            &long
+        )
     );
     let pass = bus.next().await;
-    assert_eq!((pass.frame_type, pass.destination), (FrameType::Token, 4));
+    assert_eq!((pass.frame_type, pass.destination), (FrameType::TOKEN, 4));
     assert!(pass.start >= sent.end + bus.turnaround);
     assert!(pass.start <= sent.end + bus.turnaround + Duration::from_millis(1));
     let counts = bus.transport.diagnostics().snapshot();

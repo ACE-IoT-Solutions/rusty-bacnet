@@ -1,11 +1,9 @@
 //! Integration tests for the portable MS/TP master core.
 
-#![cfg(feature = "heapless")]
-
 use bacnet_mstp_codec::{Frame, FrameType, MAX_STANDARD_MPDU_DATA};
 use bacnet_mstp_core::{
     Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,
-    NetworkPriority, ReceiveError, ReplyDecision, RequestId, TransmitId,
+    NetworkPriority, QueueStorage, ReceiveError, ReplyDecision, RequestId, TransmitId,
 };
 use proptest::prop_assert;
 
@@ -21,11 +19,10 @@ fn frame(kind: FrameType, destination: u8, source: u8, data: &[u8]) -> Frame<'_>
 }
 
 fn standard_config(station: u8, max_master: u8) -> bacnet_mstp_core::MstpCoreConfig {
-    bacnet_mstp_core::MstpCoreConfig {
-        station,
-        max_master,
-        ..Default::default()
-    }
+    let mut config = bacnet_mstp_core::MstpCoreConfig::STANDARD;
+    config.station = station;
+    config.max_master = max_master;
+    config
 }
 
 fn take_transmit<Q: bacnet_mstp_core::QueueStorage>(
@@ -88,10 +85,10 @@ fn public_events_reach_all_clause_states_and_counters_are_observable() {
     // A received token enters UseToken while queued work is available.
     core.enqueue_npdu(2, &[0, 0x00], NetworkPriority::Normal, at(532))
         .unwrap();
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), at(533))
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(533))
         .unwrap();
     assert_eq!(core.state(), MasterState::Idle);
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), at(534))
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(534))
         .unwrap();
     let state_after_token = core.state();
     assert!(
@@ -285,7 +282,7 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
     )
     .unwrap();
     core.on_validated_frame(
-        frame(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 0x01]),
+        frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[0, 0x01]),
         at(1),
     )
     .unwrap();
@@ -296,9 +293,9 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
         } => id,
         other => panic!("expected request delivery, got {other:?}"),
     };
-    let stale = RequestId::new(id.raw().wrapping_add(1));
+    let stale = RequestId::new(id.generation().wrapping_add(1));
     assert_eq!(
-        core.complete_request(stale, ReplyDecision::Cancelled, at(2)),
+        core.complete_request(stale, ReplyDecision::Postponed, at(2)),
         Err(CoreError::StaleRequest)
     );
     assert_eq!(
@@ -312,11 +309,11 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
             maximum: MAX_STANDARD_MPDU_DATA,
         })
     );
-    core.complete_request(id, ReplyDecision::Cancelled, at(2))
+    core.complete_request(id, ReplyDecision::Postponed, at(2))
         .unwrap();
     assert_eq!(core.snapshot().request_id, None);
     assert_eq!(
-        core.complete_request(id, ReplyDecision::Cancelled, at(3)),
+        core.complete_request(id, ReplyDecision::Postponed, at(3)),
         Err(CoreError::NoPendingRequest)
     );
     assert!(core.counters().npdus_delivered >= 1);
@@ -335,7 +332,7 @@ fn abandoned_request_returns_idle_without_wire_actions() {
     )
     .unwrap();
     core.on_validated_frame(
-        frame(FrameType::BACnetDataExpectingReply, 1, 7, &[0, 0x01]),
+        frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[0, 0x01]),
         at(1),
     )
     .unwrap();
@@ -372,7 +369,7 @@ fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
         Instant::ZERO,
     )
     .unwrap();
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), Instant::ZERO)
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
         .unwrap();
     core.on_deadline(at(5)).unwrap();
     let id = take_transmit(&mut core, at(5));
@@ -381,7 +378,7 @@ fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
         Err(CoreError::TransmitAlreadyStarted)
     );
     assert_eq!(
-        core.on_transmit_complete(TransmitId::new(id.raw().wrapping_add(1)), at(7)),
+        core.on_transmit_complete(TransmitId::new(id.generation().wrapping_add(1)), at(7)),
         Err(CoreError::StaleTransmit)
     );
     let watchdog = at(6) + core.config().transmit_watchdog;
@@ -405,7 +402,7 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
     )
     .unwrap();
     core.on_validated_frame(
-        frame(FrameType::BACnetDataExpectingReply, 0xff, 2, &[1, 2]),
+        frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 0xff, 2, &[1, 2]),
         at(1),
     )
     .unwrap();
@@ -431,7 +428,7 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
     .unwrap();
     core.enqueue_npdu(2, &[0, 0x04], NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), Instant::ZERO)
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
         .unwrap();
     core.on_deadline(at(5)).unwrap();
     let tx = take_transmit(&mut core, at(5));
@@ -468,13 +465,18 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
     .unwrap();
     for source in 2..=9 {
         core.on_validated_frame(
-            frame(FrameType::BACnetDataNotExpectingReply, 1, source, &[source]),
+            frame(
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+                1,
+                source,
+                &[source],
+            ),
             at(u64::from(source)),
         )
         .unwrap();
     }
     assert_eq!(core.counters().npdus_delivered, 8);
-    core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), at(10))
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(10))
         .unwrap();
     core.on_deadline(at(15)).unwrap();
     assert!(matches!(
@@ -483,7 +485,7 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
     ));
 
     let mut encoded = [0; 512];
-    let len = frame(FrameType::BACnetDataNotExpectingReply, 1, 2, &[9, 8])
+    let len = frame(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 1, 2, &[9, 8])
         .encode_into(&mut encoded)
         .unwrap();
     let mut rx = [0; 1024];
@@ -581,7 +583,7 @@ mod allocation_test {
         THREAD_ALLOCATIONS.with(|count| count.set(0));
         core.enqueue_npdu(2, &[1, 2], NetworkPriority::Normal, at(0))
             .unwrap();
-        core.on_validated_frame(frame(FrameType::Token, 1, 2, &[]), at(2))
+        core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(2))
             .unwrap();
         core.on_deadline(at(7)).unwrap();
         assert_eq!(
@@ -599,4 +601,165 @@ mod allocation_test {
         assert_eq!(measured, 0);
         assert!(core.counters().unicast.enqueued >= 1);
     }
+}
+
+/// `take_counters` returns what `counters` shows and starts the counts
+/// again, the core's own and its queues' alike, the core's oversize
+/// refusals included; the queue depth stays.
+#[test]
+fn taking_the_counters_drains_the_core_and_its_queues() {
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        at(0),
+    )
+    .unwrap();
+    core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, at(0))
+        .unwrap();
+    for _ in 0..2 {
+        core.enqueue_npdu(0xFF, &[1, 0], NetworkPriority::Normal, at(0))
+            .unwrap();
+    }
+    // Too long for a standard frame: the core refuses it itself, once for
+    // each queue.
+    let long = [0; MAX_STANDARD_MPDU_DATA + 1];
+    for destination in [2, 0xFF] {
+        assert_eq!(
+            core.enqueue_npdu(destination, &long, NetworkPriority::Normal, at(0)),
+            Err(bacnet_mstp_core::QueueRefusal::Oversize)
+        );
+    }
+    core.on_receive_error(ReceiveError::Parity, at(1)).unwrap();
+
+    let looked = core.counters();
+    let taken = core.take_counters();
+    assert_eq!(looked, taken);
+    assert_eq!(taken.parity_errors, 1);
+    // Enqueued, refused as too long, and the depth, for each queue.
+    let queue = |counters: bacnet_mstp_core::QueueCounters| {
+        (
+            counters.enqueued,
+            counters.drops_oversize,
+            counters.depth,
+            counters.high_water,
+        )
+    };
+    assert_eq!(queue(taken.unicast), (1, 1, 1, 1));
+    assert_eq!(queue(taken.broadcast), (2, 1, 2, 2));
+
+    // Both queues' counts start again; their depths stay.
+    let after = core.counters();
+    assert_eq!((after.parity_errors, after.state_transitions), (0, 0));
+    assert_eq!(queue(after.unicast), (0, 0, 1, 1));
+    assert_eq!(queue(after.broadcast), (0, 0, 2, 2));
+    assert_eq!(core.take_counters(), after);
+}
+
+/// A `now` earlier than the latest one the core was given is taken as that
+/// latest one: the clock holds still instead of failing. A queued NPDU's
+/// time is taken the same way, though queueing doesn't move the clock.
+#[test]
+fn a_clock_that_steps_back_is_held_at_the_latest_time() {
+    let mut queues = Queues::new();
+    let mut rx = [0; 1024];
+    let mut actions = Actions::new();
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        &mut queues,
+        &mut rx,
+        &mut actions,
+        at(0),
+    )
+    .unwrap();
+    // Line activity at 100 ms restarts the wait for a lost token.
+    core.on_octet(0x00, at(100)).unwrap();
+    assert_eq!(core.next_deadline(), Some(at(600)));
+    // The same at 50 ms is taken at 100 ms: the deadline stays.
+    core.on_octet(0x00, at(50)).unwrap();
+    core.on_receive_error(ReceiveError::Break, at(40)).unwrap();
+    assert_eq!(core.next_deadline(), Some(at(600)));
+    // A deadline call stamped before then is taken at 100 ms, early.
+    core.on_deadline(at(10)).unwrap();
+    assert_eq!(core.state(), MasterState::Idle);
+    assert_eq!(core.counters().deadline_misses, 0);
+    // An NPDU queued at 20 ms is queued at 100 ms, and expires five seconds
+    // (the queues' maximum age) after that.
+    core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, at(20))
+        .unwrap();
+    // A later one doesn't move the clock: an octet at 150 ms still counts.
+    core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, at(900))
+        .unwrap();
+    core.on_octet(0x00, at(150)).unwrap();
+    assert_eq!(core.next_deadline(), Some(at(650)));
+    // The core's borrow of the queues ends with its last use.
+    let first = queues.peek(at(150)).unwrap();
+    assert_eq!(first.enqueued_at, at(100));
+    assert_eq!(first.expires_at, Some(at(5_100)));
+}
+
+/// Every error and refusal is a `core::error::Error` with a message, and
+/// a configuration error's message names what is wrong.
+#[test]
+fn errors_and_refusals_read_as_messages() {
+    use bacnet_mstp_core::{ConfigError, CoreBuffer, MstpCoreConfig, QueueRefusal};
+
+    let refused = MstpCoreConfig::for_baud_rate(2_400).unwrap_err();
+    let errors: [&dyn core::error::Error; 5] = [
+        &CoreError::Config(refused),
+        &CoreError::ReplyOversize {
+            length: 600,
+            maximum: 501,
+        },
+        &CoreError::TransmitDeferred,
+        &QueueRefusal::Expired,
+        &NetworkPriority::try_from(4).unwrap_err(),
+    ];
+    for error in errors {
+        assert!(!error.to_string().is_empty(), "{error:?}");
+    }
+    assert!(refused.to_string().starts_with("T_turnaround"), "{refused}");
+    assert_eq!(
+        NetworkPriority::try_from(4).unwrap_err().to_string(),
+        "network priority 4 is not 0 to 3"
+    );
+    let storage = ConfigError::ExtendedStorageTooSmall {
+        buffer: CoreBuffer::ReceiveStorage,
+        length: 511,
+        minimum: 1516,
+    };
+    assert_eq!(
+        storage.to_string(),
+        "the receive storage holds 511 octets; extended frames need 1516"
+    );
+}
+
+/// `Debug` shows the core's state and the buffers' sizes, never the octets
+/// the buffers hold.
+#[test]
+fn debug_shows_state_not_buffers() {
+    let mut rx = [0xA5; 1024];
+    let mut actions = Actions::new();
+    assert_eq!(
+        format!("{actions:?}"),
+        "ActionBuffers { deliveries: 8, npdu: 501, frame: 511 }"
+    );
+    let mut core = MasterCore::new(
+        standard_config(1, 2),
+        Queues::new(),
+        &mut rx,
+        &mut actions,
+        at(0),
+    )
+    .unwrap();
+    core.enqueue_npdu(2, &[0xA5; 40], NetworkPriority::Normal, at(0))
+        .unwrap();
+    let shown = format!("{core:?}");
+    assert!(shown.starts_with("MasterCore {"), "{shown}");
+    assert!(shown.contains("state: Idle"), "{shown}");
+    assert!(shown.contains("unicast_queued: 1"), "{shown}");
+    assert!(!shown.contains("165, 165"), "{shown}");
 }

@@ -225,7 +225,7 @@ async fn every_precommit_failure_is_silent_and_nonmutating() {
     for device in [
         None,
         Some(DeviceConfig {
-            apdu_segment_timeout: 5000,
+            identity: bacnet_objects::DeviceIdentity::default().with_apdu_segment_timeout_ms(5000),
             apdu_timeout: 0,
             ..DeviceConfig::default()
         }),

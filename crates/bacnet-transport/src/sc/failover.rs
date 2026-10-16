@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{atomic::AtomicU16, Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use bacnet_types::error::Error;
@@ -15,26 +15,14 @@ use tracing::warn;
 use crate::sc_frame::{encode_sc_message, ScMessage};
 
 use super::{
-    connector::dial_connector, handshake::perform_handshake, publish_effective_max_apdu_length,
-    ScConnection, ScConnectionState, WebSocketConnector, WebSocketPort,
+    connector::dial_connector, handshake::perform_handshake, HubLimits, ScConnection,
+    ScConnectionState, WebSocketConnector, WebSocketPort,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Hub role currently carrying BACnet/SC traffic.
-pub enum ActiveHub {
-    /// Configured primary hub.
+pub(super) enum ActiveHub {
     Primary,
-    /// Configured failover hub.
     Failover,
-}
-
-impl ActiveHub {
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Primary => "primary",
-            Self::Failover => "failover",
-        }
-    }
 }
 
 /// The cadence of primary-restore attempts while the failover hub is active,
@@ -93,7 +81,7 @@ pub(super) struct PrimaryRestoreContext<'a, W> {
     pub(super) restore_disconnect_task: &'a Arc<StdMutex<Option<JoinHandle<()>>>>,
     pub(super) state_tx: &'a watch::Sender<ScConnectionState>,
     pub(super) connect_timeout_ms: u64,
-    pub(super) effective_max_apdu_length: &'a AtomicU16,
+    pub(super) hub_limits: &'a HubLimits,
 }
 
 pub(super) async fn publish_primary_restore<W: WebSocketPort>(
@@ -118,7 +106,7 @@ pub(super) async fn publish_primary_restore<W: WebSocketPort>(
     let disconnect_msg = c.clone().build_disconnect_request().ok();
     *c = candidate.connection;
     *current = restored_ws.clone();
-    publish_effective_max_apdu_length(ctx.effective_max_apdu_length, &c);
+    ctx.hub_limits.publish(&c);
     ctx.state_tx.send_replace(c.state);
     drop(c);
     drop(current);
@@ -180,7 +168,7 @@ mod tests {
             let conn = Arc::new(Mutex::new(connection));
             let (state, _) = watch::channel(ScConnectionState::Disconnecting);
             let disconnect = Arc::new(StdMutex::new(None));
-            let effective = AtomicU16::new(1000);
+            let limits = HubLimits::new();
             let mut probe = ScConnection::new([2; 6], [1; 16]);
             probe.state = ScConnectionState::Connected;
             probe.hub_vmac = Some([0x10; 6]);
@@ -201,7 +189,7 @@ mod tests {
                     restore_disconnect_task: &disconnect,
                     state_tx: &state,
                     connect_timeout_ms: 500,
-                    effective_max_apdu_length: &effective,
+                    hub_limits: &limits,
                 },
                 &live,
                 candidate,
@@ -216,7 +204,11 @@ mod tests {
             assert!(c.connect_retry_allowed);
             assert!(Arc::ptr_eq(&*active.lock().await, &live));
             assert_eq!(*state.borrow(), ScConnectionState::Disconnecting);
-            assert_eq!(effective.load(std::sync::atomic::Ordering::Relaxed), 1000);
+            assert_eq!(limits.apdu(), super::super::DEFAULT_MAX_APDU_LENGTH);
+            assert_eq!(
+                *limits.npdu_changes().borrow(),
+                crate::port::NpduLimits::STANDARD
+            );
             assert!(disconnect.lock().unwrap().is_none());
         }
     }

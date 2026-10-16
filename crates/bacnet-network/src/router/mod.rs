@@ -25,8 +25,9 @@
 //! - Standard convergence applies 6.6.3.2 last-wins immediately: each new
 //!   I-Am-Router / Init-ACK advertisement updates routing information, with
 //!   flap warnings retained. Same-port refreshes and absent learning stay
-//!   immediate; I-Could-Be-Router remains absent-only.
-//! - Hardened convergence (`RouterTable::new_hardened`, explicit opt-in only)
+//!   immediate; I-Could-Be-Router remains absent-only, within the route cap.
+//! - Hardened convergence ([`Convergence::Hardened`](crate::router_table::Convergence)
+//!   set through [`BACnetRouter::table`], explicit opt-in only)
 //!   holds cross-port learned moves for a second same-(network, port) claim
 //!   within 60s inclusive. Repeats in separate messages suffice; duplicates in
 //!   one message cannot corroborate. The old route forwards while pending.
@@ -52,126 +53,58 @@
 //!   `stop` cancels pending discovery.
 //! - Disconnect never removes routes (PTP unimplemented). Reject transitions
 //!   are dampened per (ingress port, network) with a 30s hold-down; no-op
-//!   rejects never extend busy deadlines. [`RouterTable::claim_snapshot`]
-//!   stays count-only saturating and never affects decisions.
+//!   rejects never extend busy deadlines. The table's
+//!   [`claim_counters`](crate::router_table::Table::claim_counters) stay
+//!   count-only saturating and never affect decisions.
 
+mod actions;
+pub mod control_policy;
+mod dispatch;
+mod engine;
+mod hosted_host;
+mod limits;
+mod local_control;
 mod local_delivery;
+mod options;
+mod port_groups;
+mod send_warning;
+mod sender;
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-#[cfg(test)]
-use bacnet_encoding::npdu::encode_npdu;
-use bacnet_encoding::npdu::{Npdu, NpduAddress};
-use bacnet_transport::port::{DataAttribute, TransportHealth, TransportPort};
-#[cfg(test)]
-use bacnet_types::enums::NetworkMessageType;
+/// The engine's counts, as [`BACnetRouter::counters`] reads them.
+pub use bacnet_router_core::router::Counters;
+use bacnet_router_core::{Instant, Mac, PortId};
+use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
-#[cfg(test)]
-use bytes::{BufMut, BytesMut};
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
 
-use crate::layer::{AdmissionReceiver, QueueAdmissionCounters, ReceivedApdu};
-use crate::layer::{AdmissionSender, ReceivedNetworkControl};
-use crate::router_table::RouterTable;
-use bacnet_transport::port::TransportProvenance;
+use crate::layer::ReceivedNetworkControl;
+use crate::layer::{AdmissionReceiver, AdmissionSender, QueueAdmissionCounters, ReceivedApdu};
 
-mod announcements;
-mod control_messages;
-pub mod control_policy;
-mod dispatch;
-mod forwarding;
-mod local_control;
-mod options;
-mod reject;
-
-pub use crate::router_table::RouteSnapshot;
-pub use announcements::RouterConfig;
 pub use control_policy::{ControlAuthContext, ControlAuthorizer, ControlClass};
 pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
 pub use control_policy::{ControlServiceCounters, ControlTrust};
-use dispatch::PortDispatch;
-use local_control::{LocalControl, OwnAddresses};
+use dispatch::{Outputs, PortDispatch, Shared};
+use engine::{Engine, EngineGuard, RouterClock, PORTS};
 pub use options::{LocalApduReceiver, NetworkControlReceiver, RouterOptions, StartedRouter};
+use port_groups::PortGroups;
 
-fn format_local_mac<T: TransportPort>(transport: &T) -> String {
-    transport
-        .local_mac()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
-fn format_transport_identity<T: TransportPort>(transport: &T) -> String {
-    transport.topology_id().unwrap_or_else(|| {
-        let identity = format_local_mac(transport);
-        if identity.is_empty() {
-            "<unavailable>".to_owned()
-        } else {
-            identity
-        }
-    })
-}
-
-fn contextualize_port_start_error(
-    error: Error,
-    config_index: usize,
-    transport_kind: &str,
-    identity: &str,
-) -> Error {
-    let context = format!(
-        "router port {config_index} ({transport_kind}, identity {identity:?}) failed to start"
-    );
-    match error {
-        Error::Transport(source) => Error::Transport(std::io::Error::new(
-            source.kind(),
-            format!("{context}: {source}"),
-        )),
-        source => Error::Encoding(format!("{context}: {source}")),
-    }
-}
-
-/// Current health of one configured router port.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RouterPortHealth {
-    /// Zero-based position in the original router configuration.
-    pub config_index: usize,
-    /// Configured BACnet network number.
-    pub network_number: u16,
-    /// Transport implementation used by this port.
-    pub transport_kind: String,
-    /// Stable topology identity, or the post-start local MAC when unavailable.
-    pub identity: String,
-    /// Latest transport-provided health snapshot.
-    pub health: TransportHealth,
-}
-
-struct PortHealthEntry {
-    config_index: usize,
-    network_number: u16,
-    transport_kind: String,
-    identity: String,
-    health: watch::Receiver<TransportHealth>,
-}
-
-impl PortHealthEntry {
-    fn snapshot(&self) -> RouterPortHealth {
-        RouterPortHealth {
-            config_index: self.config_index,
-            network_number: self.network_number,
-            transport_kind: self.transport_kind.clone(),
-            identity: self.identity.clone(),
-            health: self.health.borrow().clone(),
-        }
-    }
-}
+// The suites that start a router take these names from here, as before the
+// engine.
+#[cfg(test)]
+use {
+    bacnet_encoding::npdu::{encode_npdu, Npdu},
+    bacnet_transport::port::TransportProvenance,
+    bacnet_types::enums::NetworkMessageType,
+    bytes::BytesMut,
+    std::time::Duration,
+};
 
 /// A send request to be forwarded on a port.
 #[derive(Debug)]
@@ -187,191 +120,23 @@ enum SendRequest {
     },
 }
 
-impl SendRequest {
-    fn broadcast(npdu: Bytes) -> Self {
-        Self::broadcast_with_attributes(npdu, &[])
-    }
-
-    /// Ingress-triggered unicast: carries the ingress data attributes instead
-    /// of silently dropping them (RB-03). Locally-originated messages with no
-    /// ingress attributes pass an empty slice.
-    fn unicast_with_attributes(
-        npdu: Bytes,
-        mac: MacAddr,
-        data_attributes: &[DataAttribute],
-    ) -> Self {
-        Self::Unicast {
-            npdu,
-            mac,
-            data_attributes: data_attributes.to_vec(),
-        }
-    }
-
-    /// Ingress-triggered broadcast: carries the ingress data attributes
-    /// instead of silently dropping them (RB-03). Locally-originated
-    /// messages with no ingress attributes use [`Self::broadcast`].
-    fn broadcast_with_attributes(npdu: Bytes, data_attributes: &[DataAttribute]) -> Self {
-        Self::Broadcast {
-            npdu,
-            data_attributes: data_attributes.to_vec(),
-        }
-    }
-}
-
-/// Bounded unknown-destination discovery (RB-06, Clauses 6.5/6.6.3.1).
-///
-/// Per-DNET single inflight Who-Is solicitation: simultaneous unknowns coalesce
-/// to one broadcast, rate-limited to one per DNET per 5s, entries expire after
-/// 30s via the aging reaper, at most 256 pending DNETs, reserved never
-/// solicited. The caller still fails with NOT_DIRECTLY_CONNECTED (honest
-/// retryable); packets are never buffered and no per-packet retries occur.
-/// `cancel` (via [`BACnetRouter::stop`]) drops all pending discovery.
-const DISCOVERY_COOLDOWN: Duration = Duration::from_secs(5);
-const DISCOVERY_MAX_AGE: Duration = Duration::from_secs(30);
-const DISCOVERY_MAX_PENDING: usize = 256;
-
-#[derive(Debug, Default)]
-pub(crate) struct DiscoveryTracker {
-    last_solicited: HashMap<u16, Instant>,
-    cancelled: bool,
-}
-
-impl DiscoveryTracker {
-    /// Decide whether an unknown `dnet` should solicit now; records it if so.
-    pub(crate) fn should_solicit_at(&mut self, dnet: u16, now: Instant) -> bool {
-        if self.cancelled || dnet == 0 || dnet == 0xFFFF {
-            return false;
-        }
-        if let Some(last) = self.last_solicited.get(&dnet) {
-            if now.duration_since(*last) < DISCOVERY_COOLDOWN {
-                return false;
-            }
-        } else if self.last_solicited.len() >= DISCOVERY_MAX_PENDING {
-            return false;
-        }
-        self.last_solicited.insert(dnet, now);
-        true
-    }
-
-    /// Wall-clock wrapper for dispatch paths.
-    pub(crate) fn should_solicit(&mut self, dnet: u16) -> bool {
-        self.should_solicit_at(dnet, Instant::now())
-    }
-
-    /// Reap entries older than 30s; returns the reaped DNETs ascending.
-    pub(crate) fn expire_at(&mut self, now: Instant) -> Vec<u16> {
-        let mut out: Vec<u16> = self
-            .last_solicited
-            .iter()
-            .filter(|(_, last)| now.duration_since(**last) > DISCOVERY_MAX_AGE)
-            .map(|(net, _)| *net)
-            .collect();
-        out.sort_unstable();
-        for net in &out {
-            self.last_solicited.remove(net);
-        }
-        out
-    }
-
-    /// Cancel all pending discovery (router stop).
-    pub(crate) fn cancel(&mut self) {
-        self.cancelled = true;
-        self.last_solicited.clear();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.last_solicited.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancelled
-    }
-}
-
-/// Immutable ingress facts carried to the network-message admission point
-/// ([`dispatch::dispatch_network_message`] / `handle_network_message`).
-///
-/// This is a plain record of what arrived, free of trust assertions: ingress port
-/// identity, the immediate link peer (`source_mac`), link-layer group flag,
-/// data-link attributes, and the decoded NPDU envelope (source/destination,
-/// hop count, message type, vendor ID). It asserts no provenance or trust —
-/// a claimed SNET/SADR is carried, never verified here.
-///
-/// RB-07 threads [`TransportProvenance`] here; RB-09 [`control_policy`]
-/// consumes it at the same admission point for protected-control decisions.
-#[derive(Debug, Clone)]
-pub(super) struct IngressContext {
-    /// Dispatch index of the ingress port.
-    pub port_idx: usize,
-    /// BACnet network number assigned to the ingress port.
-    pub port_network: u16,
-    /// Immediate link peer that sent the frame (SA), not the routed origin.
-    pub source_mac: MacAddr,
-    /// Whether the frame arrived via a data-link multicast/broadcast.
-    pub link_layer_group: bool,
-    /// Data-link attributes supplied with the frame, if any.
-    pub data_attributes: Vec<DataAttribute>,
-    /// Honest transport + origin provenance, immutable by value (RB-07).
-    /// Threaded, never decided on here.
-    pub provenance: TransportProvenance,
-    /// Decoded NPDU, including envelope (source/destination, hop count,
-    /// message type, vendor ID) and control payload.
-    pub npdu: Npdu,
-}
-
-#[cfg(test)]
-impl IngressContext {
-    /// In-memory test ingress: link-broadcast delivery with no attributes.
-    pub(super) fn test_local(
-        port_idx: usize,
-        port_network: u16,
-        source_mac: &[u8],
-        npdu: Npdu,
-    ) -> Self {
-        Self {
-            port_idx,
-            port_network,
-            source_mac: MacAddr::from_slice(source_mac),
-            link_layer_group: true,
-            data_attributes: Vec::new(),
-            provenance: TransportProvenance::unverified(),
-            npdu,
-        }
-    }
-
-    /// In-memory test ingress with explicit provenance (RB-07).
-    #[cfg(test)]
-    pub(super) fn test_local_with_provenance(
-        port_idx: usize,
-        port_network: u16,
-        source_mac: &[u8],
-        npdu: Npdu,
-        provenance: TransportProvenance,
-    ) -> Self {
-        Self {
-            port_idx,
-            port_network,
-            source_mac: MacAddr::from_slice(source_mac),
-            link_layer_group: true,
-            data_attributes: Vec::new(),
-            provenance,
-            npdu,
-        }
-    }
-}
-
 /// A router port: a transport bound to a specific BACnet network number.
 ///
 /// [`BACnetRouter::start`] calls
 /// [`TransportPort::prepare_for_routing`] on each port's transport before it
 /// starts it, so an MS/TP port takes and sends extended frames whatever its
-/// `MstpConfig` says: Clause 9.3 requires them of a routing node.
+/// `MstpConfig` says: Clause 9.3 requires them of a routing node. Once the
+/// transport has started, it reads [`TransportPort::max_npdu`], and answers
+/// an NPDU too long for the port with reject reason 4 (#1665). It follows
+/// the limit's changes after that, for a transport that publishes them
+/// ([`TransportPort::max_npdu_changes`], #1696).
 pub struct RouterPort<T: TransportPort> {
     /// The transport for this port.
     pub transport: T,
-    /// The network number assigned to this port.
+    /// The network number assigned to this port: 1 to 65534.
+    /// [`BACnetRouter::start`] refuses 0, which is no network, and 0xFFFF,
+    /// the global broadcast DNET, which can't be the SNET the router puts
+    /// in what it relays from the port (Clause 6.2.2.1).
     pub network_number: u16,
 }
 
@@ -382,38 +147,73 @@ pub struct RouterPort<T: TransportPort> {
 /// another port, the router forwards the message.
 /// See the [receive-queue contract](crate::layer#receive-queue-admission) for
 /// raw/tracked local receivers, admission limits, counters and lifecycle.
+///
+/// Every routing decision is `bacnet-router-core`'s engine (#1679), which
+/// the router keeps behind one lock: each port's dispatch task takes it for
+/// one frame at a time, as the sweep and [`Self::table`] do, and nothing
+/// holds it across an await. The engine's timers run on Tokio time from the
+/// router's start. It follows Clause 6 where the router before #1679 didn't
+/// (R1 to R7 of #1679): egress limits, rejects that keep routes,
+/// network numbers at startup, reachable-only and arrival-port-aware
+/// route answers, the hop count, and the router's own address on any port.
 pub struct BACnetRouter {
-    /// Shared routing table.
-    table: Arc<Mutex<RouterTable>>,
-    /// Bounded unknown-destination discovery (per-DNET coalescing).
-    discovery: Arc<Mutex<DiscoveryTracker>>,
-    /// RB-09 wire-control gate (permissive default, hardened opt-in).
-    control: Arc<control_policy::ControlGate>,
+    /// The engine, the gate and the ports' groups.
+    shared: Arc<Shared>,
     /// Dispatch tasks (one per port).
     dispatch_tasks: Vec<JoinHandle<()>>,
     /// Sender tasks (one per port, owns the transport for outgoing messages).
     sender_tasks: Vec<JoinHandle<()>>,
-    /// Background task that purges stale learned routes.
+    /// Background task that runs the engine's sweep when it is due.
     aging_task: Option<JoinHandle<()>>,
-    /// Periodic and per-port recovery announcement tasks.
-    announcement_tasks: Vec<JoinHandle<()>>,
-    /// NPDUs refused for a link-layer source MAC, DLEN or SLEN past
-    /// `NpduAddress::MAX_MAC_LEN`.
-    address_length_drops: Arc<AtomicU64>,
-    /// NPDUs dropped for a DADR beside DNET 0xFFFF (#1379).
-    global_broadcast_dadr_drops: Arc<AtomicU64>,
-    /// Broadcast NPDUs dropped for an APDU other than an
-    /// Unconfirmed-Request (#1491).
-    broadcast_pdu_type_drops: Arc<AtomicU64>,
-    /// NPDUs dropped for a DADR that is a group on its delivery port (#1504).
-    group_dadr_drops: Arc<AtomicU64>,
-    /// Routed NPDUs refused because the egress port's encoded-NPDU limit
-    /// would be exceeded.
-    oversize_drops: Arc<AtomicU64>,
+    /// Tasks that follow a port's NPDU limit (one per port whose transport
+    /// publishes its changes).
+    limit_tasks: Vec<JoinHandle<()>>,
+    /// The bounded per-port send queues, retained for explicit recovery
+    /// announcements and cleared when the router stops.
+    send_txs: Vec<mpsc::Sender<SendRequest>>,
+    /// Actual bound B/IP endpoint for each port, including an ephemeral port
+    /// selected when the configured UDP port was zero.
+    bip_endpoints: Vec<Option<std::net::SocketAddrV4>>,
     /// Last sequence given to a control for the router's own consumer.
     network_control_ingress_sequence: Arc<AtomicU64>,
-    /// Stable metadata and live health receivers for configured ports.
-    port_health: Vec<PortHealthEntry>,
+}
+
+/// The routing table of a running [`BACnetRouter`], borrowed for local
+/// management (see [`BACnetRouter::table`]).
+///
+/// While it lives, every port's dispatch and the sweep wait for it: read or
+/// change what you need, then drop it. It can't be held across an await in
+/// a spawned task.
+///
+/// The lock behind it isn't reentrant. Don't call [`BACnetRouter::table`]
+/// again while holding one, nor from a [`ControlAuthorizer`], which runs
+/// while that lock is held: the call waits for the lock already held, and
+/// on the same thread that is forever. The router's other `&self` methods
+/// take no lock, so they are safe to call meanwhile: the counts
+/// ([`BACnetRouter::counters`] and the four drop counts),
+/// [`BACnetRouter::now`] and [`BACnetRouter::control_snapshot`].
+pub struct RouterTableGuard<'a> {
+    router: EngineGuard<'a>,
+}
+
+impl Deref for RouterTableGuard<'_> {
+    type Target = crate::router_table::RouterTable;
+
+    fn deref(&self) -> &Self::Target {
+        self.router.table()
+    }
+}
+
+impl DerefMut for RouterTableGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.router.table_mut()
+    }
+}
+
+impl std::fmt::Debug for RouterTableGuard<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.router.table().fmt(f)
+    }
 }
 
 impl BACnetRouter {
@@ -427,8 +227,13 @@ impl BACnetRouter {
     /// the tracked APDU receiver, the wire-control policy and the
     /// network-control receiver, which combine freely.
     ///
-    /// Fails if two ports share a network number or a transport fails to
-    /// start.
+    /// Fails if there are no ports or more than 255 (a routing table's Port
+    /// ID names at most 255), if a port's network number is 0 or 0xFFFF
+    /// ([`RouterPort::network_number`]), or if two ports share one, all
+    /// before any transport starts; and if a transport fails to start, or
+    /// if a transport's own MAC is longer than
+    /// [`NpduAddress::MAX_MAC_LEN`](bacnet_encoding::npdu::NpduAddress::MAX_MAC_LEN)
+    /// octets.
     pub async fn start<T, A, C>(
         ports: Vec<RouterPort<T>>,
         options: RouterOptions<A, C>,
@@ -438,30 +243,6 @@ impl BACnetRouter {
         A: LocalApduReceiver,
         C: NetworkControlReceiver,
     {
-        Self::start_with_config(ports, options, RouterConfig::default()).await
-    }
-
-    /// Create and start a router with optional background announcement behavior.
-    ///
-    /// In addition to the startup announcement, a configured interval
-    /// re-advertises reachable networks on every port. A port that reports a
-    /// transition from any non-operational state to `Up` is re-announced on
-    /// that port immediately, regardless of the periodic setting.
-    pub async fn start_with_config<T, A, C>(
-        ports: Vec<RouterPort<T>>,
-        options: RouterOptions<A, C>,
-        config: RouterConfig,
-    ) -> Result<StartedRouter<A, C>, Error>
-    where
-        T: TransportPort + 'static,
-        A: LocalApduReceiver,
-        C: NetworkControlReceiver,
-    {
-        if config.announce_interval == Some(Duration::ZERO) {
-            return Err(Error::Encoding(
-                "Router announce interval must be greater than zero".to_owned(),
-            ));
-        }
         let (control_tx, network_control) = if options.wants_network_control() {
             let (tx, rx, counters) = AdmissionReceiver::channel(C::TRACKED);
             (Some(tx), Some(C::from_queue(rx, counters)))
@@ -470,7 +251,7 @@ impl BACnetRouter {
         };
         let gate = Arc::new(options.control_gate());
         let (router, rx, counters) =
-            Self::start_dispatch(ports, A::TRACKED, gate, control_tx, config).await?;
+            Self::start_dispatch(ports, A::TRACKED, gate, control_tx).await?;
         Ok(StartedRouter {
             router,
             apdus: A::from_queue(rx, counters),
@@ -480,7 +261,27 @@ impl BACnetRouter {
 
     /// Count-only RB-09 decision totals (allow/deny/policy-deny per class).
     pub fn control_snapshot(&self) -> control_policy::ControlDecisionCounters {
-        self.control.snapshot()
+        self.shared.gate.snapshot()
+    }
+
+    /// The engine's counts since start: the four drop counts below, and
+    /// what else the engine counts, such as the frames it refused as
+    /// malformed, the relays a spent hop count stopped, the rejects it sent,
+    /// the sends too long for their egress port (`egress_too_long`: the
+    /// limit its transport's [`TransportPort::max_npdu`] reports, #1665, or
+    /// a send the transport refused as too long after that limit fell,
+    /// #1696),
+    /// and the rewrites it couldn't write (`write_failures`: longer than its
+    /// 65,556-octet scratch, or with a field no NPDU may carry). They
+    /// saturate and name no peer. The table's own counts are
+    /// [`claim_counters`](crate::router_table::Table::claim_counters).
+    ///
+    /// They are the counts as of the last frame, sweep or table change the
+    /// engine finished, copied out before its lock was let go, so reading
+    /// them takes no lock: it is safe while a [`RouterTableGuard`] lives,
+    /// and so are the four drop counts below, which read them.
+    pub fn counters(&self) -> Counters {
+        self.shared.engine.counters()
     }
 
     /// NPDUs refused on any port since start because an address in them was
@@ -498,7 +299,7 @@ impl BACnetRouter {
     /// NPDU, and the router sends nothing back to such a MAC. No built-in
     /// transport reports one.
     pub fn address_length_drops(&self) -> u64 {
-        self.address_length_drops.load(Ordering::Relaxed)
+        self.counters().address_length_drops
     }
 
     /// NPDUs dropped on any port since start because their DNET was 0xFFFF
@@ -512,7 +313,7 @@ impl BACnetRouter {
     /// bounds, so the drop is counted here and not in
     /// [`Self::address_length_drops`].
     pub fn global_broadcast_dadr_drops(&self) -> u64 {
-        self.global_broadcast_dadr_drops.load(Ordering::Relaxed)
+        self.counters().global_broadcast_dadr_drops
     }
 
     /// NPDUs dropped on any port since start because they were addressed to
@@ -526,7 +327,7 @@ impl BACnetRouter {
     /// and answers it with no reject. The PDU type comes from the first APDU
     /// octet, with no decode; network messages are not affected.
     pub fn broadcast_pdu_type_drops(&self) -> u64 {
-        self.broadcast_pdu_type_drops.load(Ordering::Relaxed)
+        self.counters().broadcast_pdu_type_drops
     }
 
     /// NPDUs dropped on any port since start because the router would have
@@ -541,18 +342,17 @@ impl BACnetRouter {
     /// asked nothing. The port's rule is
     /// [`TransportPort::group_destinations`],
     /// so a custom transport that keeps the default recognizes none. The
-    /// router delivers it nowhere and answers it with no reject; network
-    /// messages are not affected.
+    /// router delivers it nowhere and answers it with no reject. A network
+    /// message routed to such a DADR, or a Reject-Message-To-Network relayed
+    /// to one, is dropped and counted too: it must not reach every router on
+    /// that network as a broadcast. An Unconfirmed-Request for one of the
+    /// groups the port's broadcast stands for
+    /// ([`TransportPort::local_broadcast_destinations`]) isn't counted: it
+    /// goes out on that port as a local broadcast, and reaches this router's
+    /// application where a DLEN 0 broadcast would (#1677). On B/IP, one for a
+    /// group at another UDP port, another B/IP network, is counted.
     pub fn group_dadr_drops(&self) -> u64 {
-        self.group_dadr_drops.load(Ordering::Relaxed)
-    }
-
-    /// Routed NPDUs refused since start because their encoded forwarding form
-    /// exceeded the target port's advertised NPDU limit. Saturates at
-    /// `u64::MAX`; each refusal also sends Reject-Message-To-Network reason 4
-    /// when the originator can be addressed.
-    pub fn oversize_drops(&self) -> u64 {
-        self.oversize_drops.load(Ordering::Relaxed)
+        self.counters().group_dadr_drops
     }
 
     async fn start_dispatch<T: TransportPort + 'static>(
@@ -560,269 +360,234 @@ impl BACnetRouter {
         track_depth: bool,
         control: Arc<control_policy::ControlGate>,
         network_control: Option<AdmissionSender<ReceivedNetworkControl>>,
-        config: RouterConfig,
     ) -> Result<(Self, mpsc::Receiver<ReceivedApdu>, QueueAdmissionCounters), Error> {
-        let mut table = RouterTable::new();
-
-        // Reject duplicate network numbers and duplicate data-link topologies.
+        if ports.is_empty() || ports.len() > PORTS {
+            return Err(Error::Encoding(format!(
+                "A router needs 1 to {PORTS} ports, not {}",
+                ports.len()
+            )));
+        }
+        // Refuse reserved and duplicate network numbers
         {
             let mut seen = std::collections::HashSet::new();
-            let mut topologies = std::collections::HashSet::new();
             for port in &ports {
+                if matches!(port.network_number, 0 | 0xFFFF) {
+                    return Err(Error::Encoding(format!(
+                        "A router port can't be on network {}: ports take 1 to 65534",
+                        port.network_number
+                    )));
+                }
                 if !seen.insert(port.network_number) {
                     return Err(Error::Encoding(format!(
                         "Duplicate network number {} in router ports",
                         port.network_number
                     )));
                 }
-                if let Some(topology_id) = port.transport.topology_id() {
-                    let topology = (port.transport.transport_kind(), topology_id.clone());
-                    if !topologies.insert(topology) {
-                        return Err(Error::Encoding(format!(
-                            "Duplicate {} topology {topology_id:?} in router ports",
-                            port.transport.transport_kind()
-                        )));
-                    }
-                }
             }
         }
 
-        // Register directly-connected networks
-        for (idx, port) in ports.iter().enumerate() {
-            table.add_direct(port.network_number, idx);
-        }
-
-        let table = Arc::new(Mutex::new(table));
-        let discovery = Arc::new(Mutex::new(DiscoveryTracker::default()));
         let (local_tx, local_rx, counters) = AdmissionReceiver::channel(track_depth);
 
-        // Start each transport, set up send channels
+        // Start each transport, and note what the engine and its hooks need.
         let mut port_receivers = Vec::new();
-        let mut send_txs: Vec<mpsc::Sender<SendRequest>> = Vec::new();
-        let mut sender_tasks = Vec::new();
-        let mut port_networks = Vec::new();
-        let mut port_local_macs = Vec::new();
-        let mut port_groups = Vec::new();
-        let mut port_max_npdu_lengths = Vec::new();
+        let mut configs = Vec::new();
+        let mut networks = Vec::new();
+        let mut limit_changes = Vec::new();
+        let mut bip_endpoints = Vec::new();
 
-        for (config_index, port) in ports.iter_mut().enumerate() {
+        for port in &mut ports {
             // A routing node may owe its data link more than other nodes:
             // MS/TP turns on extended frames here (Clause 9.3).
             port.transport.prepare_for_routing();
-            let transport_kind = port.transport.transport_kind().to_owned();
-            let identity = format_transport_identity(&port.transport);
-            let rx = port.transport.start().await.map_err(|error| {
-                contextualize_port_start_error(error, config_index, &transport_kind, &identity)
-            })?;
+            let rx = port.transport.start().await?;
             port_receivers.push(rx);
-            port_networks.push(port.network_number);
-            port_local_macs.push(MacAddr::from_slice(port.transport.local_mac()));
-            port_groups.push(port.transport.group_destinations());
-            port_max_npdu_lengths.push(port.transport.max_npdu_length());
+            bip_endpoints.push(port.transport.bip_port().map(|port| port.endpoint));
+            let mac = Mac::from_slice(port.transport.local_mac()).map_err(|_| {
+                Error::Encoding(format!(
+                    "Router port on network {} has a MAC longer than {} octets",
+                    port.network_number,
+                    bacnet_router_core::MAX_MAC_LEN
+                ))
+            })?;
+            // Read once the transport has started: MS/TP's grows with the
+            // extended frames routing turned on, and BACnet/SC's comes from
+            // its hub connection.
+            configs.push(Engine::port(
+                port.network_number,
+                mac,
+                port.transport.max_npdu(),
+                PortGroups {
+                    groups: port.transport.group_destinations(),
+                    local_broadcasts: port.transport.local_broadcast_destinations(),
+                },
+            ));
+            // Taken after that read; the task that follows it applies the
+            // value it holds first, so a change in between isn't lost.
+            limit_changes.push(port.transport.max_npdu_changes());
+            networks.push(port.network_number);
         }
-        let port_groups = Arc::new(port_groups);
-        let port_max_npdu_lengths = Arc::new(port_max_npdu_lengths);
+        let engine = Engine::new(&configs, RouterClock::start())
+            .map_err(|error| Error::Encoding(error.to_string()))?;
 
-        let mut recovery_health = Vec::with_capacity(ports.len());
-        let mut port_health = Vec::with_capacity(ports.len());
-        for (config_index, port) in ports.iter().enumerate() {
-            let live_health = port.transport.health_changes();
-            let health = live_health.clone().unwrap_or_else(|| {
-                let (_tx, rx) = watch::channel(port.transport.health());
-                rx
-            });
-            recovery_health.push(live_health);
-            port_health.push(PortHealthEntry {
-                config_index,
-                network_number: port.network_number,
-                transport_kind: port.transport.transport_kind().to_owned(),
-                identity: format_transport_identity(&port.transport),
-                health,
-            });
-        }
+        let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
+        let shared = Arc::new(Shared {
+            engine,
+            gate: control,
+            networks,
+            warnings: Default::default(),
+        });
 
         // Move transports into sender tasks
+        let mut send_txs = Vec::new();
+        let mut sender_tasks = Vec::new();
         for port in ports {
-            let (send_tx, mut send_rx) = mpsc::channel::<SendRequest>(256);
+            let (send_tx, send_rx) = mpsc::channel::<SendRequest>(256);
             send_txs.push(send_tx);
-
-            let transport = port.transport;
-            let task = tokio::spawn(async move {
-                while let Some(req) = send_rx.recv().await {
-                    match req {
-                        SendRequest::Unicast {
-                            npdu,
-                            mac,
-                            data_attributes,
-                        } => {
-                            if let Err(e) = transport
-                                .send_unicast_with_data_attributes(&npdu, &mac, &data_attributes)
-                                .await
-                            {
-                                warn!(error = %e, "Router send_unicast failed");
-                            }
-                        }
-                        SendRequest::Broadcast {
-                            npdu,
-                            data_attributes,
-                        } => {
-                            if let Err(e) = transport
-                                .send_broadcast_with_data_attributes(&npdu, &data_attributes)
-                                .await
-                            {
-                                warn!(error = %e, "Router send_broadcast failed");
-                            }
-                        }
-                    }
-                }
-            });
-            sender_tasks.push(task);
+            sender_tasks.push(tokio::spawn(sender::run(
+                port.transport,
+                send_rx,
+                Arc::clone(&shared),
+            )));
         }
 
-        let send_txs = Arc::new(send_txs);
+        // Follow the limits of the ports whose transports publish them.
+        let limit_tasks = limit_changes
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, changes)| {
+                // At most 255 ports, checked above.
+                let port = PortId(index as u8);
+                let task = limits::follow(Arc::clone(&shared), port, changes?);
+                Some(tokio::spawn(task))
+            })
+            .collect();
 
-        // Announce once at startup, optionally on a timer, and whenever a
-        // live-health port recovers to Up.
-        let announcements = announcements::encode_for_ports(&port_networks)?;
-        announcements::announce_all(&send_txs, &announcements, "startup");
-        let mut announcement_tasks =
-            announcements::spawn_recovery(recovery_health, &send_txs, &announcements);
-        if let Some(task) = announcements::spawn_periodic(
-            config.announce_interval,
-            send_txs.as_ref().clone(),
-            announcements,
-        ) {
-            announcement_tasks.push(task);
-        }
+        // Startup: each port hears its own network number, in a
+        // Network-Number-Is (R3, Clause 6.4.20), then, in an I-Am-Router,
+        // which networks lie beyond the other ports.
+        shared.announce(&send_txs);
 
-        let mut dispatch_tasks = Vec::new();
-        let address_length_drops = Arc::new(AtomicU64::new(0));
-        let global_broadcast_dadr_drops = Arc::new(AtomicU64::new(0));
-        let broadcast_pdu_type_drops = Arc::new(AtomicU64::new(0));
-        let group_dadr_drops = Arc::new(AtomicU64::new(0));
-        let oversize_drops = Arc::new(AtomicU64::new(0));
-        let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
-        let local_control = Arc::new(LocalControl::new(
-            OwnAddresses::new(
-                port_networks
-                    .iter()
-                    .zip(&port_local_macs)
-                    .map(|(&network, mac)| NpduAddress {
-                        network,
-                        mac_address: mac.clone(),
-                    })
-                    .collect(),
+        let outputs = Arc::new(Outputs {
+            send_txs: send_txs.clone(),
+            local_tx,
+            local_control: local_control::LocalControl::new(
+                network_control,
+                Arc::clone(&network_control_ingress_sequence),
             ),
-            network_control,
-            Arc::clone(&network_control_ingress_sequence),
-        ));
+        });
+        let dispatch_tasks = port_receivers
+            .into_iter()
+            .enumerate()
+            .map(|(index, rx)| {
+                let port = PortDispatch {
+                    shared: Arc::clone(&shared),
+                    outputs: Arc::clone(&outputs),
+                    // At most 255 ports, checked above.
+                    port: index as u8,
+                };
+                tokio::spawn(port.run(rx))
+            })
+            .collect();
 
-        for (port_idx, rx) in port_receivers.into_iter().enumerate() {
-            let port = PortDispatch {
-                table: Arc::clone(&table),
-                discovery: Arc::clone(&discovery),
-                control: Arc::clone(&control),
-                local_control: Arc::clone(&local_control),
-                address_length_drops: Arc::clone(&address_length_drops),
-                global_broadcast_dadr_drops: Arc::clone(&global_broadcast_dadr_drops),
-                broadcast_pdu_type_drops: Arc::clone(&broadcast_pdu_type_drops),
-                group_dadr_drops: Arc::clone(&group_dadr_drops),
-                oversize_drops: Arc::clone(&oversize_drops),
-                port_max_npdu_lengths: Arc::clone(&port_max_npdu_lengths),
-                port_groups: Arc::clone(&port_groups),
-                local_tx: local_tx.clone(),
-                send_txs: Arc::clone(&send_txs),
-                port_idx,
-                port_network: port_networks[port_idx],
-                local_mac: port_local_macs[port_idx].clone(),
-            };
-            dispatch_tasks.push(tokio::spawn(port.run(rx)));
-        }
-
-        // Periodically purge stale learned routes, hardened pending slots and
+        // Run the engine's sweep at each of its deadlines: it purges stale
+        // learned routes, lapsed busy marks, hardened pending slots and
         // discovery entries. `last_used` never extends `last_seen` expiry.
-        let aging_table = Arc::clone(&table);
-        let aging_discovery = Arc::clone(&discovery);
+        //
+        // The task sleeps until the deadline it last read, and nothing
+        // wakes it early. That holds because only the sweep itself
+        // (`on_deadline`) moves the engine's `next_deadline`; if the core
+        // ever lets another call move it, that call's site must wake this
+        // task (a `Notify`, say), or the sweep runs late.
+        let aging = Arc::clone(&shared);
         let aging_task = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
-            let max_age = Duration::from_secs(300); // 5 minutes
+            let clock = aging.engine.clock();
+            let mut next = aging.engine.lock().next_deadline();
             loop {
-                interval.tick().await;
-                let now = Instant::now();
-                let mut tbl = aging_table.lock().await;
-                let purged = tbl.purge_stale_at(now, max_age);
-                tbl.clear_expired_busy();
-                let expired_pending = tbl.expire_pending_at(now);
-                drop(tbl);
-                let mut disc = aging_discovery.lock().await;
-                let expired_discovery = disc.expire_at(now);
-                drop(disc);
-                for net in purged {
-                    debug!(network = net, "Purged stale route");
+                match next {
+                    Some(deadline) => tokio::time::sleep_until(clock.instant(deadline)).await,
+                    None => std::future::pending().await,
                 }
-                for net in expired_pending {
-                    debug!(network = net, "Expired hardened pending challenger");
-                }
-                for net in expired_discovery {
-                    debug!(network = net, "Expired discovery solicitation");
-                }
+                next = aging.sweep();
             }
         });
 
         Ok((
             Self {
-                table,
-                discovery,
-                control,
+                shared,
                 dispatch_tasks,
                 sender_tasks,
                 aging_task: Some(aging_task),
-                announcement_tasks,
-                address_length_drops,
-                global_broadcast_dadr_drops,
-                broadcast_pdu_type_drops,
-                group_dadr_drops,
-                oversize_drops,
+                limit_tasks,
+                send_txs,
+                bip_endpoints,
                 network_control_ingress_sequence,
-                port_health,
             },
             local_rx,
             counters,
         ))
     }
 
-    /// Get a reference to the routing table.
-    pub fn table(&self) -> &Arc<Mutex<RouterTable>> {
-        &self.table
+    /// The routing table, locked for local management: read routes, or
+    /// change them with no wire-control policy in the way.
+    ///
+    /// Every port's dispatch waits while the guard lives, so drop it soon,
+    /// and never hold it across an await. Times in it are the router's own
+    /// ([`Self::now`]).
+    ///
+    /// Don't call it again while a guard lives on the same thread, or from
+    /// a [`ControlAuthorizer`]: the lock isn't reentrant, so that call
+    /// never returns. The counts, [`Self::now`] and
+    /// [`Self::control_snapshot`] take no lock and are safe to call while
+    /// the guard lives.
+    pub fn table(&self) -> RouterTableGuard<'_> {
+        RouterTableGuard {
+            router: self.shared.engine.lock(),
+        }
     }
 
-    /// Return one current health snapshot per port, in configuration order.
-    pub fn port_health(&self) -> Vec<RouterPortHealth> {
-        self.port_health
-            .iter()
-            .map(PortHealthEntry::snapshot)
-            .collect()
+    /// The router's time now: the clock its table and timers run on, Tokio
+    /// time since the router started.
+    pub fn now(&self) -> Instant {
+        self.shared.engine.now()
     }
 
-    /// Return a detached routing-table snapshot sorted by network number.
-    pub async fn routing_table(&self) -> Vec<RouteSnapshot> {
-        self.table.lock().await.snapshots()
+    /// Reannounce this router's directly connected networks on one recovered
+    /// port, using the same bounded output queue and wire messages as startup.
+    ///
+    /// `port` is the zero-based position passed to [`Self::start`]. This
+    /// returns an error after [`Self::stop`] or when the index is out of range.
+    /// Queue refusal is accounted by the router engine like a startup
+    /// announcement refusal.
+    pub fn reannounce_port(&self, port: usize) -> Result<(), Error> {
+        if port >= self.send_txs.len() {
+            return Err(Error::Encoding(format!(
+                "Router port index {port} is unavailable"
+            )));
+        }
+        // A running router has at most 255 ports, checked at start.
+        self.shared
+            .announce_port(PortId(port as u8), &self.send_txs);
+        Ok(())
+    }
+
+    /// Return the actual bound IPv4 endpoint for a B/IP router port.
+    ///
+    /// The index is the zero-based position passed to [`Self::start`]. A
+    /// non-B/IP or out-of-range port returns `None`.
+    pub fn bip_endpoint(&self, port: usize) -> Option<std::net::SocketAddrV4> {
+        self.bip_endpoints.get(port).copied().flatten()
     }
 
     /// Stop the router.
     ///
-    /// Aborts and awaits dispatch, sender and aging tasks without waiting for
-    /// the local application consumer, even with a full queue. Queued local
-    /// APDUs remain drainable, retaining their reply senders until consumed or
-    /// the receiver is dropped. Stop is not an admission drop and does not clear
-    /// depth/high-water/drop totals. See the
+    /// Aborts and awaits dispatch, sender, aging and limit tasks without
+    /// waiting for the local application consumer, even with a full queue.
+    /// Queued local APDUs remain drainable, retaining their reply senders
+    /// until consumed or the receiver is dropped. Stop is not an admission
+    /// drop and does not clear depth/high-water/drop totals. See the
     /// [receive-queue contract](crate::layer#receive-queue-admission).
     pub async fn stop(&mut self) {
         for task in self.dispatch_tasks.drain(..) {
-            task.abort();
-            let _ = task.await;
-        }
-        for task in self.announcement_tasks.drain(..) {
             task.abort();
             let _ = task.await;
         }
@@ -830,22 +595,60 @@ impl BACnetRouter {
             task.abort();
             let _ = task.await;
         }
+        self.send_txs.clear();
         if let Some(task) = self.aging_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        for task in self.limit_tasks.drain(..) {
             task.abort();
             let _ = task.await;
         }
         // Cancel pending unknown-destination discovery so no further
         // solicitation is emitted and coalesced waiters observe shutdown.
-        self.discovery.lock().await.cancel();
+        self.shared.engine.lock().cancel_discovery();
+    }
+
+    /// How many unknown networks the router is looking for.
+    #[cfg(test)]
+    fn searches(&self) -> (usize, bool) {
+        let router = self.shared.engine.lock();
+        (router.discovery().len(), router.discovery().is_cancelled())
+    }
+}
+
+impl Drop for BACnetRouter {
+    fn drop(&mut self) {
+        for task in &self.dispatch_tasks {
+            task.abort();
+        }
+        for task in &self.sender_tasks {
+            task.abort();
+        }
+        if let Some(task) = &self.aging_task {
+            task.abort();
+        }
+        for task in &self.limit_tasks {
+            task.abort();
+        }
+        self.send_txs.clear();
     }
 }
 
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
+mod bip_group_tests;
+#[cfg(test)]
 mod busy_scope_tests;
 #[cfg(test)]
 mod claim_tests;
+#[cfg(test)]
+mod corroboration_tests;
+#[cfg(test)]
+mod cutover_tests;
+#[cfg(test)]
+mod driven_port;
 #[cfg(test)]
 mod envelope_control_tests;
 #[cfg(test)]
@@ -853,14 +656,22 @@ mod envelope_discovery_tests;
 #[cfg(test)]
 mod envelope_harness;
 #[cfg(test)]
+mod fixes_tests;
+#[cfg(test)]
 mod ingress_harness;
 #[cfg(test)]
 mod init_routing_table_tests;
+#[cfg(test)]
+mod limit_tests;
 #[cfg(test)]
 mod mstp_extended_tests;
 #[cfg(test)]
 mod rb06_convergence_tests;
 #[cfg(test)]
 mod rb09_control_policy_tests;
+#[cfg(test)]
+mod reannounce_tests;
+#[cfg(test)]
+mod reject_tests;
 #[cfg(test)]
 mod tests;

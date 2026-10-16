@@ -17,7 +17,7 @@ async fn sc_client_builder_sends_configured_vmac_and_device_uuid() {
         expected.extend_from_slice(&client_vmac);
         expected.extend_from_slice(&device_uuid);
         expected.extend_from_slice(&5705u16.to_be_bytes());
-        expected.extend_from_slice(&1497u16.to_be_bytes());
+        expected.extend_from_slice(&1478u16.to_be_bytes());
         assert_eq!(data, expected);
 
         let req = decode_sc_message(&data).unwrap();
@@ -129,7 +129,6 @@ async fn sc_client_builder_rejects_invalid_reconnect_before_tls_lookup() {
                     initial_delay_ms,
                     max_delay_ms,
                     max_retries,
-                    retry_forever: false,
                 })
                 .build()
                 .await
@@ -152,13 +151,11 @@ async fn sc_client_builder_valid_reconnect_preserves_missing_tls_error() {
             initial_delay_ms: 1,
             max_delay_ms: 1,
             max_retries: 0,
-            retry_forever: false,
         }),
         Some(ScReconnectConfig {
             initial_delay_ms: 1,
             max_delay_ms: 2,
             max_retries: u32::MAX,
-            retry_forever: false,
         }),
     ] {
         let mut builder = BACnetClient::sc_builder()
@@ -209,7 +206,6 @@ async fn sc_client_test_builder_reconnect_preflight_drops_input_without_io() {
                 initial_delay_ms,
                 max_delay_ms,
                 max_retries: 0,
-                retry_forever: false,
             })
             .build_with_websocket_for_test(RejectIoWebSocket {
                 calls: calls.clone(),

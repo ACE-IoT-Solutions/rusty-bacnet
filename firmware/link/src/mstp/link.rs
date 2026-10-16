@@ -3,7 +3,7 @@
 
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
 use bacnet_mstp_core::{
-    Action, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority, QueueRejectReason,
+    Action, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal,
     ReplyDecision, RequestId, TransmitId,
 };
 
@@ -25,10 +25,11 @@ const STATION: u8 = 1;
 const PEER: u8 = 2;
 
 /// Station 1 of masters 0-2, at the standard 9600 baud.
-const CONFIG: MstpCoreConfig = MstpCoreConfig {
-    station: STATION,
-    max_master: 2,
-    ..MstpCoreConfig::standard()
+const CONFIG: MstpCoreConfig = {
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 2;
+    config
 };
 
 /// The peer's ReadProperty of Device 1's Object_Name; the NPDU control
@@ -54,8 +55,8 @@ struct Clock {
 impl Clock {
     /// Let `octets` octet times pass.
     fn pass(&mut self, octets: usize) {
-        let octets = u64::try_from(octets).unwrap_or(u64::MAX);
-        self.now += Duration::from_micros(self.octet.as_micros().saturating_mul(octets));
+        let octets = u32::try_from(octets).unwrap_or(u32::MAX);
+        self.now += self.octet.saturating_mul(octets);
     }
 }
 
@@ -89,25 +90,30 @@ pub(crate) fn run(storage: Storage<'_>, wire: &mut [u8], oversize: &[u8], summar
     receive(
         core,
         wire,
-        Frame::new(FrameType::Token, STATION, PEER, &[]),
+        Frame::new(FrameType::TOKEN, STATION, PEER, &[]),
         &mut clock,
         summary,
     );
     wait(core, &mut clock, summary);
     wait(core, &mut clock, summary);
     // The peer answers the poll, so the token goes to it.
-    let reply = Frame::new(FrameType::ReplyToPollForMaster, STATION, PEER, &[]);
+    let reply = Frame::new(FrameType::REPLY_TO_POLL_FOR_MASTER, STATION, PEER, &[]);
     receive(core, wire, reply, &mut clock, summary);
     wait(core, &mut clock, summary);
     // The peer uses the token: a broadcast shows it was taken up, then it
     // announces itself with a broadcast Test_Response, then a request that
     // this station answers at once.
-    let broadcast = Frame::new(FrameType::BACnetDataNotExpectingReply, 0xFF, PEER, &WHO_IS);
+    let broadcast = Frame::new(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        0xFF,
+        PEER,
+        &WHO_IS,
+    );
     receive(core, wire, broadcast, &mut clock, summary);
-    let announce = Frame::new(FrameType::TestResponse, 0xFF, PEER, &[]);
+    let announce = Frame::new(FrameType::TEST_RESPONSE, 0xFF, PEER, &[]);
     receive(core, wire, announce, &mut clock, summary);
     let request = Frame::new(
-        FrameType::BACnetDataExpectingReply,
+        FrameType::BACNET_DATA_EXPECTING_REPLY,
         STATION,
         PEER,
         &READ_PROPERTY,
@@ -125,20 +131,21 @@ fn fill_queues(core: &mut Core<'_>, oversize: &[u8], now: Instant, summary: &mut
     for _ in 0..=UNICAST_SLOTS {
         match core.enqueue_npdu(PEER, &WHO_IS, NetworkPriority::Normal, now) {
             Ok(()) => summary.queued_before_full += 1,
-            Err(QueueRejectReason::Full) => break,
+            Err(QueueRefusal::Full) => break,
             Err(_) => summary.error(),
         }
     }
     if core.enqueue_npdu(PEER, oversize, NetworkPriority::Normal, now)
-        != Err(QueueRejectReason::Oversize)
+        != Err(QueueRefusal::Oversize)
     {
         summary.error();
     }
 }
 
-/// Copy the core counters the summary keeps.
-fn record_counters(core: &Core<'_>, summary: &mut Summary) {
-    let counters = core.counters();
+/// Take the core's counters, as firmware drains them, and copy the ones
+/// the summary keeps: the scenario takes them once, so they are its totals.
+fn record_counters(core: &mut Core<'_>, summary: &mut Summary) {
+    let counters = core.take_counters();
     summary.frames_received = counters.frames_received;
     summary.frames_transmitted = counters.frames_transmitted;
     summary.token_rotations = counters.token_rotations;

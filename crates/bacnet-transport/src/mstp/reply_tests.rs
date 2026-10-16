@@ -16,7 +16,7 @@ const REQUEST: &[u8] = &[1, 0x04, 0x10];
 
 /// Station 7 asks station 3 for a reply.
 async fn requested(bus: &mut Bus) -> (Instant, tokio::sync::oneshot::Sender<Bytes>) {
-    let at = bus.send(FrameType::BACnetDataExpectingReply, 3, 7, REQUEST);
+    let at = bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 7, REQUEST);
     let npdu = bus.npdus.recv().await.unwrap();
     assert_eq!(npdu.npdu.as_ref(), REQUEST);
     assert!(!npdu.link_layer_group);
@@ -42,10 +42,10 @@ async fn a_ready_answer_or_a_dropped_channel_goes_out_after_turnaround() {
         let sent = bus.next().await;
         assert_eq!(sent.destination, 7);
         if ready {
-            assert_eq!(sent.frame_type, FrameType::BACnetDataNotExpectingReply);
+            assert_eq!(sent.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
             assert_eq!(sent.data, [1, 0, 0x30]);
         } else {
-            assert_eq!(sent.frame_type, FrameType::ReplyPostponed);
+            assert_eq!(sent.frame_type, FrameType::REPLY_POSTPONED);
         }
         assert!(sent.start >= at + bus.turnaround);
         assert!(sent.start <= at + bus.turnaround + TICK);
@@ -62,7 +62,7 @@ async fn a_later_answer_is_not_held_for_another_turnaround() {
     let ready = Instant::now();
     reply.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
     let sent = bus.next().await;
-    assert_eq!(sent.frame_type, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(sent.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
     assert!(sent.start <= ready + TICK);
     bus.until(sent.end + TICK).await;
     let counts = bus.transport.diagnostics().snapshot();
@@ -80,7 +80,7 @@ async fn no_answer_gets_reply_postponed_before_the_reply_delay() {
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
     assert!(sent.start >= at + DECISION);
     assert!(sent.start <= at + DECISION + TICK);
@@ -98,11 +98,11 @@ async fn a_second_request_does_not_extend_the_first_ones_deadline() {
     let mut bus = Bus::start(config(3, 127)).await;
     let (at, _reply) = requested(&mut bus).await;
     bus.until(at + Duration::from_millis(100)).await;
-    bus.send(FrameType::BACnetDataExpectingReply, 3, 8, &[1, 4, 0x20]);
+    bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 8, &[1, 4, 0x20]);
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
     assert!(sent.start <= at + DECISION + TICK);
     assert!(bus.npdus.try_recv().is_err(), "the second request went up");
@@ -118,10 +118,15 @@ async fn later_traffic_moves_the_answers_turnaround() {
     let mut bus = Bus::start(config(3, 127)).await;
     let (at, reply) = requested(&mut bus).await;
     bus.until(at + Duration::from_millis(40)).await;
-    let heard = bus.send(FrameType::BACnetDataNotExpectingReply, 9, 8, &[1, 0, 0x20]);
+    let heard = bus.send(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        9,
+        8,
+        &[1, 0, 0x20],
+    );
     reply.send(Bytes::from_static(&[1, 0, 0x30])).unwrap();
     let sent = bus.next().await;
-    assert_eq!(sent.frame_type, FrameType::BACnetDataNotExpectingReply);
+    assert_eq!(sent.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
     assert!(sent.start >= heard + bus.turnaround);
     assert!(sent.start <= heard + bus.turnaround + TICK);
     bus.stop().await;
@@ -139,7 +144,7 @@ async fn an_oversized_answer_is_postponed_and_counted() {
     let sent = bus.next().await;
     assert_eq!(
         (sent.frame_type, sent.destination),
-        (FrameType::ReplyPostponed, 7)
+        (FrameType::REPLY_POSTPONED, 7)
     );
     let counts = bus.transport.diagnostics().snapshot();
     assert_eq!(counts.outbound_oversize, 1);
@@ -158,7 +163,7 @@ async fn an_answer_around_the_deadline_is_never_lost() {
         let mut bus = Bus::start(config(3, 4)).await;
         let token = bus.join(4).await;
         bus.until(token.end + bus.turnaround).await;
-        let at = bus.send(FrameType::BACnetDataExpectingReply, 3, 4, REQUEST);
+        let at = bus.send(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 4, REQUEST);
         let reply = bus.npdus.recv().await.unwrap().reply_tx.unwrap();
         let when = if offset < 0 {
             at + DECISION - TICK
@@ -172,15 +177,15 @@ async fn an_answer_around_the_deadline_is_never_lost() {
         let first = bus.next().await;
         assert_eq!(first.destination, 4);
         let direct = match first.frame_type {
-            FrameType::BACnetDataNotExpectingReply => {
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY => {
                 assert_eq!(first.data, [1, 0, 0x31]);
                 true
             }
-            FrameType::ReplyPostponed => {
+            FrameType::REPLY_POSTPONED => {
                 bus.until(first.end + bus.turnaround).await;
-                bus.send(FrameType::Token, 3, 4, &[]);
+                bus.send(FrameType::TOKEN, 3, 4, &[]);
                 let late = bus.next().await;
-                assert_eq!(late.frame_type, FrameType::BACnetDataNotExpectingReply);
+                assert_eq!(late.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
                 assert_eq!(late.data, [1, 0, 0x31]);
                 bus.until(late.end + TICK).await;
                 false
@@ -205,82 +210,66 @@ async fn an_answer_around_the_deadline_is_never_lost() {
     }
 }
 
-/// A port whose read is always ready (here it returns nothing, as a closed
-/// pseudo-terminal does) cannot hold back the core's deadlines: reads win
-/// the task's select, but a deadline already due is serviced after each
-/// one, so Reply Postponed still goes out.
+/// A port whose read is always ready (a line that never falls quiet) cannot
+/// hold back the core's deadlines: reads win the task's select, but a
+/// deadline already due is serviced after each one. Here noise follows the
+/// request without a pause, so no answer can get the quiet T_turnaround it
+/// needs; the core still decides on Reply Postponed at its deadline, and
+/// gives the request up, counted, once the requester may have stopped
+/// waiting. Were the deadline starved, the core would hold the request for
+/// as long as the noise lasts.
 ///
 /// The test runs in real time: a paused clock advances only when every task
-/// is idle, and the always-ready read keeps the station's task busy, so a
-/// paused clock would never reach the deadline. The bound is loose (the
-/// decision deadline is 225 ms after the request, the bound 1 s) because
-/// the bug it guards against starves the deadline for ever, and a loose
-/// bound keeps a busy machine from failing it.
+/// is idle, and the always-ready read keeps the station's task busy. Each
+/// read spends Tokio's cooperative budget, as a real port's read does, so
+/// the task still yields now and then and can be stopped. The bound is loose
+/// (the request is given up about 253 ms after it arrived, the bound 2 s)
+/// because the bug it guards against starves the deadline for ever, and a
+/// loose bound keeps a busy machine from failing it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_always_readable_port_still_meets_the_reply_deadline() {
+async fn an_always_readable_port_cannot_hold_back_a_deadline() {
     use super::{MstpTransport, SerialPort};
     use crate::port::TransportPort;
 
     struct Babbling {
         request: std::sync::Mutex<Option<Vec<u8>>>,
-        /// When the read handed the request over.
-        injected: std::sync::Mutex<Option<Instant>>,
-        writes: tokio::sync::mpsc::UnboundedSender<(Instant, Vec<u8>)>,
     }
 
     impl SerialPort for Babbling {
-        async fn write(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
-            let _ = self.writes.send((Instant::now(), data.to_vec()));
+        async fn write(&self, _data: &[u8]) -> Result<(), bacnet_types::error::Error> {
             Ok(())
         }
 
         async fn read(&self, buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
-            let request = self.request.lock().unwrap().take();
-            Ok(request.map_or(0, |octets| {
-                *self.injected.lock().unwrap() = Some(Instant::now());
-                buf[..octets.len()].copy_from_slice(&octets);
-                octets.len()
-            }))
+            tokio::task::consume_budget().await;
+            // After the request, noise: octets that start no frame.
+            let octets = self
+                .request
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| vec![0x00; 4]);
+            buf[..octets.len()].copy_from_slice(&octets);
+            Ok(octets.len())
         }
     }
 
-    let (writes, mut written) = tokio::sync::mpsc::unbounded_channel();
-    let request = super::test_support::encode(FrameType::BACnetDataExpectingReply, 3, 7, REQUEST);
-    let injected = std::sync::Arc::new(Babbling {
+    let request =
+        super::test_support::encode(FrameType::BACNET_DATA_EXPECTING_REPLY, 3, 7, REQUEST);
+    let babbling = Babbling {
         request: std::sync::Mutex::new(Some(request)),
-        injected: std::sync::Mutex::new(None),
-        writes,
-    });
-    let mut transport = MstpTransport::new(Shared(injected.clone()), config(3, 127));
+    };
+    let mut transport = MstpTransport::new(babbling, config(3, 127));
+    let diagnostics = transport.diagnostics();
     let mut npdus = transport.start().await.unwrap();
     let _reply = npdus.recv().await.unwrap().reply_tx.unwrap();
-    let (at, octets) = tokio::time::timeout(Duration::from_secs(2), written.recv())
-        .await
-        .expect("a due deadline was starved by reads")
-        .unwrap();
-    assert_eq!(octets[2], FrameType::ReplyPostponed.to_raw());
-    let injected = injected
-        .injected
-        .lock()
-        .unwrap()
-        .expect("the request was read");
-    assert!(
-        at < injected + Duration::from_secs(1),
-        "{:?}",
-        at - injected
-    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while diagnostics.snapshot().mac.expired_requests == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a due deadline was starved by reads");
+    assert_eq!(diagnostics.snapshot().serial_read_errors, 0);
     transport.stop().await.unwrap();
-}
-
-/// A serial port shared with the test, which reads what it recorded.
-struct Shared<S>(std::sync::Arc<S>);
-
-impl<S: super::SerialPort> super::SerialPort for Shared<S> {
-    async fn write(&self, data: &[u8]) -> Result<(), bacnet_types::error::Error> {
-        self.0.write(data).await
-    }
-
-    async fn read(&self, buf: &mut [u8]) -> Result<usize, bacnet_types::error::Error> {
-        self.0.read(buf).await
-    }
 }

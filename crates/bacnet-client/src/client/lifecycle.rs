@@ -11,6 +11,24 @@ const DEVICE_MAX_AGE: Duration = Duration::from_secs(600);
 #[cfg(test)]
 const DEVICE_MAX_AGE: Duration = Duration::ZERO;
 
+impl ClientConfig {
+    pub(super) fn validate_request_settings(&self) -> Result<(), Error> {
+        validate_max_apdu_length(self.max_apdu_length)?;
+        validate_max_segments(self.max_segments)?;
+        pacing::validate_interval_ms(self.min_request_interval_ms)
+    }
+
+    pub(super) fn validate_window(&self) -> Result<(), Error> {
+        if !(1..=127).contains(&self.proposed_window_size) {
+            return Err(Error::Encoding(format!(
+                "invalid proposed-window-size {}; expected 1..=127",
+                self.proposed_window_size
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl<T: TransportPort> BACnetClient<T> {
     fn abort_owned_tasks(&self) {
         for task in [&self.dispatch_task, &self.network_number_task]
@@ -42,24 +60,14 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         transport: T,
         options: ClientOptions,
     ) -> Result<Self, Error> {
-        validate_max_apdu_length(config.max_apdu_length)?;
-        validate_max_segments(config.max_segments)?;
-        pacing::validate_interval_ms(config.min_request_interval_ms)?;
+        config.validate_request_settings()?;
         config.max_apdu_length =
             cap_max_apdu_to_transport(config.max_apdu_length, transport.egress_apdu_limit())?;
-        if !(1..=127).contains(&config.proposed_window_size) {
-            return Err(Error::Encoding(format!(
-                "invalid proposed-window-size {}; expected 1..=127",
-                config.proposed_window_size
-            )));
-        }
+        config.validate_window()?;
         options.validate()?;
 
         let mut network = NetworkLayer::new(transport);
         let mut network_control_rx = network.enable_network_control_receiver()?;
-        let (network_control_tx, _) =
-            broadcast::channel::<bacnet_network::layer::ReceivedNetworkControl>(256);
-        let network_control_tx_dispatch = network_control_tx.clone();
         let mut apdu_rx = network.start().await?;
         config.max_apdu_length = cap_max_apdu_to_transport(
             config.max_apdu_length,
@@ -82,13 +90,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let tsm = Arc::new(Mutex::new(new_coordinated_tsm(&config, coordinator)));
         let tsm_dispatch = Arc::clone(&tsm);
         let device_table = Arc::new(Mutex::new(DeviceTable::new()));
-        let router_snapshot = Arc::new(Mutex::new(Vec::new()));
-        let router_discovery_lock = Arc::new(Mutex::new(()));
         let device_table_dispatch = Arc::clone(&device_table);
         let network_dispatch = Arc::clone(&network);
-        let (cov_tx, startup_cov_rx) =
+        let (cov_tx, _) =
             broadcast::channel::<ReceivedCOVNotification>(options.cov_channel_capacity);
-        let initial_cov_rx = options.reserve_initial_observers.then_some(startup_cov_rx);
         let cov_tx_dispatch = cov_tx.clone();
         let (event_tx, _) =
             broadcast::channel::<ReceivedEventNotification>(options.event_channel_capacity);
@@ -99,11 +104,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let (device_collision_tx, _) =
             broadcast::channel::<DeviceCollisionEvent>(DEVICE_EVENT_CHANNEL_CAPACITY);
         let device_collision_tx_dispatch = device_collision_tx.clone();
-        // Reserve one receiver before dispatch starts so aggregate runtimes can
-        // observe I-Am packets received immediately after construction.
-        let (iam_tx, startup_iam_rx) = broadcast::channel::<IAmEvent>(IAM_EVENT_CHANNEL_CAPACITY);
-        let initial_iam_rx = options.reserve_initial_observers.then_some(startup_iam_rx);
-        let iam_tx_dispatch = iam_tx.clone();
         let seg_ack_senders: Arc<Mutex<HashMap<SegAckKey, SegmentAckRoute>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let seg_ack_senders_dispatch = Arc::clone(&seg_ack_senders);
@@ -133,7 +133,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     control = network_control_rx.recv(), if network_control_open => {
                         match control {
                             Some(control) => {
-                                let _ = network_control_tx_dispatch.send(control.clone());
                                 if let Some((tx, parsed)) = number_tx
                                     .as_ref()
                                     .zip(bacnet_network::network_number::NumberControl::parse(&control))
@@ -236,7 +235,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         confirmed_cov_ack_policy: &confirmed_cov_ack_policy,
                                         device_tx: &device_tx_dispatch,
                                         device_collision_tx: &device_collision_tx_dispatch,
-                                        iam_tx: &iam_tx_dispatch,
                                         seg_ack_senders: &seg_ack_senders_dispatch,
                                     },
                                     &mut seg_state,
@@ -271,16 +269,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             network,
             tsm,
             device_table,
-            network_control_tx,
-            router_snapshot,
-            router_discovery_lock,
             cov_tx,
-            initial_cov_rx,
             event_tx,
             device_tx,
             device_collision_tx,
-            iam_tx,
-            initial_iam_rx,
             dispatch_task: Some(dispatch_task),
             network_number_task,
             seg_ack_senders,

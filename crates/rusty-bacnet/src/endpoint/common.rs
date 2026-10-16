@@ -93,7 +93,7 @@ pub(crate) fn parse_segmentation(segmentation: Option<PySegmentation>) -> Segmen
 
 /// Build the single validated DeviceIdentity (builder-time only).
 ///
-/// All Encoding failures (instance range, APDU table, duplicate ports) map
+/// All Encoding failures (instance range, receive ceiling, duplicate ports) map
 /// to ValueError before any bind/dial. No post-start mutation exists.
 pub(crate) fn build_identity(
     device_instance: u32,

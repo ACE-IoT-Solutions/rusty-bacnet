@@ -497,7 +497,7 @@ async fn a_registered_ports_configured_number_is_local_from_startup() {
     endpoint.session = endpoint
         .session
         .with_database(db)
-        .with_identity(identity)
+        .device(identity)
         .with_registered_network_port(port);
     // No Number control arrives: the port's number is published at startup.
     endpoint.start(false).await;

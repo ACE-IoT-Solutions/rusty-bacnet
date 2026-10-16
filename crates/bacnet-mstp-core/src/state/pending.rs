@@ -124,19 +124,31 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         origin: Origin,
         now: Instant,
     ) -> Result<(), CoreError> {
-        debug_assert!(
-            self.pending_send.is_none() && self.active_transmit.is_none(),
-            "a second frame of this station's"
-        );
         self.actions.encode_frame(Frame::new(
             frame_type,
             destination,
             self.config.station,
             data,
         ))?;
+        self.send_encoded(post, origin, now)
+    }
+
+    /// Send the frame just encoded into the action buffers' frame buffer, as
+    /// [`Self::queue_frame`] does. A queued NPDU is encoded where the queue
+    /// lends it, so its frame comes here directly.
+    pub(super) fn send_encoded(
+        &mut self,
+        post: PostTransmit,
+        origin: Origin,
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        debug_assert!(
+            self.pending_send.is_none() && self.active_transmit.is_none(),
+            "a second frame of this station's"
+        );
         let limit = match origin {
             Origin::Answer(window) => window.give_up,
-            Origin::Holder | Origin::NextPoll | Origin::NoToken => now + self.config.t_no_token,
+            Origin::Holder | Origin::NextPoll | Origin::NoToken => now + T_NO_TOKEN,
             Origin::PassToken => now + self.config.t_usage_timeout,
         };
         self.pending_send = Some(PendingSend {
@@ -175,7 +187,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             return Ok(());
         };
         let evidence = matches!(pending.origin, Origin::PassToken | Origin::NoToken)
-            && self.event_count > u32::from(self.config.n_min_octets);
+            && self.event_count > u32::from(N_MIN_OCTETS);
         if now >= pending.limit || evidence {
             return self.drop_pending(now);
         }
@@ -201,7 +213,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             return Ok(false);
         };
         let header = frame.header;
-        let late_poll_reply = header.frame_type == FrameType::ReplyToPollForMaster
+        let late_poll_reply = header.frame_type == FrameType::REPLY_TO_POLL_FOR_MASTER
             && header.destination == self.config.station;
         match pending.origin {
             Origin::Answer(_) => self.frame_while_busy(frame, true),

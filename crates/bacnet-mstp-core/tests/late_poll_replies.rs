@@ -1,8 +1,6 @@
 //! A Reply To Poll For Master that arrives after the poller has moved on
 //! (Clause 9.5.6.8), while the poller's next frame has not started yet.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
 use bacnet_mstp_codec::FrameType;
@@ -25,14 +23,14 @@ fn a_late_answer_to_a_poll_still_finds_the_successor() {
         let mut core = new_core(&mut rx, &mut actions);
         poll_waiting(&mut core);
         let (_, header) = send_next(&mut core);
-        assert!(is(header, FrameType::PollForMaster, PEER));
+        assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
         let timeout = core.next_deadline().unwrap();
         let late = if handed {
             core.on_deadline(timeout).unwrap();
             timeout + us(500)
         } else {
             // A damaged answer first: the next poll waits out its tail.
-            let mut bad = encode(FrameType::ReplyToPollForMaster, STATION, 5, &[]);
+            let mut bad = encode(FrameType::REPLY_TO_POLL_FOR_MASTER, STATION, 5, &[]);
             bad[7] ^= 0x01;
             let last = feed(&mut core, &bad, timeout - Duration::from_millis(10));
             assert_eq!(core.next_deadline(), Some(last + turnaround(&core)));
@@ -40,14 +38,14 @@ fn a_late_answer_to_a_poll_still_finds_the_successor() {
         };
         let poll = if handed {
             let (poll, header) = handed_over(&mut core);
-            assert!(is(header, FrameType::PollForMaster, 3));
+            assert!(is(header, FrameType::POLL_FOR_MASTER, 3));
             Some(poll)
         } else {
             None
         };
         validated(
             &mut core,
-            FrameType::ReplyToPollForMaster,
+            FrameType::REPLY_TO_POLL_FOR_MASTER,
             STATION,
             PEER,
             &[],
@@ -67,7 +65,7 @@ fn a_late_answer_to_a_poll_still_finds_the_successor() {
         assert_eq!(core.next_deadline(), Some(due));
         core.on_deadline(due).unwrap();
         let (_, header) = handed_over(&mut core);
-        assert!(is(header, FrameType::Token, PEER));
+        assert!(is(header, FrameType::TOKEN, PEER));
     }
 }
 
@@ -84,11 +82,11 @@ fn a_late_answer_is_dropped_while_the_token_goes_to_the_successor() {
     let timeout = core.next_deadline().unwrap();
     core.on_deadline(timeout).unwrap();
     let (token, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::Token, 3));
+    assert!(is(header, FrameType::TOKEN, 3));
     let late = timeout + us(500);
     validated(
         &mut core,
-        FrameType::ReplyToPollForMaster,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
         STATION,
         PEER,
         &[],
@@ -105,6 +103,6 @@ fn a_late_answer_is_dropped_while_the_token_goes_to_the_successor() {
     let due = late + turnaround(&core);
     core.on_deadline(due).unwrap();
     let (again, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::Token, 3));
+    assert!(is(header, FrameType::TOKEN, 3));
     core.on_transmit_started(again, due).unwrap();
 }

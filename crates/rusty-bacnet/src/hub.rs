@@ -112,8 +112,6 @@ struct HubConfig {
     probe_policy: ScHubProbePolicy,
     broadcast_rate: ScHubBroadcastRatePolicy,
     relay_send_budget: Duration,
-    max_npdu_length: u16,
-    max_bvlc_length: u16,
     certificate_bindings: Option<bacnet_transport::sc_hub::ScHubCertificateBindings>,
 }
 
@@ -130,8 +128,6 @@ impl HubConfig {
                 .with_probe_policy(self.probe_policy)
                 .with_broadcast_rate_policy(self.broadcast_rate)
                 .with_relay_send_budget(self.relay_send_budget)
-                .map_err(to_py_err)?
-                .with_receive_limits(self.max_npdu_length, self.max_bvlc_length)
                 .map_err(to_py_err)?;
         if let Some(bindings) = &self.certificate_bindings {
             server_tls = server_tls.with_certificate_bindings(bindings.clone());
@@ -235,13 +231,8 @@ impl PyScHub {
     ///         Covers NPDU/opaque unicast, each concurrent broadcast recipient
     ///         and forwarded BVLC-Result; probe/control/cleanup/shutdown stay separate.
     ///         Timeout does not retire, retry, or send a fabricated Result.
-    ///     max_npdu_length: Router-capable receive and advertised NPDU limit
-    ///         (default 1497, valid 1497..=61327).
-    ///     max_bvlc_length: Receive and advertised BVLC limit (default 5705).
-    ///         It must cover the NPDU, 4192 octets of routed Data Options, and
-    ///         the 16-octet BVLC header.
     #[new]
-    #[pyo3(signature = (listen, cert, key, vmac, ca_cert=None, *, device_uuid=None, max_clients=256, max_handshakes=256, admission_policy="allow_all", graceful_disconnect_ack_ms=5000, graceful_ws_close_ms=5000, graceful_overall_ms=15000, handshake_tls_ms=10000, handshake_websocket_upgrade_ms=10000, handshake_connect_request_ms=10000, probe_scan_interval_ms=30000, probe_idle_age_ms=60000, probe_ack_age_ms=5000, probe_send_budget_ms=5000, broadcast_sender_burst=1024, broadcast_sender_per_second=128, broadcast_global_burst=4096, broadcast_global_per_second=512, relay_send_budget_ms=5000, max_npdu_length=1497, max_bvlc_length=5705, certificate_bindings=None))]
+    #[pyo3(signature = (listen, cert, key, vmac, ca_cert=None, *, device_uuid=None, max_clients=256, max_handshakes=256, admission_policy="allow_all", graceful_disconnect_ack_ms=5000, graceful_ws_close_ms=5000, graceful_overall_ms=15000, handshake_tls_ms=10000, handshake_websocket_upgrade_ms=10000, handshake_connect_request_ms=10000, probe_scan_interval_ms=30000, probe_idle_age_ms=60000, probe_ack_age_ms=5000, probe_send_budget_ms=5000, broadcast_sender_burst=1024, broadcast_sender_per_second=128, broadcast_global_burst=4096, broadcast_global_per_second=512, relay_send_budget_ms=5000, certificate_bindings=None))]
     fn new(
         listen: &str,
         cert: &str,
@@ -267,8 +258,6 @@ impl PyScHub {
         broadcast_global_burst: u64,
         broadcast_global_per_second: u64,
         relay_send_budget_ms: u64,
-        max_npdu_length: u16,
-        max_bvlc_length: u16,
         certificate_bindings: Option<
             Vec<PyRef<'_, crate::hub_bindings::PyScHubCertificateBinding>>,
         >,
@@ -327,11 +316,6 @@ impl PyScHub {
         let relay_send_budget = Duration::from_millis(relay_send_budget_ms);
         bacnet_transport::sc_hub::ScHubTlsConfig::validate_relay_send_budget(relay_send_budget)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        bacnet_transport::sc_hub::ScHubTlsConfig::validate_receive_limits(
-            max_npdu_length,
-            max_bvlc_length,
-        )
-        .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let broadcast_rate = ScHubBroadcastRatePolicy::new(
             broadcast_sender_burst,
             broadcast_sender_per_second,
@@ -356,8 +340,6 @@ impl PyScHub {
                 probe_policy,
                 broadcast_rate,
                 relay_send_budget,
-                max_npdu_length,
-                max_bvlc_length,
                 certificate_bindings,
             },
             address: Arc::new(Mutex::new(None)),

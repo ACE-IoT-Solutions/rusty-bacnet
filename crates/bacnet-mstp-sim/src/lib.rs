@@ -21,7 +21,7 @@
 //! sim.run_until(Instant::from_micros(1_000_000));
 //! // Station 0's generation slot comes first, 500 ms into the silence.
 //! let first = &sim.frames()[0];
-//! assert!(first.is(FrameType::PollForMaster, 0, 1));
+//! assert!(first.is(FrameType::POLL_FOR_MASTER, 0, 1));
 //! assert_eq!(first.start, Instant::from_micros(500_000));
 //! sim.assert_no_violations();
 //! ```
@@ -29,8 +29,9 @@
 //! # The model
 //!
 //! **Time and events.** Virtual time is the core's own
-//! [`Instant`](bacnet_mstp_core::Instant)
-//! (microseconds). One queue orders every event by time, then by a fixed
+//! [`Instant`](bacnet_mstp_core::Instant), which counts nanoseconds; the
+//! simulator's own times (octet boundaries, adapter jitter) are whole
+//! microseconds of it. One queue orders every event by time, then by a fixed
 //! class (characters arriving, transmissions ending, scheduled events, core
 //! deadlines, adapters starting frames, later octets of a frame), then by
 //! station address, then by scheduling order. Nothing reads a wall clock or

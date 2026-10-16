@@ -4,7 +4,9 @@
 use clap::{Parser, Subcommand};
 
 use bacnet_benchmarks::stress::harness::current_rss_kb;
+use bacnet_benchmarks::stress::mstp::Reply;
 use bacnet_benchmarks::stress::output::{print_results, LatencyStats, StressMetrics, StressResult};
+use bacnet_benchmarks::stress::router::Path;
 
 #[derive(Parser)]
 #[command(name = "stress-test", about = "BACnet stress & limits testing suite")]
@@ -56,7 +58,7 @@ enum Command {
     Segmentation {
         #[arg(long, default_value = "bip")]
         transport: String,
-        #[arg(long, value_delimiter = ',', default_value = "10,25,50,100")]
+        #[arg(long, value_delimiter = ',', default_value = "10,50,100,250")]
         steps: Vec<u64>,
     },
     /// Mixed realistic workload
@@ -68,11 +70,28 @@ enum Command {
         #[arg(long, default_value = "30")]
         duration: u64,
     },
-    /// Router forwarding overhead
+    /// Router forwarding overhead: the `direct` baseline, or through a
+    /// BACnetRouter to a `bip` or `mstp` network
     Router {
+        #[arg(long, default_value = "bip")]
+        path: String,
+        /// MS/TP baud rate for `--path mstp`
+        #[arg(long, default_value = "115200")]
+        baud: u32,
         #[arg(long, default_value = "10")]
         duration: u64,
         #[arg(long, value_delimiter = ',', default_value = "1,5,10,25,50")]
+        steps: Vec<u64>,
+    },
+    /// MS/TP confirmed-request rate against the wire limit, per baud rate
+    Mstp {
+        /// `small`, `standard` (near 480 octets) or `extended` (near 1,476
+        /// octets, over extended frames)
+        #[arg(long, default_value = "small")]
+        reply: String,
+        #[arg(long, default_value = "10")]
+        duration: u64,
+        #[arg(long, value_delimiter = ',', default_value = "9600,38400,76800,115200")]
         steps: Vec<u64>,
     },
     /// BBMD foreign device stress
@@ -177,13 +196,46 @@ fn main() {
                 });
                 ("mixed_workload".into(), transport, params, curve)
             }
-            Command::Router { duration, steps } => {
-                let curve = bacnet_benchmarks::stress::router::run(duration, &steps).await;
-                let params = serde_json::json!({
+            Command::Router {
+                path,
+                baud,
+                duration,
+                steps,
+            } => {
+                let Some(route) = Path::parse(&path) else {
+                    eprintln!("Error: --path must be direct, bip or mstp");
+                    std::process::exit(2);
+                };
+                let curve =
+                    bacnet_benchmarks::stress::router::run(route, baud, duration, &steps).await;
+                let mut params = serde_json::json!({
+                    "path": path,
                     "duration_secs": duration,
                     "steps": steps,
                 });
+                if route == Path::Mstp {
+                    params["baud"] = baud.into();
+                }
                 ("router_forwarding".into(), "bip".into(), params, curve)
+            }
+            Command::Mstp {
+                reply,
+                duration,
+                steps,
+            } => {
+                let Some(size) = Reply::parse(&reply) else {
+                    eprintln!("Error: --reply must be small, standard or extended");
+                    std::process::exit(2);
+                };
+                let (curve, wire) =
+                    bacnet_benchmarks::stress::mstp::run(size, duration, &steps).await;
+                let params = serde_json::json!({
+                    "reply": reply,
+                    "duration_secs": duration,
+                    "baud_rates": steps,
+                    "wire": wire,
+                });
+                ("mstp_wire".into(), "mstp".into(), params, curve)
             }
             Command::Bbmd { duration, steps } => {
                 let curve = bacnet_benchmarks::stress::bbmd::run(duration, &steps).await;
