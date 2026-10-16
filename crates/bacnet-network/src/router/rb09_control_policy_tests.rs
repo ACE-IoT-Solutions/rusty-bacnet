@@ -358,10 +358,13 @@ async fn init_query_answered_in_hardened_full_queue_bounded() {
     );
     for _ in 0..16 {
         h.txs[0]
-            .try_send(SendRequest::Broadcast {
-                npdu: bytes::Bytes::new(),
-                data_attributes: Vec::new(),
-            })
+            .try_send(
+                0,
+                SendRequest::Broadcast {
+                    npdu: bytes::Bytes::new(),
+                    data_attributes: Vec::new(),
+                },
+            )
             .unwrap();
     }
     // Allowed update still applies; ACK drops bounded on a full queue.
@@ -388,10 +391,13 @@ async fn init_query_answered_in_hardened_full_queue_bounded() {
     );
     for _ in 0..16 {
         denied.txs[0]
-            .try_send(SendRequest::Broadcast {
-                npdu: bytes::Bytes::new(),
-                data_attributes: Vec::new(),
-            })
+            .try_send(
+                0,
+                SendRequest::Broadcast {
+                    npdu: bytes::Bytes::new(),
+                    data_attributes: Vec::new(),
+                },
+            )
             .unwrap();
     }
     denied

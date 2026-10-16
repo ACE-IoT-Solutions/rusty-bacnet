@@ -13,11 +13,11 @@ use bacnet_router_core::router::{Action, Cause, Dest, Kind, SendRefusal};
 use bacnet_transport::port::DataAttribute;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tracing::warn;
 
 use super::engine::HostedRouter;
+use super::send_queue;
 use super::SendRequest;
 
 /// Send what `router` asks for on the port queues `send_txs`, by port
@@ -26,7 +26,7 @@ use super::SendRequest;
 pub(super) fn drain(
     router: &mut HostedRouter,
     attributes: &[DataAttribute],
-    send_txs: &[mpsc::Sender<SendRequest>],
+    send_txs: &[send_queue::Sender],
 ) {
     // A fan-out polls the same NPDU once per port: share its buffer.
     let mut last: Option<Bytes> = None;
@@ -56,7 +56,7 @@ pub(super) fn drain(
         };
         let (port, kind) = (usize::from(send.port.0), send.kind);
         let result = match send_txs.get(port) {
-            Some(tx) => tx.try_send(request),
+            Some(tx) => tx.try_send(send.priority, request),
             None => Err(TrySendError::Closed(request)),
         };
         if let Err(error) = result {

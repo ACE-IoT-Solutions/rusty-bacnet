@@ -14,16 +14,16 @@ use std::sync::Arc;
 
 use bacnet_router_core::router::SendRefusal;
 use bacnet_transport::port::TransportPort;
-use tokio::sync::mpsc;
 
 use super::dispatch::Shared;
+use super::send_queue;
 use super::send_warning::SendWarnings;
 use super::SendRequest;
 
 /// Carry out every send on `queue` on `transport`, until the queue closes.
 pub(super) async fn run<T: TransportPort>(
     transport: T,
-    mut queue: mpsc::Receiver<SendRequest>,
+    mut queue: send_queue::Receiver,
     shared: Arc<Shared>,
 ) {
     let warnings = SendWarnings::default();

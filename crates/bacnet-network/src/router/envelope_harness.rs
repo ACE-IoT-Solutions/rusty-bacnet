@@ -25,6 +25,7 @@ use super::dispatch::{Outputs, PortDispatch, Shared};
 use super::engine::{Engine, RouterClock};
 use super::local_control::LocalControl;
 use super::port_groups::PortGroups;
+use super::send_queue;
 use super::{RouterTableGuard, SendRequest};
 use crate::layer::{AdmissionReceiver, ReceivedApdu, ReceivedNetworkControl};
 use crate::router_table::{ClaimCounters, Convergence, Mac, PortId};
@@ -76,8 +77,8 @@ pub(super) struct Harness {
     networks: Vec<u16>,
     shared: Arc<Shared>,
     ports: Vec<PortDispatch>,
-    pub(super) txs: Vec<mpsc::Sender<SendRequest>>,
-    pub(super) rxs: Vec<mpsc::Receiver<SendRequest>>,
+    pub(super) txs: Vec<send_queue::Sender>,
+    pub(super) rxs: Vec<send_queue::Receiver>,
     pub(super) gate: Arc<ControlGate>,
     /// The router's local APDU queue.
     pub(super) apdus: AdmissionReceiver<ReceivedApdu>,
@@ -217,7 +218,7 @@ impl Harness {
             networks: networks.to_vec(),
             warnings: Default::default(),
         });
-        let (txs, rxs) = capacities.iter().map(|&n| mpsc::channel(n)).unzip();
+        let (txs, rxs) = capacities.iter().map(|&n| send_queue::channel(n)).unzip();
         let (local_tx, apdus, counters) = AdmissionReceiver::channel(true);
         let mut harness = Self {
             networks: networks.to_vec(),

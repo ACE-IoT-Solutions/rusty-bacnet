@@ -356,10 +356,13 @@ async fn full_queue_drops_acks_without_mutation_or_panic() {
     let mut h = Harness::two_port();
     for _ in 0..16 {
         h.txs[0]
-            .try_send(SendRequest::Broadcast {
-                npdu: Bytes::new(),
-                data_attributes: Vec::new(),
-            })
+            .try_send(
+                0,
+                SendRequest::Broadcast {
+                    npdu: Bytes::new(),
+                    data_attributes: Vec::new(),
+                },
+            )
             .unwrap();
     }
     h.handle(h.ctx(
@@ -382,10 +385,13 @@ async fn full_queue_drops_acks_without_mutation_or_panic() {
     let mut h = Harness::two_port();
     for _ in 0..16 {
         h.txs[0]
-            .try_send(SendRequest::Broadcast {
-                npdu: Bytes::new(),
-                data_attributes: Vec::new(),
-            })
+            .try_send(
+                0,
+                SendRequest::Broadcast {
+                    npdu: Bytes::new(),
+                    data_attributes: Vec::new(),
+                },
+            )
             .unwrap();
     }
     h.handle(h.ctx(
@@ -413,10 +419,13 @@ async fn a_full_queue_ends_a_chunked_answer_at_its_first_refused_ack() {
     let mut h = Harness::with_table(table);
     for _ in 0..15 {
         h.txs[0]
-            .try_send(SendRequest::Broadcast {
-                npdu: Bytes::new(),
-                data_attributes: Vec::new(),
-            })
+            .try_send(
+                0,
+                SendRequest::Broadcast {
+                    npdu: Bytes::new(),
+                    data_attributes: Vec::new(),
+                },
+            )
             .unwrap();
     }
     h.handle(h.ctx(
@@ -432,6 +441,26 @@ async fn a_full_queue_ends_a_chunked_answer_at_its_first_refused_ack() {
         124
     );
     assert_eq!(h.counters().refused, 1);
+}
+
+#[tokio::test]
+async fn a_closed_queue_ends_a_chunked_answer_at_its_first_refused_ack() {
+    let mut table = TableSeed::new();
+    for net in 10..266u16 {
+        table.add_learned(net, 1, MacAddr::from_slice(&[5]));
+    }
+    let mut h = Harness::with_table(table);
+    // The dispatch tasks still own senders for both ports. Closing the
+    // answer's egress must synchronously refuse its first chunk only.
+    h.rxs.remove(0);
+    h.handle(h.ctx(
+        0,
+        &[7],
+        control_npdu(NetworkMessageType::INITIALIZE_ROUTING_TABLE, &[0]),
+    ))
+    .await;
+    assert_eq!(h.counters().refused, 1);
+    assert!(h.rxs[0].try_recv().is_err(), "no send on the other port");
 }
 
 #[tokio::test]
