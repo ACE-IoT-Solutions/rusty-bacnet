@@ -171,6 +171,9 @@ pub struct BACnetRouter {
     /// The bounded per-port send queues, retained for explicit recovery
     /// announcements and cleared when the router stops.
     send_txs: Vec<mpsc::Sender<SendRequest>>,
+    /// Actual bound B/IP endpoint for each port, including an ephemeral port
+    /// selected when the configured UDP port was zero.
+    bip_endpoints: Vec<Option<std::net::SocketAddrV4>>,
     /// Last sequence given to a control for the router's own consumer.
     network_control_ingress_sequence: Arc<AtomicU64>,
 }
@@ -390,6 +393,7 @@ impl BACnetRouter {
         let mut configs = Vec::new();
         let mut networks = Vec::new();
         let mut limit_changes = Vec::new();
+        let mut bip_endpoints = Vec::new();
 
         for port in &mut ports {
             // A routing node may owe its data link more than other nodes:
@@ -397,6 +401,7 @@ impl BACnetRouter {
             port.transport.prepare_for_routing();
             let rx = port.transport.start().await?;
             port_receivers.push(rx);
+            bip_endpoints.push(port.transport.bip_port().map(|port| port.endpoint));
             let mac = Mac::from_slice(port.transport.local_mac()).map_err(|_| {
                 Error::Encoding(format!(
                     "Router port on network {} has a MAC longer than {} octets",
@@ -514,6 +519,7 @@ impl BACnetRouter {
                 aging_task: Some(aging_task),
                 limit_tasks,
                 send_txs,
+                bip_endpoints,
                 network_control_ingress_sequence,
             },
             local_rx,
@@ -564,6 +570,14 @@ impl BACnetRouter {
         Ok(())
     }
 
+    /// Return the actual bound IPv4 endpoint for a B/IP router port.
+    ///
+    /// The index is the zero-based position passed to [`Self::start`]. A
+    /// non-B/IP or out-of-range port returns `None`.
+    pub fn bip_endpoint(&self, port: usize) -> Option<std::net::SocketAddrV4> {
+        self.bip_endpoints.get(port).copied().flatten()
+    }
+
     /// Stop the router.
     ///
     /// Aborts and awaits dispatch, sender, aging and limit tasks without
@@ -600,6 +614,24 @@ impl BACnetRouter {
     fn searches(&self) -> (usize, bool) {
         let router = self.shared.engine.lock();
         (router.discovery().len(), router.discovery().is_cancelled())
+    }
+}
+
+impl Drop for BACnetRouter {
+    fn drop(&mut self) {
+        for task in &self.dispatch_tasks {
+            task.abort();
+        }
+        for task in &self.sender_tasks {
+            task.abort();
+        }
+        if let Some(task) = &self.aging_task {
+            task.abort();
+        }
+        for task in &self.limit_tasks {
+            task.abort();
+        }
+        self.send_txs.clear();
     }
 }
 

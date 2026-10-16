@@ -2135,6 +2135,50 @@ await client.who_am_i(260, "Controller-X", "SN-0001")
 
 ---
 
+## BACnetRouter
+
+`BACnetRouter` composes two or more typed B/IP or BACnet/SC ports over the
+native 0.13 routing engine. Construction validates configuration without I/O;
+`start()` binds/dials every port and `stop()` joins the router tasks. Both
+awaitables return `None`, and a stopped router can be started again.
+
+```python
+from rusty_bacnet import BACnetRouter, RouterBipPort
+
+router = BACnetRouter.from_ports([
+    RouterBipPort(100, interface="192.0.2.10", port=47808),
+    RouterBipPort(200, interface="198.51.100.10", port=47808),
+])
+await router.start()
+print(await router.local_address())
+print(await router.port_health())
+print(await router.routing_table())
+await router.stop()
+```
+
+`announce_interval_s`, when set, must be at least one second. Startup already
+announces every port. The interval repeats those announcements; an SC recovery
+also reannounces only that port through the native router's bounded send queue.
+
+`RouterScPort` requires a `wss://` primary hub, non-reserved six-byte VMAC,
+nonzero 16-byte durable device UUID, and explicit mutual-TLS credential paths.
+The current upstream transport fixes local receive capacity at 1497-octet NPDU
+and 5705-octet BVLC values. Other values and `failover_hub` are rejected: this
+binding does not claim cold-start TLS failover until upstream can preserve the
+active-hub identity across that path. For compatibility with the earlier
+Python router, `reconnect_max_retries=0` is rejected unless
+`reconnect_forever=True`; the latter maps to the upstream finite retry counter's
+maximum value.
+
+`port_health()` deliberately exposes only state upstream owns. A bound B/IP
+port is `Up`; SC maps its connection state to `Down`, `Connecting`, or `Up`.
+Legacy detail, active-hub, error, attempt, and elapsed fields remain empty for
+compatibility and are not retry telemetry. `routing_table()` returns detached,
+sorted route snapshots, so it never lends the live router lock to Python. After
+`stop()`, both methods return their last pre-stop snapshot; in particular, an
+`Up` health value is historical and does not assert that a stopped link remains
+available.
+
 ## BACnetServer
 
 The full server constructs its owned

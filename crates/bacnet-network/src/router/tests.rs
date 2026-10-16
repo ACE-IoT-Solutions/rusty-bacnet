@@ -60,6 +60,10 @@ async fn router_forwards_between_networks() {
         .await
         .unwrap();
 
+    assert_ne!(router.bip_endpoint(0).unwrap().port(), 0);
+    assert_ne!(router.bip_endpoint(1).unwrap().port(), 0);
+    assert_eq!(router.bip_endpoint(2), None);
+
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let apdu = vec![0x10, 0x08];
@@ -87,6 +91,40 @@ async fn router_forwards_between_networks() {
     drop(table);
 
     router.stop().await;
+}
+
+#[tokio::test]
+async fn dropping_router_aborts_all_owned_port_tasks() {
+    use super::driven_port::Driven;
+    use tokio::time::timeout;
+
+    let (first, first_handle) = Driven::new(1, 1497);
+    let (second, second_handle) = Driven::new(2, 1497);
+    let ports = vec![
+        RouterPort {
+            transport: first,
+            network_number: 100,
+        },
+        RouterPort {
+            transport: second,
+            network_number: 200,
+        },
+    ];
+    let StartedRouter { router, .. } = BACnetRouter::start(ports, RouterOptions::new())
+        .await
+        .unwrap();
+    let mut handles = [first_handle, second_handle];
+
+    drop(router);
+
+    for handle in &mut handles {
+        timeout(Duration::from_secs(1), async {
+            while handle.sent.recv().await.is_some() {}
+        })
+        .await
+        .expect("the router-owned sender task did not stop on drop");
+        assert!(handle.frames.is_closed());
+    }
 }
 
 #[tokio::test]

@@ -227,6 +227,15 @@ where
     }
 }
 
+/// Validate a BACnet/SC hub URI without opening a connection.
+///
+/// The URI must use the `wss` scheme and include a nonempty host. This applies
+/// the same parsing and policy as [`TlsWebSocket::connect`], so callers can
+/// reject configuration before loading credentials or performing network I/O.
+pub fn validate_wss_uri(url: &str) -> Result<(), Error> {
+    parse_wss_uri(url).map(|_| ())
+}
+
 fn parse_wss_uri(url: &str) -> Result<tokio_tungstenite::tungstenite::http::Uri, Error> {
     let uri: tokio_tungstenite::tungstenite::http::Uri = url.parse().map_err(|e| {
         ScConnectError::WebSocket {
@@ -497,6 +506,7 @@ mod tests {
     #[test]
     fn parse_wss_uri_accepts_secure_websocket_scheme() {
         assert!(parse_wss_uri("wss://hub.example.com:443").is_ok());
+        assert!(validate_wss_uri("wss://hub.example.com:443").is_ok());
     }
 
     #[test]
