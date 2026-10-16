@@ -2,6 +2,7 @@
 
 mod checks;
 mod faults;
+mod host;
 mod master;
 mod medium;
 
@@ -88,9 +89,11 @@ pub(crate) enum Event {
     AdapterStart {
         node: usize,
         id: TransmitId,
+        incarnation: u64,
     },
     Decide {
         node: usize,
+        incarnation: u64,
         request: RequestId,
         requester: u8,
         postpone: bool,
@@ -149,6 +152,7 @@ enum Next {
     Dynamic(Key),
     Timeline(Key),
     Deadline(Key, usize),
+    Host(Key, usize),
 }
 
 /// A deterministic, virtual-time MS/TP bus with real [`MasterCore`]s on it.
@@ -174,6 +178,8 @@ pub struct Sim {
     /// Draws adapter timer jitter, apart from [`Self::rng`] so a scenario's
     /// own draws don't shift it.
     jitter: SimRng,
+    /// Independent seeded stream for chunk boundaries.
+    chunks: SimRng,
     /// A fault or collision has happened; see [`Self::perturbed`].
     perturbed: bool,
     noise_bursts: u64,
@@ -204,6 +210,7 @@ impl Sim {
             report: Report::default(),
             rng: SimRng::new(config.seed),
             jitter: SimRng::new(config.seed ^ JITTER_STREAM),
+            chunks: SimRng::new(config.seed ^ 0xBB67_AE85_84CA_A73B),
             perturbed: false,
             noise_bursts: 0,
             armed: Vec::new(),
@@ -288,7 +295,10 @@ impl Sim {
     pub fn run_until(&mut self, end: Instant) {
         while let Some(next) = self.next() {
             let key = match next {
-                Next::Dynamic(key) | Next::Timeline(key) | Next::Deadline(key, _) => key,
+                Next::Dynamic(key)
+                | Next::Timeline(key)
+                | Next::Deadline(key, _)
+                | Next::Host(key, _) => key,
             };
             if key.at > end {
                 break;
@@ -304,6 +314,7 @@ impl Sim {
                     self.dispatch(event);
                 }
                 Next::Deadline(_, node) => self.service_deadline(node),
+                Next::Host(_, node) => self.host_service(node),
             }
             self.check_holders();
         }
@@ -499,7 +510,10 @@ impl Sim {
         let mut best = self.dynamic.peek_key().map(Next::Dynamic);
         let mut consider = |candidate: Next| {
             let key = |next: &Next| match next {
-                Next::Dynamic(key) | Next::Timeline(key) | Next::Deadline(key, _) => *key,
+                Next::Dynamic(key)
+                | Next::Timeline(key)
+                | Next::Deadline(key, _)
+                | Next::Host(key, _) => *key,
             };
             if best
                 .as_ref()
@@ -515,6 +529,20 @@ impl Sim {
             let NodeKind::Master(master) = &node.kind else {
                 continue;
             };
+            if let Some(at) = master.host.as_ref().and_then(host::HostState::next) {
+                consider(Next::Host(
+                    Key {
+                        at: at.max(self.now),
+                        class: Class::HostRead,
+                        tie: u16::from(node.station),
+                        seq: 0,
+                    },
+                    index,
+                ));
+            }
+            if master.transmitting.is_some() {
+                continue;
+            }
             if let Some(fire_at) = master.fire_at {
                 let key = Key {
                     at: fire_at,
@@ -548,14 +576,33 @@ impl Sim {
             Event::WindowEnd => self.window_end(),
             Event::OctetStart { tx, index } => self.octet_start(tx, index),
             Event::TxEnd { tx } => self.tx_end(tx),
-            Event::AdapterStart { node, id } => self.adapter_start(node, id),
+            Event::AdapterStart {
+                node,
+                id,
+                incarnation,
+            } => {
+                if self
+                    .master_mut(node)
+                    .is_some_and(|master| master.incarnation == incarnation)
+                {
+                    self.adapter_start(node, id);
+                }
+            }
             Event::Decide {
                 node,
+                incarnation,
                 request,
                 requester,
                 postpone,
                 payload,
-            } => self.decide(node, request, requester, postpone, payload),
+            } => {
+                if self
+                    .master_mut(node)
+                    .is_some_and(|master| master.incarnation == incarnation)
+                {
+                    self.decide(node, request, requester, postpone, payload);
+                }
+            }
             Event::ScriptSend { node, send } => self.script_send(node, send),
             Event::Enqueue {
                 node,
@@ -582,10 +629,20 @@ impl Sim {
     }
 
     fn violation(&mut self, kind: ViolationKind, detail: String) {
+        self.violation_with_host(kind, detail, None);
+    }
+
+    fn violation_with_host(
+        &mut self,
+        kind: ViolationKind,
+        detail: String,
+        host_timing: Option<crate::HostTimingFailure>,
+    ) {
         let violation = Violation {
             at: self.now,
             kind,
             detail,
+            host_timing,
         };
         self.note(Who::Sim, TraceKind::Violation(violation.to_string()));
         self.report.violations.push(violation);

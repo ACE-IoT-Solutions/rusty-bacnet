@@ -66,8 +66,15 @@ impl Sim {
             }
             Fault::Disarm => self.armed.clear(),
             Fault::SetAdapter { station, adapter } => {
+                if let Some(host) = adapter.host {
+                    host.validate();
+                }
                 let node = self.index_of(station);
                 if let NodeKind::Master(master) = &mut self.nodes[node].kind {
+                    assert!(
+                        master.core.is_none() || adapter.host.is_some() == master.host.is_some(),
+                        "change host/octet mode while the node is powered off"
+                    );
                     master.spec.adapter = adapter;
                     self.arm_deadline(node);
                 }

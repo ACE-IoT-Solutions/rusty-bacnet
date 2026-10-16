@@ -780,6 +780,13 @@ whose soft limit on open files was 1024. On the hosted runner they run as
   included, take a few seconds of wall time and read no clock. To widen the
   randomized runs locally, run
   `MSTP_SIM_SEEDS=400 cargo nextest run -p bacnet-mstp-sim -E 'binary(property)'`.
+  Host and mixed-node runs use buffered, timestamped reads, seeded chunk
+  boundaries, serial-drain completion and optional content-matched echo.
+  Paired paused-time fixtures also drive the public `MstpTransport` boundary.
+  Physical wire checks remain active: randomized fault runs retain and assert
+  diagnosed failures when a host starts before injected activity becomes
+  readable; clean and settled operation must pass the strict checks. These
+  simulations do not qualify physical serial hardware or USB timing.
 - The BACnet/SC hub capacity test needs about 2,100 descriptors and raises its
   own soft limit to that, which needs no privilege below the hard limit. The
   step above logs both limits.

@@ -430,6 +430,9 @@ version = "0.13.0"
 dependencies = [
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
+ "bacnet-transport",
+ "bacnet-types",
+ "tokio",
 ]
 
 [[package]]

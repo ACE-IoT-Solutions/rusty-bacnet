@@ -32,8 +32,8 @@
 //! [`Instant`](bacnet_mstp_core::Instant), which counts nanoseconds; the
 //! simulator's own times (octet boundaries, adapter jitter) are whole
 //! microseconds of it. One queue orders every event by time, then by a fixed
-//! class (characters arriving, transmissions ending, scheduled events, core
-//! deadlines, adapters starting frames, later octets of a frame), then by
+//! class (characters arriving, transmissions ending, scheduled events, host
+//! reads/completion, core deadlines, adapters starting frames, later octets), then by
 //! station address, then by scheduling order. Nothing reads a wall clock or
 //! runs on another thread, so a run replays exactly from its seed on any
 //! host.
@@ -76,6 +76,32 @@
 //! [`AdapterSpec::echo`] is set. Deadlines are serviced at
 //! `next_deadline`, plus any configured lateness and per-deadline jitter.
 //!
+//! **Buffered host adapters.** [`MasterSpec::host`] opts a node into
+//! [`HostSpec`], independently of other nodes. The line still delivers each
+//! physical character into its serial buffer. A read becomes ready 1–16 ms
+//! after the first buffered character and coalesces characters that arrived
+//! meanwhile. Each read takes at most the configured chunk size (optionally
+//! seeded and randomized), and all its bytes reach `on_octet` with the read
+//! timestamp, as in the production Tokio transport. Ready reads run before
+//! core deadlines and transmit admission. Admission also drains up to eight
+//! available reads without waiting, then checks the core's start contract.
+//!
+//! Host completion is stamped with the later of serial drain return and
+//! physical wire end. With `echo_grace` configured, a content-matching filter
+//! suppresses a complete copy of the outgoing frame and preserves differing
+//! peer bytes, including a shared preamble. Its Grace, Residual and Probe
+//! phases model the production policy; paired fixtures through the public
+//! `MstpTransport` check payloads and counters. This simulator-owned filter is
+//! not the production filter. Physical echo generation remains separately
+//! controlled by [`AdapterSpec::echo`]. A missing echo can postpone completion
+//! notification and expose an overdue core deadline; its completion stamp
+//! still denotes the frame end. [`Sim::host_stats`] reports this adapter work.
+//!
+//! Host input is capped at 4096 characters, pending clean-frame receipts at
+//! 513, and echo storage at one transmitted frame. Overflow is a reported
+//! invariant failure. Host state is discarded on power loss; delayed starts
+//! and application decisions carry an incarnation fence across reboot.
+//!
 //! **Scripted stations** decode the line with the codec's stream decoder
 //! and react to frames through a [`Script`]: a minimal master that answers
 //! polls and sends test frames, a slave, a misbehaving device.
@@ -92,7 +118,8 @@
 //!    fault touched it. While the run is not [perturbed](Sim::perturbed) (no
 //!    fault or collision since the start or since it was
 //!    [settled](Sim::settle)), every master that heard a clean frame whole
-//!    counted it as received.
+//!    counted it as received. Host accounting waits for bounded read delivery
+//!    and counts multiple frames coalesced into one read.
 //! 2. **Turnaround.** A master's core hands a frame over, and its adapter
 //!    starts it, no sooner than its Tturnaround after the last character on
 //!    the line, its own included.
@@ -121,6 +148,16 @@
 //! 7. **Usage delay.** A punctual master answers a Token or Poll For Master
 //!    addressed to it within Tusage_delay, unless it is still answering a
 //!    request (Clause 9.5.6.9 finishes that first).
+//!    Host direct replies also retain the physical 250 ms first-octet limit.
+//!
+//! Host defaults allow 100 ms frame abort, 35 ms usage timeout and 300 ms
+//! reply timeout; those receive allowances do not extend the peer's 15 ms
+//! usage or 250 ms reply obligations. A 16 ms receive delay can fail the wire
+//! usage check. Even a shorter delay can hide a newly injected noise burst
+//! at admission: the report retains the physical turnaround failure and any
+//! resulting collision, with typed [`HostTimingFailure`] timestamps. Random
+//! fault scenarios distinguish these negative cases from clean operation;
+//! they never remove the violations or qualify a UART or USB adapter.
 //!
 //! # What it models and what it does not
 //!
@@ -148,9 +185,9 @@
 //! - **When a character is reported.** A received character is timestamped
 //!   at the end of its stop bit; a UART usually signals it in the middle of
 //!   the stop bit, about half a bit time sooner.
-//! - **Host-style input.** Received octets go through `on_octet` one at a
-//!   time. The chunked `on_validated_frame` and `on_host_activity` paths of
-//!   a host adapter are not exercised.
+//! - **Alternative frame assemblers.** Both octet mode and the current host
+//!   transport's chunked reads feed `on_octet`. A platform adapter that uses
+//!   `on_validated_frame` and `on_host_activity` is not exercised here.
 //!
 //! Each powered-on core borrows its receive buffer and action buffers for
 //! its whole life, so the simulator leaks them on every power-up, about
@@ -191,13 +228,14 @@ mod wire;
 
 pub use line::Driver;
 pub use report::{
-    Collision, CollisionClass, Delivery, Episode, Report, Tolerance, Violation, ViolationKind,
-    WireFrame,
+    Collision, CollisionClass, Delivery, Episode, HostStats, HostTimingFailure, Report, Tolerance,
+    Violation, ViolationKind, WireFrame,
 };
 pub use rng::SimRng;
 pub use sim::{Sim, SimConfig, SimCore};
 pub use spec::{
-    AdapterSpec, Corruption, Fault, MasterSpec, ReplyPolicy, Script, ScriptSend, SeenFrame,
+    AdapterSpec, Corruption, Fault, HostSpec, MasterSpec, ReplyPolicy, Script, ScriptSend,
+    SeenFrame,
 };
 pub use trace::{Millis, Trace, TraceEntry, TraceKind, Who};
 pub use wire::{WireTiming, BITS_PER_OCTET};
