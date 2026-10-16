@@ -102,6 +102,11 @@ impl Sim {
                 }
             }
         }
+        // Once a write has returned, the main loop's biased select polls
+        // ready application replies before serial input or timers. While
+        // strip_echo still owns the write, this leaves decisions deferred:
+        // that await must consume its read (and the whole chunk) first.
+        self.host_decisions(node);
         self.host_read(node);
         self.host_timer(node);
         self.host_decisions(node);

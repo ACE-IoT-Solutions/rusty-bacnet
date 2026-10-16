@@ -20,7 +20,8 @@ struct FixtureSerial {
     input: Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
     remaining: StdMutex<Vec<u8>>,
     writes: mpsc::UnboundedSender<(Instant, Vec<u8>)>,
-    grace: Duration,
+    echo: Echo,
+    drain_duration: Duration,
 }
 
 impl SerialPort for FixtureSerial {
@@ -30,6 +31,9 @@ impl SerialPort for FixtureSerial {
     }
 
     async fn drain(&self) -> Result<(), Error> {
+        if !self.drain_duration.is_zero() {
+            tokio::time::sleep(self.drain_duration).await;
+        }
         Ok(())
     }
 
@@ -56,7 +60,7 @@ impl SerialPort for FixtureSerial {
     }
 
     fn echo(&self) -> Echo {
-        Echo::Full { grace: self.grace }
+        self.echo
     }
 }
 
@@ -143,7 +147,8 @@ async fn paired(case: Case) {
         input: Mutex::new(rx),
         remaining: StdMutex::new(Vec::new()),
         writes: tx,
-        grace: GRACE,
+        echo: Echo::Full { grace: GRACE },
+        drain_duration: Duration::ZERO,
     };
     // One millisecond per octet avoids Tokio's timer granularity changing
     // inclusive filter boundaries. Production accepts this configured baud.
@@ -269,7 +274,10 @@ async fn paired_ready_answer_during_echo_wait_keeps_wire_deadline() {
             input: Mutex::new(rx),
             remaining: StdMutex::new(Vec::new()),
             writes: tx,
-            grace: Duration::from_millis(40),
+            echo: Echo::Full {
+                grace: Duration::from_millis(40),
+            },
+            drain_duration: Duration::ZERO,
         },
         MstpConfig {
             this_station: 0,
@@ -324,4 +332,99 @@ async fn paired_ready_answer_during_echo_wait_keeps_wire_deadline() {
     // Tokio's timer wheel can wake one millisecond after a virtual deadline.
     assert!((Duration::from_millis(500)..=Duration::from_millis(501)).contains(&actual_silence));
     sim.assert_no_violations();
+}
+
+async fn paired_buffered_token_after_drain(echo: Echo, expected_kind: FrameType) {
+    let (input, rx) = mpsc::unbounded_channel();
+    let (tx, mut writes) = mpsc::unbounded_channel();
+    let mut transport = MstpTransport::new(
+        FixtureSerial {
+            input: Mutex::new(rx),
+            remaining: StdMutex::new(Vec::new()),
+            writes: tx,
+            echo,
+            drain_duration: Duration::from_millis(60),
+        },
+        MstpConfig {
+            this_station: 0,
+            max_master: 1,
+            baud_rate: 10_000,
+            transmit_latency_pad: Duration::ZERO,
+            ..MstpConfig::default()
+        },
+    );
+    let mut npdus = transport.start().await.unwrap();
+    settle_task().await;
+    let received = Instant::now();
+    let request = encode(FrameType::BACNET_DATA_EXPECTING_REPLY, 0, 1, &[1, 4, 9]);
+    input.send(request.clone()).unwrap();
+    let delivery = npdus.recv().await.unwrap();
+    let (_, postponed) = writes.recv().await.unwrap();
+    tokio::time::sleep_until(received + Duration::from_millis(240)).await;
+    delivery
+        .reply_tx
+        .unwrap()
+        .send(PAYLOAD.to_vec().into())
+        .unwrap();
+    let token = encode(FrameType::TOKEN, 0, 1, &[]);
+    tokio::time::sleep_until(received + Duration::from_millis(260)).await;
+    input.send(token.clone()).unwrap();
+    let (_, actual_next) = tokio::time::timeout(Duration::from_millis(500), writes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    transport.stop().await.unwrap();
+
+    let mut sim = Sim::new(SimConfig::new(10_000));
+    sim.add_master(
+        MasterSpec::new(0, 1, 10_000)
+            .host(HostSpec {
+                drain_duration: CoreDuration::from_millis(60),
+                echo_grace: match echo {
+                    Echo::None => None,
+                    Echo::Full { grace } => Some(CoreDuration::from_micros(
+                        u64::try_from(grace.as_micros()).unwrap(),
+                    )),
+                },
+                ..HostSpec::default()
+            })
+            .reply(crate::ReplyPolicy::Answer {
+                delay: CoreDuration::from_millis(240),
+                payload: PAYLOAD.to_vec(),
+            }),
+    );
+    model_read(&mut sim, ms(0), &request);
+    model_read(&mut sim, ms(260), &token);
+    sim.run_until(ms(320));
+    assert_eq!(postponed, encode(FrameType::REPLY_POSTPONED, 1, 0, &[]));
+    assert_eq!(postponed, sim.frames()[0].octets);
+    let expected_data = if expected_kind == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY {
+        PAYLOAD
+    } else {
+        &[]
+    };
+    let expected = encode(expected_kind, 1, 0, expected_data);
+    // The very next transmission must have this type, destination and data;
+    // eventual delivery after another token would conceal the ordering bug.
+    assert_eq!(actual_next, expected, "production: {echo:?}");
+    assert_eq!(sim.frames()[1].octets, expected, "simulator: {echo:?}");
+    sim.assert_no_violations();
+}
+
+#[tokio::test(start_paused = true)]
+async fn paired_ready_answer_precedes_buffered_token_after_drain() {
+    paired_buffered_token_after_drain(Echo::None, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY).await;
+}
+
+/// strip_echo consumes its read before the main loop can poll a ready
+/// answer. Moving decisions into host_complete would incorrectly invert it.
+#[tokio::test(start_paused = true)]
+async fn paired_echo_read_keeps_token_before_ready_answer() {
+    paired_buffered_token_after_drain(
+        Echo::Full {
+            grace: Duration::from_millis(40),
+        },
+        FrameType::POLL_FOR_MASTER,
+    )
+    .await;
 }
