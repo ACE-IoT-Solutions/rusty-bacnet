@@ -13,6 +13,19 @@ Scope: portable Rust library components. ESP-IDF task/socket/UART ownership,
 firmware integration, flashing, and hardware-in-the-loop validation belong to
 the downstream firmware team.
 
+
+Update 2026-10-12: upstream merged its own `bacnet-router-core` (#1679,
+`ab013bda`) under the same crate name and path, with `bacnet-network`
+depending on it, and opened #1697-#1699 as its router follow-ups. See I1 in
+the sc-ip-router plan for the collision decision; this crate should be
+deleted or renamed before the branch merges upstream `dev` again.
+
+Disposition 2026-10-16: the adopt-upstream option was selected. PR #5 was
+fast-forwarded to `main` at `e1540afc`; draft PR #6 starts from upstream
+`dev@488f7ecf` and therefore carries upstream's router core without the fork
+crate or `bacnet-router-adapters`. ACE-only behavior is being ported onto that
+engine rather than resolving the add/add collision mechanically.
+
 ## Completion definition
 
 The library work is ready for human review when:

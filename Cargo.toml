@@ -115,7 +115,7 @@ pyo3 = { version = "0.29", features = ["multiple-pymethods"] }
 # framework on macOS and so stops the zig cross-build of the release (#944).
 tokio-tungstenite = "0.29"
 tokio-rustls = "0.26"
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "logging", "std"] }
 futures-util = "0.3"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 smallvec = "1"

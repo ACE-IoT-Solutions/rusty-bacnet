@@ -34,7 +34,7 @@ The two requests are tracked here as K1-K5 (codecs) and M1-M8 (master core):
 | K2 | MS/TP frame types, CRC-8, CRC-16, incremental decode, bounded encode in a crate that builds with `default-features = false` |
 | K3 | Caller-provided output storage so the hot path does not allocate |
 | K4 | COBS and CRC-32K extended frames rejected explicitly and feature-tested, never silently accepted |
-| K5 | Host API preserved through adapters |
+| K5 | Superseded by upstream #1608: the host transport now drives `MasterCore` directly and does not preserve the removed `MasterNode` compatibility surface |
 | M1 | Synchronous event-driven core: `on_octet`, `on_silence`, `on_deadline`, `enqueue_npdu`, `poll_action` |
 | M2 | Injected monotonic clock; the core returns deadlines and never sleeps |
 | M3 | Actions `Transmit`, `SetDirection`, `DeliverNpdu` so platform code owns UART, DMA, and turnaround |
@@ -284,31 +284,32 @@ Crates: new `crates/bacnet-mstp-core`.
 Acceptance: core cross-compiles for both embedded targets with `heapless`
 only; all simulated-time tests green; counters observable in every test.
 
-## Phase 4 - Tokio adapter over the core (M7, K5)
+## Phase 4 - Tokio adapter over the core (M7; K5 superseded)
 
 Crates: `bacnet-transport`.
+
+Disposition 2026-10-16: upstream #1608 replaced the host MAC with the
+`MasterCore`-driven transport and removed the `MasterNode` compatibility
+surface. The completed bullets below are retained as historical implementation
+context; they are not current API guarantees.
 
 - [x] Rewrite `mstp/port.rs` to drive `MasterCore<AllocQueues>`: the host's
       bounded, chunk-tolerant assembler feeds validated frames (wire-timestamped
       platforms use `on_octet`), `tokio::time::sleep_until` feeds
       `on_deadline`, and `poll_action` maps to drained serial writes and to the
       existing DE/RE modes in `mstp_serial.rs`.
-- [x] Keep `MstpTransport<S>`, `MstpConfig` (now converting into
-      `MstpCoreConfig`), `SerialPort`, `LoopbackSerial`, `NoSerial`,
-      the existing `node_state() -> Option<&Arc<Mutex<MasterNode>>>` contract,
-      and `AnyTransport::Mstp` source-compatible. Retain `MasterNode` as a
-      deprecated adapter wrapper and add a separately named snapshot API;
-      changing `node_state()` itself would break current callers and tests.
+- [x] Superseded by #1608: the earlier plan would have retained
+      `node_state() -> Option<&Arc<Mutex<MasterNode>>>` and a deprecated
+      `MasterNode` wrapper. The adopted upstream implementation intentionally
+      removed both rather than carrying a second host state machine.
 - [x] Expose `counters()` on `MstpTransport`. `RouterPortCounters` remains a
       transport-neutral forwarding snapshot; coupling its synchronous atomic
       surface to the adapter's async MS/TP mutex did not fit that abstraction.
-- [x] Python: `mstp_py.rs` and the client, server, and router lifecycles
-      compile unchanged; add `counters` to the Python MS/TP surface only if
-      the stub change is trivial, otherwise defer.
-- [x] Delete the codec differential scaffolding after cutover. The host runtime
-      no longer invokes the old state-machine methods; their deprecated public
-      fields and methods remain solely because deleting them conflicts with
-      this plan's explicit source-compatibility requirement for `MasterNode`.
+- [x] Python: `mstp_py.rs` and the client and server lifecycles moved to the
+      upstream core-backed transport. Router bindings are being reconciled
+      separately on the upstream 0.13 migration line.
+- [x] Delete the codec differential scaffolding and the legacy host state
+      machine after cutover; no `MasterNode` compatibility promise remains.
 
 Tests: the 62 host master/adapter tests pass unchanged; `test_mstp_compat.py` passes
 on an installed wheel; a new adapter test proves a `SetDirection` pair
@@ -822,6 +823,17 @@ crates; the archive tag exists; no fork copy of an upstream-owned crate
 remains on the working branch.
 
 ## Upstream engagement after the decision
+
+Update 2026-10-12: upstream closed #1611 (extended frames, via #1650 and
+#1666), #1608 (host cutover), #1626 (no-allocator link images), #1640 (core
+fuzzing), #1613 and #1625, and fixed #1617 and #1618 in `5cc188ad`; all are
+merged on `feature/sc-ip-router-upstream-0.12`. #1678 ported two of the
+fork's adapter cases with credit. The items below that pointed at those
+issues are done. What remains for the fork is tracked as I1-I8 in the
+sc-ip-router plan: the `bacnet-router-core` name collision with upstream's
+#1679 engine, retiring the fork's R7 slice for #1665/#1696, the 0.13 release
+line (#1684), the firmware vendor pin, and the Python extended-frame opt-in
+(#1663). K5 and the Phase 4 adapter are superseded by #1608.
 
 No fork PRs are required. The team engages where it is cheap and useful:
 

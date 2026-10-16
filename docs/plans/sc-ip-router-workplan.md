@@ -1,8 +1,9 @@
 # SC-to-IP router work plan
 
-Status: R1-R9 carried onto the upstream 0.12
-baseline on `feature/sc-ip-router-upstream-0.12` (PR #5). Review findings
-H1-H7 are closed on the current upstream baseline; R10 remains open.
+Status: R1-R9 landed on `main` at `e1540afc` through PR #5. PR #4 is closed as
+superseded. Draft PR #6 ports the remaining ACE-owned surface onto upstream
+0.13 from `dev@488f7ecf`; I1-I3 and I6-I8 are dispositioned, I4 and downstream
+I5 remain open. H1-H7 closed; R10 open.
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
@@ -981,6 +982,96 @@ the bare-target router checks use the installed 1.97.1 toolchain.
       Resolved by marking both router crates `publish = false`, documenting
       their provisional status, and linking PR #5 as reference evidence from
       upstream issues #1622 and #1623.
+
+## Upstream integration 2026-10-12
+
+Reviewer pass over upstream `dev` (`a82cb364`, 209 commits since the last
+review) and the fork branch at `e1540af`. PR #5 now targets `main` and is
+green (41 checks). Local verification with the pinned toolchain: 149 test
+suites, 9695 passed, 0 failed; 21 doc-test suites, 94 passed. H1-H7 are
+confirmed closed by `134f2460`, `7cc7a690`, `41c8f033` and the changelog
+fragment `changelog.d/sc-router-legacy-api-migration.md`.
+
+### What upstream did with the fork's work
+
+- Extended frames (#1611) are done upstream: codec in #1650, core and host
+  transport in #1666. The host MS/TP MAC was cut over to the core (#1608,
+  `24f0db78`) with the U1-U6 regressions. #1617 and #1618 were fixed in
+  `5cc188ad`. #1626 links no-allocator firmware images in CI. #1640 fuzzes
+  the core. All of that is merged into this branch.
+- #1678 ports two of the fork's router-adapter test cases upstream with
+  credit; both are covered there already.
+- #1665, #1696 and #1699 are upstream's own treatment of R7: reject an NPDU
+  too long for the outgoing port with reason 4, refresh an SC port's limit
+  after failover, and route the router's own traffic through the engine.
+- #1679 is a portable sans-IO router core, `bacnet-router-core`, already
+  merged on upstream `dev` (`ab013bda`) with `bacnet-network` depending on
+  it. #1682 is the umbrella no_std program. #1684 is the 0.13.0 release
+  checklist; 0.13 is "no_std-first" and ships when the milestone is done.
+- #1663 asks for opt-in extended frames in `MstpEndpointBuilder` and the
+  Python `MstpEndpoint`.
+
+### Findings
+
+Disposition update 2026-10-16: upstream tagged v0.13.0, merged #1663, #1665,
+and #1696, and continued to `dev@488f7ecf`. PR #5 was fast-forwarded to
+`main@e1540afc`, PR #4 was closed as superseded, and draft PR #6 was created
+from upstream `dev` for the deliberate 0.13 port. Its first ACE release slice
+is `66cdccaf`; the repaired sdist passed `cargo check --locked --offline` and
+its CPython 3.13 macOS arm64 wheel passed an installed import smoke test.
+
+- [x] **I1 - Crate-name collision on the next upstream merge.** Upstream
+      `dev` now ships its own `crates/bacnet-router-core`, a different
+      design (borrowed NPDU view, const-generic tables, `bacnet-time`), and
+      `bacnet-network` depends on it. This branch still carries the fork's
+      `bacnet-router-core` (publish = false) under the same path and name.
+      The branch is 139 commits behind upstream and the collision lands with
+      the next merge. Decide before merging: delete the fork crate and let
+      `bacnet-router-adapters` target upstream's engine, or rename the
+      fork's to `ace-router-core` and keep it provisional. Deleting is the
+      option consistent with the adopt-upstream decision. **Disposition:** PR
+      #6 starts from upstream `dev` and does not carry the fork crate or
+      `bacnet-router-adapters`.
+- [x] **I2 - Retire the fork's R7 slice in favour of #1665/#1696.** The
+      fork's oversize rejection (`588a7be4`) and upstream's #1665 solve the
+      same clause; #1696 adds the SC-limit refresh after failover that the
+      fork does not have. When the branch merges upstream `dev` next, take
+      upstream's implementation and keep only the fork tests that add
+      coverage. Record R7 as delivered upstream, not fork-owned. **Disposition:**
+      PR #6 uses upstream's implementation; only additional semantic test
+      vectors may be ported.
+- [x] **I3 - Merge PR #5 and close PR #4.** PR #4's branch has zero commits
+      that PR #5 lacks. Close #4 as superseded, merge #5 to `main`, then
+      merge upstream `dev` again immediately so `main` carries #1679 and the
+      0.13 line before more fork work lands. **Disposition:** completed by an
+      exact-head fast-forward of `main` to `e1540afc`; PR #4 is closed.
+- [ ] **I4 - Align the fork release with 0.13.** `ace-rusty-bacnet` is
+      restored on the branch at version 0.12.0 via `.github/workflows/
+      release.yml`. Upstream's 0.13.0 checklist renames and first-publishes
+      the no_std crates and adds an upgrading page. Plan the next fork
+      release as a 0.13-based build after upstream tags, not a 0.12.x fork
+      tag that upstream will never share. **Update:** v0.13.0 now exists and
+      PR #6 is based on the post-release 0.13 `dev` line. Choose the first ACE
+      0.13 version only after the runtime/router port and exact-head gates pass.
+- [ ] **I5 - Repoint the firmware vendor.** `PROVENANCE.json` still pins
+      the 0.11.7 fork commit with the pre-review codec and core. Vendor the
+      branch head or upstream `dev` so the ESP32 build sees the reviewed
+      core, extended frames, and `bacnet-time`.
+- [x] **I6 - Python extended-frame opt-in (#1663).** The fork's Python
+      router and MS/TP surface should expose the same opt-in flag upstream
+      chooses, rather than a fork-only spelling. **Disposition:** upstream
+      merged #1663 with `MstpEndpointBuilder::extended_frames(bool)` and
+      Python `mstp_extended_frames=True`; PR #6 adopts that implementation.
+- [x] **I7 - Reconcile the plan's K5 and Phase 4 wording.** Upstream deleted
+      the host MAC and the `MasterNode` compatibility surface; the fork
+      followed. Mark K5 and the Phase 4 adapter items in the embedded plan
+      as superseded by #1608 so the plans stop describing an adapter that no
+      longer exists. **Disposition:** reconciled in the embedded MS/TP plan.
+- [x] **I8 - Keep PR #5 reviewable.** It is now the only integration path
+      for roughly 200 fork commits plus two upstream merges. If `main` is
+      not merged this week, split the next upstream merge into its own PR so
+      the fork's own changes stay diffable. **Disposition:** PR #5 landed
+      unchanged; the upstream 0.13 port is isolated in draft PR #6.
 
 ## Out of scope
 
