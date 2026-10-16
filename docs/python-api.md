@@ -851,6 +851,42 @@ client, or match `AnyTransport::Sc(transport)` and call the same method. The
 returned `ScHubPeerInfo` exposes `tls()` and `observed_at()`; `TlsWebSocket::peer_info()`
 provides the lower-level TLS observation before SC admission.
 
+When initial SC startup rejects a TLS peer, `BacnetTransportError` can carry a
+frozen `sc_untrusted_peer: ScUntrustedPeerInfo | None`. It contains certificates
+observed in that actual failed outbound attempt, without another connection:
+
+```python
+from rusty_bacnet import BacnetTransportError
+
+try:
+    await client.__aenter__()  # client already configured for SC
+except BacnetTransportError as error:
+    print(error)  # original failure remains the reason for rejection
+    untrusted = error.sc_untrusted_peer
+    if untrusted is not None:
+        for certificate in untrusted.certificates:
+            if certificate.metadata is not None:
+                print("UNTRUSTED", certificate.metadata.subject,
+                      certificate.metadata.issuer, certificate.metadata.not_after_unix)
+            # certificate.der explicitly exports the observed, untrusted bytes.
+    raise
+```
+
+This value is separate from `ScPeerInfo`: it has no accepted connection ID,
+authenticated identity or verified-chain claim. Its `peer_address` is the
+attempt's TCP endpoint and `server_name` is the intended URI host. Its frozen
+certificate tuple uses the same bounded optional metadata as successful
+observations and owns no socket or client. Normal representations omit the
+captured bytes and parsed names; the original TLS error text is unchanged.
+
+`None` means unavailable at the verifier observation point. It can occur before
+TLS receives certificates, when protocol processing rejects a message earlier,
+or on resumption; it does not prove no certificate was sent. Non-TLS transport
+errors also have `sc_untrusted_peer=None`. This API covers returned outbound
+dial errors, including initial client entry; it does not retain a history of
+background reconnect failures or inbound rejected clients. Rust callers use
+`ScConnectError::from_error(&error).and_then(|e| e.untrusted_peer_info())`.
+
 ### Address Format
 
 All `address` parameters accept:

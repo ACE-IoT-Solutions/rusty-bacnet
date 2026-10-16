@@ -1,9 +1,50 @@
 //! Frozen Python copies of the shared Rust certificate interpretation.
 
 use bacnet_transport::sc::ScHubPeerInfo;
-use bacnet_transport::sc_tls::{ScCertificateMetadata, ScHandshakeKind, ScPeerCertificate};
+use bacnet_transport::sc_tls::{
+    ScCertificateMetadata, ScHandshakeKind, ScPeerCertificate, ScUntrustedPeerInfo,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
+
+/// Untrusted historical evidence from one rejected outbound TLS attempt.
+#[pyclass(name = "ScUntrustedPeerInfo", module = "rusty_bacnet", frozen)]
+pub(crate) struct PyScUntrustedPeerInfo(pub(crate) ScUntrustedPeerInfo);
+
+#[pymethods]
+impl PyScUntrustedPeerInfo {
+    #[getter]
+    fn peer_address(&self) -> String {
+        self.0.peer_address().to_string()
+    }
+    #[getter]
+    fn server_name(&self) -> &str {
+        self.0.server_name()
+    }
+    #[getter]
+    fn certificates<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        certificate_tuple(py, self.0.certificates())
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "ScUntrustedPeerInfo(certificate_count={})",
+            self.0.certificates().len()
+        )
+    }
+}
+
+fn certificate_tuple<'py>(
+    py: Python<'py>,
+    certificates: &[ScPeerCertificate],
+) -> PyResult<Bound<'py, PyTuple>> {
+    PyTuple::new(
+        py,
+        certificates
+            .iter()
+            .map(|cert| Py::new(py, PyScPeerCertificate(cert.clone())))
+            .collect::<PyResult<Vec<_>>>()?,
+    )
+}
 
 /// Historical observation of an accepted active Hub. Owns data only.
 #[pyclass(name = "ScPeerInfo", module = "rusty_bacnet", frozen)]
@@ -52,14 +93,7 @@ impl PyScPeerInfo {
     }
     #[getter]
     fn certificates<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        let certificates = self
-            .0
-            .tls()
-            .certificates()
-            .iter()
-            .map(|cert| Py::new(py, PyScPeerCertificate(cert.clone())))
-            .collect::<PyResult<Vec<_>>>()?;
-        PyTuple::new(py, certificates)
+        certificate_tuple(py, self.0.tls().certificates())
     }
     fn __repr__(&self) -> String {
         format!(
@@ -141,6 +175,7 @@ impl PyScCertificateMetadata {
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyScUntrustedPeerInfo>()?;
     m.add_class::<PyScPeerInfo>()?;
     m.add_class::<PyScPeerCertificate>()?;
     m.add_class::<PyScCertificateMetadata>()?;

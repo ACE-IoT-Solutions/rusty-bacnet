@@ -4,9 +4,13 @@
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::mstp::NoSerial;
+use bacnet_transport::sc::{ScConnectError, ScWebSocketErrorKind};
 use bacnet_transport::sc_hub::{ScHub, ScHubTlsConfig};
 use bacnet_transport::sc_tls::ScNodeTlsConfig;
 use tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer;
+
+#[path = "../../../examples/rust/sc_peer_certificates.rs"]
+mod certificate_example;
 
 #[tokio::test]
 async fn configured_concrete_and_erased_clients_observe_their_accepted_hub() {
@@ -35,6 +39,45 @@ async fn configured_concrete_and_erased_clients_observe_their_accepted_hub() {
         .await
         .unwrap();
     let url = format!("wss://localhost:{}", hub.local_addr().unwrap().port());
+    // This leaf has only DNS:localhost. Both real builder paths must return
+    // the rejected attempt's evidence before publishing any client.
+    let wrong_name = url.replace("localhost", "127.0.0.1");
+    let concrete_error = BACnetClient::sc_builder()
+        .hub_url(&wrong_name)
+        .tls_config(tls.clone())
+        .vmac([0x22; 6])
+        .device_uuid([0x22; 16])
+        .build()
+        .await
+        .err()
+        .expect("wrong name must be rejected");
+    let erased_error = BACnetClient::sc_builder()
+        .hub_url(&wrong_name)
+        .tls_config(tls.clone())
+        .vmac([0x33; 6])
+        .device_uuid([0x33; 16])
+        .build_any::<NoSerial>()
+        .await
+        .err()
+        .expect("wrong name must be rejected");
+    for error in [&concrete_error, &erased_error] {
+        let sc = ScConnectError::from_error(error).unwrap();
+        assert!(matches!(
+            sc,
+            ScConnectError::WebSocket {
+                kind: ScWebSocketErrorKind::TlsHandshake,
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("not valid for name"));
+        let untrusted = sc.untrusted_peer_info().unwrap();
+        assert_eq!(untrusted.certificates()[0].der(), hub_der.as_ref());
+        assert_eq!(untrusted.server_name(), "127.0.0.1");
+        assert_eq!(
+            certificate_example::show_rejected(error).unwrap(),
+            *untrusted
+        );
+    }
     let mut concrete = BACnetClient::sc_builder()
         .hub_url(&url)
         .tls_config(tls.clone())
@@ -52,6 +95,14 @@ async fn configured_concrete_and_erased_clients_observe_their_accepted_hub() {
         .await
         .unwrap();
     let concrete_peer = concrete.transport().hub_peer_info().await.unwrap();
+    assert_eq!(
+        certificate_example::show_accepted(&concrete)
+            .await
+            .unwrap()
+            .tls()
+            .certificates(),
+        concrete_peer.tls().certificates()
+    );
     let AnyTransport::Sc(sc) = erased.transport() else {
         panic!("expected SC");
     };
@@ -79,6 +130,9 @@ async fn configured_concrete_and_erased_clients_observe_their_accepted_hub() {
     concrete.stop().await.unwrap();
     erased.stop().await.unwrap();
     assert!(concrete.transport().hub_peer_info().await.is_none());
+    assert!(certificate_example::show_accepted(&concrete)
+        .await
+        .is_none());
     drop(concrete);
     drop(erased);
     assert_eq!(

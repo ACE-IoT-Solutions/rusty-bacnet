@@ -140,10 +140,29 @@ pub enum ScConnectError {
         kind: ScWebSocketErrorKind,
         /// Human-readable detail from the underlying driver.
         message: String,
+        /// Untrusted certificate evidence from this failed outbound TLS attempt.
+        /// Absent when no verifier callback was observed, including failures
+        /// before that point or resumed handshakes. Requires `sc-tls`.
+        #[cfg(feature = "sc-tls")]
+        untrusted_peer: Option<std::sync::Arc<crate::sc_tls::ScUntrustedPeerInfo>>,
     },
 }
 
 impl ScConnectError {
+    /// Untrusted certificates from the actual failed outbound TLS attempt.
+    ///
+    /// This never performs I/O or establishes an authenticated identity. `None`
+    /// means unavailable at the observation point, not proof no certificate
+    /// was sent. Background reconnect history and inbound failures are not
+    /// retained by this API. Requires `sc-tls`.
+    #[cfg(feature = "sc-tls")]
+    pub fn untrusted_peer_info(&self) -> Option<&crate::sc_tls::ScUntrustedPeerInfo> {
+        match self {
+            Self::WebSocket { untrusted_peer, .. } => untrusted_peer.as_deref(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn into_bacnet_error(self) -> Error {
         let kind = self.default_io_kind();
         self.into_bacnet_error_with_io_kind(kind)
@@ -214,7 +233,7 @@ impl fmt::Display for ScConnectError {
             Self::ConnectAcceptMismatch => {
                 f.write_str("BACnet/SC Connect-Accept did not match pending Connect-Request")
             }
-            Self::WebSocket { kind, message } => {
+            Self::WebSocket { kind, message, .. } => {
                 write!(f, "BACnet/SC WebSocket {kind} failure: {message}")
             }
         }

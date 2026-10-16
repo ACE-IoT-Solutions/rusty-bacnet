@@ -1778,6 +1778,12 @@ class BacnetTransportError(BacnetError, OSError):
     """
     errno: int | None
     strerror: str | None
+    sc_untrusted_peer: ScUntrustedPeerInfo | None
+    """Untrusted certificate evidence from the actual failed outbound TLS attempt.
+
+    None when unavailable at the verification observation point. This is not
+    an authenticated peer or a history of background reconnect failures.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -1975,6 +1981,20 @@ class ScPeerCertificate:
     def metadata(self) -> ScCertificateMetadata | None: ...
     @property
     def inspection_error(self) -> Literal["certificate_parse_failed"] | None: ...
+
+class ScUntrustedPeerInfo:
+    """Frozen, owned untrusted certificates from one failed outbound TLS attempt.
+
+    No accepted connection identity or verification result is implied. Missing
+    evidence does not prove that the peer sent no certificates. Metadata is
+    informational; retaining this value owns no network resources.
+    """
+    @property
+    def peer_address(self) -> str: ...
+    @property
+    def server_name(self) -> str: ...
+    @property
+    def certificates(self) -> tuple[ScPeerCertificate, ...]: ...
 
 class ScPeerInfo:
     """Frozen historical observation; does not retain a client or socket."""
