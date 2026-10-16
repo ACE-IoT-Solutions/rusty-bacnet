@@ -795,6 +795,62 @@ retry. A new connection must complete TLS and SC admission before service
 traffic resumes. Applications still handle request errors; reconnection does
 not guarantee that an interrupted operation completes.
 
+### SC peer certificates
+
+`await client.sc_peer_info()` observes the accepted active Hub without another
+connection. It returns a frozen `ScPeerInfo`, or `None` while disconnected or
+reconnecting. A non-SC, stopped or closing client raises `RuntimeError`. The
+result and its nested values own data only; keeping them after close keeps no
+client or socket alive.
+
+```python
+peer = await client.sc_peer_info()
+if peer is not None:
+    print(peer.peer_address, peer.connection_id, peer.handshake_kind)
+    print(peer.leaf_sha256.hex())  # SHA-256 of the exact leaf DER
+    leaf = peer.certificates[0]
+    if leaf.metadata is not None:
+        print(leaf.metadata.subject, leaf.metadata.issuer)
+        print(leaf.metadata.not_after_unix)  # signed Unix seconds
+    # leaf.der explicitly exports original bytes; normal repr omits them.
+```
+
+`certificates` is an ordered tuple of `ScPeerCertificate` objects, leaf first.
+This is the session-associated certificate list, which can omit trust anchors
+or include extra certificates outside the verified path. `handshake_kind` is
+`"full"`, `"resumed"`, or `"unknown"`. Resumed sessions may reuse cached
+certificates without a new certificate exchange or fresh verification.
+`protocol_version` and `cipher_suite` contain the negotiated rustls names (or
+`None` if unavailable). `server_name` is the intended URI host; `peer_address`
+is the actual remote TCP endpoint, which can be a proxy.
+
+`connection_id` is process-local and changes on every physical dial, even for
+an unchanged certificate or resumed TLS. SC retries reusing the same socket
+retain it. `observed_at_unix` records when that socket was observed as SC
+Connected, not when its certificate was validated. The returned value is
+historical; read again to observe a new accepted connection. Failed restore
+candidates do not replace the active Hub observation.
+
+The shared Rust parser supplies subject, issuer, signed Unix not-before and
+not-after dates, public-key and signature algorithm OIDs. Names and OIDs are
+ASCII escaped and bounded to 1024 bytes each; `text_truncated` signals any
+truncation. `metadata=None` with `inspection_error="certificate_parse_failed"`
+means display parsing failed, while original DER remains available. Parsing
+never changes TLS acceptance. SAN, KU and EKU interpretation is outside this
+API. The underlying TLS implementation bounds the certificate message to 64 KiB.
+
+Certificate display does not authorize a VMAC/UUID, identify a relayed BACnet
+origin, establish current validity, or report a revocation check. Existing
+WebPKI path building and URI-name checks are unchanged; this is not a claim of
+complete Annex AB certificate-profile conformance. Credential files remain
+loaded at client entry. Recreate the client to load replacement material, then
+inspect its newly accepted connection.
+
+Rust callers use `client.transport().hub_peer_info().await` for a concrete SC
+client, or match `AnyTransport::Sc(transport)` and call the same method. The
+returned `ScHubPeerInfo` exposes `tls()` and `observed_at()`; `TlsWebSocket::peer_info()`
+provides the lower-level TLS observation before SC admission.
+
 ### Address Format
 
 All `address` parameters accept:

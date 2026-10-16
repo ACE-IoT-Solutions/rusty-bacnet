@@ -4,6 +4,8 @@
 //! with `rustls` TLS.  This is the production WebSocket driver used by
 //! [`crate::sc::ScTransport`] when connecting to a real BACnet/SC hub.
 
+mod peer_info;
+pub use peer_info::{ScCertificateMetadata, ScHandshakeKind, ScPeerCertificate, ScTlsPeerInfo};
 mod tls_config;
 pub use tls_config::ScNodeTlsConfig;
 
@@ -44,12 +46,19 @@ pub(crate) fn disable_nagle(stream: &TcpStream) {
 /// WebSocket upgrade in one step.
 pub struct TlsWebSocket {
     pub(crate) verified_leaf: [u8; 32],
+    peer_info: std::sync::Arc<ScTlsPeerInfo>,
     pub(crate) peer_address: std::net::SocketAddr,
     write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
     read: Mutex<futures_util::stream::SplitStream<WsStream>>,
 }
 
 impl TlsWebSocket {
+    /// Immutable certificate information from this physical TLS/WebSocket connection.
+    /// This alone does not establish BACnet/SC admission. No I/O is performed.
+    pub fn peer_info(&self) -> &std::sync::Arc<ScTlsPeerInfo> {
+        &self.peer_info
+    }
+
     // One physical WebSocket frame per worker turn, including controls. The
     // worker owns application/control writes; this adapter never takes write.
     pub(crate) async fn direct_frame(
@@ -110,6 +119,7 @@ impl TlsWebSocket {
         let uri = parse_wss_uri(url)?;
         let addr = tcp_addr_from_uri(&uri)?;
         let server_name = tls_server_name_from_uri(&uri)?;
+        let intended_server_name = server_name.to_str().into_owned();
         let request = tokio_tungstenite::tungstenite::ClientRequestBuilder::new(uri)
             .with_sub_protocol(subprotocol);
 
@@ -140,6 +150,12 @@ impl TlsWebSocket {
                 .ok_or_else(|| {
                     Error::Encoding("verified TLS peer has no leaf certificate".into())
                 })?;
+        let peer_info = std::sync::Arc::new(ScTlsPeerInfo::capture(
+            tls_stream.get_ref().1,
+            peer_address,
+            intended_server_name,
+            verified_leaf,
+        ));
         let (ws_stream, response) = boxed(|| {
             tokio_tungstenite::client_async_with_config(
                 request,
@@ -160,6 +176,7 @@ impl TlsWebSocket {
         let (write, read) = ws_stream.split();
         Ok(Self {
             verified_leaf,
+            peer_info,
             peer_address,
             write: Mutex::new(write),
             read: Mutex::new(read),
