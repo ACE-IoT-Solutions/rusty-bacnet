@@ -652,6 +652,14 @@ totals stay. It raises `RuntimeError` before start and after stop. See
 [B/IP modes on the builders](rust-api.md#bip-modes-on-the-builders) for the
 Rust side.
 
+The lease and the latest attempt are separate observations: `registered` can
+remain true while a renewal is `"pending"`, `"refused"` or `"timed_out"`.
+It does not imply that the latest attempt was accepted. Check `last_outcome`
+and `last_result` when the response to that attempt matters. A positive
+`lease_remaining` describes the time left at observation; it need not be close
+to the requested TTL, because the lease begins at a send rather than at the
+status read.
+
 ### MS/TP serial ports
 
 `transport="mstp"` takes the keyword-only `serial_port` (required),

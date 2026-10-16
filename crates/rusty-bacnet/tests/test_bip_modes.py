@@ -20,6 +20,40 @@ async def eventually(check, seconds=5.0):
         await asyncio.sleep(0.02)
 
 
+async def accepted_registration(client):
+    """Wait for the registration observations asserted by the loopback test."""
+    async def accepted():
+        status = await client.foreign_registration()
+        # The lease may survive while a later renewal is still pending.
+        return status if (status["registered"]
+                          and status["last_outcome"] == "accepted") else None
+    return await eventually(accepted, seconds=20)
+
+
+class RegistrationWaitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_waits_for_a_live_lease_and_an_accepted_attempt(self):
+        accepted = {"registered": True, "last_outcome": "accepted",
+                    "last_result": 0, "accepted": 2, "lease_remaining": 59.0}
+        observations = iter([
+            {"registered": False, "last_outcome": "pending",
+             "last_result": None, "accepted": 0, "lease_remaining": None},
+            # An accepted attempt alone does not establish a live lease.
+            {"registered": False, "last_outcome": "accepted",
+             "last_result": 0, "accepted": 1, "lease_remaining": None},
+            # A renewal can be pending while an earlier lease remains live.
+            {"registered": True, "last_outcome": "pending",
+             "last_result": None, "accepted": 1, "lease_remaining": 49.0},
+            accepted,
+        ])
+
+        class Client:
+            async def foreign_registration(self):
+                return next(observations)
+
+        status = await accepted_registration(Client())
+        self.assertEqual(status, accepted)
+
+
 class OptionTests(unittest.TestCase):
     def test_foreign_device_keeps_its_settings(self):
         foreign = ForeignDevice("192.0.2.10", ttl=600, renewal=20)
@@ -94,16 +128,15 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
             foreign = ForeignDevice(address, ttl=60, renewal=10)
             async with BACnetClient(interface="127.0.0.1", port=0,
                                     foreign_device=foreign) as client:
-                async def registered():
-                    status = await client.foreign_registration()
-                    return status if status["registered"] else None
-                status = await eventually(registered, seconds=20)
+                status = await accepted_registration(client)
                 self.assertEqual(status["last_outcome"], "accepted")
                 self.assertEqual(status["last_result"], 0)
                 self.assertEqual(status["last_bbmd"], address)
                 self.assertGreaterEqual(status["accepted"], 1)
                 self.assertEqual((status["refused"], status["lapses"]), (0, 0))
-                self.assertGreater(status["lease_remaining"], 50)
+                # A lease counts down from the send, not this observation.
+                self.assertGreater(status["lease_remaining"], 0)
+                self.assertLessEqual(status["lease_remaining"], 60)
                 # Renewed every 10 s, not at half the 60 s TTL.
                 self.assertLessEqual(status["next_attempt_in"], 10.0)
 
