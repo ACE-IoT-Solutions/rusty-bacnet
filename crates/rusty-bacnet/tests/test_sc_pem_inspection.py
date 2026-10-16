@@ -8,6 +8,7 @@ import os
 import pickle
 import ssl
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -113,6 +114,73 @@ class ScPemInspectionTests(unittest.TestCase):
             retained = inspect_sc_pem_files(path, inspected_at_unix=self.before)
             path.unlink()
         self.assertEqual(retained.certificates[0].metadata.subject, "CN=identity")
+
+    def test_bytearray_subclass_keeps_native_contents_and_bypasses_buffer_override(self):
+        for advertised in (self.trust, bytearray(self.trust), None):
+            with self.subTest(advertised_type=type(advertised).__name__):
+                calls = []
+
+                class Redirected(bytearray):
+                    def __buffer__(self, flags):
+                        calls.append(flags)
+                        if advertised is None:
+                            raise RuntimeError("untrusted buffer hook")
+                        return memoryview(advertised)
+
+                value = Redirected(self.identity)
+                try:
+                    report = inspect_sc_pem(value, inspected_at_unix=self.before)
+                    self.assertEqual(report.certificates[0].sha256, hashlib.sha256(self.der).digest())
+                    self.assertEqual(calls, [])
+                finally:
+                    value.clear()
+
+    def test_bytearray_subclass_cannot_hide_oversized_native_contents(self):
+        advertised = self.identity
+        calls = []
+
+        class Redirected(bytearray):
+            def __buffer__(self, flags):
+                calls.append(flags)
+                return memoryview(advertised)
+
+        value = Redirected(b" " * (1024 * 1024 + 1))
+        try:
+            with self.assertRaisesRegex(ValueError, "input_too_large"):
+                inspect_sc_pem(value)
+            self.assertEqual(calls, [])
+        finally:
+            value.clear()
+
+    def test_bytearray_release_callback_cannot_change_the_owned_snapshot(self):
+        calls = []
+        unraisable = []
+
+        class Releases(bytearray):
+            def __buffer__(self, flags):
+                raise AssertionError("acquisition override must not run")
+
+            def __release_buffer__(self, view):
+                calls.append("released")
+                self[0] = ord("!")
+                raise RuntimeError("release callback fixture")
+
+        value = Releases(self.identity)
+        original_hook = sys.unraisablehook
+        sys.unraisablehook = unraisable.append
+        try:
+            report = inspect_sc_pem(value, inspected_at_unix=self.before)
+        finally:
+            sys.unraisablehook = original_hook
+            value.clear()
+        self.assertEqual(report.certificates[0].sha256, hashlib.sha256(self.der).digest())
+        if sys.version_info >= (3, 12):
+            self.assertEqual(calls, ["released"])
+            self.assertEqual(len(unraisable), 1)
+            self.assertIs(unraisable[0].exc_type, RuntimeError)
+        else:
+            self.assertEqual(calls, [])
+            self.assertEqual(unraisable, [])
 
     def test_time_types_extremes_thresholds_and_clock_sample(self):
         for now, validity in [(self.before-1, "not_yet_valid"), (self.before, "within_interval"),

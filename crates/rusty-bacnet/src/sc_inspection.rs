@@ -208,10 +208,23 @@ impl<'a, 'py> PemInput<'a, 'py> {
         if let Ok(value) = value.cast::<PyBytes>() {
             Ok(Self::Bytes(value.as_bytes()))
         } else if let Ok(value) = value.cast::<PyByteArray>() {
-            Ok(Self::Mutable {
-                value,
-                buffer: PyBuffer::get(value.as_any())?,
-            })
+            let buffer = if !value.is_exact_instance_of::<PyByteArray>()
+                && value.py().version_info() >= (3, 12)
+            {
+                // Python 3.12 introduced subclass buffer hooks. Invoke the
+                // built-in descriptor so the export pins the same bytearray
+                // storage we lock below, without calling an override that can
+                // redirect the input to unrelated mutable storage.
+                let view = value
+                    .py()
+                    .get_type::<PyByteArray>()
+                    .getattr("__buffer__")?
+                    .call1((value, pyo3::ffi::PyBUF_FULL_RO))?;
+                PyBuffer::get(&view)?
+            } else {
+                PyBuffer::get(value.as_any())?
+            };
+            Ok(Self::Mutable { value, buffer })
         } else {
             Err(PyTypeError::new_err(
                 "PEM content must be bytes or bytearray",
@@ -342,7 +355,17 @@ mod tests {
     fn mutable_input_export_pins_length_until_the_bounded_snapshot_finishes() {
         Python::initialize();
         Python::attach(|py| {
-            let value = PyByteArray::new(py, b"abc");
+            for value in [
+                PyByteArray::new(py, b"abc"),
+                py.eval(
+                    c"type('Redirected', (bytearray,), {'__buffer__': lambda self, flags: memoryview(bytearray(b'other'))})(b'abc')",
+                    None,
+                    None,
+                )
+                .unwrap()
+                .cast_into::<PyByteArray>()
+                .unwrap(),
+            ] {
             let input = PemInput::pin(value.as_any()).unwrap();
             let other = value.clone().unbind();
             // A different attached thread tries to enlarge the array between
@@ -365,6 +388,7 @@ mod tests {
             assert_eq!(remaining, 0);
             value.resize(4).unwrap();
             assert_eq!(snapshot.as_ref(), b"abc");
+            }
         });
     }
 
