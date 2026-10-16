@@ -43,10 +43,23 @@ async fn observe_connections(rounds: usize) -> Vec<HandshakeKind> {
             kinds
         };
         let connect = async {
-            for _ in 0..rounds {
+            let mut previous: Option<std::sync::Arc<super::ScTlsPeerInfo>> = None;
+            for round in 0..rounds {
                 // One factory invocation, same cache/resolver/verifier on every
                 // attempt. Receiving WS traffic processes post-handshake tickets.
                 let ws = TlsWebSocket::connect(&url, node.clone()).await.unwrap();
+                let info = ws.peer_info().clone();
+                assert_eq!(info.handshake_kind(), if round == 0 { super::ScHandshakeKind::Full } else { super::ScHandshakeKind::Resumed });
+                assert_eq!(info.peer_address(), listener.local_addr().unwrap());
+                assert_eq!(info.server_name(), "localhost");
+                assert_eq!(info.protocol_version(), Some("TLSv1_3"));
+                assert!(info.cipher_suite().unwrap().starts_with("TLS13_"));
+                if let Some(previous) = previous {
+                    assert_ne!(previous.connection_id(), info.connection_id());
+                    assert_eq!(previous.certificates(), info.certificates());
+                    assert_eq!(previous.leaf_sha256(), info.leaf_sha256());
+                }
+                previous = Some(info);
                 assert_eq!(ws.recv().await.unwrap(), b"ticket barrier");
                 ws.send(b"node reply").await.unwrap();
                 assert_eq!(ws.recv().await.unwrap(), b"done");

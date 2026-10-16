@@ -332,6 +332,7 @@ dependencies = [
  "bacnet-types",
  "bytes",
  "futures-util",
+ "rcgen",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -527,6 +528,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "windows-sys 0.61.2",
+ "x509-parser",
 ]
 
 [[package]]

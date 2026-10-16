@@ -20,6 +20,7 @@ mod object_audit_policy;
 mod py_async;
 mod read_range;
 mod sc_identity;
+mod sc_peer;
 mod sc_reconnect;
 mod server;
 mod tls;
@@ -55,6 +56,7 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bip_options::PyForeignDevice>()?;
     m.add_class::<bip_options::PyBbmd>()?;
     m.add_class::<sc_reconnect::PyScReconnect>()?;
+    sc_peer::register(m)?;
     endpoint::register(m)?;
     m.add_function(wrap_pyfunction!(mstp_py::list_serial_ports, m)?)?;
     m.add_function(wrap_pyfunction!(log_records::decode_log_records, m)?)?;

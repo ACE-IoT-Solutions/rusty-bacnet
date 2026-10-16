@@ -154,7 +154,7 @@ impl ScClientBuilder {
     /// and drops its inputs; this does not promise generic endpoint rollback.
     ///
     /// The client's [`transport()`](BACnetClient::transport) lends the hub
-    /// connection-state watch and the NPDU drop counts:
+    /// connection-state watch, accepted Hub certificate observation and NPDU drop counts:
     ///
     /// ```no_run
     /// use bacnet_client::client::BACnetClient;
@@ -176,6 +176,8 @@ impl ScClientBuilder {
     ///             let _connected = *state.borrow_and_update() == ScConnectionState::Connected;
     ///         }
     ///     });
+    ///     // Owned historical TLS data, present only for an accepted active Hub.
+    ///     let _peer = client.transport().hub_peer_info().await;
     ///     // A snapshot: poll it as often as needed.
     ///     let _full_queue_drops = client.transport().npdu_drop_counts().full_drops;
     ///     Ok(())

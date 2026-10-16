@@ -147,6 +147,7 @@ mod client_methods {
     mod log_read;
     mod object_device_alarm;
     mod read_write;
+    mod sc_peer;
     mod vt_audit_time_directed;
 }
 mod state;
