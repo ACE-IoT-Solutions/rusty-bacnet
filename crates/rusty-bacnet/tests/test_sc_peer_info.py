@@ -1,6 +1,7 @@
 """Installed-extension observations use independent OpenSSL/hashlib oracles."""
 import asyncio
 import hashlib
+import math
 import ssl
 import subprocess
 import time
@@ -24,8 +25,16 @@ class ScPeerInfoTests(ClientScFixture):
         peer = await client.sc_peer_info()
         after = time.time()
         self.assertIsInstance(peer, ScPeerInfo)
-        self.assertLessEqual(before, peer.observed_at_unix)
-        self.assertLessEqual(peer.observed_at_unix, after)
+        observed = peer.observed_at_unix
+        self.assertIsInstance(observed, float)
+        self.assertTrue(math.isfinite(observed))
+        # CPython 3.12 on Windows reads the coarse system clock, while Rust
+        # reads its precise counterpart. Allow one reported clock tick plus
+        # rounding of the independently converted floating-point timestamps.
+        clock_tolerance = time.get_clock_info("time").resolution + 2 * max(
+            math.ulp(before), math.ulp(observed), math.ulp(after))
+        self.assertLessEqual(before - clock_tolerance, observed)
+        self.assertLessEqual(observed, after + clock_tolerance)
         self.assertEqual(peer.server_name, "localhost")
         self.assertEqual(peer.peer_address, relay.url.replace("wss://localhost:", "127.0.0.1:"))
         self.assertEqual(peer.handshake_kind, "full")
