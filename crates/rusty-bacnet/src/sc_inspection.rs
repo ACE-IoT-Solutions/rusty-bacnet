@@ -6,8 +6,10 @@ use bacnet_transport::sc_tls::inspection::{
     ScInspectionError, ScInspectionFinding, ScKeyFilePermissions, ScPemInspection, MAX_INPUT_BYTES,
 };
 use pyo3::{
+    buffer::PyBuffer,
     exceptions::{PyOSError, PyTypeError, PyValueError},
     prelude::*,
+    sync::critical_section::with_critical_section,
     types::{PyBool, PyByteArray, PyBytes, PyInt, PyString, PyTuple},
 };
 use std::{borrow::Cow, path::PathBuf};
@@ -194,26 +196,52 @@ fn time(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<i64>> {
         })
         .transpose()
 }
-fn bytes_len(value: &Bound<'_, PyAny>) -> PyResult<usize> {
-    if let Ok(value) = value.cast::<PyBytes>() {
-        Ok(value.as_bytes().len())
-    } else if let Ok(value) = value.cast::<PyByteArray>() {
-        Ok(value.len())
-    } else {
-        Err(PyTypeError::new_err(
-            "PEM content must be bytes or bytearray",
-        ))
-    }
+enum PemInput<'a, 'py> {
+    Bytes(&'a [u8]),
+    Mutable {
+        value: &'a Bound<'py, PyByteArray>,
+        buffer: PyBuffer<u8>,
+    },
 }
-fn bytes<'a>(value: &'a Bound<'_, PyAny>) -> PyResult<Cow<'a, [u8]>> {
-    if let Ok(value) = value.cast::<PyBytes>() {
-        Ok(Cow::Borrowed(value.as_bytes()))
-    } else if let Ok(value) = value.cast::<PyByteArray>() {
-        Ok(Cow::Owned(value.to_vec()))
-    } else {
-        Err(PyTypeError::new_err(
-            "PEM content must be bytes or bytearray",
-        ))
+impl<'a, 'py> PemInput<'a, 'py> {
+    fn pin(value: &'a Bound<'py, PyAny>) -> PyResult<Self> {
+        if let Ok(value) = value.cast::<PyBytes>() {
+            Ok(Self::Bytes(value.as_bytes()))
+        } else if let Ok(value) = value.cast::<PyByteArray>() {
+            Ok(Self::Mutable {
+                value,
+                buffer: PyBuffer::get(value.as_any())?,
+            })
+        } else {
+            Err(PyTypeError::new_err(
+                "PEM content must be bytes or bytearray",
+            ))
+        }
+    }
+
+    fn snapshot(self, remaining: &mut usize, role: ScInputRole) -> PyResult<Cow<'a, [u8]>> {
+        let len = match &self {
+            Self::Bytes(value) => value.len(),
+            Self::Mutable { buffer, .. } => buffer.len_bytes(),
+        };
+        if len > *remaining {
+            return Err(error(ScInspectionError::Input {
+                role,
+                index: None,
+                kind: ScInputErrorKind::InputTooLarge,
+            }));
+        }
+        let snapshot = match self {
+            Self::Bytes(value) => Cow::Borrowed(value),
+            Self::Mutable { value, buffer } => {
+                // The export pins the checked length through this exact copy,
+                // including on free-threaded Python. Lock mutable contents while
+                // copying; dropping the export releases it on every exit path.
+                Cow::Owned(with_critical_section(value, || buffer.to_vec(value.py()))?)
+            }
+        };
+        *remaining -= snapshot.len();
+        Ok(snapshot)
     }
 }
 fn path(value: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
@@ -258,26 +286,15 @@ fn inspect_sc_pem(
     inspected_at_unix: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyScPemInspection> {
     let now = time(inspected_at_unix)?;
-    let mut total = 0usize;
-    for (role, value) in [
-        (ScInputRole::Identity, Some(identity_pem)),
-        (ScInputRole::PeerTrust, peer_trust_pem),
-        (ScInputRole::PrivateKey, private_key_pem),
-    ] {
-        if let Some(value) = value {
-            total = total.saturating_add(bytes_len(value)?);
-            if total > MAX_INPUT_BYTES {
-                return Err(error(ScInspectionError::Input {
-                    role,
-                    index: None,
-                    kind: ScInputErrorKind::InputTooLarge,
-                }));
-            }
-        }
-    }
-    let identity = bytes(identity_pem)?;
-    let trust = peer_trust_pem.map(bytes).transpose()?;
-    let key = private_key_pem.map(bytes).transpose()?;
+    let mut remaining = MAX_INPUT_BYTES;
+    let mut snapshot = |value, role| PemInput::pin(value)?.snapshot(&mut remaining, role);
+    let identity = snapshot(identity_pem, ScInputRole::Identity)?;
+    let trust = peer_trust_pem
+        .map(|value| snapshot(value, ScInputRole::PeerTrust))
+        .transpose()?;
+    let key = private_key_pem
+        .map(|value| snapshot(value, ScInputRole::PrivateKey))
+        .transpose()?;
     inspection::inspect_sc_pem(&identity, trust.as_deref(), key.as_deref(), now)
         .map(PyScPemInspection)
         .map_err(error)
@@ -314,4 +331,75 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(inspect_sc_pem, m)?)?;
     m.add_function(wrap_pyfunction!(inspect_sc_pem_files, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::exceptions::PyBufferError;
+
+    #[test]
+    fn mutable_input_export_pins_length_until_the_bounded_snapshot_finishes() {
+        Python::initialize();
+        Python::attach(|py| {
+            let value = PyByteArray::new(py, b"abc");
+            let input = PemInput::pin(value.as_any()).unwrap();
+            let other = value.clone().unbind();
+            // A different attached thread tries to enlarge the array between
+            // acquiring the export and copying it, without a timing race.
+            let resize = std::thread::spawn(move || {
+                Python::attach(|py| {
+                    other
+                        .bind(py)
+                        .resize(MAX_INPUT_BYTES + 1)
+                        .unwrap_err()
+                        .is_instance_of::<PyBufferError>(py)
+                })
+            });
+            assert!(py.detach(|| resize.join().unwrap()));
+            let mut remaining = 3;
+            let snapshot = input
+                .snapshot(&mut remaining, ScInputRole::Identity)
+                .unwrap();
+            assert_eq!(snapshot.as_ref(), b"abc");
+            assert_eq!(remaining, 0);
+            value.resize(4).unwrap();
+            assert_eq!(snapshot.as_ref(), b"abc");
+        });
+    }
+
+    #[test]
+    fn aggregate_snapshot_budget_and_error_paths_release_mutable_exports() {
+        Python::initialize();
+        Python::attach(|py| {
+            let identity = PyByteArray::new(py, b"abc");
+            let trust = PyByteArray::new(py, b"de");
+            let key = PyByteArray::new(py, b"f");
+            let mut remaining = 4;
+            let snapshot = PemInput::pin(identity.as_any())
+                .unwrap()
+                .snapshot(&mut remaining, ScInputRole::Identity)
+                .unwrap();
+            assert_eq!(snapshot.len(), 3);
+            assert_eq!(remaining, 1);
+            let error = PemInput::pin(trust.as_any())
+                .unwrap()
+                .snapshot(&mut remaining, ScInputRole::PeerTrust)
+                .unwrap_err();
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert!(error.to_string().contains("input_too_large"));
+            assert_eq!(remaining, 1);
+            // Rejection drops its export; a successful previous copy released
+            // its export too, even while the owned snapshot remains alive.
+            trust.resize(3).unwrap();
+            identity.resize(4).unwrap();
+            let last = PemInput::pin(key.as_any())
+                .unwrap()
+                .snapshot(&mut remaining, ScInputRole::PrivateKey)
+                .unwrap();
+            assert_eq!(last.as_ref(), b"f");
+            assert_eq!(remaining, 0);
+            key.resize(2).unwrap();
+        });
+    }
 }

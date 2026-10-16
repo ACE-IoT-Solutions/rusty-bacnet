@@ -3,6 +3,7 @@ import errno
 import hashlib
 import importlib.util
 import io
+import math
 import os
 import pickle
 import ssl
@@ -17,6 +18,16 @@ from rusty_bacnet import (
     ScPemInspection, ScInspectedCertificate, ScInspectionFinding,
     ScExtensionInspection, ScKeyFilePermissions, inspect_sc_pem, inspect_sc_pem_files,
 )
+
+
+def assert_unix_second_sample(test, before, observed, after, resolution):
+    # CPython 3.12 on Windows can read a coarser clock than Rust. Account
+    # for that tick and float rounding, then intersect with the sampled
+    # integer second's [observed, observed + 1) interval.
+    tolerance = resolution + 2 * max(
+        math.ulp(before), math.ulp(observed), math.ulp(after))
+    test.assertLess(before - tolerance, observed + 1)
+    test.assertLessEqual(observed, after + tolerance)
 
 
 class ScPemInspectionTests(unittest.TestCase):
@@ -120,10 +131,22 @@ class ScPemInspectionTests(unittest.TestCase):
         for now in (-(2**63)-1, 2**63):
             with self.assertRaises(OverflowError):
                 inspect_sc_pem(self.identity, inspected_at_unix=now)
-        start = int(time.time())
+        start = time.time()
         report = inspect_sc_pem(self.identity)
-        self.assertLessEqual(start, report.inspected_at_unix)
-        self.assertLessEqual(report.inspected_at_unix, int(time.time()))
+        end = time.time()
+        self.assertIsInstance(report.inspected_at_unix, int)
+        assert_unix_second_sample(self, start, report.inspected_at_unix, end,
+                                  time.get_clock_info("time").resolution)
+
+    def test_default_clock_assertion_handles_coarse_second_boundaries(self):
+        tick = 0.015625
+        assert_unix_second_sample(self, 1000.99, 1001, 1000.99, tick)
+        assert_unix_second_sample(self, 1001.001, 1000, 1001.001, tick)
+        assert_unix_second_sample(self, 1000.75, 1000, 1000.8, tick)
+        for before, observed, after in [(1000.5, 1001, 1000.5),
+                                        (1001.5, 1000, 1001.5)]:
+            with self.assertRaises(AssertionError):
+                assert_unix_second_sample(self, before, observed, after, tick)
 
     def test_missing_malformed_oversized_inputs_and_safe_errors(self):
         for kwargs in ({"peer_trust_pem": b""}, {"private_key_pem": b""}):
@@ -134,6 +157,18 @@ class ScPemInspectionTests(unittest.TestCase):
                 inspect_sc_pem(value)
         with self.assertRaisesRegex(ValueError, "input_too_large"):
             inspect_sc_pem(b" " * (1024 * 1024 + 1))
+        # Reject the combined size before parsing, and release every export
+        # so callers can immediately resize their inputs on error.
+        mutable = bytearray(b" " * (1024 * 1024))
+        trust = bytearray(b"x")
+        with self.assertRaisesRegex(ValueError, "input_too_large"):
+            inspect_sc_pem(mutable, peer_trust_pem=trust)
+        mutable.clear()
+        trust.clear()
+        too_large = bytearray(b" " * (1024 * 1024 + 1))
+        with self.assertRaisesRegex(ValueError, "input_too_large"):
+            inspect_sc_pem(too_large)
+        too_large.clear()
         for sentinel in (b"-----BEGIN SENTINEL-SECRET invalid\n", b"-----BEGIN SENTINEL-SECRET-----\n"):
             with self.assertRaises(ValueError) as caught:
                 inspect_sc_pem(self.identity, private_key_pem=sentinel)
