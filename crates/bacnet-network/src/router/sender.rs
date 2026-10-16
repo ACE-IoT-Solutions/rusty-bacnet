@@ -76,3 +76,7 @@ fn count_if_too_long<T: TransportPort>(
         shared.engine.lock().refused_later(SendRefusal::TooLong);
     }
 }
+
+#[cfg(test)]
+#[path = "sender_ready_tests.rs"]
+mod tests;

@@ -118,6 +118,10 @@ impl Receiver {
     /// Cancellation while waiting consumes no send. Only this receiver can
     /// wait, and its next call checks the queue even after a notification.
     pub(super) async fn recv(&mut self) -> Option<SendRequest> {
+        // Like Tokio's bounded receiver, cooperate even if the queue and
+        // transport stay ready. Yield before selecting a send, not after
+        // removing one that a higher-priority arrival could overtake.
+        tokio::task::consume_budget().await;
         loop {
             match self.try_recv() {
                 Ok(request) => return Some(request),
