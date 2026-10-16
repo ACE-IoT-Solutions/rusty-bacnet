@@ -116,7 +116,9 @@ async fn take_unconfirmed(
 #[tokio::test(start_paused = true)]
 async fn unconfirmed_history_beyond_one_apdu_goes_out_in_several_notifications() {
     let mut h = Harness::start(ServerConfig {
-        max_apdu_length: u32::from(SMALL_APDU),
+        device: bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(u16::try_from(u32::from(SMALL_APDU)).expect("Device APDU fits u16"))
+            .expect("valid Device APDU"),
         ..ServerConfig::default()
     })
     .await;
@@ -148,7 +150,9 @@ async fn notifications_fit_the_maximum_apdu_the_subscriber_advertised() {
 #[tokio::test(start_paused = true)]
 async fn history_beyond_the_bound_drops_the_oldest_changes_and_counts_them() {
     let mut h = Harness::start(ServerConfig {
-        max_apdu_length: u32::from(SMALL_APDU),
+        device: bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(u16::try_from(u32::from(SMALL_APDU)).expect("Device APDU fits u16"))
+            .expect("valid Device APDU"),
         ..ServerConfig::default()
     })
     .await;
@@ -237,7 +241,9 @@ async fn untimestamped_values_go_in_the_last_notification() {
 #[tokio::test(start_paused = true)]
 async fn confirmed_history_chunks_go_out_one_per_acknowledgment() {
     let mut h = Harness::start(ServerConfig {
-        max_apdu_length: u32::from(SMALL_APDU),
+        device: bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(u16::try_from(u32::from(SMALL_APDU)).expect("Device APDU fits u16"))
+            .expect("valid Device APDU"),
         ..ServerConfig::default()
     })
     .await;
@@ -276,7 +282,9 @@ const HOLD_OFF: Duration = Duration::from_millis(10 * (DEFAULT_APDU_RETRIES as u
 #[tokio::test(start_paused = true)]
 async fn a_failed_confirmed_chunk_goes_out_again_before_the_rest() {
     let mut h = Harness::start(ServerConfig {
-        max_apdu_length: u32::from(SMALL_APDU),
+        device: bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(u16::try_from(u32::from(SMALL_APDU)).expect("Device APDU fits u16"))
+            .expect("valid Device APDU"),
         cov_retry_timeout_ms: 10,
         ..ServerConfig::default()
     })

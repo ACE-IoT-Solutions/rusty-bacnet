@@ -53,8 +53,7 @@ async fn dcc_suppresses_periodic_event_send() {
         .unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -205,8 +204,7 @@ async fn fixture_with_commanded_nc(
 
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -259,8 +257,7 @@ async fn event_notification_missing_class_distributes_nothing() {
     let mut db = clocked_test_database();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -418,8 +415,7 @@ pub(super) fn db_with_high_limit_transition(
     db.add(Box::new(ai)).unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -554,8 +550,7 @@ async fn event_enable_cleared_suppresses_periodic_time_delay_send() {
     db.add(Box::new(ai)).unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -656,8 +651,7 @@ async fn periodic_time_delay_carries_detector_event_type_to_wire() {
     db.add(Box::new(ai)).unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),

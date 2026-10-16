@@ -15,10 +15,10 @@ use bacnet_bip_codec::{BvlcFunction, Bvll};
 use bacnet_bip_core::node::{Discard, Link, Mode, Permissive};
 use bacnet_mstp_codec::{Frame as MstpFrame, FrameType};
 use bacnet_mstp_core::{Action, Instant};
-use bacnet_router_core::bip::{self, BipPort, Ingress};
-use bacnet_router_core::mstp::{self, MstpPort};
+use bacnet_router_core::bip::{BipPort, Ingress};
+use bacnet_router_core::mstp::MstpPort;
 use bacnet_router_core::npdu::{Address, Npdu};
-use bacnet_router_core::router::{Group, Host, Limits, Options, PortConfig, Received, SendRefusal};
+use bacnet_router_core::router::{Limits, Options, PortConfig, Received, SendRefusal};
 use bacnet_router_core::PortId;
 
 use fixture::{apdu_to, router_with, TestRouter, CONFIRMED, UNCONFIRMED};
@@ -33,20 +33,6 @@ const MSTP: MstpPort = MstpPort::new(PortId(1));
 const LOCAL_BBMD: core::net::SocketAddrV4 = sock(192, 0, 2, 1, PORT);
 /// A device on network 1 that the MS/TP side answers.
 const DEVICE_44: core::net::SocketAddrV4 = sock(192, 0, 2, 44, 0xBAC1);
-
-/// The router's host: each port's group addresses.
-struct Groups {
-    link: Link,
-}
-
-impl Host for Groups {
-    fn group(&self, port: PortId, mac: &[u8]) -> Group {
-        match port {
-            BIP => bip::group(&self.link, mac),
-            _ => mstp::group(mac),
-        }
-    }
-}
 
 /// The B/IP port, a normal node at [`OWN`] with `link`'s budget.
 fn bip_port(link: Link) -> BipPort<'static> {
@@ -113,9 +99,7 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
     let now = Instant::from_millis(1);
     let mut bip = bip_port(link(Mode::Normal));
     let mut router = router(&bip, None, Options::HOSTED);
-    let mut host = Groups {
-        link: *bip.node().link(),
-    };
+    let mut host = bacnet_router_core::router::Permissive;
     let (mut bus, mut out) = (Bus::<1>::new(), Wire::default());
     let mut core = bus.core(true);
 
@@ -165,14 +149,10 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
 fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
     let now = Instant::from_millis(1);
     let mut bip = bip_port(link(Mode::Normal));
-    let held_to_501 = PortConfig {
-        max_npdu: Limits::both(501),
-        ..MstpPort::config(&config(true), MSTP_NET).unwrap()
-    };
+    let mut held_to_501 = MstpPort::config(&config(true), MSTP_NET).unwrap();
+    held_to_501.max_npdu = Limits::both(501);
     let mut router = router(&bip, Some(held_to_501), Options::HOSTED);
-    let mut host = Groups {
-        link: *bip.node().link(),
-    };
+    let mut host = bacnet_router_core::router::Permissive;
     let (mut bus, mut out) = (Bus::<1>::new(), Wire::default());
     let mut core = bus.core(false);
     // From the peer, the relay gains SNET and a six-octet SADR (11 octets)
@@ -224,9 +204,7 @@ fn mstp_delivery_becomes_bip_original_unicast_with_reply_postponed() {
     let now = Instant::from_millis(1);
     let mut bip = bip_port(link(Mode::Normal));
     let mut router = router(&bip, None, Options::HOSTED);
-    let mut host = Groups {
-        link: *bip.node().link(),
-    };
+    let mut host = bacnet_router_core::router::Permissive;
     let (mut bus, mut out) = (Bus::<1>::new(), Wire::default());
     let mut core = bus.core(true);
 
@@ -288,9 +266,7 @@ fn strict_bip_failure_precedes_router_or_queue_mutation() {
     let now = Instant::from_millis(1);
     let mut bip = bip_port(link(Mode::Normal));
     let mut router = router(&bip, None, Options::HOSTED);
-    let mut host = Groups {
-        link: *bip.node().link(),
-    };
+    let mut host = bacnet_router_core::router::Permissive;
     let (mut bus, mut out) = (Bus::<1>::new(), Wire::default());
     let mut core = bus.core(true);
     let npdu = routed(20, MSTP_NET, &[5]);
@@ -353,9 +329,7 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
     let now = Instant::from_millis(10);
     let mut bip = bip_port(link(Mode::Normal));
     let mut router = router(&bip, None, Options::HOSTED);
-    let mut host = Groups {
-        link: *bip.node().link(),
-    };
+    let mut host = bacnet_router_core::router::Permissive;
     let mut out = Wire::default();
     let mut relay = |router: &mut TestRouter,
                      npdu: &[u8],
@@ -439,7 +413,7 @@ fn real_bip_success_and_admission_failures_are_observed_once() {
     let mut bip = bip_port(small);
     // The router believes the port carries 1,497 octets.
     let mut router = router(&bip_port(link(Mode::Normal)), None, Options::HOSTED);
-    let mut host = Groups { link: small };
+    let mut host = bacnet_router_core::router::Permissive;
     let mut out = Wire::default();
     let mut relay = |router: &mut TestRouter, npdu: &[u8], out: &mut Wire| {
         let arrived = MSTP.arrived(7, STATION, npdu);
@@ -475,8 +449,7 @@ fn real_bip_success_and_admission_failures_are_observed_once() {
 /// link's group addresses. With the port's groups known, an
 /// Unconfirmed-Request for a group at the link's own UDP port leaves as an
 /// Original-Broadcast, and anything else for a group is dropped and
-/// counted (#1504, #1677; decisions L19, L24). With a host that knows no
-/// groups, the port refuses each before anything is encoded.
+/// counted (#1504, #1677; decisions L19, L24), with the default host.
 ///
 /// Ported from ACE IoT's
 /// `mstp_six_byte_bip_group_destinations_never_reach_the_sink`.
@@ -485,9 +458,7 @@ fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
     let now = Instant::from_millis(1);
     let mut bip = bip_port(link(Mode::Normal));
     let mut router = router(&bip, None, Options::HOSTED);
-    let mut groups = Groups {
-        link: *bip.node().link(),
-    };
+    let mut groups = bacnet_router_core::router::Permissive;
     let mut out = Wire::default();
     let local = [
         SUBNET.broadcast,
@@ -529,19 +500,4 @@ fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
         router.counters().group_dadr_drops,
         (local.len() + elsewhere.len()) as u64
     );
-
-    // A host that knows no groups: the port refuses each unicast.
-    let mut permissive = bacnet_router_core::router::Permissive;
-    let calls = out.calls;
-    for group in local.iter().chain(&elsewhere) {
-        let npdu = apdu_to(BIP_NET, &mac(*group), UNCONFIRMED);
-        let _ = router.receive(
-            MSTP.arrived(7, STATION, &npdu).frame(),
-            now,
-            &mut permissive,
-        );
-        let results = pump(&mut router, |send| bip.send(send, now, &mut out));
-        assert_eq!(results, [(0, Err(SendRefusal::Other))], "{group}");
-    }
-    assert_eq!(out.calls, calls, "the socket never saw a group unicast");
 }

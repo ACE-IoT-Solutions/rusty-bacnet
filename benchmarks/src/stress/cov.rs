@@ -19,10 +19,10 @@ use crate::stress::output::{DegradationPoint, LatencyRecorder};
 fn make_ao_db(device_instance: u32, count: u32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
     let device = DeviceObject::new(DeviceConfig {
-        instance: device_instance,
-        name: "COV Stress Device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(device_instance, 555)
+            .expect("valid Device identity")
+            .with_name("COV Stress Device"),
         vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
         ..DeviceConfig::default()
     })
     .unwrap();

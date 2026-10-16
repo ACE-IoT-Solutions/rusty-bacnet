@@ -420,8 +420,11 @@ discovery. Inbound cursor/no-op and ordered-prefix error semantics are separate.
 For a Device wildcard request `(Device,4194303)`, the bundled server's
 ReadPropertyMultiple result wrapper names the resolved local Device, including
 wrappers containing per-property errors. Its Object_Identifier value names the
-same Device. Without a matching Device, the wrapper retains the wildcard and
-its references return UNKNOWN_OBJECT. Concrete requests remain unchanged.
+same Device. Full servers and endpoints with a composed identity resolve the
+wildcard to their frozen Device identifier; if that Device is absent, its
+references return UNKNOWN_OBJECT without selecting another Device. Standalone
+handlers and identity-free endpoints use the database's selected Device and
+retain the wildcard if none exists. Concrete requests remain unchanged.
 
 ReadPropertyMultiple response indexes follow the effective object declaration:
 requested indexes remain on known arrays, including index zero and inline array
@@ -656,19 +659,40 @@ Transparent wrappers and `AnyTransport` delegate it. The former transport method
 `max_apdu_length()` is now `egress_apdu_limit()` without an alias: it describes
 the current outgoing path, and SC negotiation/reconnect/failover can change it.
 Client budgets continue using egress limits and the client's existing canonical
-configuration policy. Unrelated Device, client and configuration APIs retain
-their names.
+configuration policy.
 
-`ServerConfig.max_apdu_length` is a raw receive ceiling. Startup clamps it to the
-transport's local capacity, rejects an effective value below 50, and requires the
-current selected Device's `Max_APDU_Length_Accepted` to equal that effective
-value before starting the transport. The server does not rewrite an
-application-owned Device. No Device remains a valid startup configuration but
-cannot emit I-Am. Both live I-Am paths recheck the selected Device under the
-same database guard; queued spontaneous announcements check at execution before
-encoding or limiter accounting. A mismatched replacement refuses announcement,
-and a later matching replacement restores it. Database replacement does not
-rebind the discovery limiter's startup identity.
+`bacnet_objects::DeviceIdentity` owns the Device instance, vendor, raw receive
+ceiling, segmentation mode and segment timeout. Full-server builders and
+endpoint builders take `.device(identity)`; `ServerConfig.device` and
+`DeviceConfig.identity` reuse that value. Startup resolves the ceiling against
+the transport's stable local capacity before generating a stock Device. A
+full-server builder with no database generates one from its configured or
+default identity. Endpoint generation requires an explicit `.device(identity)`;
+an identity-free endpoint invents no Device. For both, an explicit
+`.database(ObjectDatabase::new())` stays empty and emits no I-Am until the
+configured Device identifier exists. The full-server default is Device 1,
+vendor 0, APDU 1476, unsegmented, with a 5000 ms segment timeout; standard
+MS/TP resolves to 480.
+
+A supplied database is preserved, including custom Device and backup/profile
+state. Its initially selected Device must match the resolved identifier,
+vendor, capacity, segmentation and active segment timeout before I/O. Runtime
+announcements and served identity properties use that frozen declaration.
+Device wildcard reads through RP, RPM and `read_local` select its identifier.
+Replacing the Device at its identifier does not change those served fields;
+removing it suppresses announcements, and adding a lower Device does not rebind
+them. An absent configured Device yields UNKNOWN_OBJECT for wildcard reads.
+Raw database reads still expose the object's own declarations.
+
+For migration, replace the old independent server vendor/capacity/segmentation/
+timeout fields and builder setters with `.device(DeviceIdentity::new(instance,
+vendor)?.with_max_apdu(raw)?.with_segmentation(mode)
+.with_apdu_segment_timeout_ms(timeout))`. Reuse the resolved identity in an
+application-owned `DeviceConfig { identity, ..Default::default() }`, or omit the
+database to request generation. Endpoint `.identity(...)` and session
+`.with_identity(...)` become `.device(...)`. Endpoint identity reexports remain
+available; upper-layer I-Am and config adapters are free functions in
+`bacnet_endpoint::identity`.
 
 Raw declarations need not be header codes: Device/I-Am 1474 stays 1474, while
 originated confirmed COV, Audit and Event notifications advertise the floor 1024
@@ -677,6 +701,10 @@ in their Confirmed-Request header. The codec helper
 50/128/206/480/1024/1476 not exceeding its input, rejects values below 50 and
 saturates larger unsigned values at 1476. This conversion does not shrink raw
 byte budgets or I-Am values. It is separate from the exact-code encoder API.
+Endpoint sessions also keep the raw receive ceiling and floor their request
+headers. The existing standalone `ClientConfig` accepts only table values, so
+`bacnet_endpoint::identity::client_config` floors the configuration itself for
+that adapter; a raw 1474 identity produces standalone client capacity 1024.
 
 Built-in B/IP, B/IPv6, Ethernet and SC declare local APDU 1476; MS/TP declares 480,
 or 1476 with extended frames on (`MstpConfig::extended_frames`).
@@ -3187,13 +3215,16 @@ and reported like an unqualified one (#1184).
 #### Databases with several Devices
 
 A BACnet device has one Device object (Clause 12.11), but a database may hold
-several. The stack then treats the lowest instance as this device everywhere,
-whatever order the Devices were added in (#1204):
+several. The database selects the lowest instance independently of insertion order
+(#1204). Server startup validates that selection against its explicit identity:
 
 - **This device's Device object** is `selected_device`: wildcard Device reads,
-  Who-Is and Who-Has answers, I-Am, the identity in COV and event
-  notifications, the startup APDU capacity check, the APDU_Timeout an Audit Log
+  Who-Has answers, the identity in COV and event notifications,
+  the APDU_Timeout an Audit Log
   sink uses on receipt, and the services the standalone PICS reports.
+- **Announcements and served identity fields** remain bound to the startup
+  `DeviceIdentity`. Who-Is and manual I-Am require that identifier to remain
+  present; later lower-instance insertion does not rebind announcements.
 - **Device-qualified references** go through `local_device().is_local`: Trend
   Log polling, Event Enrollment references, Command action lists, the
   Schedule, Channel, Staging and Averaging reference rewrites, and an Audit
@@ -5099,6 +5130,41 @@ let client = BACnetClient::sc_builder()
 Use `bip_builder()` for B/IP, `sc_builder()` for BACnet/SC, or
 `generic_builder()` with a prebuilt transport.
 
+### Choosing the client transport at runtime
+
+The B/IP, B/IPv6 and SC builders also offer `build_any::<S>()`, returning
+`BACnetClient<AnyTransport<S>>`. They apply the same configuration as `build()`:
+the B/IP mode and address sharing, the IPv6 interface and device instance,
+and SC identity, TLS, heartbeat and optional reconnect settings. Client tuning,
+notification capacities and custom COV response policies are preserved too.
+The existing `build()` methods still return concrete transport types.
+
+Choose `NoSerial` when the application does not use MS/TP. It supplies the type
+parameter without requiring a serial port, `Clone`, or `Default`. For example,
+with the client's `ipv6` feature enabled:
+
+```rust,no_run
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::{any::AnyTransport, mstp::NoSerial};
+
+async fn connect(ipv6: bool) -> Result<BACnetClient<AnyTransport<NoSerial>>,
+    bacnet_types::error::Error> {
+    if ipv6 {
+        BACnetClient::bip6_builder().port(0).device_instance(123)
+            .build_any::<NoSerial>().await
+    } else {
+        BACnetClient::bip_builder().port(0)
+            .build_any::<NoSerial>().await
+    }
+}
+```
+
+With `sc-tls`, a configured `BACnetClient::sc_builder()` can use the same
+`build_any::<NoSerial>().await` call. SC validates identity, reconnect and
+client options before dialing. Reconnect remains opt-in through `.reconnect(...)`;
+each retry uses the builder's TLS policy. Use `client.stop().await` to shut down
+the selected transport and its background work.
+
 ### Transport access and BBMD helpers
 
 `client.transport()` borrows the transport a built client owns, whichever
@@ -5706,7 +5772,7 @@ conveyed, including those of a notification that fails during the renewal.
 
 Changes that one notification cannot carry go out in several (§13.1,
 §13.18.1.1), strictly in capture order (#1008). Each notification fits the smaller
-of the server's `max_apdu_length` and the max-APDU-length-accepted from the header
+of the server's resolved Device receive capacity and the max-APDU-length-accepted from the header
 of the subscriber's latest SubscribeCOVPropertyMultiple request
 (`subscribe_multiple` takes it as `subscriber_max_apdu`; `None`, unknown, keeps the
 value advertised before). The oldest changes go first, as many per notification as
@@ -7691,7 +7757,7 @@ let db = identity.build_database()?;
 let mut session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
     .role(SessionRole::Both)
     .database(db)
-    .identity(identity)
+    .device(identity)
     .build_session()?;
 session.start().await?;
 session.broadcast_i_am().await?;
@@ -7705,7 +7771,8 @@ validation; `build_hub_session` over a caller-dialed `TlsWebSocket`,
 `MstpEndpointBuilder` composes one serial owner (simulator evidence only —
 no bench or on-wire conformance; timing is RB-26). It runs standard frames
 and a 480-octet APDU bound by default; `extended_frames(true)` turns on
-extended frames and lifts the bound the identity is checked against to 1476.
+extended frames and resolves the requested identity ceiling against 1476.
+With standard frames the default identity resolves to 480 before Device generation.
 The port declares its own echo, as for a transport built by hand
 (`with_echo(Echo::full())`; see [Echo](#echo)).
 
@@ -7714,10 +7781,10 @@ The port declares its own echo, as for a transport built by hand
 | Standalone construction | Shared endpoint composition |
 |---------------------|---------------------|
 | `BACnetClient::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ClientOnly).build_session()?` then `start()` |
-| `BACnetServer::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ServerOnly).database(db).identity(id).build_session()?` then `start()` |
-| Client + server on one device | One `...role(Both).database(db).identity(id).build_session()?` (B/IP, SC, or MS/TP builder) |
+| `BACnetServer::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ServerOnly).database(db).device(id).build_session()?` then `start()` |
+| Client + server on one device | One `...role(Both).database(db).device(id).build_session()?` (B/IP, SC, or MS/TP builder) |
 | `BACnetClient::sc_builder()...build().await` | `ScEndpointBuilder::new(vmac, uuid)...build_hub_session(ws)?` (dial first, then compose) |
-| `BACnetServer::sc_builder()...build().await` | Same `ScEndpointBuilder` with `ServerOnly` + `database` + `identity` |
+| `BACnetServer::sc_builder()...build().await` | Same `ScEndpointBuilder` with `ServerOnly` + `database` + `device` |
 | `generic_builder().transport(mstp)...` | `MstpEndpointBuilder::new(serial, station)...build_session()?` (one serial owner) |
 
 Notes: the endpoint server role defaults to `ReadProperty` (+ `Reject`/`Abort`

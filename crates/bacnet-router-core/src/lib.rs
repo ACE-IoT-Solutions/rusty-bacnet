@@ -82,21 +82,13 @@
 //! ```
 //! use bacnet_router_core::npdu::{Address, Npdu};
 //! use bacnet_router_core::router::{
-//!     Action, Dest, Frame, Limits, Options, Permissive, PortConfig, Received,
+//!     Action, Dest, Frame, Groups, Limits, Options, Permissive, PortConfig, Received,
 //! };
 //! use bacnet_router_core::{Instant, Mac, PortId, Router, Storage};
 //!
 //! let ports = [
-//!     PortConfig {
-//!         network: 1,
-//!         mac: Mac::from_array([192, 0, 2, 1, 0xBA, 0xC0]),
-//!         max_npdu: Limits::both(1497),
-//!     },
-//!     PortConfig {
-//!         network: 2,
-//!         mac: Mac::from_array([1]),
-//!         max_npdu: Limits::both(1497),
-//!     },
+//!     PortConfig::new(1, Mac::from_array([192, 0, 2, 1, 0xBA, 0xC0]), Limits::both(1497), Groups::None),
+//!     PortConfig::new(2, Mac::from_array([1]), Limits::both(1497), Groups::None),
 //! ];
 //! // Two ports, a table of 8 routes and 8 hold-down records; firmware
 //! // keeps the storage in a static.

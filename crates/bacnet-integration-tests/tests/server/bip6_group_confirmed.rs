@@ -36,8 +36,9 @@ pub(super) fn database() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: DEVICE,
-            name: "B/IPv6 server".into(),
+            identity: bacnet_objects::DeviceIdentity::new(DEVICE, 0)
+                .expect("valid Device identity")
+                .with_name("B/IPv6 server"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -150,6 +151,7 @@ async fn a_confirmed_request_forwarded_to_a_bip6_foreign_device_is_ignored() {
     });
     // The I-Am fence goes by broadcast, which a foreign device hands its BBMD.
     let mut server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(DEVICE, 0).unwrap())
         .database(database())
         .discovery_policy(DiscoveryPolicy {
             prefer_directed_responses: false,

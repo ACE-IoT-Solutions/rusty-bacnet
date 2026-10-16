@@ -81,16 +81,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Minimal device database
     let mut db = ObjectDatabase::new();
     let device = DeviceObject::new(DeviceConfig {
-        instance: args.device_instance,
-        name: format!("BBMD-{}", args.device_instance),
+        identity: bacnet_objects::DeviceIdentity::new(args.device_instance, 555)
+            .expect("valid Device identity")
+            .with_name(format!("BBMD-{}", args.device_instance)),
         vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(device)).unwrap();
 
     let mut server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(
+            args.device_instance,
+            555,
+        )?)
         .transport(transport)
         .database(db)
         .build()

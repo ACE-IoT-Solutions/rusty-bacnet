@@ -143,8 +143,9 @@ impl Harness {
         db.add(Box::new(class)).unwrap();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 44,
-                name: "Device".into(),
+                identity: bacnet_objects::DeviceIdentity::new(44, 0)
+                    .expect("valid Device identity")
+                    .with_name("Device"),
                 ..DeviceConfig::default()
             })
             .unwrap(),

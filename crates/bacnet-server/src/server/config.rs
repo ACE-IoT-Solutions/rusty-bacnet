@@ -39,27 +39,11 @@ pub struct ServerConfig {
     /// that broadcasts and unicast are then received in no fixed order. Only
     /// the B/IP builder reads it; a transport passed to `start` has its own.
     pub share_port_by_address: bool,
-    /// Raw local APDU receive ceiling, clamped to the transport's stable capacity.
-    /// The effective value must be at least 50 and equal the selected Device's
-    /// `Max_APDU_Length_Accepted`. I-Am retains this raw value; only originated
-    /// Confirmed-Request headers floor it to a supported encoding.
-    pub max_apdu_length: u32,
-    /// Segmentation support level.
-    ///
-    /// Enforced, not just advertised: the dispatch loop reassembles inbound
-    /// segmented requests only under `BOTH`/`RECEIVE` and transmits
-    /// segmented responses only under `BOTH`/`TRANSMIT` (Clauses 5.4.5.1 and
-    /// 5.4.5.3); anything else draws a SEGMENTATION_NOT_SUPPORTED Abort. The
-    /// default is `NONE`, so a default-configured server refuses segmented
-    /// traffic in both directions — set this to what the device should
-    /// actually honor.
-    pub segmentation_supported: Segmentation,
-    /// Segment timeout (Tseg) in milliseconds; shared by request receive
-    /// (4 * Tseg) and response SegmentACK waits. Default: 5000 ms. When
-    /// segmentation is active it must be positive and match the selected Device.
-    pub apdu_segment_timeout_ms: u64,
-    /// Vendor identifier.
-    pub vendor_id: u16,
+    /// Device declarations shared by stock objects, discovery and active limits.
+    /// Startup resolves its receive ceiling against the owned transport. An
+    /// explicitly supplied selected Device must match; an empty database may
+    /// later add this same OID, but never rebinds the runtime to another Device.
+    pub device: bacnet_objects::DeviceIdentity,
     /// APDU timeout in ms of confirmed COV and event notifications and of the
     /// WriteProperty a Command action sends to another device (default
     /// 3000 ms): how long each attempt waits for the reply once its send has
@@ -215,10 +199,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("port", &self.port)
             .field("broadcast_address", &self.broadcast_address)
             .field("share_port_by_address", &self.share_port_by_address)
-            .field("max_apdu_length", &self.max_apdu_length)
-            .field("segmentation_supported", &self.segmentation_supported)
-            .field("apdu_segment_timeout_ms", &self.apdu_segment_timeout_ms)
-            .field("vendor_id", &self.vendor_id)
+            .field("device", &self.device)
             .field("cov_retry_timeout_ms", &self.cov_retry_timeout_ms)
             .field("time_sync_policy", &self.time_sync_policy)
             .field("mutation_policy", &self.mutation_policy)
@@ -280,6 +261,7 @@ impl std::fmt::Debug for ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            device: bacnet_objects::DeviceIdentity::default(),
             registered_network_port: None,
             audit_reporters: None,
             interface: Ipv4Addr::UNSPECIFIED,
@@ -293,10 +275,6 @@ impl Default for ServerConfig {
             port: 0xBAC0,
             broadcast_address: Ipv4Addr::BROADCAST,
             share_port_by_address: false,
-            max_apdu_length: 1476,
-            segmentation_supported: Segmentation::NONE,
-            apdu_segment_timeout_ms: 5000,
-            vendor_id: 0,
             cov_retry_timeout_ms: 3000,
             time_sync_policy: TimeSyncPolicy::default(),
             on_time_sync: None,
@@ -424,18 +402,15 @@ impl ScServerBuilder {
     }
 }
 
-impl<T: TransportPort + 'static> ServerBuilder<T> {
-    /// Sets the segment timeout in milliseconds for receive and response transfers.
-    pub fn apdu_segment_timeout_ms(mut self, timeout_ms: u64) -> Self {
-        self.config.apdu_segment_timeout_ms = timeout_ms;
-        self
-    }
-}
-
-impl BipServerBuilder {
-    /// Sets the segment timeout in milliseconds for receive and response transfers.
-    pub fn apdu_segment_timeout_ms(mut self, timeout_ms: u64) -> Self {
-        self.config.apdu_segment_timeout_ms = timeout_ms;
-        self
+impl<T: TransportPort + 'static> BACnetServer<T> {
+    /// Start a server builder for a caller-supplied transport type, with default configuration and
+    /// stock Device generation unless a database is supplied.
+    pub fn generic_builder() -> ServerBuilder<T> {
+        ServerBuilder {
+            config: ServerConfig::default(),
+            db: None,
+            transport: None,
+            configured_device_bindings: Vec::new(),
+        }
     }
 }

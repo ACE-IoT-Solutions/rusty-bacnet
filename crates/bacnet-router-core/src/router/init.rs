@@ -11,8 +11,14 @@ use crate::message::RoutingEntries;
 use crate::npdu::{Npdu, GLOBAL_NETWORK};
 use crate::PortId;
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: super::GroupClassifier,
+    > Storage<P, R, H, D, N, G>
 {
     /// Initialize-Routing-Table. A count of 0 is a query, answered with the
     /// whole table in Acks of at most 124 entries, ascending, each network

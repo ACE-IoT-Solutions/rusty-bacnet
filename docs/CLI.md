@@ -93,6 +93,22 @@ question, so pass `--device-instance` there.
 
 ## Commands
 
+### Offline SC credential inspection (development)
+
+`bacnet sc-check --sc-cert node.pem [--sc-ca site-ca.pem] [--sc-key node.key]`
+inspects local files without creating a client or connecting to a hub. Build the
+development checkout with `--features sc-tls`; older release binaries may not
+include this command. `--at-unix <SECONDS>` selects a reproducible signed Unix
+time. The identity file is required; trust and key inputs are optional.
+
+Output is human-readable in a terminal and JSON through a pipe, with explicit
+`--format table|json` and `--json` overrides. Exit 0 permits warnings, 1 reports
+local inspection errors, 2 rejects usage, and 3 means inspection/output could
+not complete. Transport flags such as `--sc` and `--sc-url` are rejected even
+though credential paths use the existing global flags. Read the
+[command contract and examples](sc-check.md) for diagnostics, JSON fields and
+the limits of this advisory result.
+
 ### Interactive Shell
 
 ```bash

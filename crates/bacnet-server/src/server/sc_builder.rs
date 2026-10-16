@@ -9,7 +9,7 @@ impl BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
     pub fn sc_builder() -> ScServerBuilder {
         ScServerBuilder {
             config: ServerConfig::default(),
-            db: ObjectDatabase::new(),
+            db: None,
             configured_device_bindings: Vec::new(),
             hub_url: String::new(),
             tls_config: None,
@@ -29,7 +29,7 @@ impl BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
 /// [`tls_config`](Self::tls_config) are required before `build` can connect.
 pub struct ScServerBuilder {
     pub(super) config: ServerConfig,
-    db: ObjectDatabase,
+    db: Option<ObjectDatabase>,
     pub(super) configured_device_bindings: Vec<DeviceBinding>,
     hub_url: String,
     tls_config: Option<bacnet_transport::sc_tls::ScNodeTlsConfig>,
@@ -44,18 +44,6 @@ impl ScServerBuilder {
     /// Set the hub WebSocket URL (e.g. `wss://hub.example.com/bacnet`).
     pub fn hub_url(mut self, url: &str) -> Self {
         self.hub_url = url.to_string();
-        self
-    }
-
-    /// Sets the segment timeout in milliseconds for receive and response transfers.
-    pub fn apdu_segment_timeout_ms(mut self, timeout_ms: u64) -> Self {
-        self.config.apdu_segment_timeout_ms = timeout_ms;
-        self
-    }
-
-    /// Set the segmentation support this device advertises and enforces.
-    pub fn segmentation_supported(mut self, segmentation: Segmentation) -> Self {
-        self.config.segmentation_supported = segmentation;
         self
     }
 
@@ -100,9 +88,16 @@ impl ScServerBuilder {
         self
     }
 
+    /// Set the one Device identity. With no supplied database, startup creates
+    /// a stock Device after resolving the owned transport's receive capacity.
+    pub fn device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {
+        self.config.device = identity;
+        self
+    }
+
     /// Set the object database (transfers ownership).
     pub fn database(mut self, db: ObjectDatabase) -> Self {
-        self.db = db;
+        self.db = Some(db);
         self
     }
 
@@ -225,7 +220,7 @@ impl ScServerBuilder {
     /// still consumes this builder and drops its inputs; this does not promise
     /// generic endpoint rollback.
     pub async fn build(
-        self,
+        mut self,
     ) -> Result<
         BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>,
         Error,
@@ -258,7 +253,11 @@ impl ScServerBuilder {
         self.config.read_range_budget.validate()?;
         self.config.get_event_information_budget.validate()?;
         self.config.cov_policy.validate()?;
-        super::segmented_receive::validate_segment_timeout(&self.config, &self.db)?;
+        let db = crate::local_device::prepare_database(
+            &mut self.config, self.db,
+            bacnet_transport::sc::ScTransport::<bacnet_transport::sc_tls::TlsWebSocket>::LOCAL_RECEIVE_APDU_CAPACITY,
+        )?;
+        super::segmented_receive::validate_segment_timeout(&self.config)?;
 
         let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&self.hub_url, tls_config.clone())
             .await?;
@@ -283,7 +282,7 @@ impl ScServerBuilder {
 
         BACnetServer::start_with_clock_mode_and_bindings(
             self.config,
-            self.db,
+            db,
             transport,
             Some(ClockConfig::default()),
             self.configured_device_bindings,

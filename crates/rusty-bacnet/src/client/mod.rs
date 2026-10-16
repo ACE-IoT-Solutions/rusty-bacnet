@@ -7,15 +7,12 @@ use bytes::BytesMut;
 use pyo3::exceptions::{PyDeprecationWarning, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-use tokio::sync::Mutex;
 
 use bacnet_client::client;
 use bacnet_client::client::WriteGroupDestination;
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_services::alarm_event::AcknowledgeAlarmRequest;
 use bacnet_services::alarm_summary::GetAlarmSummaryAck;
-type ClientInner =
-    Arc<Mutex<Option<Arc<client::BACnetClient<AnyTransport<crate::mstp_py::PySerial>>>>>>;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
@@ -36,8 +33,6 @@ use bacnet_services::who_has::WhoHasObject;
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_services::write_group::{GroupChannelValue, WriteGroupRequest};
 use bacnet_transport::any::AnyTransport;
-use bacnet_transport::bip::BipTransport;
-use bacnet_transport::bip6::Bip6Transport;
 use bacnet_types::enums::{AcknowledgmentFilter, ConfirmedServiceChoice, UnconfirmedServiceChoice};
 use bacnet_types::primitives::BACnetTimeStamp;
 
@@ -51,6 +46,10 @@ use crate::types::{
     PyObjectType, PyPropertyIdentifier, PyPropertyValue, PyPropertyWrite, PyReadAccessSpec,
     PyReinitializedState, PyWriteAccessSpec,
 };
+use state::started;
+
+type CoreClient = client::BACnetClient<AnyTransport<crate::mstp_py::PySerial>>;
+type ClientInner = Arc<state::ClientState>;
 
 fn validate_write_priority(priority: Option<u8>) -> PyResult<()> {
     bacnet_services::write_property::validate_priority(priority)
@@ -127,6 +126,7 @@ pub struct BACnetClient {
     sc_client_key: Option<String>,
     sc_heartbeat_interval_ms: Option<u64>,
     sc_heartbeat_timeout_ms: Option<u64>,
+    reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
     // IPv6 config
     ipv6_interface: Option<String>,
     /// The device instance whose VMAC an ipv6 client uses (H.7.2); `None`
@@ -147,8 +147,10 @@ mod client_methods {
     mod log_read;
     mod object_device_alarm;
     mod read_write;
+    mod sc_peer;
     mod vt_audit_time_directed;
 }
+mod state;
 
 // ---------------------------------------------------------------------------
 // Helpers

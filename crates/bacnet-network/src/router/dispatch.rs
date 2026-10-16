@@ -23,7 +23,7 @@ use tracing::{debug, warn};
 use super::actions::drain;
 use super::control_policy::ControlGate;
 use super::engine::Engine;
-use super::hosted_host::{EngineWarnings, HostedHost, PortGroups};
+use super::hosted_host::{EngineWarnings, HostedHost};
 use super::local_control::LocalControl;
 use super::local_delivery::Delivery;
 use super::SendRequest;
@@ -35,8 +35,6 @@ pub(super) struct Shared {
     pub(super) engine: Engine,
     /// The RB-09 wire-control gate.
     pub(super) gate: Arc<ControlGate>,
-    /// Each port's group destinations, by port index.
-    pub(super) groups: Vec<PortGroups>,
     /// Each port's network number, by port index.
     pub(super) networks: Vec<u16>,
     /// The throttles for the engine's per-frame warnings.
@@ -68,7 +66,6 @@ impl Shared {
     /// Run the engine's sweep if it is due, and return when the next is.
     pub(super) fn sweep(&self) -> Option<bacnet_router_core::Instant> {
         let mut host = HostedHost::new(
-            &self.groups,
             &self.gate,
             &self.warnings,
             TransportProvenance::unverified(),
@@ -136,12 +133,7 @@ impl PortDispatch {
             link_group: received.link_layer_group,
             npdu: &received.npdu,
         };
-        let mut host = HostedHost::new(
-            &shared.groups,
-            &shared.gate,
-            &shared.warnings,
-            received.provenance,
-        );
+        let mut host = HostedHost::new(&shared.gate, &shared.warnings, received.provenance);
         let outcome = {
             let mut router = shared.engine.lock();
             let failures = router.counters().write_failures;

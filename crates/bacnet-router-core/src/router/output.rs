@@ -312,8 +312,14 @@ impl Outputs {
     }
 }
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: super::GroupClassifier,
+    > Storage<P, R, H, D, N, G>
 {
     /// Drop whatever the caller left unpolled, counting each output.
     pub(super) fn drop_undrained(&mut self) {

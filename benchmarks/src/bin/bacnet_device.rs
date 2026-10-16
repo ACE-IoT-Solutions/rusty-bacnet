@@ -92,10 +92,10 @@ fn make_db(device_instance: u32, object_count: u32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
 
     let device = DeviceObject::new(DeviceConfig {
-        instance: device_instance,
-        name: format!("Device-{device_instance}"),
+        identity: bacnet_objects::DeviceIdentity::new(device_instance, 555)
+            .expect("valid Device identity")
+            .with_name(format!("Device-{device_instance}")),
         vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -162,12 +162,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
 
                 BACnetServer::generic_builder()
+                    .device(bacnet_objects::DeviceIdentity::new(args.device_instance, 555).unwrap())
                     .transport(transport)
                     .database(db)
                     .build()
                     .await?
             } else {
                 BACnetServer::bip_builder()
+                    .device(bacnet_objects::DeviceIdentity::new(args.device_instance, 555).unwrap())
                     .interface(interface)
                     .port(args.port)
                     .broadcast_address(broadcast)
@@ -193,6 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ws = TlsWebSocket::connect(hub_url, sc.tls).await?;
             let transport = ScTransport::new(ws, vmac).with_device_uuid(sc.uuid);
             let mut server = BACnetServer::generic_builder()
+                .device(bacnet_objects::DeviceIdentity::new(args.device_instance, 555).unwrap())
                 .transport(transport)
                 .database(db)
                 .build()

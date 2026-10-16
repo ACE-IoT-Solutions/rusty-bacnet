@@ -131,6 +131,16 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Inspect local SC credential files offline; no hub or transport identity is needed.
+    ///
+    /// Requires --sc-cert; --sc-ca and --sc-key are optional. This advisory
+    /// inventory does not establish TLS acceptance or change connection policy.
+    ScCheck {
+        /// Inspect at this signed Unix second instead of sampling the clock.
+        #[arg(long, value_name = "SECONDS", allow_hyphen_values = true)]
+        at_unix: Option<i64>,
+    },
+
     /// Launch interactive shell.
     Shell,
 

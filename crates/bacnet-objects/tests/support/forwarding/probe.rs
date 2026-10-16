@@ -106,7 +106,8 @@ impl Probe {
             oid: oid(object_type, 1),
             log,
             device: DeviceObject::new(DeviceConfig {
-                instance: 77,
+                identity: bacnet_objects::DeviceIdentity::new(77, 0)
+                    .expect("valid Device identity"),
                 ..DeviceConfig::default()
             })
             .unwrap(),

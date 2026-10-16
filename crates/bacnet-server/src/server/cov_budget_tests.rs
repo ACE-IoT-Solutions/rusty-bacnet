@@ -18,8 +18,9 @@ fn test_db_with_ao() -> (Arc<RwLock<ObjectDatabase>>, ObjectIdentifier) {
     let ao_oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -207,8 +208,9 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
     let ao_oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -222,6 +224,7 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
         ..Default::default()
     };
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .database(db)
         .transport(transport)
         .cov_policy(policy)
@@ -278,8 +281,9 @@ async fn expired_subscription_purged_before_cov_property_multiple_admission() {
     let ao_oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -293,6 +297,7 @@ async fn expired_subscription_purged_before_cov_property_multiple_admission() {
         ..Default::default()
     };
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .database(db)
         .transport(transport)
         .cov_policy(policy)

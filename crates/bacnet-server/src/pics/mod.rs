@@ -382,7 +382,7 @@ impl<'a> PicsGenerator<'a> {
 
     fn build_vendor_info(&self) -> VendorInfo {
         VendorInfo {
-            vendor_id: self.server_config.vendor_id,
+            vendor_id: self.server_config.device.vendor_id(),
             vendor_name: self.pics_config.vendor_name.clone(),
             model_name: self.pics_config.model_name.clone(),
             firmware_revision: self.pics_config.firmware_revision.clone(),
@@ -411,6 +411,7 @@ impl<'a> PicsGenerator<'a> {
                     self.db,
                     crate::device_view::DeviceExecution::FullServer,
                 )
+                .with_identity(Some(&self.server_config.device))
             });
             let supported_properties =
                 Self::union_property_support(objects.iter().flat_map(|object| {

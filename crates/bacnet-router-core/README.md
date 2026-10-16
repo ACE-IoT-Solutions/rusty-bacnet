@@ -43,7 +43,7 @@ allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
   receives, with the time, and returns what it means for the router's own
   application; the sends it calls for are polled after, one at a time,
   from its scratch. A port is data to it (a network number, the router's
-  MAC there, and the longest NPDU the port carries), so B/IP, MS/TP and the
+  MAC there, its group-address rule, and the longest NPDU the port carries), so B/IP, MS/TP and the
   hosted transports all plug in the same way.
 - `bip` (feature `bip`): B/IP ports over `bacnet-bip-core`'s node engine,
   in normal or foreign-device mode, or as a BBMD over its tables. A
@@ -54,6 +54,25 @@ allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
 - `mstp` (feature `mstp`): MS/TP ports over `bacnet-mstp-core`'s master
   core, which must run with extended frames. Sends queue at their network
   priority, and a request passed on is answered Reply Postponed.
+
+## Port group rules
+
+Use `bip::port_config`, `BipPort::config`, `BbmdPort::config`, or
+`MstpPort::config` to build the router's port configuration. Each carries
+its link's group rules, so `router::Permissive` handles group destinations
+without an extra hook. An Unconfirmed-Request for a directly attached
+port's own group leaves as a local broadcast. Other APDUs and network
+messages for groups, and B/IP groups at another UDP port, are dropped and
+counted. This conversion is an interoperability rule of this router.
+
+For another link, construct `PortConfig::new(network, mac, limits, groups)`.
+The default `Groups` type is copyable; `Groups::None` explicitly describes
+a link with no group addresses. An owned custom `GroupClassifier` can
+return `No`, `Broadcast`, or `Refuse` and retain shared state; use its type
+as the last parameter of `Storage` and `Router`. It needs no allocator
+unless the classifier itself uses one. `Host` handles authorization and
+events only. These rules are consulted on the destination port, never for
+a DADR behind another router or an empty DADR.
 
 ## Features
 

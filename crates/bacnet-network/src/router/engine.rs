@@ -25,6 +25,8 @@ use bacnet_router_core::router::{ConfigError, Counters, Limits, Options, PortCon
 use bacnet_router_core::{Duration, Instant, Router, Storage};
 use bacnet_transport::port::NpduLimits;
 
+use super::port_groups::PortGroups;
+
 use crate::router_table::{HOLD_RECORDS, ROUTE_CAP};
 
 /// The most ports a router has: a routing table's Port ID names 255.
@@ -40,12 +42,12 @@ pub(super) const SEARCHES: usize = 256;
 /// with its added source address.
 pub(super) const SCRATCH: usize = 65_535 + 2 + 1 + bacnet_router_core::MAX_MAC_LEN;
 
-/// What a hosted router's engine keeps, boxed: about 115 KB.
-type HostedStorage = Storage<PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH>;
+/// What a hosted router's engine keeps, including its owned port rules, boxed.
+type HostedStorage = Storage<PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH, PortGroups>;
 
 /// The engine as the hosted router runs it.
 pub(super) type HostedRouter =
-    Router<Box<HostedStorage>, PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH>;
+    Router<Box<HostedStorage>, PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH, PortGroups>;
 
 /// The hosted router's options: its policy values and timers, and the
 /// 256-route cap.
@@ -102,7 +104,10 @@ impl Engine {
     /// away. Refused as the core refuses: no port, more than 255, one on
     /// network 0 or 0xFFFF, two on one network, or a router MAC longer than
     /// 18 octets.
-    pub(super) fn new(ports: &[PortConfig], clock: RouterClock) -> Result<Self, ConfigError> {
+    pub(super) fn new(
+        ports: &[PortConfig<PortGroups>],
+        clock: RouterClock,
+    ) -> Result<Self, ConfigError> {
         let router = Router::new(boxed_storage(), ports, OPTIONS, clock.now())?;
         Ok(Self {
             router: Mutex::new(router),
@@ -117,12 +122,9 @@ impl Engine {
         network: u16,
         mac: bacnet_router_core::Mac,
         max_npdu: NpduLimits,
-    ) -> PortConfig {
-        PortConfig {
-            network,
-            mac,
-            max_npdu: Self::limits(max_npdu),
-        }
+        groups: PortGroups,
+    ) -> PortConfig<PortGroups> {
+        PortConfig::new(network, mac, Self::limits(max_npdu), groups)
     }
 
     /// The engine's limits for a port whose transport reports `reported`
@@ -267,7 +269,7 @@ const _: () = assert!(
 );
 
 /// Zeroed storage on the heap. Built here, outside any async function, so
-/// the 115 KB never sit in a future's state.
+/// the large table and scratch never sit in a future's state.
 #[inline(never)]
 fn boxed_storage() -> Box<HostedStorage> {
     Box::new(Storage::new())

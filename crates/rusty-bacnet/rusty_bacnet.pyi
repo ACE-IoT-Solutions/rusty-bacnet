@@ -1778,6 +1778,12 @@ class BacnetTransportError(BacnetError, OSError):
     """
     errno: int | None
     strerror: str | None
+    sc_untrusted_peer: ScUntrustedPeerInfo | None
+    """Untrusted certificate evidence from the actual failed outbound TLS attempt.
+
+    None when unavailable at the verification observation point. This is not
+    an authenticated peer or a history of background reconnect failures.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -1930,6 +1936,169 @@ class _DeviceWriteBatchResult(TypedDict):
     error: BacnetError | None
 
 
+class ScReconnect:
+    """Frozen SC client retry settings, copied when passed to BACnetClient.
+
+    Delays must be nonzero, initial <= maximum, and maximum <= 86,400,000 ms.
+    Invalid settings raise ValueError; unsigned integer overflow raises
+    OverflowError. Zero retries allows the initial connection and disables
+    active-hub retries after loss. Validation is not deployment qualification.
+    """
+    def __init__(
+        self, *, initial_delay_ms: int = 10000,
+        max_delay_ms: int = 600000, max_retries: int = 10,
+    ) -> None: ...
+    @property
+    def initial_delay_ms(self) -> int: ...
+    @property
+    def max_delay_ms(self) -> int: ...
+    @property
+    def max_retries(self) -> int: ...
+
+
+class ScCertificateMetadata:
+    """Frozen informational metadata; ASCII-escaped fields are at most 1024 bytes."""
+    @property
+    def subject(self) -> str: ...
+    @property
+    def issuer(self) -> str: ...
+    @property
+    def not_before_unix(self) -> int: ...
+    @property
+    def not_after_unix(self) -> int: ...
+    @property
+    def public_key_algorithm_oid(self) -> str: ...
+    @property
+    def signature_algorithm_oid(self) -> str: ...
+    @property
+    def text_truncated(self) -> bool: ...
+
+class ScInspectionFinding:
+    """Frozen local interpretation finding; never a TLS acceptance decision."""
+    @property
+    def area(self) -> Literal["certificate", "san", "key_usage", "extended_key_usage"]: ...
+    @property
+    def kind(self) -> Literal["malformed", "duplicate", "unsupported", "truncated"]: ...
+
+class ScExtensionInspection:
+    """Frozen bounded display. Read certificate findings alongside these values."""
+    @property
+    def assessed(self) -> bool: ...
+    @property
+    def present(self) -> bool: ...
+    @property
+    def values(self) -> tuple[str, ...]: ...
+
+class ScInspectedCertificate:
+    """Frozen exact DER fingerprint and optional interpretation, without retained DER."""
+    @property
+    def role(self) -> Literal["identity", "peer_trust"]: ...
+    @property
+    def index(self) -> int: ...
+    @property
+    def sha256(self) -> bytes: ...
+    @property
+    def metadata(self) -> ScCertificateMetadata | None: ...
+    @property
+    def validity(self) -> Literal["unavailable", "invalid_interval", "not_yet_valid", "expired", "within_interval"]: ...
+    @property
+    def expiry(self) -> Literal["not_assessed", "none", "warning", "alarm"]: ...
+    @property
+    def san(self) -> ScExtensionInspection: ...
+    @property
+    def key_usage(self) -> ScExtensionInspection: ...
+    @property
+    def extended_key_usage(self) -> ScExtensionInspection: ...
+    @property
+    def findings(self) -> tuple[ScInspectionFinding, ...]: ...
+
+class ScKeyFilePermissions:
+    """Frozen Unix read-mode observations from the opened key file; no ACL audit."""
+    @property
+    def group_readable(self) -> bool: ...
+    @property
+    def world_readable(self) -> bool: ...
+
+class ScPemInspection:
+    """Frozen owned offline data. No credential bytes, client or TLS policy is retained."""
+    @property
+    def inspected_at_unix(self) -> int: ...
+    @property
+    def peer_trust_supplied(self) -> bool: ...
+    @property
+    def certificates(self) -> tuple[ScInspectedCertificate, ...]: ...
+    @property
+    def key_consistency(self) -> Literal["not_assessed", "match", "mismatch", "unusable", "unknown"]: ...
+    @property
+    def key_file_permissions(self) -> ScKeyFilePermissions | None: ...
+
+def inspect_sc_pem(
+    identity_pem: bytes | bytearray, *, peer_trust_pem: bytes | bytearray | None = None,
+    private_key_pem: bytes | bytearray | None = None, inspected_at_unix: int | None = None,
+) -> ScPemInspection:
+    """Inspect bounded PEM bytes synchronously. Time is a signed 64-bit integer second.
+
+    ValueError: malformed/empty/oversized supplied PEM. TypeError: wrong input type,
+    including bool time. OverflowError: time outside the signed 64-bit range.
+    DER defects and key/date observations are returned in the report.
+    """
+    ...
+
+def inspect_sc_pem_files(
+    identity_path: str | os.PathLike[str], *, peer_trust_path: str | os.PathLike[str] | None = None,
+    private_key_path: str | os.PathLike[str] | None = None, inspected_at_unix: int | None = None,
+) -> ScPemInspection:
+    """Read selected files once and inspect them without network I/O; OSError retains errno.
+
+    None time samples the clock once. A later connection may read changed files.
+    Same interpretation and input limits as inspect_sc_pem; no chmod or startup gate.
+    """
+    ...
+
+class ScPeerCertificate:
+    """Frozen original DER and optional display interpretation."""
+    @property
+    def der(self) -> bytes: ...
+    @property
+    def metadata(self) -> ScCertificateMetadata | None: ...
+    @property
+    def inspection_error(self) -> Literal["certificate_parse_failed"] | None: ...
+
+class ScUntrustedPeerInfo:
+    """Frozen, owned untrusted certificates from one failed outbound TLS attempt.
+
+    No accepted connection identity or verification result is implied. Missing
+    evidence does not prove that the peer sent no certificates. Metadata is
+    informational; retaining this value owns no network resources.
+    """
+    @property
+    def peer_address(self) -> str: ...
+    @property
+    def server_name(self) -> str: ...
+    @property
+    def certificates(self) -> tuple[ScPeerCertificate, ...]: ...
+
+class ScPeerInfo:
+    """Frozen historical observation; does not retain a client or socket."""
+    @property
+    def connection_id(self) -> int: ...
+    @property
+    def observed_at_unix(self) -> float: ...
+    @property
+    def peer_address(self) -> str: ...
+    @property
+    def server_name(self) -> str: ...
+    @property
+    def handshake_kind(self) -> Literal["full", "resumed", "unknown"]: ...
+    @property
+    def protocol_version(self) -> str | None: ...
+    @property
+    def cipher_suite(self) -> str | None: ...
+    @property
+    def leaf_sha256(self) -> bytes: ...
+    @property
+    def certificates(self) -> tuple[ScPeerCertificate, ...]: ...
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
@@ -1949,6 +2118,15 @@ class BACnetClient:
     Provision before deployment and durably reuse the same UUID for the device's
     lifetime. No generation, persistence, change detection, or version/variant
     enforcement is provided. Non-SC transports ignore this option.
+
+    Keyword-only reconnect=None preserves the default without automatic
+    redial. Supply ScReconnect for SC retries with the same loaded TLS policy,
+    VMAC, UUID and heartbeat settings. Other transports reject this option.
+
+    stop() and context exit refuse new work, drain outstanding native operations
+    and join teardown. Cancelling the close Future leaves shutdown running;
+    await stop() again to join it. Drain duration depends on outstanding requests.
+    Entry is exclusive; entering an already running or closing client fails.
 
     Usage::
 
@@ -2009,6 +2187,7 @@ class BACnetClient:
         ipv6_device_instance: Optional[int] = None,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
+        reconnect: Optional[ScReconnect] = None,
     ) -> None:
         """``bbmd`` / ``foreign_device`` (B/IP only, at most one, else
         ValueError): run the client as a BBMD, or register it with a BBMD
@@ -2956,6 +3135,13 @@ class BACnetClient:
 
     # --- Lifecycle ---
 
+    def sc_peer_info(self) -> Awaitable[ScPeerInfo | None]:
+        """Observe the accepted active SC Hub without I/O; None while disconnected.
+        RuntimeError for non-SC, stopped or closing clients. Historical results
+        own data only. Observation time is not certificate validation time.
+        """
+        ...
+
     def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
         """How the foreign-device registration is going (#938), a refusal
         included. Sends nothing. Outside ``foreign_device=`` only manual
@@ -2964,7 +3150,12 @@ class BACnetClient:
         ...
 
     def stop(self) -> Awaitable[None]:
-        """Explicitly stop the client and release resources."""
+        """Refuse new work, drain operations, and join native teardown.
+
+        Cancelling this Future leaves shutdown running; call stop() again to
+        join it. Drain duration depends on existing requests. Errors retain
+        closing state for another stop attempt.
+        """
         ...
 
 

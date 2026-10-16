@@ -26,13 +26,14 @@ use std::net::Ipv4Addr;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Build the object database ---
+    let identity = bacnet_objects::DeviceIdentity::new(1234, 555)
+        .expect("valid Device identity")
+        .with_name("Example HVAC Controller");
     let mut db = ObjectDatabase::new();
 
     let device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Example HVAC Controller".into(),
+        identity: identity.clone(),
         vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
         ..DeviceConfig::default()
     })?;
     db.add(Box::new(device))?;
@@ -48,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.add(Box::new(bv))?;
 
     // --- Start the server ---
-    let server = BACnetServer::bip_builder()
+    let server = BACnetServer::bip_builder().device(identity)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0) // auto-assign
         .broadcast_address(Ipv4Addr::LOCALHOST)
@@ -136,10 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let devices = client.discovered_devices().await;
     println!("\nDiscovered {} device(s):", devices.len());
     for dev in &devices {
-        println!(
-            "  Device {} vendor={}",
-            dev.device_instance, dev.vendor_id
-        );
+        println!("  Device {} vendor={}", dev.device_instance, dev.vendor_id);
     }
 
     // Cleanup

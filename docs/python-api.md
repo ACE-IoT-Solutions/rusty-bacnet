@@ -552,6 +552,7 @@ client = BACnetClient(
     sc_heartbeat_interval_ms=None,  # 3000..=300000 ms when configured
     sc_heartbeat_timeout_ms=None,   # must be greater than interval
     min_request_interval_ms=0,   # Keyword-only; least ms between confirmed requests to one destination
+    reconnect=None,              # Keyword-only; SC only, a ScReconnect configuration
 )
 ```
 
@@ -740,6 +741,18 @@ print(rusty_bacnet.list_serial_ports())  # ['/dev/ttyUSB0'], ['/dev/cu.usbserial
 
 ### Lifecycle
 
+Entry holds exclusive lifecycle ownership while building and publishing the
+client. Entering an already running or closing client raises `RuntimeError`.
+Cancelling pending entry drops its unfinished connection setup. A concurrent
+`stop()` waits for entry to complete or be cancelled, then closes the client.
+
+`stop()` and context exit refuse new operations, let existing native operations
+finish or be cancelled, and join transport teardown. Operations remain concurrent
+while the client is running. Close has no universal deadline: draining depends on
+the outstanding requests. Cancelling the close Future leaves its owned shutdown
+task running; await `stop()` again to join that same teardown. Close errors are
+reported to the caller, and later close can retry. Repeated close is safe.
+
 ```python
 # Preferred: async context manager
 async with BACnetClient() as client:
@@ -748,6 +761,141 @@ async with BACnetClient() as client:
 # Manual:
 await client.stop()
 ```
+
+### SC reconnect
+
+`reconnect=None` keeps automatic redial disabled. Pass a frozen `ScReconnect`
+object to an SC client to retry after connection loss:
+
+```python
+from rusty_bacnet import BACnetClient, ScReconnect
+
+client = BACnetClient(
+    transport="sc", sc_hub="wss://hub.example.com/bacnet",
+    sc_vmac=node_vmac, sc_device_uuid=persistent_node_uuid,
+    sc_ca_cert="site-ca.pem", sc_client_cert="node.pem", sc_client_key="node.key",
+    reconnect=ScReconnect(
+        initial_delay_ms=10_000, max_delay_ms=600_000, max_retries=10,
+    ),
+)
+```
+
+All three `ScReconnect` arguments are keyword-only and have the defaults shown.
+The initial delay is the minimum reconnect sleep; exponential backoff and jitter
+stay within the configured minimum and maximum. Delays must be positive,
+`initial_delay_ms <= max_delay_ms`, and the maximum must not exceed 86,400,000 ms.
+Invalid settings raise `ValueError`; negative or overflowing unsigned integers
+raise `OverflowError`. These checks do not qualify deployment timing.
+
+`max_retries=0` still permits the initial connection and disables active-hub
+retries after loss. Passing a `ScReconnect` object to a non-SC client raises `ValueError`.
+Retries reuse the loaded TLS trust and operational identity, VMAC, UUID and
+heartbeat settings; credential files are loaded at entry, not reread on each
+retry. A new connection must complete TLS and SC admission before service
+traffic resumes. Applications still handle request errors; reconnection does
+not guarantee that an interrupted operation completes.
+
+### Offline SC credential inspection
+
+`inspect_sc_pem(identity_pem, *, peer_trust_pem=None, private_key_pem=None,
+inspected_at_unix=None)` returns a frozen, owned report without opening a
+connection. `inspect_sc_pem_files` accepts explicit `str | os.PathLike[str]` paths
+and reads each selected file once. Reports contain fingerprints, bounded metadata,
+date and SAN/KU/EKU findings, key consistency and optional Unix mode observations.
+These are advisory observations and do not change startup acceptance. See
+[the bounds, error contract and examples](sc-offline-inspection.md).
+
+### SC peer certificates
+
+`await client.sc_peer_info()` observes the accepted active Hub without another
+connection. It returns a frozen `ScPeerInfo`, or `None` while disconnected or
+reconnecting. A non-SC, stopped or closing client raises `RuntimeError`. The
+result and its nested values own data only; keeping them after close keeps no
+client or socket alive.
+
+```python
+peer = await client.sc_peer_info()
+if peer is not None:
+    print(peer.peer_address, peer.connection_id, peer.handshake_kind)
+    print(peer.leaf_sha256.hex())  # SHA-256 of the exact leaf DER
+    leaf = peer.certificates[0]
+    if leaf.metadata is not None:
+        print(leaf.metadata.subject, leaf.metadata.issuer)
+        print(leaf.metadata.not_after_unix)  # signed Unix seconds
+    # leaf.der explicitly exports original bytes; normal repr omits them.
+```
+
+`certificates` is an ordered tuple of `ScPeerCertificate` objects, leaf first.
+This is the session-associated certificate list, which can omit trust anchors
+or include extra certificates outside the verified path. `handshake_kind` is
+`"full"`, `"resumed"`, or `"unknown"`. Resumed sessions may reuse cached
+certificates without a new certificate exchange or fresh verification.
+`protocol_version` and `cipher_suite` contain the negotiated rustls names (or
+`None` if unavailable). `server_name` is the intended URI host; `peer_address`
+is the actual remote TCP endpoint, which can be a proxy.
+
+`connection_id` is process-local and changes on every physical dial, even for
+an unchanged certificate or resumed TLS. SC retries reusing the same socket
+retain it. `observed_at_unix` records when that socket was observed as SC
+Connected, not when its certificate was validated. The returned value is
+historical; read again to observe a new accepted connection. Failed restore
+candidates do not replace the active Hub observation.
+
+The shared Rust parser supplies subject, issuer, signed Unix not-before and
+not-after dates, public-key and signature algorithm OIDs. Names and OIDs are
+ASCII escaped and bounded to 1024 bytes each; `text_truncated` signals any
+truncation. `metadata=None` with `inspection_error="certificate_parse_failed"`
+means display parsing failed, while original DER remains available. Parsing
+never changes TLS acceptance. SAN, KU and EKU interpretation is outside this
+API. The underlying TLS implementation bounds the certificate message to 64 KiB.
+
+Certificate display does not authorize a VMAC/UUID, identify a relayed BACnet
+origin, establish current validity, or report a revocation check. Existing
+WebPKI path building and URI-name checks are unchanged; this is not a claim of
+complete Annex AB certificate-profile conformance. Credential files remain
+loaded at client entry. Recreate the client to load replacement material, then
+inspect its newly accepted connection.
+
+Rust callers use `client.transport().hub_peer_info().await` for a concrete SC
+client, or match `AnyTransport::Sc(transport)` and call the same method. The
+returned `ScHubPeerInfo` exposes `tls()` and `observed_at()`; `TlsWebSocket::peer_info()`
+provides the lower-level TLS observation before SC admission.
+
+When initial SC startup rejects a TLS peer, `BacnetTransportError` can carry a
+frozen `sc_untrusted_peer: ScUntrustedPeerInfo | None`. It contains certificates
+observed in that actual failed outbound attempt, without another connection:
+
+```python
+from rusty_bacnet import BacnetTransportError
+
+try:
+    await client.__aenter__()  # client already configured for SC
+except BacnetTransportError as error:
+    print(error)  # original failure remains the reason for rejection
+    untrusted = error.sc_untrusted_peer
+    if untrusted is not None:
+        for certificate in untrusted.certificates:
+            if certificate.metadata is not None:
+                print("UNTRUSTED", certificate.metadata.subject,
+                      certificate.metadata.issuer, certificate.metadata.not_after_unix)
+            # certificate.der explicitly exports the observed, untrusted bytes.
+    raise
+```
+
+This value is separate from `ScPeerInfo`: it has no accepted connection ID,
+authenticated identity or verified-chain claim. Its `peer_address` is the
+attempt's TCP endpoint and `server_name` is the intended URI host. Its frozen
+certificate tuple uses the same bounded optional metadata as successful
+observations and owns no socket or client. Normal representations omit the
+captured bytes and parsed names; the original TLS error text is unchanged.
+
+`None` means unavailable at the verifier observation point. It can occur before
+TLS receives certificates, when protocol processing rejects a message earlier,
+or on resumption; it does not prove no certificate was sent. Non-TLS transport
+errors also have `sc_untrusted_peer=None`. This API covers returned outbound
+dial errors, including initial client entry; it does not retain a history of
+background reconnect failures or inbound rejected clients. Rust callers use
+`ScConnectError::from_error(&error).and_then(|e| e.untrusted_peer_info())`.
 
 ### Address Format
 

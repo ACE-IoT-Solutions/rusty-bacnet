@@ -348,9 +348,13 @@ pub(super) async fn try_servers_config(
     for &instance in devices {
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance,
-                name: format!("Device {instance}"),
-                max_apdu_length: max_apdu_length.min(1476),
+                identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+                    .expect("valid Device identity")
+                    .with_name(format!("Device {instance}"))
+                    .with_max_apdu(
+                        u16::try_from(max_apdu_length.min(1476)).expect("Device APDU fits u16"),
+                    )
+                    .expect("valid Device APDU"),
                 ..Default::default()
             })
             .unwrap(),
@@ -386,7 +390,13 @@ pub(super) async fn try_servers_config(
     }
     let server = BACnetServer::start_with_clock_mode_and_bindings(
         ServerConfig {
-            max_apdu_length,
+            device: bacnet_objects::DeviceIdentity::new(
+                devices.iter().copied().min().unwrap_or(1),
+                0,
+            )
+            .unwrap()
+            .with_max_apdu(u16::try_from(max_apdu_length).expect("Device APDU fits u16"))
+            .expect("valid Device APDU"),
             audit_reporters: enabled.then_some(AuditReportersConfig {
                 reporters: identities,
             }),

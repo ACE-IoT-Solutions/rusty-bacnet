@@ -126,9 +126,9 @@ async fn spawn_test_server(
 
     let mut db = ObjectDatabase::new();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "TestDevice".into(),
-        vendor_id: 42,
+        identity: bacnet_objects::DeviceIdentity::new(1234, 42)
+            .expect("valid Device identity")
+            .with_name("TestDevice"),
         ..Default::default()
     })
     .unwrap();
@@ -138,6 +138,7 @@ async fn spawn_test_server(
     db.add(Box::new(ai)).unwrap();
 
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 42).unwrap())
         .database(db)
         .transport(transport)
         .discovery_policy(policy)

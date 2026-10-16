@@ -62,8 +62,9 @@ fn database(instance: u32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance,
-            name: format!("Device-{instance}"),
+            identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+                .expect("valid Device identity")
+                .with_name(format!("Device-{instance}")),
             ..Default::default()
         })
         .unwrap(),
@@ -122,6 +123,7 @@ async fn start_logger(
     BACnetServer::bip_builder()
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
+        .device(bacnet_objects::DeviceIdentity::new(20, 0).unwrap())
         .database(logger_db)
         .audit_notification_sink(oid(ObjectType::AUDIT_LOG, 1))
         .audit_notification_authorizer(move |_| policy.load(Ordering::Acquire))
@@ -193,6 +195,7 @@ async fn exercise(confirmed: bool, selected: bool, lists: bool, files: bool) {
     let mut target = BACnetServer::bip_builder()
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
+        .device(bacnet_objects::DeviceIdentity::new(10, 0).unwrap())
         .database(target_db)
         .audit_reporters(AuditReportersConfig {
             reporters: vec![oid(ObjectType::AUDIT_REPORTER, 1)],

@@ -24,8 +24,8 @@
 //!   an error to [`Router::refused`](crate::Router::refused). It queues
 //!   the NPDU with [`MasterCore::enqueue_npdu`] at the send's network
 //!   priority, so the core's queues serve the most urgent first.
-//! - **Groups:** answer [`Host::group`](crate::router::Host::group) for
-//!   the port with [`group`]: station 255 is the port's broadcast.
+//! - **Groups:** [`MstpPort::config`] installs the rule that station 255
+//!   is the port's broadcast.
 //!
 //! # Clause 6, for a router's MS/TP port
 //!
@@ -48,7 +48,7 @@ use bacnet_mstp_core::{
     ReplyDecision, RequestId,
 };
 
-use crate::router::{Dest, Group, Limits, PortConfig, Send, SendRefusal};
+use crate::router::{Dest, Groups, Limits, PortConfig, Send, SendRefusal};
 use crate::{Arrived, Instant, Mac, PortId};
 
 /// A core configuration without extended frames, which a router's MS/TP
@@ -63,17 +63,6 @@ impl fmt::Display for NotExtended {
 }
 
 impl core::error::Error for NotExtended {}
-
-/// What `mac` is on an MS/TP port, for [`Host::group`](crate::router::Host::group):
-/// station 255 is its broadcast.
-#[must_use]
-pub fn group(mac: &[u8]) -> Group {
-    if mac == [BROADCAST_MAC] {
-        Group::Broadcast
-    } else {
-        Group::No
-    }
-}
 
 /// A router port on an MS/TP master core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,12 +91,13 @@ impl MstpPort {
         if !config.extended_frames {
             return Err(NotExtended);
         }
-        Ok(PortConfig {
+        Ok(PortConfig::new(
             network,
-            mac: Mac::from_array([config.station]),
+            Mac::from_array([config.station]),
             // 1497 with extended frames on, so the cast is exact.
-            max_npdu: Limits::both(config.max_npdu() as u16),
-        })
+            Limits::both(config.max_npdu() as u16),
+            Groups::Mstp,
+        ))
     }
 
     /// The router's view of a delivery the core polled

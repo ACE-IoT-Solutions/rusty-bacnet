@@ -15,7 +15,10 @@ async fn endpoint_device_wildcard_accepts_bundled_server_concrete_ack() {
         .build_database()
         .unwrap();
     let mut server = BACnetServer::start_clockless(
-        ServerConfig::default(),
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(10, 42).unwrap(),
+            ..Default::default()
+        },
         database,
         BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
     )

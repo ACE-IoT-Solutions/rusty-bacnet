@@ -766,17 +766,12 @@ pub(crate) async fn broadcast_i_am_from<T: TransportPort + 'static>(
     limiter: Option<&Arc<DiscoveryLimiter>>,
 ) -> Result<(), Error> {
     let guard = db.read().await;
-    let device_oid =
-        crate::local_device::validate_apdu_declaration(&guard, config.max_apdu_length)?
-            .ok_or_else(|| Error::Encoding("no Device object in database".into()))?;
+    crate::local_device::announcement_device(&guard, &config.device)
+        .ok_or_else(|| Error::Encoding("no Device object in database".into()))?;
 
-    // RB-16 alignment: this construction is field-for-field identical to
-    // `bacnet-endpoint`'s `DeviceIdentity::iam_request` built from
-    // `DeviceIdentity::server_config`. The endpoint session I-Am path encodes
-    // the same four fields (object id + max-apdu + segmentation + vendor) so
-    // I-Am vs Device ReadProperty vs role limits agree on one identity.
+    // Both discovery paths encode the same frozen, resolved declarations.
     let mut service_buf = BytesMut::new();
-    iam_request_for(device_oid, config).encode(&mut service_buf);
+    iam_request_for(config).encode(&mut service_buf);
 
     let mut buf = BytesMut::new();
     encode_apdu(
@@ -809,19 +804,14 @@ pub(crate) async fn broadcast_i_am_from<T: TransportPort + 'static>(
         .await
 }
 
-/// RB-16 discovery-alignment helper: single I-Am construction shared with the
-/// endpoint identity path.
-///
-/// `bacnet-endpoint`'s `DeviceIdentity::iam_request` (via
-/// `DeviceIdentity::server_config`) builds these same four fields; any drift
-/// here breaks the I-Am ≡ ReadProperty ≡ role-capabilities matrix.
+/// I-Am from the server's frozen, resolved Device declarations.
 #[doc(hidden)]
-pub fn iam_request_for(device_oid: ObjectIdentifier, config: &ServerConfig) -> IAmRequest {
+pub fn iam_request_for(config: &ServerConfig) -> IAmRequest {
     IAmRequest {
-        object_identifier: device_oid,
-        max_apdu_length: config.max_apdu_length,
-        segmentation_supported: config.segmentation_supported,
-        vendor_id: config.vendor_id,
+        object_identifier: config.device.device_oid(),
+        max_apdu_length: u32::from(config.device.max_apdu_length()),
+        segmentation_supported: config.device.segmentation(),
+        vendor_id: config.device.vendor_id(),
     }
 }
 

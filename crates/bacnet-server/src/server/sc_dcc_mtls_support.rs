@@ -152,13 +152,15 @@ impl Fixture {
         let mut db = ObjectDatabase::new();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 123,
+                identity: bacnet_objects::DeviceIdentity::new(123, 0)
+                    .expect("valid Device identity"),
                 ..Default::default()
             })
             .unwrap(),
         ))
         .unwrap();
         let builder = builder
+            .device(bacnet_objects::DeviceIdentity::new(123, 0).unwrap())
             .hub_url(&self.url)
             .tls_config(certs.clients[0].clone())
             .vmac(SERVER)

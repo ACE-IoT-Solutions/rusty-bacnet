@@ -34,7 +34,8 @@ impl BACnetClient {
         min_request_interval_ms=0,
         ipv6_device_instance=None,
         bbmd=None,
-        foreign_device=None
+        foreign_device=None,
+        reconnect=None
     ))]
     fn new(
         interface: &str,
@@ -67,7 +68,13 @@ impl BACnetClient {
         ipv6_device_instance: Option<u32>,
         bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
+        reconnect: Option<PyRef<'_, crate::sc_reconnect::PyScReconnect>>,
     ) -> PyResult<Self> {
+        if reconnect.is_some() && transport != "sc" {
+            return Err(PyValueError::new_err(
+                "reconnect applies only to transport='sc'",
+            ));
+        }
         crate::bip_options::only_on_bip(share_port_by_address, transport)?;
         let bip_mode = crate::bip_options::bip_mode(transport, bbmd, foreign_device)?;
         let ipv6_device_instance = ipv6_device_instance_for(transport, ipv6_device_instance)?;
@@ -82,7 +89,7 @@ impl BACnetClient {
         let sc_device_uuid = crate::sc_identity::device_uuid(transport, sc_device_uuid)?;
         let min_request_interval_ms = parse_min_request_interval_ms(min_request_interval_ms)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(None)),
+            inner: Arc::new(state::ClientState::default()),
             transport_type: transport.to_string(),
             interface: interface.to_string(),
             port,
@@ -98,6 +105,7 @@ impl BACnetClient {
             sc_client_key,
             sc_heartbeat_interval_ms,
             sc_heartbeat_timeout_ms,
+            reconnect: reconnect.map(|options| options.config.clone()),
             ipv6_interface,
             ipv6_device_instance,
             mstp: crate::mstp_py::MstpOptions {
@@ -138,13 +146,15 @@ impl BACnetClient {
         let sc_client_key = slf.borrow().sc_client_key.clone();
         let sc_heartbeat_interval_ms = slf.borrow().sc_heartbeat_interval_ms;
         let sc_heartbeat_timeout_ms = slf.borrow().sc_heartbeat_timeout_ms;
+        let reconnect = slf.borrow().reconnect.clone();
         let ipv6_interface = slf.borrow().ipv6_interface.clone();
         let ipv6_device_instance = slf.borrow().ipv6_device_instance;
         let mstp = slf.borrow().mstp.clone();
         let min_request_interval_ms = slf.borrow().min_request_interval_ms;
 
         crate::py_async::future_into_py(py, async move {
-            let transport: AnyTransport<crate::mstp_py::PySerial> = match transport_type.as_str() {
+            let mut slot = state::starting(&inner).await?;
+            let c = match transport_type.as_str() {
                 "bip" => {
                     let interface: Ipv4Addr = interface_str
                         .parse()
@@ -152,17 +162,33 @@ impl BACnetClient {
                     let broadcast: Ipv4Addr = broadcast_str
                         .parse()
                         .map_err(|e| PyRuntimeError::new_err(format!("invalid broadcast: {e}")))?;
-                    let mut bip = BipTransport::new(interface, port, broadcast);
-                    bip.set_share_port_by_address(share_port_by_address);
-                    bip.set_mode(bip_mode);
-                    AnyTransport::Bip(Box::new(bip))
+                    Box::pin(
+                        client::BACnetClient::bip_builder()
+                            .interface(interface)
+                            .port(port)
+                            .broadcast_address(broadcast)
+                            .share_port_by_address(share_port_by_address)
+                            .mode(bip_mode)
+                            .apdu_timeout_ms(timeout_ms)
+                            .min_request_interval_ms(min_request_interval_ms)
+                            .build_any::<crate::mstp_py::PySerial>(),
+                    )
+                    .await
                 }
                 "ipv6" => {
                     let iface_str = ipv6_interface.as_deref().unwrap_or("::");
                     let interface: std::net::Ipv6Addr = iface_str.parse().map_err(|e| {
                         PyRuntimeError::new_err(format!("invalid IPv6 interface: {e}"))
                     })?;
-                    AnyTransport::Bip6(Bip6Transport::new(interface, port, ipv6_device_instance))
+                    let mut builder = client::BACnetClient::bip6_builder()
+                        .interface(interface)
+                        .port(port)
+                        .apdu_timeout_ms(timeout_ms)
+                        .min_request_interval_ms(min_request_interval_ms);
+                    if let Some(instance) = ipv6_device_instance {
+                        builder = builder.device_instance(instance);
+                    }
+                    Box::pin(builder.build_any::<crate::mstp_py::PySerial>()).await
                 }
                 "sc" => {
                     let hub_url = sc_hub.ok_or_else(|| {
@@ -184,37 +210,43 @@ impl BACnetClient {
                     )
                     .map_err(|e| PyRuntimeError::new_err(format!("TLS config error: {e}")))?;
 
-                    let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&hub_url, tls_config)
-                        .await
-                        .map_err(to_py_err)?;
-
-                    let mut sc = bacnet_transport::sc::ScTransport::new(ws, vmac)
-                        .with_device_uuid(sc_device_uuid);
+                    let mut builder = client::BACnetClient::sc_builder()
+                        .hub_url(&hub_url)
+                        .tls_config(tls_config)
+                        .vmac(vmac)
+                        .device_uuid(sc_device_uuid)
+                        .apdu_timeout_ms(timeout_ms)
+                        .min_request_interval_ms(min_request_interval_ms);
                     if let Some(ms) = sc_heartbeat_interval_ms {
-                        sc = sc.with_heartbeat_interval_ms(ms);
+                        builder = builder.heartbeat_interval_ms(ms);
                     }
                     if let Some(ms) = sc_heartbeat_timeout_ms {
-                        sc = sc.with_heartbeat_timeout_ms(ms);
+                        builder = builder.heartbeat_timeout_ms(ms);
                     }
-                    AnyTransport::Sc(Box::new(sc))
+                    if let Some(reconnect) = reconnect {
+                        builder = builder.reconnect(reconnect);
+                    }
+                    Box::pin(builder.build_any::<crate::mstp_py::PySerial>()).await
                 }
-                "mstp" => crate::mstp_py::build_mstp_transport(&mstp)?,
+                "mstp" => {
+                    let transport = crate::mstp_py::build_mstp_transport(&mstp)?;
+                    Box::pin(
+                        client::BACnetClient::generic_builder()
+                            .transport(transport)
+                            .apdu_timeout_ms(timeout_ms)
+                            .min_request_interval_ms(min_request_interval_ms)
+                            .build(),
+                    )
+                    .await
+                }
                 other => {
                     return Err(PyRuntimeError::new_err(format!(
                         "unknown transport: '{other}'. Use 'bip', 'ipv6', 'sc', or 'mstp'"
                     )));
                 }
-            };
-
-            let c = client::BACnetClient::generic_builder()
-                .transport(transport)
-                .apdu_timeout_ms(timeout_ms)
-                .min_request_interval_ms(min_request_interval_ms)
-                .build()
-                .await
-                .map_err(to_py_err)?;
-
-            *inner.lock().await = Some(Arc::new(c));
+            }
+            .map_err(to_py_err)?;
+            *slot = Some(c);
             Ok(self_ref)
         })
     }
@@ -228,56 +260,14 @@ impl BACnetClient {
         _exc_val: Option<Bound<'py, PyAny>>,
         _exc_tb: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let inner = self.inner.clone();
-        let future = async move {
-            let arc = {
-                let mut guard = inner.lock().await;
-                guard.take()
-            };
-            if let Some(arc) = arc {
-                // Try to get exclusive ownership for clean stop
-                match Arc::try_unwrap(arc) {
-                    Ok(mut c) => {
-                        if let Err(e) = c.stop().await {
-                            #[allow(clippy::print_stderr)]
-                            // no logging path in this crate; __aexit__ cannot raise here
-                            {
-                                eprintln!("BACnetClient stop error in __aexit__: {e}");
-                            }
-                        }
-                    }
-                    Err(_arc) => {
-                        // Other async operations still hold references;
-                        // cleanup will happen when they complete and drop the Arc.
-                    }
-                }
-            }
-            Ok(())
-        };
-        crate::py_async::future_into_py(py, crate::unit_result(future))
+        self.stop(py)
     }
-    /// Explicitly stop the client.
+    /// Stop admission, drain outstanding operations, and join native teardown.
+    ///
+    /// Cancelling this Future leaves shutdown running. A later stop joins that
+    /// same task. Draining depends on request completion or cancellation.
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = self.inner.clone();
-        let future = async move {
-            let arc = {
-                let mut guard = inner.lock().await;
-                guard.take()
-            };
-            if let Some(arc) = arc {
-                match Arc::try_unwrap(arc) {
-                    Ok(mut c) => {
-                        c.stop().await.map_err(to_py_err)?;
-                    }
-                    Err(_arc) => {
-                        // Other async operations still hold references;
-                        // cleanup will happen when they complete and drop the Arc.
-                    }
-                }
-            }
-            Ok(())
-        };
-        crate::py_async::future_into_py(py, crate::unit_result(future))
+        crate::py_async::future_into_py(py, crate::unit_result(state::close(self.inner.clone())))
     }
 }
 

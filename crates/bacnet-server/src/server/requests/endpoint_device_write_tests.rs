@@ -70,7 +70,7 @@ async fn fixture(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 123,
+            identity: bacnet_objects::DeviceIdentity::new(123, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap(),
@@ -298,7 +298,8 @@ async fn endpoint_device_write_revalidates_lower_level_authority_before_policy()
                     authority: if case == "mismatched-authority" {
                         Some(
                             DeviceObject::new(DeviceConfig {
-                                instance: 456,
+                                identity: bacnet_objects::DeviceIdentity::new(456, 0)
+                                    .expect("valid Device identity"),
                                 ..Default::default()
                             })
                             .unwrap(),
@@ -519,7 +520,8 @@ async fn endpoint_device_write_direct_and_routed_egress_preserve_destination() {
         let mut db = ObjectDatabase::new();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 123,
+                identity: bacnet_objects::DeviceIdentity::new(123, 0)
+                    .expect("valid Device identity"),
                 ..Default::default()
             })
             .unwrap(),

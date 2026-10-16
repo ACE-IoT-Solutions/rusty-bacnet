@@ -63,13 +63,13 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
         Segmentation::TRANSMIT,
         Segmentation::RECEIVE,
         Segmentation::BOTH,
-        Segmentation::from_raw(64),
     ] {
         let mut db = ObjectDatabase::new();
         let mut object = DeviceObject::new(DeviceConfig {
-            instance: 77,
-            name: "Device metadata".into(),
-            segmentation_supported,
+            identity: bacnet_objects::DeviceIdentity::new(77, 0)
+                .expect("valid Device identity")
+                .with_name("Device metadata")
+                .with_segmentation(segmentation_supported),
             ..DeviceConfig::default()
         })
         .unwrap();

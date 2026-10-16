@@ -109,7 +109,13 @@ class BipConstructorTests(unittest.TestCase):
 
     def test_invalid_max_apdu_rejected(self):
         with self.assertRaisesRegex(ValueError, "max-APDU|APDU|apdu|invalid"):
-            BipEndpoint(**bip_kwargs(port=0, max_apdu=999))
+            BipEndpoint(**bip_kwargs(port=0, max_apdu=49))
+
+    def test_non_table_max_apdu_declarations_accepted(self):
+        for raw in (999, 1474):
+            with self.subTest(max_apdu=raw):
+                endpoint = BipEndpoint(**bip_kwargs(port=0, max_apdu=raw))
+                self.assertEqual(endpoint.device_instance, 1001)
 
     def test_bad_uuid_length_rejected(self):
         with self.assertRaisesRegex(ValueError, "16 bytes"):

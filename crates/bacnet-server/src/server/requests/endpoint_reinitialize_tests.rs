@@ -20,7 +20,7 @@ async fn fixture(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 123,
+            identity: bacnet_objects::DeviceIdentity::new(123, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap(),

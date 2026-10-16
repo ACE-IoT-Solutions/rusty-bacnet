@@ -2,6 +2,8 @@
 
 use core::fmt;
 
+use super::{GroupClassifier, Groups};
+
 use crate::table::{Convergence, Timing};
 use crate::{Duration, Mac, PortId};
 
@@ -51,8 +53,13 @@ impl Limits {
 
 /// One port as the router sees it: data, with no link behind it. The
 /// caller drives the link and carries out the router's sends on it.
+///
+/// Construct it with [`Self::new`] or the B/IP/MS/TP glue. The default
+/// [`Groups`] rule is copyable; a custom [`GroupClassifier`] may own its
+/// state. `#[non_exhaustive]` keeps future port facts out of caller literals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PortConfig {
+#[non_exhaustive]
+pub struct PortConfig<G = Groups> {
     /// The network number, 1 to 65534: 0 is never a valid network number,
     /// and 0xFFFF, the global broadcast DNET, can't be an SNET (Clause
     /// 6.2.2.1), which the router puts in what it relays from the port.
@@ -64,14 +71,30 @@ pub struct PortConfig {
     /// the router runs has it replaced with
     /// [`Router::set_port_max_npdu`](super::Router::set_port_max_npdu).
     pub max_npdu: Limits,
+    /// The link's destination classifier, supplied by its configuration.
+    pub groups: G,
 }
 
-impl PortConfig {
-    /// All zero bits: an unused slot.
+impl<G> PortConfig<G> {
+    /// A port with its network, own MAC, limits and link group rule.
+    #[must_use]
+    pub const fn new(network: u16, mac: Mac, max_npdu: Limits, groups: G) -> Self {
+        Self {
+            network,
+            mac,
+            max_npdu,
+            groups,
+        }
+    }
+}
+
+impl<G: GroupClassifier> PortConfig<G> {
+    /// An unused slot; all zero bits with the default group rule.
     pub(super) const ZERO: Self = Self {
         network: 0,
         mac: Mac::EMPTY,
         max_npdu: Limits::both(0),
+        groups: G::NONE,
     };
 }
 

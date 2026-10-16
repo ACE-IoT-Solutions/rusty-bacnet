@@ -66,6 +66,7 @@ mod limits;
 mod local_control;
 mod local_delivery;
 mod options;
+mod port_groups;
 mod send_warning;
 mod sender;
 
@@ -91,8 +92,8 @@ pub use control_policy::{ControlDecisionCounters, ControlGate, ControlPolicy};
 pub use control_policy::{ControlServiceCounters, ControlTrust};
 use dispatch::{Outputs, PortDispatch, Shared};
 use engine::{Engine, EngineGuard, RouterClock, PORTS};
-use hosted_host::PortGroups;
 pub use options::{LocalApduReceiver, NetworkControlReceiver, RouterOptions, StartedRouter};
+use port_groups::PortGroups;
 
 // The suites that start a router take these names from here, as before the
 // engine.
@@ -387,7 +388,6 @@ impl BACnetRouter {
         // Start each transport, and note what the engine and its hooks need.
         let mut port_receivers = Vec::new();
         let mut configs = Vec::new();
-        let mut groups = Vec::new();
         let mut networks = Vec::new();
         let mut limit_changes = Vec::new();
 
@@ -411,14 +411,14 @@ impl BACnetRouter {
                 port.network_number,
                 mac,
                 port.transport.max_npdu(),
+                PortGroups {
+                    groups: port.transport.group_destinations(),
+                    local_broadcasts: port.transport.local_broadcast_destinations(),
+                },
             ));
             // Taken after that read; the task that follows it applies the
             // value it holds first, so a change in between isn't lost.
             limit_changes.push(port.transport.max_npdu_changes());
-            groups.push(PortGroups {
-                groups: port.transport.group_destinations(),
-                local_broadcasts: port.transport.local_broadcast_destinations(),
-            });
             networks.push(port.network_number);
         }
         let engine = Engine::new(&configs, RouterClock::start())
@@ -428,7 +428,6 @@ impl BACnetRouter {
         let shared = Arc::new(Shared {
             engine,
             gate: control,
-            groups,
             networks,
             warnings: Default::default(),
         });

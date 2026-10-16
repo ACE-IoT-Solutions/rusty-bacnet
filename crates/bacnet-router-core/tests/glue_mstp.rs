@@ -10,9 +10,11 @@ use bacnet_mstp_codec::{Frame as MstpFrame, FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::{
     Action, CoreError, Instant, NetworkPriority, QueueStorage, ReplyDecision, RequestId,
 };
-use bacnet_router_core::mstp::{group, MstpPort, NotExtended};
+use bacnet_router_core::mstp::{MstpPort, NotExtended};
 use bacnet_router_core::npdu::Npdu;
-use bacnet_router_core::router::{Dest, Group, Limits, Options, Received, SendRefusal};
+use bacnet_router_core::router::{
+    Dest, Group, GroupClassifier, Limits, Options, Received, SendRefusal,
+};
 use bacnet_router_core::{Mac, PortId};
 
 use fixture::*;
@@ -64,9 +66,27 @@ fn config_needs_extended_frames() {
 
 #[test]
 fn the_broadcast_station_is_the_only_group() {
-    assert_eq!(group(&[BROADCAST_MAC]), Group::Broadcast);
-    assert_eq!(group(&[5]), Group::No);
-    assert_eq!(group(&[]), Group::No);
+    assert_eq!(
+        MstpPort::config(&config(true), 2)
+            .unwrap()
+            .groups
+            .classify(&[BROADCAST_MAC]),
+        Group::Broadcast
+    );
+    assert_eq!(
+        MstpPort::config(&config(true), 2)
+            .unwrap()
+            .groups
+            .classify(&[5]),
+        Group::No
+    );
+    assert_eq!(
+        MstpPort::config(&config(true), 2)
+            .unwrap()
+            .groups
+            .classify(&[]),
+        Group::No
+    );
 }
 
 /// A broadcast on the MS/TP port reaches the router as a link broadcast
@@ -260,7 +280,10 @@ fn priority_reaches_the_queue() {
 #[test]
 fn refusals_map_to_the_routers() {
     let now = Instant::from_millis(1);
-    let mut router = router();
+    // Deliberately omit the group rule to exercise the link's defense too.
+    let mut mstp = MstpPort::config(&config(true), 2).unwrap();
+    mstp.groups = bacnet_router_core::router::Groups::None;
+    let mut router = router_with(&[port_on(1, OWN_0), mstp], Options::HOSTED);
     let mut host = Recorder::default();
     let mut route = |router: &mut TestRouter, npdu: &[u8], core: &mut Core<'_, 1>| {
         let _ = router.receive(frame_on(0, NODE_A, npdu), now, &mut host);
@@ -411,10 +434,8 @@ fn standard_profile_rejects_502_bytes_before_queue_mutation() {
     let npdu = relayed_as(502);
 
     // The router's own check, on a port held to 501 octets.
-    let held_to_501 = bacnet_router_core::router::PortConfig {
-        max_npdu: Limits::both(501),
-        ..MstpPort::config(&config(true), 2).unwrap()
-    };
+    let mut held_to_501 = MstpPort::config(&config(true), 2).unwrap();
+    held_to_501.max_npdu = Limits::both(501);
     let mut router = router_with(&[port_on(1, OWN_0), held_to_501], Options::HOSTED);
     let mut bus = Bus::<1>::new();
     let mut core = bus.core(true);

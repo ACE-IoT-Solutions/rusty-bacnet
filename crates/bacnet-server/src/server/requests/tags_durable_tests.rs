@@ -419,8 +419,9 @@ async fn server(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 100,
-            name: "Tags device".into(),
+            identity: bacnet_objects::DeviceIdentity::new(100, 0)
+                .expect("valid Device identity")
+                .with_name("Tags device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -434,6 +435,17 @@ async fn server(
         );
     }
     let server = BACnetServer::generic_builder()
+        .device(
+            bacnet_objects::DeviceIdentity::new(
+                if kind.kind == ObjectType::DEVICE {
+                    1
+                } else {
+                    100
+                },
+                0,
+            )
+            .unwrap(),
+        )
         .transport(transport)
         .database(db)
         .enable_event_enrollment(false)

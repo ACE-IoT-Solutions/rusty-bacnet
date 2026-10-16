@@ -59,7 +59,7 @@ async fn read_groups(limit: Option<usize>) -> Vec<Result<(), Error>> {
     let mut builder = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::ServerOnly)
         .database(database(&identity))
-        .identity(identity);
+        .device(identity);
     if let Some(limit) = limit {
         builder = builder.read_work_limit(limit);
     }
@@ -123,7 +123,7 @@ fn endpoint_read_work_limit_defaults_to_256_and_refuses_zero() {
     assert!(
         BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
             .database(database(&identity))
-            .identity(identity)
+            .device(identity)
             .read_work_limit(0)
             .build_session()
             .is_err()

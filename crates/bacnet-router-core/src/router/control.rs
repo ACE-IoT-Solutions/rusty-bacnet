@@ -7,10 +7,11 @@
 
 use super::config::Options;
 use super::counters::bump;
-use super::host::{Claim, ControlClass, Event, Group, Host, Targets};
+use super::host::{Claim, ControlClass, Event, Host, Targets};
 use super::ingress::{Arrival, Discard, Received};
 use super::output::Kind;
 use super::tasks::Task;
+use super::Group;
 use super::Storage;
 use crate::message::{
     DisconnectConnection, EstablishConnection, ICouldBeRouter, MessageType, NetworkNumberIs,
@@ -20,8 +21,14 @@ use crate::npdu::{Address, Npdu, GLOBAL_NETWORK};
 use crate::swap_apart;
 use crate::table::Learned;
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: super::GroupClassifier,
+    > Storage<P, R, H, D, N, G>
 {
     /// A network message. What-Is, Number-Is and Reject are always handled
     /// here. Any other that names a DNET besides 0xFFFF and the arrival
@@ -50,7 +57,7 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 return Received::Handled;
             };
             // Never as a broadcast its sender didn't ask for (L23).
-            if self.group_of(&route, npdu, host) != Group::No {
+            if self.group_of(&route, npdu) != Group::No {
                 return self.group_drop();
             }
             return self.forward(at, npdu, &route, host);

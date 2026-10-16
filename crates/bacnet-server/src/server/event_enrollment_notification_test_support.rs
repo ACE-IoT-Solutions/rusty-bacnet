@@ -217,8 +217,8 @@ pub(super) fn out_of_range_parameters(time_delay: u32) -> BACnetEventParameter {
 pub(super) fn add_server_context(db: &mut ObjectDatabase, recipients: bool) {
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Event Enrollment Device".into(),
+            identity: bacnet_objects::DeviceIdentity::default()
+                .with_name("Event Enrollment Device"),
             ..DeviceConfig::default()
         })
         .unwrap(),

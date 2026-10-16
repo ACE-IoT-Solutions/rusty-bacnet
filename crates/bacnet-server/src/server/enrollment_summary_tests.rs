@@ -97,7 +97,7 @@ async fn enrollment_summary_segmented_complete_ack_or_whole_abort() {
             .interface(Ipv4Addr::LOCALHOST)
             .port(0)
             .database(database)
-            .segmentation_supported(Segmentation::BOTH)
+            .device(bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH))
             .get_enrollment_summary_budget(GetEnrollmentSummaryBudget {
                 max_objects: objects,
                 max_service_ack_bytes: bytes,

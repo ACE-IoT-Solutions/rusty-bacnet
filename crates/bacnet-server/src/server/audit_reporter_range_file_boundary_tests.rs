@@ -238,7 +238,12 @@ async fn audit_reporter_range_file_segmented_response_and_divergence_are_silent(
         for segmented in [false, true] {
             let mut fixture = server(read_reporter()).await;
             let reads = add_target(&fixture, kind, None, true).await;
-            fixture.server.config_mut().segmentation_supported = Segmentation::BOTH;
+            fixture.server.config_mut().device = fixture
+                .server
+                .config_mut()
+                .device
+                .clone()
+                .with_segmentation(Segmentation::BOTH);
             let (tx, rx) = oneshot::channel();
             ingress(
                 &fixture.server,

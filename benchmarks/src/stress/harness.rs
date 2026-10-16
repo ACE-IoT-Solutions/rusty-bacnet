@@ -22,10 +22,10 @@ pub fn make_large_db(device_instance: u32, object_count: u32) -> ObjectDatabase 
 /// The stress Device's configuration, before any scenario's changes.
 pub fn stress_device_config(device_instance: u32) -> DeviceConfig {
     DeviceConfig {
-        instance: device_instance,
-        name: "Stress Device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(device_instance, 555)
+            .expect("valid Device identity")
+            .with_name("Stress Device"),
         vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
         ..DeviceConfig::default()
     }
 }
@@ -36,7 +36,7 @@ pub fn stress_device_config(device_instance: u32) -> DeviceConfig {
 /// without extended frames, say.
 pub fn make_large_db_with(config: DeviceConfig, object_count: u32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
-    let device_instance = config.instance;
+    let device_instance = config.identity.instance();
     let mut device = DeviceObject::new(config).unwrap();
     // The server leaves Object_List to its caller: list every object.
     let oid = |kind, instance| ObjectIdentifier::new(kind, instance).unwrap();
@@ -66,7 +66,12 @@ pub fn make_large_db_with(config: DeviceConfig, object_count: u32) -> ObjectData
 pub async fn make_bip_server_with_db(
     db: ObjectDatabase,
 ) -> Result<BACnetServer<BipTransport>, Error> {
+    let instance = db
+        .selected_device()
+        .expect("stress Device")
+        .instance_number();
     BACnetServer::bip_builder()
+        .device(stress_device_config(instance).identity)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(Ipv4Addr::LOCALHOST)

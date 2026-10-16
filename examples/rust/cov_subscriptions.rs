@@ -20,10 +20,12 @@ use std::net::Ipv4Addr;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build server with an analog input
+    let identity = bacnet_objects::DeviceIdentity::new(1000, 0)
+        .expect("valid Device identity")
+        .with_name("Sensor Controller");
     let mut db = ObjectDatabase::new();
     db.add(Box::new(DeviceObject::new(DeviceConfig {
-        instance: 1000,
-        name: "Sensor Controller".into(),
+        identity: identity.clone(),
         ..DeviceConfig::default()
     })?))?;
     let mut ai = AnalogInputObject::new(1, "Zone Temp", 62)?;
@@ -31,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.add(Box::new(ai))?;
 
     let server = BACnetServer::bip_builder()
+        .device(identity)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(Ipv4Addr::LOCALHOST)

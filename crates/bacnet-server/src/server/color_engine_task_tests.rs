@@ -32,8 +32,9 @@ async fn start(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1474,
-            name: "Color-engine-device".into(),
+            identity: bacnet_objects::DeviceIdentity::new(1474, 0)
+                .expect("valid Device identity")
+                .with_name("Color-engine-device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -41,6 +42,7 @@ async fn start(
     .unwrap();
     db.add(object).unwrap();
     let config = ServerConfig {
+        device: bacnet_objects::DeviceIdentity::new(1474, 0).unwrap(),
         enable_event_enrollment: false,
         ..ServerConfig::default()
     };

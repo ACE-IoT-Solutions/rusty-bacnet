@@ -43,19 +43,19 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // Validate every configured route against the concrete transport before
         // mutating the database or starting network work. No binding takes a
         // group address (#1493).
+        super::network_port::validate_apdu_capacity(&mut config, &transport)?;
+        crate::local_device::validate_startup(&db, &config.device)?;
         let is_group = |mac: &[u8]| transport.is_group_destination(mac);
         let device_bindings =
             DeviceBindingTable::from_configured(configured_device_bindings, is_group)?;
         let audit_routes = AuditRoutes::prepare(&mut db, &config, &device_bindings, &transport)?;
         super::audit_forwarder::initialize(&db, &config, &device_bindings, &transport);
-        super::network_port::validate_apdu_capacity(&mut config, &transport)?;
-        crate::local_device::validate_apdu_declaration(&db, config.max_apdu_length)?;
-        let receive_timeout = super::segmented_receive::validate_segment_timeout(&config, &db)?;
+        let receive_timeout = super::segmented_receive::validate_segment_timeout(&config)?;
         // Settled now: every owner from here on shares it (#1521).
         let config = Arc::new(config);
         let request_tasks = super::request_tasks::RequestTasks::for_server(&config)?;
 
-        if config.vendor_id == 0 {
+        if config.device.vendor_id() == 0 {
             warn!("vendor_id is 0 (ASHRAE reserved); set a valid vendor ID for production use");
         }
 
@@ -69,13 +69,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let network = Arc::new(network);
         // The limiter keeps this startup identity; changing Device membership
         // later does not rebind it.
-        let device_instance = db.selected_device().map(|oid| oid.instance_number());
+        let device_instance = Some(config.device.instance());
         let (discovery_limiter, time_sync_limiter) = request_limiters(&config, device_instance);
         let db = Arc::new(RwLock::new(db));
         let cov_counters = Arc::new(crate::cov::AtomicCovCounters::default());
         let cov_table = Arc::new(RwLock::new(
             CovSubscriptionTable::with_policy(config.cov_policy.clone(), Arc::clone(&cov_counters))
-                .with_max_apdu_length(config.max_apdu_length as usize),
+                .with_max_apdu_length(u32::from(config.device.max_apdu_length()) as usize),
         ));
         let seg_ack_senders = Arc::new(segmented_send::SegmentedSendRegistry::default());
         let seg_send_permits = Arc::new(Semaphore::new(MAX_SEG_SENDERS));
@@ -307,9 +307,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 // configured Segmentation value is the
                                 // advertisement peers plan transfers around
                                 // (#381).
-                                let receives_segments = config_dispatch.segmentation_supported
+                                let receives_segments = config_dispatch.device.segmentation()
                                     == Segmentation::BOTH
-                                    || config_dispatch.segmentation_supported
+                                    || config_dispatch.device.segmentation()
                                         == Segmentation::RECEIVE;
                                 if !receives_segments {
                                     Self::send_server_abort(
@@ -721,7 +721,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         suppressions: Arc::clone(&event_suppressions),
                         period: ee_period,
                         retry_ms: config.cov_retry_timeout_ms,
-                        local_apdu_capacity: config.max_apdu_length,
+                        local_apdu_capacity: u32::from(config.device.max_apdu_length()),
                     },
                 ),
             )

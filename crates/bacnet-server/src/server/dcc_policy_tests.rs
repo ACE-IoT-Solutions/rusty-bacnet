@@ -299,7 +299,7 @@ pub(super) async fn legacy_fixture() -> (
     fixture_with_config(
         "recovery",
         ServerConfig {
-            segmentation_supported: Segmentation::BOTH,
+            device: bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
             dcc_policy: DccPolicy::LegacyPermissive,
             ..Default::default()
         },

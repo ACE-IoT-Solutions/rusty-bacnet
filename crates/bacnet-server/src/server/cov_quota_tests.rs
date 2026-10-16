@@ -28,8 +28,9 @@ fn ai(instance: u32) -> ObjectIdentifier {
 fn create_database_with_ais(count: u32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 100,
-        name: "Device-100".to_string(),
+        identity: bacnet_objects::DeviceIdentity::new(100, 0)
+            .expect("valid Device identity")
+            .with_name("Device-100".to_string()),
         ..Default::default()
     })
     .unwrap();
@@ -56,6 +57,7 @@ async fn peer_quota_isolation() {
     };
 
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .database(db)
         .transport(recording_transport().0)
         .cov_policy(policy)
@@ -146,6 +148,7 @@ async fn reserved_capacity_preservation() {
     };
 
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .database(db)
         .transport(recording_transport().0)
         .cov_policy(policy)
@@ -251,6 +254,7 @@ async fn indefinite_subscription_policy() {
     };
 
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .database(db)
         .transport(recording_transport().0)
         .cov_policy(policy)
@@ -312,6 +316,7 @@ async fn indefinite_subscription_policy() {
         ..Default::default()
     };
     let server2 = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .database(db2)
         .transport(recording_transport().0)
         .cov_policy(policy2)
@@ -373,6 +378,7 @@ async fn disconnect_and_expiry_cleanup_releases_quota() {
     };
 
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .database(db)
         .transport(recording_transport().0)
         .cov_policy(policy)
@@ -539,6 +545,7 @@ async fn fanout_and_work_budgets_enforced() {
     };
 
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .database(db)
         .transport(recording_transport().0)
         .cov_policy(policy)
@@ -605,6 +612,7 @@ async fn in_flight_confirmed_per_peer_throttled() {
     };
 
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .database(db)
         .transport(recording_transport().0)
         .cov_policy(policy)
@@ -670,6 +678,7 @@ async fn subscribe_cov_property_multiple_quota_names_the_overflowing_reference()
     };
 
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .database(db)
         .transport(recording_transport().0)
         .cov_policy(policy)

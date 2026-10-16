@@ -222,7 +222,7 @@ fn migration_adapters_build_unstarted() {
     let server = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::ServerOnly)
         .database(db)
-        .identity(id)
+        .device(id)
         .build_session()
         .unwrap();
     assert_eq!(server.active_leases(), 0);

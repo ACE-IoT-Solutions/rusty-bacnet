@@ -98,8 +98,9 @@ pub(super) fn setup_qualified_reference(
     let mut db = ObjectDatabase::new();
     for instance in local_device_instances {
         let device = DeviceObject::new(DeviceConfig {
-            instance: *instance,
-            name: format!("Device-{instance}"),
+            identity: bacnet_objects::DeviceIdentity::new(*instance, 0)
+                .expect("valid Device identity")
+                .with_name(format!("Device-{instance}")),
             ..DeviceConfig::default()
         })
         .unwrap();

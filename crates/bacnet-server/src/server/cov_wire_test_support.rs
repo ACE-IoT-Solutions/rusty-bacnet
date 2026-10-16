@@ -195,16 +195,25 @@ impl Harness {
     }
 
     pub(super) async fn start_with(
-        config: ServerConfig,
+        mut config: ServerConfig,
         extend: impl FnOnce(&mut ObjectDatabase),
     ) -> Self {
+        config.device = bacnet_objects::DeviceIdentity::new(856, 0)
+            .unwrap()
+            .with_max_apdu(config.device.max_apdu_length())
+            .unwrap();
         let (tx, rx) = mpsc::channel(16);
         let mut db = ObjectDatabase::new();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 856,
-                name: "Timed COV Device".into(),
-                max_apdu_length: config.max_apdu_length,
+                identity: bacnet_objects::DeviceIdentity::new(856, 0)
+                    .expect("valid Device identity")
+                    .with_name("Timed COV Device")
+                    .with_max_apdu(
+                        u16::try_from(u32::from(config.device.max_apdu_length()))
+                            .expect("Device APDU fits u16"),
+                    )
+                    .expect("valid Device APDU"),
                 ..DeviceConfig::default()
             })
             .unwrap(),

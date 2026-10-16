@@ -251,13 +251,15 @@ const SERVER_INSTANCE: u32 = 1234;
 async fn server() -> BACnetServer<Bip6Transport> {
     let mut db = ObjectDatabase::new();
     let device = DeviceObject::new(DeviceConfig {
-        instance: SERVER_INSTANCE,
-        name: "B/IPv6 server".into(),
+        identity: bacnet_objects::DeviceIdentity::new(SERVER_INSTANCE, 0)
+            .expect("valid Device identity")
+            .with_name("B/IPv6 server"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(device)).unwrap();
     BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(SERVER_INSTANCE, 0).unwrap())
         .database(db)
         .transport(Bip6Transport::new(
             Ipv6Addr::LOCALHOST,

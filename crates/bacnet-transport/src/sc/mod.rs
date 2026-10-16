@@ -43,6 +43,10 @@ mod errors;
 mod failover;
 mod handshake;
 mod heartbeat;
+#[cfg(feature = "sc-tls")]
+mod peer_info;
+#[cfg(feature = "sc-tls")]
+pub use peer_info::ScHubPeerInfo;
 mod lifecycle;
 mod loopback;
 pub(crate) mod npdu_admission;

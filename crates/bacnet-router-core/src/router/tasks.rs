@@ -173,7 +173,10 @@ fn wire_entries<const R: usize, const H: usize>(
 }
 
 /// Every other port's network, in port order.
-fn other_networks(ports: &[PortConfig], port: PortId) -> impl Iterator<Item = u16> + Clone + '_ {
+fn other_networks<G>(
+    ports: &[PortConfig<G>],
+    port: PortId,
+) -> impl Iterator<Item = u16> + Clone + '_ {
     ports
         .iter()
         .enumerate()
@@ -181,8 +184,14 @@ fn other_networks(ports: &[PortConfig], port: PortId) -> impl Iterator<Item = u1
         .map(|(_, config)| config.network)
 }
 
-impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: usize>
-    Storage<P, R, H, D, N>
+impl<
+        const P: usize,
+        const R: usize,
+        const H: usize,
+        const D: usize,
+        const N: usize,
+        G: super::GroupClassifier,
+    > Storage<P, R, H, D, N, G>
 {
     /// Write the front task's next output into the scratch as the current
     /// one. `false` when no task is left.
