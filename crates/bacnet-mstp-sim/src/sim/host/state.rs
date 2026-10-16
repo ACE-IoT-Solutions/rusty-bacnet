@@ -1,7 +1,7 @@
 //! Buffered state is owned by one powered incarnation, never queued globally.
 use std::collections::VecDeque;
 
-use bacnet_mstp_core::{Duration, Instant, RequestId};
+use bacnet_mstp_core::{Duration, Instant, RequestId, TransmitId};
 
 use super::echo::EchoFilter;
 use crate::line::Character;
@@ -10,6 +10,11 @@ use crate::report::HostStats;
 /// A serial write can outlive physical driver release; its completion stamp
 /// remains the later of drain return and wire end, even when echo waits.
 pub(super) struct Write {
+    pub id: TransmitId,
+    pub incarnation: u64,
+    pub start: Instant,
+    pub wire_end: Instant,
+    pub watchdog: Instant,
     pub ended: Instant,
     pub frame: Vec<u8>,
     pub hunting: bool,

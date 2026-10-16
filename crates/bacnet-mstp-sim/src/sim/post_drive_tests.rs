@@ -16,6 +16,7 @@ fn one_octet(hold: Duration) -> Sim {
         0,
         ScriptSend {
             after: Duration::ZERO,
+            inter_octet_gap: Duration::ZERO,
             post_drive: hold,
             octets: vec![0x55],
             malformed: true,
@@ -53,7 +54,7 @@ fn driver_remains_owned_after_data_end_until_release() {
     assert_eq!(release.data_end, Some(us(1_000)));
     assert_eq!(release.scheduled, us(2_400));
     assert_eq!(release.at, us(2_400));
-    assert!(!release.power_loss);
+    assert_eq!(release.cause, crate::DriverReleaseCause::Completed);
     assert!(sim.meta.is_empty());
     assert_eq!(sim.line.live_count(), 0);
 }
@@ -137,7 +138,10 @@ fn power_loss_during_hold_fences_the_old_release() {
     sim.power_off(0);
     assert_eq!(sim.frames.len(), 1);
     assert!(!sim.frames[0].truncated);
-    assert!(sim.report.driver_releases[0].power_loss);
+    assert_eq!(
+        sim.report.driver_releases[0].cause,
+        crate::DriverReleaseCause::PowerLoss
+    );
     assert_eq!(sim.report.driver_releases[0].at, us(1_200));
     assert_eq!(sim.report.driver_releases[0].data_end, Some(us(1_000)));
     sim.power_on(0);
@@ -145,6 +149,7 @@ fn power_loss_during_hold_fences_the_old_release() {
         0,
         ScriptSend {
             after: Duration::ZERO,
+            inter_octet_gap: Duration::ZERO,
             post_drive: Duration::from_micros(1_400),
             octets: vec![0xFF],
             malformed: true,
@@ -296,6 +301,7 @@ fn own_driver_release_precedes_new_start_confirmation() {
         us(499_739),
         None,
         sim.timing.max_post_drive(),
+        Duration::ZERO,
     );
     let release = sim.line.owner(old).unwrap().release;
     assert!(release > sim.now);

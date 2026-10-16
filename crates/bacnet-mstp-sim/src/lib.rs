@@ -31,7 +31,7 @@
 //! **Time and events.** Virtual time is the core's own
 //! [`Instant`](bacnet_mstp_core::Instant), which counts nanoseconds; the
 //! octet boundaries and adapter jitter use whole microseconds; configured
-//! driver holds retain nanosecond precision. One queue orders every event by
+//! gaps and driver holds retain nanosecond precision. One queue orders every event by
 //! time, then by a fixed class (characters arriving, data ending, physical
 //! driver releases, scheduled events, host
 //! reads/completion, core deadlines, adapters starting frames, later octets), then by
@@ -40,9 +40,13 @@
 //! host.
 //!
 //! **The line.** One half-duplex medium at a configured baud rate. An octet
-//! occupies ten bit times (Clause 9.2.3); a driver sends its octets back to
-//! back, with boundaries measured from the start of its transmission and
-//! rounded up to a whole microsecond. Receivers frame characters the way a
+//! occupies ten bit times (Clause 9.2.3). Each transmission captures its
+//! [`AdapterSpec::inter_octet_gap`]: extra idle time after each non-final stop
+//! bit. Octet boundaries use the original contiguous character grid, rounded
+//! up to a whole microsecond, plus the number of preceding gaps. Rounding
+//! never accumulates from character to character. There is no leading or
+//! trailing gap. Physical ownership continues through gaps, but gaps create
+//! no characters or line activity. Receivers frame characters the way a
 //! UART does: the first octet to begin opens a character that ends with that
 //! octet. If no other driver was on the line meanwhile, receivers get the
 //! octet; otherwise they get a framing error, and while out-of-step octets
@@ -85,6 +89,10 @@
 //! ends. It is off while the node drives the line, unless
 //! [`AdapterSpec::echo`] is set. Deadlines are serviced at
 //! `next_deadline`, plus any configured lateness and per-deadline jitter.
+//! Octet adapters service the transmit watchdog while a frame is going out;
+//! expiry truncates it, releases its driver and enables reception. A final
+//! stop exactly at the deadline completes first; a later octet starting at
+//! the deadline is suppressed by the abort.
 //!
 //! **Buffered host adapters.** [`MasterSpec::host`] opts a node into
 //! [`HostSpec`], independently of other nodes. The line still delivers each
@@ -106,7 +114,13 @@
 //! not the production filter. Physical echo generation remains separately
 //! controlled by [`AdapterSpec::echo`]. A missing echo can postpone completion
 //! notification and expose an overdue core deadline; its completion stamp
-//! still denotes the frame end. [`Sim::host_stats`] reports this adapter work.
+//! still denotes the later of drain and final data stop. [`Sim::host_stats`]
+//! reports this adapter work. As in the production host, core deadlines are
+//! not polled during write/drain/echo. [`Report::host_transmits`] records
+//! start, watchdog deadline, physical end, completion stamp and notification
+//! independently. [`HostBudgetOverrun`] distinguishes late completion from
+//! a timely completion whose notification was late; neither observation
+//! claims a core timeout or physical abort occurred.
 //!
 //! Host input is capped at 4096 characters, pending clean-frame receipts at
 //! 513, and echo storage at one transmitted frame. Overflow is a reported
@@ -116,7 +130,19 @@
 //! **Scripted stations** decode the line with the codec's stream decoder
 //! and react to frames through a [`Script`]: a minimal master that answers
 //! polls and sends test frames, a slave, a misbehaving device. Each
-//! [`ScriptSend`] can also set a post-drive hold.
+//! [`ScriptSend`] can also set an inter-octet gap and a post-drive hold.
+//!
+//! **Gap limits and local budgets.** Gaps default to zero. The 20-bit idle
+//! limit in 135-2020 9.2.3 includes the stop bit, leaving at most 19 bit times
+//! after its end. [`WireTiming::max_inter_octet_gap`] rounds down to a
+//! nanosecond, and larger configurations panic. Receive-abort timing uses
+//! spacing between character indications, which also includes the next
+//! character's duration; it is a separate threshold. Core watchdog defaults
+//! budget contiguous frames. Scenarios with long gaps must explicitly set
+//! a sufficient local watchdog using [`WireTiming::duration_with_gap`] and
+//! their completion allowance. Long queued workloads also need sufficient
+//! queue age. The simulator does not enlarge production defaults or protocol
+//! timers to make a scenario pass.
 //!
 //! **Post-drive limits.** Holds default to zero. The 135-2020 text uses
 //! different edges: 9.2.3 limits release to 15 bit times from the final stop
@@ -185,14 +211,14 @@
 //!
 //! It models bit-time framing at any baud rate, collisions and the framing
 //! errors they cause, the core's Clause 9 timers against real line
-//! activity, adapter latency and timer jitter, post-drive ownership, and power loss.
+//! activity, adapter latency and timer jitter, inter-octet gaps, post-drive
+//! ownership, local watchdog expiry in octet mode, and power loss.
 //!
 //! It does not model:
 //!
 //! - **Electrical behaviour.** There is no biasing, reflection, analog driver
-//!   edge or hardware watchdog qualification. Drivers send their octets with
-//!   no idle gap, so Tframe_gap is never tested. Post-drive hold models
-//!   ownership and receiver eligibility, not voltage or current.
+//!   edge or hardware watchdog qualification. Inter-octet gaps and post-drive
+//!   hold model ownership and receiver eligibility, not voltage or current.
 //! - **Propagation and drift.** Propagation is instantaneous. Every node
 //!   runs at exactly the line's baud rate, with no ±1% tolerance. Seeded
 //!   [`AdapterSpec::deadline_jitter`] stands in for clock and timer
@@ -250,8 +276,9 @@ mod wire;
 
 pub use line::Driver;
 pub use report::{
-    Collision, CollisionClass, Delivery, DriverRelease, Episode, HostStats, HostTimingFailure,
-    PostDriveOverlap, Report, Tolerance, Violation, ViolationKind, WireFrame,
+    Collision, CollisionClass, Delivery, DriverRelease, DriverReleaseCause, Episode,
+    HostBudgetOverrun, HostStats, HostTimingFailure, HostTransmitTiming, PostDriveOverlap, Report,
+    Tolerance, Violation, ViolationKind, WireFrame,
 };
 pub use rng::SimRng;
 pub use sim::{Sim, SimConfig, SimCore};

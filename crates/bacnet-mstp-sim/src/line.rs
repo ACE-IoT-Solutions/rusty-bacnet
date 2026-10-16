@@ -1,12 +1,14 @@
 //! The shared half-duplex medium and the receivers' character framing.
 //!
-//! Every driver puts octets on the line back to back, each occupying ten bit
-//! times. Propagation is ideal, so every receiver sees the same line, and the
+//! Every octet occupies ten bit times, separated by the transmission's
+//! captured idle gaps. Driver ownership continues through gaps and any
+//! post-drive hold without creating characters. Propagation is ideal, so
+//! every receiver sees the same line, and the
 //! line keeps one receiver framing window for all of them, the way a UART
 //! frames characters:
 //!
 //! - An idle receiver starts a character at the first octet that begins.
-//! - The character ends when that octet ends. If no other octet was on the
+//! - The character ends when that octet ends. If no other driver owned the
 //!   line in between, receivers get the octet (with any injected corruption);
 //!   otherwise they get a framing error.
 //! - If an octet is still on the line when a character ends (two drivers out
@@ -20,7 +22,7 @@ use std::collections::BTreeMap;
 use bacnet_mstp_core::{Duration, Instant};
 
 use crate::spec::Corruption;
-use crate::wire::WireTiming;
+use crate::wire::{WireSchedule, WireTiming};
 
 /// Identifies one transmission on the line.
 pub(crate) type TxId = u64;
@@ -40,6 +42,7 @@ pub(crate) struct Transmission {
     pub driver: Driver,
     pub octets: Vec<u8>,
     pub start: Instant,
+    schedule: WireSchedule,
     /// Octets started so far.
     pub started: usize,
     pub truncated: bool,
@@ -60,6 +63,8 @@ pub(crate) struct Ownership {
     pub start: Instant,
     pub data_end: Instant,
     pub release: Instant,
+    /// The normal final-stop event actually ran, rather than a prediction.
+    pub data_complete: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -168,11 +173,13 @@ impl Line {
         start: Instant,
         corruption: Option<(usize, Corruption)>,
         post_drive: Duration,
+        inter_octet_gap: Duration,
     ) -> TxId {
         self.timing.validate_post_drive(post_drive);
         let id = self.next_id;
         self.next_id += 1;
-        let data_end = self.timing.end_of(start, octets.len());
+        let schedule = self.timing.schedule(start, inter_octet_gap);
+        let data_end = schedule.end(octets.len());
         self.owners.insert(
             id,
             Ownership {
@@ -180,6 +187,7 @@ impl Line {
                 start,
                 data_end,
                 release: data_end + post_drive,
+                data_complete: false,
             },
         );
         self.live.insert(
@@ -188,6 +196,7 @@ impl Line {
                 driver,
                 octets,
                 start,
+                schedule,
                 started: 0,
                 truncated: false,
                 collided: false,
@@ -203,10 +212,7 @@ impl Line {
         let (driver, end) = {
             let transmission = self.live.get_mut(&tx).expect("a live transmission");
             transmission.started = index + 1;
-            (
-                transmission.driver,
-                transmission.start + self.timing.boundary(index + 1),
-            )
+            (transmission.driver, transmission.schedule.octet_end(index))
         };
         let mut overlaps = Vec::new();
         for (&other, owner) in &self.owners {
@@ -253,14 +259,15 @@ impl Line {
     pub(crate) fn next_after(&self, tx: TxId, index: usize) -> Option<Next> {
         let transmission = self.live.get(&tx)?;
         let following = index + 1;
-        let at = transmission.start + self.timing.boundary(following);
         Some(if following < transmission.octets.len() {
             Next::Octet {
-                at,
+                at: transmission.schedule.octet_start(following),
                 index: following,
             }
         } else {
-            Next::End { at }
+            Next::End {
+                at: transmission.schedule.end(following),
+            }
         })
     }
 
@@ -329,7 +336,12 @@ impl Line {
 
     /// Remove a transmission whose last octet has ended.
     pub(crate) fn finish(&mut self, tx: TxId) -> Option<Transmission> {
-        self.live.remove(&tx)
+        let transmission = self.live.remove(&tx)?;
+        self.owners
+            .get_mut(&tx)
+            .expect("a physical owner")
+            .data_complete = true;
+        Some(transmission)
     }
 
     fn prune(&mut self, now: Instant) {
@@ -357,6 +369,7 @@ mod tests {
             vec![0x55, 0xFF],
             us(0),
             None,
+            Duration::ZERO,
             Duration::ZERO,
         );
         let first = line.start_octet(tx, 0, us(0));
@@ -390,12 +403,14 @@ mod tests {
             us(0),
             None,
             Duration::ZERO,
+            Duration::ZERO,
         );
         let b = line.begin(
             Driver::Station(2),
             vec![0x55],
             us(500),
             None,
+            Duration::ZERO,
             Duration::ZERO,
         );
         line.start_octet(a, 0, us(0));
@@ -420,6 +435,7 @@ mod tests {
             us(0),
             Some((1, Corruption::Xor(0x01))),
             Duration::ZERO,
+            Duration::ZERO,
         );
         line.start_octet(tx, 0, us(0));
         assert_eq!(
@@ -437,6 +453,7 @@ mod tests {
             vec![0x55, 0xFF],
             us(10_000),
             None,
+            Duration::ZERO,
             Duration::ZERO,
         );
         line.start_octet(cut, 0, us(10_000));

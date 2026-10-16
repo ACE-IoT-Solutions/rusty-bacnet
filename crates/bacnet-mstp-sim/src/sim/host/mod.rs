@@ -4,6 +4,8 @@ mod application;
 mod differential;
 mod echo;
 #[cfg(test)]
+mod gap_tests;
+#[cfg(test)]
 mod repair_tests;
 mod state;
 #[cfg(test)]
@@ -11,8 +13,8 @@ mod tests;
 
 use super::master::Input;
 use super::Sim;
-use crate::line::Character;
-use crate::report::{HostStats, ViolationKind};
+use crate::line::{Character, TxId};
+use crate::report::{HostStats, HostTransmitTiming, ViolationKind};
 use crate::trace::{TraceKind, Who};
 pub(crate) use state::HostState;
 pub(crate) use state::WireRequest;
@@ -49,9 +51,15 @@ impl Sim {
         host.stats.max_buffered = host.stats.max_buffered.max(host.input.len());
     }
 
-    pub(super) fn host_started(&mut self, node: usize, frame: &[u8]) {
+    pub(super) fn host_started(&mut self, node: usize, tx: TxId, id: bacnet_mstp_core::TransmitId) {
         let now = self.now;
-        let wire_end = self.timing.end_of(now, frame.len());
+        if self.master_mut(node).expect("master").host.is_none() {
+            return;
+        }
+        // Reuse the line's captured schedule; do not predict a second,
+        // potentially contiguous, end for the host's software completion.
+        let wire_end = self.line.owner(tx).expect("physical owner").data_end;
+        let frame = self.line.get(tx).expect("live frame").octets.clone();
         let master = self.master_mut(node).expect("master");
         let Some(host) = master.host.as_mut() else {
             return;
@@ -62,14 +70,20 @@ impl Sim {
         }
         host.held_at.clear();
         host.write = Some(Write {
+            id,
+            incarnation: master.incarnation,
+            start: now,
+            wire_end,
+            watchdog: now + master.spec.config.transmit_watchdog,
             ended: wire_end.max(now + spec.drain_duration),
-            frame: frame.to_vec(),
+            frame,
             hunting: false,
         });
     }
 
     fn host_complete(&mut self, node: usize) {
         let now = self.now;
+        let station = self.nodes[node].station;
         let master = self.master_mut(node).expect("master");
         let host = master.host.as_mut().expect("host");
         let Some(write) = host.write.take() else {
@@ -77,7 +91,18 @@ impl Sim {
         };
         host.stats.last_completion = Some(write.ended);
         host.completion_reported = Some(now);
-        if let Some(id) = master.transmitting.take() {
+        let id = master.transmitting.take();
+        self.report.host_transmits.push(HostTransmitTiming {
+            station,
+            incarnation: write.incarnation,
+            transmit_id: write.id,
+            start: write.start,
+            watchdog: write.watchdog,
+            data_end: write.wire_end,
+            completion: write.ended,
+            notification: now,
+        });
+        if let Some(id) = id {
             let _ = self.master_input(node, Input::Complete(id, write.ended));
         }
     }

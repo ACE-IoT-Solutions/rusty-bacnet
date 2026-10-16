@@ -2,6 +2,8 @@
 
 mod checks;
 mod faults;
+#[cfg(test)]
+mod gap_tests;
 mod host;
 mod master;
 mod medium;
@@ -142,6 +144,8 @@ pub(crate) struct Node {
 /// Facts about a transmission the line itself doesn't track.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TxMeta {
+    /// Core operation bound to this physical transmission, for abort fencing.
+    transmit_id: Option<TransmitId>,
     /// When a master's core handed this frame over.
     dispatched: Option<Instant>,
     generation: bool,
@@ -229,7 +233,7 @@ impl Sim {
     /// # Panics
     ///
     /// If the station is taken or the spec's baud rate differs from the
-    /// line's, or the post-drive hold exceeds the line's conservative limit.
+    /// line's, or the inter-octet gap or post-drive hold exceeds its limit.
     pub fn add_master(&mut self, spec: MasterSpec) -> &mut Self {
         let station = spec.station();
         self.claim_station(station);
@@ -239,6 +243,8 @@ impl Sim {
         );
         let powered = spec.powered;
         self.timing.validate_post_drive(spec.adapter.post_drive);
+        self.timing
+            .validate_inter_octet_gap(spec.adapter.inter_octet_gap);
         self.nodes.push(Node {
             station,
             kind: NodeKind::Master(Box::new(MasterNode::new(spec))),
@@ -547,7 +553,9 @@ impl Sim {
                     index,
                 ));
             }
-            if master.transmitting.is_some() {
+            // The host transport awaits write/drain/echo without polling core
+            // deadlines. An octet adapter must still service its watchdog.
+            if master.transmitting.is_some() && master.host.is_some() {
                 continue;
             }
             if let Some(fire_at) = master.fire_at {
@@ -583,7 +591,9 @@ impl Sim {
             Event::WindowEnd => self.window_end(),
             Event::OctetStart { tx, index } => self.octet_start(tx, index),
             Event::TxEnd { tx } => self.tx_end(tx),
-            Event::DriverRelease { tx } => self.release_driver(tx, false),
+            Event::DriverRelease { tx } => {
+                self.release_driver(tx, crate::DriverReleaseCause::Completed)
+            }
             Event::AdapterStart {
                 node,
                 id,

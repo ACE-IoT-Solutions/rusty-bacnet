@@ -33,6 +33,7 @@ impl Sim {
         corruption: Option<(usize, Corruption)>,
         dispatch: Option<(Instant, bool)>,
         post_drive: Duration,
+        inter_octet_gap: Duration,
     ) -> TxId {
         let now = self.now;
         self.note(who(driver), TraceKind::FrameStart(describe(&octets)));
@@ -42,10 +43,13 @@ impl Sim {
             self.listening_masters(driver)
         };
         let cut_after = self.take_cut_off(driver);
-        let tx = self.line.begin(driver, octets, now, corruption, post_drive);
+        let tx = self
+            .line
+            .begin(driver, octets, now, corruption, post_drive, inter_octet_gap);
         self.meta.insert(
             tx,
             TxMeta {
+                transmit_id: None,
                 dispatched: dispatch.map(|(at, _)| at),
                 generation: dispatch.is_some_and(|(_, generation)| generation),
                 corrupted: corruption.is_some(),
@@ -173,7 +177,7 @@ impl Sim {
         self.record_frame(tx, transmission);
         let release = self.line.owner(tx).expect("a physical driver").release;
         if release == self.now {
-            self.release_driver(tx, false);
+            self.release_driver(tx, crate::DriverReleaseCause::Completed);
         } else {
             self.push(
                 release,
@@ -278,6 +282,7 @@ impl Sim {
     /// A scripted station puts its octets on the line.
     pub(super) fn script_send(&mut self, node: usize, send: ScriptSend) {
         self.timing.validate_post_drive(send.post_drive);
+        self.timing.validate_inter_octet_gap(send.inter_octet_gap);
         let station = self.nodes[node].station;
         if self.nodes[node].listening_since.is_none() {
             self.note(
@@ -295,6 +300,7 @@ impl Sim {
             None,
             None,
             send.post_drive,
+            send.inter_octet_gap,
         );
         self.nodes[node].driving = Some(tx);
         self.nodes[node].listening_since = None;
@@ -313,6 +319,7 @@ impl Sim {
             octets,
             None,
             None,
+            Duration::ZERO,
             Duration::ZERO,
         );
         self.octet_start(tx, 0);

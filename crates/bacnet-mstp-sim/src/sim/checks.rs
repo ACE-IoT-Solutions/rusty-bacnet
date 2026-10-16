@@ -443,6 +443,7 @@ mod tests {
             None,
             Some((t0, false)),
             Duration::ZERO,
+            Duration::ZERO,
         );
         sim.nodes[0].driving = Some(first);
         sim.octet_start(first, 0);
@@ -454,6 +455,7 @@ mod tests {
             token(3, 0),
             None,
             Some((t0 + dispatched, false)),
+            Duration::ZERO,
             Duration::ZERO,
         );
         sim.nodes[1].driving = Some(second);
