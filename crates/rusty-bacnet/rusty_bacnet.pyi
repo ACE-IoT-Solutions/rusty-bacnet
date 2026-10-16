@@ -1896,7 +1896,10 @@ class ForeignRegistrationStatus(TypedDict):
     ``last_bbmd``, ``last_result`` (the BVLC result code, 0x0030 for a
     refusal) and ``last_outcome`` (``"pending"``, ``"accepted"``,
     ``"refused"``, ``"timed_out"``, ``"local_error"`` or ``"cancelled"``)
-    describe the latest attempt and clear when the owner stops. The totals
+    describe the latest attempt and clear when the owner stops. Those fields
+    are separate from the live lease: ``registered`` does not imply the
+    latest attempt was accepted, and can remain true during a pending,
+    refused or timed-out renewal. The totals
     survive it: ``lapses`` counts leases that ran out with no newer success,
     and ``renewal_hints`` the BBMD's Distribute-Broadcast-To-Network NAKs,
     each of which brings the next attempt forward."""
