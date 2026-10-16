@@ -1,0 +1,30 @@
+[package]
+name = "bacnet-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded supervised BACnet/IP runtime"
+keywords = ["bacnet", "building-automation", "runtime", "async"]
+categories = ["network-programming"]
+
+[features]
+default = []
+
+[dependencies]
+bacnet-bip-codec.workspace = true
+bacnet-client.workspace = true
+bacnet-services.workspace = true
+bacnet-transport.workspace = true
+bacnet-types.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+bacnet-encoding.workspace = true
+bacnet-network.workspace = true
+bytes.workspace = true
+
+[lints]
+workspace = true

@@ -469,6 +469,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-runtime"
+version = "0.13.0"
+dependencies = [
+ "bacnet-bip-codec",
+ "bacnet-client",
+ "bacnet-encoding",
+ "bacnet-network",
+ "bacnet-services",
+ "bacnet-transport",
+ "bacnet-types",
+ "bytes",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "bacnet-server"
 version = "0.13.0"
 dependencies = [

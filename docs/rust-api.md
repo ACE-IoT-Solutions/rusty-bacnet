@@ -5093,6 +5093,42 @@ non-finite increment with VALUE_OUT_OF_RANGE.
 
 ---
 
+## bacnet-runtime
+
+`bacnet-runtime` is the bounded, supervised application layer for managing a
+set of BACnet attachments. The initial 0.13 port deliberately supports direct
+B/IP clients only. It owns client startup and shutdown, transactional
+whole-set reconciliation, health snapshots, and ordered read/write batches.
+
+`BacnetRuntime::start` validates the complete configuration and rolls back any
+attachments already started if a later bind fails. `reconcile` accepts a newer
+complete revision, rejects reconciliation while a batch is active, and restores
+the prior attachment set if replacement fails. `stop` is idempotent, refuses
+new work, cancels runtime-owned batches, and then stops every attachment within
+the configured deadline.
+
+Batch admission is bounded by `max_inflight_operations` and
+`scheduler_capacity`; `max_batch_items` bounds each operation. Inputs execute
+in caller order and each outcome retains its `input_index`. Dropping an
+operation handle cancels its task. Targets are six-octet direct B/IP MACs
+(IPv4 address followed by UDP port); routed targets are not yet accepted.
+
+Health snapshots include attachment state, the actual local B/IP MAC, active
+operation counts, and managed foreign-device registration state. The event,
+discovery, cache, and COV counters are reserved and remain zero in this slice.
+Attachment state describes runtime lifecycle; it is not an independent probe
+of the client's receive task. A rejected or expired foreign-device lease keeps
+the attachment `Running` for unicast traffic and reports
+`ForeignDeviceRegistrationFailed` through `last_error`.
+
+MS/TP, BACnet/SC, router discovery/topology, raw I-Am observation, and COV
+supervision are represented in configuration only so requests fail with
+`UnsupportedTransport`; they are not silently approximated. Applications that
+need those capabilities should continue using their lower-level crates until
+the corresponding runtime slices land.
+
+---
+
 ## bacnet-client
 
 Async BACnet client with transaction state machine, segmentation, and discovery.
