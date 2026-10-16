@@ -148,6 +148,9 @@ impl Sim {
                 }
             };
             match &self.nodes[node].kind {
+                NodeKind::Master(master) if master.host.is_some() => {
+                    self.host_character(node, character)
+                }
                 NodeKind::Master(_) => {
                     let input = match character {
                         Character::Clean(byte) => Input::Octet(byte),

@@ -23,6 +23,8 @@ const DEADLINE_SPIN_LIMIT: u32 = 64;
 const ACTION_DRAIN_LIMIT: usize = 64;
 
 pub(crate) struct MasterNode {
+    pub(super) host: Option<super::host::HostState>,
+    pub(super) incarnation: u64,
     pub(super) spec: MasterSpec,
     pub(super) core: Option<Box<SimCore>>,
     /// The core's next deadline, as it last reported it.
@@ -60,12 +62,16 @@ pub(crate) struct PendingTx {
     /// The frame is the core's answer to a request (a data frame or Reply
     /// Postponed, handed over while answering).
     pub(super) while_answering: bool,
+    /// The accepted host request that caused this answer, on the wire clock.
+    pub(super) reply_to: Option<super::host::WireRequest>,
     pub(super) generation: bool,
 }
 
 impl MasterNode {
     pub(super) fn new(spec: MasterSpec) -> Self {
         Self {
+            host: None,
+            incarnation: 0,
             spec,
             core: None,
             deadline: None,
@@ -87,6 +93,11 @@ impl MasterNode {
     /// flag on, so a master without it treats extended frames as a node
     /// without COBS support does.
     pub(super) fn boot(&mut self, now: Instant) {
+        self.incarnation += 1;
+        self.host = self.spec.adapter.host.map(|spec| {
+            spec.validate();
+            super::host::HostState::new(self.spec.config.t_frame_abort)
+        });
         let queues = AllocQueues::new(self.spec.unicast_capacity, self.spec.broadcast_capacity);
         let storage = if self.spec.config.extended_frames {
             MAX_EXTENDED_FRAME_LENGTH
@@ -114,6 +125,7 @@ impl MasterNode {
 
     /// Drop the core, as on power loss.
     pub(super) fn shut_down(&mut self) {
+        self.host = None;
         self.core = None;
         self.deadline = None;
         self.fire_at = None;
@@ -131,7 +143,7 @@ pub(crate) enum Input {
     Garbled,
     Deadline,
     Started(TransmitId),
-    Complete(TransmitId),
+    Complete(TransmitId, Instant),
     Decide(RequestId, Option<Vec<u8>>),
 }
 
@@ -211,7 +223,10 @@ impl Sim {
     /// Feed one event to a master's core, then run the adapter over what it
     /// asked for and check the core's contract.
     pub(super) fn master_input(&mut self, node: usize, input: Input) -> Result<(), CoreError> {
-        let now = self.now;
+        let now = match input {
+            Input::Complete(_, stamp) => stamp,
+            _ => self.now,
+        };
         let station = self.nodes[node].station;
         let NodeKind::Master(master) = &mut self.nodes[node].kind else {
             return Ok(());
@@ -227,7 +242,7 @@ impl Sim {
             Input::Garbled => core.on_receive_error(ReceiveError::Framing, now),
             Input::Deadline => core.on_deadline(now),
             Input::Started(id) => core.on_transmit_started(*id, now),
-            Input::Complete(id) => core.on_transmit_complete(*id, now),
+            Input::Complete(id, stamp) => core.on_transmit_complete(*id, *stamp),
             Input::Decide(request, Some(data)) => {
                 core.complete_request(*request, ReplyDecision::Data(data), now)
             }
@@ -256,7 +271,12 @@ impl Sim {
         if !super::checks::holds_token(after) {
             master.generating = false;
         }
-        let punctual = !adapter.may_miss_deadlines();
+        let completion_exposed_timer = matches!(input, Input::Deadline)
+            && master
+                .host
+                .as_ref()
+                .is_some_and(|host| host.completion_reported == Some(self.now));
+        let punctual = !adapter.may_miss_deadlines() && !completion_exposed_timer;
         if master.fire_at.is_none() {
             self.arm_deadline(node);
         }
@@ -288,6 +308,7 @@ impl Sim {
                 format!("station {station}: {count} actions from one event"),
             ),
         }
+        self.host_finish_request(node);
         result
     }
 
@@ -295,6 +316,7 @@ impl Sim {
     /// time, plus the adapter's lateness, plus a jitter drawn once per
     /// deadline.
     pub(super) fn arm_deadline(&mut self, node: usize) {
+        let now = self.now;
         let Some(master) = self.master_mut(node) else {
             return;
         };
@@ -311,7 +333,8 @@ impl Sim {
         };
         let master = self.master_mut(node).expect("a master");
         master.fire_at = Some(
-            deadline + adapter.deadline_lateness + bacnet_mstp_core::Duration::from_micros(drawn),
+            (deadline + adapter.deadline_lateness + bacnet_mstp_core::Duration::from_micros(drawn))
+                .max(now),
         );
     }
 
@@ -411,6 +434,10 @@ impl Sim {
                     );
                     let now = self.now;
                     let activity = self.line.last_activity();
+                    let activity = self
+                        .master_mut(node)
+                        .and_then(|master| master.host.as_ref())
+                        .map_or(activity, |host| host.activity);
                     let master = self.master_mut(node).expect("a master");
                     let replaced = master.pending.is_some();
                     let delay = master.spec.adapter.start_delay;
@@ -426,8 +453,12 @@ impl Sim {
                         dispatched: now,
                         activity_at_dispatch: activity,
                         while_answering: answer,
+                        reply_to: answer
+                            .then(|| master.host.as_ref().and_then(|host| host.request))
+                            .flatten(),
                         generation,
                     });
+                    let incarnation = master.incarnation;
                     if replaced {
                         self.violation(
                             ViolationKind::CoreError,
@@ -438,7 +469,11 @@ impl Sim {
                         now + delay,
                         Class::AdapterStart,
                         station,
-                        Event::AdapterStart { node, id },
+                        Event::AdapterStart {
+                            node,
+                            id,
+                            incarnation,
+                        },
                     );
                 }
                 Effect::Deliver {
@@ -485,17 +520,21 @@ impl Sim {
         let Some(request) = request else {
             return;
         };
+        self.host_accept_request(node, request, source);
+        let master = self.master_mut(node).expect("a master");
         let (delay, postpone, payload) = match master.spec.reply.clone() {
             ReplyPolicy::Answer { delay, payload } => (delay, false, payload),
             ReplyPolicy::Postpone { delay, payload } => (delay, true, payload),
             ReplyPolicy::Ignore => return,
         };
+        let incarnation = master.incarnation;
         self.push(
             now + delay,
             Class::Scheduled,
             station,
             Event::Decide {
                 node,
+                incarnation,
                 request,
                 requester: source,
                 postpone,
@@ -514,6 +553,21 @@ impl Sim {
         postpone: bool,
         payload: Vec<u8>,
     ) {
+        let master = self.master_mut(node).expect("a master");
+        if let Some(host) = master.host.as_ref() {
+            if host.writing() {
+                self.host_defer_decision(node, request, requester, postpone, payload);
+                return;
+            }
+            // Production moves a finished request's channel to its deferred
+            // queue. A ready late answer queues data without entering the
+            // core (even a refused complete_request would advance its clock).
+            if master.core.as_ref().unwrap().snapshot().request_id != Some(request) {
+                self.report.late_answers += 1;
+                self.enqueue_now(node, requester, &payload, NetworkPriority::Normal);
+                return;
+            }
+        }
         let data = if postpone {
             None
         } else {
@@ -587,6 +641,7 @@ impl Sim {
     /// The adapter gets to a frame the core handed it: confirm the start,
     /// then drive the line.
     pub(super) fn adapter_start(&mut self, node: usize, id: TransmitId) {
+        self.host_before_start(node);
         let station = self.nodes[node].station;
         let Some(master) = self.master_mut(node) else {
             return;
@@ -602,6 +657,8 @@ impl Sim {
             Ok(()) => {
                 self.check_turnaround(node, &pending);
                 self.check_usage_delay(node, &pending);
+                self.check_host_reply_delay(node, &pending);
+                self.host_started(node, &pending.octets);
                 let corruption = self.take_corruption(station, &pending.octets);
                 let tx = self.begin_transmission(
                     Driver::Station(station),
@@ -627,11 +684,15 @@ impl Sim {
 
     /// The driver has sent the final stop bit.
     pub(super) fn master_tx_done(&mut self, node: usize) {
+        let now = self.now;
         let Some(master) = self.master_mut(node) else {
             return;
         };
+        if master.host.is_some() {
+            return;
+        }
         if let Some(id) = master.transmitting.take() {
-            let _ = self.master_input(node, Input::Complete(id));
+            let _ = self.master_input(node, Input::Complete(id, now));
         }
     }
 }

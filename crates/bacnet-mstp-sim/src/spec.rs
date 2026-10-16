@@ -7,6 +7,8 @@ use bacnet_mstp_core::{Duration, Instant, MstpCoreConfig};
 /// How a simulated master's platform adapter behaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AdapterSpec {
+    /// Chunked host reads and completion timing, or octet delivery when absent.
+    pub host: Option<HostSpec>,
     /// How long after the core hands it a frame the adapter confirms the
     /// start and enables its driver. Zero is an ideal adapter; anything more
     /// models a slow one (a busy executor, a DMA queue, a late interrupt).
@@ -24,6 +26,56 @@ pub struct AdapterSpec {
     /// a miss. Without
     /// any, two masters that start in step can stay in step for ever.
     pub deadline_jitter: Duration,
+}
+
+/// A buffered serial adapter. This is a deterministic model, not hardware
+/// qualification. The default 1 ms latency fits the response budget at the
+/// standard baud rates; 16 ms can exceed Tusage_delay on the physical wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostSpec {
+    /// Time from the first buffered character until the read becomes ready.
+    /// Later characters can coalesce into that read. Must be 1 through 16 ms.
+    pub receive_latency: Duration,
+    /// Maximum characters returned by one read, in 1..=4096.
+    pub max_chunk: usize,
+    /// Draw each read size uniformly from 1 through `max_chunk`, seeded by
+    /// the simulation seed, independently of scenario and deadline draws.
+    pub random_chunks: bool,
+    /// Time from write start until serial drain returns. Completion is the
+    /// later of this and the frame's physical wire duration.
+    pub drain_duration: Duration,
+    /// Optional content-matching echo hunt. Physical echo generation remains
+    /// [`AdapterSpec::echo`], independently, to model missing echo.
+    pub echo_grace: Option<Duration>,
+}
+
+impl Default for HostSpec {
+    fn default() -> Self {
+        Self {
+            receive_latency: Duration::from_millis(1),
+            max_chunk: 512,
+            random_chunks: false,
+            drain_duration: Duration::ZERO,
+            echo_grace: None,
+        }
+    }
+}
+
+impl HostSpec {
+    pub(crate) fn validate(self) {
+        assert!(
+            (Duration::from_millis(1)..=Duration::from_millis(16)).contains(&self.receive_latency),
+            "host receive latency must be 1 through 16 ms"
+        );
+        assert!(
+            (1..=4096).contains(&self.max_chunk),
+            "host chunk size must be 1 through 4096"
+        );
+        assert!(
+            self.echo_grace.is_none_or(|grace| grace > Duration::ZERO),
+            "echo grace must be positive"
+        );
+    }
 }
 
 impl AdapterSpec {
@@ -148,6 +200,23 @@ impl MasterSpec {
         self
     }
 
+    /// Use buffered host input and the host timeout defaults: 100 ms frame
+    /// abort, 300 ms reply timeout and 35 ms usage timeout. These receiver
+    /// allowances do not extend the 15 ms/250 ms peer response obligations.
+    ///
+    /// # Panics
+    ///
+    /// If the host read latency, chunk size or echo grace is invalid.
+    #[must_use]
+    pub fn host(mut self, host: HostSpec) -> Self {
+        host.validate();
+        self.adapter.host = Some(host);
+        self.config.t_frame_abort = bacnet_mstp_core::MAX_FRAME_ABORT;
+        self.config.t_reply_timeout = bacnet_mstp_core::MAX_REPLY_TIMEOUT;
+        self.config.t_usage_timeout = bacnet_mstp_core::MAX_USAGE_TIMEOUT;
+        self
+    }
+
     /// Set the reply policy.
     #[must_use]
     pub fn reply(mut self, reply: ReplyPolicy) -> Self {
@@ -227,7 +296,9 @@ pub enum Fault {
     },
     /// Withdraw every corruption and cut-off armed but not yet fired.
     Disarm,
-    /// Replace a node's adapter timing from now on.
+    /// Replace a node's adapter timing from now on. Changing between host
+    /// and octet delivery requires the node to be powered off; buffered data
+    /// and in-flight completion cannot migrate between the two adapters.
     SetAdapter {
         /// The node's station.
         station: u8,

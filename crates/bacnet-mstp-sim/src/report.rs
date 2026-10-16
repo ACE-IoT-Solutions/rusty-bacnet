@@ -152,6 +152,8 @@ pub enum ViolationKind {
     Deadline,
     /// A master answered a Token or Poll For Master later than Tusage_delay.
     UsageDelay,
+    /// A host's first reply octet exceeded the physical T_reply_delay.
+    ReplyDelay,
 }
 
 /// One invariant failure.
@@ -163,6 +165,24 @@ pub struct Violation {
     pub kind: ViolationKind,
     /// What exactly.
     pub detail: String,
+    /// Wire and read timestamps when unavailable host input caused a
+    /// physical turnaround failure. The failure remains a violation.
+    pub host_timing: Option<HostTimingFailure>,
+}
+
+/// Causal evidence for a physical start before buffered input became known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostTimingFailure {
+    /// Station that admitted the transmission.
+    pub station: u8,
+    /// Last character's physical end.
+    pub wire_activity: Instant,
+    /// Physical transmit admission.
+    pub start: Instant,
+    /// When the buffered input would first become readable.
+    pub readable_at: Instant,
+    /// Required silence before admission.
+    pub turnaround: Duration,
 }
 
 impl fmt::Display for Violation {
@@ -202,6 +222,9 @@ pub struct Collision {
     pub other: Driver,
     /// The explanation.
     pub class: CollisionClass,
+    /// An observed host turnaround failure at this exact start, when
+    /// present. This diagnoses the overlap; it does not tolerate it.
+    pub host_timing: Option<HostTimingFailure>,
 }
 
 /// A stretch of time in which more than one master believed it held the
@@ -235,6 +258,25 @@ pub struct Report {
     pub late_answers: u32,
     /// The most dynamic events ever pending at once.
     pub max_pending_events: usize,
+}
+
+/// Observable work at a host adapter, reset when its node reboots.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostStats {
+    /// Nonempty serial reads.
+    pub reads: u64,
+    /// Characters returned across those reads, including echo.
+    pub characters: u64,
+    /// Most buffered characters at once.
+    pub max_buffered: usize,
+    /// Echo hunts ending their grace with no copy or mismatch.
+    pub echo_missing: u32,
+    /// Hunts that passed nonmatching characters while expecting echo.
+    pub echo_mismatches: u32,
+    /// Stale or superseded held echo fragments discarded.
+    pub echo_fragments_dropped: u32,
+    /// Most recent completion timestamp passed to the core.
+    pub last_completion: Option<Instant>,
 }
 
 impl Report {
