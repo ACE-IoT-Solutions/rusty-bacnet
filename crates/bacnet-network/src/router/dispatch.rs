@@ -51,6 +51,20 @@ impl Shared {
         drain(&mut router, &[], send_txs);
     }
 
+    /// Queue startup-style announcements only on one recovered port.
+    pub(super) fn announce_port(
+        &self,
+        port: bacnet_router_core::PortId,
+        send_txs: &[mpsc::Sender<SendRequest>],
+    ) {
+        let mut router = self.engine.lock();
+        let queued = router.announce_port(port);
+        debug_assert!(queued);
+        if queued {
+            drain(&mut router, &[], send_txs);
+        }
+    }
+
     /// Run the engine's sweep if it is due, and return when the next is.
     pub(super) fn sweep(&self) -> Option<bacnet_router_core::Instant> {
         let mut host = HostedHost::new(

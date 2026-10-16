@@ -32,6 +32,8 @@ pub(super) enum TaskKind {
     NumberIs,
     /// The startup announcements, from `cursor` = port index × 2 + step.
     Announce,
+    /// The two startup-style announcements for one port, after it recovers.
+    AnnouncePort,
 }
 
 /// A queued output: all zero bits when empty.
@@ -128,6 +130,13 @@ impl Task {
     /// The startup announcements.
     pub(super) fn announce() -> Self {
         Self::of(TaskKind::Announce, PortId(0))
+    }
+
+    /// The startup-style announcements for one recovered `port`.
+    pub(super) fn announce_port(port: PortId) -> Self {
+        let mut task = Self::of(TaskKind::AnnouncePort, port);
+        task.cursor = u32::from(port.0) * 2;
+        task
     }
 }
 
@@ -276,9 +285,14 @@ impl<const P: usize, const R: usize, const H: usize, const D: usize, const N: us
                 let kind = Kind::Answer(MessageType::NETWORK_NUMBER_IS);
                 Some((len, kind, Cause::Ingress, Target::Broadcast(task.port)))
             }
-            TaskKind::Announce => {
+            TaskKind::Announce | TaskKind::AnnouncePort => {
+                let end = if task.kind == TaskKind::AnnouncePort {
+                    (u32::from(task.port.0) + 1) * 2
+                } else {
+                    self.announce_end()
+                };
                 self.next_announcement(task.cursor).map(|(at, len)| {
-                    next = Some(at + 1).filter(|&cursor| cursor < self.announce_end());
+                    next = Some(at + 1).filter(|&cursor| cursor < end);
                     let kind = if at & 1 == 0 {
                         Kind::Announce(MessageType::NETWORK_NUMBER_IS)
                     } else {

@@ -297,6 +297,26 @@ where
         store.out.push(Task::announce());
     }
 
+    /// Queue the startup-style announcements for one port: its configured
+    /// Network-Number-Is, then an I-Am-Router listing every other directly
+    /// connected network (none for a one-port router).
+    ///
+    /// A host calls this after a port recovers so peers on that data link can
+    /// rebuild routing state without broadcasting duplicate announcements on
+    /// every healthy port. On a successful call, any action the caller did not
+    /// drain first is dropped and counted. Returns `false` for a port the
+    /// router does not have and changes nothing in that case.
+    #[must_use]
+    pub fn announce_port(&mut self, port: PortId) -> bool {
+        let store = self.store();
+        if usize::from(port.0) >= store.port_count {
+            return false;
+        }
+        store.drop_undrained();
+        store.out.push(Task::announce_port(port));
+        true
+    }
+
     /// Take a frame that port `frame.port` received at `now`. What it means
     /// for the router's own application comes back at once; what to send is
     /// polled after. A `now` before the latest one passed in is taken as

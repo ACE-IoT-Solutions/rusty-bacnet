@@ -167,6 +167,9 @@ pub struct BACnetRouter {
     /// Tasks that follow a port's NPDU limit (one per port whose transport
     /// publishes its changes).
     limit_tasks: Vec<JoinHandle<()>>,
+    /// The bounded per-port send queues, retained for explicit recovery
+    /// announcements and cleared when the router stops.
+    send_txs: Vec<mpsc::Sender<SendRequest>>,
     /// Last sequence given to a control for the router's own consumer.
     network_control_ingress_sequence: Arc<AtomicU64>,
 }
@@ -461,7 +464,7 @@ impl BACnetRouter {
         shared.announce(&send_txs);
 
         let outputs = Arc::new(Outputs {
-            send_txs,
+            send_txs: send_txs.clone(),
             local_tx,
             local_control: local_control::LocalControl::new(
                 network_control,
@@ -511,6 +514,7 @@ impl BACnetRouter {
                 sender_tasks,
                 aging_task: Some(aging_task),
                 limit_tasks,
+                send_txs,
                 network_control_ingress_sequence,
             },
             local_rx,
@@ -542,6 +546,25 @@ impl BACnetRouter {
         self.shared.engine.now()
     }
 
+    /// Reannounce this router's directly connected networks on one recovered
+    /// port, using the same bounded output queue and wire messages as startup.
+    ///
+    /// `port` is the zero-based position passed to [`Self::start`]. This
+    /// returns an error after [`Self::stop`] or when the index is out of range.
+    /// Queue refusal is accounted by the router engine like a startup
+    /// announcement refusal.
+    pub fn reannounce_port(&self, port: usize) -> Result<(), Error> {
+        if port >= self.send_txs.len() {
+            return Err(Error::Encoding(format!(
+                "Router port index {port} is unavailable"
+            )));
+        }
+        // A running router has at most 255 ports, checked at start.
+        self.shared
+            .announce_port(PortId(port as u8), &self.send_txs);
+        Ok(())
+    }
+
     /// Stop the router.
     ///
     /// Aborts and awaits dispatch, sender, aging and limit tasks without
@@ -559,6 +582,7 @@ impl BACnetRouter {
             task.abort();
             let _ = task.await;
         }
+        self.send_txs.clear();
         if let Some(task) = self.aging_task.take() {
             task.abort();
             let _ = task.await;
@@ -614,6 +638,8 @@ mod mstp_extended_tests;
 mod rb06_convergence_tests;
 #[cfg(test)]
 mod rb09_control_policy_tests;
+#[cfg(test)]
+mod reannounce_tests;
 #[cfg(test)]
 mod reject_tests;
 #[cfg(test)]

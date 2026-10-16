@@ -515,3 +515,41 @@ fn a_one_port_router_announces_only_its_number() {
         message(MessageType::NETWORK_NUMBER_IS, &[0, 1, 1])
     );
 }
+
+/// A recovered port gets the same two messages it received at startup, while
+/// healthy ports get no duplicate announcements.
+#[test]
+fn a_recovered_port_reannounces_only_on_that_port() {
+    let mut router = router();
+    assert!(router.announce_port(PortId(1)));
+    let sent = drain(&mut router);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(
+        (sent[0].port, sent[0].kind, sent[0].cause),
+        (
+            1,
+            Kind::Announce(MessageType::NETWORK_NUMBER_IS),
+            Cause::Local
+        )
+    );
+    assert_eq!(
+        sent[0].npdu,
+        message(MessageType::NETWORK_NUMBER_IS, &[0, 2, 1])
+    );
+    list_broadcast(
+        &sent[1],
+        1,
+        Kind::Announce(MessageType::I_AM_ROUTER_TO_NETWORK),
+        MessageType::I_AM_ROUTER_TO_NETWORK,
+        &[1],
+    );
+    assert_eq!(sent[1].cause, Cause::Local);
+}
+
+#[test]
+fn an_unknown_recovery_port_queues_nothing() {
+    let mut router = router();
+    router.start();
+    assert!(!router.announce_port(PortId(2)));
+    assert_eq!(drain(&mut router).len(), 4);
+}
