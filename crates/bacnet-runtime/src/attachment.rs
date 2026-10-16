@@ -10,7 +10,7 @@ use crate::health::{
     AttachmentHealth, AttachmentState, ForeignDeviceRegistrationState,
     ForeignDeviceRegistrationStatus,
 };
-use crate::RuntimeError;
+use crate::{DevicePath, PropertyTarget, RuntimeError};
 
 pub(super) struct ManagedAttachment {
     pub(super) config: AttachmentConfig,
@@ -73,6 +73,88 @@ impl ManagedAttachment {
             local_mac,
             foreign_device_registration,
         }
+    }
+
+    pub(super) async fn read_property(
+        &self,
+        target: &PropertyTarget,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        let client = self.client.lock().await;
+        let client = client.as_ref().ok_or_else(RuntimeError::stopped)?;
+        let result = match &target.path {
+            DevicePath::Direct { mac } => {
+                client
+                    .read_property(
+                        mac,
+                        target.object_identifier,
+                        target.property_identifier,
+                        target.property_array_index,
+                    )
+                    .await
+            }
+            DevicePath::Routed {
+                ingress_mac,
+                dnet,
+                dadr,
+            } => {
+                client
+                    .read_property_routed(
+                        ingress_mac,
+                        *dnet,
+                        dadr,
+                        target.object_identifier,
+                        target.property_identifier,
+                        target.property_array_index,
+                    )
+                    .await
+            }
+        };
+        result
+            .map(|ack| ack.property_value)
+            .map_err(|error| RuntimeError::operation(self.config.id, error))
+    }
+
+    pub(super) async fn write_property(
+        &self,
+        target: &PropertyTarget,
+        raw_value: Vec<u8>,
+        priority: Option<u8>,
+    ) -> Result<(), RuntimeError> {
+        let client = self.client.lock().await;
+        let client = client.as_ref().ok_or_else(RuntimeError::stopped)?;
+        let result = match &target.path {
+            DevicePath::Direct { mac } => {
+                client
+                    .write_property(
+                        mac,
+                        target.object_identifier,
+                        target.property_identifier,
+                        target.property_array_index,
+                        raw_value,
+                        priority,
+                    )
+                    .await
+            }
+            DevicePath::Routed {
+                ingress_mac,
+                dnet,
+                dadr,
+            } => {
+                client
+                    .write_property_routed(
+                        ingress_mac,
+                        *dnet,
+                        dadr,
+                        target.object_identifier,
+                        target.property_identifier,
+                        target.property_array_index,
+                        raw_value,
+                        priority,
+                    )
+                    .await
+            }
+        };
+        result.map_err(|error| RuntimeError::operation(self.config.id, error))
     }
 
     pub(super) async fn stop(&self, timeout: Duration) -> Result<(), RuntimeError> {

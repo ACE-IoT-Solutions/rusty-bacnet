@@ -8,8 +8,8 @@ use tokio::task::AbortHandle;
 
 use crate::attachment::{start_attachment, ManagedAttachment};
 use crate::batch::{
-    OperationId, ReadBatch, ReadBatchOperation, ReadOutcome, WriteBatch, WriteBatchOperation,
-    WriteOutcome,
+    DevicePath, OperationId, ReadBatch, ReadBatchOperation, ReadOutcome, WriteBatch,
+    WriteBatchOperation, WriteOutcome,
 };
 use crate::config::{validate_attachments, AttachmentConfig, AttachmentId, RuntimeConfig};
 use crate::error::RuntimeError;
@@ -474,42 +474,26 @@ impl RuntimeInner {
                     return Err(RuntimeError::stopped());
                 }
                 let outcome = match self.attachment(item.attachment_id).await {
-                    Ok(attachment) => {
-                        let client = attachment.client.lock().await;
-                        match client.as_ref().ok_or_else(RuntimeError::stopped) {
-                            Ok(client) => match client
-                                .read_property(
-                                    &item.target.destination_mac,
-                                    item.target.object_identifier,
-                                    item.target.property_identifier,
-                                    item.target.property_array_index,
-                                )
-                                .await
-                            {
-                                Ok(ack) => ReadOutcome {
-                                    input_index: item.input_index,
-                                    attachment_id: item.attachment_id,
-                                    raw_value: Some(ack.property_value),
-                                    error: None,
-                                },
-                                Err(error) => ReadOutcome {
-                                    input_index: item.input_index,
-                                    attachment_id: item.attachment_id,
-                                    raw_value: None,
-                                    error: Some(RuntimeError::operation(item.attachment_id, error)),
-                                },
-                            },
-                            Err(error) => ReadOutcome {
-                                input_index: item.input_index,
-                                attachment_id: item.attachment_id,
-                                raw_value: None,
-                                error: Some(error),
-                            },
-                        }
-                    }
+                    Ok(attachment) => match attachment.read_property(&item.target).await {
+                        Ok(raw_value) => ReadOutcome {
+                            input_index: item.input_index,
+                            attachment_id: item.attachment_id,
+                            path: Some(item.target.path),
+                            raw_value: Some(raw_value),
+                            error: None,
+                        },
+                        Err(error) => ReadOutcome {
+                            input_index: item.input_index,
+                            attachment_id: item.attachment_id,
+                            path: Some(item.target.path),
+                            raw_value: None,
+                            error: Some(error),
+                        },
+                    },
                     Err(error) => ReadOutcome {
                         input_index: item.input_index,
                         attachment_id: item.attachment_id,
+                        path: None,
                         raw_value: None,
                         error: Some(error),
                     },
@@ -533,44 +517,29 @@ impl RuntimeInner {
                     return Err(RuntimeError::stopped());
                 }
                 let outcome = match self.attachment(item.attachment_id).await {
-                    Ok(attachment) => {
-                        let client = attachment.client.lock().await;
-                        match client.as_ref().ok_or_else(RuntimeError::stopped) {
-                            Ok(client) => match client
-                                .write_property(
-                                    &item.target.destination_mac,
-                                    item.target.object_identifier,
-                                    item.target.property_identifier,
-                                    item.target.property_array_index,
-                                    item.raw_value,
-                                    item.priority,
-                                )
-                                .await
-                            {
-                                Ok(()) => WriteOutcome {
-                                    input_index: item.input_index,
-                                    attachment_id: item.attachment_id,
-                                    written: true,
-                                    error: None,
-                                },
-                                Err(error) => WriteOutcome {
-                                    input_index: item.input_index,
-                                    attachment_id: item.attachment_id,
-                                    written: false,
-                                    error: Some(RuntimeError::operation(item.attachment_id, error)),
-                                },
-                            },
-                            Err(error) => WriteOutcome {
-                                input_index: item.input_index,
-                                attachment_id: item.attachment_id,
-                                written: false,
-                                error: Some(error),
-                            },
-                        }
-                    }
+                    Ok(attachment) => match attachment
+                        .write_property(&item.target, item.raw_value, item.priority)
+                        .await
+                    {
+                        Ok(()) => WriteOutcome {
+                            input_index: item.input_index,
+                            attachment_id: item.attachment_id,
+                            path: Some(item.target.path),
+                            written: true,
+                            error: None,
+                        },
+                        Err(error) => WriteOutcome {
+                            input_index: item.input_index,
+                            attachment_id: item.attachment_id,
+                            path: Some(item.target.path),
+                            written: false,
+                            error: Some(error),
+                        },
+                    },
                     Err(error) => WriteOutcome {
                         input_index: item.input_index,
                         attachment_id: item.attachment_id,
+                        path: None,
                         written: false,
                         error: Some(error),
                     },
@@ -595,14 +564,14 @@ impl RuntimeInner {
 
 fn validate_read_items(batch: &ReadBatch) -> Result<(), RuntimeError> {
     for item in &batch.items {
-        validate_target(item.attachment_id, &item.target.destination_mac)?;
+        validate_target(item.attachment_id, &item.target.path)?;
     }
     Ok(())
 }
 
 fn validate_write_items(batch: &WriteBatch) -> Result<(), RuntimeError> {
     for item in &batch.items {
-        validate_target(item.attachment_id, &item.target.destination_mac)?;
+        validate_target(item.attachment_id, &item.target.path)?;
         if item
             .priority
             .is_some_and(|priority| !(1..=16).contains(&priority))
@@ -615,14 +584,32 @@ fn validate_write_items(batch: &WriteBatch) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn validate_target(id: AttachmentId, destination_mac: &[u8]) -> Result<(), RuntimeError> {
-    if destination_mac.len() != 6 {
-        return Err(RuntimeError::attachment_config(
+fn validate_target(id: AttachmentId, path: &DevicePath) -> Result<(), RuntimeError> {
+    match path {
+        DevicePath::Direct { mac } if mac.len() != 6 => Err(RuntimeError::attachment_config(
             id,
-            "B/IP destination MAC must contain six octets",
-        ));
+            "direct B/IP MAC must contain six octets",
+        )),
+        DevicePath::Routed { ingress_mac, .. } if ingress_mac.len() != 6 => Err(
+            RuntimeError::attachment_config(id, "B/IP router MAC must contain six octets"),
+        ),
+        DevicePath::Routed { dnet, .. } if !(1..=u16::MAX - 1).contains(dnet) => Err(
+            RuntimeError::attachment_config(id, "routed DNET must be in 1..=65534"),
+        ),
+        DevicePath::Routed { dadr, .. }
+            if dadr.is_empty()
+                || dadr.len() > bacnet_types::constructed::BACnetAddress::MAX_MAC_LEN =>
+        {
+            Err(RuntimeError::attachment_config(
+                id,
+                format!(
+                    "routed DADR must contain 1..={} octets",
+                    bacnet_types::constructed::BACnetAddress::MAX_MAC_LEN
+                ),
+            ))
+        }
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 #[cfg(test)]

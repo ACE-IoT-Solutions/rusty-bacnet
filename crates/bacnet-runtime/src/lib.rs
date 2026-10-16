@@ -13,8 +13,8 @@ mod health;
 mod runtime;
 
 pub use batch::{
-    OperationId, PropertyTarget, ReadBatch, ReadBatchItem, ReadBatchOperation, ReadOutcome,
-    WriteBatch, WriteBatchItem, WriteBatchOperation, WriteOutcome,
+    DevicePath, OperationId, PropertyTarget, ReadBatch, ReadBatchItem, ReadBatchOperation,
+    ReadOutcome, WriteBatch, WriteBatchItem, WriteBatchOperation, WriteOutcome,
 };
 pub use config::{
     AttachmentConfig, AttachmentId, BipConfig, MstpConfig, RuntimeConfig, ScConfig, TransportConfig,

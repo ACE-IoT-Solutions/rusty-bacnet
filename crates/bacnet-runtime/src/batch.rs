@@ -10,11 +10,30 @@ use crate::{AttachmentId, RuntimeError};
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct OperationId(pub(crate) u64);
 
-/// Direct B/IP destination and ReadProperty addressing.
+/// Exact path to one BACnet device from an attachment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DevicePath {
+    /// Device on the attachment's directly connected B/IP network.
+    Direct {
+        /// Six-octet B/IP MAC (IPv4 address followed by UDP port).
+        mac: Vec<u8>,
+    },
+    /// Device on a remote BACnet network reached through a B/IP router.
+    Routed {
+        /// Six-octet B/IP MAC of the immediate-hop router.
+        ingress_mac: Vec<u8>,
+        /// Remote BACnet network number, in 1..=65534.
+        dnet: u16,
+        /// Destination MAC on the remote network, preserved byte-for-byte.
+        dadr: Vec<u8>,
+    },
+}
+
+/// Exact device path and property coordinates.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PropertyTarget {
-    /// Six-octet B/IP MAC (IPv4 address followed by UDP port).
-    pub destination_mac: Vec<u8>,
+    /// Direct or routed device path.
+    pub path: DevicePath,
     /// Object identifier.
     pub object_identifier: ObjectIdentifier,
     /// Property identifier.
@@ -32,7 +51,30 @@ impl PropertyTarget {
         property_array_index: Option<u32>,
     ) -> Self {
         Self {
-            destination_mac: destination_mac.into(),
+            path: DevicePath::Direct {
+                mac: destination_mac.into(),
+            },
+            object_identifier,
+            property_identifier,
+            property_array_index,
+        }
+    }
+
+    /// Creates a property target on a remote network through a B/IP router.
+    pub fn routed(
+        ingress_mac: impl Into<Vec<u8>>,
+        dnet: u16,
+        dadr: impl Into<Vec<u8>>,
+        object_identifier: ObjectIdentifier,
+        property_identifier: PropertyIdentifier,
+        property_array_index: Option<u32>,
+    ) -> Self {
+        Self {
+            path: DevicePath::Routed {
+                ingress_mac: ingress_mac.into(),
+                dnet,
+                dadr: dadr.into(),
+            },
             object_identifier,
             property_identifier,
             property_array_index,
@@ -47,7 +89,7 @@ pub struct ReadBatchItem {
     pub input_index: usize,
     /// Attachment to use.
     pub attachment_id: AttachmentId,
-    /// Direct B/IP property target.
+    /// Direct or routed B/IP property target.
     pub target: PropertyTarget,
 }
 
@@ -77,6 +119,8 @@ pub struct ReadOutcome {
     pub input_index: usize,
     /// Attachment used by the input.
     pub attachment_id: AttachmentId,
+    /// Exact requested path, or `None` when attachment resolution failed.
+    pub path: Option<DevicePath>,
     /// Raw application-tagged property value on success.
     pub raw_value: Option<Vec<u8>>,
     /// Typed error on item failure.
@@ -90,7 +134,7 @@ pub struct WriteBatchItem {
     pub input_index: usize,
     /// Attachment to use.
     pub attachment_id: AttachmentId,
-    /// Direct B/IP property target.
+    /// Direct or routed B/IP property target.
     pub target: PropertyTarget,
     /// Raw application-tagged value.
     pub raw_value: Vec<u8>,
@@ -124,6 +168,8 @@ pub struct WriteOutcome {
     pub input_index: usize,
     /// Attachment used by the input.
     pub attachment_id: AttachmentId,
+    /// Exact requested path, or `None` when attachment resolution failed.
+    pub path: Option<DevicePath>,
     /// Whether BACnet acknowledged the write.
     pub written: bool,
     /// Typed error on item failure.

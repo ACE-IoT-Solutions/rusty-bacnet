@@ -898,6 +898,8 @@ mod routed_max_apdu_tests;
 #[cfg(test)]
 mod routed_path_limit_tests;
 #[cfg(test)]
+mod routed_property_helpers_tests;
+#[cfg(test)]
 mod routed_reply_tests;
 #[cfg(all(test, feature = "sc-tls"))]
 mod sc_builder_tests;

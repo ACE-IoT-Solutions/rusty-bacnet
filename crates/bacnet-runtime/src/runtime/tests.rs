@@ -6,6 +6,8 @@ use bacnet_types::primitives::ObjectIdentifier;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
+mod routed;
+
 fn attachment(id: u128, port: u16) -> AttachmentConfig {
     AttachmentConfig {
         id: AttachmentId::from(id),
