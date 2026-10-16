@@ -4,7 +4,7 @@
 use std::fmt;
 
 use bacnet_mstp_codec::{FrameHeader, FrameType};
-use bacnet_mstp_core::{Duration, Instant};
+use bacnet_mstp_core::{Duration, Instant, TransmitId};
 
 use crate::line::Driver;
 use crate::trace::Millis;
@@ -24,13 +24,15 @@ pub struct WireFrame {
     pub header: Option<FrameHeader>,
     /// The data field, when the octets decode.
     pub data: Vec<u8>,
-    /// Another driver overlapped this frame's data. A later overlap while
+    /// Another driver overlapped before this frame's final data stop,
+    /// including during an inter-octet gap. A later overlap while
     /// this driver holds idle mark is recorded in [`Report::collisions`]
     /// without retroactively corrupting the completed data.
     pub collided: bool,
     /// An injected corruption damaged one of its octets.
     pub corrupted: bool,
-    /// Its driver lost power part way through.
+    /// Transmission stopped before all data completed, due to power loss
+    /// or an octet adapter's transmit watchdog.
     pub truncated: bool,
     /// A master sent it as a token-generation Poll For Master.
     pub generation: bool,
@@ -249,14 +251,71 @@ pub struct DriverRelease {
     pub driver: Driver,
     /// First octet start; together with `driver`, identifies the wire frame.
     pub start: Instant,
-    /// Final data stop, absent if power failed before it completed.
+    /// Final data stop, absent if power loss or watchdog expiry cut it off.
     pub data_end: Option<Instant>,
     /// Release originally scheduled when this transmission started.
     pub scheduled: Instant,
-    /// Actual release instant, possibly earlier due to power loss.
+    /// Actual release instant, possibly earlier due to power loss or expiry.
     pub at: Instant,
-    /// Whether power loss caused this release.
-    pub power_loss: bool,
+    /// Why physical ownership ended.
+    pub cause: DriverReleaseCause,
+}
+
+/// Why a driver stopped owning the physical line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverReleaseCause {
+    /// Data and any post-drive hold completed normally.
+    Completed,
+    /// The station lost power, during data or post-drive hold.
+    PowerLoss,
+    /// The octet adapter serviced the core's transmit watchdog.
+    Watchdog,
+}
+
+/// A host operation exceeded its configured local watchdog budget. This is
+/// observational evidence: the host awaits completion without polling that
+/// watchdog, so these cases do not imply a core timeout or wire abort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostBudgetOverrun {
+    /// The completion stamp itself is later than the watchdog deadline.
+    CompletionAfterWatchdog,
+    /// Completion was within budget, but echo delayed its notification.
+    NotificationAfterWatchdog,
+}
+
+/// Physical and software clocks for one completed host transmission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostTransmitTiming {
+    /// Transmitting station.
+    pub station: u8,
+    /// Powered incarnation, fencing a core ID reused after reboot.
+    pub incarnation: u64,
+    /// The core operation confirmed by the host adapter.
+    pub transmit_id: TransmitId,
+    /// Confirmed start S.
+    pub start: Instant,
+    /// Configured watchdog deadline W, captured at S.
+    pub watchdog: Instant,
+    /// Final physical data stop F from the captured gap schedule.
+    pub data_end: Instant,
+    /// Core completion stamp C = max(F, drain return).
+    pub completion: Instant,
+    /// Actual completion notification N, possibly delayed by echo handling.
+    pub notification: Instant,
+}
+
+impl HostTransmitTiming {
+    /// Classify strict budget excess while preserving the separate clocks.
+    #[must_use]
+    pub fn budget_overrun(&self) -> Option<HostBudgetOverrun> {
+        if self.completion > self.watchdog {
+            Some(HostBudgetOverrun::CompletionAfterWatchdog)
+        } else if self.notification > self.watchdog {
+            Some(HostBudgetOverrun::NotificationAfterWatchdog)
+        } else {
+            None
+        }
+    }
 }
 
 /// A stretch of time in which more than one master believed it held the
@@ -272,7 +331,9 @@ pub struct Episode {
 /// What the invariant checks found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
-    /// Physical releases in event order, including zero holds and power loss.
+    /// Completed host operations and their independent physical/budget clocks.
+    pub host_transmits: Vec<HostTransmitTiming>,
+    /// Physical releases in event order, including power loss and expiry.
     pub driver_releases: Vec<DriverRelease>,
     /// Invariant failures, in order.
     pub violations: Vec<Violation>,

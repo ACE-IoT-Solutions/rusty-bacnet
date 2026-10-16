@@ -7,6 +7,10 @@ use bacnet_mstp_core::{Duration, Instant, MstpCoreConfig};
 /// How a simulated master's platform adapter behaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AdapterSpec {
+    /// Extra idle time after each stop bit except the final one. Zero by
+    /// default; the normal maximum is 19 bit times after stop end, because
+    /// the 20-bit idle limit includes the stop bit (135-2020 9.2.3).
+    pub inter_octet_gap: Duration,
     /// Idle-mark driver hold after the final data stop bit ends. Zero by
     /// default; must not exceed [`crate::WireTiming::max_post_drive`]. This
     /// delays physical release and receiver enable, not the core's final-stop
@@ -47,7 +51,7 @@ pub struct HostSpec {
     /// the simulation seed, independently of scenario and deadline draws.
     pub random_chunks: bool,
     /// Time from write start until serial drain returns. Completion is the
-    /// later of this and the frame's physical wire duration.
+    /// later of this and the frame's captured physical gap schedule.
     pub drain_duration: Duration,
     /// Optional content-matching echo hunt. Physical echo generation remains
     /// [`AdapterSpec::echo`], independently, to model missing echo.
@@ -332,6 +336,9 @@ pub struct SeenFrame {
 pub struct ScriptSend {
     /// Delay from the frame that triggered it to the first octet.
     pub after: Duration,
+    /// Uniform extra idle time between octets, as in
+    /// [`AdapterSpec::inter_octet_gap`].
+    pub inter_octet_gap: Duration,
     /// Idle-mark driver hold after the last stop bit, with the same limit
     /// as [`AdapterSpec::post_drive`].
     pub post_drive: Duration,
@@ -363,6 +370,7 @@ impl ScriptSend {
         octets.truncate(length);
         Self {
             after,
+            inter_octet_gap: Duration::ZERO,
             post_drive: Duration::ZERO,
             octets,
             malformed: false,
@@ -374,6 +382,14 @@ impl ScriptSend {
     #[must_use]
     pub fn post_drive(mut self, hold: Duration) -> Self {
         self.post_drive = hold;
+        self
+    }
+
+    /// Insert the same extra idle time after every non-final stop bit.
+    /// The simulator validates the gap against the line's baud rate.
+    #[must_use]
+    pub fn inter_octet_gap(mut self, gap: Duration) -> Self {
+        self.inter_octet_gap = gap;
         self
     }
 

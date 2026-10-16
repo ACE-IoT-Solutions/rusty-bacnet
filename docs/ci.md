@@ -791,6 +791,15 @@ whose soft limit on open files was 1024. On the hosted runner they run as
   to satisfy the different reference edges in 135-2020 9.2.3 and 9.5.3;
   core and host completion timestamps keep their final-data/drain semantics.
   Idle holds do not generate characters or extend the line-activity clock.
+  Default-zero inter-octet gaps capture one schedule per transmission and
+  permit at most 19 bit times after each non-final stop bit; the 20-bit idle
+  limit includes that stop bit. Positive long-frame scenarios explicitly
+  provision local watchdog and queue-age budgets. Octet-mode watchdog expiry
+  truncates the frame and releases its driver; final-stop and later-octet
+  deadline ties have separate regression tests. Host operations retain the
+  production write/drain/echo wait without polling core deadlines. Their
+  recorded start, watchdog, wire-end, completion and notification times
+  distinguish budget overruns without claiming an observed host abort.
   Physical wire checks remain active: randomized fault runs retain and assert
   diagnosed failures when a host starts before injected activity becomes
   readable; clean and settled operation must pass the strict checks. These

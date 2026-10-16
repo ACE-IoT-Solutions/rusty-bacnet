@@ -422,6 +422,9 @@ impl Sim {
                     if direction == Direction::Receive && master.pending.take().is_some() {
                         self.note(who, TraceKind::Note("frame taken back".into()));
                     }
+                    if direction == Direction::Receive {
+                        self.abort_withdrawn_transmission(node);
+                    }
                 }
                 Effect::Transmit(id, octets) => {
                     self.note(
@@ -661,25 +664,25 @@ impl Sim {
                 self.check_turnaround(node, &pending);
                 self.check_usage_delay(node, &pending);
                 self.check_host_reply_delay(node, &pending);
-                self.host_started(node, &pending.octets);
                 let corruption = self.take_corruption(station, &pending.octets);
-                let post_drive = self
-                    .master_mut(node)
-                    .expect("a master")
-                    .spec
-                    .adapter
-                    .post_drive;
+                let adapter = self.master_mut(node).expect("a master").spec.adapter;
                 let tx = self.begin_transmission(
                     Driver::Station(station),
                     pending.octets,
                     corruption,
                     Some((pending.dispatched, pending.generation)),
-                    post_drive,
+                    adapter.post_drive,
+                    adapter.inter_octet_gap,
                 );
                 let master = self.master_mut(node).expect("a master");
                 master.transmitting = Some(id);
+                self.meta
+                    .get_mut(&tx)
+                    .expect("transmission metadata")
+                    .transmit_id = Some(id);
                 self.nodes[node].driving = Some(tx);
                 self.nodes[node].listening_since = None;
+                self.host_started(node, tx, id);
                 self.octet_start(tx, 0);
             }
             Err(error) => {
