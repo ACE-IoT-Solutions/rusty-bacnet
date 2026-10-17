@@ -1,5 +1,6 @@
 //! The same timed read fixtures cross the simulator's adapter and the actual
 //! public SerialPort/MstpTransport boundary. No production source is included.
+mod bus_echo;
 use std::sync::Mutex as StdMutex;
 
 use bacnet_mstp_codec::{Frame, FrameType};

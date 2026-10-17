@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use bacnet_mstp_core::{Duration, Instant, RequestId, TransmitId};
 
 use super::echo::EchoFilter;
+use super::local_echo::Return;
 use crate::line::Character;
 use crate::report::HostStats;
 
@@ -21,6 +22,7 @@ pub(super) struct Write {
 }
 
 /// Physical provenance follows the bytes, independently of delivery time.
+#[derive(Clone, Copy)]
 pub(super) struct Received {
     pub character: Character,
     pub wire_end: Instant,
@@ -43,6 +45,13 @@ pub(super) struct Decision {
 }
 
 pub(crate) struct HostState {
+    /// Opt-in, bounded read recorder for simulator/public-transport pairs.
+    #[cfg(test)]
+    pub(super) read_capture: Option<Vec<(Instant, Vec<Received>)>>,
+    pub(super) local_echo: VecDeque<Return>,
+    /// One invariant report per sustained full-queue episode, with every
+    /// refused character still counted in the run's compact diagnostics.
+    pub(super) local_echo_overflow: bool,
     pub(super) input: VecDeque<Received>,
     /// Provenance for the filter's held prefix, bounded by the sent frame.
     pub(super) held_at: VecDeque<Instant>,
@@ -72,6 +81,10 @@ impl HostState {
 
     pub(crate) fn new(frame_abort: Duration) -> Self {
         Self {
+            #[cfg(test)]
+            read_capture: None,
+            local_echo: VecDeque::new(),
+            local_echo_overflow: false,
             input: VecDeque::new(),
             held_at: VecDeque::new(),
             decisions: VecDeque::new(),
@@ -98,5 +111,11 @@ impl HostState {
             .chain(self.filter.deadline())
             .chain(self.expected.front().map(|(at, _)| *at))
             .min()
+    }
+
+    /// One live scheduler candidate, owned by this incarnation. Removing the
+    /// state on power loss cancels it without stale global character timers.
+    pub(crate) fn next_local_echo(&self) -> Option<Instant> {
+        self.local_echo.front().map(|echo| echo.available_at)
     }
 }

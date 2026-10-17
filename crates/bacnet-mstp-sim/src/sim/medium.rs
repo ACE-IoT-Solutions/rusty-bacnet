@@ -49,6 +49,7 @@ impl Sim {
         self.meta.insert(
             tx,
             TxMeta {
+                echo_profile: None,
                 transmit_id: None,
                 dispatched: dispatch.map(|(at, _)| at),
                 generation: dispatch.is_some_and(|(_, generation)| generation),
@@ -145,7 +146,10 @@ impl Sim {
                 None => {
                     let echo = matches!(&self.nodes[node].kind, NodeKind::Master(master)
                         if master.spec.adapter.echo && master.core.is_some());
-                    let own = outcome.opener == Some(Driver::Station(self.nodes[node].station));
+                    let own = outcome.opener.is_some_and(|(tx, driver)| {
+                        driver == Driver::Station(self.nodes[node].station)
+                            && self.nodes[node].driving == Some(tx)
+                    });
                     if !(echo && own && self.nodes[node].driving.is_some()) {
                         continue;
                     }
@@ -154,7 +158,12 @@ impl Sim {
             };
             match &self.nodes[node].kind {
                 NodeKind::Master(master) if master.host.is_some() => {
-                    self.host_character(node, character)
+                    if self.nodes[node].listening_since.is_none() {
+                        let (tx, _) = outcome.opener.expect("an own echo observation");
+                        self.host_local_echo(node, tx, character);
+                    } else {
+                        self.host_character(node, character);
+                    }
                 }
                 NodeKind::Master(_) => {
                     let input = match character {

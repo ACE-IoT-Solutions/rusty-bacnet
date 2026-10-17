@@ -8,10 +8,11 @@
 //! 2. transmissions ending (final data stop bit);
 //! 3. physical driver releases after post-drive hold;
 //! 4. scheduled scenario and application events;
-//! 5. ready host reads, completion and echo timers;
-//! 6. core deadlines;
-//! 7. adapters starting transmissions;
-//! 8. later octets of a transmission starting.
+//! 5. local echo becoming available to host buffering;
+//! 6. ready host reads, completion and echo timers;
+//! 7. core deadlines;
+//! 8. adapters starting transmissions;
+//! 9. later octets of a transmission starting.
 //!
 //! Putting arrivals first means a node always hears an octet that ended at
 //! the instant it decides to transmit, the conservative reading of a tie.
@@ -28,6 +29,7 @@ pub(crate) enum Class {
     TxEnd,
     DriverRelease,
     Scheduled,
+    LocalEcho,
     HostRead,
     Deadline,
     AdapterStart,
