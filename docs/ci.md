@@ -800,6 +800,14 @@ whose soft limit on open files was 1024. On the hosted runner they run as
   production write/drain/echo wait without polling core deadlines. Their
   recorded start, watchdog, wire-end, completion and notification times
   distinguish budget overruns without claiming an observed host abort.
+  Buffered hosts also model a captured local self-echo return delay before
+  ordinary read latency. A bounded FIFO preserves physical character/error
+  provenance across completion and new writes, and power loss cancels it.
+  Compact counters expose overflow and cancellation; bounded traces show
+  requested availability and FIFO deferral. This local policy changes no
+  physical bus timing. Bus-generated read sequences are replayed through the
+  public transport for Grace, Residual and Probe boundaries and peer payload
+  order, including expired and interleaved copies that remain diagnostic.
   Physical wire checks remain active: randomized fault runs retain and assert
   diagnosed failures when a host starts before injected activity becomes
   readable; clean and settled operation must pass the strict checks. These

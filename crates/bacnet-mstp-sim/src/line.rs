@@ -89,8 +89,8 @@ pub(crate) enum Character {
 pub(crate) struct WindowOutcome {
     pub start: Instant,
     pub character: Character,
-    /// The driver whose octet opened the window in step.
-    pub opener: Option<Driver>,
+    /// The transmission and driver whose octet opened the window in step.
+    pub opener: Option<(TxId, Driver)>,
     /// When a garbled follow-on window ends, if one opened.
     pub reopened: Option<Instant>,
 }
@@ -278,7 +278,7 @@ impl Line {
         let character = match window.opener {
             Some((tx, index)) => match self.live.get(&tx) {
                 Some(transmission) => {
-                    opener = Some(transmission.driver);
+                    opener = Some((tx, transmission.driver));
                     if window.corrupted || transmission.truncated {
                         Character::Garbled
                     } else {

@@ -22,9 +22,9 @@ pub struct AdapterSpec {
     /// start and enables its driver. Zero is an ideal adapter; anything more
     /// models a slow one (a busy executor, a DMA queue, a late interrupt).
     pub start_delay: Duration,
-    /// Feed the node its own octets while it transmits, as a transceiver
-    /// whose receiver stays enabled would. The core takes what it hears
-    /// after confirming a start for its own echo, and ignores it.
+    /// Feed the node its own observations while it transmits, as a transceiver
+    /// whose receiver stays enabled would. Octet mode delivers immediately;
+    /// buffered hosts apply [`HostSpec::echo_return_delay`] and their filter.
     pub echo: bool,
     /// How late the adapter services each core deadline. Zero services it
     /// exactly when it falls due.
@@ -42,6 +42,14 @@ pub struct AdapterSpec {
 /// standard baud rates; 16 ms can exceed Tusage_delay on the physical wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostSpec {
+    /// Local delay between observing an own transmitted character and making
+    /// it available to the serial receive buffer. Captured at transmit start;
+    /// ordinary receive latency follows it. Zero preserves immediate return.
+    /// This does not change physical line timing or enable echo generation.
+    /// Returns are FIFO: a shorter later profile cannot overtake queued data.
+    /// Each host retains at most 4096 pending characters; overflow is counted
+    /// and reported, and power loss cancels them. See [`crate::Report::local_echo`].
+    pub echo_return_delay: Duration,
     /// Time from the first buffered character until the read becomes ready.
     /// Later characters can coalesce into that read. Must be 1 through 16 ms.
     pub receive_latency: Duration,
@@ -61,6 +69,7 @@ pub struct HostSpec {
 impl Default for HostSpec {
     fn default() -> Self {
         Self {
+            echo_return_delay: Duration::ZERO,
             receive_latency: Duration::from_millis(1),
             max_chunk: 512,
             random_chunks: false,

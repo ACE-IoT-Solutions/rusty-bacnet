@@ -331,6 +331,8 @@ pub struct Episode {
 /// What the invariant checks found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
+    /// Bounded local echo-return accounting, retained across node reboots.
+    pub local_echo: LocalEchoStats,
     /// Completed host operations and their independent physical/budget clocks.
     pub host_transmits: Vec<HostTransmitTiming>,
     /// Physical releases in event order, including power loss and expiry.
@@ -353,6 +355,24 @@ pub struct Report {
     pub late_answers: u32,
     /// The most dynamic events ever pending at once.
     pub max_pending_events: usize,
+}
+
+/// Run-wide accounting for the independent local echo-return queues.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LocalEchoStats {
+    /// Physical characters accepted into local return queues.
+    pub captured: u64,
+    /// Characters whose local availability time ran, before host reads.
+    pub released: u64,
+    /// Characters cancelled on power loss or rejected as a stale incarnation.
+    pub cancelled: u64,
+    /// Characters refused because a host's 4096-character return queue was full.
+    /// One invariant failure is recorded per sustained overflow episode.
+    pub overflows: u64,
+    /// Currently pending characters across all hosts.
+    pub pending: usize,
+    /// Largest pending queue at any single host, at most 4096 characters.
+    pub max_pending: usize,
 }
 
 /// Observable work at a host adapter, reset when its node reboots.

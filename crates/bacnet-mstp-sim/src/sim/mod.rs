@@ -144,6 +144,8 @@ pub(crate) struct Node {
 /// Facts about a transmission the line itself doesn't track.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TxMeta {
+    /// Local return timing belongs to the physical operation, not its Write.
+    echo_profile: Option<host::EchoProfile>,
     /// Core operation bound to this physical transmission, for abort fencing.
     transmit_id: Option<TransmitId>,
     /// When a master's core handed this frame over.
@@ -163,6 +165,7 @@ enum Next {
     Timeline(Key),
     Deadline(Key, usize),
     Host(Key, usize),
+    LocalEcho(Key, usize),
 }
 
 /// A deterministic, virtual-time MS/TP bus with real [`MasterCore`]s on it.
@@ -311,7 +314,8 @@ impl Sim {
                 Next::Dynamic(key)
                 | Next::Timeline(key)
                 | Next::Deadline(key, _)
-                | Next::Host(key, _) => key,
+                | Next::Host(key, _)
+                | Next::LocalEcho(key, _) => key,
             };
             if key.at > end {
                 break;
@@ -328,6 +332,7 @@ impl Sim {
                 }
                 Next::Deadline(_, node) => self.service_deadline(node),
                 Next::Host(_, node) => self.host_service(node),
+                Next::LocalEcho(_, node) => self.local_echo_service(node),
             }
             self.check_holders();
         }
@@ -526,7 +531,8 @@ impl Sim {
                 Next::Dynamic(key)
                 | Next::Timeline(key)
                 | Next::Deadline(key, _)
-                | Next::Host(key, _) => *key,
+                | Next::Host(key, _)
+                | Next::LocalEcho(key, _) => *key,
             };
             if best
                 .as_ref()
@@ -542,6 +548,21 @@ impl Sim {
             let NodeKind::Master(master) = &node.kind else {
                 continue;
             };
+            if let Some(at) = master
+                .host
+                .as_ref()
+                .and_then(host::HostState::next_local_echo)
+            {
+                consider(Next::LocalEcho(
+                    Key {
+                        at: at.max(self.now),
+                        class: Class::LocalEcho,
+                        tie: u16::from(node.station),
+                        seq: 0,
+                    },
+                    index,
+                ));
+            }
             if let Some(at) = master.host.as_ref().and_then(host::HostState::next) {
                 consider(Next::Host(
                     Key {

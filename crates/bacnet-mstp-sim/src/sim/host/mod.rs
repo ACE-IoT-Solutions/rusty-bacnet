@@ -1,10 +1,15 @@
 //! Chunked serial reads around the unchanged portable core.
 mod application;
 #[cfg(test)]
+mod delayed_echo_tests;
+#[cfg(test)]
 mod differential;
 mod echo;
 #[cfg(test)]
 mod gap_tests;
+mod local_echo;
+#[cfg(test)]
+mod local_echo_tests;
 #[cfg(test)]
 mod repair_tests;
 mod state;
@@ -16,6 +21,7 @@ use super::Sim;
 use crate::line::{Character, TxId};
 use crate::report::{HostStats, HostTransmitTiming, ViolationKind};
 use crate::trace::{TraceKind, Who};
+pub(crate) use local_echo::Profile as EchoProfile;
 pub(crate) use state::HostState;
 pub(crate) use state::WireRequest;
 use state::{Received, Write};
@@ -32,6 +38,15 @@ impl Sim {
     }
 
     pub(super) fn host_character(&mut self, node: usize, character: Character) {
+        self.host_character_at(node, character, self.now);
+    }
+
+    fn host_character_at(
+        &mut self,
+        node: usize,
+        character: Character,
+        wire_end: bacnet_mstp_core::Instant,
+    ) {
         let now = self.now;
         let master = self.master_mut(node).expect("master");
         let spec = master.spec.adapter.host.expect("host mode");
@@ -45,7 +60,7 @@ impl Sim {
         }
         host.input.push_back(Received {
             character,
-            wire_end: now,
+            wire_end,
         });
         host.ready.get_or_insert(now + spec.receive_latency);
         host.stats.max_buffered = host.stats.max_buffered.max(host.input.len());
@@ -79,6 +94,14 @@ impl Sim {
             frame,
             hunting: false,
         });
+        let profile = EchoProfile {
+            incarnation: master.incarnation,
+            delay: spec.echo_return_delay,
+        };
+        self.meta
+            .get_mut(&tx)
+            .expect("physical operation")
+            .echo_profile = Some(profile);
     }
 
     fn host_complete(&mut self, node: usize) {
@@ -165,6 +188,14 @@ impl Sim {
         let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
         let count = size.min(host.input.len());
         let characters: Vec<_> = host.input.drain(..count).collect();
+        #[cfg(test)]
+        if let Some(reads) = &mut host.read_capture {
+            assert!(
+                reads.len() < 64,
+                "differential read capture exceeded its bound"
+            );
+            reads.push((now, characters.clone()));
+        }
         host.ready = (!host.input.is_empty()).then_some(now);
         host.stats.reads += 1;
         host.stats.characters += count as u64;

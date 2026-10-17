@@ -33,6 +33,21 @@ impl fmt::Display for Who {
 /// What happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TraceKind {
+    /// A physically observed own character became locally available. The
+    /// entry timestamp is availability; later profiles cannot overtake older
+    /// queued returns, so it may exceed `requested_at` under the FIFO policy.
+    LocalEcho {
+        /// Original monotonic line transmission identity.
+        transmission: u64,
+        /// Powered incarnation that observed the character.
+        incarnation: u64,
+        /// Physical stop time, retained through delayed buffering.
+        wire_end: Instant,
+        /// Physical stop plus the delay captured at transmit start.
+        requested_at: Instant,
+        /// Actual observed byte, or `None` for a framing error.
+        byte: Option<u8>,
+    },
     /// A driver started putting an octet on the wire.
     Octet {
         /// Index of the octet within its transmission.
@@ -78,6 +93,18 @@ impl fmt::Display for TraceEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {:<6} ", Millis(self.at), self.who)?;
         match &self.kind {
+            TraceKind::LocalEcho {
+                transmission,
+                incarnation,
+                wire_end,
+                requested_at,
+                byte,
+            } => write!(
+                f,
+                "local echo tx{transmission}/boot{incarnation} wire {} requested {} {byte:?}",
+                Millis(*wire_end),
+                Millis(*requested_at)
+            ),
             TraceKind::Octet { index, byte } => write!(f, "octet[{index}] {byte:02X}"),
             TraceKind::Garbled => f.write_str("garbled character"),
             TraceKind::FrameStart(text) => write!(f, "TX start {text}"),

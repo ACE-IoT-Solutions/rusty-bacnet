@@ -33,7 +33,7 @@
 //! octet boundaries and adapter jitter use whole microseconds; configured
 //! gaps and driver holds retain nanosecond precision. One queue orders every event by
 //! time, then by a fixed class (characters arriving, data ending, physical
-//! driver releases, scheduled events, host
+//! driver releases, scheduled events, local echo availability, host
 //! reads/completion, core deadlines, adapters starting frames, later octets), then by
 //! station address, then by scheduling order. Nothing reads a wall clock or
 //! runs on another thread, so a run replays exactly from its seed on any
@@ -96,13 +96,35 @@
 //!
 //! **Buffered host adapters.** [`MasterSpec::host`] opts a node into
 //! [`HostSpec`], independently of other nodes. The line still delivers each
-//! physical character into its serial buffer. A read becomes ready 1–16 ms
+//! peer character into its serial buffer. A read becomes ready 1–16 ms
 //! after the first buffered character and coalesces characters that arrived
 //! meanwhile. Each read takes at most the configured chunk size (optionally
 //! seeded and randomized), and all its bytes reach `on_octet` with the read
 //! timestamp, as in the production Tokio transport. Ready reads run before
 //! core deadlines and transmit admission. Admission also drains up to eight
 //! available reads without waiting, then checks the core's start contract.
+//!
+//! **Local echo return.** [`HostSpec::echo_return_delay`] defaults to zero
+//! and is captured at transmit start. With [`AdapterSpec::echo`] enabled,
+//! each eligible own character or framing error is retained with its physical
+//! stop time and becomes locally available after that delay. Ordinary host
+//! receive latency then applies. This adds no physical transmission, line
+//! activity or peer input; octet-mode echo remains immediate. The queue owns
+//! its observations across data completion, physical release, software
+//! notification and later writes. A new write does not erase old unread
+//! returns or wait for them; all bytes still face the content-based filter.
+//!
+//! Local returns use a FIFO, preserving physical observation order even if
+//! a later transmission selects a shorter delay. This is a simulator policy,
+//! not a Standard requirement. [`TraceKind::LocalEcho`] retains the original
+//! transmission/incarnation, physical time, requested availability and actual
+//! byte/error; its trace timestamp shows any FIFO deferral. Each host has at
+//! most 4096 pending returns and one queue-head scheduler candidate. Due
+//! returns precede host reads and new starts. Power-off scenario events win
+//! a same-time availability tie, cancel the queue and fence a reboot.
+//! [`Report::local_echo`] preserves compact capture, release, cancellation,
+//! overflow and high-water counters across reboots. A full queue refuses
+//! further characters and reports one invariant failure per overflow episode.
 //!
 //! Host completion is stamped with the later of serial drain return and
 //! final data stop, independently of physical driver release. With
@@ -121,9 +143,16 @@
 //! independently. [`HostBudgetOverrun`] distinguishes late completion from
 //! a timely completion whose notification was late; neither observation
 //! claims a core timeout or physical abort occurred.
+//! Local delay may change notification time without changing the physical
+//! end or completion stamp. A ready read gets its entire chunk before Grace
+//! expires, while Probe expires before bytes read exactly at its deadline.
+//! Residual prefixes survive until strictly excessive read silence or a new
+//! confirmed start. Arbitrarily late or interleaved copies can escape this
+//! bounded heuristic; their own-address/parser/receipt diagnostics remain.
 //!
 //! Host input is capped at 4096 characters, pending clean-frame receipts at
-//! 513, and echo storage at one transmitted frame. Overflow is a reported
+//! 513, and filter storage at one transmitted frame, independently of the
+//! bounded local-return queue. Overflow is a reported
 //! invariant failure. Host state is discarded on power loss; delayed starts
 //! and application decisions carry an incarnation fence across reboot.
 //!
@@ -277,8 +306,8 @@ mod wire;
 pub use line::Driver;
 pub use report::{
     Collision, CollisionClass, Delivery, DriverRelease, DriverReleaseCause, Episode,
-    HostBudgetOverrun, HostStats, HostTimingFailure, HostTransmitTiming, PostDriveOverlap, Report,
-    Tolerance, Violation, ViolationKind, WireFrame,
+    HostBudgetOverrun, HostStats, HostTimingFailure, HostTransmitTiming, LocalEchoStats,
+    PostDriveOverlap, Report, Tolerance, Violation, ViolationKind, WireFrame,
 };
 pub use rng::SimRng;
 pub use sim::{Sim, SimConfig, SimCore};
