@@ -806,8 +806,10 @@ whose soft limit on open files was 1024. On the hosted runner they run as
   Compact counters expose overflow and cancellation; bounded traces show
   requested availability and FIFO deferral. This local policy changes no
   physical bus timing. Bus-generated read sequences are replayed through the
-  public transport for Grace, Residual and Probe boundaries and peer payload
-  order, including expired and interleaved copies that remain diagnostic.
+  public transport for Grace, Residual and Probe boundaries, expired and
+  missing copies, and ordered peer payloads. A separate simulator negative
+  test retains parser-error and missed-receipt diagnostics when delayed local
+  echo interleaves with peer traffic.
   Physical wire checks remain active: randomized fault runs retain and assert
   diagnosed failures when a host starts before injected activity becomes
   readable; clean and settled operation must pass the strict checks. These
