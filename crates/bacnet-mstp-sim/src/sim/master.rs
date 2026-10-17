@@ -661,6 +661,7 @@ impl Sim {
         }
         match self.master_input(node, Input::Started(id)) {
             Ok(()) => {
+                self.receiver_started(node);
                 self.check_turnaround(node, &pending);
                 self.check_usage_delay(node, &pending);
                 self.check_host_reply_delay(node, &pending);

@@ -39,7 +39,9 @@ pub struct WireFrame {
 }
 
 impl WireFrame {
-    /// Whether receivers got every octet as sent.
+    /// Whether the transmission was free of physical overlap, injected
+    /// corruption and truncation. A receiver-specific intact capture does
+    /// not make a globally collided transmission clean.
     #[must_use]
     pub fn is_clean(&self) -> bool {
         !self.collided && !self.corrupted && !self.truncated
@@ -413,9 +415,10 @@ pub struct Tolerance {
     pub duplicate_token: Duration,
     /// How long masters that each generated a token may go on holding them
     /// together. Only masters whose silence began at different instants can
-    /// share a generation slot, and the race ends when one hears the other
-    /// before its own timer fires, so timing variation must break it; see
-    /// [`AdapterSpec::deadline_jitter`](crate::AdapterSpec::deadline_jitter).
+    /// share a generation slot. Scenarios can use timing variation to test
+    /// bounded recovery; see [`AdapterSpec::deadline_jitter`](crate::AdapterSpec::deadline_jitter).
+    /// This configured tolerance is not a guarantee that every physical
+    /// duplicate-token collision eventually resolves (135-2020 9.4).
     pub generation_race: Duration,
     /// Accept collisions a slow or late adapter causes: its core handed the
     /// frame over before the other frame's first character arrived, and only

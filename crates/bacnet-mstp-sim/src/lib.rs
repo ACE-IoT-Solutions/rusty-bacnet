@@ -49,7 +49,7 @@
 //! no characters or line activity. Receivers frame characters the way a
 //! UART does: the first octet to begin opens a character that ends with that
 //! octet. If no other driver was on the line meanwhile, receivers get the
-//! octet; otherwise they get a framing error, and while out-of-step octets
+//! octet; by default an overlap produces a framing error, and while out-of-step octets
 //! remain they get further framing errors, one per octet time. Propagation is
 //! ideal: every receiver sees the same line at the same instant.
 //! A configured [`AdapterSpec::post_drive`] holds idle mark after the final
@@ -58,6 +58,46 @@
 //! physical release separately from [`WireFrame::end`]; an overlap during the
 //! hold carries [`PostDriveOverlap`] evidence without changing a completed
 //! frame's receipt. Power loss releases the driver immediately.
+//!
+//! **Receiver-specific contention.** [`Sim::set_contention`] opts individual
+//! receivers into [`ContentionPolicy`] while retaining the common physical
+//! character grid. A receiver can capture a named contributor, XOR one
+//! character with a clean UART indication, or use seeded choices. Different
+//! receivers may see different data/errors for the same real overlap.
+//! Every active contributor must span the complete common window; misaligned
+//! windows, truncation, explicit framing errors and mid-character receiver
+//! enable still produce errors. Explicit XOR faults retain their damaged byte.
+//! Uncontended input, line activity, frame clocks, driver release and collision
+//! records are unchanged. [`WireFrame`] remains transmission intent, and an
+//! intact capture does not change its global `collided` or `is_clean` result.
+//! This is synthetic digital fault injection, not electrical arbitration,
+//! separate UART sampling/resynchronization, baud tolerance or clock drift.
+//!
+//! Seeded contention has one stream per station, separate from scenario,
+//! timer-jitter, host-chunk and other receiver draws. It persists across
+//! reboot; only eligible aligned contention draws from it. The existing
+//! bounded trace records selected contributors and actual data/errors in
+//! [`TraceKind::Contention`], and [`Sim::contention_stats`] exposes compact
+//! counters. A transmitting host's local echo queue still belongs to its own
+//! operation, but carries its actual resolved observation; the contention
+//! trace identifies the selected contributor at the same physical time.
+//!
+//! Each opt-in master tracks one sequential contributor and up to 513
+//! completed receipt candidates. A separate bounded codec instance follows
+//! actual forwarded bytes and read-time gaps, respecting transmit, framing,
+//! echo-filter and reboot dispositions. An intact physical stream creates a
+//! candidate; only a matching reference decode at its terminal character
+//! qualifies a core receipt check, with unsupported extended frames expecting
+//! no receipt. Comparison uses that exact core input, so an unrelated later
+//! frame cannot satisfy it. Identical simultaneous intents owe one perceived
+//! receipt. Explicit filter suppression and power loss cancel candidates;
+//! unexplained loss of a buffered terminal character remains diagnostic.
+//! An older parser candidate can invalidate standalone-frame expectations,
+//! recorded as unqualified. Enabling the audit after previously untracked
+//! input waits for a known parser reset before qualifying receipts.
+//! Mixed-origin and corrupted streams use bounded
+//! reference decoding and exact scenario assertions, not a universal MAC
+//! oracle. Receipt overflow is counted and reported; storage stays bounded.
 //!
 //! **Masters and their adapters.** Each master runs a core over
 //! [`AllocQueues`](bacnet_mstp_core::AllocQueues). A master built with
@@ -251,14 +291,14 @@
 //! - **Propagation and drift.** Propagation is instantaneous. Every node
 //!   runs at exactly the line's baud rate, with no ±1% tolerance. Seeded
 //!   [`AdapterSpec::deadline_jitter`] stands in for clock and timer
-//!   variation; without any, two masters that start in step stay in step,
-//!   which a real bus would not allow for long.
+//!   variation. Serial baud tolerance and protocol-clock drift are separate
+//!   unmodeled quantities; no recovery bound is inferred.
 //! - **Noise at bit level.** Noise on an idle line arrives as clean random
-//!   octets; noise over a frame garbles whole characters. There are no
+//!   octets; noise over a frame follows the selected contention policy. There are no
 //!   overruns, parity errors or breaks.
-//! - **Contention.** Every overlap reaches every receiver as framing errors.
-//!   Two real drivers fighting over the line can also yield valid but wrong
-//!   characters, and different ones at different receivers.
+//! - **Electrical contention and convergence.** Digital receiver choices
+//!   do not predict voltage arbitration or guarantee token recovery.
+//!   Duplicate-token collisions can persist under 135-2020 9.4.
 //! - **When a character is reported.** A received character is timestamped
 //!   at the end of its stop bit; a UART usually signals it in the middle of
 //!   the stop bit, about half a bit time sooner.
@@ -294,6 +334,7 @@
 #![forbid(unsafe_code)]
 
 pub mod analysis;
+mod contention;
 mod event;
 mod line;
 mod report;
@@ -303,6 +344,7 @@ mod spec;
 mod trace;
 mod wire;
 
+pub use contention::{ContentionPolicy, ContentionStats};
 pub use line::Driver;
 pub use report::{
     Collision, CollisionClass, Delivery, DriverRelease, DriverReleaseCause, Episode,

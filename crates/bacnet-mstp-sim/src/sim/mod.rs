@@ -1,6 +1,7 @@
 //! The simulator: nodes, the line, the event loop and the public API.
 
 mod checks;
+mod contention;
 mod faults;
 #[cfg(test)]
 mod gap_tests;
@@ -133,6 +134,7 @@ pub(crate) enum NodeKind {
 
 pub(crate) struct Node {
     station: u8,
+    receiver: contention::Receiver,
     kind: NodeKind,
     /// The transmission this node is driving.
     driving: Option<TxId>,
@@ -250,6 +252,7 @@ impl Sim {
             .validate_inter_octet_gap(spec.adapter.inter_octet_gap);
         self.nodes.push(Node {
             station,
+            receiver: contention::Receiver::new(self.config.seed, station),
             kind: NodeKind::Master(Box::new(MasterNode::new(spec))),
             driving: None,
             listening_since: None,
@@ -271,6 +274,7 @@ impl Sim {
         self.claim_station(station);
         self.nodes.push(Node {
             station,
+            receiver: contention::Receiver::new(self.config.seed, station),
             kind: NodeKind::Scripted(Box::new(ScriptedNode {
                 script: Box::new(script),
                 decoder: StreamDecoder::new(leak_storage(2 * MAX_EXTENDED_FRAME_LENGTH)),
@@ -279,6 +283,20 @@ impl Sim {
             driving: None,
             listening_since: Some(self.now),
         });
+        self
+    }
+
+    /// Select this receiver's synthetic digital contention policy.
+    /// Uncontended characters and physical line timing are unchanged.
+    /// If enabled after unobserved core input, receipt qualification waits
+    /// for a known parser reset (silence, receive error, transmit or reboot).
+    ///
+    /// # Panics
+    ///
+    /// If the station has not been added.
+    pub fn set_contention(&mut self, station: u8, policy: crate::ContentionPolicy) -> &mut Self {
+        let node = self.index_of(station);
+        self.nodes[node].receiver.policy = policy;
         self
     }
 
