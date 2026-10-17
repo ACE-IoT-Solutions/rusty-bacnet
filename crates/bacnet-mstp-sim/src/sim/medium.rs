@@ -139,27 +139,39 @@ impl Sim {
             self.note(Who::Line, TraceKind::Garbled);
         }
         for node in 0..self.nodes.len() {
-            let character = match self.nodes[node].listening_since {
+            let own = self.nodes[node].driving.filter(|tx| {
+                if self.nodes[node].receiver.policy == crate::ContentionPolicy::FramingError {
+                    outcome.opener.is_some_and(|(opener, _)| opener == *tx)
+                } else {
+                    outcome.contributors.iter().any(|c| c.tx == *tx)
+                }
+            });
+            let eligible = match self.nodes[node].listening_since {
                 // A receiver switched on part way through hears a fragment.
-                Some(since) if since > outcome.start => Character::Garbled,
-                Some(_) => outcome.character,
+                Some(since) => since <= outcome.start,
                 None => {
                     let echo = matches!(&self.nodes[node].kind, NodeKind::Master(master)
                         if master.spec.adapter.echo && master.core.is_some());
-                    let own = outcome.opener.is_some_and(|(tx, driver)| {
-                        driver == Driver::Station(self.nodes[node].station)
-                            && self.nodes[node].driving == Some(tx)
-                    });
-                    if !(echo && own && self.nodes[node].driving.is_some()) {
+                    if !(echo && own.is_some()) {
                         continue;
                     }
-                    outcome.character
+                    outcome
+                        .contributors
+                        .iter()
+                        .any(|c| Some(c.tx) == own && c.aligned)
                 }
             };
+            let receiver = &mut self.nodes[node].receiver;
+            let (character, contributor) = if eligible {
+                crate::contention::resolve(receiver.policy, &outcome, &mut receiver.rng)
+            } else {
+                (Character::Garbled, None)
+            };
+            self.observe_contention(node, &outcome, character, contributor);
             match &self.nodes[node].kind {
                 NodeKind::Master(master) if master.host.is_some() => {
                     if self.nodes[node].listening_since.is_none() {
-                        let (tx, _) = outcome.opener.expect("an own echo observation");
+                        let tx = own.expect("an own echo observation");
                         self.host_local_echo(node, tx, character);
                     } else {
                         self.host_character(node, character);
@@ -170,7 +182,7 @@ impl Sim {
                         Character::Clean(byte) => Input::Octet(byte),
                         Character::Garbled => Input::Garbled,
                     };
-                    let _ = self.master_input(node, input);
+                    let _ = self.receiver_input(node, input, now);
                 }
                 NodeKind::Scripted(_) => self.scripted_receive(node, character),
             }

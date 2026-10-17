@@ -2,10 +2,10 @@
 //!
 //! Every octet occupies ten bit times, separated by the transmission's
 //! captured idle gaps. Driver ownership continues through gaps and any
-//! post-drive hold without creating characters. Propagation is ideal, so
-//! every receiver sees the same line, and the
-//! line keeps one receiver framing window for all of them, the way a UART
-//! frames characters:
+//! post-drive hold without creating characters. Propagation is ideal. The
+//! line keeps one common character grid and physical collision record;
+//! receiver-specific digital policies resolve observations afterwards.
+//! The conservative default frames characters as follows:
 //!
 //! - An idle receiver starts a character at the first octet that begins.
 //! - The character ends when that octet ends. If no other driver owned the
@@ -14,8 +14,9 @@
 //! - If an octet is still on the line when a character ends (two drivers out
 //!   of step), the receiver starts another, garbled, character at once.
 //!
-//! So a clean line delivers each octet once, and a collision delivers about
-//! one garbled character per octet time while it lasts.
+//! A clean line delivers each octet once. Default contention delivers about
+//! one garbled character per octet time while it lasts. Opt-in policies do
+//! not retime these windows or implement separate UART synchronization.
 
 use std::collections::BTreeMap;
 
@@ -23,6 +24,9 @@ use bacnet_mstp_core::{Duration, Instant};
 
 use crate::spec::Corruption;
 use crate::wire::{WireSchedule, WireTiming};
+
+#[cfg(test)]
+mod contention_tests;
 
 /// Identifies one transmission on the line.
 pub(crate) type TxId = u64;
@@ -53,6 +57,8 @@ pub(crate) struct Transmission {
 #[derive(Debug, Clone, Copy)]
 struct ActiveOctet {
     tx: TxId,
+    index: usize,
+    start: Instant,
     end: Instant,
 }
 
@@ -75,6 +81,9 @@ struct Window {
     /// one did.
     opener: Option<(TxId, usize)>,
     corrupted: bool,
+    contended: bool,
+    /// A truncated character cannot be recovered by a contention policy.
+    broken: bool,
 }
 
 /// What receivers get when a character ends.
@@ -85,14 +94,29 @@ pub(crate) enum Character {
 }
 
 /// The result of ending the current receiver window.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct WindowOutcome {
     pub start: Instant,
     pub character: Character,
     /// The transmission and driver whose octet opened the window in step.
     pub opener: Option<(TxId, Driver)>,
+    pub contended: bool,
+    pub resolvable: bool,
+    pub contributors: Vec<Contributor>,
     /// When a garbled follow-on window ends, if one opened.
     pub reopened: Option<Instant>,
+}
+
+/// A real contributor, with explicit corruption already applied. These
+/// observations never replace the transmission's physical intent record.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Contributor {
+    pub tx: TxId,
+    pub driver: Driver,
+    pub index: usize,
+    pub character: Character,
+    pub aligned: bool,
+    pub faulted: bool,
 }
 
 /// The result of starting an octet.
@@ -230,7 +254,12 @@ impl Line {
                 }
             }
         }
-        self.active.push(ActiveOctet { tx, end });
+        self.active.push(ActiveOctet {
+            tx,
+            index,
+            start: now,
+            end,
+        });
         let window_end = match self.window.as_mut() {
             None => {
                 self.window = Some(Window {
@@ -238,11 +267,14 @@ impl Line {
                     end,
                     opener: Some((tx, index)),
                     corrupted: !overlaps.is_empty(),
+                    contended: !overlaps.is_empty(),
+                    broken: false,
                 });
                 Some(end)
             }
             Some(window) => {
                 window.corrupted = true;
+                window.contended = true;
                 None
             }
         };
@@ -274,6 +306,36 @@ impl Line {
     /// End the receiver window that falls due at `now`.
     pub(crate) fn end_window(&mut self, now: Instant) -> Option<WindowOutcome> {
         let window = self.window.take()?;
+        let contributors: Vec<_> = self
+            .active
+            .iter()
+            .filter_map(|octet| {
+                let transmission = self.live.get(&octet.tx)?;
+                let byte = transmission.octets[octet.index];
+                let character = match transmission.corruption {
+                    Some((at, Corruption::Xor(mask))) if at == octet.index => {
+                        Character::Clean(byte ^ mask)
+                    }
+                    Some((at, Corruption::FramingError)) if at == octet.index => Character::Garbled,
+                    _ => Character::Clean(byte),
+                };
+                Some(Contributor {
+                    tx: octet.tx,
+                    driver: transmission.driver,
+                    index: octet.index,
+                    character,
+                    aligned: octet.start == window.start && octet.end == now,
+                    faulted: transmission
+                        .corruption
+                        .is_some_and(|(at, _)| at == octet.index),
+                })
+            })
+            .collect();
+        let resolvable = !window.broken
+            && window.opener.is_some()
+            && contributors
+                .iter()
+                .all(|c| c.aligned && c.character != Character::Garbled);
         let mut opener = None;
         let character = match window.opener {
             Some((tx, index)) => match self.live.get(&tx) {
@@ -307,6 +369,8 @@ impl Line {
                 end,
                 opener: None,
                 corrupted: true,
+                contended: true,
+                broken: false,
             });
             Some(end)
         } else {
@@ -316,6 +380,9 @@ impl Line {
             start: window.start,
             character,
             opener,
+            contended: window.contended,
+            resolvable,
+            contributors,
             reopened,
         })
     }
@@ -327,8 +394,9 @@ impl Line {
         transmission.truncated = true;
         self.active.retain(|octet| octet.tx != tx);
         if let Some(window) = self.window.as_mut() {
-            if window.opener.is_some_and(|(opener, _)| opener == tx) && window.end > now {
+            if window.end > now {
                 window.corrupted = true;
+                window.broken = true;
             }
         }
         Some(transmission)

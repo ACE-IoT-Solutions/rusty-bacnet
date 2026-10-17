@@ -810,6 +810,19 @@ whose soft limit on open files was 1024. On the hosted runner they run as
   missing copies, and ordered peer payloads. A separate simulator negative
   test retains parser-error and missed-receipt diagnostics when delayed local
   echo interleaves with peer traffic.
+  Opt-in receiver-specific digital contention can capture a contributor,
+  alter UART-clean data or retain framing errors on the same physical grid.
+  Tests preserve global collision/release evidence, check standard and extended
+  winner payloads, independently reject an altered standard CRC, and cover
+  identical simultaneous intents, lifecycle eligibility and delayed actual
+  self-echo. Bounded receipt candidates are correlated with the terminal
+  character through real forwarding and a separate reference codec instance;
+  later valid traffic cannot hide a missing winner. Parser synchronization,
+  unsupported extended input and explicit filter dispositions qualify those
+  checks. Seed replay is independent of scenario/jitter/chunk draws. Mixed
+  adapters at 9600, 38400 and 115200 baud receive exact known traffic after
+  bounded contention; this does not promise universal duplicate-token recovery
+  or model electrical arbitration, UART resynchronization or clock drift.
   Physical wire checks remain active: randomized fault runs retain and assert
   diagnosed failures when a host starts before injected activity becomes
   readable; clean and settled operation must pass the strict checks. These

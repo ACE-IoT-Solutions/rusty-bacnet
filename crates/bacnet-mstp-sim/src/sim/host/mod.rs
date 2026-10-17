@@ -1,6 +1,12 @@
 //! Chunked serial reads around the unchanged portable core.
 mod application;
 #[cfg(test)]
+mod contention_lifecycle_tests;
+#[cfg(test)]
+mod contention_matrix_tests;
+#[cfg(test)]
+mod contention_tests;
+#[cfg(test)]
 mod delayed_echo_tests;
 #[cfg(test)]
 mod differential;
@@ -75,6 +81,19 @@ impl Sim {
         // potentially contiguous, end for the host's software completion.
         let wire_end = self.line.owner(tx).expect("physical owner").data_end;
         let frame = self.line.get(tx).expect("live frame").octets.clone();
+        let held: Vec<_> = self
+            .master_mut(node)
+            .unwrap()
+            .host
+            .as_ref()
+            .unwrap()
+            .held_at
+            .iter()
+            .copied()
+            .collect();
+        for wire_end in held {
+            self.receiver_filter_drop(node, wire_end);
+        }
         let master = self.master_mut(node).expect("master");
         let Some(host) = master.host.as_mut() else {
             return;
@@ -213,7 +232,7 @@ impl Sim {
                 Character::Clean(octet) => {
                     let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
                     let pushed = host.filter.push(octet, now);
-                    host.held_at.drain(..pushed.stale);
+                    let mut dropped: Vec<_> = host.held_at.drain(..pushed.stale).collect();
                     let mut passed: Vec<_> = host
                         .filter
                         .held(pushed.release)
@@ -224,12 +243,16 @@ impl Sim {
                     if pushed.pass {
                         passed.push((octet, received.wire_end));
                     } else if pushed.echo {
-                        host.held_at.clear();
+                        dropped.extend(host.held_at.drain(..));
+                        dropped.push(received.wire_end);
                     } else {
                         host.held_at.push_back(received.wire_end);
                     }
                     host.stats.echo_fragments_dropped += u32::from(pushed.stale > 0);
                     host.stats.echo_mismatches += u32::from(pushed.first_mismatch);
+                    for wire_end in dropped {
+                        self.receiver_filter_drop(node, wire_end);
+                    }
                     if pushed.echo || pushed.passes() {
                         self.host_complete(node);
                     }
@@ -239,6 +262,7 @@ impl Sim {
                 }
             }
         }
+        self.host_check_contention(node);
         true
     }
 
@@ -247,7 +271,7 @@ impl Sim {
         let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
         host.activity = Some(now);
         host.receiving = Some(wire_end);
-        let _ = self.master_input(node, input);
+        let _ = self.receiver_input(node, input, wire_end);
         self.master_mut(node)
             .unwrap()
             .host
@@ -261,7 +285,7 @@ impl Sim {
         let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
         let due = host.filter.deadline().is_some_and(|end| end <= now);
         let ended = host.filter.timer(now);
-        host.held_at.drain(..ended.stale);
+        let dropped: Vec<_> = host.held_at.drain(..ended.stale).collect();
         let passed: Vec<_> = host
             .filter
             .held(ended.release)
@@ -271,12 +295,16 @@ impl Sim {
             .collect();
         host.stats.echo_missing += u32::from(ended.missing);
         host.stats.echo_fragments_dropped += u32::from(ended.stale > 0);
+        for wire_end in dropped {
+            self.receiver_filter_drop(node, wire_end);
+        }
         if due {
             self.host_complete(node);
         }
         for (octet, wire_end) in passed {
             self.host_feed(node, Input::Octet(octet), wire_end);
         }
+        self.host_check_contention(node);
     }
 
     /// Like production's bounded nonblocking drain, only reads already ready
@@ -293,7 +321,7 @@ impl Sim {
         let now = self.now;
         let host = self.master_mut(node).unwrap().host.as_mut().unwrap();
         let ended = host.filter.before_start(now);
-        host.held_at.drain(..ended.stale);
+        let dropped: Vec<_> = host.held_at.drain(..ended.stale).collect();
         let passed: Vec<_> = host
             .filter
             .held(ended.release)
@@ -302,9 +330,27 @@ impl Sim {
             .zip(host.held_at.drain(..ended.release))
             .collect();
         host.stats.echo_fragments_dropped += u32::from(ended.stale > 0);
+        for wire_end in dropped {
+            self.receiver_filter_drop(node, wire_end);
+        }
         for (octet, wire_end) in passed {
             self.host_feed(node, Input::Octet(octet), wire_end);
         }
+        self.host_check_contention(node);
+    }
+
+    fn host_check_contention(&mut self, node: usize) {
+        if !self.receiver_has_pending(node) {
+            return;
+        }
+        let host = self.master_mut(node).unwrap().host.as_ref().unwrap();
+        let retained: Vec<_> = host
+            .input
+            .iter()
+            .map(|r| r.wire_end)
+            .chain(host.held_at.iter().copied())
+            .collect();
+        self.receiver_check_dropped(node, &retained);
     }
 
     pub(super) fn host_expect_frame(&mut self, node: usize, before: u32, takes: bool) {

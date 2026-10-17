@@ -117,6 +117,7 @@ impl Sim {
         let station = self.nodes[node].station;
         self.perturb("a node powered off");
         self.cancel_local_echo(node);
+        self.receiver_power_off(node);
         if let Some(tx) = self.nodes[node].driving.take() {
             if let Some(transmission) = self.line.truncate(tx, now) {
                 self.record_frame(tx, transmission);
