@@ -1,7 +1,8 @@
 //! Append-only output for the sink-based encoders.
 //!
 //! The tag-header functions in [`crate::tags`] and bounded scalar and timestamp encoders in
-//! [`crate::primitives`] support these sinks. Other encoder families still use
+//! [`crate::primitives`], plus bounded references in [`crate::constructed`],
+//! support these sinks. Other encoder families still use
 //! their existing buffers. The crate still needs either its `std` or its
 //! `alloc` feature, including with a bounded sink.
 
@@ -13,10 +14,10 @@ use core::fmt;
 /// nor the output position may change. Implementers must uphold that contract;
 /// it is not a partial-I/O interface.
 ///
-/// The tag-header, bounded scalar and timestamp encoders check advertised capacity,
-/// then write their complete output once. They leave no partial header or
-/// scalar or partial timestamp frame on failure. This does not promise rollback across several encoder
-/// calls: a custom sink can refuse a later write even after a total-capacity
+/// The tag-header, bounded scalar, timestamp and reference encoders check
+/// advertised capacity, then write their complete output once. They leave no
+/// partial header, scalar, timestamp frame or reference on failure. This does
+/// not promise rollback across several encoder calls: a custom sink can refuse a later write even after a total-capacity
 /// check, leaving earlier writes in place. A future multi-write encoder must
 /// state its own failure behavior.
 ///

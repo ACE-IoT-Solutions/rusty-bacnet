@@ -34,8 +34,9 @@ use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
 
-use crate::primitives;
-use crate::tags;
+pub use super::reference_sinks::{
+    encode_object_property_reference_to_sink, encode_setpoint_reference_to_sink,
+};
 
 use super::tagged::{
     decode_ctx_constructed, decode_ctx_object_id, decode_ctx_unsigned, decode_optional_ctx,
@@ -48,20 +49,14 @@ const SETPOINT: &str = "BACnetSetpointReference";
 /// Encode the bare `BACnetObjectPropertyReference` member sequence:
 /// context-tagged \[0\]/\[1\] plus \[2\] when the reference is indexed.
 pub fn encode_object_property_reference(buf: &mut BytesMut, r: &BACnetObjectPropertyReference) {
-    primitives::encode_ctx_object_id(buf, 0, &r.object_identifier);
-    primitives::encode_ctx_unsigned(buf, 1, r.property_identifier as u64);
-    if let Some(index) = r.property_array_index {
-        primitives::encode_ctx_unsigned(buf, 2, index as u64);
-    }
+    encode_object_property_reference_to_sink(buf, r).expect("BytesMut accepts each reference");
 }
 
 /// Encode the `BACnetSetpointReference` form: the reference inside an
 /// opening/closing context tag 0 frame (the production's
 /// `setpoint-reference [0]` member).
 pub fn encode_setpoint_reference(buf: &mut BytesMut, r: &BACnetObjectPropertyReference) {
-    tags::encode_opening_tag(buf, 0);
-    encode_object_property_reference(buf, r);
-    tags::encode_closing_tag(buf, 0);
+    encode_setpoint_reference_to_sink(buf, r).expect("BytesMut accepts each reference");
 }
 
 /// Decode the bare `BACnetObjectPropertyReference` members starting at
