@@ -3,7 +3,8 @@
 use bacnet_mstp_codec::{decode_frame_in_place, Frame, FrameType, MAX_EXTENDED_MPDU_DATA};
 use bacnet_mstp_core::{Action, ExtendedStorage, FixedQueues, Instant, MasterCore, MstpCoreConfig};
 use bacnet_router_core::mstp::MstpPort;
-use bacnet_router_core::{Arrived, Mac, PortId};
+use bacnet_router_core::npdu::Mac;
+use bacnet_router_core::{Arrived, PortId};
 
 /// The router's station on the MS/TP port.
 pub const STATION: u8 = 1;

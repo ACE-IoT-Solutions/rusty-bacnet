@@ -8,8 +8,8 @@ use bacnet_time::Instant;
 use super::{count, Datagrams, HeldBroadcast, Ingress, PortCounters, PortError};
 use crate::node::{
     Action, Admission, Cast, Datagram, Inbound, LocalFailure, Mode, Node, Policy, SendRefusal,
-    MAX_NPDU,
 };
+use bacnet_npdu::MAX_NPDU;
 
 /// A port on a B/IP node in normal or foreign-device mode, which it owns,
 /// with `X` exchange slots and held-broadcast slots of `N` octets.

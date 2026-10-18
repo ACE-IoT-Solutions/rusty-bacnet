@@ -3,12 +3,14 @@
 
 mod fixture;
 
-use bacnet_router_core::message::{MessageType, RejectReason};
+use bacnet_router_core::npdu::Mac;
+use bacnet_router_core::npdu::NpduLimits;
+use bacnet_router_core::npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_router_core::router::{
-    Action, ConfigError, ControlClass, Counters, Discard, Event, Frame, Kind, LimitError, Limits,
-    Options, Permissive, Received, SendRefusal,
+    Action, ConfigError, ControlClass, Counters, Discard, Event, Frame, Kind, LimitError, Options,
+    Permissive, Received, SendRefusal,
 };
-use bacnet_router_core::{Duration, Instant, Mac, PortId, Router, RouterIn, Storage};
+use bacnet_router_core::{Duration, Instant, PortId, Router, RouterIn, Storage};
 use fixture::{
     apdu_to, at, deliver, drain, i_am, learn_9_via_r7, message, options, port_on, router,
     sent_reject, two_ports, Outcome, Recorder, Store, CONFIRMED, NODE_A, OWN_0, OWN_1, R7,
@@ -52,9 +54,9 @@ fn new_refuses_what_it_cannot_route() {
     let ends = [port_on(1, OWN_0), port_on(0xFFFE, OWN_1)];
     assert_eq!(new(&ends, hosted), Ok(()));
     for limits in [
-        Limits::both(63),
-        Limits::both(1498),
-        Limits {
+        NpduLimits::both(63),
+        NpduLimits::both(1498),
+        NpduLimits {
             unicast: 1497,
             broadcast: 10,
         },
@@ -64,7 +66,7 @@ fn new_refuses_what_it_cannot_route() {
         assert_eq!(new(&ports, hosted), Err(ConfigError::Limit(PortId(1))));
     }
     let mut ports = two_ports();
-    ports[0].max_npdu = Limits::both(64);
+    ports[0].max_npdu = NpduLimits::both(64);
     assert_eq!(new(&ports, hosted), Ok(()));
     let over = options(|o| o.route_cap = Some(257));
     assert_eq!(
@@ -180,7 +182,7 @@ fn a_later_refusal_is_counted_and_ends_no_answer() {
             .table_mut()
             .add_learned(network, PortId(1), peer, at(0));
     }
-    let query = message(MessageType::INITIALIZE_ROUTING_TABLE, &[0]);
+    let query = message(NetworkMessageType::INITIALIZE_ROUTING_TABLE, &[0]);
     let received = router.receive(
         Frame {
             port: PortId(0),
@@ -219,20 +221,20 @@ fn a_ports_limits_can_change_while_it_runs() {
     );
 
     assert_eq!(
-        router.set_port_max_npdu(PortId(1), Limits::both(601)),
+        router.set_port_max_npdu(PortId(1), NpduLimits::both(601)),
         Ok(())
     );
-    assert_eq!(router.ports()[1].max_npdu, Limits::both(601));
+    assert_eq!(router.ports()[1].max_npdu, NpduLimits::both(601));
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(2));
     assert_eq!((sent.len(), sent[0].port), (1, 0));
     assert_eq!(
         sent_reject(&sent[0]),
-        (RejectReason::MESSAGE_TOO_LONG, 2, None)
+        (RejectMessageReason::MESSAGE_TOO_LONG, 2, None)
     );
     assert_eq!(router.counters().egress_too_long, 1);
 
     assert_eq!(
-        router.set_port_max_npdu(PortId(1), Limits::both(602)),
+        router.set_port_max_npdu(PortId(1), NpduLimits::both(602)),
         Ok(())
     );
     let (_, sent) = deliver(&mut router, &mut host, 0, NODE_A, &frame, at(3));
@@ -251,7 +253,7 @@ fn a_ports_limits_can_change_while_it_runs() {
     );
     assert_eq!(received, Received::Handled);
     assert_eq!(
-        router.set_port_max_npdu(PortId(1), Limits::both(601)),
+        router.set_port_max_npdu(PortId(1), NpduLimits::both(601)),
         Ok(())
     );
     assert!(drain(&mut router).is_empty());
@@ -259,12 +261,12 @@ fn a_ports_limits_can_change_while_it_runs() {
     assert_eq!((counters.egress_too_long, counters.rejects), (2, 1));
 
     for (port, limits, refusal) in [
-        (PortId(2), Limits::both(1497), LimitError::UnknownPort),
-        (PortId(1), Limits::both(63), LimitError::OutOfRange),
-        (PortId(1), Limits::both(1498), LimitError::OutOfRange),
+        (PortId(2), NpduLimits::both(1497), LimitError::UnknownPort),
+        (PortId(1), NpduLimits::both(63), LimitError::OutOfRange),
+        (PortId(1), NpduLimits::both(1498), LimitError::OutOfRange),
         (
             PortId(1),
-            Limits {
+            NpduLimits {
                 unicast: 1497,
                 broadcast: 10,
             },
@@ -273,7 +275,7 @@ fn a_ports_limits_can_change_while_it_runs() {
     ] {
         assert_eq!(router.set_port_max_npdu(port, limits), Err(refusal));
     }
-    assert_eq!(router.ports()[1].max_npdu, Limits::both(601));
+    assert_eq!(router.ports()[1].max_npdu, NpduLimits::both(601));
 }
 
 /// The sweep runs when due and not before; a late call runs it once and
@@ -396,7 +398,7 @@ fn discovery_is_bounded() {
             &mut Permissive,
         );
         while let Action::Send(send) = router.poll_action() {
-            if send.npdu[2] == MessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw() {
+            if send.npdu[2] == NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw() {
                 solicited += 1;
             }
         }

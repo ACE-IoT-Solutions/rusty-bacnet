@@ -140,8 +140,6 @@ mod property_id;
 pub use property_id::*;
 mod protocol;
 pub use protocol::*;
-mod network;
-pub use network::*;
 mod object_level;
 pub use object_level::*;
 mod network_port;

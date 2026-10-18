@@ -82,7 +82,7 @@ async fn atomic_write_file_segmented_request_budget_and_client_readback() {
                     }),
                 )
                 .unwrap();
-                raw.send_apdu(&encoded, server.local_mac(), true, NetworkPriority::NORMAL)
+                raw.send_apdu(&encoded, server.local_mac(), true, NetworkPriority::Normal)
                     .await
                     .unwrap();
                 let ack = tokio::time::timeout(Duration::from_secs(3), rx.recv())

@@ -2,9 +2,10 @@
 //! core needs.
 
 use bacnet_mstp_codec::{Frame, FrameType};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
     Action, ConfigError, Direction, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    NetworkPriority, TransmitError, TransmitId, MIN_RX_STORAGE,
+    TransmitError, TransmitId, MIN_RX_STORAGE,
 };
 
 type Queues = FixedQueues<4, 4>;

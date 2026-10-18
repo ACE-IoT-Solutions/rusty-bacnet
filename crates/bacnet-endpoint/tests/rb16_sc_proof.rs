@@ -30,14 +30,15 @@ use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
 use bacnet_endpoint::sc::ScEndpointBuilder;
 use bacnet_endpoint::session::SessionRole;
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::sc::{ScReconnectConfig, ScTransport};
 use bacnet_transport::sc_hub::{ScHub, ScHubTlsConfig};
 use bacnet_transport::sc_tls::{ScNodeTlsConfig, TlsWebSocket};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, Segmentation,
-    ServiceSupported, UnconfirmedServiceChoice,
+    ConfirmedServiceChoice, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
+    UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::primitives::PropertyValue;
@@ -189,7 +190,7 @@ impl ControlledPeer {
         let mut enc = BytesMut::new();
         encode_apdu(&mut enc, &resp).unwrap();
         self.net
-            .send_apdu(&enc, &src, false, NetworkPriority::NORMAL)
+            .send_apdu(&enc, &src, false, NetworkPriority::Normal)
             .await
             .unwrap();
         (iid, src, verified)
@@ -281,7 +282,7 @@ async fn sc_one_node_bidirectional_with_provenance_and_admin() {
     let mut enc = BytesMut::new();
     encode_apdu(&mut enc, &req).unwrap();
     peer.net
-        .send_apdu(&enc, &src, true, NetworkPriority::NORMAL)
+        .send_apdu(&enc, &src, true, NetworkPriority::Normal)
         .await
         .unwrap();
     let reply = tokio::time::timeout(WAIT, peer.rx.recv())

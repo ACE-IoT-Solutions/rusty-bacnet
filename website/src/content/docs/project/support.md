@@ -31,7 +31,7 @@ This summary describes v0.13.0; its [release notes](https://github.com/jscott320
 
 `bacnet-network` routes between networks and transports, and `bacnet-endpoint` lets one transport serve both client and server roles.
 
-**Embedded (`no_std`).** `bacnet-time`, `bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core` and `bacnet-router-core` build without the standard library or an allocator and take their time from the caller, so firmware can run MS/TP, BACnet/IP (BBMD included) and a router between them. The MS/TP and BACnet/IP transports and `BACnetRouter` run on these cores. `bacnet-types`, `bacnet-encoding` and `bacnet-services` build without the standard library when given an allocator.
+**Embedded (`no_std`).** `bacnet-time`, `bacnet-npdu`, `bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core` and `bacnet-router-core` build without the standard library or an allocator and take their time from the caller, so firmware can run MS/TP, BACnet/IP (BBMD included) and a router between them. The MS/TP and BACnet/IP transports and `BACnetRouter` run on these cores. `bacnet-types`, `bacnet-encoding` and `bacnet-services` build without the standard library when given an allocator.
 
 **Python.** The `rusty-bacnet` package (CPython 3.11 or later) wraps the client as `BACnetClient`, the full server as `BACnetServer`, the SC hub as `ScHub` and the shared endpoints as `BipEndpoint`, `ScEndpoint` and `MstpEndpoint`, with asyncio methods. It includes BACnet/IP, BACnet/IPv6, BACnet/SC and MS/TP, but not Ethernet, and it does not wrap every Rust API.
 

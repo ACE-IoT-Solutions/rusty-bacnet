@@ -405,7 +405,7 @@ async fn send_raw_response<T: TransportPort + 'static>(
                 next_hop: source_mac,
                 destination: source_network,
                 expecting_reply: false,
-                priority: NetworkPriority::NORMAL,
+                priority: NetworkPriority::Normal,
             },
             route,
         ) {
@@ -478,7 +478,7 @@ async fn send_response<T: TransportPort + 'static>(
                 next_hop: source_mac,
                 destination: source_network,
                 expecting_reply: false,
-                priority: NetworkPriority::NORMAL,
+                priority: NetworkPriority::Normal,
             },
             route,
         ) {

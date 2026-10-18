@@ -26,13 +26,14 @@ use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
 use bacnet_endpoint::session::SessionRole;
 use bacnet_endpoint::EndpointApduDestination;
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bvll::{decode_bvll, encode_bvll, Bvll};
 use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
-    RejectReason, Segmentation, ServiceSupported,
+    AbortReason, ConfirmedServiceChoice, ObjectType, PropertyIdentifier, RejectReason,
+    Segmentation, ServiceSupported,
 };
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
@@ -134,7 +135,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut enc_in = BytesMut::new();
     encode_apdu(&mut enc_in, &inbound_req).unwrap();
     net_a
-        .send_apdu(&enc_in, &endpoint_mac, true, NetworkPriority::NORMAL)
+        .send_apdu(&enc_in, &endpoint_mac, true, NetworkPriority::Normal)
         .await
         .unwrap();
 
@@ -163,7 +164,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut enc_resp = BytesMut::new();
     encode_apdu(&mut enc_resp, &resp).unwrap();
     net_a
-        .send_apdu(&enc_resp, &endpoint_mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&enc_resp, &endpoint_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
 
@@ -245,7 +246,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     encode_apdu(&mut fenc, &forged).unwrap();
     // B sends the forged ack (wrong peer MAC) directly to the endpoint.
     net_b
-        .send_apdu(&fenc, &endpoint_mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&fenc, &endpoint_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
     // Give dispatch a chance to classify the forgery as unclaimed (no hang).
@@ -275,7 +276,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut genc = BytesMut::new();
     encode_apdu(&mut genc, &good).unwrap();
     net_a
-        .send_apdu(&genc, &endpoint_mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&genc, &endpoint_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
     let done = tokio::time::timeout(WAIT, pending)
@@ -371,9 +372,8 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
     encode_npdu(
         &mut rnpdu,
         &Npdu {
-            is_network_message: false,
             expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             payload: rapdu.freeze(),
@@ -455,9 +455,8 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
     encode_npdu(
         &mut n2,
         &Npdu {
-            is_network_message: false,
             expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: Some(NpduAddress {
                 network: 77,
@@ -506,9 +505,8 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
         encode_npdu(
             &mut cn,
             &Npdu {
-                is_network_message: false,
                 expecting_reply: true,
-                priority: NetworkPriority::NORMAL,
+                priority: NetworkPriority::Normal,
                 destination: None,
                 source: None,
                 payload: ce.freeze(),
@@ -563,9 +561,8 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
     encode_npdu(
         &mut sn,
         &Npdu {
-            is_network_message: false,
             expecting_reply: true,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             payload: se.freeze(),

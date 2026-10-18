@@ -13,11 +13,12 @@ use bytes::BytesMut;
 use bacnet_encoding::apdu::{encode_apdu, Apdu, UnconfirmedRequest as UnconfirmedRequestPdu};
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
 use bacnet_transport::port::TransportPort;
-use bacnet_types::enums::{ErrorClass, ErrorCode, NetworkPriority, UnconfirmedServiceChoice};
+use bacnet_types::enums::{ErrorClass, ErrorCode, UnconfirmedServiceChoice};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
@@ -800,7 +801,7 @@ pub(crate) async fn broadcast_i_am_from<T: TransportPort + 'static>(
     }
 
     network
-        .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+        .broadcast_apdu(&buf, false, NetworkPriority::Normal)
         .await
 }
 

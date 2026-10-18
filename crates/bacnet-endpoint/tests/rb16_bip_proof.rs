@@ -32,13 +32,13 @@ use bacnet_endpoint::bip::BipEndpointBuilder;
 use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
 use bacnet_endpoint::session::{SessionConfig, SessionRole};
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier, Segmentation,
-    ServiceSupported,
+    ConfirmedServiceChoice, ObjectType, PropertyIdentifier, Segmentation, ServiceSupported,
 };
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
@@ -145,13 +145,13 @@ async fn peer_respond_once(
                 &src.mac_address,
                 &endpoint_mac,
                 false,
-                NetworkPriority::NORMAL,
+                NetworkPriority::Normal,
             )
             .await
             .unwrap();
         }
         _ => {
-            net.send_apdu(&enc, &endpoint_mac, false, NetworkPriority::NORMAL)
+            net.send_apdu(&enc, &endpoint_mac, false, NetworkPriority::Normal)
                 .await
                 .unwrap();
         }
@@ -322,7 +322,7 @@ async fn bip_one_socket_bidirectional_and_device_inspection() {
     let mut enc = BytesMut::new();
     encode_apdu(&mut enc, &inbound).unwrap();
     peer_net
-        .send_apdu(&enc, &endpoint_mac, true, NetworkPriority::NORMAL)
+        .send_apdu(&enc, &endpoint_mac, true, NetworkPriority::Normal)
         .await
         .unwrap();
     let reply = tokio::time::timeout(WAIT, peer_rx.recv())
@@ -399,7 +399,7 @@ async fn bip_one_socket_bidirectional_and_device_inspection() {
         let mut e = BytesMut::new();
         encode_apdu(&mut e, &req).unwrap();
         peer_net
-            .send_apdu(&e, &endpoint_mac, true, NetworkPriority::NORMAL)
+            .send_apdu(&e, &endpoint_mac, true, NetworkPriority::Normal)
             .await
             .unwrap();
         let rep = tokio::time::timeout(WAIT, peer_rx.recv())

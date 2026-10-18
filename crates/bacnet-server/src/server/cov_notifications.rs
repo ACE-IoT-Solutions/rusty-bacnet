@@ -90,7 +90,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     &destination.mac_address,
                     &sub.subscriber_mac,
                     expecting_reply,
-                    NetworkPriority::NORMAL,
+                    NetworkPriority::Normal,
                 )
                 .await
         } else {
@@ -99,7 +99,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     apdu,
                     &sub.subscriber_mac,
                     expecting_reply,
-                    NetworkPriority::NORMAL,
+                    NetworkPriority::Normal,
                 )
                 .await
         }

@@ -198,7 +198,7 @@ async fn endpoint_write_non_bip_without_reporter_is_refused_and_reads_remain_ava
     let (invoke, rp) = read_request(&envelope);
     let mut encoded = BytesMut::new();
     encode_apdu(&mut encoded, &ack(invoke, &rp)).unwrap();
-    peer.send_apdu(&encoded, &[1], false, NetworkPriority::NORMAL)
+    peer.send_apdu(&encoded, &[1], false, NetworkPriority::Normal)
         .await
         .unwrap();
     assert!(read.await.unwrap().is_ok());

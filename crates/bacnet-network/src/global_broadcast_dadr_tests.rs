@@ -11,21 +11,21 @@
 //! shows the refused ones went nowhere, and a global broadcast with DLEN 0
 //! still goes everywhere it should.
 
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
-use bacnet_types::enums::{NetworkMessageType, RejectMessageReason};
 
 use crate::layer::NetworkLayer;
 use crate::loopback_fixture::{next_from_router, recv, reject_of, wire, RouterFixture, APDU};
-use bacnet_encoding::npdu::{decode_npdu, NpduAddress, RejectMessageToNetwork};
+use bacnet_encoding::npdu::{decode_npdu, RejectMessageToNetwork};
 
 /// DADR lengths beside DNET 0xFFFF: an MS/TP station, a B/IP or BACnet/SC
 /// address, and the longest an NPDU address may be.
-const DADR_LENGTHS: [u8; 3] = [1, 6, NpduAddress::MAX_MAC_LEN as u8];
+const DADR_LENGTHS: [u8; 3] = [1, 6, bacnet_npdu::MAX_MAC_LEN as u8];
 
 /// A global broadcast of the fixture APDU, or of a `control` network message
 /// carrying network 3000, with a `dlen`-octet DADR.
-fn global(dlen: u8, control: Option<u8>) -> Vec<u8> {
+fn global(dlen: u8, control: Option<NetworkMessageType>) -> Vec<u8> {
     wire(Some((0xFFFF, dlen)), None, control)
 }
 
@@ -35,7 +35,7 @@ async fn non_router_drops_and_counts_a_global_broadcast_that_names_a_device() {
     let mut network = NetworkLayer::new(transport);
     let mut controls = network.enable_network_control_receiver().unwrap();
     let mut apdus = network.start().await.unwrap();
-    let control = Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw());
+    let control = Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK);
 
     for dlen in DADR_LENGTHS {
         peer.send_unicast(&global(dlen, None), &[0x01])
@@ -86,7 +86,7 @@ async fn router_neither_forwards_nor_delivers_nor_answers_a_global_broadcast_tha
     // Network 3000 lies behind port B. Taken as plain global broadcasts, the
     // route query for 3000 would be answered on port A, and the APDU would go
     // out on port B and to the local queue.
-    let who_is_router = Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw());
+    let who_is_router = Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK);
     for dlen in DADR_LENGTHS {
         fixture.send_from_a(&global(dlen, None)).await;
         fixture

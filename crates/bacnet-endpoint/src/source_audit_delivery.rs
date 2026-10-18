@@ -3,13 +3,14 @@ use super::*;
 use bacnet_encoding::apdu::{encode_apdu, Apdu, ConfirmedRequest, UnconfirmedRequest};
 use bacnet_endpoint_core::coordinator::CanonicalPeer;
 use bacnet_endpoint_core::endpoint_ingress::EndpointEgressAdmissionError;
+use bacnet_npdu::NetworkPriority;
 use bacnet_server::server::{
     __endpoint_NotificationWorkerResult as NotificationWorkerResult,
     __endpoint_run_notification_worker as run_notification_worker,
 };
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, ErrorClass, ErrorCode, NetworkPriority, UnconfirmedServiceChoice,
+    ConfirmedServiceChoice, ErrorClass, ErrorCode, UnconfirmedServiceChoice,
 };
 use bacnet_types::MacAddr;
 use bytes::BytesMut;
@@ -172,7 +173,7 @@ pub(super) fn admit_encoded(
             destination_mac: mac,
         },
         confirmed,
-        NetworkPriority::NORMAL,
+        NetworkPriority::Normal,
         Vec::new(),
         Some(deadline),
     )
@@ -190,7 +191,7 @@ pub(super) fn admit_global_broadcast(
         encoded,
         EndpointApduDestination::GlobalBroadcast,
         false,
-        NetworkPriority::NORMAL,
+        NetworkPriority::Normal,
         Vec::new(),
         Some(deadline),
     )

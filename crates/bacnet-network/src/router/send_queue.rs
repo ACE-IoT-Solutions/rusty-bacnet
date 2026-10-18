@@ -7,6 +7,7 @@
 //! `Notify::notify_one`'s retained permit, so admission or the last sender's
 //! drop between checking the queue and awaiting cannot lose a wakeup.
 
+use bacnet_npdu::NetworkPriority;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -56,12 +57,12 @@ pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
 }
 
 impl Sender {
-    /// Admit at the engine's validated network priority (0 through 3).
+    /// Admit at the engine's network priority.
     /// Closure wins over fullness, as for the previous bounded channel.
     /// Refused work is dropped; callers need only the refusal kind.
     pub(super) fn try_send(
         &self,
-        priority: u8,
+        priority: NetworkPriority,
         request: SendRequest,
     ) -> Result<(), TrySendError<()>> {
         {
@@ -72,7 +73,7 @@ impl Sender {
             if state.len == state.capacity {
                 return Err(TrySendError::Full(()));
             }
-            state.lanes[usize::from(priority)].push_back(request);
+            state.lanes[usize::from(priority.to_raw())].push_back(request);
             state.len += 1;
         }
         self.0.ready.notify_one();

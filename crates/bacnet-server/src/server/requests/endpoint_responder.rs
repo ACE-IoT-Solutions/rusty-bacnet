@@ -384,7 +384,7 @@ impl EndpointResponder {
                     &encoded,
                     received.source_network.as_ref(),
                     false,
-                    NetworkPriority::NORMAL,
+                    NetworkPriority::Normal,
                 )?;
                 let _ = reply_tx.send(wrapped.freeze());
                 return Ok(true);
@@ -416,7 +416,7 @@ impl EndpointResponder {
                         router_mac: received.source_mac,
                     },
                     false,
-                    NetworkPriority::NORMAL,
+                    NetworkPriority::Normal,
                     preserved_attributes,
                 )
                 .await?;
@@ -429,7 +429,7 @@ impl EndpointResponder {
                     destination_mac: received.source_mac,
                 },
                 false,
-                NetworkPriority::NORMAL,
+                NetworkPriority::Normal,
                 preserved_attributes,
             )
             .await?;

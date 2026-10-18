@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
+use bacnet_npdu::NpduLimits;
 use bacnet_router_core::PortId;
-use bacnet_transport::port::NpduLimits;
 use tokio::sync::watch;
 use tracing::{info, warn};
 

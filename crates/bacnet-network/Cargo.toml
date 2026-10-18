@@ -18,6 +18,7 @@ targets = []
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+bacnet-npdu = { workspace = true }
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-transport.workspace = true

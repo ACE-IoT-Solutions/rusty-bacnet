@@ -143,8 +143,9 @@ but not `[workspace.lints]`, since samples print to the terminal.
 when `alloc` replaces their default `std` feature, and without an allocator
 when neither is on (#1614), and the MS/TP and B/IP
 crates (`bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec` and
-`bacnet-bip-core`), the router core (`bacnet-router-core`) and the cores'
-time type (`bacnet-time`) never use it. A host build always has `std` and an allocator, so no single run
+`bacnet-bip-core`), the router core (`bacnet-router-core`), the cores'
+time type (`bacnet-time`) and the network-layer vocabulary (`bacnet-npdu`)
+never use it. A host build always has `std` and an allocator, so no single run
 proves all of that; each check covers a part.
 
 | Check | Job | What it shows |
@@ -1287,8 +1288,8 @@ Postponed handled as an abandoned request within five.
 
 **When.** On a PR to `dev` or `main` that changes
 `crates/bacnet-mstp-codec/**`, `crates/bacnet-bip-codec/**`,
-`crates/bacnet-mstp-core/**` (fuzz crates included) or
-`crates/bacnet-time/**`, the workflow,
+`crates/bacnet-mstp-core/**` (fuzz crates included),
+`crates/bacnet-time/**` or `crates/bacnet-npdu/**`, the workflow,
 `.github/ci-pins.env`, `scripts/ci/fuzz.sh` or
 `scripts/ci/install-tools.sh`, each target runs for 60 seconds. Twice a
 week (Sundays and Wednesdays at 03:41 UTC, on `dev`) and by hand, each runs
@@ -1432,7 +1433,7 @@ Clippy runs six ways:
 - the workspace with every feature;
 - the PyO3 crate on its own;
 - `bacnet-cli` with no default features (without the TUI);
-- the `no_std` crates (`bacnet-time`, `bacnet-mstp-codec`,
+- the `no_std` crates (`bacnet-time`, `bacnet-npdu`, `bacnet-mstp-codec`,
   `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core`,
   `bacnet-router-core`, and `bacnet-types`,
   `bacnet-encoding` and `bacnet-services` with `alloc` in place of their
@@ -1525,9 +1526,9 @@ a suspected path locally with `printf '%s' "$path" | git hash-object --stdin`.
 Run the file-size gate in its default strict mode, without `CHECK_FILE_SIZE_WARN=1`.
 
 `bacnet-bip-codec` (`src/function.rs`), `bacnet-mstp-codec` (`src/frame.rs`)
-and `bacnet-router-core` (`src/message/codes.rs`) each keep a private copy of
+and `bacnet-npdu` (`src/codes.rs`) each keep a private copy of
 the `named_codes!` macro, which builds their open wire-code types
-(`BvlcFunction`, `FrameType`, `MessageType` and the rest): none of them
+(`BvlcFunction`, `FrameType`, `NetworkMessageType` and the rest): none of them
 depends on another for it (#1684). `check-named-codes.py` compares each
 `macro_rules!` definition, from that line to the closing brace, with the
 first, and fails with a diff when one differs, so a change to one is made to

@@ -87,7 +87,7 @@ type WsSink = SplitSink<WebSocketStream<TlsStream>, Message>;
 type DeviceUuid = [u8; 16];
 
 const HUB_MAX_BVLC_LENGTH: u16 = crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH;
-const HUB_MAX_NPDU_LENGTH: u16 = 1497;
+const HUB_MAX_NPDU_LENGTH: u16 = bacnet_npdu::MAX_NPDU as u16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectRequestVmacDisposition {

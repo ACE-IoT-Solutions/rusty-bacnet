@@ -4,6 +4,7 @@ use bacnet_encoding::apdu::{
     decode_apdu, encode_apdu, AbortPdu, ComplexAck, ErrorPdu, RejectPdu, SimpleAck,
 };
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::audit::AuditReporterObject;
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
@@ -13,7 +14,7 @@ use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter};
 use bacnet_types::constructed::{BACnetAuditNotification, BACnetObjectSelector, BACnetRecipient};
 use bacnet_types::enums::{
     AbortReason, AuditLevel, AuditOperation, ConfirmedServiceChoice, ErrorClass, ErrorCode,
-    NetworkPriority, RejectReason, Reliability, UnconfirmedServiceChoice,
+    RejectReason, Reliability, UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::BACnetTimeStamp;
 use bacnet_types::MacAddr;
@@ -95,7 +96,7 @@ async fn send(network: &NetworkLayer<BipTransport>, mac: &[u8], pdu: Apdu) {
     let mut bytes = BytesMut::new();
     encode_apdu(&mut bytes, &pdu).unwrap();
     network
-        .send_apdu(&bytes, mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&bytes, mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
 }

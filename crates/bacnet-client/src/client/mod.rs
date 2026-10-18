@@ -32,14 +32,13 @@ use bacnet_encoding::npdu::NpduAddress;
 use bacnet_encoding::npdu::{encode_npdu, Npdu};
 use bacnet_endpoint_core::coordinator::{CanonicalPeer, OutboundTransactionCoordinator};
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_transport::bip::{BipMode, BipTransport};
 #[cfg(feature = "ipv6")]
 use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::port::{TransportPort, TransportProvenance};
-use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, RejectReason, UnconfirmedServiceChoice,
-};
+use bacnet_types::enums::{ConfirmedServiceChoice, RejectReason, UnconfirmedServiceChoice};
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 

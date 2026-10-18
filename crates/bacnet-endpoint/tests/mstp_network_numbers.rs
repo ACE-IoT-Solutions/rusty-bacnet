@@ -104,7 +104,7 @@ async fn responder_progress(peer: &mut Peer) {
     let frame = peer.answer().await;
     assert_eq!(frame.destination, PEER);
     let npdu = decode_npdu(frame.data).unwrap();
-    assert!(!npdu.is_network_message);
+    assert!(!npdu.is_network_message());
     match decode_apdu(npdu.payload).unwrap() {
         Apdu::ComplexAck(ack) => {
             assert_eq!(ack.invoke_id, 42);
@@ -129,7 +129,7 @@ async fn requester_progress(client: &BACnetClient<GatedTransport>, peer: &mut Pe
         assert_eq!(frame.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
         assert_eq!(frame.destination, PEER);
         let npdu = decode_npdu(frame.data).unwrap();
-        assert!(!npdu.is_network_message);
+        assert!(!npdu.is_network_message());
         let invoke_id = match decode_apdu(npdu.payload).unwrap() {
             Apdu::ConfirmedRequest(request) => {
                 assert_eq!(request.service_choice.to_raw(), 12);

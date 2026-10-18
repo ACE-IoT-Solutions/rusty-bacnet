@@ -74,7 +74,7 @@ async fn wire(
                 destination_mac: MacAddr::from_slice(peer.local_mac()),
             },
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             Vec::new(),
         )
         .await

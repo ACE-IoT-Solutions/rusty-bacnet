@@ -152,7 +152,7 @@ async fn sc_max_apdu_length_reflects_negotiated_hub_npdu_limit() {
 /// Before start, the default.
 #[tokio::test]
 async fn sc_reports_its_hub_connections_npdu_limit() {
-    use crate::port::NpduLimits;
+    use bacnet_npdu::NpduLimits;
     for (bvlc, npdu, limit) in [(1200, 480, 480), (1476, 1476, 1466), (65535, 61327, 61327)] {
         let (ws_client, ws_hub) = LoopbackWebSocket::pair();
         let mut transport = ScTransport::new(ws_client, [0x01; 6]).with_device_uuid([1; 16]);
@@ -221,8 +221,8 @@ async fn sc_max_apdu_length_updates_after_failover_handshake() {
 /// only when it differs.
 #[tokio::test]
 async fn sc_publishes_its_npdu_limit_when_a_failover_changes_it() {
-    use crate::port::NpduLimits;
     use crate::sc::ScConnectionState;
+    use bacnet_npdu::NpduLimits;
     for (bvlc, npdu, after) in [(300, 1476, 290), (1200, 480, 480)] {
         let (primary_client, primary_hub) = LoopbackWebSocket::pair();
         let (failover_client, failover_hub) = LoopbackWebSocket::pair();

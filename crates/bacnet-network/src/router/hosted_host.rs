@@ -67,7 +67,7 @@ impl Host for HostedHost<'_> {
             source_mac: MacAddr::from_slice(claim.source),
             provenance: self.provenance,
             trust: ControlTrust::from_provenance(self.provenance),
-            message_type: claim.message_type.to_raw(),
+            message_type: claim.message_type,
             vendor_id: claim.vendor_id,
             source_net: claim.snet,
             dest_net: claim.dnet,

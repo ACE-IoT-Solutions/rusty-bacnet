@@ -279,6 +279,7 @@ name = "bacnet-bip-core"
 version = "0.13.0"
 dependencies = [
  "bacnet-bip-codec",
+ "bacnet-npdu",
  "bacnet-time",
  "proptest",
 ]
@@ -290,6 +291,7 @@ dependencies = [
  "bacnet-client",
  "bacnet-encoding",
  "bacnet-network",
+ "bacnet-npdu",
  "bacnet-objects",
  "bacnet-server",
  "bacnet-services",
@@ -330,6 +332,7 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-endpoint-core",
  "bacnet-network",
+ "bacnet-npdu",
  "bacnet-objects",
  "bacnet-services",
  "bacnet-transport",
@@ -346,6 +349,7 @@ dependencies = [
 name = "bacnet-encoding"
 version = "0.13.0"
 dependencies = [
+ "bacnet-npdu",
  "bacnet-types",
  "bytes",
  "heapless",
@@ -360,6 +364,7 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-endpoint-core",
  "bacnet-network",
+ "bacnet-npdu",
  "bacnet-objects",
  "bacnet-server",
  "bacnet-services",
@@ -382,6 +387,7 @@ version = "0.13.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-network",
+ "bacnet-npdu",
  "bacnet-transport",
  "bacnet-types",
  "bytes",
@@ -395,6 +401,7 @@ dependencies = [
  "bacnet-client",
  "bacnet-encoding",
  "bacnet-network",
+ "bacnet-npdu",
  "bacnet-objects",
  "bacnet-server",
  "bacnet-services",
@@ -421,6 +428,7 @@ name = "bacnet-mstp-core"
 version = "0.13.0"
 dependencies = [
  "bacnet-mstp-codec",
+ "bacnet-npdu",
  "bacnet-time",
  "proptest",
 ]
@@ -441,6 +449,7 @@ name = "bacnet-network"
 version = "0.13.0"
 dependencies = [
  "bacnet-encoding",
+ "bacnet-npdu",
  "bacnet-router-core",
  "bacnet-time",
  "bacnet-transport",
@@ -476,6 +485,7 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
+ "bacnet-npdu",
  "bacnet-time",
  "bacnet-types",
  "bytes",
@@ -490,6 +500,7 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-endpoint-core",
  "bacnet-network",
+ "bacnet-npdu",
  "bacnet-objects",
  "bacnet-services",
  "bacnet-transport",
@@ -528,6 +539,7 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
+ "bacnet-npdu",
  "bacnet-time",
  "bacnet-types",
  "bytes",
@@ -551,6 +563,7 @@ dependencies = [
 name = "bacnet-types"
 version = "0.13.0"
 dependencies = [
+ "bacnet-npdu",
  "bitflags 2.13.1",
  "serde",
  "serde_json",

@@ -14,9 +14,9 @@
 //! APDU sent with no DNET, are not affected.
 
 use bacnet_encoding::npdu::decode_npdu;
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
-use bacnet_types::enums::{NetworkMessageType, RejectMessageReason};
 
 use crate::layer::NetworkLayer;
 use crate::loopback_fixture::{
@@ -143,7 +143,7 @@ async fn non_router_delivers_no_broadcast_that_isnt_an_unconfirmed_request() {
     local.truncate(local.len() - APDU.len());
     local.extend_from_slice(CONFIRMED_REQUEST);
     peer.send_broadcast(&local).await.unwrap();
-    let i_am_router = Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw());
+    let i_am_router = Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK);
     peer.send_broadcast(&wire(Some((0xFFFF, 0)), None, i_am_router))
         .await
         .unwrap();

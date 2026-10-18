@@ -9,7 +9,7 @@
 
 use super::data_attributes::sc_hub_accept_with_limits;
 use super::*;
-use bacnet_router_core::router::Limits;
+use bacnet_npdu::NpduLimits;
 use bacnet_transport::sc::{LoopbackWebSocket, ScReconnectConfig, ScTransport, WebSocketPort};
 use bacnet_transport::sc_frame::{
     decode_sc_message, encode_sc_message, ScFunction, ScMessage, ScOption, Vmac,
@@ -98,7 +98,7 @@ impl Hubs {
             .expect("the port fails over")
             .unwrap();
         let deadline = Instant::now() + WAIT;
-        while router.shared.engine.lock().ports()[1].max_npdu != Limits::both(expected) {
+        while router.shared.engine.lock().ports()[1].max_npdu != NpduLimits::both(expected) {
             assert!(
                 Instant::now() < deadline,
                 "the router never routed by {expected}"
@@ -171,7 +171,7 @@ async fn next_npdu_to(hub: &LoopbackWebSocket, to: Vmac) -> Bytes {
 /// Whether `npdu` is a reject with reason 4 naming network 2000.
 fn is_reason_4(npdu: Bytes) -> bool {
     let npdu = decode_npdu(npdu).unwrap();
-    npdu.message_type == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+    npdu.message_type == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
         && npdu.payload.as_ref() == [4, 0x07, 0xD0]
 }
 
@@ -182,7 +182,7 @@ async fn a_hub_that_carries_less_draws_reason_4() {
     let hubs = start((1600, 1497)).await;
     assert_eq!(
         hubs.router.shared.engine.lock().ports()[1].max_npdu,
-        Limits::both(1497)
+        NpduLimits::both(1497)
     );
     let (mut router, hub_a, _failover) = hubs.fail_over((1200, 480), 480).await;
     send_to_peer(&hub_a, 590).await;

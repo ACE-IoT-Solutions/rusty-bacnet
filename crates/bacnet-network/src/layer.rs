@@ -86,10 +86,11 @@
 
 use crate::network_number::LocalNetworkNumber;
 use bacnet_encoding::npdu::{encode_npdu, Npdu, NpduAddress};
+use bacnet_npdu::NetworkPriority;
 use bacnet_transport::port::{
     DataAttribute, GroupDestinations, TransportPort, TransportProvenance,
 };
-use bacnet_types::enums::{NetworkPriority, PduType};
+use bacnet_types::enums::PduType;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
@@ -328,7 +329,7 @@ pub struct RoutedTarget<'a> {
 /// See the [receive-queue contract](self#receive-queue-admission) for raw/tracked
 /// receiver choices, admission limits, drop attribution and lifecycle.
 /// An inbound frame from a link-layer source MAC longer than
-/// [`NpduAddress::MAX_MAC_LEN`], or whose DLEN or SLEN is past it, is dropped
+/// [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN), or whose DLEN or SLEN is past it, is dropped
 /// before admission and counted by [`Self::address_length_drops`]; one whose
 /// DNET 0xFFFF carries a DADR is dropped and counted by
 /// [`Self::global_broadcast_dadr_drops`], and a broadcast whose APDU isn't an
@@ -416,7 +417,6 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         data_attributes: &[DataAttribute],
     ) -> Result<(), Error> {
         let npdu = Npdu {
-            is_network_message: false,
             expecting_reply,
             priority,
             destination: None,
@@ -469,7 +469,6 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     ) -> Result<(), Error> {
         check_broadcast_apdu(apdu, "a local broadcast")?;
         let npdu = Npdu {
-            is_network_message: false,
             expecting_reply,
             priority,
             destination: None,
@@ -512,7 +511,6 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     ) -> Result<(), Error> {
         check_broadcast_apdu(apdu, "a global broadcast")?;
         let npdu = Npdu {
-            is_network_message: false,
             expecting_reply,
             priority,
             destination: Some(NpduAddress {
@@ -570,7 +568,6 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         check_destination(dest_network, "use broadcast_apdu for the local network")?;
         check_broadcast_apdu(apdu, "a broadcast to one network")?;
         let npdu = Npdu {
-            is_network_message: false,
             expecting_reply,
             priority,
             destination: Some(NpduAddress {
@@ -754,7 +751,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     }
 
     /// Inbound NPDUs dropped since this layer was created because an address
-    /// in them was past [`NpduAddress::MAX_MAC_LEN`]: their DLEN or SLEN
+    /// in them was past [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN): their DLEN or SLEN
     /// (#1141), or the link-layer source MAC the transport reported (#1198).
     /// Saturates at `u64::MAX`.
     ///
@@ -810,7 +807,6 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         priority: NetworkPriority,
     ) -> Result<BytesMut, Error> {
         let npdu = Npdu {
-            is_network_message: false,
             expecting_reply,
             priority,
             destination: Some(NpduAddress {
@@ -1004,7 +1000,7 @@ mod tests {
             &apdu,
             &dest_vmac,
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             &data_attributes,
         )
         .await
@@ -1024,7 +1020,7 @@ mod tests {
         let npdu = decode_npdu(msg.payload).unwrap();
         assert_eq!(npdu.payload, apdu);
         assert!(!npdu.expecting_reply);
-        assert_eq!(npdu.priority, NetworkPriority::NORMAL);
+        assert_eq!(npdu.priority, NetworkPriority::Normal);
 
         net.stop().await.unwrap();
     }
@@ -1051,7 +1047,7 @@ mod tests {
         encode_apdu(&mut apdu_buf, &who_is_apdu).expect("valid APDU encoding");
 
         net_a
-            .send_apdu(&apdu_buf, net_b.local_mac(), false, NetworkPriority::NORMAL)
+            .send_apdu(&apdu_buf, net_b.local_mac(), false, NetworkPriority::Normal)
             .await
             .unwrap();
 

@@ -4,7 +4,7 @@
 //! harness router has direct routes to 1000 on port 0 and 2000 on port 1.
 
 use bacnet_encoding::npdu::{decode_npdu, Npdu, NpduAddress};
-use bacnet_types::enums::NetworkMessageType;
+use bacnet_npdu::NetworkMessageType;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 
@@ -413,8 +413,7 @@ async fn dampened_table_transition_still_relays_every_reject() {
     };
     for reason in [1, 1, 2] {
         let npdu = Npdu {
-            is_network_message: true,
-            message_type: Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw()),
+            message_type: Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK),
             destination: Some(origin.clone()),
             payload: Bytes::from(vec![reason, 0x0b, 0xb8]),
             ..Default::default()

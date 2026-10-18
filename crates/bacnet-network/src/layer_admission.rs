@@ -554,7 +554,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                         {
                             continue;
                         }
-                        if npdu.is_network_message {
+                        if npdu.is_network_message() {
                             if let Some(tx) = network_control_tx.as_ref() {
                                 let ingress_sequence = next_ingress_sequence(
                                     network_control_ingress_sequence.as_ref(),
@@ -576,7 +576,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                                 }
                             } else {
                                 debug!(
-                                    message_type = npdu.message_type,
+                                    message_type = ?npdu.message_type,
                                     "Ignoring network layer message (non-router mode)"
                                 );
                             }
@@ -635,7 +635,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     }
 }
 
-/// Whether a frame's link-layer source MAC fits [`NpduAddress::MAX_MAC_LEN`]
+/// Whether a frame's link-layer source MAC fits [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN)
 /// (#1198). [`NetworkLayer`] asks before decoding anything else in the
 /// frame, and the router's engine (`bacnet-router-core`) applies the same
 /// bound. A longer MAC is counted in `drops` and its frame goes no
@@ -644,13 +644,13 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
 /// one: B/IP, BACnet/SC and Ethernet MACs are 6 octets, B/IPv6 VMACs 3 and
 /// MS/TP 1; only a custom [`TransportPort`] can.
 pub(crate) fn link_source_fits(source_mac: &[u8], drops: &AtomicU64) -> bool {
-    if source_mac.len() <= NpduAddress::MAX_MAC_LEN {
+    if source_mac.len() <= bacnet_npdu::MAX_MAC_LEN {
         return true;
     }
     count_drop(drops);
     warn!(
         octets = source_mac.len(),
-        limit = NpduAddress::MAX_MAC_LEN,
+        limit = bacnet_npdu::MAX_MAC_LEN,
         "Dropping a frame whose link-layer source MAC is over the limit"
     );
     false
@@ -702,7 +702,7 @@ pub(crate) fn broadcast_carries_unconfirmed(npdu: &Npdu, drops: &AtomicU64) -> b
         .payload
         .first()
         .is_some_and(|&first| PduType::from_raw(first >> 4) == PduType::UNCONFIRMED_REQUEST);
-    if npdu.is_network_message || !broadcast || unconfirmed {
+    if npdu.is_network_message() || !broadcast || unconfirmed {
         return true;
     }
     count_drop(drops);

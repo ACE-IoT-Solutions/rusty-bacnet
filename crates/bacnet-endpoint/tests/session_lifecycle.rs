@@ -179,7 +179,7 @@ async fn shutdown_with_pending_segmented_response_cleans_up() {
         &encoded,
         &[0x01],
         false,
-        bacnet_types::enums::NetworkPriority::NORMAL,
+        bacnet_npdu::NetworkPriority::Normal,
     )
     .await
     .unwrap();

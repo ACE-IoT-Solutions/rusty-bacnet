@@ -354,14 +354,9 @@ async fn capability_matrix_services_and_segmentation_refuse() {
     });
     let mut enc = BytesMut::new();
     encode_apdu(&mut enc, &write_req).unwrap();
-    peer.send_apdu(
-        &enc,
-        &[0xC1],
-        true,
-        bacnet_types::enums::NetworkPriority::NORMAL,
-    )
-    .await
-    .unwrap();
+    peer.send_apdu(&enc, &[0xC1], true, bacnet_npdu::NetworkPriority::Normal)
+        .await
+        .unwrap();
     let reply = tokio::time::timeout(WAIT, peer_rx.recv())
         .await
         .expect("reject must arrive")
@@ -399,14 +394,9 @@ async fn capability_matrix_services_and_segmentation_refuse() {
     });
     let mut enc2 = BytesMut::new();
     encode_apdu(&mut enc2, &seg_req).unwrap();
-    peer.send_apdu(
-        &enc2,
-        &[0xC1],
-        true,
-        bacnet_types::enums::NetworkPriority::NORMAL,
-    )
-    .await
-    .unwrap();
+    peer.send_apdu(&enc2, &[0xC1], true, bacnet_npdu::NetworkPriority::Normal)
+        .await
+        .unwrap();
     let abort = tokio::time::timeout(WAIT, peer_rx.recv())
         .await
         .expect("abort must arrive")

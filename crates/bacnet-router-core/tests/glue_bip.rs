@@ -13,8 +13,9 @@ use bacnet_bip_core::codec::{BdtEntries, BdtEntry, BvlcFunction, BvlcResultCode,
 use bacnet_bip_core::node::{self, Discard, Mode, Permissive};
 use bacnet_bip_core::port::{BbmdPort, HeldBroadcast, Ingress, NodePort};
 use bacnet_router_core::bip::BipPort;
+use bacnet_router_core::npdu::NpduLimits;
 use bacnet_router_core::router::{
-    Group, GroupClassifier, Limits, Options, PortConfig, Received, SendRefusal,
+    Group, GroupClassifier, Options, PortConfig, Received, SendRefusal,
 };
 use bacnet_router_core::Instant;
 
@@ -44,20 +45,23 @@ fn port_config_reads_the_link() {
     let config = BipPort::config(&link, 1);
     assert_eq!(config.network, 1);
     assert_eq!(config.mac.as_slice(), mac(OWN));
-    assert_eq!(config.max_npdu, Limits::both(1497));
+    assert_eq!(config.max_npdu, NpduLimits::both(1497));
     // A smaller budget: a unicast's datagram adds the 4-octet header, a
     // broadcast's also the origin a BBMD forwards it with.
     let small = with(link, |link| link.budget = Some(510));
     assert_eq!(
         BipPort::config(&small, 1).max_npdu,
-        Limits {
+        NpduLimits {
             unicast: 506,
             broadcast: 500,
         }
     );
     // No budget: B/IP's largest NPDU all the same (Table 6-1).
     let unbounded = with(link, |link| link.budget = None);
-    assert_eq!(BipPort::config(&unbounded, 1).max_npdu, Limits::both(1497));
+    assert_eq!(
+        BipPort::config(&unbounded, 1).max_npdu,
+        NpduLimits::both(1497)
+    );
 }
 
 #[test]
@@ -141,7 +145,7 @@ fn deliveries_become_frames_and_sends_become_annex_j_messages() {
         (wire[0].to, wire[0].function),
         (PEER, BvlcFunction::ORIGINAL_UNICAST_NPDU)
     );
-    let relayed = bacnet_router_core::npdu::Npdu::parse(&wire[0].npdu).unwrap();
+    let relayed = bacnet_router_core::npdu::Npdu::decode(&wire[0].npdu).unwrap();
     assert_eq!(relayed.destination, None);
     assert_eq!(
         relayed.source,

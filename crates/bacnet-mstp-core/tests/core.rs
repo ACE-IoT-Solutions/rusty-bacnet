@@ -1,9 +1,10 @@
 //! Integration tests for the portable MS/TP master core.
 
 use bacnet_mstp_codec::{Frame, FrameType, MAX_STANDARD_MPDU_DATA};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
-    Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, NetworkPriority,
-    QueueStorage, ReceiveError, ReplyDecision, RequestError, RequestId, TransmitError, TransmitId,
+    Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, QueueStorage,
+    ReceiveError, ReplyDecision, RequestError, RequestId, TransmitError, TransmitId,
 };
 use proptest::prop_assert;
 

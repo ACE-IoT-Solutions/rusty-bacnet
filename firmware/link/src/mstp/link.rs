@@ -2,9 +2,10 @@
 //! adapter would drive it, then the capacity paths.
 
 use bacnet_mstp_codec::{decode_frame, Frame, FrameType};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
-    Action, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal,
-    ReplyDecision, RequestId, TransmitId,
+    Action, Duration, Instant, MasterCore, MstpCoreConfig, QueueRefusal, ReplyDecision, RequestId,
+    TransmitId,
 };
 
 use super::{Core, Storage, Summary, UNICAST_SLOTS, WHO_IS};
