@@ -1,5 +1,6 @@
 [package]
 name = "bacnet-services"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,6 +23,13 @@ alloc = ["bacnet-types/alloc", "bacnet-encoding/alloc"]
 bacnet-types = { workspace = true }
 bacnet-encoding = { workspace = true }
 bytes = { workspace = true }
+
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["std"]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true
