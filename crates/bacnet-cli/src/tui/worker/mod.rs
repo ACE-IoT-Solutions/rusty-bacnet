@@ -10,6 +10,7 @@
 pub(crate) mod browse;
 pub(crate) mod coordinator;
 pub(crate) mod session;
+pub(crate) mod watch;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -125,6 +126,21 @@ impl EventSink {
                 Offer::Dropped
             }
             Err(mpsc::error::TrySendError::Closed(_)) => Offer::Closed,
+        }
+    }
+
+    /// Queue an event that must not be lost, without waiting: hand it back
+    /// when the channel is full so the caller can offer it again later.
+    pub(crate) fn offer_or_keep(&self, event: WorkerEvent) -> Option<WorkerEvent> {
+        if self.is_cancelled() {
+            return None;
+        }
+        match self.tx.try_send(self.scoped(event)) {
+            Err(mpsc::error::TrySendError::Full(event)) => Some(match event {
+                WorkerEvent::Session { event, .. } if self.session.is_some() => *event,
+                event => event,
+            }),
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => None,
         }
     }
 

@@ -63,22 +63,22 @@ struct Done {
 
 type JobFuture<'a> = Pin<Box<dyn Future<Output = Done> + Send + 'a>>;
 
-/// Serve browse commands until `commands` closes. Dropping the returned
+/// Serve browse commands until `commands` closes, every request after a
+/// slot from `rate`, the cap the watch list shares. Dropping the returned
 /// future drops every job, and with it any request still outstanding.
 pub(crate) async fn run<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     sink: &EventSink,
     mut commands: mpsc::Receiver<Command>,
-    max_rate: u32,
+    rate: &RateCap,
 ) {
-    let rate = RateCap::new(max_rate);
     let mut scheduler = Scheduler::default();
     // Devices that refused RPM go straight to ReadProperty next time.
     let mut no_rpm = HashSet::new();
     let mut jobs: FuturesUnordered<JobFuture<'_>> = FuturesUnordered::new();
     let start = |started: Started, no_rpm: &HashSet<u32>| -> JobFuture<'_> {
         let rpm = !no_rpm.contains(&started.device);
-        Box::pin(job(client, sink, &rate, started, rpm))
+        Box::pin(job(client, sink, rate, started, rpm))
     };
     loop {
         tokio::select! {

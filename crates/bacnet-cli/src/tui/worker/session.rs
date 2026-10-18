@@ -3,6 +3,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
@@ -15,6 +16,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use super::browse::limits::RateCap;
+use super::watch::WatchOptions;
 use super::{DeviceFeed, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::core::target::AddressStyle;
 use crate::transport::{self, TransportArgs};
@@ -68,24 +71,41 @@ pub(crate) struct ConnectPlan {
     pub(crate) await_interface: bool,
 }
 
+/// A session's request limits and watch list settings.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SessionOptions {
+    /// Confirmed requests a second across the browser and the watch list
+    /// (0: no cap).
+    pub(crate) max_rate: u32,
+    /// The watch list's settings.
+    pub(crate) watch: WatchOptions,
+}
+
+/// Capacity of the session's queue to the watch worker: a burst of adds
+/// and removes must not be refused, since a lost remove would leave a
+/// subscription until the session ends.
+const WATCH_CHANNEL_CAPACITY: usize = 128;
+
 /// Start the worker task. Boxed so the transport futures never sit on a
 /// small stack.
 pub(crate) fn spawn(
     plan: ConnectPlan,
     sink: EventSink,
     commands: mpsc::Receiver<Command>,
-    max_rate: u32,
+    options: SessionOptions,
 ) -> JoinHandle<()> {
-    tokio::spawn(Box::pin(connect(plan, sink, commands, max_rate)))
+    tokio::spawn(Box::pin(connect(plan, sink, commands, options)))
 }
 
 async fn connect(
     plan: ConnectPlan,
     sink: EventSink,
     commands: mpsc::Receiver<Command>,
-    max_rate: u32,
+    mut options: SessionOptions,
 ) {
     let args = plan.args;
+    // The CLI's clients keep bacnet-client's default of three retries.
+    options.watch.request_budget = Duration::from_millis(args.timeout_ms) * 4;
     let style = plan.kind.style();
     match plan.kind {
         TransportKind::Bip => {
@@ -110,14 +130,14 @@ async fn connect(
                         Err(error) => tracing::warn!("{error}; retrying in the background"),
                     }
                 }
-                Box::pin(serve(client, style, sink, commands, max_rate)).await;
+                Box::pin(serve(client, style, sink, commands, options)).await;
             }
         }
         TransportKind::Bip6 => {
             if let Some(client) =
                 finish_build(Box::pin(transport::build_bip6_client(&args)), &sink).await
             {
-                Box::pin(serve(client, style, sink, commands, max_rate)).await;
+                Box::pin(serve(client, style, sink, commands, options)).await;
             }
         }
         #[cfg(feature = "sc-tls")]
@@ -125,7 +145,7 @@ async fn connect(
             if let Some(client) =
                 finish_build(Box::pin(transport::build_sc_client(&args)), &sink).await
             {
-                Box::pin(serve(client, style, sink, commands, max_rate)).await;
+                Box::pin(serve(client, style, sink, commands, options)).await;
             }
         }
         #[cfg(not(feature = "sc-tls"))]
@@ -190,13 +210,19 @@ async fn resolved(resolving: &mut Option<Resolving<'_>>) -> Result<Vec<u8>, Stri
 }
 
 /// Serve one connected client until the UI drops its command sender.
+///
+/// The client is shared with the watch list's renewal tasks while the
+/// session runs. The watch worker stops every one of them before it
+/// returns, so the client is this function's alone again when it stops it.
 pub(crate) async fn serve<T: TransportPort + 'static>(
-    mut client: BACnetClient<T>,
+    client: BACnetClient<T>,
     style: AddressStyle,
     sink: EventSink,
     mut commands: mpsc::Receiver<Command>,
-    max_rate: u32,
+    options: SessionOptions,
 ) {
+    let client = Arc::new(client);
+    let rate = RateCap::new(options.max_rate);
     let mut local = style.format(client.local_mac());
     // A B/IPv6 VMAC alone doesn't say where the client is bound.
     if let Some(bound) =
@@ -209,11 +235,13 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
     let mut collisions = client.device_collision_events();
     if sink.deliver(WorkerEvent::Connected { local }).await {
         let (browse, browse_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
-        // The browser runs beside this loop under `join!`, so its jobs keep
-        // being polled while an arm here awaits; the loop ending drops
-        // `browse`, which ends the browser.
+        let (watch, watch_rx) = mpsc::channel(WATCH_CHANNEL_CAPACITY);
+        // The browser and the watch list run beside this loop under
+        // `join!`, so their jobs keep being polled while an arm here awaits;
+        // the loop ending drops `browse` and `watch`, which ends them.
         let session = async {
             let browse = browse;
+            let watch = watch;
             let mut feed = DeviceFeed::new(style);
             let mut listening: Option<(OpId, Instant)> = None;
             let mut resolving: Option<Resolving<'_>> = None;
@@ -260,6 +288,14 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                                 }
                             }
                         }
+                        Some(command @ Command::Watch(_)) => {
+                            // The watch worker is polled beside this loop, so
+                            // waiting for room can't deadlock; it only fails
+                            // once the worker has ended with the session.
+                            if watch.send(command).await.is_err() {
+                                tracing::debug!("the watch list has ended");
+                            }
+                        }
                         Some(Command::Disconnect) => break,
                         Some(Command::Connect { .. } | Command::Reconnect | Command::Profile(_)) => {}
                         None => break,
@@ -297,11 +333,57 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
         };
         tokio::join!(
             Box::pin(session),
-            Box::pin(super::browse::run(&client, &sink, browse_rx, max_rate))
+            Box::pin(super::browse::run(&client, &sink, browse_rx, &rate)),
+            Box::pin(super::watch::run(
+                &client,
+                &sink,
+                watch_rx,
+                &rate,
+                &options.watch
+            ))
         );
     }
-    if let Err(error) = client.stop().await {
-        tracing::warn!("client stop: {error}");
+    stop_shared(client).await;
+}
+
+/// How long [`stop_shared`] waits quietly for the renewal tasks to let go
+/// of the client, and then how long more after warning.
+const RELEASE_WAIT: (Duration, Duration) = (Duration::from_secs(1), Duration::from_secs(10));
+
+/// Stop the client once no renewal task holds it.
+///
+/// The watch worker has told every renewal task to stop before this runs,
+/// and a stopping task lets go of the client as it ends. Dropping the client
+/// instead of stopping it would leave the transport's sockets to whatever
+/// task still held them, so a reconnect could find the port taken: this
+/// waits for the tasks, warning after a second. Only a task that never
+/// ends would make it give up, with an error, after the longer wait.
+async fn stop_shared<T: TransportPort + 'static>(mut client: Arc<BACnetClient<T>>) {
+    let start = Instant::now();
+    let mut warned = false;
+    loop {
+        match Arc::try_unwrap(client) {
+            Ok(mut owned) => {
+                if let Err(error) = owned.stop().await {
+                    tracing::warn!("client stop: {error}");
+                }
+                return;
+            }
+            Err(shared) => client = shared,
+        }
+        let waited = start.elapsed();
+        if waited >= RELEASE_WAIT.0 + RELEASE_WAIT.1 {
+            tracing::error!(
+                "a COV renewal task still holds the client after {} s; dropping it unstopped",
+                waited.as_secs()
+            );
+            return;
+        }
+        if waited >= RELEASE_WAIT.0 && !warned {
+            warned = true;
+            tracing::warn!("waiting for a COV renewal task to release the client");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 

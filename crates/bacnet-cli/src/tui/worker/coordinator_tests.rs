@@ -196,3 +196,64 @@ async fn a_browse_read_without_a_session_fails_under_its_request() {
             if error == "no active connection"
     ));
 }
+
+/// A watch command waits for room in a full session queue rather than
+/// being dropped: a lost remove would leave a renewed subscription on the
+/// device. One that still finds no room after the wait fails its row.
+#[tokio::test(start_paused = true)]
+async fn a_watch_command_waits_for_room_in_a_full_session_queue() {
+    use crate::tui::watched::{Point, Source, WatchCommand, WatchEvent};
+    use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+    use bacnet_types::primitives::ObjectIdentifier;
+
+    let (sink, mut events) = EventSink::channel(4);
+    let (commands, mut held) = mpsc::channel(1);
+    let (cancel, _) = watch::channel(false);
+    let active = Active {
+        cancel,
+        commands,
+        task: tokio::spawn(std::future::pending::<()>()),
+    };
+    active.commands.try_send(Command::Reconnect).unwrap();
+    assert_eq!(active.commands.capacity(), 0, "the session queue is full");
+
+    let remove = WatchCommand::Remove { row: 3 };
+    let drain = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(held.recv().await, Some(Command::Reconnect));
+        // A dropped command never arrives: give up rather than hang.
+        tokio::time::timeout(Duration::from_secs(30), held.recv())
+            .await
+            .ok()
+            .flatten()
+    };
+    let ((), forwarded) = tokio::join!(
+        forward_watch(Some(&active), remove.clone(), 7, &sink),
+        drain
+    );
+    assert_eq!(forwarded, Some(Command::Watch(remove)));
+
+    // Never drained: the add gives up after the wait and its row fails.
+    active.commands.try_send(Command::Reconnect).unwrap();
+    let add = WatchCommand::Add {
+        row: 4,
+        point: Point {
+            device: 100,
+            object: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+            property: PropertyIdentifier::PRESENT_VALUE,
+        },
+    };
+    forward_watch(Some(&active), add, 7, &sink).await;
+    let WorkerEvent::Session { generation, event } = events.recv().await.unwrap() else {
+        panic!("unscoped event");
+    };
+    assert_eq!(generation, 7);
+    assert!(matches!(
+        *event,
+        WorkerEvent::Watch(WatchEvent::Source {
+            row: 4,
+            source: Source::Failed(_)
+        })
+    ));
+    active.task.abort();
+}

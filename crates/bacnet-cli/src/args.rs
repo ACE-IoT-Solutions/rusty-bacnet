@@ -172,6 +172,16 @@ pub(crate) enum Command {
         /// outstanding at a time either way.
         #[arg(long, value_name = "N", default_value_t = 20)]
         max_rate: u32,
+        /// Lifetime of the watch list's COV subscriptions, in seconds. They
+        /// are renewed before it runs out and cancelled on exit.
+        #[arg(long, value_name = "SECS", default_value_t = 300,
+              value_parser = clap::value_parser!(u32).range(10..=28_800))]
+        cov_lifetime: u32,
+        /// Least time between two polls of a watched point a device won't
+        /// report by COV, in seconds.
+        #[arg(long, value_name = "SECS", default_value_t = 10,
+              value_parser = clap::value_parser!(u64).range(1..=3_600))]
+        poll_interval: u64,
     },
 
     /// Discover BACnet devices (WhoIs).

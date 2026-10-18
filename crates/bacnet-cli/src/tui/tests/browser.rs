@@ -39,7 +39,7 @@ fn lab_objects() -> Vec<ObjectIdentifier> {
 }
 
 /// Discover the one device and open it, waiting for its object list.
-async fn open_device(site: &mut Site) {
+pub(super) async fn open_device(site: &mut Site) {
     site.who_is("", 1).await;
     site.press(KeyCode::Enter).await;
     site.pump_until(|app| {

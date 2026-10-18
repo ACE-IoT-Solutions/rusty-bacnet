@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/browser.rs
 expression: text
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | drop 0                                                           ? help "
+" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 0                                                   ? help "
 "┌ Device 100 at 10.0.0.100:47808 ────────────┐┌ analog-output 1 ───────────────────────────────────────────────────────┐"
 "│ Name              "Lab device 100"         ││ Status: normal                                                         │"
 "│ Vendor            "Rusty Lab"              ││ object-identifier           ANALOG_OUTPUT:1                            │"
@@ -41,4 +41,4 @@ expression: text
 "│ trend-log (1)                              ││ Relinquish_Default  0                                                  │"
 "│   trend-log 1                              ││ Present_Value       55                                                 │"
 "└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘"
-" Enter read  Tab pane  / filter  r refresh  Esc devices  ? help  q quit                                                 "
+" Enter read  a watch  Tab pane  / filter  r refresh  Esc devices  ? help  q quit                                        "

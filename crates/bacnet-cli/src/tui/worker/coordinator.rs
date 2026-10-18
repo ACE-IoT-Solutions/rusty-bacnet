@@ -1,10 +1,12 @@
 //! One retained owner for connection attempts, commands and complete retirement.
 
-use super::session::{ConnectPlan, TransportKind};
+use super::session::{ConnectPlan, SessionOptions, TransportKind};
 use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
 use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
+use crate::tui::watched::{Source, WatchCommand, WatchEvent};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -16,22 +18,22 @@ struct Active {
 
 /// The coordinator lives until the UI drops its command channel. It never
 /// detaches an attempt or starts a replacement before the old one is joined.
-/// `max_rate` caps the device browser's requests a second (0: no cap).
+/// Every session runs with `options`; a profile's adds its workspace.
 pub(crate) fn spawn(
     plan: Option<ConnectPlan>,
     profiles: Option<Service>,
     sink: EventSink,
     commands: mpsc::Receiver<Command>,
-    max_rate: u32,
+    options: SessionOptions,
 ) -> JoinHandle<()> {
-    tokio::spawn(Box::pin(run(plan, profiles, sink, commands, max_rate)))
+    tokio::spawn(Box::pin(run(plan, profiles, sink, commands, options)))
 }
 
 async fn start(
     plan: &ConnectPlan,
     generation: u64,
     sink: &EventSink,
-    max_rate: u32,
+    options: &SessionOptions,
 ) -> Option<Active> {
     let (cancel, cancelled) = watch::channel(false);
     let (commands, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
@@ -42,7 +44,7 @@ async fn start(
         return None;
     }
     let scoped = sink.for_session(generation, cancelled);
-    let task = session::spawn(plan.clone(), scoped, command_rx, max_rate);
+    let task = session::spawn(plan.clone(), scoped, command_rx, options.clone());
     Some(Active {
         cancel,
         commands,
@@ -77,14 +79,14 @@ async fn run(
     profiles: Option<Service>,
     sink: EventSink,
     mut commands: mpsc::Receiver<Command>,
-    max_rate: u32,
+    mut options: SessionOptions,
 ) {
     let mut generation = 0;
     let mut active = None;
     if let Some(plan) = &plan {
         if !plan.await_interface {
             generation += 1;
-            active = start(plan, generation, &sink, max_rate).await;
+            active = start(plan, generation, &sink, &options).await;
         }
     }
     loop {
@@ -120,6 +122,9 @@ async fn run(
                     Command::Browse { req, .. } => {
                         forward_browse(active.as_ref(), command, req, generation, &sink).await;
                     }
+                    Command::Watch(watch) => {
+                        forward_watch(active.as_ref(), watch, generation, &sink).await;
+                    }
                     Command::StopBrowse { .. } => {
                         // Best effort: a stale browse result is dropped by the UI anyway.
                         if let Some(active) = &active {
@@ -150,10 +155,11 @@ async fn run(
                                         // Publish the persisted snapshot used by this attempt,
                                         // without reloading a possibly newer external edit.
                                         profile.authorized_at_unix = authorized_at_unix;
+                                        options.watch.workspace = profiles.workspace(&name);
                                         sink.deliver(WorkerEvent::Profile(Ok(Reply::Loaded { name, profile }))).await;
                                         let next = ConnectPlan { kind: TransportKind::Bip, args, await_interface: false };
                                         generation += 1;
-                                        active = start(&next, generation, &sink, max_rate).await;
+                                        active = start(&next, generation, &sink, &options).await;
                                         plan = Some(next);
                                         continue;
                                     }
@@ -169,7 +175,7 @@ async fn run(
                             plan.args.interface = interface; plan.args.broadcast = broadcast;
                             plan.await_interface = false;
                             generation += 1;
-                            active = start(plan, generation, &sink, max_rate).await;
+                            active = start(plan, generation, &sink, &options).await;
                         } else { reject(&sink, "select a profile before connecting").await; }
                     }
                     Command::Reconnect => {
@@ -178,7 +184,7 @@ async fn run(
                         if let Some(plan) = &plan {
                             if plan.await_interface { reject(&sink, "choose an interface first").await; continue; }
                             generation += 1;
-                            active = start(plan, generation, &sink, max_rate).await;
+                            active = start(plan, generation, &sink, &options).await;
                         }
                     }
                 }
@@ -250,6 +256,51 @@ async fn forward_browse(
         })
         .await;
     }
+}
+
+/// How long a watch command waits for room in the session's queue.
+pub(crate) const WATCH_SEND_WAIT: Duration = Duration::from_secs(5);
+
+/// Forward a watch command, waiting for room: a lost remove would leave a
+/// renewed subscription on the device with no row to show it, and a lost
+/// add a row that never starts. The wait is bounded so a stuck session
+/// can't hold up a disconnect; a command still refused then is reported.
+async fn forward_watch(
+    active: Option<&Active>,
+    command: WatchCommand,
+    generation: u64,
+    sink: &EventSink,
+) {
+    let sent = match active {
+        Some(active) => matches!(
+            tokio::time::timeout(
+                WATCH_SEND_WAIT,
+                active.commands.send(Command::Watch(command.clone()))
+            )
+            .await,
+            Ok(Ok(()))
+        ),
+        None => false,
+    };
+    if sent {
+        return;
+    }
+    let event = match command {
+        WatchCommand::Add { row, .. } => WatchEvent::Source {
+            row,
+            source: Source::Failed("the session did not take the request".into()),
+        },
+        WatchCommand::Remove { row } => {
+            tracing::warn!("watch row {row}: the session did not take the remove; its subscription ends with the session");
+            return;
+        }
+        WatchCommand::Csv(_) => WatchEvent::Notice("The session did not take the request.".into()),
+    };
+    sink.deliver(WorkerEvent::Session {
+        generation,
+        event: Box::new(WorkerEvent::Watch(event)),
+    })
+    .await;
 }
 
 #[cfg(test)]

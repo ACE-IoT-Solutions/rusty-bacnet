@@ -2,7 +2,7 @@
 source: crates/bacnet-cli/src/tui/tests/frames.rs
 expression: "screen(&mut app, 80, 24)"
 ---
-" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | drop 42                  ? help "
+" bacnet | BIP 10.0.0.1:47808 | up | READ-ONLY | COV 0 | drop 42          ? help "
 "┌ Devices (0 of 1) | sort: instance ↑ ────────────────────── filter: "nothing" ┐"
 "│                                                                              │"
 "│              No device matches "nothing". Esc clears the filter.             │"

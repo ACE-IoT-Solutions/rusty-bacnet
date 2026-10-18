@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::devices::Movement;
 use super::app::picker::PickerKey;
+use super::app::watch::Screen;
 use super::app::whois::FormKey;
 use super::app::{Action, App, FilterKey, Overlay};
 
@@ -25,7 +26,9 @@ pub(crate) fn map_key(app: &App, key: KeyEvent) -> Option<Action> {
             KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
         },
+        Overlay::Command(_) => command_line(key),
         Overlay::None if app.filter_editing => filter(key),
+        Overlay::None if app.screen == Screen::Watch => watch(key),
         Overlay::None => main(key),
     }
 }
@@ -79,7 +82,39 @@ fn main(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('/') => Action::StartFilter,
         KeyCode::Char('s') => Action::CycleSort,
         KeyCode::Char('S') => Action::ReverseSort,
+        KeyCode::Char('a') => Action::AddWatch,
+        KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('3') => Action::ShowScreen(Screen::Watch),
+        KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
         _ => return None,
+    })
+}
+
+/// The watch list: move, remove, the command bar and the global keys.
+fn watch(key: KeyEvent) -> Option<Action> {
+    if matches!(key.code, KeyCode::Char(_)) && typed(key).is_none() {
+        return None;
+    }
+    if let Some(m) = movement(key.code) {
+        return Some(Action::Move(m));
+    }
+    Some(match key.code {
+        KeyCode::Esc | KeyCode::Char('1' | '2') => Action::ShowScreen(Screen::Main),
+        KeyCode::Char('x') | KeyCode::Delete => Action::RemoveWatch,
+        KeyCode::Char(':') => Action::OpenCommandLine,
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char('L') => Action::ToggleLog,
+        _ => return None,
+    })
+}
+
+fn command_line(key: KeyEvent) -> Option<Action> {
+    Some(match key.code {
+        KeyCode::Esc => Action::CommandLine(FilterKey::Clear),
+        KeyCode::Enter => Action::CommandLine(FilterKey::Commit),
+        KeyCode::Backspace => Action::CommandLine(FilterKey::Backspace),
+        _ => Action::CommandLine(FilterKey::Char(typed(key)?)),
     })
 }
 

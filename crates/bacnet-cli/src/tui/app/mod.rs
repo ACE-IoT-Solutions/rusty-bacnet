@@ -6,10 +6,12 @@
 //! terminal or a transport.
 
 pub(crate) mod browser;
+pub(crate) mod command_bar;
 pub(crate) mod connection;
 pub(crate) mod devices;
 pub(crate) mod objects;
 pub(crate) mod picker;
+pub(crate) mod watch;
 pub(crate) mod whois;
 
 use std::time::{Duration, Instant};
@@ -17,6 +19,7 @@ use std::time::{Duration, Instant};
 use self::browser::Browser;
 use self::devices::{DeviceTable, Duplicates, Movement};
 use self::picker::{Picker, PickerKey};
+use self::watch::{Screen, WatchList};
 use self::whois::{FormKey, FormOutcome, WhoIsForm};
 use super::log_layer::LogRing;
 use super::message::{Command, OpId, OpOutcome, WhoIsSpec, WorkerEvent};
@@ -61,6 +64,8 @@ pub(crate) enum Overlay {
     WhoIs(WhoIsForm),
     /// The interface picker.
     Picker(Picker),
+    /// The `:` command bar, with what has been typed.
+    Command(String),
 }
 
 /// Progress of the current operation.
@@ -126,7 +131,7 @@ pub(crate) enum FilterKey {
 }
 
 /// Everything that can change the state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Action {
     /// A frame interval elapsed.
     Tick {
@@ -182,6 +187,16 @@ pub(crate) enum Action {
     Form(FormKey),
     /// A key in the interface picker.
     Picker(PickerKey),
+    /// Show the device screen or the watch list.
+    ShowScreen(Screen),
+    /// `a`: watch the browser's selected object.
+    AddWatch,
+    /// `x` on the watch list: stop watching the selected row.
+    RemoveWatch,
+    /// `:`: open the command bar.
+    OpenCommandLine,
+    /// A key on the command bar.
+    CommandLine(FilterKey),
     /// A message from the worker.
     Worker(WorkerEvent),
 }
@@ -218,6 +233,10 @@ pub(crate) struct App {
     pub(crate) devices: DeviceTable,
     /// The device browser, when open; the device table otherwise.
     pub(crate) browser: Option<Box<Browser>>,
+    /// The watch list.
+    pub(crate) watch: WatchList,
+    /// The screen in the body.
+    pub(crate) screen: Screen,
     next_req: super::point::ReqId,
     /// Instances claimed by more than one address.
     pub(crate) duplicates: Duplicates,
@@ -269,6 +288,8 @@ impl App {
             generation: 0,
             devices: DeviceTable::default(),
             browser: None,
+            watch: WatchList::default(),
+            screen: Screen::Main,
             next_req: 0,
             duplicates: Duplicates::default(),
             overlay,
@@ -332,7 +353,8 @@ impl App {
     fn tick(&mut self, now: Instant, dropped: u64, log_generation: u64) {
         let second = |t: Instant| t.saturating_duration_since(self.epoch).as_secs();
         // Ages and countdowns change once a second.
-        if second(now) != second(self.now) && (!self.devices.is_empty() || self.op_running()) {
+        let ticking = !self.devices.is_empty() || !self.watch.rows().is_empty();
+        if second(now) != second(self.now) && (ticking || self.op_running()) {
             self.dirty = true;
         }
         self.now = now;
@@ -402,7 +424,10 @@ impl App {
     fn escape(&mut self, out: &mut Vec<Command>) {
         match self.overlay {
             Overlay::Picker(_) => self.quit = true,
-            Overlay::Help | Overlay::WhoIs(_) | Overlay::Connection => self.overlay = Overlay::None,
+            Overlay::Help | Overlay::WhoIs(_) | Overlay::Connection | Overlay::Command(_) => {
+                self.overlay = Overlay::None
+            }
+            Overlay::None if self.screen == Screen::Watch => self.screen = Screen::Main,
             Overlay::None if self.browser.is_some() => match self.browser.as_deref_mut() {
                 Some(browser) if !browser.objects.filter().is_empty() => {
                     browser.objects.clear_filter();
@@ -511,6 +536,8 @@ impl App {
     fn reset_session(&mut self) {
         self.devices = DeviceTable::default();
         self.browser = None;
+        // The worker of the ended session cancelled the subscriptions.
+        self.watch = WatchList::default();
         self.duplicates = Duplicates::default();
         self.op = None;
         self.last_spec = None;
@@ -668,6 +695,11 @@ impl App {
             WorkerEvent::OpRejected { op, cancel, error } => {
                 self.operation_rejected(op, cancel, error)
             }
+            WorkerEvent::Watch(event) => {
+                if let Some(text) = self.watch.apply(event) {
+                    self.flash(text, FLASH_FOR);
+                }
+            }
             WorkerEvent::Browse { req, result } => {
                 if let Some(browser) = self.browser.as_deref_mut() {
                     browser.apply(req, result);
@@ -726,6 +758,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
             }
         }
         Action::Move(movement) => match app.browser.as_deref_mut() {
+            _ if app.screen == Screen::Watch => app.watch.move_selection(movement),
             Some(browser) => browser.move_selection(movement),
             None => app.devices.move_selection(movement),
         },
@@ -753,6 +786,11 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
         Action::Filter(key) => app.filter_key(key),
         Action::Form(key) => app.form_key(key, &mut out),
         Action::Picker(key) => app.picker_key(key, &mut out),
+        Action::ShowScreen(screen) => app.screen = screen,
+        Action::AddWatch => app.watch_selected(&mut out),
+        Action::RemoveWatch => app.unwatch_selected(&mut out),
+        Action::OpenCommandLine => app.open_command_line(),
+        Action::CommandLine(key) => app.command_line_key(key, &mut out),
         Action::Worker(event) => app.worker_event(event),
     }
     out

@@ -7,9 +7,11 @@ use ratatui::Frame;
 use tracing::Level;
 
 use super::{centered, Theme};
+use crate::tui::app::watch::Screen;
 use crate::tui::app::{App, Link, Overlay};
 
-/// `bacnet | BIP 10.0.1.5:47808 | up | READ-ONLY | drop 0` and `? help`.
+/// `bacnet | BIP 10.0.1.5:47808 | up | READ-ONLY | COV 0 | drop 0` and
+/// `? help`. `COV` is the footprint: the subscriptions held on devices.
 pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let bar = theme.bar();
     let (endpoint, state) = match &app.link {
@@ -30,6 +32,8 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
         sep(),
         Span::styled("READ-ONLY", theme.safe()),
         sep(),
+        Span::styled(format!("COV {}", app.watch.stats.subscriptions), bar),
+        sep(),
         Span::styled(format!("drop {}", app.dropped), bar),
     ]);
     let [left_area, right_area] =
@@ -45,7 +49,13 @@ pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
 
 /// Key hints, the filter line, or a status message.
 pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let line = if app.filter_editing {
+    let line = if let Overlay::Command(text) = &app.overlay {
+        Line::from(vec![
+            Span::styled(" :", theme.accent()),
+            Span::styled(format!("{text}_"), theme.selected()),
+            Span::styled("  Enter run  Esc close", theme.dim()),
+        ])
+    } else if app.filter_editing {
         Line::from(vec![
             Span::styled(" /", theme.accent()),
             Span::styled(format!("{}_", app.filter_text()), theme.selected()),
@@ -60,8 +70,16 @@ pub(super) fn footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Line::raw("")
     } else {
         let hints: &[(&str, &str)] = match app.link {
+            _ if app.screen == Screen::Watch => &[
+                ("x", "remove"),
+                (":", "command"),
+                ("Esc", "back"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
             Link::Up { .. } if app.browser.is_some() => &[
                 ("Enter", "read"),
+                ("a", "watch"),
                 ("Tab", "pane"),
                 ("/", "filter"),
                 ("r", "refresh"),
@@ -112,24 +130,29 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("d  Enter", "Who-Is form; browse the selected device"),
             ("Up Down j k", "Move; PgUp PgDn Home End jump"),
-            ("s  S", "Next sort column; reverse the order"),
-            ("/", "Filter rows; Esc clears the filter"),
+            ("s  S  /", "Sort column; reverse; filter (Esc clears)"),
         ],
     ),
     (
         "Browser",
         &[
             ("Tab  Enter", "Next pane; read the selected object"),
-            ("/  r  Esc", "Filter objects; read again; back"),
+            ("/  r  a  Esc", "Filter; read again; watch the object; back"),
+        ],
+    ),
+    (
+        "Watch list",
+        &[
+            ("3  1  x", "Watch list; devices; stop watching a row"),
+            (":", "watch DEVICE OBJECT [PROPERTY]; csv on|off"),
         ],
     ),
     (
         "Who-Is form",
         &[
             ("Tab Up Down", "Next or previous field"),
-            ("Left Right", "Change the scope (also Space)"),
-            ("Enter", "Send; Enter again confirms a warning"),
-            ("Esc", "Close the form"),
+            ("Left Rt Space", "Change the scope"),
+            ("Enter  Esc", "Send (again past a warning); close"),
         ],
     ),
 ];
@@ -146,9 +169,8 @@ pub(super) fn help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ]));
         }
     }
-    lines.push(Line::raw(""));
     lines.push(Line::styled(
-        " READ-ONLY: discovery, reads and finite FD registrations.",
+        " READ-ONLY: reads, finite COV and FD registrations.",
         theme.dim(),
     ));
     let height = lines.len() as u16 + 2;
