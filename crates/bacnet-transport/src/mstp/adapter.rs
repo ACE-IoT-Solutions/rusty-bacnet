@@ -1,20 +1,20 @@
 //! The Tokio adapter that drives the portable master core.
 //!
-//! The transport's task owns the [`MasterCore`], its receive storage and a
-//! boxed [`ExtendedActionBuffers`]; the core borrows the two buffers for as
-//! long as the task's future lives, so they go away with the task, whether
-//! it ends or is aborted. The core's queues are shared with the send calls
-//! (see the `queues` module).
+//! The transport's task owns the [`MasterCore`] and a boxed [`Storage`]
+//! bundle, which the core borrows for as long as the task's future lives,
+//! so it goes away with the task, whether it ends or is aborted. The
+//! bundle's queues are the core's handle on the queues it shares with the
+//! send calls (see the `queues` module).
 //!
 //! # Extended frames
 //!
-//! The action buffers, and so the core's `NPDU` parameter, are always sized
-//! for extended frames, whatever the configuration: on a host they cost only
+//! The bundle, and so the core's `NPDU` parameter, is always sized for
+//! extended frames, whatever the configuration: on a host it costs only
 //! memory, and one core type serves both settings. What changes behaviour
 //! follows [`MstpConfig::extended_frames`](super::MstpConfig::extended_frames):
-//! the core's flag, the receive storage (a standard frame's, or an extended
-//! one's), and the queues' slot size, which is what refuses an NPDU too long
-//! to send at the send call.
+//! the core's flag, the receive storage the core uses (a standard frame's,
+//! or an extended one's), and the queues' slot size, which is what refuses
+//! an NPDU too long to send at the send call.
 //!
 //! # Input: the octet path
 //!
@@ -82,11 +82,10 @@ use std::time::Duration;
 
 use bacnet_mstp_codec::{
     FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
-    MAX_STANDARD_FRAME_LENGTH,
 };
 use bacnet_mstp_core::{
-    Action, CoreError, Direction, ExtendedActionBuffers, MasterCore, MasterState, MstpCoreConfig,
-    QueueRefusal, ReplyDecision, RequestId, TransmitId,
+    Action, Direction, MasterCore, MasterState, MstpCoreConfig, QueueRefusal, ReplyDecision,
+    RequestError, RequestId, Storage, TransmitId, DEFAULT_DELIVERY_SLOTS,
 };
 use bacnet_time::{earliest, HostClock};
 use bacnet_types::error::Error;
@@ -112,7 +111,11 @@ const READ_CHUNK: usize = 512;
 /// from a port that breaks the contract does not end it.
 pub(super) const END_OF_FILE_READS: u32 = 3;
 
-type Core<'a> = MasterCore<'a, CoreQueues, MAX_EXTENDED_MPDU_DATA>;
+/// What the core borrows, sized for extended frames.
+type CoreStorage =
+    Storage<CoreQueues, DEFAULT_DELIVERY_SLOTS, MAX_EXTENDED_MPDU_DATA, MAX_EXTENDED_FRAME_LENGTH>;
+
+type Core<'a> = MasterCore<'a, &'a mut CoreQueues, MAX_EXTENDED_MPDU_DATA>;
 
 /// The transport's task: everything it needs, moved in at start.
 pub(super) struct Task<S> {
@@ -139,23 +142,8 @@ impl<S: SerialPort> Task<S> {
             transmit_pad,
         } = self;
         let _closed = CloseOnExit(queues.clone());
-        let mut rx_storage = vec![
-            0u8;
-            if config.extended_frames {
-                MAX_EXTENDED_FRAME_LENGTH
-            } else {
-                MAX_STANDARD_FRAME_LENGTH
-            }
-        ];
-        let mut buffers: Box<ExtendedActionBuffers> = Box::default();
-        let core_queues = queues.for_core();
-        let mut core = match MasterCore::new(
-            config,
-            core_queues,
-            &mut rx_storage,
-            &mut buffers,
-            clock.now(),
-        ) {
+        let mut storage = Box::new(CoreStorage::with_queues(queues.for_core()));
+        let mut core = match MasterCore::new(config, &mut *storage, clock.now()) {
             Ok(core) => core,
             Err(error) => {
                 warn!(?error, "MS/TP core refused its configuration");
@@ -460,13 +448,14 @@ impl<S: SerialPort> Mac<S> {
         let now = self.clock.now();
         let Some(answer) = answer else {
             if let Err(error) = core.complete_request(current.id, ReplyDecision::Postponed, now) {
+                // The core finished the request already.
                 debug!(?error, "MS/TP request already finished");
             }
             return;
         };
         match core.complete_request(current.id, ReplyDecision::Data(&answer), now) {
             Ok(()) => {}
-            Err(CoreError::ReplyOversize { length, maximum }) => {
+            Err(RequestError::Oversize { length, maximum }) => {
                 increment(&self.counts.outbound_oversize);
                 warn!("MS/TP application reply length {length} exceeds the port's maximum NPDU {maximum}");
                 // No answer can be sent, so the request is postponed.
@@ -560,9 +549,7 @@ impl<S: SerialPort> Mac<S> {
 
     /// Feed one octet to the core and carry out the actions.
     fn feed(&mut self, core: &mut Core<'_>, octet: u8, now: bacnet_mstp_core::Instant) {
-        if let Err(error) = core.on_octet(octet, now) {
-            debug!(?error, "MS/TP core refused an octet");
-        }
+        core.on_octet(octet, now);
         self.drain_actions(core);
     }
 
@@ -588,9 +575,7 @@ impl<S: SerialPort> Mac<S> {
     fn deadline(&mut self, core: &mut Core<'_>) {
         let before = core.state();
         let invalid = (before == MasterState::WaitForReply).then(|| core.counters().parser_errors);
-        if let Err(error) = core.on_deadline(self.clock.now()) {
-            debug!(?error, "MS/TP core refused a deadline");
-        }
+        core.on_deadline(self.clock.now());
         // Leaving WAIT_FOR_REPLY at a deadline without an invalid frame (a
         // timed-out partial one) is the reply timeout.
         if let Some(invalid) = invalid {

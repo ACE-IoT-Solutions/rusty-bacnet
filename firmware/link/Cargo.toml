@@ -107,7 +107,7 @@ board-sifive-e = ["emulate"]
 
 # Default features, so no allocator, plus the BVLL codec's heapless sink
 # and the router core's B/IP and MS/TP glue, which need neither std nor an
-# allocator. The MS/TP core's HeaplessQueues need no feature, and
+# allocator. The MS/TP core's FixedQueues need no feature, and
 # bacnet-bip-core has none. The alloc stack is `no_std` with `alloc`, as
 # the libraries document.
 [dependencies]

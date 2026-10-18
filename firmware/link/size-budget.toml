@@ -116,7 +116,7 @@
 #   thumbv7em bbmd              8436 /  324 / 0 /   240    9784 /   240
 #
 # The mstp-extended image's .bss is the core's storage alone, 7,712 octets:
-# 1,516 of receive storage, HeaplessQueues<1, 1, 1497> and
+# 1,516 of receive storage, FixedQueues<1, 1, 1497> and
 # ExtendedActionBuffers<1>. Each more queue slot would add about 1.5 KB.
 # The bbmd rows on thumbv6m are after bacnet-bip-core stopped copying a
 # 6-octet B/IP address whole into a BDT or FDT row, which linked
@@ -212,7 +212,7 @@
 # Its .bss is one static of 15,504 octets: the router's Storage<2, 8, 8, 4>
 # (3,216: a 1,497-octet scratch, a table of 8 routes and 8 hold-down
 # records, 4 searches, the output queue and the counters); the MS/TP
-# core's receive storage (1,516), HeaplessQueues<1, 2, 1497> (4,688) and
+# core's receive storage (1,516), FixedQueues<1, 2, 1497> (4,688) and
 # ExtendedActionBuffers<1> (3,028); the B/IP socket's two datagram buffers
 # (2 x 1,507); and where the BBMD writes a decision's destinations (40).
 # The BBMD port holds no broadcasts: only a foreign device's port does. The

@@ -18,8 +18,8 @@ use bacnet_mstp_codec::{
     FrameHeader, StreamDecoder, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
 };
 use bacnet_mstp_core::{
-    AllocQueues, Duration, ExtendedActionBuffers, Instant, MasterCore, MasterState,
-    NetworkPriority, QueueRefusal, RequestId, TransmitId,
+    AllocQueues, Duration, Instant, MasterCore, MasterState, NetworkPriority, QueueRefusal,
+    RequestId, Storage, TransmitId, DEFAULT_DELIVERY_SLOTS,
 };
 
 use crate::event::{Class, Key, Queue};
@@ -32,17 +32,27 @@ use crate::wire::WireTiming;
 
 use master::MasterNode;
 
-/// The core type every simulated master runs. Its queues and action buffers
-/// are sized for extended frames whether the master's configuration takes
-/// them or not, so masters with and without the flag share one type; the
-/// receive storage follows the flag (see [`MasterSpec::extended_frames`]).
+/// The storage every simulated master's core borrows: queues and buffers
+/// sized for extended frames whether the master's configuration takes them
+/// or not, so masters with and without the flag share one type. The core
+/// uses as much of the receive storage as the flag takes (see
+/// [`MasterSpec::extended_frames`]).
+pub(crate) type SimStorage = Storage<
+    AllocQueues<MAX_EXTENDED_MPDU_DATA>,
+    DEFAULT_DELIVERY_SLOTS,
+    MAX_EXTENDED_MPDU_DATA,
+    MAX_EXTENDED_FRAME_LENGTH,
+>;
+
+/// The core type every simulated master runs, over a `SimStorage`.
 ///
 /// So a master without the flag runs with 1497-octet delivery and queue
 /// slots, not the 501-octet default instantiation a firmware build uses.
 /// Its behaviour is the same: the flag, not the slot size, decides what it
 /// takes and sends, and the core refuses an NPDU over 501 octets at the
 /// queue whatever the slots hold.
-pub type SimCore = MasterCore<'static, AllocQueues<MAX_EXTENDED_MPDU_DATA>, MAX_EXTENDED_MPDU_DATA>;
+pub type SimCore =
+    MasterCore<'static, &'static mut AllocQueues<MAX_EXTENDED_MPDU_DATA>, MAX_EXTENDED_MPDU_DATA>;
 
 /// Run-wide settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,11 +729,10 @@ fn leak_storage(length: usize) -> &'static mut [u8] {
     Box::leak(vec![0u8; length].into_boxed_slice())
 }
 
-/// The action buffers a powered-on core borrows for its whole life, kept
-/// like [`leak_storage`]'s, with the default delivery slots, sized for
-/// extended frames.
-fn leak_action_buffers() -> &'static mut ExtendedActionBuffers {
-    Box::leak(Box::default())
+/// The storage a powered-on core borrows for its whole life, kept like
+/// [`leak_storage`]'s, around `queues`.
+fn leak_core_storage(queues: AllocQueues<MAX_EXTENDED_MPDU_DATA>) -> &'static mut SimStorage {
+    Box::leak(Box::new(SimStorage::with_queues(queues)))
 }
 
 /// Ties at one instant go to the lower station; the noise source and the line

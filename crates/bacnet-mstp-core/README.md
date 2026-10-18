@@ -16,9 +16,14 @@ serial port.
   firmware feeds them one clock. A `now` earlier than the latest one passed
   in is taken as that latest one: time never runs backwards, so a clock
   that steps back holds the timers still instead of failing.
-- Its large buffers are yours: the receive storage, the `ActionBuffers`
-  and the queues, each built by a `const fn` of zeros, so firmware keeps
-  them in `.bss` and builds the core, a few hundred octets, on its stack.
+- Its large buffers are yours, in one bundle: a `StandardStorage` or
+  `ExtendedStorage` holds the receive storage, the queues and the
+  `ActionBuffers`, sized together and built by a `const fn` of zeros, so
+  firmware keeps it in `.bss` and builds the core, a few hundred octets, on
+  its stack.
+- Line events go in through `on_*` calls that cannot fail; what breaks the
+  contract is counted. Only construction, a transmit start and a request's
+  answer return an error, each its own type.
 - Extended frames (types 32 and 33, NPDUs of up to 1497 octets) sit behind
   one flag, `MstpCoreConfig::extended_frames`. Buffer sizes are const
   generics with standard defaults, so an image without them pays nothing.
@@ -40,7 +45,7 @@ serial port.
 - Two input paths: every octet through the core's own stream decoder, or
   whole frames from a backend that assembles them in hardware.
 - Transmit queues for unicast and broadcast, served by network priority
-  with a starvation limit: `HeaplessQueues`, in arrays sized at compile
+  with a starvation limit: `FixedQueues`, in arrays sized at compile
   time, `AllocQueues` with the `alloc` feature, or a `QueueStorage` of your
   own, whose methods are part of the crate's semver.
 
@@ -58,8 +63,8 @@ None is on by default, and none needs `std`.
 ```rust
 use bacnet_mstp_core::codec::{decode_frame, Frame, FrameType, MAX_STANDARD_FRAME_LENGTH};
 use bacnet_mstp_core::{
-    Action, ActionBuffers, Direction, Duration, HeaplessQueues, Instant, MasterCore,
-    MstpCoreConfig, NetworkPriority,
+    Action, Direction, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority,
+    StandardStorage,
 };
 
 // Station 1 of masters 0 to 3, at 9600 baud.
@@ -67,10 +72,10 @@ let mut config = MstpCoreConfig::STANDARD;
 config.station = 1;
 config.max_master = 3;
 
-let mut rx = [0u8; MAX_STANDARD_FRAME_LENGTH];
-let mut actions: ActionBuffers<1> = ActionBuffers::new();
-let queues: HeaplessQueues<4, 2> = HeaplessQueues::new();
-let mut core = MasterCore::new(config, queues, &mut rx, &mut actions, Instant::ZERO).unwrap();
+// Receive storage, four unicast and two broadcast queue slots, and one
+// delivery slot, all zeroed: on firmware, a static in `.bss`.
+let mut storage: StandardStorage<4, 2, 1> = StandardStorage::new();
+let mut core = MasterCore::new(config, &mut storage, Instant::ZERO).unwrap();
 
 // An NPDU to send when the token comes.
 let npdu = [0x01, 0x00, 0x10, 0x08];
@@ -81,13 +86,13 @@ let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
 let length = Frame::new(FrameType::TOKEN, 1, 2, &[]).encode_into(&mut wire).unwrap();
 let heard = Instant::from_millis(10);
 for &octet in &wire[..length] {
-    core.on_octet(octet, heard).unwrap();
+    core.on_octet(octet, heard);
 }
 
 // The NPDU goes out once the line has been quiet for T_turnaround.
 let now = core.next_deadline().unwrap();
 assert_eq!(now, heard + core.config().t_turnaround);
-core.on_deadline(now).unwrap();
+core.on_deadline(now);
 assert_eq!(core.poll_action(), Action::SetDirection(Direction::Transmit));
 let Action::Transmit { id, frame } = core.poll_action() else {
     panic!("a frame to send");
@@ -99,7 +104,7 @@ assert_eq!((sent.header.destination, sent.data), (2, &npdu[..]));
 // Drive the line only once the core confirms the start, then report the
 // frame's last stop bit.
 core.on_transmit_started(id, now).unwrap();
-core.on_transmit_complete(id, now + Duration::from_millis(20)).unwrap();
+core.on_transmit_complete(id, now + Duration::from_millis(20));
 
 let counters = core.take_counters();
 assert_eq!((counters.frames_received, counters.frames_transmitted), (1, 1));

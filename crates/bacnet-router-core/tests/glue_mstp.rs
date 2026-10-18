@@ -8,7 +8,7 @@ mod glue;
 
 use bacnet_mstp_codec::{Frame as MstpFrame, FrameType, BROADCAST_MAC};
 use bacnet_mstp_core::{
-    Action, CoreError, Instant, NetworkPriority, QueueStorage, ReplyDecision, RequestId,
+    Action, Instant, NetworkPriority, QueueStorage, ReplyDecision, RequestError, RequestId,
 };
 use bacnet_router_core::mstp::{MstpPort, NotExtended};
 use bacnet_router_core::npdu::Npdu;
@@ -106,7 +106,7 @@ fn deliveries_become_frames() {
         7,
         &global,
     );
-    core.on_validated_frame(frame, now).unwrap();
+    core.on_validated_frame(frame, now);
     let (source, destination, request, npdu) = delivered(&mut core);
     let arrived = MSTP_PORT.arrived(source, destination, &npdu);
     assert_eq!(
@@ -144,7 +144,7 @@ fn relayed_requests_are_postponed() {
     request.expecting_reply = true;
     let request = bytes(&request);
     let frame = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &request);
-    core.on_validated_frame(frame, now).unwrap();
+    core.on_validated_frame(frame, now);
     let (source, destination, id, npdu) = delivered(&mut core);
     assert!(id.is_some());
     let arrived = MSTP_PORT.arrived(source, destination, &npdu);
@@ -169,7 +169,7 @@ fn relayed_requests_are_postponed() {
     let local = bytes(&local);
     let later = now + bacnet_router_core::Duration::from_millis(100);
     let frame = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &local);
-    core.on_validated_frame(frame, later).unwrap();
+    core.on_validated_frame(frame, later);
     let (source, destination, id, npdu) = delivered(&mut core);
     let arrived = MSTP_PORT.arrived(source, destination, &npdu);
     assert!(matches!(
@@ -199,12 +199,12 @@ fn relayed_requests_are_postponed() {
     // once its requester may have stopped waiting.
     let late = later + bacnet_router_core::Duration::from_millis(10);
     let frame = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &local);
-    core.on_validated_frame(frame, late).unwrap();
+    core.on_validated_frame(frame, late);
     let (.., id, _) = delivered(&mut core);
     let gone = late + bacnet_router_core::Duration::from_millis(300);
     assert_eq!(
         MstpPort::release(&mut core, id, gone),
-        Err(CoreError::RequestExpired)
+        Err(RequestError::Expired)
     );
 }
 
@@ -221,7 +221,7 @@ fn a_late_release_leaves_the_next_request_alone() {
     let local = bytes(&local);
     let request = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &local);
 
-    core.on_validated_frame(request, now).unwrap();
+    core.on_validated_frame(request, now);
     let (.., first, _) = delivered(&mut core);
     let reply = [0x30, 0x05, 0x0C];
     core.complete_request(first.unwrap(), ReplyDecision::Data(&reply), now)
@@ -233,7 +233,7 @@ fn a_late_release_leaves_the_next_request_alone() {
     );
 
     let later = now + bacnet_router_core::Duration::from_millis(100);
-    core.on_validated_frame(request, later).unwrap();
+    core.on_validated_frame(request, later);
     let (.., second, _) = delivered(&mut core);
     assert_ne!(first, second);
     MstpPort::release(&mut core, first, later).unwrap();
@@ -264,12 +264,12 @@ fn priority_reaches_the_queue() {
             assert_eq!(results, [(1, Ok(()))]);
         }
     }
-    let first = bus.queues.dequeue(now, 1497).unwrap().unwrap();
+    let first = bus.queues().dequeue(now, 1497).unwrap().unwrap();
     assert_eq!(
         (first.destination, first.priority),
         (6, NetworkPriority::LifeSafety)
     );
-    let second = bus.queues.dequeue(now, 1497).unwrap().unwrap();
+    let second = bus.queues().dequeue(now, 1497).unwrap().unwrap();
     assert_eq!(
         (second.destination, second.priority),
         (5, NetworkPriority::Normal)
@@ -377,7 +377,7 @@ fn relayed_in_one_extended_frame(len: usize) {
     let mut peer_bus = Bus::<1>::new();
     let mut peer = peer_bus.core_at(NEXT, true);
     for &octet in &wired.octets {
-        peer.on_octet(octet, now).unwrap();
+        peer.on_octet(octet, now);
     }
     let delivered = loop {
         match peer.poll_action() {

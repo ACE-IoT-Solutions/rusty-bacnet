@@ -14,21 +14,21 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// drain time, which is safe because a later stamp can only defer the
     /// start. After an error for a transmit, or once it is aborted, send
     /// nothing more for its id; the one exception is
-    /// [`CoreError::TransmitNotPolled`], below.
+    /// [`TransmitError::NotPolled`], below.
     ///
     /// A host assembler that was part way through a frame drops it now: the
     /// receiver is off while the driver is on, so it can never complete, and
     /// the core drops its own decoder's partial frame here too.
     ///
     /// - A start for a transmit whose [`Action::Transmit`] has not been
-    ///   polled is refused with [`CoreError::TransmitNotPolled`] and counted
+    ///   polled is refused with [`TransmitError::NotPolled`] and counted
     ///   in [`MstpCounters::adapter_errors`]. It is an adapter bug: an id
     ///   learned elsewhere, such as from [`Self::snapshot`], is no frame to
     ///   send. Nothing changes and nothing is queued; the id stays live, and
     ///   the fix is to poll the frame, then start it.
     /// - If the line was active within T_turnaround of `now` (activity that
     ///   reached the core after the frame was handed over), the start is
-    ///   refused with [`CoreError::TransmitDeferred`] and counted in
+    ///   refused with [`TransmitError::Deferred`] and counted in
     ///   [`MstpCounters::deferred_starts`]. The frame waits for a quiet line
     ///   again (Clause 9.5.5.1) and comes back as a new [`Action::Transmit`],
     ///   unless its waiting rules drop it.
@@ -36,36 +36,40 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     ///   T_usage_delay for Reply To Poll For Master) still goes out and is
     ///   counted in [`MstpCounters::late_replies`]. One that would start once
     ///   the asker may have stopped waiting is refused with
-    ///   [`CoreError::RequestExpired`] and counted as an expired request.
+    ///   [`TransmitError::Expired`] and counted as an expired request.
     ///
     /// A deferred or expired start queues
     /// [`Direction::Receive`](crate::Direction::Receive); the other
     /// refusals queue nothing.
-    pub fn on_transmit_started(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
+    pub fn on_transmit_started(
+        &mut self,
+        id: TransmitId,
+        now: Instant,
+    ) -> Result<(), TransmitError> {
         let now = self.observe_time(now);
         let tx = self
             .active_transmit
             .filter(|tx| tx.id == id)
-            .ok_or(CoreError::StaleTransmit)?;
+            .ok_or(TransmitError::Stale)?;
         if tx.started {
             self.counters.record_adapter_error();
-            return Err(CoreError::TransmitAlreadyStarted);
+            return Err(TransmitError::AlreadyStarted);
         }
         // The control actions stay within a switch to receive and one
         // transmit only because a transmit is polled before it starts.
         if self.actions.transmit_queued(id) {
             self.counters.record_adapter_error();
-            return Err(CoreError::TransmitNotPolled);
+            return Err(TransmitError::NotPolled);
         }
         // An unconfirmed transmit is still the waiting frame.
-        let pending = self.pending_send.ok_or(CoreError::StaleTransmit)?;
+        let pending = self.pending_send.ok_or(TransmitError::Stale)?;
         let window = match pending.origin {
             Origin::Answer(window) => Some(window),
             Origin::Holder | Origin::NextPoll | Origin::PassToken | Origin::NoToken => None,
         };
         if window.is_some_and(|window| now >= window.give_up) {
-            self.drop_pending(now)?;
-            return Err(CoreError::RequestExpired);
+            self.drop_pending(now);
+            return Err(TransmitError::Expired);
         }
         if now < pending.earliest {
             // Activity since the hand-over: the line has not been quiet for
@@ -75,11 +79,11 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             // Past its limit: drop it now, rather than leave a deadline that
             // is already due.
             if now >= pending.limit {
-                self.drop_pending(now)?;
+                self.drop_pending(now);
             } else {
                 self.protocol_deadline = Some(pending.deadline());
             }
-            return Err(CoreError::TransmitDeferred);
+            return Err(TransmitError::Deferred);
         }
         if window.is_some_and(|window| now > window.send_by) {
             self.counters.record_late_reply();
@@ -117,19 +121,20 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// echo is taken for another station's: its own Token heard back in
     /// PASS_TOKEN would read as the successor using the token (SawTokenUser).
     ///
-    /// The start must have been confirmed first. Completion without it is
-    /// refused with [`CoreError::TransmitNotStarted`] and counted in
-    /// [`MstpCounters::adapter_errors`]; the transmit stays active until it
-    /// is started and completed, aborted, or caught by the watchdog.
-    pub fn on_transmit_complete(&mut self, id: TransmitId, now: Instant) -> Result<(), CoreError> {
+    /// The start must have been confirmed first. Completion without it is an
+    /// adapter bug: it is ignored and counted in
+    /// [`MstpCounters::adapter_errors`], and the transmit stays active until
+    /// it is started and completed, aborted, or caught by the watchdog. A
+    /// completion for an id that is not the active transmit's (one the
+    /// watchdog already aborted, say) is ignored.
+    pub fn on_transmit_complete(&mut self, id: TransmitId, now: Instant) {
         let now = self.observe_time(now);
-        let tx = self
-            .active_transmit
-            .filter(|tx| tx.id == id)
-            .ok_or(CoreError::StaleTransmit)?;
+        let Some(tx) = self.active_transmit.filter(|tx| tx.id == id) else {
+            return;
+        };
         if !tx.started {
             self.counters.record_adapter_error();
-            return Err(CoreError::TransmitNotStarted);
+            return;
         }
         self.actions.queue_receive();
         self.active_transmit = None;
@@ -146,19 +151,16 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
             PostTransmit::WaitForReply => {
                 self.set_state(MasterState::WaitForReply);
                 self.protocol_deadline = Some(now + self.config.t_reply_timeout);
-                Ok(())
             }
             PostTransmit::PassToken => {
                 self.set_state(MasterState::PassToken);
                 self.event_count = 0;
                 self.protocol_deadline = Some(now + self.config.t_usage_timeout);
                 self.counters.record_token_rotation();
-                Ok(())
             }
             PostTransmit::PollForMaster => {
                 self.set_state(MasterState::PollForMaster);
                 self.protocol_deadline = Some(now + self.config.t_usage_timeout);
-                Ok(())
             }
         }
     }
@@ -173,18 +175,14 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// [`MstpCounters::expired_requests`] for an answer, which leaves its
     /// request unanswered, and in [`MstpCounters::cancelled_sends`] for any
     /// other frame. Every abort counts under its `reason`, in
-    /// [`MstpCounters::transmit_aborts`] and the three beside it.
-    pub fn on_transmit_aborted(
-        &mut self,
-        id: TransmitId,
-        reason: TransmitFailure,
-        now: Instant,
-    ) -> Result<(), CoreError> {
+    /// [`MstpCounters::transmit_aborts`] and the three beside it. An abort
+    /// for an id that is not the active transmit's (one already completed,
+    /// aborted or taken back) is ignored.
+    pub fn on_transmit_aborted(&mut self, id: TransmitId, reason: TransmitFailure, now: Instant) {
         let now = self.observe_time(now);
-        let tx = self
-            .active_transmit
-            .filter(|tx| tx.id == id)
-            .ok_or(CoreError::StaleTransmit)?;
+        let Some(tx) = self.active_transmit.filter(|tx| tx.id == id) else {
+            return;
+        };
         self.counters.record_transmit_failure(reason);
         self.withdraw_transmit(id);
         self.forget_pending();

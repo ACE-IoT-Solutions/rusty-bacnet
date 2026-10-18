@@ -212,7 +212,7 @@ fn mstp_delivery_becomes_bip_original_unicast_with_reply_postponed() {
     let mut request = routed(40, BIP_NET, &mac(DEVICE_44));
     request[1] |= 0x04;
     let frame = MstpFrame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, STATION, 7, &request);
-    core.on_validated_frame(frame, now).unwrap();
+    core.on_validated_frame(frame, now);
     let (id, received) = match core.poll_action() {
         Action::DeliverNpdu {
             source,
@@ -370,7 +370,7 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
     // (the core's clock rule), so it is queued.
     let mut bus = Bus::<1>::new();
     let mut ahead = bus.core(true);
-    ahead.on_deadline(Instant::from_millis(20)).unwrap();
+    ahead.on_deadline(Instant::from_millis(20));
     let mut to_ahead =
         |send: &bacnet_router_core::router::Send<'_>| MSTP.send(&mut ahead, send, now);
     assert_eq!(relay(&mut router, &short, &mut to_ahead), [(1, Ok(()))]);
@@ -379,7 +379,7 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
     // expires at once.
     let mut bus = Bus::<1>::new();
     let mut ended = bus.core(true);
-    ended.on_deadline(Instant::from_nanos(u64::MAX)).unwrap();
+    ended.on_deadline(Instant::from_nanos(u64::MAX));
     let mut to_ended =
         |send: &bacnet_router_core::router::Send<'_>| MSTP.send(&mut ended, send, now);
     assert_eq!(

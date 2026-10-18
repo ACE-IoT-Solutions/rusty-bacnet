@@ -103,10 +103,7 @@ impl<S: SerialPort> Mac<S> {
                 increment(&self.counts.serial_write_errors);
                 warn!("MS/TP write error: {error}");
                 let now = self.clock.now();
-                if let Err(error) = core.on_transmit_aborted(outgoing.id, TransmitFailure::Io, now)
-                {
-                    debug!(?error, "MS/TP abort refused");
-                }
+                core.on_transmit_aborted(outgoing.id, TransmitFailure::Io, now);
                 return Ok(());
             }
         };
@@ -124,11 +121,15 @@ impl<S: SerialPort> Mac<S> {
         Ok(())
     }
 
-    /// Report the frame complete, stamped with its end.
+    /// Report the frame complete, stamped with its end. It counts as sent
+    /// unless the core's watchdog aborted it first.
     fn complete(&mut self, core: &mut Core<'_>, outgoing: &Outgoing, ended: Instant) {
-        match core.on_transmit_complete(outgoing.id, self.clock.instant(ended.into_std())) {
-            Ok(()) => self.count_sent(outgoing.kind),
-            Err(error) => debug!(?error, "MS/TP completion refused"),
+        let active = core.snapshot().transmit_id == Some(outgoing.id);
+        core.on_transmit_complete(outgoing.id, self.clock.instant(ended.into_std()));
+        if active {
+            self.count_sent(outgoing.kind);
+        } else {
+            debug!("MS/TP transmit was over before its completion");
         }
         self.drain_actions(core);
     }

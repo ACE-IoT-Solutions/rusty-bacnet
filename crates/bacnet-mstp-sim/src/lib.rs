@@ -257,8 +257,10 @@
 //!    (two seconds by default).
 //! 5. **Bounded events.** Pending events stay within a small multiple of the
 //!    node count, and the trace keeps only its most recent entries.
-//! 6. **Core contract.** No unexpected [`CoreError`](bacnet_mstp_core::CoreError);
-//!    adapter errors, delivery drops and frames from a station's own address
+//! 6. **Core contract.** No unexpected refusal of a transmit start
+//!    ([`TransmitError`](bacnet_mstp_core::TransmitError)) or a decision
+//!    ([`RequestError`](bacnet_mstp_core::RequestError)); adapter and
+//!    internal errors, delivery drops and frames from a station's own address
 //!    (its echo leaking past the adapter) stay zero; a punctual adapter's core
 //!    counts no deadline misses; no new deadline lies in the past, and none
 //!    stays due after being serviced over and over at one instant.

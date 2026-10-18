@@ -44,8 +44,8 @@ use core::fmt;
 
 use bacnet_mstp_core::codec::BROADCAST_MAC;
 use bacnet_mstp_core::{
-    CoreError, MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal, QueueStorage,
-    ReplyDecision, RequestId,
+    MasterCore, MstpCoreConfig, NetworkPriority, QueueRefusal, QueueStorage, ReplyDecision,
+    RequestError, RequestId,
 };
 
 use crate::router::{Dest, Groups, Limits, PortConfig, Send, SendRefusal};
@@ -118,18 +118,18 @@ impl MstpPort {
     /// answers Reply Postponed (Clauses 6.5.4, 9.5.6.9). `None`, a delivery
     /// with no request, does nothing; so does a request already answered.
     /// The core's other refusals, such as a release after the requester may
-    /// have stopped waiting ([`CoreError::RequestExpired`]), come back as
+    /// have stopped waiting ([`RequestError::Expired`]), come back as
     /// they are.
     pub fn release<Q: QueueStorage, const NPDU: usize>(
         core: &mut MasterCore<'_, Q, NPDU>,
         request: Option<RequestId>,
         now: Instant,
-    ) -> Result<(), CoreError> {
+    ) -> Result<(), RequestError> {
         let Some(request) = request else {
             return Ok(());
         };
         match core.complete_request(request, ReplyDecision::Postponed, now) {
-            Err(CoreError::NoPendingRequest | CoreError::StaleRequest) => Ok(()),
+            Err(RequestError::NoPending | RequestError::Stale) => Ok(()),
             result => result,
         }
     }

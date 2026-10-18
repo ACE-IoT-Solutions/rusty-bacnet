@@ -115,7 +115,7 @@ pub enum Action<'a> {
     /// queueing `SetDirection(Direction::Receive)` before the start; drop the
     /// frame then. After an error for this id, or an abort, send nothing
     /// more for it. The exception is
-    /// [`CoreError::TransmitNotPolled`](crate::CoreError::TransmitNotPolled),
+    /// [`TransmitError::NotPolled`](crate::TransmitError::NotPolled),
     /// an adapter bug that leaves the id live: poll this action, then start.
     Transmit {
         /// Generation-bound operation identifier.

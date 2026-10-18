@@ -75,8 +75,10 @@ pub struct MstpCounters {
     /// Transmit starts refused because the line was active within
     /// T_turnaround.
     pub deferred_starts: u64,
-    /// Transmit events refused because they broke the transmit contract.
+    /// Inputs the core ignored or refused because they broke its contract.
     pub adapter_errors: u64,
+    /// Broken internal invariants of the core: zero unless it has a bug.
+    pub internal_errors: u64,
     /// Frames for this station dropped because it was busy.
     pub discarded_while_busy: u64,
     /// Frames abandoned part way through.
@@ -142,6 +144,7 @@ impl MstpCounters {
         add(&mut self.cancelled_sends, taken.cancelled_sends);
         add(&mut self.deferred_starts, taken.deferred_starts);
         add(&mut self.adapter_errors, taken.adapter_errors);
+        add(&mut self.internal_errors, taken.internal_errors);
         add(&mut self.discarded_while_busy, taken.discarded_while_busy);
         add(&mut self.frame_aborts, taken.frame_aborts);
         add(&mut self.frames_received, taken.frames_received);
@@ -215,6 +218,7 @@ mod tests {
             &mut taken.cancelled_sends,
             &mut taken.deferred_starts,
             &mut taken.adapter_errors,
+            &mut taken.internal_errors,
             &mut taken.discarded_while_busy,
             &mut taken.frame_aborts,
             &mut taken.frames_received,

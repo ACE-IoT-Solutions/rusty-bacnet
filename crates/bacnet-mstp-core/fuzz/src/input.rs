@@ -87,7 +87,7 @@ pub struct Policy {
 pub enum Layout {
     /// Standard sizes, allocating queues, one delivery slot.
     Standard,
-    /// Standard sizes, heapless queues (3 unicast, 2 broadcast), three
+    /// Standard sizes, fixed queues (3 unicast, 2 broadcast), three
     /// delivery slots.
     Heapless,
     /// Extended sizes, allocating queues, two delivery slots: what extended

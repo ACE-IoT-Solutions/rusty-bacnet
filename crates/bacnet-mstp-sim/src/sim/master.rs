@@ -1,15 +1,14 @@
 //! A master node: its core, the adapter that runs the core's actions, and
 //! the application behind it.
 
-use bacnet_mstp_codec::{FrameType, MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH};
+use bacnet_mstp_codec::FrameType;
 use bacnet_mstp_core::{
-    Action, AllocQueues, CoreError, Direction, Instant, MasterCore, MasterState, MstpCounters,
-    NetworkPriority, QueueRefusal, ReceiveError, ReplyDecision, RequestId, TransmitId,
+    Action, AllocQueues, Direction, Instant, MasterCore, MasterState, MstpCounters,
+    NetworkPriority, QueueRefusal, ReceiveError, ReplyDecision, RequestError, RequestId,
+    TransmitError, TransmitId,
 };
 
-use super::{
-    decode_whole, describe, leak_action_buffers, leak_storage, Event, NodeKind, Sim, SimCore,
-};
+use super::{decode_whole, describe, leak_core_storage, Event, NodeKind, Sim, SimCore};
 use crate::event::Class;
 use crate::line::Driver;
 use crate::report::{Delivery, ViolationKind};
@@ -88,9 +87,9 @@ impl MasterNode {
         }
     }
 
-    /// A fresh core, as after INITIALIZE. Its receive storage holds the
-    /// longest frame it takes: a standard one, or an extended one with the
-    /// flag on, so a master without it treats extended frames as a node
+    /// A fresh core, as after INITIALIZE. It uses as much receive storage as
+    /// the longest frame it takes: a standard one, or an extended one with
+    /// the flag on, so a master without it treats extended frames as a node
     /// without COBS support does.
     pub(super) fn boot(&mut self, now: Instant) {
         self.incarnation += 1;
@@ -99,19 +98,8 @@ impl MasterNode {
             super::host::HostState::new(self.spec.config.t_frame_abort)
         });
         let queues = AllocQueues::new(self.spec.unicast_capacity, self.spec.broadcast_capacity);
-        let storage = if self.spec.config.extended_frames {
-            MAX_EXTENDED_FRAME_LENGTH
-        } else {
-            MAX_STANDARD_FRAME_LENGTH
-        };
-        let core: SimCore = MasterCore::new(
-            self.spec.config,
-            queues,
-            leak_storage(storage),
-            leak_action_buffers(),
-            now,
-        )
-        .expect("a valid master spec");
+        let core: SimCore = MasterCore::new(self.spec.config, leak_core_storage(queues), now)
+            .expect("a valid master spec");
         self.deadline = core.next_deadline();
         self.fire_at = None;
         self.misses_seen = 0;
@@ -145,6 +133,15 @@ pub(crate) enum Input {
     Started(TransmitId),
     Complete(TransmitId, Instant),
     Decide(RequestId, Option<Vec<u8>>),
+}
+
+/// What the core refused, for the two inputs that can be refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// The adapter's transmit start.
+    Start(TransmitError),
+    /// The application's decision on a request.
+    Decision(RequestError),
 }
 
 /// An action, copied out of the core so the borrow ends.
@@ -222,7 +219,7 @@ fn drain(core: &mut SimCore) -> Result<Vec<Effect>, usize> {
 impl Sim {
     /// Feed one event to a master's core, then run the adapter over what it
     /// asked for and check the core's contract.
-    pub(super) fn master_input(&mut self, node: usize, input: Input) -> Result<(), CoreError> {
+    pub(super) fn master_input(&mut self, node: usize, input: Input) -> Result<(), Refused> {
         let now = match input {
             Input::Complete(_, stamp) => stamp,
             _ => self.now,
@@ -238,17 +235,29 @@ impl Sim {
         let generations = core.counters().token_regenerations;
         let gave_up = given_up(&core.counters());
         let result = match &input {
-            Input::Octet(byte) => core.on_octet(*byte, now),
-            Input::Garbled => core.on_receive_error(ReceiveError::Framing, now),
-            Input::Deadline => core.on_deadline(now),
-            Input::Started(id) => core.on_transmit_started(*id, now),
-            Input::Complete(id, stamp) => core.on_transmit_complete(*id, *stamp),
-            Input::Decide(request, Some(data)) => {
-                core.complete_request(*request, ReplyDecision::Data(data), now)
+            Input::Octet(byte) => {
+                core.on_octet(*byte, now);
+                Ok(())
             }
-            Input::Decide(request, None) => {
-                core.complete_request(*request, ReplyDecision::Postponed, now)
+            Input::Garbled => {
+                core.on_receive_error(ReceiveError::Framing, now);
+                Ok(())
             }
+            Input::Deadline => {
+                core.on_deadline(now);
+                Ok(())
+            }
+            Input::Started(id) => core.on_transmit_started(*id, now).map_err(Refused::Start),
+            Input::Complete(id, stamp) => {
+                core.on_transmit_complete(*id, *stamp);
+                Ok(())
+            }
+            Input::Decide(request, Some(data)) => core
+                .complete_request(*request, ReplyDecision::Data(data), now)
+                .map_err(Refused::Decision),
+            Input::Decide(request, None) => core
+                .complete_request(*request, ReplyDecision::Postponed, now)
+                .map_err(Refused::Decision),
         };
         let effects = drain(core);
         let after = core.state();
@@ -290,7 +299,7 @@ impl Sim {
                 },
             );
         }
-        self.check_core_result(station, &input, result);
+        self.check_core_result(station, result);
         self.check_counters(node, &counters, punctual);
         // A deadline already due may wait for a late or jittery adapter; a
         // new one must not be set in the past.
@@ -339,24 +348,20 @@ impl Sim {
     }
 
     /// Errors the adapter contract expects; anything else is a violation.
-    fn check_core_result(&mut self, station: u8, input: &Input, result: Result<(), CoreError>) {
+    fn check_core_result(&mut self, station: u8, result: Result<(), Refused>) {
         let Err(error) = result else {
             return;
         };
-        let expected = match input {
+        let expected = matches!(
+            error,
             // A reply whose window closed before the adapter got to it, or
             // line activity within Tturnaround of the start.
-            Input::Started(_) => matches!(
-                error,
-                CoreError::RequestExpired | CoreError::TransmitDeferred
-            ),
+            Refused::Start(TransmitError::Expired | TransmitError::Deferred)
             // The application answered late, or for a request already gone.
-            Input::Decide(..) => matches!(
-                error,
-                CoreError::RequestExpired | CoreError::NoPendingRequest | CoreError::StaleRequest
-            ),
-            _ => false,
-        };
+                | Refused::Decision(
+                    RequestError::Expired | RequestError::NoPending | RequestError::Stale
+                )
+        );
         if expected {
             self.note(
                 Who::Station(station),
@@ -381,6 +386,12 @@ impl Sim {
         let mut wrong = Vec::new();
         if counters.adapter_errors != 0 {
             wrong.push(format!("adapter_errors {}", counters.adapter_errors));
+        }
+        if counters.internal_errors != 0 {
+            wrong.push(format!("internal_errors {}", counters.internal_errors));
+        }
+        if counters.internal_errors != 0 {
+            wrong.push(format!("internal_errors {}", counters.internal_errors));
         }
         if counters.delivery_drops != 0 {
             wrong.push(format!("delivery_drops {}", counters.delivery_drops));
@@ -688,7 +699,7 @@ impl Sim {
             }
             Err(error) => {
                 self.report.refused_starts += 1;
-                if error == CoreError::TransmitDeferred {
+                if error == Refused::Start(TransmitError::Deferred) {
                     let master = self.master_mut(node).expect("a master");
                     master.withdrawn = Some(pending);
                 }

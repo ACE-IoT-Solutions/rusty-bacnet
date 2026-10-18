@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["bacnet", "mstp", "embedded", "no-std"]
 categories = ["embedded", "network-programming", "no-std", "no-std::no-alloc"]
 
-# No feature needs std. `alloc` adds AllocQueues; HeaplessQueues, which
+# No feature needs std. `alloc` adds AllocQueues; FixedQueues, which
 # keeps its slots in arrays, needs no feature.
 [features]
 default = []
