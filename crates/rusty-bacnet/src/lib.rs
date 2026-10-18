@@ -21,6 +21,7 @@ mod py_async;
 mod read_range;
 mod sc_identity;
 mod sc_inspection;
+mod sc_npdu;
 mod sc_peer;
 mod sc_reconnect;
 mod server;

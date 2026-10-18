@@ -628,6 +628,7 @@ impl BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
             heartbeat_interval_ms: 30_000,
             heartbeat_timeout_ms: 60_000,
             reconnect: None,
+            npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy::default(),
         }
     }
 }
@@ -646,6 +647,7 @@ pub struct ScClientBuilder {
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
     reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
+    npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy,
 }
 
 #[cfg(feature = "sc-tls")]
@@ -714,6 +716,15 @@ impl ScClientBuilder {
         self
     }
 
+    /// Set the maximum queued, unconsumed NPDUs per ingress path and source.
+    ///
+    /// Defaults to 32. The accepted range is 1 through 256; checked before
+    /// TLS lookup or dialing. The aggregate queue remains fixed at 256.
+    pub fn npdu_per_origin_limit(mut self, limit: usize) -> Self {
+        self.npdu_admission_policy.per_origin_limit = limit;
+        self
+    }
+
     /// Enable automatic reconnection with the given configuration.
     pub fn reconnect(mut self, config: bacnet_transport::sc::ScReconnectConfig) -> Self {
         self.reconnect = Some(config);
@@ -741,6 +752,7 @@ impl ScClientBuilder {
     ) -> bacnet_transport::sc::ScTransport<W> {
         bacnet_transport::sc::ScTransport::new(ws, self.vmac)
             .with_device_uuid(self.device_uuid)
+            .with_npdu_per_origin_limit(self.npdu_admission_policy.per_origin_limit)
             .with_heartbeat_interval_ms(self.heartbeat_interval_ms)
             .with_heartbeat_timeout_ms(self.heartbeat_timeout_ms)
     }

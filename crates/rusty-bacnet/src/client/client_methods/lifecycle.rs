@@ -35,7 +35,8 @@ impl BACnetClient {
         ipv6_device_instance=None,
         bbmd=None,
         foreign_device=None,
-        reconnect=None
+        reconnect=None,
+        sc_npdu_per_origin_limit=None
     ))]
     fn new(
         interface: &str,
@@ -69,7 +70,9 @@ impl BACnetClient {
         bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
         foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
         reconnect: Option<PyRef<'_, crate::sc_reconnect::PyScReconnect>>,
+        sc_npdu_per_origin_limit: Option<usize>,
     ) -> PyResult<Self> {
+        let sc_npdu_admission_policy = crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit)?;
         if reconnect.is_some() && transport != "sc" {
             return Err(PyValueError::new_err(
                 "reconnect applies only to transport='sc'",
@@ -100,6 +103,7 @@ impl BACnetClient {
             sc_hub,
             sc_vmac,
             sc_device_uuid,
+            sc_npdu_admission_policy,
             sc_ca_cert,
             sc_client_cert,
             sc_client_key,
@@ -141,6 +145,7 @@ impl BACnetClient {
         let sc_hub = slf.borrow().sc_hub.clone();
         let sc_vmac = slf.borrow().sc_vmac.clone();
         let sc_device_uuid = slf.borrow().sc_device_uuid;
+        let sc_npdu_admission_policy = slf.borrow().sc_npdu_admission_policy;
         let sc_ca_cert = slf.borrow().sc_ca_cert.clone();
         let sc_client_cert = slf.borrow().sc_client_cert.clone();
         let sc_client_key = slf.borrow().sc_client_key.clone();
@@ -215,6 +220,7 @@ impl BACnetClient {
                         .tls_config(tls_config)
                         .vmac(vmac)
                         .device_uuid(sc_device_uuid)
+                        .npdu_per_origin_limit(sc_npdu_admission_policy.per_origin_limit)
                         .apdu_timeout_ms(timeout_ms)
                         .min_request_interval_ms(min_request_interval_ms);
                     if let Some(ms) = sc_heartbeat_interval_ms {

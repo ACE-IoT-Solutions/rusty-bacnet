@@ -102,6 +102,7 @@ impl Bip6ClientBuilder {
 #[cfg(feature = "sc-tls")]
 impl ScClientBuilder {
     pub(super) fn validate(&self) -> Result<(), Error> {
+        self.npdu_admission_policy.validate()?;
         if let Some(config) = &self.reconnect {
             config.validate()?;
         }
@@ -149,7 +150,7 @@ impl ScClientBuilder {
 
     /// Connect to the hub and start the client.
     ///
-    /// Reconnect configuration is validated before TLS lookup or dialing, and
+    /// NPDU admission and reconnect configuration are validated before TLS lookup or dialing, and
     /// again when the transport starts. An error still consumes this builder
     /// and drops its inputs; this does not promise generic endpoint rollback.
     ///
@@ -199,7 +200,7 @@ impl ScClientBuilder {
     /// Connect to the hub and start a transport-erased BACnet/SC client.
     ///
     /// Shares [`Self::build`]'s validation, TLS policy, identity, heartbeat and
-    /// optional reconnect configuration. Identity, reconnect and client options
+    /// optional reconnect configuration. Identity, NPDU admission, reconnect and client options
     /// are checked before dialing; heartbeat timing is checked when the transport
     /// starts. No serial-port value is required.
     ///
