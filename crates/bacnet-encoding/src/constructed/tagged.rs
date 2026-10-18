@@ -340,6 +340,7 @@ pub fn expect_end(data: &[u8], end: usize, at: usize, what: &str) -> Result<(), 
 /// [`tags::decode_tag`] caps a length at 1 MiB and puts `start` inside
 /// `data`, so the end can't overflow; saturating keeps that true for any
 /// caller.
+#[inline]
 pub(crate) fn contents(data: &[u8], start: usize, length: u32) -> Result<(&[u8], usize), Error> {
     let end = usize::try_from(length).map_or(usize::MAX, |length| start.saturating_add(length));
     if end > data.len() {
@@ -351,6 +352,7 @@ pub(crate) fn contents(data: &[u8], start: usize, length: u32) -> Result<(&[u8],
 /// Require a primitive context tag `tag` at `offset`; return its header and
 /// the offset of its contents. `kind`, unless empty, names the expected type
 /// in the error.
+#[inline]
 fn ctx_header(
     data: &[u8],
     offset: usize,
@@ -360,20 +362,34 @@ fn ctx_header(
 ) -> Result<(Tag, usize), Error> {
     let (t, start) = tags::decode_tag(data, offset)?;
     if !t.is_context(tag) {
-        let space = if kind.is_empty() { "" } else { " " };
-        return Err(misplaced_tag(
-            data,
-            &t,
-            Some(tag),
-            offset,
-            format!("{what}: expected context tag [{tag}]{space}{kind}"),
-        ));
+        return Err(ctx_header_error(data, offset, tag, kind, what, &t));
     }
     Ok((t, start))
 }
 
+/// Keep refusal formatting out of the shared primitive readers' success path.
+#[cold]
+fn ctx_header_error(
+    data: &[u8],
+    offset: usize,
+    tag: u8,
+    kind: &str,
+    what: &str,
+    found: &Tag,
+) -> Error {
+    let space = if kind.is_empty() { "" } else { " " };
+    misplaced_tag(
+        data,
+        found,
+        Some(tag),
+        offset,
+        format!("{what}: expected context tag [{tag}]{space}{kind}"),
+    )
+}
+
 /// Require a primitive context tag `tag` at `offset`; return its contents and
 /// the offset past them.
+#[inline]
 pub fn decode_ctx_primitive<'a>(
     data: &'a [u8],
     offset: usize,
@@ -388,6 +404,7 @@ pub fn decode_ctx_primitive<'a>(
 /// contents octets of the type `kind` names (`"Time"`, say, for the error);
 /// return those contents and the offset past them. A header announcing any
 /// other length is [`Error::Decoding`] even when the data also stops early.
+#[inline]
 pub fn decode_ctx_fixed<'a>(
     data: &'a [u8],
     offset: usize,
@@ -398,15 +415,25 @@ pub fn decode_ctx_fixed<'a>(
 ) -> Result<(&'a [u8], usize), Error> {
     let (t, start) = ctx_header(data, offset, tag, kind, what)?;
     if t.length != octets {
-        return Err(Error::decoding(
-            offset,
-            format!(
-                "{what}: [{tag}] {kind} has {} contents octets, expected {octets}",
-                t.length
-            ),
-        ));
+        return Err(ctx_length_error(offset, tag, octets, kind, what, t.length));
     }
     contents(data, start, octets)
+}
+
+/// Report a wrong fixed length before attempting to read its contents.
+#[cold]
+fn ctx_length_error(
+    offset: usize,
+    tag: u8,
+    octets: u32,
+    kind: &str,
+    what: &str,
+    length: u32,
+) -> Error {
+    Error::decoding(
+        offset,
+        format!("{what}: [{tag}] {kind} has {length} contents octets, expected {octets}"),
+    )
 }
 
 /// Require a primitive context tag `tag` at `offset` holding a REAL.
@@ -441,6 +468,7 @@ pub fn decode_ctx_boolean(
 
 /// Require a primitive context tag `tag` at `offset` holding an object
 /// identifier, which is always four octets.
+#[inline]
 pub fn decode_ctx_object_id(
     data: &[u8],
     offset: usize,
@@ -559,6 +587,7 @@ fn narrow<T: UnsignedWidth>(value: u64, offset: usize, tag: u8, what: &str) -> R
 /// that fits `T`. An ENUMERATED's contents are encoded the same way, so this
 /// reads those too. Leading zero octets are accepted, as
 /// [`primitives::decode_unsigned`] accepts them.
+#[inline]
 pub fn decode_ctx_unsigned<T: UnsignedWidth>(
     data: &[u8],
     offset: usize,
