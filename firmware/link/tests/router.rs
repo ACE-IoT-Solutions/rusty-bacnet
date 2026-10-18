@@ -6,8 +6,8 @@
 use core::mem::size_of;
 
 use firmware_link::router::{
-    expected, run, Actions, Bbmd, BbmdTables, Core, Memory, Queues, RouterEngine, RouterStorage,
-    Summary,
+    expected, run, Bbmd, BbmdTables, Core, Memory, MstpStorage, Queues, RouterEngine,
+    RouterStorage, Summary,
 };
 
 /// The whole summary against the one the emulation build checks too
@@ -30,8 +30,11 @@ fn ram_sizes() {
         "Storage<2, 8, 8, 4> (the router's, in the static): {} octets",
         size_of::<RouterStorage>()
     );
-    println!("HeaplessQueues<1, 2, 1497>: {} octets", size_of::<Queues>());
-    println!("ExtendedActionBuffers<1>: {} octets", size_of::<Actions>());
+    println!("FixedQueues<1, 2, 1497>: {} octets", size_of::<Queues>());
+    println!(
+        "ExtendedStorage<1, 2, 1> (the MS/TP core's): {} octets",
+        size_of::<MstpStorage>()
+    );
     println!("Memory: {} octets", size_of::<Memory>());
     println!("Router (on the stack): {router} octets");
     println!("MasterCore (on the stack): {core} octets");

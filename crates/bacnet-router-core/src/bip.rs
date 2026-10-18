@@ -11,8 +11,8 @@
 //!
 //! To the router a B/IP port is data, the [`PortConfig`] that
 //! [`BipPort::config`] reads from the node's [`Link`]. [`BipPort`] is a
-//! thin translator that keeps no state, as the `mstp` feature's `MstpPort`
-//! is: the caller owns the bip-core port and lends it to each call.
+//! thin translator that keeps no state: the caller owns the bip-core port,
+//! which owns its node, and lends it to each call.
 //!
 //! Wiring a port to the router:
 //!

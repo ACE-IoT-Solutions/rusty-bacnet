@@ -145,10 +145,17 @@ pub struct MstpCounters {
     /// T_turnaround of them (Clause 9.5.5.1). Each frame waited for a quiet
     /// line again.
     pub deferred_starts: u32,
-    /// Transmit events refused because the adapter broke the transmit
-    /// contract: confirming a start twice, or completing a transmit it never
-    /// confirmed starting.
+    /// Inputs ignored or refused because the adapter broke the core's
+    /// contract: starting a transmit before polling it, confirming a start
+    /// twice, completing a transmit it never confirmed starting, or handing
+    /// [`MasterCore::on_validated_frame`](crate::MasterCore::on_validated_frame)
+    /// a frame the codec would not have decoded.
     pub adapter_errors: u32,
+    /// Broken internal invariants: a frame the core built that its own frame
+    /// buffer could not hold. Debug builds assert instead; a release build
+    /// counts it here and does not send the frame. Zero unless the core has
+    /// a bug.
+    pub internal_errors: u32,
     /// Frames for this station that it could not act on, so dropped: a Poll
     /// For Master, data request, Test_Request or Reply To Poll For Master
     /// that arrived while it was answering a request or waiting to send a
@@ -239,9 +246,14 @@ impl MstpCounters {
         increment(&mut self.discarded_while_busy);
     }
 
-    /// Record a transmit event refused for breaking the transmit contract.
+    /// Record an input ignored or refused for breaking the core's contract.
     pub(crate) fn record_adapter_error(&mut self) {
         increment(&mut self.adapter_errors);
+    }
+
+    /// Record a broken internal invariant.
+    pub(crate) fn record_internal_error(&mut self) {
+        increment(&mut self.internal_errors);
     }
 
     /// Record a successful token rotation.

@@ -60,7 +60,7 @@ impl Sim {
             .is_some_and(|meta| meta.transmit_id == Some(id))
         {
             self.violation(
-                ViolationKind::CoreError,
+                ViolationKind::ContractBroken,
                 "withdrawn core transmit does not match physical ownership".into(),
             );
             return;

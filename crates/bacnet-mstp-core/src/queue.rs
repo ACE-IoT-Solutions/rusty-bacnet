@@ -238,7 +238,7 @@ impl QueueItemInfo {
 
 /// A bounded storage backend for queued NPDUs: the core's transmit queues.
 ///
-/// [`HeaplessQueues`] implements it, and `AllocQueues` with the `alloc`
+/// [`FixedQueues`] implements it, and `AllocQueues` with the `alloc`
 /// feature; so may storage of your own, such as queues another task fills
 /// too (the Tokio MS/TP transport keeps `AllocQueues` behind a lock that
 /// way). It carries the queue policy as well as the items: which item goes
@@ -409,9 +409,9 @@ impl<T: QueueStorage + ?Sized> QueueStorage for &mut T {
 // The slots and selection policy that the two queue backends share.
 mod slots;
 
-mod heapless;
+mod fixed;
 
-pub use heapless::HeaplessQueues;
+pub use fixed::FixedQueues;
 
 #[cfg(feature = "alloc")]
 mod alloc;

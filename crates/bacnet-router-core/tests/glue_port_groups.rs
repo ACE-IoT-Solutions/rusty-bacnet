@@ -10,7 +10,7 @@ use bacnet_bip_core::node::Mode;
 use bacnet_bip_core::port::NodePort;
 use bacnet_router_core::bip::BipPort;
 use bacnet_router_core::message::{MessageType, RejectReason};
-use bacnet_router_core::mstp::MstpPort;
+use bacnet_router_core::mstp::port_config;
 use bacnet_router_core::npdu::Npdu;
 use bacnet_router_core::router::{Discard, Group, GroupClassifier, Options, Permissive, Received};
 use bacnet_router_core::Instant;
@@ -29,7 +29,7 @@ fn default_host_delivers_a_subnet_group_through_the_bip_link() {
     let mut router = router_with(
         &[
             BipPort::config(bip.node().link(), 1),
-            MstpPort::config(&config(true), 2).unwrap(),
+            port_config(&config(true), 2).unwrap(),
         ],
         Options::HOSTED,
     );
@@ -54,7 +54,7 @@ fn configured() -> TestRouter {
     router_with(
         &[
             BipPort::config(&link(Mode::Normal), 1),
-            MstpPort::config(&config(true), 2).unwrap(),
+            port_config(&config(true), 2).unwrap(),
         ],
         Options::HOSTED,
     )

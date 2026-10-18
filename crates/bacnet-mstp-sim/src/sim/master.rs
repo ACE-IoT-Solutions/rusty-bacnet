@@ -1,15 +1,14 @@
 //! A master node: its core, the adapter that runs the core's actions, and
 //! the application behind it.
 
-use bacnet_mstp_codec::{FrameType, MAX_EXTENDED_FRAME_LENGTH, MAX_STANDARD_FRAME_LENGTH};
+use bacnet_mstp_codec::{FrameHeader, FrameType};
 use bacnet_mstp_core::{
-    Action, AllocQueues, CoreError, Direction, Instant, MasterCore, MasterState, MstpCounters,
-    NetworkPriority, QueueRefusal, ReceiveError, ReplyDecision, RequestId, TransmitId,
+    Action, AllocQueues, Direction, Instant, MasterCore, MasterState, MstpCounters,
+    NetworkPriority, QueueRefusal, ReceiveError, ReplyDecision, RequestError, RequestId,
+    TransmitError, TransmitId,
 };
 
-use super::{
-    decode_whole, describe, leak_action_buffers, leak_storage, Event, NodeKind, Sim, SimCore,
-};
+use super::{decode_whole, describe, leak_core_storage, Event, NodeKind, Sim, SimCore};
 use crate::event::Class;
 use crate::line::Driver;
 use crate::report::{Delivery, ViolationKind};
@@ -38,10 +37,12 @@ pub(crate) struct MasterNode {
     pub(super) transmitting: Option<TransmitId>,
     /// The core counted a token generation; its next frame is that poll.
     pub(super) regenerated: bool,
-    /// A frame whose start the core deferred. When the core hands the same
-    /// octets over again, before it gives any frame up, it is the same
-    /// frame.
+    /// A frame whose start the core deferred. When the core hands a frame
+    /// with the same header and length over again, before it gives any
+    /// frame up, it is the same frame.
     withdrawn: Option<PendingTx>,
+    /// The octets the core handed over with the last confirmed start.
+    started: Option<Vec<u8>>,
     /// Deadline misses already accounted for.
     misses_seen: u32,
     /// The master generated a token and has held it since: a collision with
@@ -54,6 +55,11 @@ pub(crate) struct MasterNode {
 
 pub(crate) struct PendingTx {
     pub(super) id: TransmitId,
+    /// The frame's type and addresses, as the action named them.
+    pub(super) header: FrameHeader,
+    /// Its length on the wire, as the action gave it.
+    pub(super) length: usize,
+    /// Its octets, which come with the confirmed start: empty until then.
     pub(super) octets: Vec<u8>,
     /// When the core handed the frame over.
     pub(super) dispatched: Instant,
@@ -80,6 +86,7 @@ impl MasterNode {
             transmitting: None,
             regenerated: false,
             withdrawn: None,
+            started: None,
             generating: false,
             misses_seen: 0,
             deliveries: Vec::new(),
@@ -88,9 +95,9 @@ impl MasterNode {
         }
     }
 
-    /// A fresh core, as after INITIALIZE. Its receive storage holds the
-    /// longest frame it takes: a standard one, or an extended one with the
-    /// flag on, so a master without it treats extended frames as a node
+    /// A fresh core, as after INITIALIZE. It uses as much receive storage as
+    /// the longest frame it takes: a standard one, or an extended one with
+    /// the flag on, so a master without it treats extended frames as a node
     /// without COBS support does.
     pub(super) fn boot(&mut self, now: Instant) {
         self.incarnation += 1;
@@ -99,19 +106,8 @@ impl MasterNode {
             super::host::HostState::new(self.spec.config.t_frame_abort)
         });
         let queues = AllocQueues::new(self.spec.unicast_capacity, self.spec.broadcast_capacity);
-        let storage = if self.spec.config.extended_frames {
-            MAX_EXTENDED_FRAME_LENGTH
-        } else {
-            MAX_STANDARD_FRAME_LENGTH
-        };
-        let core: SimCore = MasterCore::new(
-            self.spec.config,
-            queues,
-            leak_storage(storage),
-            leak_action_buffers(),
-            now,
-        )
-        .expect("a valid master spec");
+        let core: SimCore = MasterCore::new(self.spec.config, leak_core_storage(queues), now)
+            .expect("a valid master spec");
         self.deadline = core.next_deadline();
         self.fire_at = None;
         self.misses_seen = 0;
@@ -147,10 +143,19 @@ pub(crate) enum Input {
     Decide(RequestId, Option<Vec<u8>>),
 }
 
+/// What the core refused, for the two inputs that can be refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// The adapter's transmit start.
+    Start(TransmitError),
+    /// The application's decision on a request.
+    Decision(RequestError),
+}
+
 /// An action, copied out of the core so the borrow ends.
 enum Effect {
     Direction(Direction),
-    Transmit(TransmitId, Vec<u8>),
+    Transmit(TransmitId, FrameHeader, usize),
     Deliver {
         source: u8,
         destination: u8,
@@ -163,15 +168,21 @@ enum Effect {
 
 /// Whether a frame is an answer to a request: a data frame not expecting a
 /// reply, standard or extended, or Reply Postponed.
-fn is_answer(octets: &[u8]) -> bool {
-    decode_whole(octets).is_some_and(|(header, _)| {
-        matches!(
-            header.frame_type,
-            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
-                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
-                | FrameType::REPLY_POSTPONED
-        )
-    })
+fn is_answer(header: FrameHeader) -> bool {
+    matches!(
+        header.frame_type,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
+            | FrameType::REPLY_POSTPONED
+    )
+}
+
+/// A frame named by its header and length, as [`describe`] prints octets.
+fn describe_named(header: FrameHeader, length: usize) -> String {
+    format!(
+        "{:?} {}->{} ({length} octets)",
+        header.frame_type, header.source, header.destination
+    )
 }
 
 /// Frames the core has given up before they went out.
@@ -186,7 +197,7 @@ fn drain(core: &mut SimCore) -> Result<Vec<Effect>, usize> {
         let effect = match core.poll_action() {
             Action::Idle => return Ok(effects),
             Action::SetDirection(direction) => Effect::Direction(direction),
-            Action::Transmit { id, frame } => Effect::Transmit(id, frame.to_vec()),
+            Action::Transmit { id, header, length } => Effect::Transmit(id, header, length),
             Action::DeliverNpdu {
                 source,
                 destination,
@@ -222,7 +233,7 @@ fn drain(core: &mut SimCore) -> Result<Vec<Effect>, usize> {
 impl Sim {
     /// Feed one event to a master's core, then run the adapter over what it
     /// asked for and check the core's contract.
-    pub(super) fn master_input(&mut self, node: usize, input: Input) -> Result<(), CoreError> {
+    pub(super) fn master_input(&mut self, node: usize, input: Input) -> Result<(), Refused> {
         let now = match input {
             Input::Complete(_, stamp) => stamp,
             _ => self.now,
@@ -237,23 +248,42 @@ impl Sim {
         let before = core.state();
         let generations = core.counters().token_regenerations;
         let gave_up = given_up(&core.counters());
+        let mut started = None;
         let result = match &input {
-            Input::Octet(byte) => core.on_octet(*byte, now),
-            Input::Garbled => core.on_receive_error(ReceiveError::Framing, now),
-            Input::Deadline => core.on_deadline(now),
-            Input::Started(id) => core.on_transmit_started(*id, now),
-            Input::Complete(id, stamp) => core.on_transmit_complete(*id, *stamp),
-            Input::Decide(request, Some(data)) => {
-                core.complete_request(*request, ReplyDecision::Data(data), now)
+            Input::Octet(byte) => {
+                core.on_octet(*byte, now);
+                Ok(())
             }
-            Input::Decide(request, None) => {
-                core.complete_request(*request, ReplyDecision::Postponed, now)
+            Input::Garbled => {
+                core.on_receive_error(ReceiveError::Framing, now);
+                Ok(())
             }
+            Input::Deadline => {
+                core.on_deadline(now);
+                Ok(())
+            }
+            Input::Started(id) => core
+                .on_transmit_started(*id, now)
+                .map(|frame| started = Some(frame.to_vec()))
+                .map_err(Refused::Start),
+            Input::Complete(id, stamp) => {
+                core.on_transmit_complete(*id, *stamp);
+                Ok(())
+            }
+            Input::Decide(request, Some(data)) => core
+                .complete_request(*request, ReplyDecision::Data(data), now)
+                .map_err(Refused::Decision),
+            Input::Decide(request, None) => core
+                .complete_request(*request, ReplyDecision::Postponed, now)
+                .map_err(Refused::Decision),
         };
         let effects = drain(core);
         let after = core.state();
         let counters = core.counters();
         let deadline = core.next_deadline();
+        if started.is_some() {
+            master.started = started;
+        }
         let adapter = master.spec.adapter;
         let rearmed = deadline != master.deadline;
         if rearmed {
@@ -290,7 +320,7 @@ impl Sim {
                 },
             );
         }
-        self.check_core_result(station, &input, result);
+        self.check_core_result(station, result);
         self.check_counters(node, &counters, punctual);
         // A deadline already due may wait for a late or jittery adapter; a
         // new one must not be set in the past.
@@ -304,7 +334,7 @@ impl Sim {
         match effects {
             Ok(effects) => self.apply_effects(node, effects, answering),
             Err(count) => self.violation(
-                ViolationKind::CoreError,
+                ViolationKind::ContractBroken,
                 format!("station {station}: {count} actions from one event"),
             ),
         }
@@ -339,24 +369,20 @@ impl Sim {
     }
 
     /// Errors the adapter contract expects; anything else is a violation.
-    fn check_core_result(&mut self, station: u8, input: &Input, result: Result<(), CoreError>) {
+    fn check_core_result(&mut self, station: u8, result: Result<(), Refused>) {
         let Err(error) = result else {
             return;
         };
-        let expected = match input {
+        let expected = matches!(
+            error,
             // A reply whose window closed before the adapter got to it, or
             // line activity within Tturnaround of the start.
-            Input::Started(_) => matches!(
-                error,
-                CoreError::RequestExpired | CoreError::TransmitDeferred
-            ),
+            Refused::Start(TransmitError::Expired | TransmitError::Deferred)
             // The application answered late, or for a request already gone.
-            Input::Decide(..) => matches!(
-                error,
-                CoreError::RequestExpired | CoreError::NoPendingRequest | CoreError::StaleRequest
-            ),
-            _ => false,
-        };
+                | Refused::Decision(
+                    RequestError::Expired | RequestError::NoPending | RequestError::Stale
+                )
+        );
         if expected {
             self.note(
                 Who::Station(station),
@@ -364,7 +390,7 @@ impl Sim {
             );
         } else {
             self.violation(
-                ViolationKind::CoreError,
+                ViolationKind::ContractBroken,
                 format!("station {station}: unexpected {error:?}"),
             );
         }
@@ -381,6 +407,9 @@ impl Sim {
         let mut wrong = Vec::new();
         if counters.adapter_errors != 0 {
             wrong.push(format!("adapter_errors {}", counters.adapter_errors));
+        }
+        if counters.internal_errors != 0 {
+            wrong.push(format!("internal_errors {}", counters.internal_errors));
         }
         if counters.delivery_drops != 0 {
             wrong.push(format!("delivery_drops {}", counters.delivery_drops));
@@ -426,13 +455,13 @@ impl Sim {
                         self.abort_withdrawn_transmission(node);
                     }
                 }
-                Effect::Transmit(id, octets) => {
+                Effect::Transmit(id, header, length) => {
                     self.note(
                         who,
                         TraceKind::Action(format!(
                             "Transmit #{} {}",
                             id.generation(),
-                            describe(&octets)
+                            describe_named(header, length)
                         )),
                     );
                     let now = self.now;
@@ -445,14 +474,17 @@ impl Sim {
                     let replaced = master.pending.is_some();
                     let delay = master.spec.adapter.start_delay;
                     let again = master.withdrawn.take().is_some_and(|withdrawn| {
-                        withdrawn.generation && withdrawn.octets == octets
+                        withdrawn.generation
+                            && (withdrawn.header, withdrawn.length) == (header, length)
                     });
                     let generation = std::mem::take(&mut master.regenerated) || again;
                     master.generating |= generation;
-                    let answer = answering && is_answer(&octets);
+                    let answer = answering && is_answer(header);
                     master.pending = Some(PendingTx {
                         id,
-                        octets,
+                        header,
+                        length,
+                        octets: Vec::new(),
                         dispatched: now,
                         activity_at_dispatch: activity,
                         while_answering: answer,
@@ -464,7 +496,7 @@ impl Sim {
                     let incarnation = master.incarnation;
                     if replaced {
                         self.violation(
-                            ViolationKind::CoreError,
+                            ViolationKind::ContractBroken,
                             format!("station {station}: a transmit before the last one started"),
                         );
                     }
@@ -652,7 +684,7 @@ impl Sim {
         let Some(master) = self.master_mut(node) else {
             return;
         };
-        let Some(pending) = master.pending.take() else {
+        let Some(mut pending) = master.pending.take() else {
             return;
         };
         if pending.id != id {
@@ -661,6 +693,23 @@ impl Sim {
         }
         match self.master_input(node, Input::Started(id)) {
             Ok(()) => {
+                // The octets come with the confirmed start, and must be the
+                // frame the action named.
+                let master = self.master_mut(node).expect("a master");
+                pending.octets = master.started.take().unwrap_or_default();
+                let named = decode_whole(&pending.octets)
+                    .is_some_and(|(header, _)| header == pending.header)
+                    && pending.octets.len() == pending.length;
+                if !named {
+                    self.violation(
+                        ViolationKind::ContractBroken,
+                        format!(
+                            "station {station}: the start handed over {}, not the {} the action named",
+                            describe(&pending.octets),
+                            describe_named(pending.header, pending.length)
+                        ),
+                    );
+                }
                 self.receiver_started(node);
                 self.check_turnaround(node, &pending);
                 self.check_usage_delay(node, &pending);
@@ -688,7 +737,7 @@ impl Sim {
             }
             Err(error) => {
                 self.report.refused_starts += 1;
-                if error == CoreError::TransmitDeferred {
+                if error == Refused::Start(TransmitError::Deferred) {
                     let master = self.master_mut(node).expect("a master");
                     master.withdrawn = Some(pending);
                 }

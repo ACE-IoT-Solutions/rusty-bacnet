@@ -2,12 +2,12 @@
 
 use bacnet_mstp_codec::{Frame, FrameType, MAX_STANDARD_MPDU_DATA};
 use bacnet_mstp_core::{
-    Action, CoreError, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState,
-    NetworkPriority, QueueStorage, ReceiveError, ReplyDecision, RequestId, TransmitId,
+    Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, NetworkPriority,
+    QueueStorage, ReceiveError, ReplyDecision, RequestError, RequestId, TransmitError, TransmitId,
 };
 use proptest::prop_assert;
 
-type Queues = HeaplessQueues<8, 8>;
+type Queues = FixedQueues<8, 8>;
 type Actions = bacnet_mstp_core::ActionBuffers;
 
 fn at(millis: u64) -> Instant {
@@ -34,8 +34,8 @@ fn take_transmit<Q: bacnet_mstp_core::QueueStorage>(
         Action::SetDirection(Direction::Transmit)
     );
     let id = match core.poll_action() {
-        Action::Transmit { id, frame } => {
-            assert!(frame.len() >= 8);
+        Action::Transmit { id, length, .. } => {
+            assert!(length >= 8);
             id
         }
         other => panic!("expected transmit, got {other:?}"),
@@ -49,7 +49,7 @@ fn complete_transmit<Q: bacnet_mstp_core::QueueStorage>(
     id: TransmitId,
     now: Instant,
 ) {
-    core.on_transmit_complete(id, now).unwrap();
+    core.on_transmit_complete(id, now);
     assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
 }
 
@@ -57,7 +57,7 @@ fn complete_transmit<Q: bacnet_mstp_core::QueueStorage>(
 fn public_events_reach_all_clause_states_and_counters_are_observable() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,
@@ -69,15 +69,15 @@ fn public_events_reach_all_clause_states_and_counters_are_observable() {
 
     // Lost-token recovery has a distinct NoToken station slot before its
     // PollForMaster transmission is due.
-    core.on_deadline(at(500)).unwrap();
+    core.on_deadline(at(500));
     assert_eq!(core.state(), MasterState::NoToken);
-    core.on_deadline(at(510)).unwrap();
+    core.on_deadline(at(510));
     assert_eq!(core.state(), MasterState::PollForMaster);
     let poll = take_transmit(&mut core, at(510));
     complete_transmit(&mut core, poll, at(511));
 
     // No ReplyToPollForMaster arrives, so the usage timeout advances polling.
-    core.on_deadline(at(531)).unwrap();
+    core.on_deadline(at(531));
     assert_eq!(core.state(), MasterState::PollForMaster);
     let poll_next = take_transmit(&mut core, at(531));
     complete_transmit(&mut core, poll_next, at(532));
@@ -85,11 +85,9 @@ fn public_events_reach_all_clause_states_and_counters_are_observable() {
     // A received token enters UseToken while queued work is available.
     core.enqueue_npdu(2, &[0, 0x00], NetworkPriority::Normal, at(532))
         .unwrap();
-    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(533))
-        .unwrap();
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(533));
     assert_eq!(core.state(), MasterState::Idle);
-    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(534))
-        .unwrap();
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(534));
     let state_after_token = core.state();
     assert!(
         matches!(
@@ -110,7 +108,7 @@ fn frame_abort_is_strictly_greater_than_timing_and_next_deadline_is_plus_one() {
     let mut actions = Actions::new();
     let core_config = standard_config(0, 1);
     let abort = core_config.t_frame_abort;
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         core_config,
         Queues::new(),
         &mut rx,
@@ -118,15 +116,14 @@ fn frame_abort_is_strictly_greater_than_timing_and_next_deadline_is_plus_one() {
         Instant::ZERO,
     )
     .unwrap();
-    core.on_octet(0x55, Instant::ZERO).unwrap();
+    core.on_octet(0x55, Instant::ZERO);
     assert_eq!(
         core.next_deadline(),
         Some(Instant::ZERO + abort + Duration::from_micros(1))
     );
-    core.on_silence(Instant::ZERO + abort).unwrap();
+    core.on_silence(Instant::ZERO + abort);
     assert_eq!(core.counters().frame_aborts, 0);
-    core.on_silence(Instant::ZERO + abort + Duration::from_micros(1))
-        .unwrap();
+    core.on_silence(Instant::ZERO + abort + Duration::from_micros(1));
     assert_eq!(core.counters().frame_aborts, 1);
 }
 
@@ -134,7 +131,7 @@ fn frame_abort_is_strictly_greater_than_timing_and_next_deadline_is_plus_one() {
 fn no_token_uses_station_slot_and_resets_after_new_silence_epoch() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(2, 4),
         Queues::new(),
         &mut rx,
@@ -142,18 +139,18 @@ fn no_token_uses_station_slot_and_resets_after_new_silence_epoch() {
         Instant::ZERO,
     )
     .unwrap();
-    core.on_deadline(at(500)).unwrap();
+    core.on_deadline(at(500));
     assert_eq!(core.state(), MasterState::NoToken);
     assert_eq!(core.next_deadline(), Some(at(520)));
-    core.on_silence(at(519)).unwrap();
+    core.on_silence(at(519));
     assert_eq!(core.state(), MasterState::NoToken);
-    core.on_deadline(at(520)).unwrap();
+    core.on_deadline(at(520));
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert!(core.counters().token_regenerations >= 1);
 
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(2, 4),
         Queues::new(),
         &mut rx,
@@ -161,8 +158,8 @@ fn no_token_uses_station_slot_and_resets_after_new_silence_epoch() {
         Instant::ZERO,
     )
     .unwrap();
-    core.on_deadline(at(500)).unwrap();
-    core.on_octet(0x00, at(501)).unwrap();
+    core.on_deadline(at(500));
+    core.on_octet(0x00, at(501));
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.next_deadline(), Some(at(1001)));
 }
@@ -176,7 +173,7 @@ fn a_missed_generation_slot_comes_round_again_and_is_counted() {
     for (serviced, generated, missed) in [(530, 530, 0), (545, 570, 1)] {
         let mut rx = [0; 1024];
         let mut actions = Actions::new();
-        let mut core = MasterCore::new(
+        let mut core = MasterCore::from_parts(
             standard_config(3, 3),
             Queues::new(),
             &mut rx,
@@ -184,13 +181,13 @@ fn a_missed_generation_slot_comes_round_again_and_is_counted() {
             Instant::ZERO,
         )
         .unwrap();
-        core.on_deadline(at(500)).unwrap();
+        core.on_deadline(at(500));
         assert_eq!(core.next_deadline(), Some(at(530)));
-        core.on_deadline(at(serviced)).unwrap();
+        core.on_deadline(at(serviced));
         if serviced != generated {
             assert_eq!(core.state(), MasterState::NoToken);
             assert_eq!(core.next_deadline(), Some(at(generated)));
-            core.on_deadline(at(generated)).unwrap();
+            core.on_deadline(at(generated));
         }
         assert_eq!(core.state(), MasterState::PollForMaster);
         assert_eq!(core.counters().token_regenerations, 1);
@@ -221,7 +218,7 @@ fn a_repeated_generation_window_has_exact_edges() {
     for (serviced, generated) in cases {
         let mut rx = [0; 1024];
         let mut actions = Actions::new();
-        let mut core = MasterCore::new(
+        let mut core = MasterCore::from_parts(
             standard_config(3, 3),
             Queues::new(),
             &mut rx,
@@ -229,14 +226,14 @@ fn a_repeated_generation_window_has_exact_edges() {
             Instant::ZERO,
         )
         .unwrap();
-        core.on_deadline(at(500)).unwrap();
+        core.on_deadline(at(500));
         let serviced = Instant::from_micros(serviced);
         let generated = Instant::from_micros(generated);
-        core.on_deadline(serviced).unwrap();
+        core.on_deadline(serviced);
         if generated != serviced {
             assert_eq!(core.state(), MasterState::NoToken, "{serviced:?}");
             assert_eq!(core.next_deadline(), Some(generated), "{serviced:?}");
-            core.on_deadline(generated).unwrap();
+            core.on_deadline(generated);
         }
         assert_eq!(core.state(), MasterState::PollForMaster, "{serviced:?}");
         assert_eq!(core.counters().missed_generation_slots, 1);
@@ -247,7 +244,7 @@ fn a_repeated_generation_window_has_exact_edges() {
 fn poll_for_master_uses_usage_timeout_not_slot() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(0, 2),
         Queues::new(),
         &mut rx,
@@ -255,16 +252,16 @@ fn poll_for_master_uses_usage_timeout_not_slot() {
         Instant::ZERO,
     )
     .unwrap();
-    core.on_deadline(at(500)).unwrap();
-    core.on_deadline(at(500)).unwrap();
+    core.on_deadline(at(500));
+    core.on_deadline(at(500));
     // Station zero's slot is the beginning of the epoch.
     let poll = take_transmit(&mut core, at(500));
     complete_transmit(&mut core, poll, at(501));
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert_eq!(core.next_deadline(), Some(at(521)));
-    core.on_deadline(at(511)).unwrap();
+    core.on_deadline(at(511));
     assert_eq!(core.poll_action(), Action::Idle);
-    core.on_deadline(at(521)).unwrap();
+    core.on_deadline(at(521));
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert!(core.counters().deadline_misses == 0);
 }
@@ -273,7 +270,7 @@ fn poll_for_master_uses_usage_timeout_not_slot() {
 fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,
@@ -284,8 +281,7 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
     core.on_validated_frame(
         frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[0, 0x01]),
         at(1),
-    )
-    .unwrap();
+    );
     let id = match core.poll_action() {
         Action::DeliverNpdu {
             request_id: Some(id),
@@ -296,7 +292,7 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
     let stale = RequestId::new(id.generation().wrapping_add(1));
     assert_eq!(
         core.complete_request(stale, ReplyDecision::Postponed, at(2)),
-        Err(CoreError::StaleRequest)
+        Err(RequestError::Stale)
     );
     assert_eq!(
         core.complete_request(
@@ -304,7 +300,7 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
             ReplyDecision::Data(&[0; MAX_STANDARD_MPDU_DATA + 1]),
             at(2)
         ),
-        Err(CoreError::ReplyOversize {
+        Err(RequestError::Oversize {
             length: MAX_STANDARD_MPDU_DATA + 1,
             maximum: MAX_STANDARD_MPDU_DATA,
         })
@@ -314,7 +310,7 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
     assert_eq!(core.snapshot().request_id, None);
     assert_eq!(
         core.complete_request(id, ReplyDecision::Postponed, at(3)),
-        Err(CoreError::NoPendingRequest)
+        Err(RequestError::NoPending)
     );
     assert!(core.counters().npdus_delivered >= 1);
 }
@@ -323,7 +319,7 @@ fn request_ids_reject_stale_duplicate_oversize_and_allow_cancel() {
 fn abandoned_request_returns_idle_without_wire_actions() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,
@@ -334,8 +330,7 @@ fn abandoned_request_returns_idle_without_wire_actions() {
     core.on_validated_frame(
         frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 1, 7, &[0, 0x01]),
         at(1),
-    )
-    .unwrap();
+    );
     let id = match core.poll_action() {
         Action::DeliverNpdu {
             request_id: Some(id),
@@ -361,7 +356,7 @@ fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
     let queues = Queues::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         queues,
         &mut rx,
@@ -369,20 +364,18 @@ fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
         Instant::ZERO,
     )
     .unwrap();
-    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
-        .unwrap();
-    core.on_deadline(at(5)).unwrap();
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO);
+    core.on_deadline(at(5));
     let id = take_transmit(&mut core, at(5));
     assert_eq!(
         core.on_transmit_started(id, at(6)),
-        Err(CoreError::TransmitAlreadyStarted)
+        Err(TransmitError::AlreadyStarted)
     );
-    assert_eq!(
-        core.on_transmit_complete(TransmitId::new(id.generation().wrapping_add(1)), at(7)),
-        Err(CoreError::StaleTransmit)
-    );
+    // A completion for another id is ignored: the transmit stays active.
+    core.on_transmit_complete(TransmitId::new(id.generation().wrapping_add(1)), at(7));
+    assert_eq!(core.snapshot().transmit_id, Some(id));
     let watchdog = at(6) + core.config().transmit_watchdog;
-    core.on_deadline(watchdog).unwrap();
+    core.on_deadline(watchdog);
     assert_eq!(core.snapshot().transmit_id, None);
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
@@ -393,7 +386,7 @@ fn transmit_ids_are_generation_bound_and_watchdog_recovers_receive_direction() {
 fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,
@@ -404,8 +397,7 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
     core.on_validated_frame(
         frame(FrameType::BACNET_DATA_EXPECTING_REPLY, 0xff, 2, &[1, 2]),
         at(1),
-    )
-    .unwrap();
+    );
     assert_eq!(
         core.poll_action(),
         Action::DeliverNpdu {
@@ -418,7 +410,7 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
 
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,
@@ -428,18 +420,16 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
     .unwrap();
     core.enqueue_npdu(2, &[0, 0x04], NetworkPriority::Normal, Instant::ZERO)
         .unwrap();
-    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO)
-        .unwrap();
-    core.on_deadline(at(5)).unwrap();
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), Instant::ZERO);
+    core.on_deadline(at(5));
     let tx = take_transmit(&mut core, at(5));
     complete_transmit(&mut core, tx, at(6));
     assert_eq!(core.state(), MasterState::WaitForReply);
-    core.on_receive_error(ReceiveError::Framing, at(7)).unwrap();
+    core.on_receive_error(ReceiveError::Framing, at(7));
     assert_eq!(core.state(), MasterState::WaitForReply);
-    core.on_octet(0x55, at(8)).unwrap();
-    core.on_octet(0xff, at(9)).unwrap();
-    core.on_receive_error(ReceiveError::Framing, at(10))
-        .unwrap();
+    core.on_octet(0x55, at(8));
+    core.on_octet(0xff, at(9));
+    core.on_receive_error(ReceiveError::Framing, at(10));
     let post_error_state = core.state();
     assert!(
         matches!(
@@ -455,7 +445,7 @@ fn broadcasts_are_delivered_without_reply_and_invalid_wait_reply_finishes_token(
 fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_octets() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,
@@ -472,13 +462,11 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
                 &[source],
             ),
             at(u64::from(source)),
-        )
-        .unwrap();
+        );
     }
     assert_eq!(core.counters().npdus_delivered, 8);
-    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(10))
-        .unwrap();
-    core.on_deadline(at(15)).unwrap();
+    core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(10));
+    core.on_deadline(at(15));
     assert!(matches!(
         core.poll_action(),
         Action::SetDirection(Direction::Transmit)
@@ -490,7 +478,7 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
         .unwrap();
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut stream_core = MasterCore::new(
+    let mut stream_core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,
@@ -499,9 +487,7 @@ fn queue_overflow_does_not_prevent_control_progress_and_validated_frames_match_o
     )
     .unwrap();
     for (index, byte) in encoded[..len].iter().copied().enumerate() {
-        stream_core
-            .on_octet(byte, at(u64::try_from(index).unwrap() + 1))
-            .unwrap();
+        stream_core.on_octet(byte, at(u64::try_from(index).unwrap() + 1));
     }
     assert_eq!(stream_core.counters().frames_received, 1);
     assert_eq!(stream_core.counters().npdus_delivered, 1);
@@ -513,17 +499,17 @@ fn monotone_random_events_never_panic_and_deadlines_are_causal() {
     proptest::proptest!(|(steps in proptest::collection::vec(0u8..6, 1..80))| {
         let mut rx = [0; 1024];
         let mut actions = Actions::new();
-        let mut core = MasterCore::new(standard_config(1, 2), Queues::new(), &mut rx, &mut actions, Instant::ZERO)
+        let mut core = MasterCore::from_parts(standard_config(1, 2), Queues::new(), &mut rx, &mut actions, Instant::ZERO)
             .unwrap();
         let mut now = Instant::ZERO;
         for step in steps {
             now += Duration::from_micros(u64::from(step));
             match step {
-                0 => { core.on_silence(now).unwrap(); }
-                1 => { core.on_receive_error(ReceiveError::Overrun, now).unwrap(); }
-                2 => { core.on_octet(0x55, now).unwrap(); }
-                3 => { core.on_octet(0xff, now).unwrap(); }
-                _ => { core.on_deadline(now).unwrap(); }
+                0 => { core.on_silence(now); }
+                1 => { core.on_receive_error(ReceiveError::Overrun, now); }
+                2 => { core.on_octet(0x55, now); }
+                3 => { core.on_octet(0xff, now); }
+                _ => { core.on_deadline(now); }
             }
             if let Some(deadline) = core.next_deadline() {
                 prop_assert!(deadline >= now || core.counters().deadline_misses > 0);
@@ -570,7 +556,7 @@ mod allocation_test {
         let mut rx = [0; 1024];
         let mut actions = Actions::new();
         let queues = AllocQueues::<MAX_STANDARD_MPDU_DATA>::new(4, 4);
-        let mut core = MasterCore::new(
+        let mut core = MasterCore::from_parts(
             standard_config(1, 2),
             queues,
             &mut rx,
@@ -583,9 +569,8 @@ mod allocation_test {
         THREAD_ALLOCATIONS.with(|count| count.set(0));
         core.enqueue_npdu(2, &[1, 2], NetworkPriority::Normal, at(0))
             .unwrap();
-        core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(2))
-            .unwrap();
-        core.on_deadline(at(7)).unwrap();
+        core.on_validated_frame(frame(FrameType::TOKEN, 1, 2, &[]), at(2));
+        core.on_deadline(at(7));
         assert_eq!(
             core.poll_action(),
             Action::SetDirection(Direction::Transmit)
@@ -595,7 +580,7 @@ mod allocation_test {
             other => panic!("expected transmit, got {other:?}"),
         };
         core.on_transmit_started(id, at(7)).unwrap();
-        core.on_transmit_complete(id, at(8)).unwrap();
+        core.on_transmit_complete(id, at(8));
         assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
         let measured = THREAD_ALLOCATIONS.with(Cell::get);
         assert_eq!(measured, 0);
@@ -610,7 +595,7 @@ mod allocation_test {
 fn taking_the_counters_drains_the_core_and_its_queues() {
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,
@@ -633,7 +618,7 @@ fn taking_the_counters_drains_the_core_and_its_queues() {
             Err(bacnet_mstp_core::QueueRefusal::Oversize)
         );
     }
-    core.on_receive_error(ReceiveError::Parity, at(1)).unwrap();
+    core.on_receive_error(ReceiveError::Parity, at(1));
 
     let looked = core.counters();
     let taken = core.take_counters();
@@ -667,7 +652,7 @@ fn a_clock_that_steps_back_is_held_at_the_latest_time() {
     let mut queues = Queues::new();
     let mut rx = [0; 1024];
     let mut actions = Actions::new();
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         &mut queues,
         &mut rx,
@@ -676,14 +661,14 @@ fn a_clock_that_steps_back_is_held_at_the_latest_time() {
     )
     .unwrap();
     // Line activity at 100 ms restarts the wait for a lost token.
-    core.on_octet(0x00, at(100)).unwrap();
+    core.on_octet(0x00, at(100));
     assert_eq!(core.next_deadline(), Some(at(600)));
     // The same at 50 ms is taken at 100 ms: the deadline stays.
-    core.on_octet(0x00, at(50)).unwrap();
-    core.on_receive_error(ReceiveError::Break, at(40)).unwrap();
+    core.on_octet(0x00, at(50));
+    core.on_receive_error(ReceiveError::Break, at(40));
     assert_eq!(core.next_deadline(), Some(at(600)));
     // A deadline call stamped before then is taken at 100 ms, early.
-    core.on_deadline(at(10)).unwrap();
+    core.on_deadline(at(10));
     assert_eq!(core.state(), MasterState::Idle);
     assert_eq!(core.counters().deadline_misses, 0);
     // An NPDU queued at 20 ms is queued at 100 ms, and expires five seconds
@@ -693,7 +678,7 @@ fn a_clock_that_steps_back_is_held_at_the_latest_time() {
     // A later one doesn't move the clock: an octet at 150 ms still counts.
     core.enqueue_npdu(2, &[1, 0], NetworkPriority::Normal, at(900))
         .unwrap();
-    core.on_octet(0x00, at(150)).unwrap();
+    core.on_octet(0x00, at(150));
     assert_eq!(core.next_deadline(), Some(at(650)));
     // The core's borrow of the queues ends with its last use.
     let first = queues.peek(at(150)).unwrap();
@@ -708,13 +693,14 @@ fn errors_and_refusals_read_as_messages() {
     use bacnet_mstp_core::{ConfigError, CoreBuffer, MstpCoreConfig, QueueRefusal};
 
     let refused = MstpCoreConfig::for_baud_rate(2_400).unwrap_err();
-    let errors: [&dyn core::error::Error; 5] = [
-        &CoreError::Config(refused),
-        &CoreError::ReplyOversize {
+    let errors: [&dyn core::error::Error; 6] = [
+        &refused,
+        &RequestError::Oversize {
             length: 600,
             maximum: 501,
         },
-        &CoreError::TransmitDeferred,
+        &TransmitError::Deferred,
+        &RequestError::Expired,
         &QueueRefusal::Expired,
         &NetworkPriority::try_from(4).unwrap_err(),
     ];
@@ -747,7 +733,7 @@ fn debug_shows_state_not_buffers() {
         format!("{actions:?}"),
         "ActionBuffers { deliveries: 8, npdu: 501, frame: 511 }"
     );
-    let mut core = MasterCore::new(
+    let mut core = MasterCore::from_parts(
         standard_config(1, 2),
         Queues::new(),
         &mut rx,

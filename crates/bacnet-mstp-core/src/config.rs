@@ -195,8 +195,9 @@ pub enum ConfigError {
     },
     /// [`MstpCoreConfig::extended_frames`] is on, but a buffer the core was
     /// given can't hold the largest extended frame or NPDU. Only
-    /// [`MasterCore::new`](crate::MasterCore::new) reports it, since only it
-    /// sees the buffers.
+    /// [`MasterCore::new`](crate::MasterCore::new) and
+    /// [`MasterCore::from_parts`](crate::MasterCore::from_parts) report it,
+    /// since only they see the buffers.
     ExtendedStorageTooSmall {
         /// The buffer that is too small.
         buffer: CoreBuffer,
@@ -205,6 +206,15 @@ pub enum ConfigError {
         /// The size extended frames need: the longest extended frame on the
         /// wire for the receive storage and the transmit frame, the longest
         /// NPDU one carries for a delivery slot and a queue slot.
+        minimum: usize,
+    },
+    /// The receive storage the core was given can't hold even the shortest
+    /// frame. Only [`MasterCore::new`](crate::MasterCore::new) and
+    /// [`MasterCore::from_parts`](crate::MasterCore::from_parts) report it.
+    ReceiveStorageTooSmall {
+        /// Supplied storage length.
+        length: usize,
+        /// [`MIN_RX_STORAGE`](crate::MIN_RX_STORAGE).
         minimum: usize,
     },
 }
@@ -293,6 +303,10 @@ impl fmt::Display for ConfigError {
             } => write!(
                 f,
                 "the {buffer} holds {length} octets; extended frames need {minimum}"
+            ),
+            Self::ReceiveStorageTooSmall { length, minimum } => write!(
+                f,
+                "receive storage of {length} octets is under the {minimum} of the shortest frame"
             ),
         }
     }

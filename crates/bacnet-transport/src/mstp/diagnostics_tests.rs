@@ -96,6 +96,7 @@ async fn frames_are_counted_by_kind_and_outlive_the_transport() {
     assert_eq!(snapshot.mac.unicast.dequeued, 2);
     assert_eq!(snapshot.mac.token_rotations, 3);
     assert_eq!(snapshot.mac.adapter_errors, 0);
+    assert_eq!(snapshot.mac.internal_errors, 0);
     assert_eq!(
         observer.snapshot(),
         snapshot,

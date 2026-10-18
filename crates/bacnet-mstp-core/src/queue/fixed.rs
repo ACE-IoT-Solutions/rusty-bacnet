@@ -32,15 +32,15 @@ const EMPTY_QUEUE_COUNTERS: QueueCounters = QueueCounters {
 /// constructor fails to compile:
 ///
 /// ```
-/// use bacnet_mstp_core::HeaplessQueues;
+/// use bacnet_mstp_core::FixedQueues;
 ///
-/// static LONGEST: HeaplessQueues<1, 0, 65_535> = HeaplessQueues::new();
+/// static LONGEST: FixedQueues<1, 0, 65_535> = FixedQueues::new();
 /// ```
 ///
 /// ```compile_fail
-/// use bacnet_mstp_core::HeaplessQueues;
+/// use bacnet_mstp_core::FixedQueues;
 ///
-/// static TOO_LONG: HeaplessQueues<1, 0, 65_536> = HeaplessQueues::new();
+/// static TOO_LONG: FixedQueues<1, 0, 65_536> = FixedQueues::new();
 /// ```
 ///
 /// Each item is written into a free slot and stays there until it leaves,
@@ -54,7 +54,7 @@ const EMPTY_QUEUE_COUNTERS: QueueCounters = QueueCounters {
 /// ([`MstpCoreConfig::starvation_limit`](crate::MstpCoreConfig::starvation_limit)),
 /// which [`MasterCore::new`](crate::MasterCore::new) hands over; until
 /// then the queues use that field's default.
-pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
+pub struct FixedQueues<const U: usize, const B: usize, const N: usize = MAX_STANDARD_MPDU_DATA> {
     unicast: Lane<[Slot<N>; U]>,
     broadcast: Lane<[Slot<N>; B]>,
     sequence: u64,
@@ -62,7 +62,7 @@ pub struct HeaplessQueues<const U: usize, const B: usize, const N: usize = MAX_S
     starvation_limit: Option<u8>,
 }
 
-impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
+impl<const U: usize, const B: usize, const N: usize> FixedQueues<U, B, N> {
     /// Empty queues.
     #[must_use]
     pub const fn new() -> Self {
@@ -126,9 +126,9 @@ impl<const U: usize, const B: usize, const N: usize> HeaplessQueues<U, B, N> {
 
 /// The items waiting, oldest slot first, with their sequence numbers, and
 /// the counters; free slots are left out.
-impl<const U: usize, const B: usize, const N: usize> fmt::Debug for HeaplessQueues<U, B, N> {
+impl<const U: usize, const B: usize, const N: usize> fmt::Debug for FixedQueues<U, B, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HeaplessQueues")
+        f.debug_struct("FixedQueues")
             .field("unicast", &LiveItems(&self.unicast.slots))
             .field("broadcast", &LiveItems(&self.broadcast.slots))
             .field("sequence", &self.sequence)
@@ -139,13 +139,13 @@ impl<const U: usize, const B: usize, const N: usize> fmt::Debug for HeaplessQueu
     }
 }
 
-impl<const U: usize, const B: usize, const N: usize> Default for HeaplessQueues<U, B, N> {
+impl<const U: usize, const B: usize, const N: usize> Default for FixedQueues<U, B, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const U: usize, const B: usize, const N: usize> QueueStorage for HeaplessQueues<U, B, N> {
+impl<const U: usize, const B: usize, const N: usize> QueueStorage for FixedQueues<U, B, N> {
     fn set_starvation_limit(&mut self, limit: u8) {
         self.starvation_limit = Some(limit);
     }
