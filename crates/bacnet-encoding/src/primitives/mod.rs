@@ -9,6 +9,11 @@
 //! capacity shortages never call the sink; a custom sink's error is unchanged.
 //! The scalar staging buffer is at most eleven bytes. These functions preserve
 //! the existing encoders' input semantics and do not add value validation.
+//!
+//! [`encode_timestamp_choice_to_sink`] and [`encode_timestamp_to_sink`] extend
+//! the same one-write contract to complete timestamps, with twelve-byte and
+//! sixteen-byte staging bounds respectively. These bounds describe encoded
+//! output, not the full call stack.
 
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
@@ -21,6 +26,9 @@ use crate::constructed::tagged::{misplaced_tag, unclosed_kind};
 use crate::tags::{self, app_tag, TagClass};
 
 mod scalar;
+mod timestamp;
+
+pub use timestamp::{encode_timestamp_choice_to_sink, encode_timestamp_to_sink};
 
 pub use scalar::{
     encode_app_boolean, encode_app_boolean_to_sink, encode_app_date, encode_app_date_to_sink,
@@ -561,7 +569,8 @@ pub fn encode_property_value(buf: &mut BytesMut, value: &PropertyValue) -> Resul
 pub const MAX_TIMESTAMP_SEQUENCE_NUMBER: u64 = 65535;
 
 /// Encode a `BACnetTimeStamp` as a bare CHOICE element (no enclosing field
-/// tag).
+/// tag). Delegates to [`encode_timestamp_choice_to_sink`] through the
+/// growable buffer; the existing result type is retained.
 ///
 /// Used where a production lists `BACnetTimeStamp` as a bare CHOICE item —
 /// e.g. the `eventTimeStamps [3] SEQUENCE OF BACnetTimeStamp` inside
@@ -577,21 +586,7 @@ pub const MAX_TIMESTAMP_SEQUENCE_NUMBER: u64 = 65535;
 /// `datetime [2]` tags the *constructed* `BACnetDateTime`, so it encodes as opening tag 2 /
 /// application-tagged `Date` / application-tagged `Time` / closing tag 2.
 pub fn encode_timestamp_choice(buf: &mut BytesMut, ts: &BACnetTimeStamp) -> Result<(), Error> {
-    match ts {
-        BACnetTimeStamp::Time(t) => {
-            tags::encode_tag(buf, 0, TagClass::Context, 4);
-            buf.put_slice(&t.encode());
-        }
-        BACnetTimeStamp::SequenceNumber(n) => {
-            encode_ctx_unsigned(buf, 1, u64::from(*n));
-        }
-        BACnetTimeStamp::DateTime { date, time } => {
-            tags::encode_opening_tag(buf, 2);
-            encode_app_date(buf, date);
-            encode_app_time(buf, time);
-            tags::encode_closing_tag(buf, 2);
-        }
-    }
+    encode_timestamp_choice_to_sink(buf, ts).expect("the BytesMut sink cannot return SinkFull");
     Ok(())
 }
 
@@ -652,6 +647,9 @@ pub fn decode_timestamp_choice(
 
 /// Encode a BACnetTimeStamp wrapped in a context opening/closing tag pair.
 ///
+/// Delegates to [`encode_timestamp_to_sink`] through the growable buffer,
+/// retaining the existing result type.
+///
 /// The outer `tag_number` is the context tag of the enclosing field.
 /// Inside, the CHOICE variant uses its own context tag (0=Time,
 /// 1=SequenceNumber, 2=DateTime) via [`encode_timestamp_choice`].
@@ -660,9 +658,8 @@ pub fn encode_timestamp(
     tag_number: u8,
     ts: &BACnetTimeStamp,
 ) -> Result<(), Error> {
-    tags::encode_opening_tag(buf, tag_number);
-    encode_timestamp_choice(buf, ts)?;
-    tags::encode_closing_tag(buf, tag_number);
+    encode_timestamp_to_sink(buf, tag_number, ts)
+        .expect("the BytesMut sink cannot return SinkFull");
     Ok(())
 }
 

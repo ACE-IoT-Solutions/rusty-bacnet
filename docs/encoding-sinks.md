@@ -1,9 +1,9 @@
 # Encoding into caller-owned storage
 
 Tag headers, context opening/closing markers and the bounded scalar primitive
-family support caller-selected storage. Their existing `BytesMut` entrypoints
-and output remain unchanged. These are parts of #1614; variable-length and
-composite encoder families still use their current buffers.
+family, plus the two primitive timestamp encoders, support caller-selected
+storage. Their existing `BytesMut` entrypoints and output remain unchanged. These are parts of #1614; variable-length and
+other composite encoder families still use their current buffers.
 
 ## Output contract
 
@@ -80,6 +80,35 @@ legacy `BytesMut` output. Compatibility cases separately preserve tag 255,
 unvalidated Date/Time fields and nonfinite floating-point payloads. Those cases
 do not advertise the inputs as valid in every BACnet service context.
 
+## Timestamp entrypoints and wire behavior
+
+`primitives::encode_timestamp_choice_to_sink` writes a bare `BACnetTimeStamp`
+CHOICE, while `encode_timestamp_to_sink` includes its enclosing context tag
+pair. Both accept `EncodeSink + ?Sized`, return `Result<usize, SinkFull>` and
+make one write for the whole public call. The bare choice occupies at most
+twelve bytes; the outer frame occupies at most sixteen. These are encoded-output
+and staging bounds, not full call-stack measurements.
+
+Time retains its context-0 primitive form. SequenceNumber retains context 1
+and the shortest representation of its `u16` value. DateTime retains the
+context-2 frame around application Date followed by application Time. An outer
+tag of 2 encloses that complete inner frame; the two layers do not collapse.
+These layouts follow the BACnetTimeStamp and BACnetDateTime productions in
+ASHRAE 135-2020 Clause 21 and the tagging, sequence and CHOICE rules in Clause
+20.2. The Standard marks the Time choice deprecated from protocol revision 21;
+this migration preserves the existing input without adding a Rust deprecation.
+
+The old `BytesMut` functions keep their `Result<(), Error>` signatures and
+bytes, delegating to the infallible growable adapter. No timestamp semantic
+error is added. Unchecked Date/Time fields and outer tag 255 remain separately
+labeled compatibility inputs; preserving bytes does not make them valid in
+every service context. Independent literals cover each choice, the sequence
+width boundary, outer tags and nested context-2 frames. An unchanged baseline
+consumer separately checks legacy output. Failure tests cover complete-frame
+capacity and arbitrary refusal, and mutations challenge layout and one-write
+atomicity. Earlier successful encoder calls remain committed if a later one
+fails.
+
 ## Storage adapters
 
 | Storage | Capacity report | Successful append |
@@ -92,14 +121,15 @@ do not advertise the inputs as valid in every BACnet service context.
 The bounded adapters preserve their bytes, length and remaining slice on a
 failed append. Growable adapters retain their ordinary allocation-failure
 behavior; `SinkFull` is not an allocation-error abstraction. Existing tag and
-scalar `BytesMut` functions delegate through that infallible sink adapter.
+scalar and timestamp `BytesMut` functions delegate through that infallible sink adapter.
 
 ## Scope and feature limits
 
 This migration adds no semantic validation or new raw/context variants.
 Strings, octet strings, bit strings, PropertyValue/composite dispatch,
-timestamps and decoders retain their existing APIs and behavior. Higher-level
-callers use the same scalar `BytesMut` paths; no whole-message atomicity is
+the separate constructed log-field timestamp helper and decoders retain their
+existing APIs and behavior. Higher-level callers use the same scalar and
+timestamp `BytesMut` paths; no whole-message atomicity is
 implied by composing them. A decoder's configured length bound does not limit
 a header encoder.
 
@@ -107,4 +137,5 @@ a header encoder.
 or heapless output. The optional adapter does not make the rest of the crate
 allocation-free. Sink storage selection and bounded staging do not establish
 physical-device operation or a performance improvement. The sink contract,
-tag assembly and bounded scalar assembly themselves need no allocator.
+tag assembly, bounded scalar assembly and timestamp staging themselves need no
+allocator.
