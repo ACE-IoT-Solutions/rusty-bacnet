@@ -1,5 +1,4 @@
 #![doc = include_str!("../README.md")]
-
 // Tests always build with std, so feature-off test runs need no imports of
 // their own.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
