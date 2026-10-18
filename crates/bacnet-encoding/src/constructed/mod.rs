@@ -68,6 +68,7 @@ mod property_access_result;
 mod property_value;
 mod read_access;
 pub mod recipient;
+mod reference_sinks;
 mod scale;
 pub mod schedule;
 mod shed_level;
@@ -136,7 +137,8 @@ pub use network_port::{
 pub use object_property_reference::{
     decode_object_property_reference, decode_object_property_reference_at,
     decode_setpoint_reference, decode_setpoint_reference_at, encode_object_property_reference,
-    encode_setpoint_reference,
+    encode_object_property_reference_to_sink, encode_setpoint_reference,
+    encode_setpoint_reference_to_sink,
 };
 pub use port_permission::{decode_port_permission, encode_port_permission};
 pub use property_access_result::{decode_property_access_result, encode_property_access_result};
@@ -148,12 +150,13 @@ pub use property_value::{
 };
 pub use read_access::{
     decode_property_reference, decode_read_access_specification, encode_property_reference,
-    encode_read_access_specification,
+    encode_property_reference_to_sink, encode_read_access_specification,
 };
 pub use recipient::{
     check_decoded_mac_len, check_encoded_mac_len, decode_destination, decode_destination_list,
     decode_recipient, encode_destination, encode_destination_list, encode_recipient,
 };
+pub use reference_sinks::encode_device_object_property_reference_to_sink;
 pub use scale::{decode_prescale, decode_scale, encode_prescale, encode_scale};
 pub use schedule::{
     decode_daily_schedule, decode_exception_schedule, decode_special_event,
@@ -164,7 +167,7 @@ pub use schedule::{
 pub use shed_level::{decode_shed_level, encode_shed_level};
 pub use staging::{
     decode_device_object_reference, decode_stage_limit_value, encode_device_object_reference,
-    encode_stage_limit_value,
+    encode_device_object_reference_to_sink, encode_stage_limit_value,
 };
 
 pub use value_source::{decode_value_source, encode_value_source};
@@ -413,14 +416,8 @@ pub fn decode_property_state(
 /// `property-array-index [2]`, optional `device-identifier [3]` — the body
 /// that sits between the enclosing field's opening/closing tags.
 pub(crate) fn encode_dopr_body(buf: &mut BytesMut, r: &BACnetDeviceObjectPropertyReference) {
-    primitives::encode_ctx_object_id(buf, 0, &r.object_identifier);
-    primitives::encode_ctx_unsigned(buf, 1, r.property_identifier as u64);
-    if let Some(index) = r.property_array_index {
-        primitives::encode_ctx_unsigned(buf, 2, index as u64);
-    }
-    if let Some(ref device) = r.device_identifier {
-        primitives::encode_ctx_object_id(buf, 3, device);
-    }
+    encode_device_object_property_reference_to_sink(buf, r)
+        .expect("BytesMut accepts each reference");
 }
 
 /// Decode the members written by [`encode_dopr_body`], stopping before the

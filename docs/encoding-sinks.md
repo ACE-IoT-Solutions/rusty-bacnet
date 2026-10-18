@@ -1,9 +1,10 @@
 # Encoding into caller-owned storage
 
 Tag headers, context opening/closing markers and the bounded scalar primitive
-family, plus the two primitive timestamp encoders, support caller-selected
-storage. Their existing `BytesMut` entrypoints and output remain unchanged. These are parts of #1614; variable-length and
-other composite encoder families still use their current buffers.
+family, the two primitive timestamp encoders and five bounded reference
+encoders support caller-selected storage. Their existing `BytesMut` entrypoints
+and output remain unchanged. These are parts of #1614; variable-length and other
+composite encoder families still use their current buffers.
 
 ## Output contract
 
@@ -109,6 +110,45 @@ capacity and arbitrary refusal, and mutations challenge layout and one-write
 atomicity. Earlier successful encoder calls remain committed if a later one
 fails.
 
+## Reference entrypoints and wire behavior
+
+These `constructed` entrypoints accept `EncodeSink + ?Sized` and return
+`Result<usize, SinkFull>`. Each stages its complete output and makes one caller
+write, including every optional member and any enclosing frame.
+
+| Entry point | Maximum encoded/staged bytes |
+| --- | ---: |
+| `encode_property_reference_to_sink` | 10 |
+| `encode_object_property_reference_to_sink` | 15 |
+| `encode_setpoint_reference_to_sink` | 17 |
+| `encode_device_object_property_reference_to_sink` | 20 |
+| `encode_device_object_reference_to_sink` | 10 |
+
+These are encoded-output and staging bounds, not whole-stack measurements.
+PropertyReference retains property then optional array index. ObjectPropertyReference
+retains object, property and optional index; SetpointReference encloses that
+complete sequence in context 0. Its optional absence is still represented by
+callers emitting nothing. DeviceObjectPropertyReference puts an optional device
+in context 3 after the other members. DeviceObjectReference instead puts its
+optional device in context 0 before the required object in context 1. The
+layouts follow the corresponding Clause 21 definitions and ASHRAE 135-2020
+Clauses 20.2.1 and 20.2.14–20.2.16.
+
+Missing and zero-valued array indices remain distinct, and unsigned members
+keep their shortest widths. The existing `BytesMut` functions retain their
+signatures and bytes, including the private device-object-property body used
+by other composites. No semantic checks or type changes are added. Raw
+property/index bounds, wildcard identifiers and non-Device values in a device
+field are labeled compatibility inputs in tests; retaining encoder bytes does
+not make those values valid for every service or property.
+
+Independent literals cover member tags/order, optional omissions, all unsigned
+width boundaries, complete Setpoint frames and maximum output lengths. An
+unchanged external baseline probe also checks enclosing callers of the private
+reference body. A refusal preserves prefix, cursor, length and tail for the
+whole reference call. This does not make a variable-length enclosing encoder
+atomic or provide rollback across successful calls.
+
 ## Storage adapters
 
 | Storage | Capacity report | Successful append |
@@ -120,16 +160,17 @@ fails.
 
 The bounded adapters preserve their bytes, length and remaining slice on a
 failed append. Growable adapters retain their ordinary allocation-failure
-behavior; `SinkFull` is not an allocation-error abstraction. Existing tag and
-scalar and timestamp `BytesMut` functions delegate through that infallible sink adapter.
+behavior; `SinkFull` is not an allocation-error abstraction. Existing tag, scalar,
+timestamp and bounded reference `BytesMut` functions delegate through that
+infallible sink adapter.
 
 ## Scope and feature limits
 
 This migration adds no semantic validation or new raw/context variants.
 Strings, octet strings, bit strings, PropertyValue/composite dispatch,
 the separate constructed log-field timestamp helper and decoders retain their
-existing APIs and behavior. Higher-level callers use the same scalar and
-timestamp `BytesMut` paths; no whole-message atomicity is
+existing APIs and behavior. Higher-level callers use the same scalar, timestamp
+and reference `BytesMut` paths; no whole-message atomicity is
 implied by composing them. A decoder's configured length bound does not limit
 a header encoder.
 
@@ -137,5 +178,5 @@ a header encoder.
 or heapless output. The optional adapter does not make the rest of the crate
 allocation-free. Sink storage selection and bounded staging do not establish
 physical-device operation or a performance improvement. The sink contract,
-tag assembly, bounded scalar assembly and timestamp staging themselves need no
-allocator.
+tag assembly, bounded scalar assembly, timestamp staging and bounded reference
+assembly themselves need no allocator.
