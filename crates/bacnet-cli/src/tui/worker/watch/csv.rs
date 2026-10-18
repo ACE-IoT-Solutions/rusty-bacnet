@@ -83,6 +83,18 @@ impl CsvLog {
     }
 }
 
+impl Drop for CsvLog {
+    /// A log dropped without [`CsvLog::close`] (a session future dropped
+    /// mid-way) still flushes: close the channel and wait for the writer,
+    /// which has at most [`QUEUE`] short lines left.
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 fn write_lines(file: File, lines: impl Iterator<Item = String>) {
     let mut out = BufWriter::new(file);
     for line in lines {

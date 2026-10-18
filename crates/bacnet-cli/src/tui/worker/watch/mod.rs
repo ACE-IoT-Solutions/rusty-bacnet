@@ -32,7 +32,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use self::csv::{field, unix_ms, CsvLog};
-use self::jobs::{Polled, Refusal, Started};
+use self::jobs::{Lifetime, Polled, Refusal, Started};
 use super::browse::limits::RateCap;
 use super::EventSink;
 use crate::tui::app::objects::{kebab, object_label};
@@ -51,6 +51,16 @@ const TICK: Duration = Duration::from_millis(250);
 pub(crate) const PENDING_PER_ROW: usize = 32;
 /// How long the end of a session waits for its cancels.
 pub(crate) const CANCEL_WAIT: Duration = Duration::from_secs(5);
+/// A confirmed request with every retry at the CLI's defaults: a 6 s APDU
+/// timeout, sent four times.
+pub(crate) const DEFAULT_REQUEST_BUDGET: Duration = Duration::from_secs(24);
+/// The first and the longest wait before polling a device that stopped
+/// answering again.
+const POLL_BACKOFF: (Duration, Duration) = (Duration::from_secs(2), Duration::from_secs(60));
+/// The first and the longest wait before subscribing again after a
+/// renewal failed.
+const RESUBSCRIBE_BACKOFF: (Duration, Duration) =
+    (Duration::from_secs(30), Duration::from_secs(300));
 
 /// The watch list's settings.
 #[derive(Debug, Clone)]
@@ -61,6 +71,9 @@ pub(crate) struct WatchOptions {
     pub(crate) poll_every: Duration,
     /// The profile workspace, where CSV logs go.
     pub(crate) workspace: Option<PathBuf>,
+    /// How long one confirmed request can take with its retries; renewals
+    /// go at least this long before a lifetime ends.
+    pub(crate) request_budget: Duration,
 }
 
 impl Default for WatchOptions {
@@ -69,7 +82,17 @@ impl Default for WatchOptions {
             lifetime: DEFAULT_COV_LIFETIME,
             poll_every: Duration::from_secs(DEFAULT_POLL_SECS),
             workspace: None,
+            request_budget: DEFAULT_REQUEST_BUDGET,
         }
+    }
+}
+
+/// The next wait in an exponential backoff of `(first, longest)`.
+fn backoff(previous: Duration, (first, longest): (Duration, Duration)) -> Duration {
+    if previous.is_zero() {
+        first
+    } else {
+        (previous * 2).min(longest)
     }
 }
 
@@ -92,7 +115,9 @@ struct Row {
     removing: bool,
     /// A subscription may exist although the row isn't subscribed.
     maybe_subscribed: bool,
-    last_poll: Option<Instant>,
+    /// After a renewal failed: when to subscribe again, and the wait that
+    /// led there.
+    resubscribe: Option<(Instant, Duration)>,
     /// Samples since the last tick, with their wall-clock time for the CSV.
     pending: VecDeque<(Sample, u128)>,
 }
@@ -112,6 +137,16 @@ struct Device {
     busy: bool,
     ops: VecDeque<Op>,
     no_rpm: bool,
+    /// The device stopped answering polls: the current backoff, and when
+    /// to poll it again.
+    backoff: Duration,
+    retry_at: Option<Instant>,
+    /// When its last poll, or a polled row's first read, ended. A device
+    /// is polled, all its polled rows in one go, `poll_every` after that:
+    /// rows added at different times share its requests, no row is polled
+    /// more often than that, and a slow poll is never followed at once by
+    /// the next.
+    last_polled: Option<Instant>,
 }
 
 enum Done {
@@ -171,7 +206,8 @@ impl<'s> State<'s> {
     fn command(&mut self, command: WatchCommand) {
         match command {
             WatchCommand::Add { row, point } => {
-                if self.rows.len() >= MAX_ROWS || self.rows.contains_key(&row) {
+                let watched = self.rows.values().filter(|row| !row.removing).count();
+                if watched >= MAX_ROWS || self.rows.contains_key(&row) {
                     self.source(row, Source::Failed(format!("at most {MAX_ROWS} rows")));
                     return;
                 }
@@ -183,7 +219,7 @@ impl<'s> State<'s> {
                         mac: None,
                         removing: false,
                         maybe_subscribed: false,
-                        last_poll: None,
+                        resubscribe: None,
                         pending: VecDeque::new(),
                     },
                 );
@@ -296,8 +332,20 @@ impl<'s> State<'s> {
                 }
             }
             Done::Polled { device, polled } => {
-                if polled.refused_rpm {
-                    self.devices.entry(device).or_default().no_rpm = true;
+                let now = Instant::now();
+                let entry = self.devices.entry(device).or_default();
+                entry.no_rpm |= polled.refused_rpm;
+                entry.last_polled = Some(now);
+                if polled.unreachable {
+                    entry.backoff = backoff(entry.backoff, POLL_BACKOFF);
+                    entry.retry_at = Some(now + entry.backoff);
+                    tracing::info!(
+                        "device {device} isn't answering polls; next try in {} s",
+                        entry.backoff.as_secs()
+                    );
+                } else {
+                    entry.backoff = Duration::ZERO;
+                    entry.retry_at = None;
                 }
                 for (id, sample) in polled.samples {
                     if let Some(row) = self.rows.get_mut(&id) {
@@ -338,6 +386,8 @@ impl<'s> State<'s> {
             }
             Ok(managed) => {
                 row.mode = Mode::Cov(managed);
+                row.resubscribe = None;
+                row.maybe_subscribed = false;
                 let lifetime = self.options.lifetime;
                 tracing::info!(
                     "watch row {id}: subscribed to {} on device {} for {lifetime} s",
@@ -364,8 +414,18 @@ impl<'s> State<'s> {
                     return;
                 }
                 row.mode = Mode::Polled;
-                row.maybe_subscribed = maybe_subscribed;
-                row.last_poll = read_first.then(Instant::now);
+                row.maybe_subscribed |= maybe_subscribed;
+                if read_first {
+                    // The first read stands in for a poll.
+                    let device = self.devices.entry(point.device).or_default();
+                    device.last_polled.get_or_insert_with(Instant::now);
+                }
+                // A row that was subscribed once keeps trying, ever more
+                // slowly; a device that refuses COV outright is only polled.
+                if let Some((_, wait)) = row.resubscribe {
+                    let wait = backoff(wait, RESUBSCRIBE_BACKOFF);
+                    row.resubscribe = Some((Instant::now() + wait, wait));
+                }
                 self.source(id, Source::Polled(reason));
             }
         }
@@ -394,9 +454,8 @@ impl<'s> State<'s> {
         }
     }
 
-    /// Every tick: hand samples to the UI and the CSV, notice ended
-    /// renewals, and report the counters.
-    fn tick(&mut self, rate: &RateCap) {
+    /// Hand pending samples to the UI and the CSV.
+    fn flush(&mut self) {
         let mut samples = Vec::new();
         for (id, row) in &mut self.rows {
             let source = match row.mode {
@@ -411,6 +470,29 @@ impl<'s> State<'s> {
                 }
                 samples.push((*id, sample));
             }
+        }
+        if !samples.is_empty() {
+            samples.sort_by_key(|(_, sample)| sample.at);
+            self.sink
+                .offer(WorkerEvent::Watch(WatchEvent::Samples(samples)));
+        }
+    }
+
+    /// Every tick: hand samples on, notice ended renewals, queue the
+    /// subscriptions due again, and report the counters.
+    fn tick(&mut self, rate: &RateCap) {
+        self.flush();
+        let now = Instant::now();
+        for (id, row) in &mut self.rows {
+            if let (Mode::Polled, Some((at, _)), false) =
+                (&row.mode, row.resubscribe, self.shutting_down)
+            {
+                if at <= now {
+                    row.mode = Mode::Queued;
+                    let device = self.devices.entry(row.point.device).or_default();
+                    device.ops.push_back(Op::Start(*id));
+                }
+            }
             if let Mode::Cov(managed) = &row.mode {
                 if managed.is_finished() {
                     let reason = match managed.last_event() {
@@ -419,20 +501,20 @@ impl<'s> State<'s> {
                         }
                         _ => "renewal stopped".to_string(),
                     };
-                    tracing::warn!("watch row {id}: {reason}; polling instead");
+                    let wait = RESUBSCRIBE_BACKOFF.0;
+                    tracing::warn!(
+                        "watch row {id}: {reason}; polling, and subscribing again in {} s",
+                        wait.as_secs()
+                    );
                     row.mode = Mode::Polled;
                     row.maybe_subscribed = true;
+                    row.resubscribe = Some((now + wait, wait));
                     self.outbox.push_back(WatchEvent::Source {
                         row: *id,
                         source: Source::Polled(reason),
                     });
                 }
             }
-        }
-        if !samples.is_empty() {
-            samples.sort_by_key(|(_, sample)| sample.at);
-            self.sink
-                .offer(WorkerEvent::Watch(WatchEvent::Samples(samples)));
         }
         let stats = WatchStats {
             subscriptions: self
@@ -446,6 +528,9 @@ impl<'s> State<'s> {
         };
         if stats != self.stats {
             self.stats = stats.clone();
+            // Only the newest counters matter: the outbox holds one.
+            self.outbox
+                .retain(|event| !matches!(event, WatchEvent::Stats(_)));
             self.outbox.push_back(WatchEvent::Stats(stats));
         }
     }
@@ -478,7 +563,7 @@ impl<'s> State<'s> {
             }));
         }
         let now = Instant::now();
-        let lifetime = self.options.lifetime;
+        let lifetime = Lifetime::new(self.options.lifetime, self.options.request_budget);
         for (&id, device) in &mut self.devices {
             if device.busy {
                 continue;
@@ -513,23 +598,24 @@ impl<'s> State<'s> {
                         result,
                     }
                 }),
-                None if self.shutting_down => continue,
+                None if self.shutting_down || device.retry_at.is_some_and(|at| at > now) => {
+                    continue
+                }
                 None => {
                     let every = self.options.poll_every;
+                    if device
+                        .last_polled
+                        .is_some_and(|at| now.saturating_duration_since(at) < every)
+                    {
+                        continue;
+                    }
                     let due: Vec<(RowId, Point)> = self
                         .rows
-                        .iter_mut()
+                        .iter()
                         .filter(|(_, row)| {
-                            row.point.device == id
-                                && matches!(row.mode, Mode::Polled)
-                                && row
-                                    .last_poll
-                                    .is_none_or(|at| now.saturating_duration_since(at) >= every)
+                            row.point.device == id && matches!(row.mode, Mode::Polled)
                         })
-                        .map(|(row_id, row)| {
-                            row.last_poll = Some(now);
-                            (*row_id, row.point)
-                        })
+                        .map(|(row_id, row)| (*row_id, row.point))
                         .collect();
                     if due.is_empty() {
                         continue;
@@ -548,6 +634,8 @@ impl<'s> State<'s> {
     /// The session is ending: remove every row, which queues the cancels.
     fn shutdown(&mut self) {
         self.shutting_down = true;
+        // The CSV gets what arrived since the last tick.
+        self.flush();
         let ids: Vec<RowId> = self.rows.keys().copied().collect();
         for id in ids {
             self.remove(id);

@@ -130,8 +130,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("d  Enter", "Who-Is form; browse the selected device"),
             ("Up Down j k", "Move; PgUp PgDn Home End jump"),
-            ("s  S", "Next sort column; reverse the order"),
-            ("/", "Filter rows; Esc clears the filter"),
+            ("s  S  /", "Sort column; reverse; filter (Esc clears)"),
         ],
     ),
     (
@@ -151,7 +150,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Who-Is form",
         &[
-            ("Tab  Left Rt", "Next field; change the scope"),
+            ("Tab Up Down", "Next or previous field"),
+            ("Left Rt Space", "Change the scope"),
             ("Enter  Esc", "Send (again past a warning); close"),
         ],
     ),

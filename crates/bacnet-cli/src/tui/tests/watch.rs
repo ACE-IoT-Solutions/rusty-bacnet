@@ -17,7 +17,7 @@ use super::*;
 use crate::tui::app::watch::Screen;
 use crate::tui::watched::Source;
 use crate::tui::worker::session::SessionOptions;
-use crate::tui::worker::watch::{jobs::MAX_BATCH, WatchOptions};
+use crate::tui::worker::watch::WatchOptions;
 
 const LAB: u32 = 100;
 const LAB_MAC: [u8; 6] = [10, 0, 0, 100, 0xBA, 0xC0];
@@ -35,6 +35,8 @@ fn options(lifetime: u32, poll_secs: u64, max_rate: u32) -> SessionOptions {
             lifetime,
             poll_every: Duration::from_secs(poll_secs),
             workspace: None,
+            // The site's client: a 2 s timeout, sent four times.
+            request_budget: Duration::from_secs(8),
         },
     }
 }
@@ -211,24 +213,53 @@ async fn removing_a_row_cancels_its_subscription() {
     site.stop().await;
 }
 
-/// A device without COV: every row is polled, by RPM in batches, and over
-/// 30 s the requests stay within the cap of 2 a second, which binds: 40
-/// rows at a 1 s interval want three RPMs a second.
-#[tokio::test(start_paused = true)]
-async fn a_device_without_cov_is_polled_within_the_rate_cap() {
-    const ROWS: u32 = 40;
-    const CAP: u32 = 2;
-    let server = Server {
-        database: Some(super::lab::large_database(LAB, ROWS)),
+/// A device without COV, with these quirks and `points` analog values.
+fn no_cov(octet: u8, instance: u32, points: u32, quirks: Quirks) -> Server {
+    Server {
+        database: Some(super::lab::large_database(instance, points)),
         quirks: Quirks {
             refuse_cov: true,
-            ..Quirks::default()
+            ..quirks
         },
-        ..Server::bare(100, LAB)
-    };
-    let mut site = lab_site(server, options(300, 1, CAP)).await;
-    for n in 1..=ROWS {
-        command(&mut site, &format!("watch 100 av:{n}")).await;
+        ..Server::bare(octet, instance)
+    }
+}
+
+/// Requests the hub saw to the device at 10.0.0.`octet` in `[from, to)`,
+/// of `service` when given.
+fn requests_in(
+    site: &Site,
+    octet: u8,
+    service: Option<u8>,
+    from: tokio::time::Instant,
+    to: tokio::time::Instant,
+) -> usize {
+    site.hub
+        .requests_to(&[10, 0, 0, octet, 0xBA, 0xC0])
+        .into_iter()
+        .filter(|(s, at)| service.is_none_or(|w| w == *s) && *at >= from && *at < to)
+        .count()
+}
+
+/// Four devices without COV: every row is polled by RPM, and over 30 s the
+/// requests stay within the cap of 2 a second, which binds: each device on
+/// its own would be polled about once a second.
+#[tokio::test(start_paused = true)]
+async fn devices_without_cov_are_polled_within_the_rate_cap() {
+    const DEVICES: [u8; 4] = [101, 102, 103, 104];
+    const ROWS: u32 = 3;
+    const CAP: u32 = 2;
+    let servers = DEVICES
+        .iter()
+        .map(|&octet| no_cov(octet, u32::from(octet), ROWS, Quirks::default()))
+        .collect();
+    let mut site =
+        Site::start_with_options(servers, ClientLimits::default(), options(300, 1, CAP)).await;
+    site.who_is("", DEVICES.len()).await;
+    for octet in DEVICES {
+        for n in 1..=ROWS {
+            command(&mut site, &format!("watch {octet} av:{n}")).await;
+        }
     }
     settle(&mut site).await;
     assert!(
@@ -239,25 +270,22 @@ async fn a_device_without_cov_is_polled_within_the_rate_cap() {
         sources(&site)
     );
     // Let the start-up reads drain, then measure 30 s.
-    site.run_for(Duration::from_secs(20)).await;
+    site.run_for(Duration::from_secs(10)).await;
     let from = tokio::time::Instant::now();
     site.run_for(Duration::from_secs(30)).await;
     let to = tokio::time::Instant::now();
-    let requests = site
-        .hub
-        .requests_to(&LAB_MAC)
-        .into_iter()
-        .filter(|(_, at)| *at >= from && *at < to)
-        .count();
+    let requests: usize = DEVICES
+        .iter()
+        .map(|&octet| requests_in(&site, octet, None, from, to))
+        .sum();
     let cap = (CAP * 30) as usize;
     assert!(requests <= cap, "{requests} requests in 30 s");
-    let wanted = (ROWS as usize).div_ceil(MAX_BATCH) * 30;
-    assert!(
-        requests >= cap - 2 && wanted > cap,
-        "{requests}; the cap binds"
-    );
+    assert!(requests >= cap - 4, "{requests}: the cap binds");
     assert!(site.app.watch.stats.recent_requests <= (CAP * 10) as usize);
-    assert_eq!(site.hub.most_outstanding(&LAB_MAC), 1);
+    for octet in DEVICES {
+        let mac = [10, 0, 0, octet, 0xBA, 0xC0];
+        assert_eq!(site.hub.most_outstanding(&mac), 1, "device {octet}");
+    }
     assert_eq!(site.app.watch.stats.subscriptions, 0);
     let row = &site.app.watch.rows()[0];
     assert_eq!(row.value.as_ref().unwrap().as_deref(), Ok("0"));
@@ -265,6 +293,91 @@ async fn a_device_without_cov_is_polled_within_the_rate_cap() {
     assert!(text.contains("polled"), "{text}");
     assert!(text.contains("COV 0"), "{text}");
     assert_snapshot!("watch_polled_120x40", text);
+    site.stop().await;
+}
+
+/// A device that stops answering is polled again after a wait that
+/// doubles, not every interval: over 300 s at a 1 s interval it gets a
+/// handful of polls rather than one every nine seconds.
+#[tokio::test(start_paused = true)]
+async fn a_silent_device_is_polled_with_a_growing_wait() {
+    const RPM: u8 = 14;
+    let silent = Quirks {
+        silent: true,
+        ..Quirks::default()
+    };
+    let mut site = lab_site(no_cov(100, LAB, 1, silent), options(300, 1, 0)).await;
+    command(&mut site, "watch 100 av:1").await;
+    settle(&mut site).await;
+    let sources_now = sources(&site);
+    let [Source::Polled(reason)] = sources_now.as_slice() else {
+        panic!("{:?}", sources(&site));
+    };
+    assert!(reason.contains("no answer"), "{reason}");
+    let from = tokio::time::Instant::now();
+    site.run_for(Duration::from_secs(300)).await;
+    let to = tokio::time::Instant::now();
+    // Each poll is sent four times (three retries) before it times out.
+    let polls = requests_in(&site, 100, Some(RPM), from, to) / 4;
+    assert!((4..=10).contains(&polls), "{polls} polls in 300 s");
+    let row = &site.app.watch.rows()[0];
+    assert!(row.value.as_ref().unwrap().is_err(), "{:?}", row.value);
+    site.stop().await;
+}
+
+/// A device that fails a whole RPM for one unknown object: that batch is
+/// read one property at a time, so its healthy rows keep their values.
+#[tokio::test(start_paused = true)]
+async fn one_bad_object_leaves_its_batch_healthy() {
+    let failing = Quirks {
+        fail_rpm: true,
+        ..Quirks::default()
+    };
+    let mut site = lab_site(no_cov(100, LAB, 2, failing), options(300, 1, 0)).await;
+    for object in ["av:1", "av:99", "av:2"] {
+        command(&mut site, &format!("watch 100 {object}")).await;
+    }
+    settle(&mut site).await;
+    site.run_for(Duration::from_secs(5)).await;
+    let values: Vec<_> = site
+        .app
+        .watch
+        .rows()
+        .iter()
+        .map(|row| row.value.clone().unwrap().is_ok())
+        .collect();
+    assert_eq!(values, [true, false, true]);
+    site.stop().await;
+}
+
+/// A renewal that times out, retries and all, turns the row to polling,
+/// and a later subscription brings it back to COV.
+#[tokio::test(start_paused = true)]
+async fn a_failed_renewal_subscribes_again() {
+    let server = Server {
+        quirks: Quirks {
+            lose_cov_after_first: 4,
+            ..Quirks::default()
+        },
+        ..Server::lab(100, LAB)
+    };
+    let mut site = lab_site(server, options(60, 10, 0)).await;
+    command(&mut site, "watch 100 ai:2").await;
+    settle(&mut site).await;
+    assert_eq!(sources(&site), [Source::Cov { lifetime: 60 }]);
+    // Renewed 8 s early, at 52 s; four tries time out by 60 s.
+    site.run_for(Duration::from_secs(70)).await;
+    let sources_now = sources(&site);
+    let [Source::Polled(reason)] = sources_now.as_slice() else {
+        panic!("{:?}", sources(&site));
+    };
+    assert!(reason.contains("renewal failed"), "{reason}");
+    // Polled meanwhile, then subscribed again 30 s after the failure.
+    site.run_for(Duration::from_secs(40)).await;
+    assert_eq!(sources(&site), [Source::Cov { lifetime: 60 }]);
+    assert_eq!(active(&site), 1);
+    site.quit().await;
+    assert_eq!(active(&site), 0);
     site.stop().await;
 }
 

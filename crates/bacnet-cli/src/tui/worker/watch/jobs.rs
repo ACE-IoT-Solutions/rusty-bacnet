@@ -32,10 +32,28 @@ use crate::tui::worker::browse::read::{
 /// Rows read by one ReadPropertyMultiple when polling.
 pub(crate) const MAX_BATCH: usize = 16;
 
-/// How long before a lifetime ends the subscription is renewed: a tenth of
-/// it, between 1 and 30 seconds.
-pub(crate) fn renewal_margin(lifetime: u32) -> Duration {
-    Duration::from_secs(u64::from(lifetime / 10).clamp(1, 30))
+/// A subscription's lifetime and how long before its end it is renewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Lifetime {
+    /// Seconds.
+    pub(crate) secs: u32,
+    /// The renewal margin.
+    pub(crate) margin: Duration,
+}
+
+impl Lifetime {
+    /// A lifetime of `secs`, renewed a tenth of it early (1 to 30 s), but
+    /// never later than `request_budget` before the end, the time a renewal
+    /// takes with every retry, so one lost packet can't let it lapse. The
+    /// margin stays at most half the lifetime.
+    pub(crate) fn new(secs: u32, request_budget: Duration) -> Self {
+        let tenth = Duration::from_secs(u64::from(secs / 10).clamp(1, 30));
+        let half = Duration::from_secs(u64::from(secs)) / 2;
+        Self {
+            secs,
+            margin: tenth.max(request_budget).min(half),
+        }
+    }
 }
 
 /// Why a row is polled rather than subscribed.
@@ -62,13 +80,13 @@ pub(crate) struct Started {
     pub(crate) refused_rpm: bool,
 }
 
-/// Read the point once, then subscribe for `lifetime` seconds.
+/// Read the point once, then subscribe for `lifetime`.
 pub(crate) async fn start<T: TransportPort + 'static>(
     client: &Arc<BACnetClient<T>>,
     rate: &RateCap,
     row: RowId,
     point: Point,
-    lifetime: u32,
+    lifetime: Lifetime,
     rpm: bool,
 ) -> Started {
     let Some(device) = client.get_device(point.device).await else {
@@ -146,14 +164,13 @@ async fn subscribe<T: TransportPort + 'static>(
     mac: &[u8],
     row: RowId,
     point: Point,
-    lifetime: u32,
+    lifetime: Lifetime,
 ) -> Result<ManagedCOVSubscription, Refusal> {
-    let options =
-        ManagedCOVSubscriptionOptions::default().with_renewal_margin(renewal_margin(lifetime));
+    let options = ManagedCOVSubscriptionOptions::default().with_renewal_margin(lifetime.margin);
     rate.acquire().await;
     let managed = if point.whole_object() {
         Arc::clone(client)
-            .manage_cov_subscription(mac, row, point.object, false, lifetime, options)
+            .manage_cov_subscription(mac, row, point.object, false, lifetime.secs, options)
             .await
     } else {
         let subscription = CovPropertySubscription {
@@ -162,7 +179,7 @@ async fn subscribe<T: TransportPort + 'static>(
             monitored_property_identifier: point.property,
             monitored_property_array_index: None,
             confirmed: false,
-            lifetime: NonZeroU32::new(lifetime).unwrap_or(NonZeroU32::MIN),
+            lifetime: NonZeroU32::new(lifetime.secs).unwrap_or(NonZeroU32::MIN),
             cov_increment: None,
         };
         Arc::clone(client)
@@ -202,15 +219,20 @@ pub(crate) async fn cancel<T: TransportPort + 'static>(
 
 /// One poll of a device's due rows.
 pub(crate) struct Polled {
-    /// Each row's sample.
+    /// A sample for every row asked for: its value, or why it has none.
     pub(crate) samples: Vec<(RowId, Sample)>,
     /// The device refused RPM during this poll.
     pub(crate) refused_rpm: bool,
+    /// The device stopped answering: the poll gave up on the rows left.
+    pub(crate) unreachable: bool,
 }
 
 /// Read every row in `rows` of `device`: by ReadPropertyMultiple in
 /// batches of [`MAX_BATCH`], each row with its Status_Flags, or by
-/// ReadProperty once the device has refused RPM (Clause 15.5).
+/// ReadProperty once the device has refused RPM (Clause 15.5). A batch the
+/// device fails as a whole is read by ReadProperty for this poll, so one
+/// bad object can't put errors on its neighbours. A device that stops
+/// answering ends the poll: the rows left get the error at once.
 pub(crate) async fn poll<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     rate: &RateCap,
@@ -220,11 +242,21 @@ pub(crate) async fn poll<T: TransportPort + 'static>(
 ) -> Polled {
     let started_rpm = rpm;
     let mut samples = Vec::with_capacity(rows.len());
+    let mut silent: Option<Error> = None;
     for batch in rows.chunks(MAX_BATCH) {
+        if let Some(error) = &silent {
+            samples.extend(batch.iter().map(|(row, _)| (*row, failed(error))));
+            continue;
+        }
         if rpm {
             match rpm_batch(client, rate, device, batch).await {
                 Ok(read) => {
                     samples.extend(read);
+                    continue;
+                }
+                Err(error) if unreachable(&error) => {
+                    samples.extend(batch.iter().map(|(row, _)| (*row, failed(&error))));
+                    silent = Some(error);
                     continue;
                 }
                 Err(error) => match rpm_failure(&error) {
@@ -232,21 +264,30 @@ pub(crate) async fn poll<T: TransportPort + 'static>(
                         tracing::info!("device {device} refused ReadPropertyMultiple ({error}); polling one property at a time");
                         rpm = false;
                     }
-                    RpmFailure::TooLarge => {}
-                    RpmFailure::Other => {
-                        samples.extend(batch.iter().map(|(row, _)| (*row, failed(&error))));
-                        continue;
-                    }
+                    RpmFailure::TooLarge | RpmFailure::Other => tracing::debug!(
+                        "device {device}: batch read failed ({error}); reading it one property at a time"
+                    ),
                 },
             }
         }
         for (row, point) in batch {
+            if let Some(error) = &silent {
+                samples.push((*row, failed(error)));
+                continue;
+            }
             rate.acquire().await;
-            let value = client
+            let value = match client
                 .read_property_from_device(device, point.object, point.property, None)
                 .await
-                .map(|ack| ack.property_value)
-                .map_err(|error| error.to_string());
+            {
+                Ok(ack) => Ok(ack.property_value),
+                Err(error) if unreachable(&error) => {
+                    samples.push((*row, failed(&error)));
+                    silent = Some(error);
+                    continue;
+                }
+                Err(error) => Err(error.to_string()),
+            };
             let rows: Vec<RawRow> = vec![(point.property, value)];
             if let Some(sample) = sample::from_rows(point.property, &rows) {
                 samples.push((*row, sample));
@@ -256,12 +297,17 @@ pub(crate) async fn poll<T: TransportPort + 'static>(
     Polled {
         samples,
         refused_rpm: started_rpm && !rpm,
+        unreachable: silent.is_some(),
     }
 }
 
 fn failed(error: &Error) -> Sample {
+    failed_with(error.to_string())
+}
+
+fn failed_with(error: String) -> Sample {
     Sample {
-        value: Err(error.to_string()),
+        value: Err(error),
         number: None,
         flags: None,
         at: tokio::time::Instant::now().into_std(),
@@ -292,11 +338,15 @@ async fn rpm_batch<T: TransportPort + 'static>(
     let ack = client
         .read_property_multiple_from_device(device, specs)
         .await?;
-    // The answer lists the objects in the order they were asked for.
+    // The answer lists the objects in the order they were asked for; a row
+    // it leaves out, or answers without the property, gets an error.
+    let mut results = ack.list_of_read_access_results.into_iter();
     Ok(batch
         .iter()
-        .zip(ack.list_of_read_access_results)
-        .filter_map(|((row, point), result)| {
+        .map(|(row, point)| {
+            let Some(result) = results.next() else {
+                return (*row, failed_with("missing from the device's answer".into()));
+            };
             let rows: Vec<RawRow> = result
                 .list_of_results
                 .into_iter()
@@ -309,7 +359,26 @@ async fn rpm_batch<T: TransportPort + 'static>(
                     (element.property_identifier, value)
                 })
                 .collect();
-            sample::from_rows(point.property, &rows).map(|sample| (*row, sample))
+            let sample = sample::from_rows(point.property, &rows)
+                .unwrap_or_else(|| failed_with("missing from the device's answer".into()));
+            (*row, sample)
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_margin_covers_a_renewal_with_its_retries_within_half_the_lifetime() {
+        let budget = Duration::from_secs(24);
+        assert_eq!(Lifetime::new(300, budget).margin, Duration::from_secs(30));
+        assert_eq!(Lifetime::new(120, budget).margin, budget);
+        assert_eq!(Lifetime::new(30, budget).margin, Duration::from_secs(15));
+        assert_eq!(
+            Lifetime::new(60, Duration::ZERO).margin,
+            Duration::from_secs(6)
+        );
+    }
 }

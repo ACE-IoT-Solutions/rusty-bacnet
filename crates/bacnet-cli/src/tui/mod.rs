@@ -85,6 +85,7 @@ pub(crate) async fn run(cli: Cli) -> crate::CliResult {
                     lifetime: *cov_lifetime,
                     poll_every: Duration::from_secs(*poll_interval),
                     workspace: None,
+                    request_budget: worker::watch::DEFAULT_REQUEST_BUDGET,
                 },
             },
         ),

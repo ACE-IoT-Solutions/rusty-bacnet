@@ -132,11 +132,16 @@ impl EventSink {
     /// Queue an event that must not be lost, without waiting: hand it back
     /// when the channel is full so the caller can offer it again later.
     pub(crate) fn offer_or_keep(&self, event: WorkerEvent) -> Option<WorkerEvent> {
-        if self.tx.capacity() == 0 && !self.is_cancelled() {
-            return Some(event);
+        if self.is_cancelled() {
+            return None;
         }
-        self.offer(event);
-        None
+        match self.tx.try_send(self.scoped(event)) {
+            Err(mpsc::error::TrySendError::Full(event)) => Some(match event {
+                WorkerEvent::Session { event, .. } if self.session.is_some() => *event,
+                event => event,
+            }),
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => None,
+        }
     }
 
     /// Queue a rare control event (connect, operation progress), waiting for

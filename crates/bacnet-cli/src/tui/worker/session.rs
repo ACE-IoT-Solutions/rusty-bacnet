@@ -101,9 +101,11 @@ async fn connect(
     plan: ConnectPlan,
     sink: EventSink,
     commands: mpsc::Receiver<Command>,
-    options: SessionOptions,
+    mut options: SessionOptions,
 ) {
     let args = plan.args;
+    // The CLI's clients keep bacnet-client's default of three retries.
+    options.watch.request_budget = Duration::from_millis(args.timeout_ms) * 4;
     let style = plan.kind.style();
     match plan.kind {
         TransportKind::Bip => {
@@ -287,8 +289,11 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                             }
                         }
                         Some(command @ Command::Watch(_)) => {
-                            if let Err(refused) = watch.try_send(command) {
-                                tracing::warn!("watch list busy; dropped {:?}", refused.into_inner());
+                            // The watch worker is polled beside this loop, so
+                            // waiting for room can't deadlock; it only fails
+                            // once the worker has ended with the session.
+                            if watch.send(command).await.is_err() {
+                                tracing::debug!("the watch list has ended");
                             }
                         }
                         Some(Command::Disconnect) => break,
@@ -341,10 +346,22 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
     stop_shared(client).await;
 }
 
-/// Stop the client once no renewal task holds it. A task told to stop
-/// lets go of it as it ends, which may take a few turns of the runtime.
+/// How long [`stop_shared`] waits quietly for the renewal tasks to let go
+/// of the client, and then how long more after warning.
+const RELEASE_WAIT: (Duration, Duration) = (Duration::from_secs(1), Duration::from_secs(10));
+
+/// Stop the client once no renewal task holds it.
+///
+/// The watch worker has told every renewal task to stop before this runs,
+/// and a stopping task lets go of the client as it ends. Dropping the client
+/// instead of stopping it would leave the transport's sockets to whatever
+/// task still held them, so a reconnect could find the port taken: this
+/// waits for the tasks, warning after a second. Only a task that never
+/// ends would make it give up, with an error, after the longer wait.
 async fn stop_shared<T: TransportPort + 'static>(mut client: Arc<BACnetClient<T>>) {
-    for _ in 0..100 {
+    let start = Instant::now();
+    let mut warned = false;
+    loop {
         match Arc::try_unwrap(client) {
             Ok(mut owned) => {
                 if let Err(error) = owned.stop().await {
@@ -352,13 +369,22 @@ async fn stop_shared<T: TransportPort + 'static>(mut client: Arc<BACnetClient<T>
                 }
                 return;
             }
-            Err(shared) => {
-                client = shared;
-                tokio::task::yield_now().await;
-            }
+            Err(shared) => client = shared,
         }
+        let waited = start.elapsed();
+        if waited >= RELEASE_WAIT.0 + RELEASE_WAIT.1 {
+            tracing::error!(
+                "a COV renewal task still holds the client after {} s; dropping it unstopped",
+                waited.as_secs()
+            );
+            return;
+        }
+        if waited >= RELEASE_WAIT.0 && !warned {
+            warned = true;
+            tracing::warn!("waiting for a COV renewal task to release the client");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    tracing::warn!("a COV renewal task still holds the client; dropping it unstopped");
 }
 
 fn far_future() -> Instant {

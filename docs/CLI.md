@@ -350,11 +350,18 @@ Each row subscribes for COV with a finite lifetime (`--cov-lifetime`, default
 300 s) that is renewed before it runs out: SubscribeCOV for Present_Value,
 SubscribeCOVProperty for anything else. Removing a row, and quitting, cancel
 its subscription on the device; the status bar's `COV` counter is how many
-subscriptions the session holds. A device that refuses COV, or a routed one,
-is polled instead: one ReadPropertyMultiple per device for up to 16 rows, a
-point at most every `--poll-interval` seconds (default 10), one request
-outstanding per device, and within the shared `--max-rate`. The list's title
-shows the request rate over the last 10 s. Notifications the TUI couldn't
+subscriptions the session holds. A renewal that fails turns the row to
+polling and it subscribes again later, waiting longer each time it fails.
+A device that refuses COV, or a routed one, is polled instead: one
+ReadPropertyMultiple per device for up to 16 rows, a point at most every
+`--poll-interval` seconds (default 10) counted from the end of its last
+poll, and within the shared `--max-rate`; a device that stops answering is
+polled again after a wait that doubles up to a minute. The watch list keeps
+at most one of its own requests outstanding per device. The browser keeps
+its own one-per-device limit, so a device you browse while watching can
+have one of each, and the renewals are sent by the client outside both
+limits and `--max-rate`, once per lifetime. The list's title shows the
+request rate over the last 10 s. Notifications the TUI couldn't
 keep up with count in the `drop` counter. With a profile, `:csv on` logs every
 value to `watch-<time>.csv` in the profile's workspace and `:csv off` stops.
 

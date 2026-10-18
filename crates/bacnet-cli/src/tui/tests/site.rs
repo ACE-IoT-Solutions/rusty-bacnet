@@ -54,12 +54,20 @@ pub(super) struct Quirks {
     /// Reject SubscribeCOV and SubscribeCOVProperty as unknown services: a
     /// device without COV.
     pub(super) refuse_cov: bool,
+    /// After the first SubscribeCOV, swallow this many more, retries
+    /// included: a renewal that times out.
+    pub(super) lose_cov_after_first: u8,
+    /// Answer every ReadPropertyMultiple with an OBJECT / UNKNOWN_OBJECT
+    /// error, as a device that fails a whole request for one bad object.
+    pub(super) fail_rpm: bool,
 }
 
 struct Port {
     mac: MacAddr,
     inbox: mpsc::Sender<ReceivedNpdu>,
     quirks: Quirks,
+    /// SubscribeCOV requests answered so far.
+    cov_answered: usize,
 }
 
 #[derive(Default)]
@@ -142,6 +150,7 @@ impl HubPort {
             mac: mac.clone(),
             inbox,
             quirks,
+            cov_answered: 0,
         });
         Self {
             hub: Arc::clone(hub),
@@ -172,13 +181,31 @@ impl HubPort {
                     if port.quirks.silent {
                         return;
                     }
+                    if service == ConfirmedServiceChoice::SUBSCRIBE_COV.to_raw() {
+                        if port.cov_answered > 0 && port.quirks.lose_cov_after_first > 0 {
+                            port.quirks.lose_cov_after_first -= 1;
+                            return;
+                        }
+                        port.cov_answered += 1;
+                    }
                     // Answer for the device, with no NPDU options.
                     let answer =
                         if (rpm && port.quirks.refuse_rpm) || (cov && port.quirks.refuse_cov) {
-                            Some([0x01, 0x00, 0x60, invoke_id, UNRECOGNIZED_SERVICE])
+                            Some(vec![0x01, 0x00, 0x60, invoke_id, UNRECOGNIZED_SERVICE])
                         } else if rpm && port.quirks.abort_first_rpm {
                             port.quirks.abort_first_rpm = false;
-                            Some([0x01, 0x00, 0x71, invoke_id, SEGMENTATION_NOT_SUPPORTED])
+                            Some(vec![
+                                0x01,
+                                0x00,
+                                0x71,
+                                invoke_id,
+                                SEGMENTATION_NOT_SUPPORTED,
+                            ])
+                        } else if rpm && port.quirks.fail_rpm {
+                            // Error PDU: class OBJECT (1), code UNKNOWN_OBJECT (31).
+                            Some(vec![
+                                0x01, 0x00, 0x50, invoke_id, service, 0x91, 1, 0x91, 31,
+                            ])
                         } else {
                             None
                         };

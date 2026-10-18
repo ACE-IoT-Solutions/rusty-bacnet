@@ -5,6 +5,8 @@ use super::{session, EventSink, COMMAND_CHANNEL_CAPACITY};
 use crate::tui::message::{Command, OpId, WorkerEvent};
 use crate::tui::point::{BrowseResult, ReqId};
 use crate::tui::profile::service::{Reply, Request, Service};
+use crate::tui::watched::{Source, WatchCommand, WatchEvent};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -120,12 +122,14 @@ async fn run(
                     Command::Browse { req, .. } => {
                         forward_browse(active.as_ref(), command, req, generation, &sink).await;
                     }
-                    Command::StopBrowse { .. } | Command::Watch(_) => {
-                        // Best effort: a stale browse result is dropped by the UI
-                        // anyway, and the session ending cancels every watch row.
+                    Command::Watch(watch) => {
+                        forward_watch(active.as_ref(), watch, generation, &sink).await;
+                    }
+                    Command::StopBrowse { .. } => {
+                        // Best effort: a stale browse result is dropped by the UI anyway.
                         if let Some(active) = &active {
                             if let Err(error) = active.commands.try_send(command) {
-                                tracing::debug!("command not admitted: {error}");
+                                tracing::debug!("browse stop not admitted: {error}");
                             }
                         }
                     }
@@ -252,6 +256,51 @@ async fn forward_browse(
         })
         .await;
     }
+}
+
+/// How long a watch command waits for room in the session's queue.
+pub(crate) const WATCH_SEND_WAIT: Duration = Duration::from_secs(5);
+
+/// Forward a watch command, waiting for room: a lost remove would leave a
+/// renewed subscription on the device with no row to show it, and a lost
+/// add a row that never starts. The wait is bounded so a stuck session
+/// can't hold up a disconnect; a command still refused then is reported.
+async fn forward_watch(
+    active: Option<&Active>,
+    command: WatchCommand,
+    generation: u64,
+    sink: &EventSink,
+) {
+    let sent = match active {
+        Some(active) => matches!(
+            tokio::time::timeout(
+                WATCH_SEND_WAIT,
+                active.commands.send(Command::Watch(command.clone()))
+            )
+            .await,
+            Ok(Ok(()))
+        ),
+        None => false,
+    };
+    if sent {
+        return;
+    }
+    let event = match command {
+        WatchCommand::Add { row, .. } => WatchEvent::Source {
+            row,
+            source: Source::Failed("the session did not take the request".into()),
+        },
+        WatchCommand::Remove { row } => {
+            tracing::warn!("watch row {row}: the session did not take the remove; its subscription ends with the session");
+            return;
+        }
+        WatchCommand::Csv(_) => WatchEvent::Notice("The session did not take the request.".into()),
+    };
+    sink.deliver(WorkerEvent::Session {
+        generation,
+        event: Box::new(WorkerEvent::Watch(event)),
+    })
+    .await;
 }
 
 #[cfg(test)]

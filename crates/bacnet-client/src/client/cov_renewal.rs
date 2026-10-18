@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::enums::PropertyIdentifier;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::oneshot;
 use tokio::time::{sleep_until, Instant as TokioInstant};
@@ -162,6 +163,14 @@ impl ManagedRequest {
         match self {
             Self::Object { lifetime, .. } => lifetime,
             Self::Property(subscription) => subscription.lifetime.get(),
+        }
+    }
+
+    /// The property a single-property subscription monitors.
+    fn property(self) -> Option<PropertyIdentifier> {
+        match self {
+            Self::Object { .. } => None,
+            Self::Property(subscription) => Some(subscription.monitored_property_identifier),
         }
     }
 
@@ -334,6 +343,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             &destination_mac,
                             subscriber_process_identifier,
                             monitored_object_identifier,
+                            request.property(),
                         ) {
                             continue;
                         }
@@ -387,15 +397,27 @@ fn publish_managed_cov_event(
     let _ = events_tx.send(event);
 }
 
+/// True when `received` answers this subscription. A single-property
+/// subscription also needs its property among the reported values, so two
+/// subscriptions to one object under one process identifier don't move
+/// each other's renewals.
 fn matches_managed_cov_notification(
     received: &ReceivedCOVNotification,
     destination_mac: &[u8],
     subscriber_process_identifier: u32,
     monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
+    property: Option<PropertyIdentifier>,
 ) -> bool {
     received.notification.subscriber_process_identifier == subscriber_process_identifier
         && received.notification.monitored_object_identifier == monitored_object_identifier
         && received.source_network.is_none()
         && received.source_address.is_none()
         && &received.source_mac[..] == destination_mac
+        && property.is_none_or(|property| {
+            received
+                .notification
+                .list_of_values
+                .iter()
+                .any(|value| value.property_identifier == property)
+        })
 }
