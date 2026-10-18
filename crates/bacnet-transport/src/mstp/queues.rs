@@ -1,5 +1,5 @@
 //! The transmit queues the core sends from, shared with the transport's
-//! send calls, and the clock that maps Tokio time onto the core's.
+//! send calls.
 //!
 //! The core lives in the transport's task, but `send_unicast` and
 //! `send_broadcast` run on the caller's task and report a full queue or an
@@ -231,43 +231,6 @@ impl QueueStorage for CoreQueues {
     }
 }
 
-/// Tokio time mapped onto the core's nanosecond timeline from a fixed
-/// origin, the moment the transport started. Both the task and the send
-/// calls use it, so queue times and core events share one clock.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct CoreClock {
-    origin: tokio::time::Instant,
-}
-
-impl CoreClock {
-    pub(super) fn new() -> Self {
-        Self {
-            origin: tokio::time::Instant::now(),
-        }
-    }
-
-    /// The core's time now.
-    pub(super) fn now(&self) -> CoreInstant {
-        self.at(tokio::time::Instant::now())
-    }
-
-    /// The core's time at `instant`, exactly (saturating some 584 years
-    /// after the origin).
-    pub(super) fn at(&self, instant: tokio::time::Instant) -> CoreInstant {
-        let elapsed = instant.saturating_duration_since(self.origin);
-        CoreInstant::ZERO + CoreDuration::saturating_from_core(elapsed)
-    }
-
-    /// The Tokio instant of a core time. Both ways are exact, so a timer set
-    /// here never wakes before the core's deadline is due.
-    pub(super) fn instant(&self, at: CoreInstant) -> tokio::time::Instant {
-        let offset = std::time::Duration::from_nanos(at.as_nanos());
-        self.origin
-            .checked_add(offset)
-            .unwrap_or_else(|| self.origin + std::time::Duration::from_secs(86_400 * 365))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,16 +289,5 @@ mod tests {
             (unicast.depth, unicast.dequeued, unicast.drops_oversize),
             (0, 3, 1)
         );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_clock_round_trips_without_waking_early() {
-        let clock = CoreClock::new();
-        tokio::time::advance(std::time::Duration::from_nanos(2_500)).await;
-        let now = clock.now();
-        assert_eq!(now, CoreInstant::from_nanos(2_500));
-        assert_eq!(clock.instant(now), tokio::time::Instant::now());
-        let deadline = CoreInstant::from_nanos(10_001);
-        assert_eq!(clock.at(clock.instant(deadline)), deadline);
     }
 }

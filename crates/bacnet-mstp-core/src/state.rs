@@ -7,7 +7,7 @@ use bacnet_mstp_codec::{
     HEADER_LENGTH, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA,
     PREAMBLE,
 };
-use bacnet_time::{Duration, Instant};
+use bacnet_time::{earliest, Duration, Instant};
 
 use crate::actions::{
     carries_npdu, Action, ActionBuffers, ActionQueue, RequestId, TransmitFailure, TransmitId,
@@ -612,25 +612,19 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
     /// Return the earliest parser, protocol, or transmit-watchdog deadline.
     #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
-        let mut deadline = self.protocol_deadline;
-        if self.parser_partial {
-            if let Some(last_octet) = self.last_octet {
-                // A partial frame is dropped once the silence is longer than
-                // T_frame_abort, so the deadline falls just past it: a whole
-                // microsecond, the value it had when the core counted
-                // microseconds, which keeps it on the whole-microsecond
-                // timeline the simulator and the fuzz model check.
-                let parser = last_octet + self.config.t_frame_abort + Duration::from_micros(1);
-                deadline = minimum(deadline, Some(parser));
-            }
-        }
-        if let Some(tx) = self.active_transmit {
-            deadline = minimum(
-                deadline,
-                Some(tx.asserted_at + self.config.transmit_watchdog),
-            );
-        }
-        deadline
+        // A partial frame is dropped once the silence is longer than
+        // T_frame_abort, so the deadline falls just past it: a whole
+        // microsecond, the value it had when the core counted microseconds,
+        // which keeps it on the whole-microsecond timeline the simulator and
+        // the fuzz model check.
+        let parser = self
+            .last_octet
+            .filter(|_| self.parser_partial)
+            .map(|last_octet| last_octet + self.config.t_frame_abort + Duration::from_micros(1));
+        let watchdog = self
+            .active_transmit
+            .map(|tx| tx.asserted_at + self.config.transmit_watchdog);
+        earliest([self.protocol_deadline, parser, watchdog])
     }
 
     /// The time a call is taken at: `now`, or the latest time passed in
@@ -743,12 +737,4 @@ fn merge_queues(
     counters.unicast = merge(unicast, core.unicast);
     counters.broadcast = merge(broadcast, core.broadcast);
     counters
-}
-
-fn minimum(left: Option<Instant>, right: Option<Instant>) -> Option<Instant> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(core::cmp::min(left, right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
 }

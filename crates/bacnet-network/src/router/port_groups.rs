@@ -38,7 +38,7 @@ mod tests {
     use bacnet_transport::port::NpduLimits;
 
     use super::*;
-    use crate::router::engine::{Engine, RouterClock};
+    use crate::router::engine::{tokio_clock, Engine};
 
     #[tokio::test]
     async fn engine_keeps_custom_transport_predicates_live_after_installation() {
@@ -63,7 +63,7 @@ mod tests {
                     PortGroups::default(),
                 ),
             ],
-            RouterClock::start(),
+            tokio_clock(),
         )
         .unwrap();
         let npdu = [1, 0x20, 0, 1, 1, 42, 255, 0x10, 8];

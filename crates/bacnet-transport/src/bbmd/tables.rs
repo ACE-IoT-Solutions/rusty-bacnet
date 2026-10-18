@@ -50,7 +50,7 @@ impl BbmdState {
     /// period included. Unlike [`Self::fdt`] this purges nothing, so a read
     /// leaves the table and its counters alone.
     pub fn fdt_entries_at(&self, now: Instant) -> Vec<BACnetFDTEntry> {
-        let now = self.clock.to_core(now);
+        let now = self.clock.instant(now);
         self.tables
             .fdt
             .live_at(now)

@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::super::control_policy::ControlGate;
 use super::super::dispatch::Shared;
-use super::super::engine::{Engine, RouterClock};
+use super::super::engine::{tokio_clock, Engine};
 use super::super::port_groups::PortGroups;
 use super::super::send_queue;
 use super::super::SendRequest;
@@ -37,7 +37,7 @@ fn shared() -> Arc<Shared> {
         PortGroups::default(),
     );
     Arc::new(Shared {
-        engine: Engine::new(&[port], RouterClock::start()).unwrap(),
+        engine: Engine::new(&[port], tokio_clock()).unwrap(),
         gate: Arc::new(ControlGate::permissive()),
         networks: vec![1000],
         warnings: Default::default(),

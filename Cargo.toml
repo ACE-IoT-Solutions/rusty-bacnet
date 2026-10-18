@@ -84,6 +84,8 @@ categories = ["network-programming", "embedded"]
 # edge, so only the entry can. Hosted crates turn std back on with
 # `features = ["std"]` on each edge. tracing keeps its defaults: only
 # bacnet-encoding's `std` feature brings it into a no_std crate.
+# bacnet-time versions on its own (#1768): this is its version, which moves
+# only when its API changes, not the workspace version below it.
 bacnet-time = { version = "0.13.0", path = "crates/bacnet-time" }
 bacnet-types = { version = "0.13.0", path = "crates/bacnet-types", default-features = false }
 bacnet-encoding = { version = "0.13.0", path = "crates/bacnet-encoding", default-features = false }

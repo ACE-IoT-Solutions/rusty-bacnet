@@ -24,6 +24,7 @@ bacnet-bip-codec = { workspace = true, features = ["bytes"] }
 bacnet-bip-core = { workspace = true }
 bacnet-mstp-codec = { workspace = true, features = ["alloc"] }
 bacnet-mstp-core = { workspace = true, features = ["alloc"] }
+bacnet-time = { workspace = true, features = ["std"] }
 bytes = { workspace = true, features = ["std"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }

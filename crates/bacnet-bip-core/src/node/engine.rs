@@ -5,7 +5,7 @@
 use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{BvlcResultCode, Bvll, BvllError};
-use bacnet_time::{Duration, Instant};
+use bacnet_time::{earliest, Duration, Instant};
 
 use super::actions::{Action, Actions};
 use super::config::{ConfigError, Link, Mode, Retry};
@@ -510,14 +510,11 @@ impl<const X: usize> Node<X> {
     pub fn next_deadline(&self) -> Option<Instant> {
         let exchange = self.exchanges.next_deadline().map(|(_, deadline)| deadline);
         let lifecycle = self.lifecycle.as_ref();
-        [
+        earliest([
             exchange,
             lifecycle.and_then(Lifecycle::lapse_at),
             lifecycle.and_then(Lifecycle::due_at),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
+        ])
     }
 
     /// Do what is due at `now`, the time the caller actually woke.
@@ -542,10 +539,7 @@ impl<const X: usize> Node<X> {
             let lifecycle = self.lifecycle.as_ref();
             let lapse = lifecycle.and_then(Lifecycle::lapse_at);
             let due = lifecycle.and_then(Lifecycle::due_at).filter(|_| start_due);
-            let first = [timeout.map(|(_, at)| at), lapse, due]
-                .into_iter()
-                .flatten()
-                .min();
+            let first = earliest([timeout.map(|(_, at)| at), lapse, due]);
             match first {
                 Some(at) if at <= now => {}
                 _ => return now,

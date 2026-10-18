@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use super::control_policy::ControlGate;
 use super::dispatch::{Outputs, PortDispatch, Shared};
-use super::engine::{Engine, RouterClock};
+use super::engine::{tokio_clock, Engine};
 use super::local_control::LocalControl;
 use super::port_groups::PortGroups;
 use super::send_queue;
@@ -211,7 +211,7 @@ impl Harness {
                 )
             })
             .collect();
-        let engine = Engine::new(&configs, RouterClock::start()).unwrap();
+        let engine = Engine::new(&configs, tokio_clock()).unwrap();
         let shared = Arc::new(Shared {
             engine,
             gate: Arc::clone(&gate),
