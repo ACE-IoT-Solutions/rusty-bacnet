@@ -115,6 +115,11 @@ let counters = core.take_counters();
 assert_eq!((counters.frames_received, counters.frames_transmitted), (1, 1));
 ```
 
+`examples/node.rs` puts two master nodes on a simulated line with a virtual
+clock, each driven the way a UART adapter drives the core, and prints the
+token ring forming and a request answered in its reply window:
+`cargo run -p bacnet-mstp-core --example node`.
+
 ## License
 
 MIT

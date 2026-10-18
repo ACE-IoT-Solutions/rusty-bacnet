@@ -127,6 +127,12 @@ assert_eq!(
 );
 ```
 
+`examples/bip_mstp_router.rs` runs a router between B/IP and MS/TP, its
+B/IP port also the network's BBMD, in the main loop firmware runs: every
+core's deadline merged with `bacnet_time::earliest`, and the BBMD's
+management answers coming from its tables:
+`cargo run -p bacnet-router-core --features bip,mstp --example bip_mstp_router`.
+
 ## License
 
 MIT

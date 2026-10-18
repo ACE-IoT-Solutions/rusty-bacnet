@@ -53,7 +53,7 @@ an allocator (#1614), for firmware with no heap.
 | --- | --- | --- |
 | Hosted | `std` (default) | Everything; enables `alloc` and the dependencies' standard-library support. Adds tracing for reserved NPDU control bits. |
 | `no_std` with a heap | `alloc` | Everything but the tracing. Firmware must supply a global allocator. |
-| No allocator | neither | Tag decoding and the `_to_sink` encoders (tags, scalars, timestamps, strings, octet and bit strings), the primitive decoders and the borrowed views (`primitives::CharacterStringRef`, `primitives::ApplicationValueRef`), the tagged-field readers in `constructed::tagged`, and `apdu::header`, which reads and writes the header of an Unconfirmed-Request and an unsegmented Confirmed-Request or ComplexACK. The owned APDU and NPDU, segmentation, the other `constructed` codecs and every `BytesMut` encoder need `alloc`. |
+| No allocator | neither | Tag decoding and the `_to_sink` encoders (tags, scalars, timestamps, strings, octet and bit strings), the primitive decoders and the borrowed views (`primitives::CharacterStringRef`, `primitives::ApplicationValueRef`), the tagged-field readers in `constructed::tagged`, and `apdu::header`, which reads and writes the header of an Unconfirmed-Request, an unsegmented Confirmed-Request or ComplexACK and an Error, and a whole Reject or Abort. The owned APDU and NPDU, segmentation, the other `constructed` codecs and every `BytesMut` encoder need `alloc`. |
 | | `heapless` | Adds `sink::EncodeSink` for `heapless::Vec<u8, N>`, in any profile. |
 
 `EncodeSink` also supports caller slices, and with `alloc` `Vec<u8>` and

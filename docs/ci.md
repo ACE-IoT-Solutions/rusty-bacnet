@@ -23,7 +23,7 @@ only when every job under it did (see [Merge evidence](#merge-evidence)).
 | Job | PR to `dev` | PR to `main` | Push to `dev` (merge) | Push to `main`, `v*` tag, weekly, manual |
 | --- | --- | --- | --- | --- |
 | Lint: rustfmt, 700-LOC cap, no-secret scan, script regressions, the `named_codes!` copies, changelog fragments, the [tool pins](#tool-pins), the [fuzz crates' lockfiles](#fuzzing) | ✓ | ✓ | ✓ | ✓ |
-| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP and B/IP images built without an allocator, and the APDU image with one, checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
+| Clippy and rustdoc, warnings denied: every feature, PyO3 crate, `bacnet-cli` without default features, each published crate with default features for Linux, Windows and macOS, the `no_std` crates on bare-metal targets and their `alloc` tests on the host; the every-feature and PyO3 rustdoc runs include private items. The workspace runs include the [samples](#samples). Also the [firmware link test](#firmware-link-test): the MS/TP, B/IP and MS/TP device images built without an allocator, and the APDU image with one, checked against their size budgets | ✓ | ✓ | ✓ | ✓ |
 | Test: Linux, every feature (`LINUX_FEATURES`); also the [`no_std` crates](#no_std-checks)' tests and doctests with `alloc` and without `std`, and their tests without either | ✓ | ✓ | ✓ | ✓ |
 | Python bindings: `maturin develop` (maturin at its [pinned](#tool-pins) version), then `python -m unittest discover -s crates/rusty-bacnet/tests` and the crate's Rust tests (`cargo nextest run -p rusty-bacnet`) | ✓ | ✓ | ✓ | ✓ |
 | MSRV (`RUST_MSRV` in [`.github/ci-pins.env`](../.github/ci-pins.env)), Linux native (`check-msrv.sh --linux-native`), the `no_std` builds included |  | ✓ |  | ✓ |
@@ -156,7 +156,7 @@ proves all of that; each check covers a part.
 | The `alloc` tests and doctests | Test | The three crates' tests and doctests with `alloc` and without `std`: the code a bare-metal build compiles. The tests link `std`; `check-no-std.sh` shows the code needs none |
 | The allocation-free tests | Test | The three crates' tests without `alloc` either, including `bacnet-services/tests/no_alloc_subset.rs`, which runs Who-Is, I-Am and ReadProperty through the APDU header under a counting allocator and finds no allocation. Their doctests aren't run: most examples build values with `alloc` |
 | `scripts/ci/check-msrv.sh` | MSRV | The three crates with `alloc` and without `std` build at the MSRV, in a run of their own, since the hosted crates turn `std` back on in the main run |
-| [Firmware link test](#firmware-link-test) | Clippy, `FIRMWARE_TARGETS` | The MS/TP and B/IP stacks link into bare-metal images with no allocator, and `bacnet-encoding` and `bacnet-services` into one with an allocator, each within its size budget |
+| [Firmware link test](#firmware-link-test) | Clippy, `FIRMWARE_TARGETS` | The MS/TP and B/IP stacks, and an MS/TP device with its application layer, link into bare-metal images with no allocator, and `bacnet-encoding` and `bacnet-services` into one with an allocator, each within its size budget |
 
 **ARMv6-M and `bytes`.** `bytes` needs atomic compare-and-swap, which
 `thumbv6m-none-eabi` lacks. With its `extra-platforms` feature it takes that
@@ -203,8 +203,8 @@ cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-defa
 ### Firmware link test
 
 `check-no-std.sh` runs clippy on the `no_std` crates, and clippy never links.
-The firmware link test (#1626, #1635, #1664, #1667, #1679) does.
-`firmware/link` (the `firmware-link` crate, `publish = false`) builds seven
+The firmware link test (#1626, #1635, #1664, #1667, #1679, #1771) does.
+`firmware/link` (the `firmware-link` crate, `publish = false`) builds eight
 `#![no_main]` bare-metal images, one per stack, because code can't be
 credited to a crate reliably within one LTO image:
 
@@ -233,11 +233,16 @@ credited to a crate reliably within one LTO image:
   routes and nothing more: a product router also needs a Device object,
   since Clause 6.6 holds a router to the device requirements of Clause
   22.1.5, and the image has no application layer to host one;
+- `device` links an MS/TP device with no global allocator: the MS/TP core
+  over a `StandardStorage<1, 2, 1>`, `bacnet-npdu`'s view, and
+  `bacnet-types`, `bacnet-encoding` and `bacnet-services` without default
+  features, their allocation-free profile (#1614). It answers Who-Is and
+  ReadProperty for a Device object and an Analog Input;
 - `apdu` links `bacnet-encoding` and `bacnet-services` (and through them
   `bacnet-types`) without default features and with `alloc`, the way a
   firmware uses them, with a global allocator over a fixed arena.
 
-A use of `alloc` anywhere in an image but `apdu` fails its build with "no
+A use of `alloc` anywhere in an image but `apdu`, the device's application layer included, fails its build with "no
 global memory allocator found". In any image, a symbol that only a hosted
 target or the firmware provides fails the link: an atomic library call, or
 a critical section that nothing implements. A compare-and-swap on ARMv6-M or
@@ -338,9 +343,23 @@ targets, so a crate that needs one builds only with a backend such as
     records how the library classifies the fault, the Reject reason the
     error maps to. Two of them, a Who-Is and an I-Am, are unconfirmed, so
     no Reject would be sent for them.
+  - `device::run` is station 1 on an MS/TP line where a client, station
+    2, asks for every device and for devices 5000 to 6000, passes the
+    token, and sends thirteen confirmed requests. The device answers the
+    first Who-Is with a global I-Am on its next token and ignores the
+    second. It answers each request in its reply window: reads that
+    succeed, one through the wildcard Device instance and one relayed
+    from network 5, which goes back with that DNET and DADR; the four
+    ReadProperty Errors of Clause 15.5.1.3.1; a Reject for a request with
+    no property identifier and for WriteProperty; and an Abort for a
+    segmented request. Two confirmed requests by broadcast, one in a
+    broadcast frame and one to every network, go unanswered. The client's frames are written by hand from the
+    Clause 6.2 and 20.1 layouts, and so are the answers it expects, whose
+    hashes `device::expected()` holds.
 
   The host tests in `firmware/link/tests/` (`mstp.rs`, `mstp_extended.rs`,
-  `bip.rs`, `node.rs`, `bbmd.rs`, `router.rs` and `apdu.rs`) run them and
+  `bip.rs`, `node.rs`, `bbmd.rs`, `router.rs`, `device.rs` and `apdu.rs`)
+  run them and
   compare each
   whole summary, so the behaviour is checked natively, in every
   `--workspace` test run on Linux, macOS and Windows. Each image's reset
@@ -419,7 +438,11 @@ targets, so a crate that needs one builds only with a backend such as
   default, so host builds, clippy, rustdoc and tests cover them. It links
   `alloc` into the crate's lib, so the other images build with
   `--no-default-features`: a bare-metal build of them with the feature on
-  fails, as it should, with "no global memory allocator found".
+  fails, as it should, with "no global memory allocator found". The device
+  image depends on `bacnet-types`, `bacnet-encoding` and
+  `bacnet-services` without default features; the feature turns on their
+  `alloc` profile for `apdu`, so the device image fails the same way if
+  anything turns it on for them.
 - **The check.** `scripts/ci/check-firmware-link.sh` runs, per target,
   clippy on the images' code (a host build compiles it out) and the
   `firmware`-profile build, once without the `alloc` feature for every
@@ -457,7 +480,10 @@ targets, so a crate that needs one builds only with a backend such as
   no multiply with a 64-bit product, formatting a `u64` divides by a
   constant through the 64-bit division routine (3 functions). Its budget
   holds both counts at what it links today, with no headroom, so any new
-  formatting or division function still fails the check. It also fails
+  formatting or division function still fails the check. The device image
+  calls the same libraries through their allocation-free profile, whose
+  errors carry static labels formatted only when displayed, and links no
+  `core::fmt` function. It also fails
   when the image has no function symbols to look for that code in: the
   images must not be stripped. A size more than 20% under its budget gets a
   notice to tighten it, not a failure, and so does a count under its limit,
@@ -468,7 +494,7 @@ targets, so a crate that needs one builds only with a backend such as
   `__aeabi_memmove4` and `__aeabi_memmove8` entry points to it, 0.8 to
   1.4 KB in all. A copy of a whole value that the compiler can't prove
   doesn't overlap its source, or a slice rotation, calls it. The bip,
-  node, bbmd, mstp, mstp-extended and router images link none, and their
+  node, bbmd, mstp, mstp-extended, router and device images link none, and their
   limit of 0 keeps it out. The apdu image links it (2); its limit is that count,
   with no headroom.
   `scripts/ci/test-firmware-size.py` tests the helper on small ELF files
@@ -601,12 +627,13 @@ schedule runs it, and no required check depends on it.
 
 - **What runs.** The `emulate` feature of `firmware-link`, with one board
   feature, builds an emulation build of each image (mstp, mstp-extended,
-  bip, node, bbmd, router and apdu). Its reset entry runs the same scenario
+  bip, node, bbmd, router, device and apdu). Its reset entry runs the same scenario
   as the link test's image, with its input still behind `black_box`, then
   checks the summary against the one the host test asserts:
   `firmware_link::mstp::EXPECTED`, `mstp_extended::EXPECTED`,
   `bip::EXPECTED`, `node::expected()`, `bbmd::EXPECTED`,
-  `router::expected()` and `apdu::expected()`, shared by both so they
+  `router::expected()`, `device::expected()` and `apdu::expected()`,
+  shared by both so they
   can't drift. The router image is built for every board but runs only on
   the two with more than 16 KiB of RAM (see Stack, below). It prints the
   summary and a verdict through semihosting and exits with a status QEMU
@@ -696,6 +723,10 @@ schedule runs it, and no required check depends on it.
   reaches the statics. The extended frames Clause 9.3 asks of a router's
   MS/TP port are most of those statics, so no standard-frame router image
   is offered for those boards.
+  The device image, measured when it joined (#1771) with the same
+  toolchain and QEMU, peaked at 2,652 octets on `microbit`, 2,284 on
+  `lm3s6965evb`, 2,292 on `netduinoplus2` and 2,172 on `sifive_e`; its
+  3,496 octets of statics leave the 16 KiB boards 12,888 for the stack.
 - **Stack budgets.** `firmware/link/stack-budget.toml` (#1660) holds a
   budget for each board and image that runs there (the micro:bit and
   SiFive E tables have no router key), in a `[<board>]` table with a key

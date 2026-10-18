@@ -1375,6 +1375,7 @@ dependencies = [
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
+ "bacnet-npdu",
  "bacnet-router-core",
  "bacnet-services",
  "bacnet-types",

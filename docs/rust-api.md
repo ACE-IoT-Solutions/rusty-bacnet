@@ -32,6 +32,158 @@ definition of each: the borrowed NPDU view (`Npdu::decode`,
 encodes through its view. The Tokio MS/TP and B/IP transports
 run on the MS/TP and B/IP cores, and `BACnetRouter` on the router core.
 
+The website's [Run on a microcontroller](../website/src/content/docs/start/embedded.md)
+page says which of these crates each product needs, with the sizes the
+firmware images measure. The four sections below cover the vocabulary the
+cores share.
+
+---
+
+## bacnet-time
+
+The time every portable core takes: a monotonic `Instant` and a `Duration`,
+both nanoseconds on a `u64` from an epoch the caller chooses (about 584
+years of range). `no_std`, no allocator, no dependencies; it versions on
+its own, taking a new version only when its API changes (#1768).
+
+- **Construction.** `Instant::from_nanos`, `from_micros`, `from_millis` and
+  `from_secs`, and the same on `Duration`, are `const` and saturate. The
+  `as_*` accessors round toward zero.
+- **Arithmetic.** `+` and `-` saturate; every operation has a `checked_*`
+  form that returns `None` instead, and nothing panics.
+  `saturating_duration_since` measures between two instants.
+- **No 64-bit division.** The accessors, `checked_rem`, the conversion to
+  `core::time::Duration` and `Debug` use binary long division, so a 32-bit
+  target doesn't link the division routine.
+- **`earliest`** merges optional deadlines, skipping `None`. Use it where
+  several cores report `next_deadline()`: `Option::min` orders `None`
+  first, so one core with nothing due would hide every other deadline.
+- **`HostClock`** (feature `std`) maps the standard library's monotonic
+  clock onto the timeline and back: `HostClock::new(origin)` puts `origin`
+  at `Instant::ZERO`, `HostClock::centred(origin)` at 2^63 ns so earlier
+  host instants map too, `now()` reads the clock, `instant(at)` maps a host
+  instant, and `to_std(at)` maps a deadline back for a sleep (`None` when
+  the host can't represent it). `reading(source)` swaps the clock it
+  reads, for an async runtime's paused test time.
+
+```rust
+use bacnet_time::{earliest, Duration, Instant};
+
+// A microsecond tick from a hardware timer.
+let now = Instant::from_micros(1_250_000);
+let mstp = Some(now + Duration::from_millis(5));
+let router = None; // nothing due
+let wake = earliest([mstp, router]).unwrap_or(now + Duration::from_secs(1));
+assert_eq!(wake, now + Duration::from_millis(5));
+assert_eq!(Option::min(mstp, router), None); // the trap earliest avoids
+```
+
+Every core takes a `now` earlier than the latest it has seen as that latest
+one, so a clock that steps back holds its timers still instead of failing.
+
+---
+
+## bacnet-npdu
+
+The network-layer vocabulary of Clause 6, one definition of each, shared
+by the cores, the hosted transports and network layer, and
+`bacnet-encoding`'s owned NPDU (#1770). `no_std`, no allocator, no
+dependencies.
+
+- **`Npdu`** is a borrowed view of an NPDU's control information and
+  payload: `Npdu::decode(frame)` reads one in place; `Npdu::apdu(payload)`
+  and `Npdu::message(kind, payload)` build one for the local network, whose
+  public fields (`destination`, `source`, `hop_count`, `priority`,
+  `expecting_reply`) a caller then sets; `encoded_len()` and
+  `encode_into(out)` write it, refusing before writing an octet anything
+  `decode` would refuse. `is_network_message()` and `is_global()` classify
+  it.
+- **`Address`** is a network number and a borrowed MAC: a DNET and DADR, or
+  an SNET and SADR. An empty MAC is a broadcast on that network, and
+  `GLOBAL_NETWORK` (0xFFFF) is every network.
+- **`DecodeError`** reports an address too long for any data link apart
+  from every other fault, with what a router needs to address its reject.
+- **`NetworkMessageType`** and **`RejectMessageReason`** are open sets of
+  wire codes with named constants, so a `match` needs a wildcard arm;
+  **`NetworkPriority`** is the closed two-bit priority.
+- **`NpduLimits`**, **`MAX_NPDU`** (1,497 octets), **`Mac`** and
+  **`MAX_MAC_LEN`** (18 octets) bound what a link carries.
+
+```rust
+use bacnet_npdu::{Address, Npdu};
+
+// A request relayed by a router from station 7 on network 5.
+let request = [0x01, 0x0C, 0x00, 0x05, 0x01, 0x07, 0x00, 0x03, 0x01, 0x0C];
+let npdu = Npdu::decode(&request).expect("an NPDU");
+assert!(npdu.expecting_reply);
+assert_eq!(npdu.source, Some(Address { network: 5, mac: &[7] }));
+
+// The reply goes back through the router: DNET 5, DADR 7.
+let apdu = [0x30, 0x01, 0x0C];
+let mut reply = Npdu::apdu(&apdu);
+reply.destination = npdu.source;
+let mut out = [0u8; 16];
+let length = reply.encode_into(&mut out).expect("room");
+assert_eq!(out[..length], [0x01, 0x20, 0x00, 0x05, 0x01, 0x07, 0xFF, 0x30, 0x01, 0x0C]);
+```
+
+---
+
+## bacnet-mstp-codec
+
+The MS/TP frame format of Clause 9, and nothing above it: token passing,
+timers and line control are `bacnet-mstp-core`'s, which re-exports this
+crate as `codec`. `no_std`, no allocator and no dependencies by default.
+
+- **`Frame`** borrows its data; `Frame::new(frame_type, destination,
+  source, data)` and `encode_into(out)` write it into caller storage, and
+  `decode_frame(wire)` reads one in a single pass. Extended data frames
+  (types 32 and 33) go on the wire COBS-encoded with a CRC-32K;
+  `decode_frame_in_place` decodes one over its own encoded form.
+- **`StreamDecoder`** decodes a serial byte stream octet by octet in a
+  buffer the caller lends it. It skips a frame too long for that buffer by
+  count, and reports every candidate it drops with the destination a
+  receiver needs to judge it.
+- **`FrameType`** is an open set: constants for the types the standard
+  defines and `from_raw` for any other octet, so proprietary and reserved
+  types pass through.
+- **CRCs** (the `crc` module): the header CRC-8, the data CRC-16 and the
+  CRC-32K.
+- **Checks.** Decoding is a raw link-level check; encoding is strict. The
+  crate documentation lists the checks in the order each direction runs
+  them.
+- **Features**, none on by default and none needing `std`: `alloc`,
+  `bytes` and `heapless` each add a `FrameSink` for that buffer type, and
+  `crc32k-table` swaps the 16-entry CRC-32K table for a 256-entry one,
+  about 1 KiB more flash for half the lookups.
+
+---
+
+## bacnet-bip-codec
+
+The BVLL format of Annex J (B/IP) at the crate root and Annex U (B/IPv6)
+in its `ipv6` module, and nothing above it: sockets, BBMD forwarding and
+foreign-device registration are `bacnet-bip-core`'s, which re-exports this
+crate as `codec`. `no_std`, no allocator and no dependencies by default.
+
+- **`Bvll`** and **`Bvll6`** are the twelve messages of each, borrowing
+  their NPDU or table from the datagram; `encode_into(out)` writes one
+  into caller storage and `decode(datagram)` reads one.
+- **`BvllFrame`** reads the header alone, so a receiver can see which
+  function arrived before it refuses one it doesn't know.
+- **`BvlcFunction`** and **`BvlcResultCode`** (and their B/IPv6
+  counterparts) are open sets of wire codes with named constants.
+- **Tables.** BDT and FDT entries read through iterators straight from the
+  wire; `BdtEntries::from_entries` builds a table to send.
+- **Addresses.** A B/IP address is a plain `SocketAddrV4`, since all of it
+  travels; a B/IPv6 address is a `Bip6Address`, the 18 octets that travel.
+- **Checks.** Decoding is strict about shape (the BVLC type, a Length
+  field equal to the datagram, a payload the function's layout allows) and
+  lenient about values; encoding refuses what the Length field can't state
+  and a BVLC-Result with an undefined code.
+- **Features**, none on by default and none needing `std`: `alloc`,
+  `bytes` and `heapless` each add a `BvllSink` for that buffer type.
+
 ---
 
 ## bacnet-types

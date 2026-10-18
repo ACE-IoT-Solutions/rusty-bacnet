@@ -200,9 +200,12 @@ since they write such a value with its length saturated instead.
 ## APDU header and services
 
 `apdu::header::ApduHeader` writes the header of an Unconfirmed-Request (two
-octets), or of an unsegmented Confirmed-Request (four) or ComplexACK (three),
-with the octets the owned `encode_apdu` writes (Clauses 20.1.2, 20.1.3 and
-20.1.5). `encode_to_sink` makes one write; `encode_with_parameters_to_sink`
+octets), of an unsegmented Confirmed-Request (four) or ComplexACK (three), or
+of an Error (three), and a whole Reject or Abort (three), with the octets the
+owned `encode_apdu` writes (Clauses 20.1.2, 20.1.3, 20.1.5, 20.1.7, 20.1.8
+and 20.1.9). The Error, Reject and Abort let a device without a heap refuse
+what it doesn't serve (#1771); an Error's class and code follow its header
+as two `encode_app_enumerated_to_sink` values. `encode_to_sink` makes one write; `encode_with_parameters_to_sink`
 appends the header and the service parameters as one value. The max-segments
 and max-APDU fields are typed (`MaxSegments`, `MaxApdu`), so the writer has no
 invalid input to refuse.
