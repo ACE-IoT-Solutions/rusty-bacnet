@@ -68,26 +68,35 @@ async fn r7_endpoint_queued_and_prompt_replies_keep_target_and_reject_retired_co
 #[tokio::test]
 async fn r7_endpoint_retirement_during_read_prevents_prompt_der_handoff() {
     use std::future::Future;
-    let mut routed = Routed::new().await;
-    let (port, _keep_open) = TestTransport::inbound(8);
-    let mut endpoint = EndpointIngress::new(port, 4);
-    let ingress = endpoint.start().await.unwrap();
-    let db = Arc::new(RwLock::new(database()));
-    let responder = EndpointResponder::new(db.clone(), ingress.egress);
-    let held = db.write().await;
-    let (tx, rx) = oneshot::channel();
-    let received = routed.receive(2000, &read(11), Some(tx)).await;
-    let mut handle = Box::pin(responder.handle(received));
-    assert!(handle
-        .as_mut()
-        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-        .is_pending());
-    endpoint.stop().await.unwrap();
-    drop(held);
-    assert!(handle.await.is_err());
-    assert!(rx.await.is_err());
-    assert!(routed.wire.try_recv().is_err());
-    routed.router.stop().await;
+    for close_responder in [false, true] {
+        let mut routed = Routed::new().await;
+        let (port, _keep_open) = TestTransport::inbound(8);
+        let mut endpoint = EndpointIngress::new(port, 4);
+        let ingress = endpoint.start().await.unwrap();
+        let db = Arc::new(RwLock::new(database()));
+        let responder = EndpointResponder::new(db.clone(), ingress.egress);
+        let held = db.write().await;
+        let (tx, rx) = oneshot::channel();
+        let received = routed.receive(2000, &read(11), Some(tx)).await;
+        let mut handle = Box::pin(responder.handle(received));
+        assert!(handle
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            .is_pending());
+        if close_responder {
+            responder.close();
+        } else {
+            endpoint.stop().await.unwrap();
+        }
+        drop(held);
+        assert!(handle.await.is_err());
+        assert!(rx.await.is_err());
+        assert!(routed.wire.try_recv().is_err());
+        if close_responder {
+            endpoint.stop().await.unwrap();
+        }
+        routed.router.stop().await;
+    }
 }
 
 #[tokio::test]

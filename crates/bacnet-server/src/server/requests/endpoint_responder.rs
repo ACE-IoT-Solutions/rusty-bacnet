@@ -371,7 +371,12 @@ impl EndpointResponder {
 
         if !response_route.requires_direct_response() {
             if let Some(reply_tx) = received.reply_tx.take() {
-                self.ensure_open()?;
+                // An admitted ordinary DER request may still return its
+                // protocol refusal after role closure. Captured router replies
+                // additionally require this responder's original authority.
+                if checked_response {
+                    self.ensure_open()?;
+                }
                 if !self.egress.is_open() {
                     return Err(shutdown_error());
                 }
