@@ -123,7 +123,9 @@ async fn run(
                     Command::StopBrowse { .. } => {
                         // Best effort: a stale browse result is dropped by the UI anyway.
                         if let Some(active) = &active {
-                            let _ = active.commands.try_send(command);
+                            if let Err(error) = active.commands.try_send(command) {
+                                tracing::debug!("browse stop not admitted: {error}");
+                            }
                         }
                     }
                     Command::Profile(request) => {

@@ -351,7 +351,7 @@ async fn resolve_destination<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
 ) -> Result<Destination, String> {
-    destination::resolve(client, target_str, destination::ROUTED_DISCOVERY_WAIT).await
+    destination::resolve(client, target_str, destination::routed_wait()).await
 }
 
 /// Print the help message listing all available shell commands.

@@ -89,6 +89,14 @@ pub(crate) fn parse_target(s: &str) -> Result<Target, String> {
 
     if let Some((left, right)) = s.split_once(':') {
         if let Ok(dnet) = left.parse::<u16>() {
+            let routed =
+                right.parse::<u32>().is_ok() || right.starts_with("0x") || right.starts_with("0X");
+            // 0 isn't a network number, and 65535 means every network.
+            if routed && matches!(dnet, 0 | u16::MAX) {
+                return Err(format!(
+                    "invalid network {dnet} in routed target '{s}': expected 1 to 65534"
+                ));
+            }
             // dnet:instance: both parts numeric.
             if let Ok(instance) = right.parse::<u32>() {
                 return Ok(Target::Routed { dnet, instance });

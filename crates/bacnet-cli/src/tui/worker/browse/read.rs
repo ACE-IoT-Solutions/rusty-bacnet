@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
-use bacnet_types::enums::{ErrorClass, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifier, RejectReason};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
@@ -59,15 +59,61 @@ pub(crate) enum Wanted<'a> {
     List(&'a [PropertyIdentifier]),
 }
 
-/// True when an RPM failure means the device won't take RPM, so ReadProperty
-/// may still work: a reject (an unknown service, say), an abort (the answer
-/// too large), or a services-class error.
-fn refuses_rpm(error: &Error) -> bool {
+/// What an RPM failure says about trying ReadProperty instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RpmFailure {
+    /// The device doesn't take RPM: a reject (an unknown service, say) or a
+    /// services-class error. Remembered for the rest of the session.
+    Refused,
+    /// This answer was too large to send (an abort for segmentation or a
+    /// full buffer): ReadProperty for this request only.
+    TooLarge,
+    /// Anything else, a timeout included: the read fails.
+    Other,
+}
+
+/// Classify an RPM failure.
+pub(crate) fn rpm_failure(error: &Error) -> RpmFailure {
+    let too_large = [
+        AbortReason::SEGMENTATION_NOT_SUPPORTED,
+        AbortReason::BUFFER_OVERFLOW,
+        AbortReason::APDU_TOO_LONG,
+    ];
     match error {
-        Error::Reject { .. } | Error::Abort { .. } => true,
-        Error::Protocol { class, .. } => *class == u32::from(ErrorClass::SERVICES.to_raw()),
+        Error::Reject { reason } if *reason == RejectReason::BUFFER_OVERFLOW.to_raw() => {
+            RpmFailure::TooLarge
+        }
+        Error::Reject { .. } => RpmFailure::Refused,
+        Error::Protocol { class, .. } if *class == u32::from(ErrorClass::SERVICES.to_raw()) => {
+            RpmFailure::Refused
+        }
+        Error::Abort { reason } if too_large.iter().any(|r| r.to_raw() == *reason) => {
+            RpmFailure::TooLarge
+        }
+        _ => RpmFailure::Other,
+    }
+}
+
+/// True when `error` says the device, or the way to it, isn't answering: a
+/// timeout or a transport failure. Reading on would only time out again.
+pub(crate) fn unreachable(error: &Error) -> bool {
+    match error {
+        Error::Abort { reason } => *reason == AbortReason::TSM_TIMEOUT.to_raw(),
+        Error::Timeout(_) | Error::Transport(_) => true,
         _ => false,
     }
+}
+
+/// How an Object_List read went.
+#[derive(Debug)]
+pub(crate) struct ListRead {
+    /// The entries read, in device order.
+    pub(crate) objects: Vec<ObjectIdentifier>,
+    /// It took element-by-element reads.
+    pub(crate) indexed: bool,
+    /// An element-by-element read stopped early, and why: `objects` holds
+    /// the elements before it.
+    pub(crate) stopped: Option<String>,
 }
 
 /// Reads one device, one request at a time, each after the global rate cap.
@@ -162,14 +208,20 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
         if self.rpm {
             match self.rpm_rows(object, &wanted).await {
                 Ok(rows) => return Ok((rows, ReadVia::Rpm)),
-                Err(Halt::Device(error)) if refuses_rpm(&error) => {
-                    tracing::info!(
-                        "device {} refused ReadPropertyMultiple ({error}); reading one property at a time",
-                        self.device
-                    );
-                    self.rpm = false;
-                }
-                Err(halt) => return Err(halt),
+                Err(Halt::Device(error)) => match rpm_failure(&error) {
+                    RpmFailure::Refused => {
+                        tracing::info!(
+                            "device {} refused ReadPropertyMultiple ({error}); reading one property at a time",
+                            self.device
+                        );
+                        self.rpm = false;
+                    }
+                    RpmFailure::TooLarge => tracing::info!(
+                        "{object}: the RPM answer is too large ({error}); reading one property at a time"
+                    ),
+                    RpmFailure::Other => return Err(Halt::Device(error)),
+                },
+                Err(Halt::Cancelled) => return Err(Halt::Cancelled),
             }
         }
         let properties = match wanted {
@@ -180,6 +232,8 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
         for property in properties {
             let value = match self.rp(object, property, None).await {
                 Ok(value) => Ok(value),
+                // A device that stopped answering fails the read once.
+                Err(Halt::Device(error)) if unreachable(&error) => return Err(Halt::Device(error)),
                 Err(Halt::Device(error)) => Err(error.to_string()),
                 Err(Halt::Cancelled) => return Err(Halt::Cancelled),
             };
@@ -210,6 +264,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
                     _ => None,
                 })
                 .collect(),
+            Err(Halt::Device(error)) if unreachable(&error) => return Err(Halt::Device(error)),
             Err(Halt::Device(error)) => {
                 tracing::info!(
                     "{object}: no Property_List ({error}); reading the usual properties"
@@ -226,16 +281,24 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
         Ok(list)
     }
 
-    /// The device's Object_List, and whether it took element-by-element
-    /// reads. `progress` hears `(done, total)` along the way.
+    /// The device's Object_List. `progress` hears `(done, total)` along an
+    /// element-by-element read.
     pub(crate) async fn object_list(
         &self,
         mut progress: impl FnMut(u32, u32),
-    ) -> Result<(Vec<ObjectIdentifier>, bool), Halt> {
+    ) -> Result<ListRead, Halt> {
         let device = self.device_object()?;
         let list = PropertyIdentifier::OBJECT_LIST;
         let whole = match self.rp(device, list, None).await {
-            Ok(data) => return Ok((identifiers(&data), false)),
+            Ok(data) => {
+                return Ok(ListRead {
+                    objects: identifiers(&data),
+                    indexed: false,
+                    stopped: None,
+                })
+            }
+            // Element 0 would only time out too.
+            Err(Halt::Device(error)) if unreachable(&error) => return Err(Halt::Device(error)),
             Err(Halt::Device(error)) => error,
             Err(Halt::Cancelled) => return Err(Halt::Cancelled),
         };
@@ -257,12 +320,24 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
             ))));
         }
         let mut objects = Vec::with_capacity(total as usize);
+        let mut stopped = None;
         for index in 1..=total {
-            let data = self.rp(device, list, Some(index)).await?;
-            objects.extend(identifiers(&data));
+            match self.rp(device, list, Some(index)).await {
+                Ok(data) => objects.extend(identifiers(&data)),
+                // Keep what was read rather than lose the whole list.
+                Err(Halt::Device(error)) => {
+                    stopped = Some(format!("element {index} of {total}: {error}"));
+                    break;
+                }
+                Err(Halt::Cancelled) => return Err(Halt::Cancelled),
+            }
             progress(index, total);
         }
-        Ok((objects, true))
+        Ok(ListRead {
+            objects,
+            indexed: true,
+            stopped,
+        })
     }
 }
 

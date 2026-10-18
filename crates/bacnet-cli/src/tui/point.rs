@@ -156,6 +156,9 @@ pub(crate) enum BrowseResult {
         objects: Vec<ObjectIdentifier>,
         /// Read element by element because the whole list couldn't be.
         indexed: bool,
+        /// The element-by-element read stopped early, and why; `objects`
+        /// holds the elements before it.
+        stopped: Option<String>,
     },
     /// One object's properties.
     Object(Box<ObjectView>),

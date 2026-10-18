@@ -250,7 +250,11 @@ pub(crate) async fn serve<T: TransportPort + 'static>(
                         }
                         Some(command @ (Command::Browse { .. } | Command::StopBrowse { .. })) => {
                             if let Err(refused) = browse.try_send(command) {
-                                if let Command::Browse { req, .. } = refused.into_inner() {
+                                let refused = refused.into_inner();
+                                if let Command::StopBrowse { device } = refused {
+                                    tracing::debug!("browser busy; dropped the stop for device {device}");
+                                }
+                                if let Command::Browse { req, .. } = refused {
                                     let result = BrowseResult::Failed("the browser is busy; try again".into());
                                     sink.deliver(WorkerEvent::Browse { req, result }).await;
                                 }

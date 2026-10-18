@@ -27,7 +27,20 @@ use super::target::{bip6_vmac, parse_target_on, Target};
 
 /// How long a routed target waits for its device to answer a Who-Is sent
 /// to its network, as long as `discover` waits by default.
-pub(crate) const ROUTED_DISCOVERY_WAIT: Duration = Duration::from_secs(3);
+const ROUTED_DISCOVERY_WAIT: Duration = Duration::from_secs(3);
+
+/// Undocumented: milliseconds to wait instead, so tests of a device that
+/// never answers don't wait the full three seconds.
+const ROUTED_WAIT_VAR: &str = "BACNET_CLI_ROUTED_WAIT_MS";
+
+/// How long a routed target waits for its device: [`ROUTED_DISCOVERY_WAIT`],
+/// unless the environment sets another wait for a test.
+pub(crate) fn routed_wait() -> Duration {
+    std::env::var(ROUTED_WAIT_VAR)
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(ROUTED_DISCOVERY_WAIT, Duration::from_millis)
+}
 
 /// Where a confirmed request goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,15 +96,15 @@ pub(crate) async fn resolve_mac<T: TransportPort + 'static>(
         Target::Bip6(peer) => bip6_vmac(client.transport(), peer).await,
         Target::Instance(instance) => match client.get_device(instance).await {
             Some(device) if device.source_network.is_some() => Err(format!(
-                "Device {instance} is behind a router; only read, readm, write, writem \
-                 and subscribe reach routed devices"
+                "Device {instance} is behind a router; only read, readm, write and \
+                 subscribe (and the shell's writem) reach routed devices"
             )),
             Some(device) => Ok(device.mac_address.to_vec()),
             None => Err(not_found(instance)),
         },
         Target::Routed { .. } | Target::RoutedMac { .. } => Err(format!(
-            "'{text}' is a routed target; only read, readm, write, writem and subscribe \
-             reach routed devices"
+            "'{text}' is a routed target; only read, readm, write and subscribe (and \
+             the shell's writem) reach routed devices"
         )),
     }
 }
@@ -151,8 +164,8 @@ async fn find_routed<T: TransportPort + 'static>(
                     Station::Mac(mac) => format!("{dnet}:0x{}", hex_digits(mac)),
                 };
                 return Err(format!(
-                    "device {name} did not answer a Who-Is on network {dnet} within {} s",
-                    wait.as_secs()
+                    "device {name} did not answer a Who-Is on network {dnet} within {} ms",
+                    wait.as_millis()
                 ));
             }
             Ok(Ok(event)) => {

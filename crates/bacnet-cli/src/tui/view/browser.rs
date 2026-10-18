@@ -100,6 +100,7 @@ fn list_status(browser: &Browser) -> String {
         ListState::Reading { done, total } => format!(" reading Object_List {done}/{total} "),
         ListState::Ready { indexed: true } => " Object_List read element by element ".into(),
         ListState::Ready { indexed: false } => String::new(),
+        ListState::Partial(error) => format!(" Object_List stopped at {error} "),
         ListState::Failed(error) => format!(" failed: {error} "),
     }
 }

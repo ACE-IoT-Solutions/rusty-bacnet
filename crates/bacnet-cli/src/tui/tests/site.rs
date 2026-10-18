@@ -38,13 +38,33 @@ use crate::tui::worker::{session, EventSink, EVENT_CHANNEL_CAPACITY};
 
 /// Reject reason: the service is not recognized (Clause 20.1.5).
 const UNRECOGNIZED_SERVICE: u8 = 9;
+/// Abort reason: the answer would need segmentation (Clause 20.1.6).
+const SEGMENTATION_NOT_SUPPORTED: u8 = 4;
+
+/// How a server's port departs from a well-behaved device.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Quirks {
+    /// Reject every ReadPropertyMultiple as an unknown service.
+    pub(super) refuse_rpm: bool,
+    /// Abort the first ReadPropertyMultiple as too large to send.
+    pub(super) abort_first_rpm: bool,
+    /// Answer no confirmed request at all.
+    pub(super) silent: bool,
+}
+
+struct Port {
+    mac: MacAddr,
+    inbox: mpsc::Sender<ReceivedNpdu>,
+    quirks: Quirks,
+}
 
 #[derive(Default)]
 struct Ports {
-    /// MAC, inbox, and whether that port refuses RPM.
-    ports: Vec<(MacAddr, mpsc::Sender<ReceivedNpdu>, bool)>,
+    ports: Vec<Port>,
     /// Confirmed requests outstanding per destination, and the most seen.
     outstanding: HashMap<MacAddr, (usize, usize)>,
+    /// Every confirmed request: its destination and service.
+    requests: Vec<(MacAddr, u8)>,
 }
 
 /// Every port sees every broadcast; a unicast reaches the port with that MAC.
@@ -62,6 +82,18 @@ impl Hub {
             .outstanding
             .get(&MacAddr::from_slice(mac))
             .map_or(0, |(_, most)| *most)
+    }
+
+    /// The services of the confirmed requests sent to `mac`, in order,
+    /// retries included.
+    pub(super) fn services_to(&self, mac: &[u8]) -> Vec<u8> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .requests
+            .iter()
+            .filter(|(to, _)| to.as_slice() == mac)
+            .map(|(_, service)| *service)
+            .collect()
     }
 }
 
@@ -87,14 +119,14 @@ pub(super) struct HubPort {
 }
 
 impl HubPort {
-    pub(super) fn join(hub: &Arc<Hub>, ip: [u8; 4], refuse_rpm: bool) -> Self {
+    pub(super) fn join(hub: &Arc<Hub>, ip: [u8; 4], quirks: Quirks) -> Self {
         let mac = MacAddr::from_slice(&[ip[0], ip[1], ip[2], ip[3], 0xBA, 0xC0]);
-        let (tx, rx) = mpsc::channel(256);
-        hub.inner
-            .lock()
-            .unwrap()
-            .ports
-            .push((mac.clone(), tx, refuse_rpm));
+        let (inbox, rx) = mpsc::channel(256);
+        hub.inner.lock().unwrap().ports.push(Port {
+            mac: mac.clone(),
+            inbox,
+            quirks,
+        });
         Self {
             hub: Arc::clone(hub),
             mac,
@@ -109,25 +141,33 @@ impl HubPort {
             let to = MacAddr::from_slice(to);
             match (pdu_type, request) {
                 (0, Some((invoke_id, service))) => {
-                    let refuses = inner
-                        .ports
-                        .iter()
-                        .any(|(mac, _, refuse)| *mac == to && *refuse);
-                    if refuses && service == ConfirmedServiceChoice::READ_PROPERTY_MULTIPLE.to_raw()
-                    {
-                        // Answer for the device: a Reject, with no NPDU options.
-                        let reject = [0x01, 0x00, 0x60, invoke_id, UNRECOGNIZED_SERVICE];
+                    inner.requests.push((to.clone(), service));
+                    let rpm = service == ConfirmedServiceChoice::READ_PROPERTY_MULTIPLE.to_raw();
+                    let Some(port) = inner.ports.iter_mut().find(|port| port.mac == to) else {
+                        return;
+                    };
+                    if port.quirks.silent {
+                        return;
+                    }
+                    // Answer for the device, with no NPDU options.
+                    let answer = if rpm && port.quirks.refuse_rpm {
+                        Some([0x01, 0x00, 0x60, invoke_id, UNRECOGNIZED_SERVICE])
+                    } else if rpm && port.quirks.abort_first_rpm {
+                        port.quirks.abort_first_rpm = false;
+                        Some([0x01, 0x00, 0x71, invoke_id, SEGMENTATION_NOT_SUPPORTED])
+                    } else {
+                        None
+                    };
+                    if let Some(answer) = answer {
                         let back = ReceivedNpdu::unverified(
-                            Bytes::copy_from_slice(&reject),
+                            Bytes::copy_from_slice(&answer),
                             to,
                             false,
                             Vec::new(),
                             None,
                         );
-                        if let Some((_, tx, _)) =
-                            inner.ports.iter().find(|(mac, ..)| *mac == self.mac)
-                        {
-                            let _ = tx.try_send(back);
+                        if let Some(me) = inner.ports.iter().find(|port| port.mac == self.mac) {
+                            let _ = me.inbox.try_send(back);
                         }
                         return;
                     }
@@ -147,8 +187,8 @@ impl HubPort {
         let targets: Vec<_> = inner
             .ports
             .iter()
-            .filter(|(mac, ..)| *mac != self.mac && to.is_none_or(|to| mac.as_slice() == to))
-            .map(|(_, tx, _)| tx.clone())
+            .filter(|port| port.mac != self.mac && to.is_none_or(|to| port.mac.as_slice() == to))
+            .map(|port| port.inbox.clone())
             .collect();
         drop(inner);
         for tx in targets {
@@ -225,8 +265,8 @@ pub(super) struct Server {
     pub(super) instance: u32,
     /// Its objects; a bare Device object when `None`.
     pub(super) database: Option<ObjectDatabase>,
-    /// Stand in for a device that refuses ReadPropertyMultiple.
-    pub(super) refuse_rpm: bool,
+    /// How its port misbehaves.
+    pub(super) quirks: Quirks,
 }
 
 impl Server {
@@ -236,7 +276,7 @@ impl Server {
             octet,
             instance,
             database: None,
-            refuse_rpm: false,
+            quirks: Quirks::default(),
         }
     }
 
@@ -298,16 +338,12 @@ impl Site {
             };
             let builder = BACnetServer::generic_builder()
                 .device(identity)
-                .transport(HubPort::join(
-                    &hub,
-                    [10, 0, 0, server.octet],
-                    server.refuse_rpm,
-                ))
+                .transport(HubPort::join(&hub, [10, 0, 0, server.octet], server.quirks))
                 .database(database);
             started.push(bounded(Box::pin(builder.build())).await.unwrap());
         }
         let client = BACnetClient::generic_builder()
-            .transport(HubPort::join(&hub, [10, 0, 0, 1], false))
+            .transport(HubPort::join(&hub, [10, 0, 0, 1], Quirks::default()))
             .apdu_timeout_ms(2_000)
             .max_apdu_length(limits.max_apdu)
             .segmented_response_accepted(limits.segmented);

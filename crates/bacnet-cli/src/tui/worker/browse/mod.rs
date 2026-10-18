@@ -152,7 +152,7 @@ async fn read_device<T: TransportPort + 'static>(
     let device = reader.device_object()?;
     let (rows, via) = reader.properties(device, Wanted::List(&CARD)).await?;
     deliver(sink, req, BrowseResult::Card(format::card(&rows, via))).await;
-    let (objects, indexed) = reader
+    let read = reader
         .object_list(|done, total| {
             if done.is_multiple_of(PROGRESS_EVERY) {
                 // Progress may be dropped when the UI falls behind.
@@ -163,7 +163,16 @@ async fn read_device<T: TransportPort + 'static>(
             }
         })
         .await?;
-    deliver(sink, req, BrowseResult::Objects { objects, indexed }).await;
+    deliver(
+        sink,
+        req,
+        BrowseResult::Objects {
+            objects: read.objects,
+            indexed: read.indexed,
+            stopped: read.stopped,
+        },
+    )
+    .await;
     Ok(())
 }
 

@@ -8,7 +8,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use insta::assert_snapshot;
 use ratatui::crossterm::event::KeyCode;
 
-use super::site::{ClientLimits, Server, Site};
+use super::site::{ClientLimits, Quirks, Server, Site};
 use super::*;
 use crate::tui::app::browser::{ListState, ViewState};
 use crate::tui::point::{BrowseRead, BrowseResult, ObjectView, ReadVia};
@@ -145,7 +145,10 @@ async fn ai1_out_of_service_and_in_fault_shows_both_badges() {
 /// The object list and values a device gives by RPM, as `(objects, AO:1)`.
 async fn lab_read(refuse_rpm: bool) -> (Vec<ObjectIdentifier>, ObjectView, Option<ReadVia>) {
     let server = Server {
-        refuse_rpm,
+        quirks: Quirks {
+            refuse_rpm,
+            ..Quirks::default()
+        },
         ..Server::lab(100, LAB)
     };
     let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
@@ -254,5 +257,75 @@ async fn a_device_gets_one_request_at_a_time() {
         !answered.iter().any(|(req, _)| *req == 1_001),
         "{answered:?}"
     );
+    site.stop().await;
+}
+
+/// The services of ReadProperty and ReadPropertyMultiple.
+const RP: u8 = 12;
+const RPM: u8 = 14;
+
+/// A device that stops answering fails the read once, by timeout, and is
+/// not taken for one that refuses RPM: reading it again tries RPM again,
+/// and no ReadProperty is ever sent to it.
+#[tokio::test(start_paused = true)]
+async fn a_silent_device_fails_once_and_keeps_rpm() {
+    let server = Server {
+        quirks: Quirks {
+            silent: true,
+            ..Quirks::default()
+        },
+        ..Server::lab(100, LAB)
+    };
+    let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
+    open_device(&mut site).await;
+    let failed = |app: &App| {
+        app.browser
+            .as_ref()
+            .is_some_and(|b| matches!(b.list, ListState::Failed(_)))
+    };
+    assert!(
+        failed(&site.app),
+        "{:?}",
+        site.app.browser.as_ref().unwrap().list
+    );
+    let first = site.hub.services_to(&LAB_MAC);
+    assert!(
+        !first.is_empty() && first.iter().all(|s| *s == RPM),
+        "{first:?}"
+    );
+    // Read it again: RPM first, as before.
+    site.press(KeyCode::Char('r')).await;
+    site.pump_until(failed).await;
+    let services = site.hub.services_to(&LAB_MAC);
+    assert!(services.len() > first.len());
+    assert!(!services.contains(&RP), "{services:?}");
+    site.stop().await;
+}
+
+/// An RPM answer too large to send falls back to ReadProperty for that
+/// read only; the next object is read with RPM again.
+#[tokio::test(start_paused = true)]
+async fn a_size_abort_falls_back_for_that_read_only() {
+    let server = Server {
+        quirks: Quirks {
+            abort_first_rpm: true,
+            ..Quirks::default()
+        },
+        ..Server::lab(100, LAB)
+    };
+    let mut site = Site::start_with(vec![server], ClientLimits::default()).await;
+    open_device(&mut site).await;
+    let card_via = site
+        .app
+        .browser
+        .as_ref()
+        .unwrap()
+        .card
+        .as_ref()
+        .unwrap()
+        .via;
+    assert_eq!(card_via, Some(ReadVia::Rp), "the aborted card read");
+    let view = open_object(&mut site, "analog-input 2").await;
+    assert_eq!(view.via, ReadVia::Rpm);
     site.stop().await;
 }

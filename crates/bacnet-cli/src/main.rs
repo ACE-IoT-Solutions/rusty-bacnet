@@ -86,7 +86,7 @@ async fn resolve_destination<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
 ) -> Result<Destination, Box<dyn std::error::Error>> {
-    Ok(destination::resolve(client, target_str, destination::ROUTED_DISCOVERY_WAIT).await?)
+    Ok(destination::resolve(client, target_str, destination::routed_wait()).await?)
 }
 
 /// Execute a one-shot CLI command.

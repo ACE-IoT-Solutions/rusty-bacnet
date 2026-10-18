@@ -20,7 +20,7 @@ use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::NoSerial;
 use serde_json::{json, Value};
 use support::lab::{lab_database, lab_identity};
-use support::{failure, run};
+use support::{command, failure, run, Process};
 
 /// The lab device's network and instance.
 const DNET: u16 = 2;
@@ -70,9 +70,11 @@ async fn site() -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
     panic!("no loopback UDP port the router could bind");
 }
 
-/// `bacnet read` through the router's BBMD.
-async fn read(port: u16, target: &str) -> std::process::Output {
-    run([
+/// `bacnet read` through the router's BBMD, waiting `wait_ms` for a routed
+/// device to answer.
+async fn read(port: u16, target: &str, wait_ms: &str) -> std::process::Output {
+    let mut cmd = command();
+    cmd.env("BACNET_CLI_ROUTED_WAIT_MS", wait_ms).args([
         "--interface",
         "127.0.0.1",
         "--port",
@@ -84,15 +86,15 @@ async fn read(port: u16, target: &str) -> std::process::Output {
         target,
         "analog-input:2",
         "present-value",
-    ])
-    .await
+    ]);
+    Process::spawn(&mut cmd).output().await
 }
 
 #[tokio::test]
 async fn a_routed_read_reaches_the_device_behind_the_router() {
     let (mut router, mut server, port) = site().await;
     for target in [format!("{DNET}:{INSTANCE}"), format!("{DNET}:0x05")] {
-        let output = read(port, &target).await;
+        let output = read(port, &target, "3000").await;
         assert!(
             output.status.success(),
             "{target}: {}",
@@ -115,7 +117,7 @@ async fn a_routed_read_reaches_the_device_behind_the_router() {
 #[tokio::test]
 async fn routed_targets_fail_clearly() {
     let (mut router, mut server, port) = site().await;
-    let output = read(port, &format!("{DNET}:{}", INSTANCE + 1)).await;
+    let output = read(port, &format!("{DNET}:{}", INSTANCE + 1), "300").await;
     failure(&output, "did not answer a Who-Is on network 2");
     let output = run([
         "--interface",

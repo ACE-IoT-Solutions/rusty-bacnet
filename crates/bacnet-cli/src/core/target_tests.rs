@@ -74,6 +74,10 @@ fn routed_targets_name_a_network_and_an_instance_or_a_mac() {
             mac: vec![2, 0, 0, 0, 0, 1]
         })
     );
+    for bad in ["0:1234", "65535:1234", "0:0x05", "65535:0x05"] {
+        let error = parse_target(bad).unwrap_err();
+        assert!(error.contains("expected 1 to 65534"), "{bad}: {error}");
+    }
     for bad in ["2:0x", "2:0x5", "2:0xZZ"] {
         let error = parse_target(bad).unwrap_err();
         assert!(

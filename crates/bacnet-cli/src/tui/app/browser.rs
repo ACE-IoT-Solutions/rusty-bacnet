@@ -45,6 +45,9 @@ pub(crate) enum ListState {
         /// It took element-by-element reads.
         indexed: bool,
     },
+    /// Read element by element up to an element that failed; the list
+    /// holds the ones before it.
+    Partial(String),
     /// The read failed.
     Failed(String),
 }
@@ -116,9 +119,16 @@ impl Browser {
                 BrowseResult::Progress { done, total } => {
                     self.list = ListState::Reading { done, total };
                 }
-                BrowseResult::Objects { objects, indexed } => {
+                BrowseResult::Objects {
+                    objects,
+                    indexed,
+                    stopped,
+                } => {
                     self.objects.set(objects);
-                    self.list = ListState::Ready { indexed };
+                    self.list = match stopped {
+                        Some(error) => ListState::Partial(error),
+                        None => ListState::Ready { indexed },
+                    };
                 }
                 BrowseResult::Failed(error) => self.list = ListState::Failed(error),
                 BrowseResult::Object(_) => return false,
@@ -245,6 +255,12 @@ impl App {
             None => {
                 browser.device_req = req;
                 browser.list = ListState::Card;
+                // A device read replaces any object read still waiting for
+                // the device, and that one never answers.
+                if let ViewState::Reading(_) = browser.view {
+                    browser.view = ViewState::Empty;
+                    browser.object_req = None;
+                }
                 BrowseRead::Device
             }
         };
@@ -311,5 +327,39 @@ mod tests {
                 total: 500
             }
         );
+    }
+
+    /// A device read started while an object read waits replaces it, and
+    /// that one never answers: the properties pane must not keep saying
+    /// it is reading.
+    #[test]
+    fn a_device_refresh_releases_a_waiting_object_read() {
+        use crate::tui::app::{update, Action};
+        let ai = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
+        let mut app = crate::tui::tests::connected_app();
+        let mut browser = Browser::new(7, "10.0.0.7:47808".into(), 1);
+        browser.objects.set(vec![ai]);
+        app.browser = Some(Box::new(browser));
+        let read = update(&mut app, Action::Open);
+        let [Command::Browse {
+            req: object_req, ..
+        }] = read.as_slice()
+        else {
+            panic!("expected one object read, got {read:?}");
+        };
+        let browser = app.browser.as_deref_mut().unwrap();
+        assert_eq!(browser.view, ViewState::Reading(ai));
+        browser.focus = Pane::Objects;
+        let refresh = update(&mut app, Action::Refresh);
+        assert!(matches!(
+            refresh.as_slice(),
+            [Command::Browse {
+                read: BrowseRead::Device,
+                ..
+            }]
+        ));
+        let browser = app.browser.as_deref_mut().unwrap();
+        assert_eq!(browser.view, ViewState::Empty);
+        assert!(!browser.apply(*object_req, view(1)), "the replaced read");
     }
 }

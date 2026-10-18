@@ -78,7 +78,7 @@ Commands that take a `<target>` argument accept several formats:
 
 When using a device instance number, the device must have been previously found via `discover`. In the shell, you can set a default target with the `target` command to omit the target argument from subsequent commands.
 
-**Routed targets.** `read`, `readm`, `write`, `writem` and `subscribe` take
+**Routed targets.** `read`, `readm`, `write` and `subscribe` (and the shell's `writem`) take
 `DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
 yet, the CLI sends a Who-Is to that network and waits up to three seconds for
 the device to answer, then sends the request through the router that answered

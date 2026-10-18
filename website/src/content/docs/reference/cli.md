@@ -27,7 +27,7 @@ Do not use an object-name string where an object identifier is required. Do not 
 
 ## Session behavior matters
 
-The interactive shell retains a default target and discovered devices for its session. A new one-shot process has a different lifecycle. The reviewed one-shot `DNET:instance` path rejects routed expressions; successful discovery of a network does not establish a routed read capability on that path.
+The interactive shell retains a default target and discovered devices for its session. A new one-shot process has a different lifecycle. In the development branch after v0.13.0, one-shot `read`, `readm`, `write` and `subscribe` take a routed `DNET:instance` or `DNET:0xMAC` target: the CLI asks that network for the device with a Who-Is and sends the request through the router that answers. Other one-shot commands still refuse routed targets, and v0.13.0 refuses them everywhere.
 
 ## Machine-readable output
 
