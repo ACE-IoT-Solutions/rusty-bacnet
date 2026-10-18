@@ -274,8 +274,8 @@ fn read_fdt_answers_with_each_live_registration() {
     );
 }
 
-/// A Delete-Foreign-Device-Table-Entry for a live registration removes it,
-/// with Successful completion; for none, the Delete NAK, 0x0050
+/// Delete-Foreign-Device-Table-Entry removes a live registration, with
+/// Successful completion; with none, it draws the Delete NAK, 0x0050
 /// (J.5.2.1.2). A lapsed registration counts as none, and goes too.
 #[test]
 fn delete_fdt_entry_removes_a_live_registration_or_naks() {

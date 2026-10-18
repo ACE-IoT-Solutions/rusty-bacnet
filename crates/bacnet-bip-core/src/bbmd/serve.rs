@@ -34,7 +34,7 @@ pub enum Request {
         /// The requester.
         sender: SocketAddrV4,
     },
-    /// A Delete-Foreign-Device-Table-Entry, naming a registration to
+    /// Delete-Foreign-Device-Table-Entry, naming a registration to
     /// remove.
     DeleteFdtEntry {
         /// The requester.
@@ -97,7 +97,7 @@ pub trait Rules {
 
 impl Rules for Permissive {}
 
-/// Why a Delete-Foreign-Device-Table-Entry was refused (Annex J.5.2.1.2).
+/// Why Delete-Foreign-Device-Table-Entry deleted nothing (Annex J.5.2.1.2).
 ///
 /// It is `#[non_exhaustive]`, so a new reason isn't a breaking change: a
 /// `match` needs a wildcard arm.
@@ -147,7 +147,7 @@ pub enum Served {
     /// registrations, or refused because the row storage couldn't hold
     /// them.
     ReadFdt(Result<usize, StorageFull>),
-    /// A Delete-Foreign-Device-Table-Entry: the registration deleted, or
+    /// Delete-Foreign-Device-Table-Entry: the registration deleted, or
     /// why not.
     DeleteFdtEntry(Result<(), DeleteRefusal>),
 }
