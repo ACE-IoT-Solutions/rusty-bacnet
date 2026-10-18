@@ -1990,7 +1990,26 @@ use bacnet_transport::mstp::NoSerial; // placeholder when serial feature is off
 let transport: AnyTransport<NoSerial> = AnyTransport::Bip(Box::new(bip_transport));
 ```
 
-Variants: `Bip` (boxed), `Bip6`, `Mstp`, `Sc` (boxed), `Loopback`.
+`Bip` (boxed), `Mstp` and `Loopback` are always available. `Bip6` requires
+`ipv6`, `Sc` (boxed) requires `sc-tls`, and `Ethernet` requires `ethernet` on
+Linux. Cargo can enable these features through another dependency.
+
+`AnyTransport` is `#[non_exhaustive]`: matches outside `bacnet-transport` must
+include a fallback even when they list every currently enabled variant. Handle
+only the transports the caller supports and choose an appropriate fallback:
+
+```rust
+use bacnet_transport::{any::AnyTransport, mstp::NoSerial};
+
+fn is_bip(transport: &AnyTransport<NoSerial>) -> bool {
+    match transport {
+        AnyTransport::Bip(_) => true,
+        _ => false,
+    }
+}
+```
+
+Existing variants remain directly constructible as in the example above.
 
 `bacnet_transport::bip::AsBip` lends the `BipTransport` underneath a transport
 that may carry BACnet/IP. `BipTransport` always lends itself; `AnyTransport`

@@ -25,6 +25,44 @@ use crate::sc_tls::TlsWebSocket;
 /// A transport that can be any supported BACnet transport type.
 ///
 /// Enables mixed-transport routing (e.g., BIP + MS/TP on the same router).
+///
+/// Variants depend on enabled transport features, which other dependencies can
+/// also enable. Outside `bacnet-transport`, include a fallback arm so matching
+/// remains valid when additional variants become available. Existing variants
+/// can still be constructed directly:
+///
+/// ```
+/// use bacnet_transport::{any::AnyTransport, loopback::LoopbackTransport, mstp::NoSerial};
+///
+/// let (port, _peer) = LoopbackTransport::pair(vec![1], vec![2]);
+/// let transport = AnyTransport::<NoSerial>::Loopback(port);
+/// let name = match &transport {
+///     AnyTransport::Bip(_) => "B/IP",
+///     _ => "another transport",
+/// };
+/// assert_eq!(name, "another transport");
+/// ```
+///
+/// Even listing every currently enabled variant needs a fallback externally:
+///
+/// ```compile_fail,E0004
+/// use bacnet_transport::{any::AnyTransport, mstp::NoSerial};
+///
+/// fn transport_name(transport: &AnyTransport<NoSerial>) -> &'static str {
+///     match transport {
+///         AnyTransport::Bip(_) => "B/IP",
+///         AnyTransport::Mstp(_) => "MS/TP",
+///         #[cfg(feature = "ipv6")]
+///         AnyTransport::Bip6(_) => "B/IPv6",
+///         #[cfg(all(feature = "ethernet", target_os = "linux"))]
+///         AnyTransport::Ethernet(_) => "Ethernet",
+///         #[cfg(feature = "sc-tls")]
+///         AnyTransport::Sc(_) => "BACnet/SC",
+///         AnyTransport::Loopback(_) => "loopback",
+///     }
+/// }
+/// ```
+#[non_exhaustive]
 pub enum AnyTransport<S: SerialPort + 'static> {
     /// BACnet/IP over UDP. Boxed, like `Sc`, because it is several times larger
     /// than the other variants.
