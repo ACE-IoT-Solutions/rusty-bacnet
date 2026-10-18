@@ -210,6 +210,34 @@ pub struct Router<
     latest: Instant,
 }
 
+/// A [`Router`] over [`Storage`] it borrows, as firmware runs one: the
+/// storage's sizes are said once, in the alias.
+///
+/// ```
+/// use bacnet_router_core::router::{Groups, Limits, Options, PortConfig};
+/// use bacnet_router_core::{Instant, Mac, RouterIn, Storage};
+///
+/// /// Two ports, 8 routes and 8 hold-down records.
+/// type Engine<'s> = RouterIn<'s, 2, 8, 8>;
+///
+/// let ports = [
+///     PortConfig::new(1, Mac::from_array([1]), Limits::both(501), Groups::None),
+///     PortConfig::new(2, Mac::from_array([2]), Limits::both(501), Groups::None),
+/// ];
+/// let mut storage = Storage::new();
+/// let router = Engine::new(&mut storage, &ports, Options::STANDARD, Instant::ZERO)?;
+/// assert_eq!(router.table().len(), 2);
+/// # Ok::<(), bacnet_router_core::router::ConfigError>(())
+/// ```
+pub type RouterIn<
+    's,
+    const P: usize,
+    const R: usize,
+    const H: usize,
+    const D: usize = 16,
+    const N: usize = MAX_NPDU,
+> = Router<&'s mut Storage<P, R, H, D, N>, P, R, H, D, N>;
+
 impl<
         S,
         const P: usize,
@@ -287,11 +315,10 @@ where
                 return Err(ConfigError::Limit(id));
             }
         }
-        if usize::from(options.route_cap) > R {
-            return Err(ConfigError::RouteCap {
-                cap: options.route_cap,
-                capacity: R,
-            });
+        if let Some(cap) = options.route_cap {
+            if usize::from(cap) > R {
+                return Err(ConfigError::RouteCap { cap, capacity: R });
+            }
         }
         if options.sweep.as_nanos() == 0 {
             return Err(ConfigError::ZeroSweep);
@@ -489,7 +516,20 @@ where
         &self.storage.borrow().discovery
     }
 
-    /// The router's counts so far.
+    /// The counts since the counters were last taken, which then start
+    /// again from zero: add them to your own totals, as wide as you need,
+    /// as the hosted router does. Each is a `u32` that saturates between
+    /// takes.
+    #[must_use = "the counts are gone once taken; add them to your totals"]
+    pub fn take_counters(&mut self) -> Counters {
+        core::mem::replace(&mut self.store().counters, Counters::ZERO)
+    }
+
+    /// The counts since the counters were last taken, as
+    /// [`take_counters`](Self::take_counters) would return them, without
+    /// taking them: for a look between takes. A router whose counters are
+    /// never taken counts from its start.
+    #[must_use]
     pub fn counters(&self) -> Counters {
         self.storage.borrow().counters
     }

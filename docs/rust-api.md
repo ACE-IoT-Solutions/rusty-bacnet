@@ -2275,12 +2275,70 @@ without `..`: `NodeCounters`, `ExchangeCounters`, `RegisterAttempt`,
 
 The enums a host acts on case by case, and the closed sets, stay exhaustive:
 `Action`, `Received`, `Inbound`, `ForBbmd`, `Mode`, `Arrival`, `Cast`,
-`Via`, `Registered`, `Admission` and `Operation`.
+`Via`, `Registered`, `Admission`, `Operation`, `bbmd::Request` and
+`port::Ingress`.
 
 `bbmd::GRACE_PERIOD` is a `Duration`. `bbmd::StorageFull` and
 `BdtError::Capacity` carry `needed` and `available`, in entries, as the
 codec's `SinkFull` does in octets. `RegistrationRefusal` and `EntryError`
 implement `core::error::Error`.
+
+**The port driver** (`bacnet_bip_core::port`, #1766) joins a node to a
+socket and carries out what it asks, so firmware doesn't write that loop
+itself. Every datagram leaves through your `Datagrams`, which encodes the
+`Bvll` straight into the socket's buffer and refuses with
+`SendRefusal::SocketFull` or `SocketError`; what a datagram brought comes
+back as an `Ingress`.
+
+- `NodePort::new(node, held)` runs a node in normal or foreign-device mode:
+  call `start` once, then `receive`, `unicast`, `broadcast` (which returns
+  the `Admission`: sent, or held while the first registration is
+  outstanding) and `on_deadline`. It sends the NAKs and the registrations,
+  and holds broadcasts in the `HeldBroadcast<N>` slots you lend: at least
+  `Foreign::hold` of them, each as long as the link's broadcast limit.
+- `BbmdPort::new(link, tables, targets, rows)` runs a BBMD's `Link` over
+  `Tables` you lend, with `Tables::MAX_TARGETS` targets and `F` rows. It
+  forwards each broadcast where the tables say and answers each management
+  request itself; a BBMD registers nowhere, so it needs no `Node`.
+  `receive` takes a policy that is both `node::Policy` and `bbmd::Rules`;
+  `node::Permissive` is both.
+- Both count the datagrams of their own the socket refused, drained with
+  `take_counters()` (a `PortCounters` of `u32`s) and looked at with
+  `counters()`, as the node's own counts are (`Node::take_counters`, and
+  `Node::counters` since #1767). `PortError` says why a port refused its
+  node or storage.
+
+`Tables::serve(request, now, rules, rows)` answers the four management
+requests a BBMD serves (`bbmd::Request`), each with the answer Annex J
+gives it: a registration with Successful completion or the
+Register-Foreign-Device NAK, the two table reads with their ACKs (a
+Read-FDT whose rows don't fit, with the Read-FDT NAK), and an entry's
+deletion with Successful completion or, for no live registration or a
+deletion `Rules::admit_delete` refuses, the Delete NAK. The returned `Answer` has the requester, the message and a `Served`
+saying what the request came to. `bbmd::Rules` holds the host's own rules,
+each with a default that admits: the registration limits, which sources
+the reserved slots are for, an admission check, and who may delete. The
+node hands each request over as `ForBbmd::Management(Request)`.
+
+Moving from 0.13's `bacnet_router_core::bip` ports:
+
+- `BipPort` and `BbmdPort` are `bacnet_bip_core::port::NodePort` and
+  `BbmdPort`, without the `PortId`: `NodePort::new(node, held)` and
+  `BbmdPort::new(link, tables, targets, rows)`, which takes the BBMD's
+  `Link` instead of a `Node`, and storage for a Read-FDT-Ack's rows. The
+  router's adapter is `bacnet_router_core::bip::BipPort` (below).
+- `HeldBroadcast`, `Datagrams`, `Ingress`, `PortCounters` and `PortError`
+  move to `bacnet_bip_core::port`. `Datagrams::send` refuses with the
+  bip-core `node::SendRefusal::SocketFull` or `SocketError` instead of the
+  router's `Full` or `Other`.
+- `Ingress::Npdu` carries the node's `Delivery`; `BipPort::arrived` makes
+  the router's `Arrived` of it. `Ingress::Management(ForBbmd)` is gone: the
+  port answers each request, and says what it came to with
+  `Ingress::Served(Served)`.
+- `ForBbmd::Register`, `ReadBdt`, `ReadFdt` and `DeleteFdtEntry` are
+  `ForBbmd::Management(Request::Register { .. })` and so on.
+- A `BbmdPort` has no `node`, `node_mut`, `next_deadline` or `on_deadline`
+  any more: `link()` reads its link.
 
 ---
 
@@ -2328,8 +2386,11 @@ management, which no wire-control policy sees; drop the guard soon, since
 every port waits for it. The lock isn't reentrant: calling `table()` again
 while a guard lives on the same thread, or from the control authorizer,
 never returns. `counters()`, the four drop counts, `now()` and
-`control_snapshot()` take no lock, so they are safe to call meanwhile; the
-counts are copied out of the engine before each lock is let go.
+`control_snapshot()` take no lock, so they are safe to call meanwhile: the
+engine's counts are taken and added to the router's `u64` totals before
+each lock is let go. `bacnet_network::router::Counters` holds those totals
+since start, as before #1767; it is the hosted router's own type now, no
+longer a re-export of the engine's, whose counts are drained `u32`s.
 
 ```rust
 use bacnet_network::router_table::{Convergence, Reachability};
@@ -2684,17 +2745,15 @@ back to the hosted router's behaviour before 0.13.0.
 The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
 crate builds them like this:
 
-- `router::Options::HOSTED` (also its `Default`), then set the fields to
-  change: a `Storage` smaller than the hosted router's needs a smaller
-  `route_cap`.
+- `router::Options::STANDARD` (also its `Default`) or `Options::HOSTED`,
+  then set the fields to change. The two differ only in the route cap:
+  `STANDARD` has none of its own (`route_cap: None`), so learning may fill
+  whatever table the `Storage` holds, and `HOSTED` caps it at the hosted
+  router's 256 routes, which `Router::new` refuses over a smaller table.
 - `Route::direct(port)` and `Route::learned(port, next_hop, now)`, to
   compare with what a lookup returns.
-- `router::Counters`, `table::ClaimCounters` and `bip::PortCounters` from
-  `Default`, then set the counts.
-- `HeldBroadcast::<N>::EMPTY`, or `<HeldBroadcast>::EMPTY` for the default
-  `N`: a default doesn't drive inference, so a bare `HeldBroadcast::EMPTY`
-  in an expression leaves `N` open, but `<HeldBroadcast>` names the type,
-  default and all.
+- `router::Counters` and `table::ClaimCounters` from `Default`, then set
+  the counts.
 
 The crate builds the rest, which a caller reads but can't build, or match
 without `..`: `Claim`, `Send`, `Pending` and `MacTooLong`; and a `Route`
@@ -2702,10 +2761,10 @@ only through its two constructors above. A
 `match` on these enums needs a wildcard arm: `npdu::ParseError`,
 `Malformed`, `WriteError`, `message::DataError`, `router::ConfigError`,
 `Discard`, `Event`, `Kind`, `SendRefusal`, `ControlClass`,
-`table::LearnRefusal`, `Learned`, `RejectEffect` and `bip::PortError`. The
-enums a host acts on case by case, and the closed sets, stay exhaustive:
-`Action`, `Received`, `bip::Ingress`, `Dest`, `Cause`, `Group`, `Targets`,
-`Reachability`, `Convergence`, `AddressField` and `WhoIsRouter`.
+`table::LearnRefusal`, `Learned` and `RejectEffect`. The enums a host acts
+on case by case, and the closed sets, stay exhaustive: `Action`,
+`Received`, `Dest`, `Cause`, `Group`, `Targets`, `Reachability`,
+`Convergence`, `AddressField` and `WhoIsRouter`.
 
 The wire codes are open newtypes, the shape the codecs give `BvlcFunction`
 and `FrameType`: `message::MessageType(u8)` and `RejectReason(u8)`, with
@@ -2733,23 +2792,44 @@ calls change a row:
 - `last_used`: `touch`;
 - `flap_count` and `last_port_change`: none; `learn` keeps them.
 
-The B/IP ports count what their socket refused, drained like the link
-cores' counts: `BipPort::take_counters()` and `BbmdPort::take_counters()`
-return a `PortCounters` of `u32`s that saturate between takes, and
-`counters()` looks without taking. The router keeps its cumulative `u64`
-`counters()`, which `BACnetRouter` reads without its lock.
+The B/IP ports are `bacnet-bip-core`'s port driver (#1766): a
+`port::NodePort` for a node in normal or foreign-device mode, and a
+`port::BbmdPort` for a BBMD, which answers the management requests from
+its tables itself (see bacnet-bip-core above). `bip::BipPort` is the
+router's translator over either, as `mstp::MstpPort` is over a master
+core: `BipPort::new(port)`, then `BipPort::config(link, network)` for the
+router's `PortConfig`, `arrived(&delivery)` for each NPDU a port hands up,
+and `send(&mut port, &send, now, &mut socket)` for each router send,
+whose refusals it maps to the router's. The ports count what their socket
+refused, drained like the link cores' counts: `take_counters()` returns
+a `PortCounters` of `u32`s that saturate between takes, and `counters()`
+looks without taking. The router's counts drain the same way (#1767,
+decision D3): `Router::take_counters()` returns the `u32` counts since the
+last take, which saturate between takes, and `counters()` looks without
+taking. `BACnetRouter` takes them each time it lets the engine's lock go,
+and keeps the `u64` totals its users read.
+
+The `bip` and `mstp` features re-export their link cores, as
+`bacnet_router_core::bip_core` and `mstp_core` (with their codecs), so a
+router image needs this crate alone, at one version. `RouterIn<'s, P, R,
+H>` is a `Router` over a `&'s mut Storage<P, R, H>`, with `D` and `N` as
+`Storage`'s defaults, so firmware names the sizes once.
 
 A foreign-device port holds broadcasts in `HeldBroadcast<N>` slots of `N`
-octets, `MAX_NPDU` by default. `BipPort::new` checks that the link's
+octets, `MAX_NPDU` by default. `NodePort::new` checks that the link's
 broadcast limit fits: a link with a smaller send budget can lend shorter
-slots.
+slots. Build them with `HeldBroadcast::<N>::EMPTY`, or
+`<HeldBroadcast>::EMPTY` for the default `N`: a default doesn't drive
+inference, so a bare `HeldBroadcast::EMPTY` in an expression leaves `N`
+open, but `<HeldBroadcast>` names the type, default and all.
 
 The network-message views return `Result<_, DataError>`, and their writers
 `Result<usize, DataError>`. Route discovery's cooldown and maximum age are
-fields of `router::Options` (`Options::HOSTED` holds the hosted router's).
-`PortError::HeldStorage` and `TargetStorage` carry `needed` and
-`available`; a link with no send budget, or a broadcast limit past the
-slots, is `PortError::HeldLength`.
+fields of `router::Options` (`Options::STANDARD` and `HOSTED` hold 5 s and
+30 s).
+bip-core's `PortError::HeldStorage`, `TargetStorage` and `RowStorage`
+carry `needed` and `available`; a link with no send budget, or a broadcast
+limit past the slots, is `PortError::HeldLength`.
 
 `Malformed`, `LearnRefusal` and `DataError` implement `Display` and
 `core::error::Error`, as the crate's other errors do.

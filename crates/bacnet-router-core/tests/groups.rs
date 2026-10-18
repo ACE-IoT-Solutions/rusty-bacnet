@@ -77,7 +77,7 @@ fn host() -> Recorder {
     Recorder::default()
 }
 
-fn dropped(router: &TestRouter, outcome: &Outcome, sent: &[fixture::Sent], drops: u64) {
+fn dropped(router: &TestRouter, outcome: &Outcome, sent: &[fixture::Sent], drops: u32) {
     assert_eq!(*outcome, Outcome::Discarded(Discard::GroupDadr));
     assert!(sent.is_empty(), "no send and no reject");
     assert_eq!(router.counters().group_dadr_drops, drops);

@@ -8,14 +8,15 @@
 //! - `mstp-extended` ([`mstp_extended::run`]): the same core with extended
 //!   frames on, and the buffers they need.
 //! - `bip` ([`bip::run`]): `bacnet-bip-codec`, B/IP and B/IPv6.
-//! - `node` ([`node::run`]): `bacnet-bip-core`'s node engine, as a foreign
-//!   device.
-//! - `bbmd` ([`bbmd::run`]): `bacnet-bip-core`'s BBMD tables, behind its
-//!   receive rules.
+//! - `node` ([`node::run`]): `bacnet-bip-core`'s port driver over its node
+//!   engine, as a foreign device.
+//! - `bbmd` ([`bbmd::run`]): `bacnet-bip-core`'s port driver on a BBMD: its
+//!   BBMD tables, behind its receive rules, answering management requests
+//!   themselves.
 //! - `router` ([`router::run`]): `bacnet-router-core` with its B/IP and
 //!   MS/TP glue, routing between a BBMD's B/IP port and an MS/TP port with
-//!   extended frames, over the node engine, the BBMD tables, the MS/TP core
-//!   and both codecs.
+//!   extended frames, over bip-core's port driver and BBMD tables, the
+//!   MS/TP core and both codecs.
 //! - `apdu` (`apdu::run`, with the `alloc` feature): `bacnet-encoding` and
 //!   `bacnet-services`, `no_std` with `alloc`, and a global allocator over a
 //!   fixed arena.

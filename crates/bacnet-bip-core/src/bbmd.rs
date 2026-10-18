@@ -21,11 +21,18 @@
 //! for a Read-Broadcast-Distribution-Table-Ack, and [`Fdt::wire_entries`]
 //! gives the rows of a Read-Foreign-Device-Table-Ack.
 //!
+//! [`Tables::serve`] answers the four management requests a BBMD serves
+//! from its tables ([`Request`]): Register-Foreign-Device, the two table
+//! reads and Delete-Foreign-Device-Table-Entry, each with the answer Annex
+//! J gives it, under the host's own [`Rules`].
+//!
 //! The caller keeps everything else: the socket, delivering the NPDU to its
 //! network layer, its own echoes, access lists and rate limits (through
-//! [`Fdt::register`]'s `admit`), counters, and persistence. Registrations
-//! expire on the caller's clock: pass `now` to each call, and call
-//! [`Fdt::purge`] now and then to free the slots of lapsed ones.
+//! [`Rules`], or [`Fdt::register`]'s `admit`), counters, and persistence.
+//! Registrations expire on the caller's clock: pass `now` to each call, and
+//! call [`Fdt::purge`] now and then to free the slots of lapsed ones.
+//! [`port::BbmdPort`](crate::port::BbmdPort) does all of this but the
+//! persistence for a BBMD on one socket.
 //!
 //! ```
 //! use core::net::{Ipv4Addr, SocketAddrV4};
@@ -66,6 +73,7 @@
 mod bdt;
 mod fdt;
 mod forward;
+mod serve;
 
 pub use bdt::{
     canonicalize, distribution_address, validate_entry, Bdt, BdtError, EntryError, TWO_HOP_MASK,
@@ -77,3 +85,4 @@ pub use fdt::{
 pub use forward::{
     Context, DistributeRefusal, Distribution, Fanout, ForwardRefusal, Tables, Target, Via,
 };
+pub use serve::{Answer, DeleteRefusal, Request, Rules, Served};

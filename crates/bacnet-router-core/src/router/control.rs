@@ -271,7 +271,7 @@ impl<
         host: &mut impl Host,
     ) -> bool {
         let route = self.table.lookup(network);
-        if self.table.len() >= usize::from(options.route_cap) && route.is_none() {
+        if self.table.len() >= options.cap(R) && route.is_none() {
             self.table.record_learning_cap();
             host.observe(Event::RouteCap { class });
             return false;
@@ -325,7 +325,7 @@ impl<
         }
         let network = offer.network;
         let new = network != 0 && network != GLOBAL_NETWORK && self.table.lookup(network).is_none();
-        let at_cap = self.table.len() >= usize::from(options.route_cap);
+        let at_cap = self.table.len() >= options.cap(R);
         if new && at_cap {
             self.table.record_learning_cap();
             host.observe(Event::RouteCap {

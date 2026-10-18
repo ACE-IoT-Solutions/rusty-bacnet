@@ -11,11 +11,12 @@
 mod fixture;
 mod glue;
 
-use bacnet_bip_codec::{BvlcFunction, Bvll};
-use bacnet_bip_core::node::{Discard, Link, Mode, Permissive};
+use bacnet_bip_core::codec::{BvlcFunction, Bvll};
+use bacnet_bip_core::node::{self, Discard, Link, Mode, Permissive};
+use bacnet_bip_core::port::{Ingress, NodePort};
 use bacnet_mstp_codec::{Frame as MstpFrame, FrameType};
 use bacnet_mstp_core::{Action, Instant};
-use bacnet_router_core::bip::{BipPort, Ingress};
+use bacnet_router_core::bip::BipPort;
 use bacnet_router_core::mstp::MstpPort;
 use bacnet_router_core::npdu::{Address, Npdu};
 use bacnet_router_core::router::{Limits, Options, PortConfig, Received, SendRefusal};
@@ -27,6 +28,7 @@ use glue::*;
 const BIP_NET: u16 = 1;
 const MSTP_NET: u16 = 2;
 const BIP: PortId = PortId(0);
+const BIP_PORT: BipPort = BipPort::new(BIP);
 const MSTP: MstpPort = MstpPort::new(PortId(1));
 
 /// A BBMD on the router's subnet, which rebroadcasts a forward there.
@@ -35,39 +37,37 @@ const LOCAL_BBMD: core::net::SocketAddrV4 = sock(192, 0, 2, 1, PORT);
 const DEVICE_44: core::net::SocketAddrV4 = sock(192, 0, 2, 44, 0xBAC1);
 
 /// The B/IP port, a normal node at [`OWN`] with `link`'s budget.
-fn bip_port(link: Link) -> BipPort<'static> {
-    BipPort::new(
-        BIP,
-        bacnet_bip_core::node::Node::new(link, Instant::ZERO).unwrap(),
-        &mut [],
-    )
-    .unwrap()
+fn bip_port(link: Link) -> NodePort<'static> {
+    NodePort::new(node::Node::new(link, Instant::ZERO).unwrap(), &mut []).unwrap()
 }
 
 /// The router over `bip`, with the MS/TP port as the core's configuration
 /// gives it, or as `mstp` overrides it.
-fn router(bip: &BipPort<'_>, mstp: Option<PortConfig>, options: Options) -> TestRouter {
+fn router(bip: &NodePort<'_>, mstp: Option<PortConfig>, options: Options) -> TestRouter {
     let mstp = mstp.unwrap_or_else(|| MstpPort::config(&config(true), MSTP_NET).unwrap());
-    router_with(&[bip.config(BIP_NET), mstp], options)
+    router_with(
+        &[BipPort::config(bip.node().link(), BIP_NET), mstp],
+        options,
+    )
 }
 
 /// Carry out every send the router has, each on its port.
 fn carry<const U: usize>(
     router: &mut TestRouter,
-    bip: &mut BipPort<'_>,
+    bip: &mut NodePort<'_>,
     out: &mut Wire,
     core: &mut Core<'_, U>,
     now: Instant,
 ) -> Vec<(u8, Result<(), SendRefusal>)> {
     pump(router, |send| match send.port {
-        BIP => bip.send(send, now, out),
+        BIP => BIP_PORT.send(bip, send, now, out),
         _ => MSTP.send(core, send, now),
     })
 }
 
 /// What the B/IP port makes of `message` from `source`, sent as `to`.
 fn into_bip<'d>(
-    bip: &mut BipPort<'_>,
+    bip: &mut NodePort<'_>,
     payload: &'d [u8],
     source: core::net::SocketAddrV4,
     to: bacnet_bip_core::node::Addressed,
@@ -116,9 +116,10 @@ fn forwarded_origin_and_priority_survive_bip_to_mstp_composition() {
         &mut out,
         now,
     );
-    let Ingress::Npdu(arrived) = ingress else {
+    let Ingress::Npdu(delivery) = ingress else {
         panic!("{ingress:?}");
     };
+    let arrived = BIP_PORT.arrived(&delivery);
     assert_eq!(arrived.source.as_slice(), mac(ORIGIN));
     assert_eq!(
         router.receive(arrived.frame(), now, &mut host),
@@ -160,13 +161,13 @@ fn standard_boundary_and_burst_backpressure_are_visible_at_mstp_queue() {
     let mut relay = |router: &mut TestRouter, core: &mut Core<'_, 1>, len: usize| {
         let npdu = routed(len - 4, MSTP_NET, &[5]);
         let payload = encode(&Bvll::OriginalUnicastNpdu(&npdu));
-        let Ingress::Npdu(arrived) = into_bip(&mut bip, &payload, PEER, UNICAST, &mut out, now)
+        let Ingress::Npdu(delivery) = into_bip(&mut bip, &payload, PEER, UNICAST, &mut out, now)
         else {
             panic!("not delivered");
         };
-        let _ = router.receive(arrived.frame(), now, &mut host);
+        let _ = router.receive(BIP_PORT.arrived(&delivery).frame(), now, &mut host);
         let results = pump(router, |send| match send.port {
-            BIP => bip.send(send, now, &mut out),
+            BIP => BIP_PORT.send(&mut bip, send, now, &mut out),
             _ => MSTP.send(core, send, now),
         });
         (results, out.take())
@@ -282,8 +283,8 @@ fn strict_bip_failure_precedes_router_or_queue_mutation() {
                      router: &mut TestRouter,
                      out: &mut Wire| {
         let dropped = match bip.receive(datagram, now, &mut Permissive, out) {
-            Ingress::Npdu(arrived) => {
-                let _ = router.receive(arrived.frame(), now, &mut host);
+            Ingress::Npdu(delivery) => {
+                let _ = router.receive(BIP_PORT.arrived(&delivery).frame(), now, &mut host);
                 None
             }
             Ingress::Discarded(reason) => Some(reason),
@@ -337,11 +338,11 @@ fn real_mstp_success_full_oversize_expired_and_invalid_are_observed() {
         &bacnet_router_core::router::Send<'_>,
     ) -> Result<(), SendRefusal>| {
         let payload = encode(&Bvll::OriginalUnicastNpdu(npdu));
-        let Ingress::Npdu(arrived) = into_bip(&mut bip, &payload, PEER, UNICAST, &mut out, now)
+        let Ingress::Npdu(delivery) = into_bip(&mut bip, &payload, PEER, UNICAST, &mut out, now)
         else {
             panic!("not delivered");
         };
-        let _ = router.receive(arrived.frame(), now, &mut host);
+        let _ = router.receive(BIP_PORT.arrived(&delivery).frame(), now, &mut host);
         pump(router, each)
     };
     let short = routed(100, MSTP_NET, &[5]);
@@ -418,14 +419,14 @@ fn real_bip_success_and_admission_failures_are_observed_once() {
     let mut relay = |router: &mut TestRouter, npdu: &[u8], out: &mut Wire| {
         let arrived = MSTP.arrived(7, STATION, npdu);
         let _ = router.receive(arrived.frame(), now, &mut host);
-        pump(router, |send| bip.send(send, now, out))
+        pump(router, |send| BIP_PORT.send(&mut bip, send, now, out))
     };
     let short = routed(40, BIP_NET, &mac(DEVICE_44));
     let long = routed(600, BIP_NET, &mac(DEVICE_44));
 
     assert_eq!(relay(&mut router, &short, &mut out), [(0, Ok(()))]);
     assert_eq!(out.take().len(), 1);
-    out.refuse = Some(SendRefusal::Full);
+    out.refuse = Some(node::SendRefusal::SocketFull);
     assert_eq!(
         relay(&mut router, &short, &mut out),
         [(0, Err(SendRefusal::Full))]
@@ -435,7 +436,7 @@ fn real_bip_success_and_admission_failures_are_observed_once() {
         relay(&mut router, &long, &mut out),
         [(0, Err(SendRefusal::TooLong))]
     );
-    out.refuse = Some(SendRefusal::Other);
+    out.refuse = Some(node::SendRefusal::SocketError);
     assert_eq!(
         relay(&mut router, &short, &mut out),
         [(0, Err(SendRefusal::Other))]
@@ -476,7 +477,9 @@ fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
     {
         let npdu = apdu_to(BIP_NET, &mac(*group), apdu);
         let _ = router.receive(MSTP.arrived(7, STATION, &npdu).frame(), now, &mut groups);
-        let results = pump(&mut router, |send| bip.send(send, now, &mut out));
+        let results = pump(&mut router, |send| {
+            BIP_PORT.send(&mut bip, send, now, &mut out)
+        });
         assert!(results.iter().all(|(_, result)| result.is_ok()));
         sent.extend(out.take());
     }
@@ -498,6 +501,6 @@ fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
     }
     assert_eq!(
         router.counters().group_dadr_drops,
-        (local.len() + elsewhere.len()) as u64
+        (local.len() + elsewhere.len()) as u32
     );
 }

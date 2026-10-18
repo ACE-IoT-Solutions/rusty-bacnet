@@ -6,7 +6,7 @@
 use core::mem::size_of;
 
 use firmware_link::router::{
-    expected, run, Actions, BbmdTables, BipPort, Core, Memory, Queues, RouterEngine, RouterStorage,
+    expected, run, Actions, Bbmd, BbmdTables, Core, Memory, Queues, RouterEngine, RouterStorage,
     Summary,
 };
 
@@ -25,7 +25,7 @@ fn scenario_summary() {
 fn ram_sizes() {
     let router = size_of::<RouterEngine<'static>>();
     let core = size_of::<Core<'static>>();
-    let port = size_of::<BipPort<'static>>();
+    let port = size_of::<Bbmd<'static>>();
     println!(
         "Storage<2, 8, 8, 4> (the router's, in the static): {} octets",
         size_of::<RouterStorage>()
@@ -35,7 +35,7 @@ fn ram_sizes() {
     println!("Memory: {} octets", size_of::<Memory>());
     println!("Router (on the stack): {router} octets");
     println!("MasterCore (on the stack): {core} octets");
-    println!("BbmdPort with its Node<1> (on the stack): {port} octets");
+    println!("BbmdPort (on the stack): {port} octets");
     println!(
         "Tables<2, 2> (on the stack): {} octets",
         size_of::<BbmdTables>()

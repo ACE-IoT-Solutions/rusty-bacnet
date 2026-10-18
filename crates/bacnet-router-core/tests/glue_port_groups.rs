@@ -5,9 +5,10 @@
 mod fixture;
 mod glue;
 
-use bacnet_bip_codec::BvlcFunction;
+use bacnet_bip_core::codec::BvlcFunction;
 use bacnet_bip_core::node::Mode;
-use bacnet_router_core::bip::{port_config, BipPort};
+use bacnet_bip_core::port::NodePort;
+use bacnet_router_core::bip::BipPort;
 use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::mstp::MstpPort;
 use bacnet_router_core::npdu::Npdu;
@@ -23,9 +24,13 @@ use glue::*;
 #[test]
 fn default_host_delivers_a_subnet_group_through_the_bip_link() {
     let now = Instant::ZERO;
-    let mut bip: BipPort<'_> = BipPort::new(BIP_PORT, node(Mode::Normal, now), &mut []).unwrap();
+    let glue = BipPort::new(BIP_PORT);
+    let mut bip: NodePort<'_> = NodePort::new(node(Mode::Normal, now), &mut []).unwrap();
     let mut router = router_with(
-        &[bip.config(1), MstpPort::config(&config(true), 2).unwrap()],
+        &[
+            BipPort::config(bip.node().link(), 1),
+            MstpPort::config(&config(true), 2).unwrap(),
+        ],
         Options::HOSTED,
     );
     let npdu = apdu_to(1, &mac(SUBNET.broadcast), UNCONFIRMED);
@@ -34,7 +39,9 @@ fn default_host_delivers_a_subnet_group_through_the_bip_link() {
         Received::Handled
     );
     let mut wire = Wire::default();
-    let results = pump(&mut router, |send| bip.send(send, now, &mut wire));
+    let results = pump(&mut router, |send| {
+        glue.send(&mut bip, send, now, &mut wire)
+    });
     assert_eq!(results, [(0, Ok(()))]);
     let sent = wire.take();
     assert_eq!(sent.len(), 1);
@@ -46,7 +53,7 @@ fn default_host_delivers_a_subnet_group_through_the_bip_link() {
 fn configured() -> TestRouter {
     router_with(
         &[
-            port_config(&link(Mode::Normal), 1),
+            BipPort::config(&link(Mode::Normal), 1),
             MstpPort::config(&config(true), 2).unwrap(),
         ],
         Options::HOSTED,
@@ -171,7 +178,7 @@ fn port_rules_preserve_loopback_and_interface_address_exceptions() {
     for ip in [core::net::Ipv4Addr::LOCALHOST, *OWN.ip()] {
         let mut link = link(Mode::Normal);
         link.subnet.broadcast = core::net::SocketAddrV4::new(ip, PORT);
-        let rules = port_config(&link, 1).groups;
+        let rules = BipPort::config(&link, 1).groups;
         assert_eq!(
             rules.classify(&mac(link.subnet.broadcast)),
             Group::Broadcast

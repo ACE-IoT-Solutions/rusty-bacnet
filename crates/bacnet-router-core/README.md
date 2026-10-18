@@ -45,20 +45,22 @@ allocator: on a Cortex-M3, about 45 KB of flash, 15.5 KB of statics and
   from its scratch. A port is data to it (a network number, the router's
   MAC there, its group-address rule, and the longest NPDU the port carries), so B/IP, MS/TP and the
   hosted transports all plug in the same way.
-- `bip` (feature `bip`): B/IP ports over `bacnet-bip-core`'s node engine,
-  in normal or foreign-device mode, or as a BBMD over its tables. A
-  Forwarded-NPDU reaches the router from its origin, a unicast to a group
-  address is refused, and a foreign device's startup announcements wait
-  for its registration. Datagrams leave through a sink you implement,
-  which encodes each straight into your socket's buffer.
+- `bip` (feature `bip`): B/IP ports over `bacnet-bip-core`'s port
+  driver (`NodePort` in normal or foreign-device mode, `BbmdPort` for a
+  BBMD, which answers management requests from its tables). `BipPort`
+  hands the router what a port delivers and carries out the router's
+  sends on it. A Forwarded-NPDU reaches the router from its origin, a
+  unicast to a group address is refused, and a foreign device's startup
+  announcements wait for its registration. Datagrams leave through a sink
+  you implement, which encodes each straight into your socket's buffer.
 - `mstp` (feature `mstp`): MS/TP ports over `bacnet-mstp-core`'s master
   core, which must run with extended frames. Sends queue at their network
   priority, and a request passed on is answered Reply Postponed.
 
 ## Port group rules
 
-Use `bip::port_config`, `BipPort::config`, `BbmdPort::config`, or
-`MstpPort::config` to build the router's port configuration. Each carries
+Use `BipPort::config` or `MstpPort::config` to build the router's port
+configuration. Each carries
 its link's group rules, so `router::Permissive` handles group destinations
 without an extra hook. An Unconfirmed-Request for a directly attached
 port's own group leaves as a local broadcast. Other APDUs and network
@@ -76,8 +78,14 @@ a DADR behind another router or an empty DADR.
 
 ## Features
 
-None by default. `bip` adds `bacnet-bip-core` and `bacnet-bip-codec`, and
-`mstp` adds `bacnet-mstp-core`. Neither needs `std` or an allocator, and
+None by default. `bip` adds `bacnet-bip-core` (and through it
+`bacnet-bip-codec`), and `mstp` adds `bacnet-mstp-core`. Each re-exports
+its core, as `bip_core` and `mstp_core`, so a router image needs this crate
+alone; `RouterIn` names a router over borrowed storage. The router's
+counters drain like the link cores': `take_counters()` returns `u32` counts
+since the last take, and `counters()` looks without taking.
+`Options::STANDARD` fits any storage; `Options::HOSTED` is the hosted
+router's, with its 256-route cap. Neither needs `std` or an allocator, and
 every combination builds on bare-metal targets.
 
 ## Example

@@ -25,7 +25,7 @@ fn from_a_to_9() -> Vec<u8> {
 
 /// The router's counts: `rejects` sent and `solicitations` made, nothing
 /// else.
-fn counts(rejects: u64, solicitations: u64) -> Counters {
+fn counts(rejects: u32, solicitations: u32) -> Counters {
     router_counts(|c| {
         c.rejects = rejects;
         c.solicitations = solicitations;

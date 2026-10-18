@@ -8,6 +8,7 @@ use bacnet_time::Instant;
 
 use super::addressing::Addressed;
 use super::config::{ForwardedTrust, Link, Mode};
+use crate::bbmd::Request;
 use crate::Arrival;
 
 /// One received datagram, as the host's socket reported it.
@@ -240,30 +241,10 @@ pub enum ForBbmd<'d> {
         /// The NPDU.
         npdu: &'d [u8],
     },
-    /// A Register-Foreign-Device: [`Fdt::register`](crate::bbmd::Fdt::register).
-    Register {
-        /// The registrant.
-        sender: SocketAddrV4,
-        /// The time-to-live it asks for, in seconds.
-        ttl: u16,
-    },
-    /// A Read-Broadcast-Distribution-Table.
-    ReadBdt {
-        /// The requester.
-        sender: SocketAddrV4,
-    },
-    /// A Read-Foreign-Device-Table.
-    ReadFdt {
-        /// The requester.
-        sender: SocketAddrV4,
-    },
-    /// Delete-Foreign-Device-Table-Entry, naming a registration to remove.
-    DeleteFdtEntry {
-        /// The requester.
-        sender: SocketAddrV4,
-        /// The entry to delete.
-        entry: SocketAddrV4,
-    },
+    /// A request for the BBMD's tables (Register-Foreign-Device, the two
+    /// table reads, Delete-Foreign-Device-Table-Entry), which
+    /// [`Tables::serve`](crate::bbmd::Tables::serve) answers.
+    Management(Request),
 }
 
 impl<'d> ForBbmd<'d> {
@@ -271,14 +252,17 @@ impl<'d> ForBbmd<'d> {
     /// `None` for Write-Broadcast-Distribution-Table, which every device
     /// refuses (Annex J.4.4.2), and any other message.
     fn of_request(message: Bvll<'d>, sender: SocketAddrV4) -> Option<Self> {
-        Some(match message {
-            Bvll::DistributeBroadcastToNetwork(npdu) => Self::Distribute { sender, npdu },
-            Bvll::RegisterForeignDevice { ttl } => Self::Register { sender, ttl },
-            Bvll::ReadBroadcastDistributionTable => Self::ReadBdt { sender },
-            Bvll::ReadForeignDeviceTable => Self::ReadFdt { sender },
-            Bvll::DeleteForeignDeviceTableEntry(entry) => Self::DeleteFdtEntry { sender, entry },
+        let request = match message {
+            Bvll::DistributeBroadcastToNetwork(npdu) => {
+                return Some(Self::Distribute { sender, npdu })
+            }
+            Bvll::RegisterForeignDevice { ttl } => Request::Register { sender, ttl },
+            Bvll::ReadBroadcastDistributionTable => Request::ReadBdt { sender },
+            Bvll::ReadForeignDeviceTable => Request::ReadFdt { sender },
+            Bvll::DeleteForeignDeviceTableEntry(entry) => Request::DeleteFdtEntry { sender, entry },
             _ => return None,
-        })
+        };
+        Some(Self::Management(request))
     }
 }
 

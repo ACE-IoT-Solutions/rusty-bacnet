@@ -1,6 +1,9 @@
 //! What the router counts.
 
-/// Counts of what the router dropped, sent and was refused. They saturate,
+/// Counts of what the router dropped, sent and was refused since its
+/// counters were last taken ([`Router::take_counters`](super::Router::take_counters)).
+/// Each is a `u32` that saturates between takes; add them to your own
+/// totals, as wide as you need, as the link cores' counts are added. They
 /// never change a decision, and name no peer. The table's own counts are
 /// [`Table::claim_counters`](crate::table::Table::claim_counters).
 ///
@@ -12,48 +15,48 @@
 pub struct Counters {
     /// Frames refused because the link source, the DLEN or the SLEN was
     /// past [`MAX_MAC_LEN`](crate::MAX_MAC_LEN) (#1141, #1198).
-    pub address_length_drops: u64,
+    pub address_length_drops: u32,
     /// Frames dropped for a DADR beside DNET 0xFFFF (#1379).
-    pub global_broadcast_dadr_drops: u64,
+    pub global_broadcast_dadr_drops: u32,
     /// Broadcasts dropped for carrying an APDU other than an
     /// Unconfirmed-Request (#1491).
-    pub broadcast_pdu_type_drops: u64,
+    pub broadcast_pdu_type_drops: u32,
     /// Frames dropped for a DADR that is a group address on its delivery
     /// port: an APDU other than an Unconfirmed-Request, a network message,
     /// or anything for a [`Group::Refuse`](super::Group::Refuse) address
     /// (#1504, #1677). An Unconfirmed-Request sent as the port's broadcast
     /// instead isn't counted.
-    pub group_dadr_drops: u64,
+    pub group_dadr_drops: u32,
     /// Frames that didn't parse as an NPDU for any other reason.
-    pub malformed: u64,
+    pub malformed: u32,
     /// Network messages whose data or addressing the router refused.
-    pub bad_messages: u64,
+    pub bad_messages: u32,
     /// Frames that came on a port the router doesn't have, or whose route
     /// names one.
-    pub unknown_port: u64,
+    pub unknown_port: u32,
     /// Relays not sent because the hop count had run out.
-    pub hop_count_drops: u64,
+    pub hop_count_drops: u32,
     /// Protected network messages [`Host::authorize`](super::Host::authorize)
     /// refused.
-    pub denied: u64,
+    pub denied: u32,
     /// Received rejects that were neither for this router nor routable.
-    pub unroutable_rejects: u64,
+    pub unroutable_rejects: u32,
     /// Rejects this router queued.
-    pub rejects: u64,
+    pub rejects: u32,
     /// Who-Is-Router searches for unknown networks queued.
-    pub solicitations: u64,
+    pub solicitations: u32,
     /// Outputs that couldn't be written: longer than the scratch, or with
     /// a field no NPDU may carry, such as an SNET of 0.
-    pub write_failures: u64,
+    pub write_failures: u32,
     /// Sends left out because their egress port can't carry them: by the
     /// router's own check (R1), or refused by the port as too long, at once
     /// or later ([`Router::refused`](super::Router::refused),
     /// [`Router::refused_later`](super::Router::refused_later)).
-    pub egress_too_long: u64,
+    pub egress_too_long: u32,
     /// Sends the caller reported refused, at once or later.
-    pub refused: u64,
+    pub refused: u32,
     /// Actions dropped because a call came before they were polled.
-    pub undrained: u64,
+    pub undrained: u32,
 }
 
 impl Counters {
@@ -79,6 +82,6 @@ impl Counters {
 }
 
 /// Add one to a count, saturating.
-pub(super) fn bump(count: &mut u64) {
+pub(super) fn bump(count: &mut u32) {
     *count = count.saturating_add(1);
 }

@@ -331,7 +331,8 @@ impl<
     pub(super) fn drop_undrained(&mut self) {
         let pending = self.out.pending(self.port_count);
         if pending > 0 {
-            self.counters.undrained = self.counters.undrained.saturating_add(pending as u64);
+            let pending = u32::try_from(pending).unwrap_or(u32::MAX);
+            self.counters.undrained = self.counters.undrained.saturating_add(pending);
             self.out = Outputs::NEW;
         }
     }

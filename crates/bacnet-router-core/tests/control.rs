@@ -145,7 +145,7 @@ fn one_message_never_corroborates_itself() {
 /// still refreshes ones the table holds. Direct routes count.
 #[test]
 fn the_route_cap_ends_learning() {
-    let options = options(|o| o.route_cap = 4);
+    let options = options(|o| o.route_cap = Some(4));
     let mut router = router_with(&fixture::two_ports(), options);
     let mut host = Recorder::default();
     deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9, 10, 11]), at(1));
@@ -166,7 +166,7 @@ fn the_route_cap_ends_learning() {
 /// refused, counted, and ends the message's learning.
 #[test]
 fn an_init_ack_at_the_cap_refreshes_held_networks() {
-    let options = options(|o| o.route_cap = 4);
+    let options = options(|o| o.route_cap = Some(4));
     let mut router = router_with(&fixture::two_ports(), options);
     let mut host = Recorder::default();
     deliver_broadcast(&mut router, &mut host, 1, R7, &i_am(&[9, 10]), at(1));
@@ -503,7 +503,7 @@ fn i_could_be_router_fills_only_gaps() {
 /// router stored these past its cap before #1679.
 #[test]
 fn the_route_cap_turns_i_could_be_router_away() {
-    let options = options(|o| o.route_cap = 3);
+    let options = options(|o| o.route_cap = Some(3));
     let mut router = router_with(&fixture::two_ports(), options);
     let mut host = Recorder::default();
     let could_be = |network: u16| {
