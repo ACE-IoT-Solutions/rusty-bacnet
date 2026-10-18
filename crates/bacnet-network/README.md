@@ -29,7 +29,7 @@ source MAC. The timeout bounds the wait; no socket or device is opened.
 ```rust
 use bacnet_network::layer::NetworkLayer;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::NetworkPriority;
+use bacnet_npdu::NetworkPriority;
 use tokio::time::{timeout, Duration};
 
 #[tokio::main(flavor = "current_thread")]
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut right_rx = right.start().await?;
 
     let apdu = [0x10, 0x08];
-    left.send_apdu(&apdu, &[2], false, NetworkPriority::NORMAL)
+    left.send_apdu(&apdu, &[2], false, NetworkPriority::Normal)
         .await?;
     let received = timeout(Duration::from_secs(2), right_rx.recv())
         .await?

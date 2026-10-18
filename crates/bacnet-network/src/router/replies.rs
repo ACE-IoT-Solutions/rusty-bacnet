@@ -85,7 +85,7 @@ impl RouterResponse {
     pub(crate) async fn send(
         &self,
         npdu: Bytes,
-        priority: u8,
+        priority: bacnet_npdu::NetworkPriority,
         owner: ResponseScopeGuard,
         on_issuance: impl FnOnce() + Send + 'static,
     ) -> Result<(), Error> {

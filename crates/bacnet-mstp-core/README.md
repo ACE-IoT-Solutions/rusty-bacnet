@@ -5,9 +5,11 @@ The MS/TP master node of Clause 9 of ASHRAE 135 as a portable core, for
 `bacnet-mstp-codec`, which has the wire format, and below a UART or a host
 serial port.
 
-- `#![no_std]`, no allocator, no dependencies besides `bacnet-mstp-codec`
-  and `bacnet-time`. The codec is re-exported as `bacnet_mstp_core::codec`,
-  since the API speaks its types.
+- `#![no_std]`, no allocator, no dependencies besides `bacnet-mstp-codec`,
+  `bacnet-npdu` and `bacnet-time`. The codec is re-exported as
+  `bacnet_mstp_core::codec` and the network-layer vocabulary as
+  `bacnet_mstp_core::npdu`, since the API speaks their types (an NPDU's
+  network priority is `npdu::NetworkPriority`).
 - The core reads no clock and owns no serial port. You feed it what the
   line does, each event stamped with an `Instant`, and carry out the
   actions it returns: switch the transceiver, send a frame, deliver an
@@ -64,9 +66,9 @@ None is on by default, and none needs `std`.
 
 ```rust
 use bacnet_mstp_core::codec::{decode_frame, Frame, FrameType, MAX_STANDARD_FRAME_LENGTH};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
-    Action, Direction, Duration, Instant, MasterCore, MstpCoreConfig, NetworkPriority,
-    StandardStorage,
+    Action, Direction, Duration, Instant, MasterCore, MstpCoreConfig, StandardStorage,
 };
 
 // Station 1 of masters 0 to 3, at 9600 baud.

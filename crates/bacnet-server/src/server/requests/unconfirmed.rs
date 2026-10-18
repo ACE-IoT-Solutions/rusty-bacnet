@@ -121,7 +121,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     &source_net.mac_address,
                                     &received.source_mac,
                                     false,
-                                    NetworkPriority::NORMAL,
+                                    NetworkPriority::Normal,
                                 )
                                 .await,
                             true,
@@ -133,7 +133,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     &buf,
                                     &received.source_mac,
                                     false,
-                                    NetworkPriority::NORMAL,
+                                    NetworkPriority::Normal,
                                 )
                                 .await,
                             true,
@@ -141,7 +141,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     } else {
                         (
                             network
-                                .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+                                .broadcast_apdu(&buf, false, NetworkPriority::Normal)
                                 .await,
                             false,
                         )
@@ -220,7 +220,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 &source_net.mac_address,
                                                 &received.source_mac,
                                                 false,
-                                                NetworkPriority::NORMAL,
+                                                NetworkPriority::Normal,
                                             )
                                             .await,
                                         true,
@@ -234,7 +234,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 &buf,
                                                 &received.source_mac,
                                                 false,
-                                                NetworkPriority::NORMAL,
+                                                NetworkPriority::Normal,
                                             )
                                             .await,
                                         true,
@@ -242,7 +242,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 } else {
                                     (
                                         network
-                                            .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+                                            .broadcast_apdu(&buf, false, NetworkPriority::Normal)
                                             .await,
                                         false,
                                     )

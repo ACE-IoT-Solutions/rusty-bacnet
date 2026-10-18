@@ -1,6 +1,38 @@
 //! Owned addressing for a response to one locally delivered request.
-use crate::npdu::{Address, Npdu, WriteError};
+use core::fmt;
+
+use crate::npdu::{Address, EncodeError, NetworkPriority, Npdu};
 use crate::{Mac, PortId};
+
+/// Why [`ReplyPlan::new`] refused a response's addresses.
+///
+/// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
+/// `match` needs a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReplyPlanError {
+    /// An empty DADR, where a response must name one destination node.
+    EmptyDestination,
+    /// Addresses no NPDU may carry, as the encoder refuses them.
+    Npdu(EncodeError),
+}
+
+impl From<EncodeError> for ReplyPlanError {
+    fn from(error: EncodeError) -> Self {
+        Self::Npdu(error)
+    }
+}
+
+impl fmt::Display for ReplyPlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyDestination => f.write_str("reply destination requires a nonempty DADR"),
+            Self::Npdu(error) => error.fmt(f),
+        }
+    }
+}
+
+impl core::error::Error for ReplyPlanError {}
 
 /// A bounded response description independent of the engine and its scratch.
 ///
@@ -25,32 +57,32 @@ impl ReplyPlan {
         peer: &[u8],
         source: Option<Address<'_>>,
         destination: Option<Address<'_>>,
-    ) -> Result<Self, WriteError> {
+    ) -> Result<Self, ReplyPlanError> {
         if destination.is_some_and(|a| a.network == 65535 || a.mac.is_empty()) {
             return Err(if destination.is_some_and(|a| a.network == 65535) {
-                WriteError::ReservedNetwork
+                EncodeError::ReservedNetwork.into()
             } else {
-                WriteError::EmptyDestination
+                ReplyPlanError::EmptyDestination
             });
         }
-        // The existing writer is the field-validity oracle; no payload or
-        // engine scratch is involved in this small header-only preflight.
+        // The encoder is the field-validity oracle; no payload or engine
+        // scratch is involved in this small header-only preflight.
         let mut header = [0; 2 + 2 * (3 + crate::MAX_MAC_LEN) + 1];
         Npdu {
             source,
             destination,
             ..Npdu::apdu(&[])
         }
-        .write(&mut header)?;
-        let own = |a: Address<'_>| -> Result<_, WriteError> {
+        .encode_into(&mut header)?;
+        let own = |a: Address<'_>| -> Result<_, ReplyPlanError> {
             Ok((
                 a.network,
-                Mac::from_slice(a.mac).map_err(|_| WriteError::AddressTooLong)?,
+                Mac::from_slice(a.mac).map_err(|_| EncodeError::AddressTooLong)?,
             ))
         };
         Ok(Self {
             port,
-            peer: Mac::from_slice(peer).map_err(|_| WriteError::AddressTooLong)?,
+            peer: Mac::from_slice(peer).map_err(|_| EncodeError::AddressTooLong)?,
             source: source.map(own).transpose()?,
             destination: destination.map(own).transpose()?,
         })
@@ -85,7 +117,12 @@ impl ReplyPlan {
     /// Prepare the same NPDU view for sizing and writing into caller storage.
     /// The view borrows this owned plan and the supplied APDU, never the router.
     #[must_use]
-    pub fn npdu<'a>(&'a self, apdu: &'a [u8], expecting_reply: bool, priority: u8) -> Npdu<'a> {
+    pub fn npdu<'a>(
+        &'a self,
+        apdu: &'a [u8],
+        expecting_reply: bool,
+        priority: NetworkPriority,
+    ) -> Npdu<'a> {
         Npdu {
             source: self.source(),
             destination: self.destination(),

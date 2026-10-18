@@ -81,9 +81,9 @@ fn local_network_number_shares_the_last_published_state() {
 async fn a_published_number_leaves_routed_sends_as_named() {
     use crate::layer::NetworkLayer;
     use bacnet_encoding::npdu::NpduAddress;
+    use bacnet_npdu::NetworkPriority;
     use bacnet_transport::loopback::LoopbackTransport;
     use bacnet_transport::port::TransportPort;
-    use bacnet_types::enums::NetworkPriority;
 
     let (mut link, mut peer) = LoopbackTransport::pair(vec![1], vec![2]);
     let mut destinations = link.record_unicast_destinations();
@@ -94,7 +94,7 @@ async fn a_published_number_leaves_routed_sends_as_named() {
         .local_network_number()
         .publish(NetworkNumber::configured(7).unwrap());
     let apdu = [0x10, 0x08];
-    let priority = NetworkPriority::NORMAL;
+    let priority = NetworkPriority::Normal;
 
     network
         .send_apdu_routed(&apdu, 7, &[3], &[9], false, priority)

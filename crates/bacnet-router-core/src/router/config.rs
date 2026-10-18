@@ -4,51 +4,22 @@ use core::fmt;
 
 use super::{GroupClassifier, Groups};
 
+use crate::npdu::NpduLimits;
 use crate::table::{Convergence, Timing};
 use crate::{Duration, Mac, PortId};
 
-/// The longest NPDU a port carries, for each kind of send. B/IP and MS/TP
-/// with extended frames carry 1,497 octets each way (Table 6-1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Limits {
-    /// To one node.
-    pub unicast: u16,
-    /// To every node on the port.
-    pub broadcast: u16,
-}
+/// The least NPDU limit a port may have, either way, in octets: room for
+/// any reject the router passes on, so its own limit check never refuses
+/// one.
+pub const MIN_PORT_LIMIT: u16 = 64;
 
-impl Limits {
-    /// The least limit a port may have, either way: room for any reject
-    /// the router passes on, so its own limit check never refuses one.
-    pub const MIN: u16 = 64;
-
-    /// The same limit both ways.
-    #[must_use]
-    pub const fn both(octets: u16) -> Self {
-        Self {
-            unicast: octets,
-            broadcast: octets,
-        }
-    }
-
-    /// Whether a port may have these limits on a router whose scratch holds
-    /// `scratch` octets: at least [`Self::MIN`] and at most the scratch,
-    /// each way.
-    pub(super) fn fit(self, scratch: usize) -> bool {
-        [self.unicast, self.broadcast]
-            .iter()
-            .all(|&limit| limit >= Self::MIN && usize::from(limit) <= scratch)
-    }
-
-    /// The limit for a broadcast, or for a unicast.
-    #[must_use]
-    pub const fn get(self, broadcast: bool) -> usize {
-        if broadcast {
-            self.broadcast as usize
-        } else {
-            self.unicast as usize
-        }
-    }
+/// Whether a port may have `limits` on a router whose scratch holds
+/// `scratch` octets: at least [`MIN_PORT_LIMIT`] and at most the scratch,
+/// each way.
+pub(super) fn limits_fit(limits: NpduLimits, scratch: usize) -> bool {
+    [limits.unicast, limits.broadcast]
+        .iter()
+        .all(|&limit| limit >= MIN_PORT_LIMIT && usize::from(limit) <= scratch)
 }
 
 /// One port as the router sees it: data, with no link behind it. The
@@ -70,7 +41,7 @@ pub struct PortConfig<G = Groups> {
     /// The largest NPDU the port carries. A link whose limit changes while
     /// the router runs has it replaced with
     /// [`Router::set_port_max_npdu`](super::Router::set_port_max_npdu).
-    pub max_npdu: Limits,
+    pub max_npdu: NpduLimits,
     /// The link's destination classifier, supplied by its configuration.
     pub groups: G,
 }
@@ -78,7 +49,7 @@ pub struct PortConfig<G = Groups> {
 impl<G> PortConfig<G> {
     /// A port with its network, own MAC, limits and link group rule.
     #[must_use]
-    pub const fn new(network: u16, mac: Mac, max_npdu: Limits, groups: G) -> Self {
+    pub const fn new(network: u16, mac: Mac, max_npdu: NpduLimits, groups: G) -> Self {
         Self {
             network,
             mac,
@@ -93,7 +64,7 @@ impl<G: GroupClassifier> PortConfig<G> {
     pub(super) const ZERO: Self = Self {
         network: 0,
         mac: Mac::EMPTY,
-        max_npdu: Limits::both(0),
+        max_npdu: NpduLimits::both(0),
         groups: G::NONE,
     };
 }
@@ -194,7 +165,7 @@ pub enum ConfigError {
         /// Its network number.
         network: u16,
     },
-    /// A port's limit is under [`Limits::MIN`] or over the scratch.
+    /// A port's limit is under [`MIN_PORT_LIMIT`] or over the scratch.
     Limit(PortId),
     /// The route cap is over the table's capacity.
     RouteCap {
@@ -250,7 +221,7 @@ impl core::error::Error for ConfigError {}
 pub enum LimitError {
     /// The router has no such port.
     UnknownPort,
-    /// A limit is under [`Limits::MIN`] or over the scratch, which
+    /// A limit is under [`MIN_PORT_LIMIT`] or over the scratch, which
     /// [`Router::new`](super::Router::new) refuses too.
     OutOfRange,
 }

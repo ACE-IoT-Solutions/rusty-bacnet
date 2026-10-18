@@ -9,9 +9,9 @@ use bacnet_bip_core::codec::BvlcFunction;
 use bacnet_bip_core::node::Mode;
 use bacnet_bip_core::port::NodePort;
 use bacnet_router_core::bip::BipPort;
-use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::mstp::port_config;
 use bacnet_router_core::npdu::Npdu;
+use bacnet_router_core::npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_router_core::router::{Discard, Group, GroupClassifier, Options, Permissive, Received};
 use bacnet_router_core::Instant;
 
@@ -64,15 +64,15 @@ fn configured() -> TestRouter {
 fn default_host_drops_unsupported_apdus_and_network_messages_once() {
     let mut router = configured();
     let mut drops = 0;
-    let reject_data = reject_data(RejectReason::NOT_DIRECTLY_CONNECTED, 9);
+    let reject_data = reject_data(RejectMessageReason::NOT_DIRECTLY_CONNECTED, 9);
     learn_9_via_r7(&mut router, Instant::ZERO);
     for target in [SUBNET.broadcast, sock(192, 0, 2, 255, PORT + 1)] {
         let dadr = mac(target);
-        let mut message = Npdu::message(MessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
+        let mut message = Npdu::message(NetworkMessageType::I_AM_ROUTER_TO_NETWORK, &[0, 44]);
         message.destination = Some(addr(1, &dadr));
-        let mut reject = Npdu::message(MessageType::REJECT_MESSAGE_TO_NETWORK, &reject_data);
+        let mut reject = Npdu::message(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK, &reject_data);
         reject.destination = Some(addr(1, &dadr));
-        let mut proprietary = Npdu::message(MessageType::from_raw(0x80), UNCONFIRMED);
+        let mut proprietary = Npdu::message(NetworkMessageType::from_raw(0x80), UNCONFIRMED);
         proprietary.vendor_id = Some(260);
         proprietary.destination = message.destination;
         let mut frames = vec![

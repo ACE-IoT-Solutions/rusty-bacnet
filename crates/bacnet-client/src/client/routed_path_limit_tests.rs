@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use bacnet_encoding::apdu::{self, encode_apdu, Apdu, SegmentAck, SimpleAck};
 use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::port::{ReceivedNpdu, TransportPort, TransportProvenance};
-use bacnet_types::enums::{ConfirmedServiceChoice, NetworkMessageType, RejectMessageReason};
+use bacnet_types::enums::ConfirmedServiceChoice;
 use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
@@ -153,14 +154,13 @@ async fn inject_apdu(
 async fn inject_control(
     inbound: &mpsc::Sender<ReceivedNpdu>,
     immediate_source: &[u8],
-    message_type: u8,
+    message_type: NetworkMessageType,
     payload: &[u8],
 ) {
     let mut npdu_buf = BytesMut::new();
     encode_npdu(
         &mut npdu_buf,
         &Npdu {
-            is_network_message: true,
             message_type: Some(message_type),
             payload: Bytes::copy_from_slice(payload),
             ..Npdu::default()
@@ -185,7 +185,7 @@ async fn inject_reason_4(inbound: &mpsc::Sender<ReceivedNpdu>, immediate_source:
     inject_control(
         inbound,
         immediate_source,
-        NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw(),
+        NetworkMessageType::REJECT_MESSAGE_TO_NETWORK,
         &[
             RejectMessageReason::MESSAGE_TOO_LONG.to_raw(),
             (dnet >> 8) as u8,
@@ -487,21 +487,21 @@ async fn unmatched_controls_and_direct_requests_do_not_change_path_policy() {
     inject_control(
         &inbound,
         &router,
-        NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw(),
+        NetworkMessageType::REJECT_MESSAGE_TO_NETWORK,
         &[RejectMessageReason::ROUTER_BUSY.to_raw(), 0, DNET as u8],
     )
     .await;
     inject_control(
         &inbound,
         &router,
-        NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw(),
+        NetworkMessageType::REJECT_MESSAGE_TO_NETWORK,
         &[RejectMessageReason::MESSAGE_TOO_LONG.to_raw(), 0],
     )
     .await;
     inject_control(
         &inbound,
         &router,
-        NetworkMessageType::ROUTER_BUSY_TO_NETWORK.to_raw(),
+        NetworkMessageType::ROUTER_BUSY_TO_NETWORK,
         &[
             RejectMessageReason::MESSAGE_TOO_LONG.to_raw(),
             0,

@@ -207,7 +207,7 @@ mod tests {
             assert_eq!(limits.apdu(), super::super::DEFAULT_MAX_APDU_LENGTH);
             assert_eq!(
                 *limits.npdu_changes().borrow(),
-                crate::port::NpduLimits::STANDARD
+                bacnet_npdu::NpduLimits::STANDARD
             );
             assert!(disconnect.lock().unwrap().is_none());
         }

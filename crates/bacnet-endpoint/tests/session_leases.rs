@@ -139,7 +139,7 @@ async fn lost_consumer_routes_to_policy_without_hanging() {
         &encoded,
         &[0x01],
         true,
-        bacnet_types::enums::NetworkPriority::NORMAL,
+        bacnet_npdu::NetworkPriority::Normal,
     )
     .await
     .unwrap();
@@ -200,7 +200,7 @@ async fn full_ingress_queue_overflows_to_policy() {
             &encoded,
             &[0x01],
             true,
-            bacnet_types::enums::NetworkPriority::NORMAL,
+            bacnet_npdu::NetworkPriority::Normal,
         )
         .await
         .unwrap();
@@ -239,7 +239,7 @@ async fn full_ingress_queue_overflows_to_policy() {
                     &encoded,
                     &[0x01],
                     true,
-                    bacnet_types::enums::NetworkPriority::NORMAL,
+                    bacnet_npdu::NetworkPriority::Normal,
                 )
                 .await
                 .unwrap();
@@ -290,14 +290,9 @@ async fn malformed_apdu_is_policy_owned() {
     let _peer_rx = peer.start().await.unwrap();
 
     // Und decodable APDU (empty payload decodes as malformed at classifier).
-    peer.send_apdu(
-        &[],
-        &[0x01],
-        false,
-        bacnet_types::enums::NetworkPriority::NORMAL,
-    )
-    .await
-    .unwrap();
+    peer.send_apdu(&[], &[0x01], false, bacnet_npdu::NetworkPriority::Normal)
+        .await
+        .unwrap();
 
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {

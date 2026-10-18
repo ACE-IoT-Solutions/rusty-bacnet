@@ -1,10 +1,11 @@
 use super::*;
 use bacnet_encoding::apdu::{decode_apdu, encode_apdu, ConfirmedRequest};
 use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::ReceivedNpdu;
-use bacnet_types::enums::{ConfirmedServiceChoice, NetworkPriority, ServiceSupported};
+use bacnet_types::enums::{ConfirmedServiceChoice, ServiceSupported};
 use bytes::BytesMut;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
@@ -273,7 +274,7 @@ async fn endpoint_device_write_actual_ingress_rejects_source_reporter_and_stops(
             &mut bytes,
             &Npdu {
                 expecting_reply: true,
-                priority: NetworkPriority::NORMAL,
+                priority: NetworkPriority::Normal,
                 payload: apdu.freeze(),
                 ..Default::default()
             },

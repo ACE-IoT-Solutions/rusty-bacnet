@@ -6,7 +6,9 @@ use core::net::SocketAddrV4;
 
 use bacnet_bip_codec::{Bvll, HEADER_LENGTH, MAX_BVLL_LENGTH};
 
-use super::config::{Link, Mode, MAX_NPDU};
+use bacnet_npdu::MAX_NPDU;
+
+use super::config::{Link, Mode};
 
 /// A message to send. The caller encodes it
 /// ([`Bvll::encode_into`](bacnet_bip_codec::Bvll::encode_into)) and sends

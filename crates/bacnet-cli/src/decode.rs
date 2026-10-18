@@ -173,19 +173,19 @@ fn decode_npdu_layer(npdu: Bytes) -> Result<DecodedNpdu, String> {
     let source_network = npdu_result.source.as_ref().map(|a| a.network);
     let dest_network = npdu_result.destination.as_ref().map(|a| a.network);
 
-    let apdu = if !npdu_result.is_network_message && !npdu_result.payload.is_empty() {
+    let apdu = if !npdu_result.is_network_message() && !npdu_result.payload.is_empty() {
         Some(decode_apdu_layer(&npdu_result)?)
     } else {
         None
     };
 
     Ok(DecodedNpdu {
-        is_network_message: npdu_result.is_network_message,
+        is_network_message: npdu_result.is_network_message(),
         expecting_reply: npdu_result.expecting_reply,
         source_network,
         dest_network,
         hop_count: npdu_result.hop_count,
-        network_message_type: npdu_result.message_type,
+        network_message_type: npdu_result.message_type.map(|kind| kind.to_raw()),
         apdu,
     })
 }
@@ -266,8 +266,9 @@ mod tests {
     use super::*;
     use bacnet_encoding::apdu::{self, Apdu, ConfirmedRequest, UnconfirmedRequest};
     use bacnet_encoding::npdu::{self, Npdu};
+    use bacnet_npdu::NetworkPriority;
     use bacnet_transport::bvll::{self, BvlcResultCode, Bvll};
-    use bacnet_types::enums::{ConfirmedServiceChoice, NetworkPriority, UnconfirmedServiceChoice};
+    use bacnet_types::enums::{ConfirmedServiceChoice, UnconfirmedServiceChoice};
     use bytes::{Bytes, BytesMut};
 
     /// Build a complete BVLC-wrapped packet from an NPDU + APDU.
@@ -300,9 +301,8 @@ mod tests {
 
     fn simple_npdu() -> Npdu {
         Npdu {
-            is_network_message: false,
             expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             hop_count: 255,

@@ -10,11 +10,10 @@ use bacnet_endpoint_core::coordinator::{
 };
 use bacnet_endpoint_core::endpoint_ingress::EndpointIngress;
 use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_npdu::NetworkPriority;
 use bacnet_services::read_property::ReadPropertyACK;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
-};
+use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
@@ -254,7 +253,7 @@ async fn pre_admitted_segmented_response_sends_one_abort_and_releases_exact_leas
         &encoded_apdu(&segmented),
         &[0x01],
         false,
-        NetworkPriority::NORMAL,
+        NetworkPriority::Normal,
     )
     .await
     .unwrap();

@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use bacnet_encoding::npdu::{Npdu, NpduAddress};
+use bacnet_npdu::NetworkMessageType;
 use bacnet_transport::port::DataAttribute;
-use bacnet_types::enums::NetworkMessageType;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 
@@ -90,8 +90,7 @@ fn received_reject(
         mac_address: MacAddr::from_slice(mac),
     };
     Npdu {
-        is_network_message: true,
-        message_type: Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw()),
+        message_type: Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK),
         destination: destination.map(address),
         source: source.map(address),
         hop_count: hop,

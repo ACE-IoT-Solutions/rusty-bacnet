@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_npdu::NetworkPriority;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use bacnet_types::{enums::NetworkPriority, error::Error, MacAddr};
+use bacnet_types::{error::Error, MacAddr};
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 
@@ -114,7 +115,7 @@ async fn r7_response_matches_addressed_endpoint_and_invoke_id() {
                 next_hop: &received.source_mac,
                 destination: received.source_network.as_ref(),
                 expecting_reply: false,
-                priority: NetworkPriority::NORMAL,
+                priority: NetworkPriority::Normal,
             },
             &received.response_route(),
             || {},
@@ -154,7 +155,7 @@ fn issued() -> IssuedApdu<'static> {
         next_hop: &[77],
         destination: None,
         expecting_reply: false,
-        priority: NetworkPriority::NORMAL,
+        priority: NetworkPriority::Normal,
     }
 }
 
@@ -267,7 +268,7 @@ async fn r7_clone_retains_owned_route_and_slice_without_repeating_der_authority(
         .await
         .is_err());
     assert!(route
-        .encode_reply_npdu(&[0x20, 0x37, 12], None, false, NetworkPriority::NORMAL)
+        .encode_reply_npdu(&[0x20, 0x37, 12], None, false, NetworkPriority::Normal)
         .is_err());
     assert!(wire_a.try_recv().is_err() && unrelated.try_recv().is_err());
 }

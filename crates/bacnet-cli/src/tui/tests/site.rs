@@ -117,7 +117,7 @@ impl Hub {
 /// invoke id and service.
 fn apdu_kind(npdu: &[u8]) -> Option<(u8, Option<(u8, u8)>)> {
     let decoded = decode_npdu(Bytes::copy_from_slice(npdu)).ok()?;
-    if decoded.is_network_message {
+    if decoded.is_network_message() {
         return None;
     }
     let apdu = decoded.payload;

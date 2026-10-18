@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use bacnet_router_core::npdu::{AddressField, Malformed};
+use bacnet_npdu::MAX_MAC_LEN;
 use bacnet_router_core::router::{Discard, Frame, Received};
 use bacnet_router_core::PortId;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
@@ -172,34 +172,20 @@ fn log_discard(reason: Discard, port: u8, source_len: usize) {
     match reason {
         Discard::SourceTooLong { .. } => warn!(
             octets = source_len,
-            limit = bacnet_router_core::MAX_MAC_LEN,
+            limit = MAX_MAC_LEN,
             "Dropping a frame whose link-layer source MAC is over the limit"
         ),
         Discard::AddressTooLong { field, length } => {
-            let octet = match field {
-                AddressField::Destination => "DLEN",
-                AddressField::Source => "SLEN",
-            };
             warn!(
                 error = %format_args!(
-                    "NPDU {octet}={length} exceeds the {}-octet address limit",
-                    bacnet_router_core::MAX_MAC_LEN
+                    "NPDU {}={length} exceeds the {MAX_MAC_LEN}-octet address limit",
+                    field.length_octet()
                 ),
                 port,
                 "Router refused an NPDU"
             );
         }
-        Discard::Malformed(fault) => {
-            let error = match fault {
-                Malformed::Truncated => "NPDU truncated",
-                Malformed::Version => "unsupported BACnet protocol version",
-                Malformed::ReservedNetwork => "NPDU names a reserved network number",
-                Malformed::EmptySource => "NPDU source SLEN=0 is invalid",
-                // A fault a later engine adds.
-                _ => "NPDU malformed",
-            };
-            warn!(error, port, "Router decode failed");
-        }
+        Discard::Malformed(fault) => warn!(error = %fault, port, "Router decode failed"),
         Discard::GlobalWithDadr => {
             warn!("Dropping a global broadcast NPDU that also names a DADR")
         }

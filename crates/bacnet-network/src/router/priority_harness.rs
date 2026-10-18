@@ -1,6 +1,7 @@
 //! Socket-free router ports whose sends finish only when the test allows it.
 
-use bacnet_transport::port::{DataAttribute, NpduLimits, ReceivedNpdu, TransportPort};
+use bacnet_npdu::NpduLimits;
+use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort};
 use bacnet_types::{error::Error, MacAddr};
 use bytes::Bytes;
 use std::sync::{

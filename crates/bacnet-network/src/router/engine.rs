@@ -23,12 +23,12 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use bacnet_npdu::NpduLimits;
 use bacnet_router_core::router::{
-    ConfigError, Counters as EngineCounters, Limits, Options, PortConfig,
+    ConfigError, Counters as EngineCounters, Options, PortConfig, MIN_PORT_LIMIT,
 };
 use bacnet_router_core::{Instant, Router, Storage};
 use bacnet_time::HostClock;
-use bacnet_transport::port::NpduLimits;
 
 use super::port_groups::PortGroups;
 use super::Counters;
@@ -46,7 +46,7 @@ pub(super) const SEARCHES: usize = 256;
 /// than that BVLC bound (Table 6-1 puts it at 61,327 octets, and Clause 6.6
 /// lets two BACnet/SC ports route NPDUs that long), so any of them fits
 /// with its added source address.
-pub(super) const SCRATCH: usize = 65_535 + 2 + 1 + bacnet_router_core::MAX_MAC_LEN;
+pub(super) const SCRATCH: usize = 65_535 + 2 + 1 + bacnet_npdu::MAX_MAC_LEN;
 
 /// What a hosted router's engine keeps, including its owned port rules, boxed.
 type HostedStorage = Storage<PORTS, ROUTE_CAP, HOLD_RECORDS, SEARCHES, SCRATCH, PortGroups>;
@@ -104,7 +104,7 @@ impl Engine {
     /// NPDUs its transport reports ([`Self::limits`]).
     pub(super) fn port(
         network: u16,
-        mac: bacnet_router_core::Mac,
+        mac: bacnet_npdu::Mac,
         max_npdu: NpduLimits,
         groups: PortGroups,
     ) -> PortConfig<PortGroups> {
@@ -113,13 +113,13 @@ impl Engine {
 
     /// The engine's limits for a port whose transport reports `reported`
     /// (`TransportPort::max_npdu`, #1665), at start or later (#1696). A
-    /// report under [`Limits::MIN`] counts as that: the engine refuses a
+    /// report under [`MIN_PORT_LIMIT`] counts as that: the engine refuses a
     /// smaller limit, and the transport still refuses what it can't carry.
     /// None is over the scratch, which holds more than any `u16`.
-    pub(super) fn limits(reported: NpduLimits) -> Limits {
-        Limits {
-            unicast: reported.unicast.max(Limits::MIN),
-            broadcast: reported.broadcast.max(Limits::MIN),
+    pub(super) fn limits(reported: NpduLimits) -> NpduLimits {
+        NpduLimits {
+            unicast: reported.unicast.max(MIN_PORT_LIMIT),
+            broadcast: reported.broadcast.max(MIN_PORT_LIMIT),
         }
     }
 
@@ -274,9 +274,10 @@ fn boxed_storage() -> Box<HostedStorage> {
 
 #[cfg(test)]
 mod tests {
+    use bacnet_npdu::Mac;
+    use bacnet_npdu::NpduLimits;
     use bacnet_router_core::router::{Frame, Permissive};
-    use bacnet_router_core::{Mac, PortId};
-    use bacnet_transport::port::NpduLimits;
+    use bacnet_router_core::PortId;
 
     use super::*;
 

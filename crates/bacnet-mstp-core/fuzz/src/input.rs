@@ -1,7 +1,8 @@
 //! The fuzz input: one station's configuration, and the steps that drive it.
 
 use arbitrary::Arbitrary;
-use bacnet_mstp_core::{Duration, MstpCoreConfig, NetworkPriority, ReceiveError, TransmitFailure};
+use bacnet_mstp_core::npdu::NetworkPriority;
+use bacnet_mstp_core::{Duration, MstpCoreConfig, ReceiveError, TransmitFailure};
 
 /// Steps past this many are ignored, to keep runs quick.
 pub const MAX_STEPS: usize = 2048;

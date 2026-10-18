@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_npdu::NetworkMessageType;
 use bacnet_transport::port::ReceivedNpdu;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
@@ -66,8 +67,7 @@ fn incoming(control: bool, id: u16) -> ReceivedNpdu {
         id.to_be_bytes().to_vec()
     };
     let npdu = Npdu {
-        is_network_message: control,
-        message_type: control.then_some(3),
+        message_type: control.then_some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK),
         expecting_reply: !control,
         source: Some(NpduAddress {
             network: 200,

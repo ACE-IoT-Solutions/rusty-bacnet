@@ -2,9 +2,10 @@
 //! and 9.5.6.9), and the reply window under steady line activity.
 
 use bacnet_mstp_codec::{Frame, FrameHeader, FrameType};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
     Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    NetworkPriority, ReceiveError, ReplyDecision, RequestId, TransmitId,
+    ReceiveError, ReplyDecision, RequestId, TransmitId,
 };
 
 type Queues = FixedQueues<4, 4>;

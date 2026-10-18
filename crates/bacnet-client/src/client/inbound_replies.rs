@@ -115,7 +115,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         next_hop: reply_mac,
                         destination,
                         expecting_reply: false,
-                        priority: NetworkPriority::NORMAL,
+                        priority: NetworkPriority::Normal,
                     },
                     &route,
                 )?;
@@ -132,7 +132,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         next_hop: reply_mac,
                         destination,
                         expecting_reply: false,
-                        priority: NetworkPriority::NORMAL,
+                        priority: NetworkPriority::Normal,
                     },
                     &route,
                     || {},

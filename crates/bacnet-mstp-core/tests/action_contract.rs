@@ -5,9 +5,10 @@
 mod support;
 
 use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
-    Action, ActionBuffers, Direction, Duration, Instant, MasterCore, MasterState, NetworkPriority,
-    QueueKind, QueueStorage, TransmitError,
+    Action, ActionBuffers, Direction, Duration, Instant, MasterCore, MasterState, QueueKind,
+    QueueStorage, TransmitError,
 };
 
 use support::*;

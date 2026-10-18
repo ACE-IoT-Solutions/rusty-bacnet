@@ -6,8 +6,10 @@ use super::host::Host;
 use super::tasks::Task;
 use super::Group;
 use super::Storage;
-use crate::message::RejectReason;
-use crate::npdu::{Address, AddressField, Malformed, Npdu, ParseError, GLOBAL_NETWORK};
+use crate::npdu::RejectMessageReason;
+use crate::npdu::{
+    Address, AddressField, DecodeError, Malformed, NetworkPriority, Npdu, GLOBAL_NETWORK,
+};
 use crate::table::{Reachability, Route};
 use crate::{Instant, Mac, PortId};
 
@@ -60,9 +62,8 @@ pub struct Local<'f> {
     pub global: bool,
     /// Whether its sender expects a reply.
     pub expecting_reply: bool,
-    /// Its network priority: the control octet's two low bits, 0 (normal)
-    /// to 3 (life safety), so never more than 3.
-    pub priority: u8,
+    /// Its network priority.
+    pub priority: NetworkPriority,
     /// Owned return route and explicitly addressed local source, if any.
     pub reply: super::ReplyPlan,
 }
@@ -196,9 +197,9 @@ impl<
             link_group: frame.link_group,
             now,
         };
-        let npdu = match Npdu::parse(frame.npdu) {
+        let npdu = match Npdu::decode(frame.npdu) {
             Ok(npdu) => npdu,
-            Err(ParseError::AddressTooLong {
+            Err(DecodeError::AddressTooLong {
                 field,
                 length,
                 dnet,
@@ -208,11 +209,17 @@ impl<
                 // A global broadcast draws no reject, and an NPDU without a
                 // DNET has no network to name.
                 if let Some(dnet) = dnet.filter(|&dnet| dnet != GLOBAL_NETWORK) {
-                    self.reject(&at, source, dnet, RejectReason::ADDRESSING_ERROR, host);
+                    self.reject(
+                        &at,
+                        source,
+                        dnet,
+                        RejectMessageReason::ADDRESSING_ERROR,
+                        host,
+                    );
                 }
                 return Received::Discarded(Discard::AddressTooLong { field, length });
             }
-            Err(ParseError::Malformed(fault)) => {
+            Err(DecodeError::Malformed(fault)) => {
                 bump(&mut self.counters.malformed);
                 return Received::Discarded(Discard::Malformed(fault));
             }
@@ -323,15 +330,15 @@ impl<
                 at,
                 npdu.source,
                 dnet,
-                RejectReason::NOT_DIRECTLY_CONNECTED,
+                RejectMessageReason::NOT_DIRECTLY_CONNECTED,
                 host,
             );
             return None;
         };
         self.table.touch(dnet, at.now);
         let refusal = match reachability {
-            Some(Reachability::Busy) => RejectReason::ROUTER_BUSY,
-            Some(Reachability::Unreachable) => RejectReason::NOT_DIRECTLY_CONNECTED,
+            Some(Reachability::Busy) => RejectMessageReason::ROUTER_BUSY,
+            Some(Reachability::Unreachable) => RejectMessageReason::NOT_DIRECTLY_CONNECTED,
             _ => return Some(route),
         };
         self.reject(at, npdu.source, dnet, refusal, host);

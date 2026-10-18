@@ -602,12 +602,7 @@ async fn registered_port_capacity_independent_local_bvll_framing() {
     let apdu = vec![0x55; 1476];
     let mac = bacnet_transport::bvll::encode_bip_mac(address.ip().octets(), address.port());
     network
-        .send_apdu(
-            &apdu,
-            &mac,
-            false,
-            bacnet_types::enums::NetworkPriority::NORMAL,
-        )
+        .send_apdu(&apdu, &mac, false, bacnet_npdu::NetworkPriority::Normal)
         .await
         .unwrap();
     let mut frame = [0; 1500];

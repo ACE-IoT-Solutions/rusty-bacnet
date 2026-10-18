@@ -33,9 +33,10 @@ mod tests {
     use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::Arc;
 
+    use bacnet_npdu::Mac;
+    use bacnet_npdu::NpduLimits;
     use bacnet_router_core::router::{Action, Dest, Discard, Frame, Permissive, Received};
-    use bacnet_router_core::{Mac, PortId};
-    use bacnet_transport::port::NpduLimits;
+    use bacnet_router_core::PortId;
 
     use super::*;
     use crate::router::engine::{tokio_clock, Engine};

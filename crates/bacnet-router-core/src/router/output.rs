@@ -13,8 +13,8 @@ use super::counters::bump;
 use super::host::{Event, Host};
 use super::tasks::{Task, TaskKind};
 use super::{RejectOrigin, Storage};
-use crate::message::{MessageType, RejectReason};
-use crate::npdu::Npdu;
+use crate::npdu::{NetworkMessageType, RejectMessageReason};
+use crate::npdu::{NetworkPriority, Npdu};
 use crate::{swap_apart, Mac, PortId};
 
 /// What to do next. Poll [`Router::poll_action`](super::Router::poll_action)
@@ -42,10 +42,8 @@ pub struct Send<'a> {
     pub to: Dest<'a>,
     /// The NPDU, in the router's scratch until the next poll.
     pub npdu: &'a [u8],
-    /// The NPDU's network priority, 0 (normal) to 3 (life safety), for a
-    /// port that queues by it: the control octet's two low bits, so never
-    /// more than 3.
-    pub priority: u8,
+    /// The NPDU's network priority, for a port that queues by it.
+    pub priority: NetworkPriority,
     /// Why the router sends it.
     pub kind: Kind,
     /// What prompted it.
@@ -81,14 +79,14 @@ pub enum Kind {
     /// A network message of this type passed on: an I-Am-Router, a
     /// Router-Busy or Router-Available, or a Who-Is-Router searching
     /// further.
-    Relay(MessageType),
+    Relay(NetworkMessageType),
     /// A reject this router sends, with this reason.
-    Reject(RejectReason),
+    Reject(RejectMessageReason),
     /// An answer of this type: I-Am-Router, Initialize-Routing-Table-Ack
     /// or Network-Number-Is.
-    Answer(MessageType),
+    Answer(NetworkMessageType),
     /// A startup announcement of this type.
-    Announce(MessageType),
+    Announce(NetworkMessageType),
     /// A Who-Is-Router for a network the router has no route to.
     Solicit,
 }
@@ -154,7 +152,7 @@ pub(super) struct Current {
     code: u8,
     /// [`Cause::Local`]; zero is [`Cause::Ingress`].
     local: bool,
-    priority: u8,
+    priority: NetworkPriority,
     /// To every port but `port`, rather than to `port`.
     fan_out: bool,
     port: PortId,
@@ -175,7 +173,7 @@ impl Current {
         tag: Tag::Forward,
         code: 0,
         local: false,
-        priority: 0,
+        priority: NetworkPriority::Normal,
         fan_out: false,
         port: PortId(0),
         next: 0,
@@ -190,7 +188,7 @@ impl Current {
         len: usize,
         kind: Kind,
         cause: Cause,
-        priority: u8,
+        priority: NetworkPriority,
         target: Target<'_>,
     ) -> Self {
         let (tag, code) = match kind {
@@ -247,10 +245,10 @@ impl Current {
         match self.tag {
             Tag::Forward => Kind::Forward,
             Tag::Global => Kind::Global,
-            Tag::Relay => Kind::Relay(MessageType::from_raw(self.code)),
-            Tag::Reject => Kind::Reject(RejectReason::from_raw(self.code)),
-            Tag::Answer => Kind::Answer(MessageType::from_raw(self.code)),
-            Tag::Announce => Kind::Announce(MessageType::from_raw(self.code)),
+            Tag::Relay => Kind::Relay(NetworkMessageType::from_raw(self.code)),
+            Tag::Reject => Kind::Reject(RejectMessageReason::from_raw(self.code)),
+            Tag::Answer => Kind::Answer(NetworkMessageType::from_raw(self.code)),
+            Tag::Announce => Kind::Announce(NetworkMessageType::from_raw(self.code)),
             Tag::Solicit => Kind::Solicit,
         }
     }
@@ -345,7 +343,7 @@ impl<
             0,
             "a frame's output comes first"
         );
-        match npdu.write(&mut self.scratch) {
+        match npdu.encode_into(&mut self.scratch) {
             Ok(len) => {
                 self.out.current = Current::new(len, kind, Cause::Ingress, npdu.priority, target);
                 true

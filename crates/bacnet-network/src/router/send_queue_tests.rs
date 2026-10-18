@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::task::{Context, Poll, Wake, Waker};
 
+use bacnet_npdu::NetworkPriority;
 use bytes::Bytes;
 
 use super::{channel, SendRequest, TryRecvError, TrySendError, CAPACITY};
@@ -13,6 +14,11 @@ fn request(priority: u8, tag: u8) -> SendRequest {
         data_attributes: Vec::new(),
         reject_origin: None,
     }
+}
+
+/// The lane for a priority given as its value, 0 to 3.
+fn prio(value: u8) -> NetworkPriority {
+    NetworkPriority::try_from(value).unwrap()
 }
 
 fn tag(request: SendRequest) -> (u8, u8) {
@@ -27,14 +33,14 @@ fn all_priorities_share_capacity_without_eviction_and_dequeue_releases_a_slot() 
     let (tx, mut rx) = channel(CAPACITY);
     for index in 0..CAPACITY {
         let priority = (index % 4) as u8;
-        tx.try_send(priority, request(priority, index as u8))
+        tx.try_send(prio(priority), request(priority, index as u8))
             .unwrap();
     }
-    let Err(TrySendError::Full(())) = tx.try_send(3, request(3, 99)) else {
+    let Err(TrySendError::Full(())) = tx.try_send(prio(3), request(3, 99)) else {
         panic!("a full queue must refuse even life safety");
     };
     assert_eq!(tag(rx.try_recv().unwrap()), (3, 3));
-    tx.try_send(3, request(3, 99)).unwrap();
+    tx.try_send(prio(3), request(3, 99)).unwrap();
     let mut expected = Vec::new();
     for priority in (0..4).rev() {
         expected.extend((0..CAPACITY).filter_map(|index| {
@@ -64,7 +70,7 @@ fn concurrent_senders_cannot_over_admit_or_reorder_their_lane() {
                 start.wait();
                 let mut admitted = 0;
                 for index in 0..100 {
-                    match tx.try_send(priority, request(priority, index)) {
+                    match tx.try_send(prio(priority), request(priority, index)) {
                         Ok(()) => admitted += 1,
                         Err(TrySendError::Full(_)) => {}
                         Err(TrySendError::Closed(_)) => panic!("receiver is still alive"),
@@ -112,7 +118,7 @@ fn receiver_drop_releases_every_lane_and_closed_wins_over_full() {
             data: [priority, 1],
         });
         tx.try_send(
-            priority,
+            prio(priority),
             SendRequest::Broadcast {
                 npdu,
                 data_attributes: Vec::new(),
@@ -124,7 +130,7 @@ fn receiver_drop_releases_every_lane_and_closed_wins_over_full() {
     assert!(lifetimes.iter().all(|weak| weak.upgrade().is_some()));
     drop(rx);
     assert!(lifetimes.iter().all(|weak| weak.upgrade().is_none()));
-    let Err(TrySendError::Closed(())) = tx.try_send(3, request(3, 88)) else {
+    let Err(TrySendError::Closed(())) = tx.try_send(prio(3), request(3, 88)) else {
         panic!("dropped receiver must close admission");
     };
 }
@@ -146,11 +152,11 @@ fn receive_wakes_on_send_and_last_sender_drop_and_survives_cancellation() {
     let mut context = Context::from_waker(&waker);
     let mut receive = Box::pin(rx.recv());
     assert!(receive.as_mut().poll(&mut context).is_pending());
-    tx.try_send(0, request(0, 1)).unwrap();
+    tx.try_send(prio(0), request(0, 1)).unwrap();
     assert!(wake.0.load(Ordering::SeqCst) > 0);
     // Cancel after notification but before consuming the queued send.
     drop(receive);
-    tx.try_send(3, request(3, 2)).unwrap();
+    tx.try_send(prio(3), request(3, 2)).unwrap();
     let mut receive = Box::pin(rx.recv());
     let Poll::Ready(Some(item)) = receive.as_mut().poll(&mut context) else {
         panic!("queued high priority must be ready after cancellation");

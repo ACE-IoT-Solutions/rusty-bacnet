@@ -17,9 +17,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use bacnet_mstp_codec::{MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_MPDU_DATA};
 
 use bacnet_mstp_core::{
-    AllocQueues, DequeuedNpdu, Duration as CoreDuration, Instant as CoreInstant, NetworkPriority,
-    QueueCounters, QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
+    AllocQueues, DequeuedNpdu, Duration as CoreDuration, Instant as CoreInstant, QueueCounters,
+    QueueItemInfo, QueueKind, QueueRefusal, QueueStorage,
 };
+use bacnet_npdu::NetworkPriority;
 
 /// Room in each queue, unicast and broadcast: the host transport's limit
 /// before the core, which had one queue of this depth for both.
@@ -129,9 +130,9 @@ impl SharedQueues {
 /// core's queues serve life-safety traffic first; normal for an NPDU too
 /// short to carry one.
 pub(super) fn npdu_priority(npdu: &[u8]) -> NetworkPriority {
-    npdu.get(1)
-        .and_then(|control| NetworkPriority::try_from(control & 0x03).ok())
-        .unwrap_or(NetworkPriority::Normal)
+    npdu.get(1).map_or(NetworkPriority::Normal, |&control| {
+        NetworkPriority::from_control(control)
+    })
 }
 
 /// The core's handle on the [`SharedQueues`], from

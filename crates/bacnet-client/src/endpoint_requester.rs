@@ -12,12 +12,11 @@ use bacnet_endpoint_core::coordinator::{
 };
 use bacnet_endpoint_core::endpoint_ingress::{EndpointApduDestination, EndpointEgress};
 use bacnet_network::layer::ReceivedApdu;
+use bacnet_npdu::NetworkPriority;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_services::read_range::{ReadRangeReply, ReadRangeRequest, ReadRangeValidation};
 use bacnet_transport::port::{DataAttribute, TransportProvenance};
-use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, NetworkPriority, PropertyIdentifier,
-};
+use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
@@ -537,7 +536,7 @@ impl EndpointRequester {
                         encoded.to_vec(),
                         destination,
                         false,
-                        NetworkPriority::NORMAL,
+                        NetworkPriority::Normal,
                         attributes,
                     )
                     .await

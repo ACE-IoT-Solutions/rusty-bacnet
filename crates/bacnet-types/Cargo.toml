@@ -25,6 +25,7 @@ alloc = ["dep:smallvec"]
 serde = ["alloc", "dep:serde", "serde/alloc"]
 
 [dependencies]
+bacnet-npdu = { workspace = true }
 bitflags = { workspace = true }
 smallvec = { workspace = true, optional = true }
 thiserror = { workspace = true }

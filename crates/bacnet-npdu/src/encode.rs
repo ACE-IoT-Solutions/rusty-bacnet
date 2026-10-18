@@ -1,20 +1,18 @@
-//! Writing an [`Npdu`] into the caller's buffer.
+//! Encoding an [`Npdu`] into the caller's buffer: [`Npdu::encoded_len`]
+//! and [`Npdu::encode_into`].
 
 use core::fmt;
 
-use super::{
-    Address, Npdu, DESTINATION, EXPECTING_REPLY, GLOBAL_NETWORK, NETWORK_MESSAGE, PRIORITY, SOURCE,
-    VERSION,
-};
-use crate::MAX_MAC_LEN;
+use crate::view::{DESTINATION, EXPECTING_REPLY, NETWORK_MESSAGE, SOURCE};
+use crate::{Address, Npdu, GLOBAL_NETWORK, MAX_MAC_LEN, VERSION};
 
-/// Why NPDU writing or [`ReplyPlan`](crate::router::ReplyPlan) validation failed.
+/// Why [`Npdu::encode_into`] refused an NPDU. Nothing was written.
 ///
 /// It is `#[non_exhaustive]`, so a new refusal isn't a breaking change: a
 /// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum WriteError {
+pub enum EncodeError {
     /// The buffer is shorter than the NPDU.
     NoRoom {
         /// The NPDU's length, [`Npdu::encoded_len`].
@@ -22,17 +20,15 @@ pub enum WriteError {
         /// The buffer's length.
         available: usize,
     },
-    /// A DNET of 0, or an SNET of 0 or 0xFFFF, which no parser accepts.
+    /// A DNET of 0, or an SNET of 0 or 0xFFFF, which no decoder accepts.
     ReservedNetwork,
     /// An empty SADR.
     EmptySource,
-    /// An empty DADR where a reply plan requires one destination node.
-    EmptyDestination,
     /// A DADR or SADR longer than [`MAX_MAC_LEN`].
     AddressTooLong,
 }
 
-impl fmt::Display for WriteError {
+impl fmt::Display for EncodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoRoom { needed, available } => {
@@ -40,17 +36,16 @@ impl fmt::Display for WriteError {
             }
             Self::ReservedNetwork => f.write_str("NPDU names a reserved network number"),
             Self::EmptySource => f.write_str("NPDU source SLEN=0 is invalid"),
-            Self::EmptyDestination => f.write_str("reply destination requires a nonempty DADR"),
             Self::AddressTooLong => write!(f, "NPDU address exceeds the {MAX_MAC_LEN}-octet limit"),
         }
     }
 }
 
-impl core::error::Error for WriteError {}
+impl core::error::Error for EncodeError {}
 
 impl Npdu<'_> {
-    /// The octets [`write`](Self::write) produces: the NPCI the fields call
-    /// for, then the payload.
+    /// The octets [`encode_into`](Self::encode_into) produces: the NPCI the
+    /// fields call for, then the payload.
     #[must_use]
     pub fn encoded_len(&self) -> usize {
         let address = |address: Option<Address<'_>>| address.map_or(0, |a| 3 + a.mac.len());
@@ -66,40 +61,39 @@ impl Npdu<'_> {
             + self.payload.len()
     }
 
-    /// Write the NPDU at the start of `out` and return its length.
+    /// Encode the NPDU at the start of `out` and return its length.
     ///
     /// Nothing is written unless all of it fits and its fields are ones
-    /// [`Npdu::parse`] accepts. As in `bacnet-encoding`, the hop count is
-    /// written only with a destination, the vendor ID only with a
-    /// proprietary message type (0 when it is `None`), and the priority's
-    /// two low bits only.
-    pub fn write(&self, out: &mut [u8]) -> Result<usize, WriteError> {
+    /// [`Npdu::decode`] accepts. The hop count is written only with a
+    /// destination, and the vendor ID only with a proprietary message type
+    /// (0 when it is `None`).
+    pub fn encode_into(&self, out: &mut [u8]) -> Result<usize, EncodeError> {
         if let Some(destination) = self.destination {
             if destination.network == 0 {
-                return Err(WriteError::ReservedNetwork);
+                return Err(EncodeError::ReservedNetwork);
             }
             if destination.mac.len() > MAX_MAC_LEN {
-                return Err(WriteError::AddressTooLong);
+                return Err(EncodeError::AddressTooLong);
             }
         }
         if let Some(source) = self.source {
             if source.network == 0 || source.network == GLOBAL_NETWORK {
-                return Err(WriteError::ReservedNetwork);
+                return Err(EncodeError::ReservedNetwork);
             }
             if source.mac.is_empty() {
-                return Err(WriteError::EmptySource);
+                return Err(EncodeError::EmptySource);
             }
             if source.mac.len() > MAX_MAC_LEN {
-                return Err(WriteError::AddressTooLong);
+                return Err(EncodeError::AddressTooLong);
             }
         }
         let needed = self.encoded_len();
         let available = out.len();
         let out = out
             .get_mut(..needed)
-            .ok_or(WriteError::NoRoom { needed, available })?;
+            .ok_or(EncodeError::NoRoom { needed, available })?;
 
-        let mut control = self.priority & PRIORITY;
+        let mut control = self.priority.to_raw();
         if self.message_type.is_some() {
             control |= NETWORK_MESSAGE;
         }

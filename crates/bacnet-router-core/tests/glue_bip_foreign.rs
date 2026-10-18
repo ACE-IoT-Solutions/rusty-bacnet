@@ -12,7 +12,7 @@ use bacnet_bip_core::codec::{BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{self, Cast, Node, Permissive};
 use bacnet_bip_core::port::{HeldBroadcast, Ingress, NodePort, PortCounters};
 use bacnet_router_core::bip::BipPort;
-use bacnet_router_core::message::MessageType;
+use bacnet_router_core::npdu::NetworkMessageType;
 use bacnet_router_core::router::{Options, PortConfig, SendRefusal};
 use bacnet_router_core::Instant;
 
@@ -64,7 +64,7 @@ fn started_foreign_port<'h>(
 fn trace_e(released: Instant) -> [(Instant, Out); 3] {
     let dbtn = BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK;
     let ttl = 60u16.to_be_bytes();
-    let number_is = message(MessageType::NETWORK_NUMBER_IS, &[0, 1, 1]);
+    let number_is = message(NetworkMessageType::NETWORK_NUMBER_IS, &[0, 1, 1]);
     [
         (
             Instant::ZERO,
@@ -213,7 +213,7 @@ fn held_broadcasts_leave_before_a_later_one() {
     );
     assert_eq!(
         sent[0].npdu,
-        message(MessageType::NETWORK_NUMBER_IS, &[0, 1, 1])
+        message(NetworkMessageType::NETWORK_NUMBER_IS, &[0, 1, 1])
     );
     assert_eq!(sent[1].npdu, i_am(&[2]));
 }

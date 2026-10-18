@@ -671,13 +671,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         &address.mac_address,
                         reply_mac,
                         false,
-                        NetworkPriority::NORMAL,
+                        NetworkPriority::Normal,
                     )
                     .await
             }
             _ => {
                 network
-                    .send_apdu(buf, reply_mac, false, NetworkPriority::NORMAL)
+                    .send_apdu(buf, reply_mac, false, NetworkPriority::Normal)
                     .await
             }
         }

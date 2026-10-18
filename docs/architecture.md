@@ -12,6 +12,9 @@ are omitted; each crate's `Cargo.toml` is the exact dependency authority.
 Foundations
   bacnet-time           Instant and Duration in nanoseconds, the portable cores' shared
                         time (no_std; no allocator, no deps)
+  bacnet-npdu           The network-layer vocabulary: a borrowed NPDU view and encoder,
+                        message types, reject reasons, priority, NPDU limits (no_std;
+                        no allocator, no deps)
   bacnet-types          Enums, primitives, error types (no I/O; no_std + alloc)
   bacnet-encoding       ASN.1 tags, APDU/NPDU codecs, value encoding (no_std + alloc)
   bacnet-services       Service request/response structures (no_std + alloc)
@@ -20,8 +23,8 @@ Foundations
   bacnet-bip-codec      B/IP and B/IPv6 BVLL codec (no_std; by default no allocator, no deps)
   bacnet-bip-core       B/IP behaviour: a sans-IO node engine, BBMD tables and forwarding
                         (no_std; no allocator)
-  bacnet-router-core    Router behaviour (Clause 6): a sans-IO routing engine over an NPDU view
-                        and writer, network-layer messages, the routing table and route
+  bacnet-router-core    Router behaviour (Clause 6): a sans-IO routing engine over
+                        bacnet-npdu's view, network-layer messages, the routing table and route
                         discovery; B/IP and MS/TP port glue behind features (no_std; no
                         allocator)
   bacnet-transport      Data-link transports and framing (B/IP, B/IPv6 BVLL via bacnet-bip-codec;

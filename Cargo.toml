@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/bacnet-time",
+    "crates/bacnet-npdu",
     "crates/bacnet-types",
     "crates/bacnet-encoding",
     "crates/bacnet-services",
@@ -46,6 +47,7 @@ members = [
 # `-p` picks one.
 default-members = [
     "crates/bacnet-time",
+    "crates/bacnet-npdu",
     "crates/bacnet-types",
     "crates/bacnet-encoding",
     "crates/bacnet-services",
@@ -87,6 +89,7 @@ categories = ["network-programming", "embedded"]
 # bacnet-time versions on its own (#1768): this is its version, which moves
 # only when its API changes, not the workspace version below it.
 bacnet-time = { version = "0.13.1", path = "crates/bacnet-time" }
+bacnet-npdu = { version = "0.13.0", path = "crates/bacnet-npdu" }
 bacnet-types = { version = "0.13.0", path = "crates/bacnet-types", default-features = false }
 bacnet-encoding = { version = "0.13.0", path = "crates/bacnet-encoding", default-features = false }
 bacnet-services = { version = "0.13.0", path = "crates/bacnet-services", default-features = false }

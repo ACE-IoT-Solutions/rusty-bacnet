@@ -5,8 +5,8 @@
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_router_core::bip_core::codec::BvlcFunction;
-use bacnet_router_core::message::{MessageType, RejectReason};
 use bacnet_router_core::mstp_core::codec::FrameType;
+use bacnet_router_core::npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_router_core::router::{Counters, Discard, Event, Kind};
 use bacnet_router_core::{Duration, PortId};
 
@@ -70,10 +70,26 @@ const M: u8 = 1;
 /// for every node there.
 const SENT: [Option<(u8, Kind, bool)>; SENDS] = slots([
     // 1: on each port in turn, its number, then the network beyond it.
-    (B, Kind::Announce(MessageType::NETWORK_NUMBER_IS), true),
-    (B, Kind::Announce(MessageType::I_AM_ROUTER_TO_NETWORK), true),
-    (M, Kind::Announce(MessageType::NETWORK_NUMBER_IS), true),
-    (M, Kind::Announce(MessageType::I_AM_ROUTER_TO_NETWORK), true),
+    (
+        B,
+        Kind::Announce(NetworkMessageType::NETWORK_NUMBER_IS),
+        true,
+    ),
+    (
+        B,
+        Kind::Announce(NetworkMessageType::I_AM_ROUTER_TO_NETWORK),
+        true,
+    ),
+    (
+        M,
+        Kind::Announce(NetworkMessageType::NETWORK_NUMBER_IS),
+        true,
+    ),
+    (
+        M,
+        Kind::Announce(NetworkMessageType::I_AM_ROUTER_TO_NETWORK),
+        true,
+    ),
     // 2, 3 and 4.
     (M, Kind::Forward, false),
     (M, Kind::Forward, false),
@@ -81,18 +97,34 @@ const SENT: [Option<(u8, Kind, bool)>; SENDS] = slots([
     // 5: the search on every other port, then the reject; the second time,
     // within the cooldown, the reject alone.
     (M, Kind::Solicit, true),
-    (B, Kind::Reject(RejectReason::NOT_DIRECTLY_CONNECTED), false),
-    (B, Kind::Reject(RejectReason::NOT_DIRECTLY_CONNECTED), false),
+    (
+        B,
+        Kind::Reject(RejectMessageReason::NOT_DIRECTLY_CONNECTED),
+        false,
+    ),
+    (
+        B,
+        Kind::Reject(RejectMessageReason::NOT_DIRECTLY_CONNECTED),
+        false,
+    ),
     // 6: the reject for the one too long, which goes nowhere else, then
     // the one that fits.
-    (B, Kind::Reject(RejectReason::MESSAGE_TOO_LONG), false),
+    (
+        B,
+        Kind::Reject(RejectMessageReason::MESSAGE_TOO_LONG),
+        false,
+    ),
     (M, Kind::Forward, false),
     // 7: each answer to its asker: the I-Am-Router on its port, the Ack to
     // station 2.
-    (M, Kind::Answer(MessageType::I_AM_ROUTER_TO_NETWORK), true),
     (
         M,
-        Kind::Answer(MessageType::INITIALIZE_ROUTING_TABLE_ACK),
+        Kind::Answer(NetworkMessageType::I_AM_ROUTER_TO_NETWORK),
+        true,
+    ),
+    (
+        M,
+        Kind::Answer(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK),
         false,
     ),
     // 8.

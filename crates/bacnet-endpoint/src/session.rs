@@ -821,7 +821,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 apdu,
                 bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination::LocalBroadcast,
                 false,
-                bacnet_types::enums::NetworkPriority::NORMAL,
+                bacnet_npdu::NetworkPriority::Normal,
                 Vec::new(),
             )
             .await

@@ -26,6 +26,7 @@ use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
 use bacnet_endpoint::session::SessionRole;
 use bacnet_endpoint_core::endpoint_ingress::{EndpointApduDestination, EndpointIngress};
 use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_server::server::__endpoint_EndpointResponder as EndpointResponder;
 use bacnet_transport::loopback::LoopbackTransport;
@@ -33,7 +34,7 @@ use bacnet_transport::mstp::{
     LoopbackSerial, MstpConfig, MstpExecutionMode, MstpTransport, SerialPort,
 };
 use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort, TransportProvenance};
-use bacnet_types::enums::{NetworkPriority, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::{error::Error, MacAddr};
 use bytes::{Bytes, BytesMut};
 use mstp_wire::{pfm_frame, token_frame, FrameType, MstpFrame};
@@ -287,7 +288,7 @@ async fn mstp_queue_and_admission_bounds_release() {
                     destination_mac: MacAddr::from_slice(&[0x09]),
                 },
                 false,
-                NetworkPriority::NORMAL,
+                NetworkPriority::Normal,
                 Vec::<DataAttribute>::new(),
             )
             .await
@@ -350,9 +351,8 @@ async fn mstp_queue_and_admission_bounds_release() {
     encode_npdu(
         &mut buf,
         &Npdu {
-            is_network_message: false,
             expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             payload: Bytes::from_static(&[0x10, 0x08]),
@@ -541,9 +541,8 @@ async fn nonrouting_impl(mode: MstpExecutionMode, frames: Frames) {
     encode_npdu(
         &mut routed,
         &Npdu {
-            is_network_message: false,
             expecting_reply: true,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: Some(NpduAddress {
                 network: 77,
                 mac_address: MacAddr::from_slice(&[0x44]),

@@ -4,10 +4,10 @@
 use bacnet_mstp_codec::{
     Frame, FrameType, MAX_COBS_FRAME_LENGTH, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
 };
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
     Action, ConfigError, CoreBuffer, Direction, Duration, ExtendedStorage, Instant, MasterCore,
-    MasterState, MstpCoreConfig, NetworkPriority, QueueKind, QueueStorage, StandardStorage,
-    Storage,
+    MasterState, MstpCoreConfig, QueueKind, QueueStorage, StandardStorage, Storage,
 };
 
 const STATION: u8 = 1;

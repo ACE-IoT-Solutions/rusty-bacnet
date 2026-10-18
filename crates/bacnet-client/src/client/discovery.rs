@@ -153,7 +153,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// such a registration returns [`Error::Encoding`] and the table is left
     /// unchanged (an empty SADR could never satisfy a routed lookup). A
     /// `remote_network` outside 1..=65534 or a `remote_mac` longer than
-    /// [`NpduAddress::MAX_MAC_LEN`] is refused the same way, since
+    /// [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN) is refused the same way, since
     /// [`BACnetClient::confirmed_request_routed`] refuses that destination.
     pub async fn add_routed_device(&self, config: RoutedDeviceConfig) -> Result<(), Error> {
         if config.router_mac.is_empty() {

@@ -4,9 +4,10 @@
 #![allow(dead_code)]
 
 use bacnet_mstp_codec::{Frame, FrameHeader, FrameType};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
     Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    NetworkPriority, TransmitId,
+    TransmitId,
 };
 
 pub type Queues = FixedQueues<4, 4>;

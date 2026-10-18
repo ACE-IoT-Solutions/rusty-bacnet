@@ -104,7 +104,9 @@ use core::net::SocketAddrV4;
 use bacnet_bip_codec::Bvll;
 
 use crate::bbmd::{ForwardRefusal, Served};
-use crate::node::{ConfigError, Delivery, Discard, SendRefusal, MAX_NPDU};
+use bacnet_npdu::MAX_NPDU;
+
+use crate::node::{ConfigError, Delivery, Discard, SendRefusal};
 
 pub use bbmd::BbmdPort;
 pub use node::NodePort;

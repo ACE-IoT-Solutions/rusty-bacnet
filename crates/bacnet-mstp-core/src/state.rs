@@ -18,8 +18,9 @@ use crate::config::{
 };
 use crate::counters::{MstpCounters, QueueCounters};
 use crate::errors::{RequestError, TransmitError};
-use crate::queue::{NetworkPriority, QueueKind, QueueRefusal, QueueStorage};
+use crate::queue::{QueueKind, QueueRefusal, QueueStorage};
 use crate::storage::{receive_window, Storage};
+use bacnet_npdu::NetworkPriority;
 
 mod input;
 mod pending;

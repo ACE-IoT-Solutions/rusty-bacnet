@@ -20,7 +20,7 @@ async fn issue(
             next_hop: &PEER_MAC,
             destination: None,
             expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
         },
         route,
         || {},

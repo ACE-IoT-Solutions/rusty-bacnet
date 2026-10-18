@@ -4,14 +4,13 @@
 use core::fmt;
 use core::net::SocketAddrV4;
 
+use bacnet_npdu::MAX_NPDU;
 use bacnet_time::Duration;
 
 use crate::LocalSubnet;
 
-/// The largest NPDU a B/IP data link carries (Table 6-1).
-pub const MAX_NPDU: usize = 1497;
-
-/// The largest datagram B/IP sends a [`MAX_NPDU`]-octet NPDU in: a
+/// The largest datagram B/IP sends a [`MAX_NPDU`]-octet NPDU in, the
+/// largest a B/IP data link carries (Table 6-1): a
 /// Forwarded-NPDU, whose 4-octet header and 6-octet originating address
 /// come before the NPDU. It is the default send budget, and a node's
 /// receive buffer should hold at least this much.

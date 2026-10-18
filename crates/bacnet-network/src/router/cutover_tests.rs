@@ -27,7 +27,8 @@ use super::control_policy::{ControlAuthContext, ControlAuthorizer};
 use super::dispatch::Shared;
 use super::ingress_harness::*;
 use super::*;
-use crate::router_table::{Instant as RouterInstant, Mac, PortId, ROUTE_CAP};
+use crate::router_table::{Instant as RouterInstant, PortId, ROUTE_CAP};
+use bacnet_npdu::Mac;
 
 /// A network message of type `kind` with `data`, as peer `source` on a port
 /// sends it.
@@ -299,7 +300,7 @@ async fn start_refuses_a_reserved_network_before_any_transport_starts() {
 async fn a_rewrite_past_the_scratch_is_dropped_and_counted() {
     use super::envelope_harness::Harness;
     use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
-    use bacnet_transport::port::NpduLimits;
+    use bacnet_npdu::NpduLimits;
 
     let widest = [NpduLimits::both(u16::MAX); 2];
     let npdu = |network: u16, mac: &[u8], apdu_len: usize| Npdu {

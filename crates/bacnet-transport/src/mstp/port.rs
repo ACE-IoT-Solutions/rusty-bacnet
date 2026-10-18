@@ -270,9 +270,9 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
 
     /// [`MstpConfig::max_npdu_length`] both ways: 1497 octets with extended
     /// frames, 501 without.
-    fn max_npdu(&self) -> crate::port::NpduLimits {
+    fn max_npdu(&self) -> bacnet_npdu::NpduLimits {
         let octets = u16::try_from(self.config.max_npdu_length()).unwrap_or(u16::MAX);
-        crate::port::NpduLimits::both(octets)
+        bacnet_npdu::NpduLimits::both(octets)
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {

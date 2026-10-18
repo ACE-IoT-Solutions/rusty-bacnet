@@ -201,7 +201,7 @@ fn assert_reply(data: Bytes, source: Option<NpduAddress>, expected: &[u8]) {
     assert_eq!(npdu.destination, source);
     assert!(npdu.source.is_none());
     assert!(!npdu.expecting_reply);
-    assert_eq!(npdu.priority, NetworkPriority::NORMAL);
+    assert_eq!(npdu.priority, NetworkPriority::Normal);
     assert_eq!(npdu.payload.as_ref(), expected);
 }
 
