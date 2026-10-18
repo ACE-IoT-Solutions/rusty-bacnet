@@ -16,7 +16,7 @@ use bacnet_encoding::constructed::tagged::{
     decode_ctx_unsigned, expect_end, misplaced_tag, next_is_context,
 };
 
-fn decode_count(data: &[u8], offset: usize, field: &str) -> Result<(i32, usize), Error> {
+fn decode_count(data: &[u8], offset: usize, field: &'static str) -> Result<(i32, usize), Error> {
     let (content, end) = decode_app_primitive(data, offset, tags::app_tag::SIGNED, field)?;
     let value = primitives::decode_signed(content)?;
     let value = i16::try_from(value)

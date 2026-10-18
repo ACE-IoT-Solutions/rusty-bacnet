@@ -117,7 +117,7 @@ fn encode_raw_value(buf: &mut BytesMut, field_tag: u8, value: &[u8]) {
 
 /// Check a raw value before encoding it. `what` names it in the error, written
 /// out whole, so a value that passes builds no label (#1645).
-fn validate_raw_value(value: Option<&[u8]>, what: &str) -> Result<(), Error> {
+fn validate_raw_value(value: Option<&[u8]>, what: &'static str) -> Result<(), Error> {
     let Some(value) = value else {
         return Ok(());
     };
@@ -337,7 +337,7 @@ fn decode_wrapped_recipient(
     data: &[u8],
     offset: usize,
     tag_number: u8,
-    what: &str,
+    what: &'static str,
 ) -> Result<(bacnet_types::constructed::BACnetRecipient, usize), Error> {
     let (body, next) = decode_ctx_constructed(data, offset, tag_number, what)?;
     let (recipient, recipient_end) = decode_recipient(body, 0)?;
@@ -357,7 +357,7 @@ fn decode_canonical_timestamp(
     data: &[u8],
     offset: usize,
     tag_number: u8,
-    what: &str,
+    what: &'static str,
 ) -> Result<(bacnet_types::primitives::BACnetTimeStamp, usize), Error> {
     let (timestamp, next) = primitives::decode_timestamp(data, offset, tag_number)?;
     let mut canonical = BytesMut::new();
@@ -375,7 +375,7 @@ fn decode_raw_value(
     data: &[u8],
     offset: usize,
     tag_number: u8,
-    what: &str,
+    what: &'static str,
 ) -> Result<(Vec<u8>, usize), Error> {
     let (value, next) = decode_ctx_constructed(data, offset, tag_number, what)?;
     validate_tlv_sequence(value, what)?;

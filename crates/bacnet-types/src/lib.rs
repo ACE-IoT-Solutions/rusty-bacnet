@@ -3,22 +3,19 @@
 // their own.
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
-// bacnet-encoding and bacnet-services pass their feature on to this crate, so
-// with neither on they stop here, before their own check can run.
-#[cfg(not(any(feature = "std", feature = "alloc")))]
-compile_error!(
-    "bacnet-types needs the `std` or the `alloc` feature \
-     (bacnet-encoding and bacnet-services pass theirs on)"
-);
-
-// `format!` and `vec!` without std's prelude.
+// `format!` and `vec!` without std's prelude. Without `alloc` the crate
+// links no allocator at all (#1614).
+#[cfg(feature = "alloc")]
 #[macro_use]
 extern crate alloc;
 
 #[cfg(feature = "std")]
 pub mod bip_port;
 pub mod bitstring;
+// Matches the constructed calendar types, which need alloc.
+#[cfg(feature = "alloc")]
 pub mod calendar;
+#[cfg(feature = "alloc")]
 pub mod constructed;
 pub mod data_link;
 pub mod enums;
@@ -30,5 +27,6 @@ pub mod primitives;
 ///
 /// The data links this stack serves use 1-octet (MS/TP), 3-octet (the
 /// B/IPv6 VMAC) and 6-octet (B/IP, Ethernet, the B/SC VMAC) MACs, so SmallVec
-/// keeps every one of them inline.
+/// keeps every one of them inline. Only with `alloc`.
+#[cfg(feature = "alloc")]
 pub type MacAddr = smallvec::SmallVec<[u8; 6]>;

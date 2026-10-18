@@ -107,7 +107,7 @@ fn decode_time_values(
     data: &[u8],
     offset: usize,
     tag: u8,
-    what: &str,
+    what: &'static str,
 ) -> Result<(Vec<BACnetTimeValue>, usize), Error> {
     let mut pos = expect_opening(data, offset, tag, what)?;
     let mut time_values = Vec::new();

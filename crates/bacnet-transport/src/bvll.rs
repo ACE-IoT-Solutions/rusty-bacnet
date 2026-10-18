@@ -67,7 +67,7 @@ pub use bacnet_bip_codec::{
 
 /// Map a codec error to the transport's [`Error`].
 ///
-/// Decode failures become [`Error::Decoding`] at the offset of the field at
+/// Decode failures become [`Error::DecodingMessage`] at the offset of the field at
 /// fault: 0 for the datagram as a whole, its type octet or a B/IP address,
 /// 1 for the function, 2 for the Length field, 4 for the payload. Encode
 /// failures become [`Error::Encoding`], and so does an error the codec adds

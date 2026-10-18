@@ -171,7 +171,7 @@ fn assigned_landing_calls_reject_more_than_the_item_limit() {
     wire.push(0x0F);
     assert!(matches!(
         decode_assigned_landing_calls(&wire, 0),
-        Err(Error::Decoding { .. })
+        Err(Error::Decoding(_) | Error::DecodingMessage { .. })
     ));
 }
 

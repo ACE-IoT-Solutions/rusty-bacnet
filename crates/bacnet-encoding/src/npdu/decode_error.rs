@@ -1,11 +1,8 @@
 //! Why [`decode_npdu`](super::decode_npdu) refused an NPDU.
 
-#[cfg(not(feature = "std"))]
-use alloc::string::ToString;
-
 use core::fmt;
 
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RangeError};
 
 use super::NpduAddress;
 
@@ -98,11 +95,22 @@ impl From<Error> for NpduDecodeError {
 }
 
 impl From<NpduDecodeError> for Error {
-    /// An over-long address becomes [`Error::OutOfRange`]: the length octet
-    /// is well formed, but its value is past the limit.
+    /// An over-long address becomes [`Error::Range`]: the length octet is
+    /// well formed, but its value is past the limit. Its text is the
+    /// refusal's own.
     fn from(error: NpduDecodeError) -> Self {
         match error {
-            NpduDecodeError::AddressTooLong { .. } => Error::OutOfRange(error.to_string()),
+            NpduDecodeError::AddressTooLong { field, length, .. } => {
+                let label = match field {
+                    NpduAddressField::Destination => {
+                        "NPDU DLEN={} exceeds the {}-octet address limit"
+                    }
+                    NpduAddressField::Source => "NPDU SLEN={} exceeds the {}-octet address limit",
+                };
+                RangeError::new(label)
+                    .with_values(length.into(), NpduAddress::MAX_MAC_LEN as u64)
+                    .into()
+            }
             NpduDecodeError::Malformed(error) => error,
         }
     }

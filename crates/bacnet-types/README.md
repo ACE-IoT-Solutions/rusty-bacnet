@@ -39,18 +39,30 @@ fn main() -> Result<(), bacnet_types::error::Error> {
 
 ## Features and allocation
 
-One of `std` or `alloc` is required. Disabling both is a compile error; an
-allocation-free configuration is not available.
+The crate has three profiles. With neither `std` nor `alloc` it builds without
+an allocator (#1614), for firmware with no heap.
 
-| Feature | Effect |
-| --- | --- |
-| `std` (default) | Hosted support, including `error::Error::Transport` and `bip_port`. Enables `alloc`. |
-| `alloc` | `no_std` support with allocation. Firmware must supply a global allocator. |
-| `serde` | Deserialization for `enums::ObjectType` and `enums::PropertyIdentifier`; enables `alloc`, without selecting `std`. |
+| Profile | Features | What it has |
+| --- | --- | --- |
+| Hosted | `std` (default) | Everything, including `error::Error::Transport` and `bip_port`. Enables `alloc`. |
+| `no_std` with a heap | `alloc` | Everything but those two. Firmware must supply a global allocator. |
+| No allocator | neither | The enums, `ObjectIdentifier`, `Date`, `Time`, `BACnetTimeStamp`, the bit-string flag types and the error type. The owned values (`PropertyValue`, the `constructed` types, `MacAddr`, the `calendar` matching) need `alloc`. |
+| | `serde` | Deserialization for `enums::ObjectType` and `enums::PropertyIdentifier`; enables `alloc`, without selecting `std`. |
+
+Without `alloc`, `error::Error` keeps only the variants that own nothing. A
+decoder's refusal is `Error::Decoding(DecodeError)` and a checked constructor's
+is `Error::Range(RangeError)`: each carries static labels and up to two numbers,
+and builds its text only when it is displayed (#1646), so firmware that never
+displays one links no formatting for it. With `alloc`, `Error::DecodingMessage`
+carries a decoding error whose message was formatted when it was made (the
+decoders outside the allocation-free profile, until #1776), and
+`Error::Encoding`, `Error::OutOfRange`, `Error::Segmentation` and
+`Error::Structured` return.
 
 Enum newtypes support `FromStr` for their named constants in common case styles,
 such as `analog-input` and `ANALOG_INPUT`. The normal runtime dependencies are
-`bitflags`, `smallvec` and `thiserror`, plus `serde` when selected.
+`bitflags` and `thiserror`, plus `smallvec` with `alloc` and `serde` when
+selected.
 
 For an alloc-only dependency build, replace the dependency block with:
 
@@ -59,11 +71,13 @@ For an alloc-only dependency build, replace the dependency block with:
 bacnet-types = { path = "../rusty-bacnet/crates/bacnet-types", default-features = false, features = ["alloc"] }
 ```
 
-The same quickstart runs on a host with either block. Running it on a host with
-alloc-only dependencies is not a bare-metal execution test or proof that the
-crate needs no heap. A firmware application also supplies its runtime and
-allocator. Cargo features are additive: another dependency can enable `std`
-again, so inspect the application's resolved feature graph.
+For a build without an allocator, leave out `features = ["alloc"]`. The
+quickstart runs on a host with any of the three blocks; CI also builds each
+profile for ARMv6-M, ARMv7E-M and RISC-V (`scripts/ci/check-no-std.sh`), which
+shows the code needs no `std`, and no heap without `alloc`, but doesn't run it
+there. A firmware application supplies its runtime, and with `alloc` its
+allocator. Cargo features are additive: another dependency can enable `alloc`
+or `std` again, so inspect the application's resolved feature graph.
 
 ## API documentation
 

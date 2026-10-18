@@ -36,7 +36,7 @@ pub fn encode_xy_color(buf: &mut BytesMut, value: &BACnetXyColor) {
 }
 
 /// Read one application-tagged REAL at `offset` for `what`.
-fn app_real(data: &[u8], offset: usize, what: &str) -> Result<(f32, usize), Error> {
+fn app_real(data: &[u8], offset: usize, what: &'static str) -> Result<(f32, usize), Error> {
     let (octets, end) = decode_app_fixed(data, offset, app_tag::REAL, 4, what)?;
     Ok((primitives::decode_real(octets)?, end))
 }

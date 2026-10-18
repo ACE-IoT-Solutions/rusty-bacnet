@@ -129,7 +129,7 @@ pub fn decode_calendar_entry_list(data: &[u8]) -> Result<Vec<BACnetCalendarEntry
 }
 
 /// Decode one application-tagged Date of exactly four octets.
-fn decode_app_date(data: &[u8], offset: usize, what: &str) -> Result<(Date, usize), Error> {
+fn decode_app_date(data: &[u8], offset: usize, what: &'static str) -> Result<(Date, usize), Error> {
     let (tag, content) = tags::decode_tag(data, offset)?;
     if tag.class != TagClass::Application || tag.number != tags::app_tag::DATE {
         return Err(Error::decoding(
@@ -149,7 +149,7 @@ fn fixed_content<'a>(
     content: usize,
     length: u32,
     expected: usize,
-    what: &str,
+    what: &'static str,
 ) -> Result<(&'a [u8], usize), Error> {
     if usize::try_from(length).ok() != Some(expected) {
         return Err(Error::decoding(

@@ -1,5 +1,8 @@
 //! Independent timestamp wire literals and whole-call output refusal behavior.
 
+// These compare with the BytesMut encoders, which need alloc.
+#![cfg(feature = "alloc")]
+
 use bacnet_encoding::primitives::{encode_timestamp, encode_timestamp_choice};
 use bacnet_encoding::sink::{EncodeSink, SinkFull};
 use bacnet_types::error::Error;

@@ -1,5 +1,8 @@
 //! Whole-scalar atomicity and independent wire vectors for all 22 entrypoints.
 
+// These compare with the BytesMut encoders, which need alloc.
+#![cfg(feature = "alloc")]
+
 use bacnet_encoding::primitives::{signed_len, unsigned_len};
 use bacnet_encoding::sink::{EncodeSink, SinkFull};
 use bytes::BytesMut;

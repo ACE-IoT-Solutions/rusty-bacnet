@@ -39,7 +39,7 @@ use bytes::BytesMut;
 
 use super::tagged::{
     contents, decode_ctx_character_string, decode_ctx_fixed, decode_ctx_unsigned,
-    decode_optional_ctx, expect_closing, expect_opening, misplaced_tag,
+    decode_optional_ctx, expect_closing, expect_opening, misplaced_tag, Fixed,
 };
 use super::MAX_FRAMED_ITEMS;
 use crate::primitives;
@@ -168,8 +168,13 @@ pub fn decode_bdt_entry(data: &[u8], offset: usize) -> Result<(BACnetBDTEntry, u
     let pos = expect_opening(data, offset, 0, what)?;
     let (bbmd_address, pos) = decode_host_n_port(data, pos)?;
     let pos = expect_closing(data, pos, 0, what)?;
+    const MASK: Fixed = Fixed {
+        octets: 4,
+        misplaced: "expected context tag [{}] broadcast mask",
+        wrong_length: "[{}] broadcast mask has {} contents octets, expected 4",
+    };
     let (mask, pos) = decode_optional_ctx(data, pos, 1, what, |data, at, tag, what| {
-        decode_ctx_fixed(data, at, tag, 4, "broadcast mask", what)
+        decode_ctx_fixed(data, at, tag, MASK, what)
     })?;
     let broadcast_mask = mask.map(|octets| [octets[0], octets[1], octets[2], octets[3]]);
     Ok((
@@ -283,7 +288,7 @@ pub fn decode_fdt_entry_list(data: &[u8]) -> Result<Vec<BACnetFDTEntry>, Error> 
 
 fn decode_list<T>(
     data: &[u8],
-    what: &str,
+    what: &'static str,
     decode: impl Fn(&[u8], usize) -> Result<(T, usize), Error>,
 ) -> Result<Vec<T>, Error> {
     let mut values = Vec::new();

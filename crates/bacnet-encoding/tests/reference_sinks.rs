@@ -1,5 +1,8 @@
 //! Independent reference wire literals and whole-call output refusal behavior.
 
+// These compare with the BytesMut encoders, which need alloc.
+#![cfg(feature = "alloc")]
+
 use bacnet_encoding::constructed::*;
 use bacnet_encoding::sink::{EncodeSink, SinkFull};
 use bacnet_types::constructed::{

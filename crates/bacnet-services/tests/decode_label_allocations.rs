@@ -16,6 +16,9 @@
 //! case, so a label built in its branch would show. The other tests check
 //! each label in an error that names it, so its text is what it was.
 
+// Most of these services need alloc; tests/no_alloc_subset.rs covers the
+// allocation-free ones in every profile.
+#![cfg(feature = "alloc")]
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};

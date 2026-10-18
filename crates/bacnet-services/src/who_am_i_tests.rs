@@ -48,7 +48,7 @@ fn assert_who_am_i_decoding_error(data: &[u8]) {
     assert!(
         matches!(
             WhoAmIRequest::decode(data),
-            Err(Error::Decoding { .. } | Error::BufferTooShort { .. })
+            Err(Error::Decoding(_) | Error::DecodingMessage { .. } | Error::BufferTooShort { .. })
         ),
         "expected a decoding error for {data:02X?}"
     );
@@ -58,7 +58,7 @@ fn assert_you_are_decoding_error(data: &[u8]) {
     assert!(
         matches!(
             YouAreRequest::decode(data),
-            Err(Error::Decoding { .. } | Error::BufferTooShort { .. })
+            Err(Error::Decoding(_) | Error::DecodingMessage { .. } | Error::BufferTooShort { .. })
         ),
         "expected a decoding error for {data:02X?}"
     );

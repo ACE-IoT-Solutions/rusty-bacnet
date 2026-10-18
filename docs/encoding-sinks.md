@@ -1,10 +1,14 @@
 # Encoding into caller-owned storage
 
 Tag headers, context opening/closing markers and the bounded scalar primitive
-family, the two primitive timestamp encoders and five bounded reference
-encoders support caller-selected storage. Their existing `BytesMut` entrypoints
-and output remain unchanged. These are parts of #1614; variable-length and other
-composite encoder families still use their current buffers.
+family, the two primitive timestamp encoders, five bounded reference encoders,
+the CharacterString, OCTET STRING and BIT STRING encoders, the APDU header
+writer and the Who-Is, I-Am and ReadProperty encoders support caller-selected
+storage. Their existing `BytesMut` entrypoints and output remain unchanged.
+They are the encoding half of #1614, which also gives `bacnet-types`,
+`bacnet-encoding` and `bacnet-services` a profile with no allocator; the other
+composite encoder families still use their `BytesMut` buffers and need
+`alloc`.
 
 ## Output contract
 
@@ -17,6 +21,16 @@ composite encoder families still use their current buffers.
 - `write(&mut self, bytes: &[u8]) -> Result<(), SinkFull>` appends the complete
   slice, or returns an error without changing output bytes or the output
   position. Implementers must preserve this per-write atomicity.
+- `write_parts(&mut self, parts: &[&[u8]]) -> Result<(), SinkFull>` appends
+  several slices in order as one value, or none of them. The provided method
+  adds up their lengths, refuses a total that overflows `usize` (reporting
+  `needed: usize::MAX`) or exceeds the advertised capacity, and only then
+  writes each part. That is atomic when `write` never refuses an append the
+  advertised capacity covers, and a sink advertising `None` never refuses at
+  all, which holds for every adapter below. A sink that can refuse despite
+  advertising enough room, such as one with a quota it doesn't advertise or
+  fallible storage, must override `write_parts`, staging the parts or undoing
+  the ones it wrote.
 
 `SinkFull { needed: usize, available: usize }` describes the refused append
 without a string allocation. Each sink encoder returns `Result<usize,
@@ -36,6 +50,10 @@ eleven-byte staging buffer: up to eight content bytes and three header bytes.
 A refusal leaves earlier output, the slice cursor, container length and unused
 tail unchanged. Header and payload are never issued as separate caller writes.
 The eleven-byte output bound does not describe the full call-stack requirement.
+
+A variable-length encoder stages its header and leading octet, at most eight
+octets, and appends them with the caller's payload in one `write_parts` call:
+the payload is never copied into a staging buffer.
 
 Atomicity stops at one encoder call. Several successful calls followed by a
 refusal retain the completed earlier values. A total-capacity preflight does
@@ -149,34 +167,82 @@ reference body. A refusal preserves prefix, cursor, length and tail for the
 whole reference call. This does not make a variable-length enclosing encoder
 atomic or provide rollback across successful calls.
 
+## String, octet string and bit string entrypoints
+
+These `primitives` functions accept `EncodeSink + ?Sized`, return
+`Result<usize, SinkFull>` and append the whole value through `write_parts`:
+
+| Form | Entry points |
+| --- | --- |
+| Contents only | `encode_character_string_to_sink`, `encode_bit_string_to_sink` |
+| Application tagged | `encode_app_character_string_to_sink`, `encode_app_octet_string_to_sink`, `encode_app_bit_string_to_sink` |
+| Context tagged | `encode_ctx_character_string_to_sink`, `encode_ctx_octet_string_to_sink`, `encode_ctx_bit_string_to_sink` |
+
+A CharacterString is the UTF-8 character set the stack encodes: the
+character-set octet X'00', then the string's octets (Clause 20.2.9). A BIT
+STRING leads with its unused-bit count, unchecked as before (Clause 20.2.10),
+and an OCTET STRING is its octets alone (Clause 20.2.8). The header takes the
+contents' length, in its short or extended form (Clause 20.2.1.3). Independent
+literals cover each form; a comparison at every length where the header's form
+changes, up to 70,000 octets, checks the `BytesMut` encoders' bytes, which are
+unchanged; refusal tests cover every shortfall of room.
+
+A value whose contents a header's 32-bit length can't express, reachable
+only with more than 4 GiB in one value, is refused with `SinkFull`, whose
+`needed` is its encoded length and `available` the sink's room, or
+`u32::MAX` for a sink that advertises none. The CharacterString `BytesMut`
+encoders, and the contents-only BIT STRING one, delegate to these sink
+encoders: a too-long CharacterString is still `Error::Encoding` with nothing
+written, which a test shows with a 4 GiB string in untouched zeroed memory.
+The tagged OCTET and BIT STRING `BytesMut` encoders keep their own code,
+since they write such a value with its length saturated instead.
+
+## APDU header and services
+
+`apdu::header::ApduHeader` writes the header of an Unconfirmed-Request (two
+octets), or of an unsegmented Confirmed-Request (four) or ComplexACK (three),
+with the octets the owned `encode_apdu` writes (Clauses 20.1.2, 20.1.3 and
+20.1.5). `encode_to_sink` makes one write; `encode_with_parameters_to_sink`
+appends the header and the service parameters as one value. The max-segments
+and max-APDU fields are typed (`MaxSegments`, `MaxApdu`), so the writer has no
+invalid input to refuse.
+
+In `bacnet-services`, `WhoIsRequest`, `IAmRequest` and `ReadPropertyRequest`
+stage their members, at most ten, fifteen and fifteen octets, and make one
+write. `ReadPropertyAckRef` stages its members and the `[3]` opening tag, at
+most sixteen octets, and appends them, the borrowed value and the closing tag
+through `write_parts`. Their `BytesMut` encoders delegate to these and keep
+their bytes; tests compare them with the member-by-member `BytesMut` encoding
+they replaced.
+
 ## Storage adapters
 
 | Storage | Capacity report | Successful append |
 | --- | --- | --- |
 | `&mut [u8]` | Current slice length | Writes at the front and advances the slice to its unused tail |
 | `heapless::Vec<u8, N>` | `N - len()` | Extends after existing elements; enabled by the `heapless` feature |
-| `alloc::vec::Vec<u8>` | `None` | Extends after existing elements and may allocate |
-| `bytes::BytesMut` | `None` | Extends after existing bytes and may allocate |
+| `alloc::vec::Vec<u8>` | `None` | Extends after existing elements and may allocate; with `alloc` |
+| `bytes::BytesMut` | `None` | Extends after existing bytes and may allocate; with `alloc` |
 
 The bounded adapters preserve their bytes, length and remaining slice on a
-failed append. Growable adapters retain their ordinary allocation-failure
-behavior; `SinkFull` is not an allocation-error abstraction. Existing tag, scalar,
-timestamp and bounded reference `BytesMut` functions delegate through that
-infallible sink adapter.
+failed append, and for `write_parts` on a value that doesn't fit, which tests
+check for each. Growable adapters retain their ordinary allocation-failure
+behavior; `SinkFull` is not an allocation-error abstraction. Existing tag,
+scalar, timestamp and bounded reference `BytesMut` functions delegate through
+that infallible sink adapter.
 
 ## Scope and feature limits
 
 This migration adds no semantic validation or new raw/context variants.
-Strings, octet strings, bit strings, PropertyValue/composite dispatch,
-the separate constructed log-field timestamp helper and decoders retain their
-existing APIs and behavior. Higher-level callers use the same scalar, timestamp
-and reference `BytesMut` paths; no whole-message atomicity is
-implied by composing them. A decoder's configured length bound does not limit
-a header encoder.
+PropertyValue/composite dispatch, lists, the other constructed codecs, the
+separate constructed log-field timestamp helper and the remaining services
+retain their `BytesMut` APIs, which need `alloc`; they move to sinks only on
+demand. No whole-message atomicity is implied by composing encoder calls. A
+decoder's configured length bound does not limit a header encoder.
 
-`bacnet-encoding` still requires either `std` or `alloc`, including with slice
-or heapless output. The optional adapter does not make the rest of the crate
-allocation-free. Sink storage selection and bounded staging do not establish
-physical-device operation or a performance improvement. The sink contract,
-tag assembly, bounded scalar assembly, timestamp staging and bounded reference
-assembly themselves need no allocator.
+With neither `std` nor `alloc`, `bacnet-encoding` keeps the sink contract,
+the slice adapter (and `heapless` with its feature), every `_to_sink`
+encoder above except the references, which need `alloc` for their types,
+tag and primitive decoding, the borrowed views and the APDU header. Sink
+storage selection and bounded staging do not establish physical-device
+operation or a performance improvement.
