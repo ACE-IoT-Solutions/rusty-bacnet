@@ -161,7 +161,6 @@ impl<S: SerialPort> Task<S> {
             octet_time: Duration::from(config.octet_time()),
             transmit_pad,
             read_buf: vec![0; READ_CHUNK],
-            tx_frame: Vec::with_capacity(MAX_EXTENDED_FRAME_LENGTH),
             outgoing: None,
             replies: Replies::new(max_age),
             filter: EchoFilter::new(Duration::from_millis(super::HOST_FRAME_ABORT_MS)),
@@ -195,23 +194,21 @@ enum SentKind {
 }
 
 impl SentKind {
-    /// Classify an encoded frame; `answering` says the core is answering a
-    /// request, so a data frame is that answer.
-    fn of(frame: &[u8], answering: bool) -> Self {
-        match frame.get(2).copied().map(FrameType::from_raw) {
-            Some(
-                FrameType::BACNET_DATA_EXPECTING_REPLY
-                | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
-            ) => Self::DataExpectingReply,
-            Some(
-                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
-                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
-            ) if answering => Self::DirectAnswer,
-            Some(
-                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
-                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
-            ) => Self::QueuedData,
-            Some(FrameType::REPLY_POSTPONED) => Self::ReplyPostponed,
+    /// Classify a frame by its type; `answering` says the core is answering
+    /// a request, so a data frame is that answer.
+    fn of(frame_type: FrameType, answering: bool) -> Self {
+        match frame_type {
+            FrameType::BACNET_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY => Self::DataExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
+                if answering =>
+            {
+                Self::DirectAnswer
+            }
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY => Self::QueuedData,
+            FrameType::REPLY_POSTPONED => Self::ReplyPostponed,
             _ => Self::Other,
         }
     }
@@ -255,8 +252,6 @@ struct Mac<S> {
     /// Added to a frame's wire time when the port has no drain.
     transmit_pad: Duration,
     read_buf: Vec<u8>,
-    /// The octets of the frame handed over last.
-    tx_frame: Vec<u8>,
     outgoing: Option<Outgoing>,
     filter: EchoFilter,
     /// Reads in a row that returned no octets.
@@ -365,10 +360,10 @@ impl<S: SerialPort> Mac<S> {
                 // Every SerialPort switches its transceiver as it writes,
                 // and writes only once the start is confirmed.
                 Action::SetDirection(Direction::Transmit) => continue,
-                Action::Transmit { id, frame } => {
-                    self.tx_frame.clear();
-                    self.tx_frame.extend_from_slice(frame);
-                    Polled::Transmit(id, SentKind::of(frame, answering))
+                // The octets come with the confirmed start (the `transmit`
+                // module); the header says what the frame counts as.
+                Action::Transmit { id, header, .. } => {
+                    Polled::Transmit(id, SentKind::of(header.frame_type, answering))
                 }
                 Action::DeliverNpdu {
                     source,
@@ -635,19 +630,18 @@ mod tests {
 
     #[test]
     fn sent_frames_are_classified_by_type_and_answering() {
-        let frame = |kind: u8| [0x55, 0xFF, kind, 1, 2, 0, 0, 0];
-        assert_eq!(SentKind::of(&frame(5), false), SentKind::DataExpectingReply);
-        assert_eq!(SentKind::of(&frame(6), true), SentKind::DirectAnswer);
-        assert_eq!(SentKind::of(&frame(6), false), SentKind::QueuedData);
-        assert_eq!(SentKind::of(&frame(7), true), SentKind::ReplyPostponed);
+        let frame = FrameType::from_raw;
+        assert_eq!(SentKind::of(frame(5), false), SentKind::DataExpectingReply);
+        assert_eq!(SentKind::of(frame(6), true), SentKind::DirectAnswer);
+        assert_eq!(SentKind::of(frame(6), false), SentKind::QueuedData);
+        assert_eq!(SentKind::of(frame(7), true), SentKind::ReplyPostponed);
         assert_eq!(
-            SentKind::of(&frame(0x20), false),
+            SentKind::of(frame(0x20), false),
             SentKind::DataExpectingReply
         );
-        assert_eq!(SentKind::of(&frame(0x21), true), SentKind::DirectAnswer);
-        assert_eq!(SentKind::of(&frame(0x21), false), SentKind::QueuedData);
-        assert_eq!(SentKind::of(&frame(0), false), SentKind::Other);
-        assert_eq!(SentKind::of(&[0x55], false), SentKind::Other);
+        assert_eq!(SentKind::of(frame(0x21), true), SentKind::DirectAnswer);
+        assert_eq!(SentKind::of(frame(0x21), false), SentKind::QueuedData);
+        assert_eq!(SentKind::of(frame(0), false), SentKind::Other);
     }
 
     #[tokio::test]

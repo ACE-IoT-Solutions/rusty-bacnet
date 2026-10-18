@@ -108,9 +108,8 @@ pub fn next_frame<const U: usize>(core: &mut Core<'_, U>, now: Instant) -> Optio
     let mut now = now;
     for _ in 0..32 {
         match core.poll_action() {
-            Action::Transmit { id, frame } => {
-                let octets = frame.to_vec();
-                core.on_transmit_started(id, now).unwrap();
+            Action::Transmit { id, .. } => {
+                let octets = core.on_transmit_started(id, now).unwrap().to_vec();
                 core.on_transmit_complete(id, now);
                 let mut decoded = octets.clone();
                 let (frame, _) = decode_frame_in_place(&mut decoded).unwrap();

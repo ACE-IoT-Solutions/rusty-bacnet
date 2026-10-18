@@ -1971,6 +1971,14 @@ nothing: an input that breaks the contract is ignored and counted in
 `MasterCore::new` with `ConfigError`, `on_transmit_started` with
 `TransmitError` and `complete_request` with `RequestError`.
 
+`Action::Transmit { id, header, length }` names a frame ready to send; its
+octets come only from `on_transmit_started(id, now)`, which returns them
+when it confirms the start (decision D10, #1769). A refused start has no
+octets, so the line is never driven for one, and an adapter that can send
+from the core's frame buffer copies nothing. The `inspect` feature adds
+`handed_over_frame()`, a view of the frame before its start, for test
+oracles only.
+
 The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
 crate builds them like this:
 

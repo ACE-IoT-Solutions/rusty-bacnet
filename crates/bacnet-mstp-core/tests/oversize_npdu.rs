@@ -1,7 +1,7 @@
 //! An NPDU too long for a standard frame never holds the token: it is
 //! refused at the queue, or dropped and counted when it gets in anyway.
 
-use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType, MAX_EXTENDED_MPDU_DATA};
+use bacnet_mstp_codec::{Frame, FrameHeader, FrameType, MAX_EXTENDED_MPDU_DATA};
 use bacnet_mstp_core::{
     Action, DequeuedNpdu, Direction, ExtendedActionBuffers, FixedQueues, Instant, MasterCore,
     MasterState, MstpCoreConfig, NetworkPriority, QueueCounters, QueueItemInfo, QueueKind,
@@ -32,7 +32,7 @@ fn next_frame_after_token<Q: QueueStorage, const NPDU: usize>(
         Action::SetDirection(Direction::Transmit)
     );
     match core.poll_action() {
-        Action::Transmit { frame, .. } => decode_frame(frame).unwrap().0.header,
+        Action::Transmit { header, .. } => header,
         other => panic!("expected transmit, got {other:?}"),
     }
 }

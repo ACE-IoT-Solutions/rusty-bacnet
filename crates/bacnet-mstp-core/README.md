@@ -55,6 +55,8 @@ The Tokio MS/TP transport in `bacnet-transport` and the MS/TP simulator in
 ## Features
 
 - `alloc`: `AllocQueues`, which reserve their capacity when built.
+- `inspect`: `MasterCore::handed_over_frame`, a view of a frame handed over
+  and not yet started, for test oracles. Adapters never need it.
 
 None is on by default, and none needs `std`.
 
@@ -94,16 +96,17 @@ let now = core.next_deadline().unwrap();
 assert_eq!(now, heard + core.config().t_turnaround);
 core.on_deadline(now);
 assert_eq!(core.poll_action(), Action::SetDirection(Direction::Transmit));
-let Action::Transmit { id, frame } = core.poll_action() else {
+let Action::Transmit { id, header, .. } = core.poll_action() else {
     panic!("a frame to send");
 };
-let (sent, _) = decode_frame(frame).unwrap();
-assert_eq!(sent.header.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
-assert_eq!((sent.header.destination, sent.data), (2, &npdu[..]));
+assert_eq!(header.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
 
-// Drive the line only once the core confirms the start, then report the
+// The octets come only with a confirmed start, right before the line
+// driver goes on, so a refused start has nothing to send. Then report the
 // frame's last stop bit.
-core.on_transmit_started(id, now).unwrap();
+let frame = core.on_transmit_started(id, now).unwrap();
+let (sent, _) = decode_frame(frame).unwrap();
+assert_eq!((sent.header.destination, sent.data), (2, &npdu[..]));
 core.on_transmit_complete(id, now + Duration::from_millis(20));
 
 let counters = core.take_counters();

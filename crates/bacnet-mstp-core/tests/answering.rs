@@ -1,7 +1,7 @@
 //! Frames that arrive while this station answers a request (Clauses 9.5.6.2
 //! and 9.5.6.9), and the reply window under steady line activity.
 
-use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
+use bacnet_mstp_codec::{Frame, FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
     NetworkPriority, ReceiveError, ReplyDecision, RequestId, TransmitId,
@@ -42,7 +42,7 @@ fn take_transmit(core: &mut MasterCore<'_, Queues>, now: Instant) -> (TransmitId
         Action::SetDirection(Direction::Transmit)
     );
     let (id, header) = match core.poll_action() {
-        Action::Transmit { id, frame } => (id, decode_frame(frame).unwrap().0.header),
+        Action::Transmit { id, header, .. } => (id, header),
         other => panic!("expected transmit, got {other:?}"),
     };
     core.on_transmit_started(id, now).unwrap();

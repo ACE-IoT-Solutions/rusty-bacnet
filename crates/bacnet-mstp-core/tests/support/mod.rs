@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
+use bacnet_mstp_codec::{Frame, FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
     NetworkPriority, TransmitId,
@@ -89,7 +89,7 @@ pub fn handed_over(core: &mut Core<'_>) -> (TransmitId, FrameHeader) {
         Action::SetDirection(Direction::Transmit)
     );
     match core.poll_action() {
-        Action::Transmit { id, frame } => (id, decode_frame(frame).unwrap().0.header),
+        Action::Transmit { id, header, .. } => (id, header),
         other => panic!("expected a transmit, got {other:?}"),
     }
 }

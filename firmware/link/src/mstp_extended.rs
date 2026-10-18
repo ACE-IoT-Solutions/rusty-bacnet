@@ -294,7 +294,7 @@ struct Line<'m> {
 /// borrow of the core has ended.
 enum Then {
     Nothing,
-    Send { id: TransmitId, octets: usize },
+    Send { id: TransmitId },
 }
 
 impl Line<'_> {
@@ -388,13 +388,7 @@ impl Line<'_> {
                     self.summary.direction_changes += 1;
                     Then::Nothing
                 }
-                Action::Transmit { id, frame } => {
-                    self.record_sent(frame);
-                    Then::Send {
-                        id,
-                        octets: frame.len(),
-                    }
-                }
+                Action::Transmit { id, .. } => Then::Send { id },
                 Action::DeliverNpdu {
                     source,
                     destination,
@@ -414,10 +408,19 @@ impl Line<'_> {
                     Then::Nothing
                 }
             };
-            if let Then::Send { id, octets } = then {
-                if core.on_transmit_started(id, self.now).is_err() {
-                    self.summary.error();
-                }
+            if let Then::Send { id } = then {
+                // The octets come with the confirmed start: send them from
+                // the core's frame buffer.
+                let octets = match core.on_transmit_started(id, self.now) {
+                    Ok(frame) => {
+                        self.record_sent(frame);
+                        frame.len()
+                    }
+                    Err(_) => {
+                        self.summary.error();
+                        0
+                    }
+                };
                 let octets = u32::try_from(octets).unwrap_or(u32::MAX);
                 self.now += self.octet.saturating_mul(octets);
                 core.on_transmit_complete(id, self.now);

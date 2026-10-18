@@ -545,7 +545,7 @@ struct Device<'d, 'm> {
 /// has ended.
 enum Then {
     Nothing,
-    Send { id: TransmitId, octets: usize },
+    Send { id: TransmitId },
     Release(Option<RequestId>),
 }
 
@@ -793,14 +793,10 @@ impl Device<'_, '_> {
             let then = match self.mstp.poll_action() {
                 PortAction::Core(MstpAction::Idle) => return,
                 PortAction::Core(MstpAction::SetDirection(_)) => Then::Nothing,
-                PortAction::Core(MstpAction::Transmit { id, frame }) => {
-                    wired(self.summary, frame);
-                    self.last_frame = frame.get(2).copied().map(FrameType::from_raw);
+                PortAction::Core(MstpAction::Transmit { id, header, .. }) => {
+                    self.last_frame = Some(header.frame_type);
                     self.last_sent_at = self.now;
-                    Then::Send {
-                        id,
-                        octets: frame.len(),
-                    }
+                    Then::Send { id }
                 }
                 PortAction::Arrived { arrived, request } => {
                     let received = self
@@ -816,15 +812,19 @@ impl Device<'_, '_> {
             };
             match then {
                 Then::Nothing => {}
-                Then::Send { id, octets } => {
-                    if self
-                        .mstp
-                        .core_mut()
-                        .on_transmit_started(id, self.now)
-                        .is_err()
-                    {
-                        self.summary.error();
-                    }
+                Then::Send { id } => {
+                    // The octets come with the confirmed start: send them
+                    // from the core's frame buffer.
+                    let octets = match self.mstp.core_mut().on_transmit_started(id, self.now) {
+                        Ok(frame) => {
+                            wired(self.summary, frame);
+                            frame.len()
+                        }
+                        Err(_) => {
+                            self.summary.error();
+                            0
+                        }
+                    };
                     let octets = u32::try_from(octets).unwrap_or(u32::MAX);
                     self.now += self.octet.saturating_mul(octets);
                     self.mstp.core_mut().on_transmit_complete(id, self.now);

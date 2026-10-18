@@ -309,10 +309,31 @@ impl<'s> Driver<'s> {
                     Some(_) => self.checker.withdrawn(),
                     None => {}
                 },
-                Action::Transmit { id, frame } => {
+                Action::Transmit { id, header, length } => {
                     direction = false;
-                    self.check_span(frame, self.frame, "a transmit");
-                    let octets = frame.to_vec();
+                    if length > self.frame {
+                        self.fail(&format!(
+                            "a transmit of {length} octets, over {}",
+                            self.frame
+                        ));
+                    }
+                    // An adapter gets the octets with the confirmed start;
+                    // the checker sees them now, through `inspect`, and the
+                    // start must hand over the same.
+                    let octets = match core.handed_over_frame() {
+                        Some((handed, frame)) if handed == id => {
+                            self.check_span(frame, self.frame, "a transmit");
+                            frame.to_vec()
+                        }
+                        other => self.fail(&format!("transmit {id:?} handed over as {other:?}")),
+                    };
+                    if (
+                        octets.len(),
+                        Seen::decode(&octets).map(|seen| seen.frame().header),
+                    ) != (length, Ok(header))
+                    {
+                        self.fail("the transmit action misnames its frame");
+                    }
                     if tracing() {
                         eprintln!("  {} us: transmit {:?}", self.now, Seen::decode(&octets));
                     }

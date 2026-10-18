@@ -169,16 +169,17 @@ struct ActiveTransmit {
 /// dropped and counted in [`MstpCounters::delivery_drops`].
 ///
 /// A transmit goes through three calls. Poll [`Action::Transmit`]; when the
-/// driver is about to go on, call [`Self::on_transmit_started`] and drive the
-/// line only if it returns `Ok`; at the final stop bit, call
+/// driver is about to go on, call [`Self::on_transmit_started`], which hands
+/// over the frame's octets only if it confirms the start; at the final stop
+/// bit, call
 /// [`Self::on_transmit_complete`]. Until the start is confirmed, keep
 /// receiving and feed the core what arrives, draining the receive FIFO or
 /// DMA buffer right before the start call (octets stamped with the drain
 /// time are safe: a later stamp can only defer the start). Line activity in
 /// that time pushes the frame back (Clause 9.5.5.1), and the core may take
 /// the frame back on its own, queueing
-/// [`Direction::Receive`](crate::Direction::Receive) before the start; drop
-/// the frame then. Input after the confirmed start is taken for the
+/// [`Direction::Receive`](crate::Direction::Receive) before the start; forget
+/// the id then. Input after the confirmed start is taken for the
 /// station's own echo and ignored, whichever call reports it.
 ///
 /// Line activity only delays a frame the core waits to send. A frame is

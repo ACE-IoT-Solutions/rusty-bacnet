@@ -1,7 +1,7 @@
 //! A master node: its core, the adapter that runs the core's actions, and
 //! the application behind it.
 
-use bacnet_mstp_codec::FrameType;
+use bacnet_mstp_codec::{FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, AllocQueues, Direction, Instant, MasterCore, MasterState, MstpCounters,
     NetworkPriority, QueueRefusal, ReceiveError, ReplyDecision, RequestError, RequestId,
@@ -37,10 +37,12 @@ pub(crate) struct MasterNode {
     pub(super) transmitting: Option<TransmitId>,
     /// The core counted a token generation; its next frame is that poll.
     pub(super) regenerated: bool,
-    /// A frame whose start the core deferred. When the core hands the same
-    /// octets over again, before it gives any frame up, it is the same
-    /// frame.
+    /// A frame whose start the core deferred. When the core hands a frame
+    /// with the same header and length over again, before it gives any
+    /// frame up, it is the same frame.
     withdrawn: Option<PendingTx>,
+    /// The octets the core handed over with the last confirmed start.
+    started: Option<Vec<u8>>,
     /// Deadline misses already accounted for.
     misses_seen: u32,
     /// The master generated a token and has held it since: a collision with
@@ -53,6 +55,11 @@ pub(crate) struct MasterNode {
 
 pub(crate) struct PendingTx {
     pub(super) id: TransmitId,
+    /// The frame's type and addresses, as the action named them.
+    pub(super) header: FrameHeader,
+    /// Its length on the wire, as the action gave it.
+    pub(super) length: usize,
+    /// Its octets, which come with the confirmed start: empty until then.
     pub(super) octets: Vec<u8>,
     /// When the core handed the frame over.
     pub(super) dispatched: Instant,
@@ -79,6 +86,7 @@ impl MasterNode {
             transmitting: None,
             regenerated: false,
             withdrawn: None,
+            started: None,
             generating: false,
             misses_seen: 0,
             deliveries: Vec::new(),
@@ -147,7 +155,7 @@ pub(crate) enum Refused {
 /// An action, copied out of the core so the borrow ends.
 enum Effect {
     Direction(Direction),
-    Transmit(TransmitId, Vec<u8>),
+    Transmit(TransmitId, FrameHeader, usize),
     Deliver {
         source: u8,
         destination: u8,
@@ -160,15 +168,21 @@ enum Effect {
 
 /// Whether a frame is an answer to a request: a data frame not expecting a
 /// reply, standard or extended, or Reply Postponed.
-fn is_answer(octets: &[u8]) -> bool {
-    decode_whole(octets).is_some_and(|(header, _)| {
-        matches!(
-            header.frame_type,
-            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
-                | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
-                | FrameType::REPLY_POSTPONED
-        )
-    })
+fn is_answer(header: FrameHeader) -> bool {
+    matches!(
+        header.frame_type,
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
+            | FrameType::REPLY_POSTPONED
+    )
+}
+
+/// A frame named by its header and length, as [`describe`] prints octets.
+fn describe_named(header: FrameHeader, length: usize) -> String {
+    format!(
+        "{:?} {}->{} ({length} octets)",
+        header.frame_type, header.source, header.destination
+    )
 }
 
 /// Frames the core has given up before they went out.
@@ -183,7 +197,7 @@ fn drain(core: &mut SimCore) -> Result<Vec<Effect>, usize> {
         let effect = match core.poll_action() {
             Action::Idle => return Ok(effects),
             Action::SetDirection(direction) => Effect::Direction(direction),
-            Action::Transmit { id, frame } => Effect::Transmit(id, frame.to_vec()),
+            Action::Transmit { id, header, length } => Effect::Transmit(id, header, length),
             Action::DeliverNpdu {
                 source,
                 destination,
@@ -234,6 +248,7 @@ impl Sim {
         let before = core.state();
         let generations = core.counters().token_regenerations;
         let gave_up = given_up(&core.counters());
+        let mut started = None;
         let result = match &input {
             Input::Octet(byte) => {
                 core.on_octet(*byte, now);
@@ -247,7 +262,10 @@ impl Sim {
                 core.on_deadline(now);
                 Ok(())
             }
-            Input::Started(id) => core.on_transmit_started(*id, now).map_err(Refused::Start),
+            Input::Started(id) => core
+                .on_transmit_started(*id, now)
+                .map(|frame| started = Some(frame.to_vec()))
+                .map_err(Refused::Start),
             Input::Complete(id, stamp) => {
                 core.on_transmit_complete(*id, *stamp);
                 Ok(())
@@ -263,6 +281,9 @@ impl Sim {
         let after = core.state();
         let counters = core.counters();
         let deadline = core.next_deadline();
+        if started.is_some() {
+            master.started = started;
+        }
         let adapter = master.spec.adapter;
         let rearmed = deadline != master.deadline;
         if rearmed {
@@ -437,13 +458,13 @@ impl Sim {
                         self.abort_withdrawn_transmission(node);
                     }
                 }
-                Effect::Transmit(id, octets) => {
+                Effect::Transmit(id, header, length) => {
                     self.note(
                         who,
                         TraceKind::Action(format!(
                             "Transmit #{} {}",
                             id.generation(),
-                            describe(&octets)
+                            describe_named(header, length)
                         )),
                     );
                     let now = self.now;
@@ -456,14 +477,17 @@ impl Sim {
                     let replaced = master.pending.is_some();
                     let delay = master.spec.adapter.start_delay;
                     let again = master.withdrawn.take().is_some_and(|withdrawn| {
-                        withdrawn.generation && withdrawn.octets == octets
+                        withdrawn.generation
+                            && (withdrawn.header, withdrawn.length) == (header, length)
                     });
                     let generation = std::mem::take(&mut master.regenerated) || again;
                     master.generating |= generation;
-                    let answer = answering && is_answer(&octets);
+                    let answer = answering && is_answer(header);
                     master.pending = Some(PendingTx {
                         id,
-                        octets,
+                        header,
+                        length,
+                        octets: Vec::new(),
                         dispatched: now,
                         activity_at_dispatch: activity,
                         while_answering: answer,
@@ -663,7 +687,7 @@ impl Sim {
         let Some(master) = self.master_mut(node) else {
             return;
         };
-        let Some(pending) = master.pending.take() else {
+        let Some(mut pending) = master.pending.take() else {
             return;
         };
         if pending.id != id {
@@ -672,6 +696,23 @@ impl Sim {
         }
         match self.master_input(node, Input::Started(id)) {
             Ok(()) => {
+                // The octets come with the confirmed start, and must be the
+                // frame the action named.
+                let master = self.master_mut(node).expect("a master");
+                pending.octets = master.started.take().unwrap_or_default();
+                let named = decode_whole(&pending.octets)
+                    .is_some_and(|(header, _)| header == pending.header)
+                    && pending.octets.len() == pending.length;
+                if !named {
+                    self.violation(
+                        ViolationKind::CoreError,
+                        format!(
+                            "station {station}: the start handed over {}, not the {} the action named",
+                            describe(&pending.octets),
+                            describe_named(pending.header, pending.length)
+                        ),
+                    );
+                }
                 self.receiver_started(node);
                 self.check_turnaround(node, &pending);
                 self.check_usage_delay(node, &pending);

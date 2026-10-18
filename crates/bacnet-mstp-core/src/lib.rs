@@ -57,20 +57,21 @@
 //!   [`MasterCore::poll_action`] until [`Action::Idle`], and always before
 //!   reporting the next transmit event. Control actions can't run out of
 //!   room, and a start is refused ([`TransmitError::NotPolled`]) until
-//!   its frame has been polled; received data waits in a fixed number of
+//!   its action has been polled; received data waits in a fixed number of
 //!   slots, and data that finds them full is dropped and counted.
-//! - **A frame starts only on `Ok`.** Call
-//!   [`MasterCore::on_transmit_started`] right before enabling the line
-//!   driver, and drive the line only if it succeeds. It refuses a start that
-//!   comes within T_turnaround of line activity
+//! - **A frame's octets come with its start.** [`Action::Transmit`] names
+//!   a frame; call [`MasterCore::on_transmit_started`] right before
+//!   enabling the line driver, and it returns the octets only if it
+//!   confirms the start, so the line is never driven for a refused one. It
+//!   refuses a start that comes within T_turnaround of line activity
 //!   ([`TransmitError::Deferred`]), and the frame comes back later as a
 //!   new [`Action::Transmit`] (Clause 9.5.5.1).
 //! - **Echo begins at the confirmed start.** Until then, keep the driver
 //!   off and the receiver on, and feed the core every octet and receive
 //!   error, draining the receive FIFO or DMA buffer right before the start
 //!   call: they are line activity. A `SetDirection(Receive)` that arrives
-//!   before you confirmed a start means the core took the frame back; drop
-//!   it. From the confirmed start to [`MasterCore::on_transmit_complete`],
+//!   before you confirmed a start means the core took the frame back;
+//!   forget its id. From the confirmed start to [`MasterCore::on_transmit_complete`],
 //!   what the receiver hears is the station's own echo, which the core
 //!   ignores; a frame it was part way through receiving is dropped then.
 //!
@@ -158,12 +159,17 @@
 //! provide for. Each token generated that way is counted in
 //! [`MstpCounters::missed_generation_slots`]; see [`MasterCore`].
 //!
-//! # Queue storage, and the one feature
+//! # Queue storage, and the features
 //!
 //! [`FixedQueues`] keeps the transmit queues in arrays sized at compile
 //! time, with no allocator and no feature. The `alloc` feature adds
 //! `AllocQueues`, which reserves its capacity when built; no feature needs
 //! `std`. A caller may also implement [`QueueStorage`] itself.
+//!
+//! The `inspect` feature adds `MasterCore::handed_over_frame`, which shows
+//! a frame handed over and not yet started, for a test oracle that checks
+//! what the core will send. An adapter never needs it: it gets the octets
+//! from [`MasterCore::on_transmit_started`].
 
 #![no_std]
 #![forbid(unsafe_code)]

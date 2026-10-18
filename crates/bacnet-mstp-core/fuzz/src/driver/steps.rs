@@ -212,7 +212,6 @@ impl Driver<'_> {
         }
     }
 
-
     /// Octets back to back, with an optional gap before one of them.
     fn wire<Q: QueueStorage, const N: usize>(
         &mut self,
@@ -243,7 +242,7 @@ impl Driver<'_> {
         if start_before_poll {
             let held = self.tx.as_ref().map(|tx| tx.id);
             if let Some(id) = core.snapshot().transmit_id.filter(|&id| Some(id) != held) {
-                let result = core.on_transmit_started(id, self.at());
+                let result = core.on_transmit_started(id, self.at()).map(<[u8]>::len);
                 if result != Err(TransmitError::NotPolled) {
                     self.fail(&format!(
                         "a start before the frame was polled got {result:?}"
@@ -279,7 +278,7 @@ impl Driver<'_> {
         let id = tx.id;
         if tx.started.is_some() {
             let before = core.snapshot();
-            let result = core.on_transmit_started(id, self.at());
+            let result = core.on_transmit_started(id, self.at()).map(<[u8]>::len);
             self.stamp = self.now;
             if result != Err(TransmitError::AlreadyStarted) || core.snapshot() != before {
                 self.fail(&format!("a second start got {result:?}"));
@@ -291,7 +290,13 @@ impl Driver<'_> {
         let result = core.on_transmit_started(id, self.at());
         self.stamp = self.now;
         match result {
-            Ok(()) => {
+            Ok(frame) => {
+                // Only a confirmed start hands the octets over: exactly the
+                // frame the action named, from the action buffers.
+                self.check_span(frame, self.frame, "a started transmit");
+                if self.tx.as_ref().is_none_or(|tx| tx.octets != frame) {
+                    self.fail("the start handed over other octets than the action named");
+                }
                 self.checker.started(self.now);
                 if let Some(tx) = &mut self.tx {
                     tx.started = Some(self.now);
@@ -380,7 +385,7 @@ impl Driver<'_> {
         let before = (core.snapshot(), core.counters());
         let at = self.at();
         let result = match event {
-            TransmitEvent::Start => core.on_transmit_started(id, at),
+            TransmitEvent::Start => core.on_transmit_started(id, at).map(drop),
             TransmitEvent::Complete => {
                 core.on_transmit_complete(id, at);
                 Err(TransmitError::Stale)

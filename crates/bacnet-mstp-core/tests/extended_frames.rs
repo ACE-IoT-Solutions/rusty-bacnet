@@ -131,11 +131,12 @@ fn send_handed_over(core: &mut Core<'_>, due: Instant) -> (Instant, Vec<u8>) {
         core.poll_action(),
         Action::SetDirection(Direction::Transmit)
     );
-    let (id, octets) = match core.poll_action() {
-        Action::Transmit { id, frame } => (id, frame.to_vec()),
+    let (id, length) = match core.poll_action() {
+        Action::Transmit { id, length, .. } => (id, length),
         other => panic!("expected a transmit, got {other:?}"),
     };
-    core.on_transmit_started(id, due).unwrap();
+    let octets = core.on_transmit_started(id, due).unwrap().to_vec();
+    assert_eq!(octets.len(), length);
     let done = due + Duration::from_millis(1);
     core.on_transmit_complete(id, done);
     assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));

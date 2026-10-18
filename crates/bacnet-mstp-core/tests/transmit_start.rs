@@ -103,7 +103,7 @@ fn a_start_a_full_turnaround_after_the_activity_goes_ahead() {
         if refused {
             assert_eq!(result, Err(TransmitError::Deferred));
         } else {
-            assert_eq!(result, Ok(()));
+            assert!(result.is_ok());
             assert_eq!(core.snapshot().transmit_id, Some(id));
         }
     }
@@ -319,4 +319,71 @@ fn only_an_abort_of_the_transmit_counts_its_reason() {
         ),
         (0, 0, 0, 1)
     );
+}
+
+/// The octets come with the confirmed start and only with it (decision D10,
+/// #1769), and the turnaround contract holds as before. The action names
+/// the frame by header and length; a start within T_turnaround of line
+/// activity is refused, with nothing to send, and the frame waits a full
+/// T_turnaround of quiet line from that activity (Clause 9.5.5.1); it then
+/// comes back under a new id as the same frame, and its confirmed start
+/// hands over exactly its encoding. From there on, input is echo.
+#[test]
+fn only_a_confirmed_start_hands_out_the_frame() {
+    let mut rx = [0; 64];
+    let mut actions = Actions::new();
+    let mut core = new_core(&mut rx, &mut actions);
+    poll_waiting(&mut core);
+    let handed = core.next_deadline().unwrap();
+    core.on_deadline(handed);
+    assert_eq!(
+        core.poll_action(),
+        Action::SetDirection(Direction::Transmit)
+    );
+    let Action::Transmit { id, header, length } = core.poll_action() else {
+        panic!("expected the poll");
+    };
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
+
+    let noise = handed + us(100);
+    core.on_octet(0x00, noise);
+    assert_eq!(
+        core.on_transmit_started(id, noise + us(1)),
+        Err(TransmitError::Deferred)
+    );
+    assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
+
+    let due = noise + turnaround(&core);
+    assert_eq!(core.next_deadline(), Some(due));
+    core.on_deadline(due - us(1));
+    assert_eq!(
+        core.poll_action(),
+        Action::Idle,
+        "not before a quiet turnaround"
+    );
+    core.on_deadline(due);
+    assert_eq!(
+        core.poll_action(),
+        Action::SetDirection(Direction::Transmit)
+    );
+    let Action::Transmit {
+        id: again,
+        header: same_header,
+        length: same_length,
+    } = core.poll_action()
+    else {
+        panic!("expected the poll again");
+    };
+    assert_ne!(again, id);
+    assert_eq!((same_header, same_length), (header, length));
+    let frame = core.on_transmit_started(again, due).unwrap().to_vec();
+    assert_eq!(
+        frame,
+        encode(FrameType::POLL_FOR_MASTER, PEER, STATION, &[])
+    );
+    assert_eq!(frame.len(), length);
+
+    let before = (core.snapshot(), core.counters());
+    feed(&mut core, &frame, due + us(10));
+    assert_eq!((core.snapshot(), core.counters()), before, "its own echo");
 }

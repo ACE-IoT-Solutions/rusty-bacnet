@@ -34,8 +34,8 @@ fn take_transmit<Q: bacnet_mstp_core::QueueStorage>(
         Action::SetDirection(Direction::Transmit)
     );
     let id = match core.poll_action() {
-        Action::Transmit { id, frame } => {
-            assert!(frame.len() >= 8);
+        Action::Transmit { id, length, .. } => {
+            assert!(length >= 8);
             id
         }
         other => panic!("expected transmit, got {other:?}"),

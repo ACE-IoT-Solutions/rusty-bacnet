@@ -1,6 +1,6 @@
 //! Public-API regressions for Clause 9 transitions and local scheduling.
 
-use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
+use bacnet_mstp_codec::{Frame, FrameHeader, FrameType};
 use bacnet_mstp_core::{
     Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
     NetworkPriority, ReplyDecision, RequestError, TransmitFailure, TransmitId,
@@ -37,10 +37,7 @@ fn take_transmit(core: &mut MasterCore<'_, Queues>, now: Instant) -> (TransmitId
         Action::SetDirection(Direction::Transmit)
     );
     let (id, header) = match core.poll_action() {
-        Action::Transmit { id, frame } => {
-            let (decoded, _) = decode_frame(frame).unwrap();
-            (id, decoded.header)
-        }
+        Action::Transmit { id, header, .. } => (id, header),
         other => panic!("expected transmit, got {other:?}"),
     };
     core.on_transmit_started(id, now).unwrap();

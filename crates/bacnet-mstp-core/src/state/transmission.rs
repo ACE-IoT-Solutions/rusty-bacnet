@@ -3,18 +3,33 @@
 use super::*;
 
 impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
-    /// Confirm that the platform is about to start the matching UART transfer.
+    /// Confirm that the platform is about to start the matching UART
+    /// transfer, and take the frame to send: its whole encoded octets,
+    /// preamble and CRCs included.
     ///
-    /// Call it after polling [`Action::Transmit`] and before enabling the
-    /// line driver, and send only if it returns `Ok`. Until it does, keep the
-    /// receiver on and feed the core what it hears: those octets are line
-    /// activity, not echo. Right before the call, drain the receive FIFO or
-    /// DMA buffer and feed the core every octet and receive error in it; an
-    /// adapter that cannot tell when they arrived may stamp them with the
-    /// drain time, which is safe because a later stamp can only defer the
-    /// start. After an error for a transmit, or once it is aborted, send
-    /// nothing more for its id; the one exception is
-    /// [`TransmitError::NotPolled`], below.
+    /// Call it after polling [`Action::Transmit`] and right before enabling
+    /// the line driver. Only a confirmed start returns the octets, so the
+    /// line is driven only on success: there is nothing to send otherwise.
+    /// The octets borrow the core until its next `&mut` call. Send them from
+    /// there where the platform can; an adapter that needs its own copy (an
+    /// interrupt-driven UART that also feeds the core its echo, or a host
+    /// echo filter) makes it now, and keeps that copy short, since the
+    /// time from this call to the driver going on is time the core cannot
+    /// see. Until the call, keep the receiver on and feed the core what it
+    /// hears: those octets are line activity, not echo. Right before it,
+    /// drain the receive FIFO or DMA buffer and feed the core every octet
+    /// and receive error in it; an adapter that cannot tell when they
+    /// arrived may stamp them with the drain time, which is safe because a
+    /// later stamp can only defer the start. After an error for a
+    /// transmit, or once it is aborted, there is nothing to send for its id;
+    /// the one exception is [`TransmitError::NotPolled`], below.
+    ///
+    /// Handing out the octets here (design decision D10, #1769) keeps the
+    /// turnaround contract as it was: the T_turnaround check runs at this
+    /// call, as before; a start too soon after line activity is refused
+    /// and the frame waits again for a quiet line (Clause 9.5.5.1); and
+    /// input counts as echo only once a start is confirmed. What changed is
+    /// only that a refused start has no octets to send by mistake.
     ///
     /// A host assembler that was part way through a frame drops it now: the
     /// receiver is off while the driver is on, so it can never complete, and
@@ -45,7 +60,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         &mut self,
         id: TransmitId,
         now: Instant,
-    ) -> Result<(), TransmitError> {
+    ) -> Result<&[u8], TransmitError> {
         let now = self.observe_time(now);
         let tx = self
             .active_transmit
@@ -105,7 +120,7 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         let tx = self.active_transmit.as_mut().expect("checked above");
         tx.started = true;
         tx.asserted_at = now;
-        Ok(())
+        Ok(self.actions.frame())
     }
 
     /// Report that the final stop bit for the matching generation left UART.
@@ -197,6 +212,20 @@ impl<'rx, Q: QueueStorage, const NPDU: usize> MasterCore<'rx, Q, NPDU> {
         self.set_state(MasterState::Idle);
         self.protocol_deadline = Some(now + T_NO_TOKEN);
         self.take_pending_token(now)
+    }
+
+    /// The frame handed over as [`Action::Transmit`] and not started yet,
+    /// with its id: for a test oracle that checks what the core will send
+    /// before the adapter starts it (feature `inspect`). Never drive the
+    /// line from it: an adapter gets the octets to send from
+    /// [`Self::on_transmit_started`], and only when the start is confirmed.
+    #[cfg(feature = "inspect")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "inspect")))]
+    #[must_use]
+    pub fn handed_over_frame(&self) -> Option<(TransmitId, &[u8])> {
+        self.active_transmit
+            .filter(|tx| !tx.started && !self.actions.transmit_queued(tx.id))
+            .map(|tx| (tx.id, self.actions.frame()))
     }
 
     /// Whether the adapter is sending a frame whose start it confirmed: what

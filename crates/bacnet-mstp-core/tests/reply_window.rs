@@ -50,8 +50,7 @@ fn take_postponed(core: &mut MasterCore<'_, Queues>) -> TransmitId {
         Action::SetDirection(Direction::Transmit)
     );
     match core.poll_action() {
-        Action::Transmit { id, frame } => {
-            let header = decode_frame(frame).unwrap().0.header;
+        Action::Transmit { id, header, .. } => {
             assert_eq!(
                 (header.frame_type, header.destination),
                 (FrameType::REPLY_POSTPONED, 7)
@@ -271,9 +270,10 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
         core.poll_action(),
         Action::SetDirection(Direction::Transmit)
     );
-    let Action::Transmit { frame, .. } = core.poll_action() else {
+    let Action::Transmit { id, .. } = core.poll_action() else {
         panic!("expected the reply transmit");
     };
+    let frame = core.on_transmit_started(id, due).unwrap();
     let reply = decode_frame(frame).unwrap().0;
     assert_eq!(
         (
@@ -311,10 +311,9 @@ fn a_reply_waiting_out_the_turnaround_survives_line_activity() {
         core.poll_action(),
         Action::SetDirection(Direction::Transmit)
     );
-    let Action::Transmit { frame, .. } = core.poll_action() else {
+    let Action::Transmit { header: reply, .. } = core.poll_action() else {
         panic!("expected the reply transmit");
     };
-    let reply = decode_frame(frame).unwrap().0.header;
     assert_eq!(
         (reply.frame_type, reply.destination),
         (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 7)

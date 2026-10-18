@@ -182,7 +182,7 @@ fn wait(core: &mut Core<'_>, clock: &mut Clock, summary: &mut Summary) {
 /// borrow of the core has ended.
 enum Then {
     Nothing,
-    Send { id: TransmitId, octets: usize },
+    Send { id: TransmitId },
     Answer(RequestId),
 }
 
@@ -197,13 +197,7 @@ fn drain(core: &mut Core<'_>, clock: &mut Clock, summary: &mut Summary) {
                 summary.direction_changes += 1;
                 Then::Nothing
             }
-            Action::Transmit { id, frame } => {
-                record_sent(frame, summary);
-                Then::Send {
-                    id,
-                    octets: frame.len(),
-                }
-            }
+            Action::Transmit { id, .. } => Then::Send { id },
             Action::DeliverNpdu { request_id, .. } => {
                 summary.npdus_delivered += 1;
                 match request_id {
@@ -218,10 +212,19 @@ fn drain(core: &mut Core<'_>, clock: &mut Clock, summary: &mut Summary) {
         };
         match then {
             Then::Nothing => {}
-            Then::Send { id, octets } => {
-                if core.on_transmit_started(id, clock.now).is_err() {
-                    summary.error();
-                }
+            Then::Send { id } => {
+                // The octets come with the confirmed start: send them from
+                // the core's frame buffer.
+                let octets = match core.on_transmit_started(id, clock.now) {
+                    Ok(frame) => {
+                        record_sent(frame, summary);
+                        frame.len()
+                    }
+                    Err(_) => {
+                        summary.error();
+                        0
+                    }
+                };
                 clock.pass(octets);
                 core.on_transmit_complete(id, clock.now);
             }
