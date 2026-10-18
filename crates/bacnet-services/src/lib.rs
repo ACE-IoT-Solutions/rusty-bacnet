@@ -1,22 +1,4 @@
-//! BACnet service request/response encode/decode per ASHRAE 135-2020.
-//!
-//! Each module covers one or more related BACnet services with request/response
-//! structs and encode/decode functions. Service data at constructed boundaries
-//! remains as raw bytes (`Vec<u8>`) — the application layer interprets
-//! property values, not the service codec.
-//!
-//! # Features
-//!
-//! Decoded lists and text are owned, so the codecs need an allocator, and one
-//! of these features to say so:
-//!
-//! - `std` (default): hosted builds.
-//! - `alloc`: `no_std` with a global allocator, for bare-metal targets:
-//!   `default-features = false, features = ["alloc"]`. As for
-//!   `bacnet-encoding`, `bytes` must build for the target.
-//!
-//! A build with neither fails; that combination is reserved for a future
-//! allocation-free subset.
+#![doc = include_str!("../README.md")]
 
 // Tests always build with std, so feature-off test runs need no imports of
 // their own.
