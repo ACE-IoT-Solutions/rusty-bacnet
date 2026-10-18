@@ -6,7 +6,9 @@
 use core::mem::size_of;
 
 use firmware_link::device::app::{answer, Answer, Scratch, ANSWER_LENGTH};
-use firmware_link::device::{expected, run, Core, Memory, Storage, Summary, REQUESTS};
+use firmware_link::device::{
+    expected, run, Core, Memory, Storage, Summary, GLOBAL_READ_PROPERTY, REQUESTS,
+};
 
 /// The whole summary, against the one the emulation build checks too
 /// (`firmware_link::device::expected`, which explains each value).
@@ -41,6 +43,11 @@ fn the_application_answers_within_its_buffers() {
         &[0x01, 0x00, 0x10, 0x00, 0xC4, 0x02, 0x00, 0x00, 0x01],
         // A ComplexACK, which answers nothing the device asked.
         &[0x01, 0x00, 0x30, 0x01, 0x0C],
+        // A ReadProperty sent to every network: confirmed requests don't
+        // travel by broadcast.
+        &GLOBAL_READ_PROPERTY,
+        // A Who-Is whose low limit (5) is above its high one (1).
+        &[0x01, 0x00, 0x10, 0x08, 0x09, 0x05, 0x19, 0x01],
         // Protocol version 2.
         &[0x02, 0x00, 0x10, 0x08],
         // An empty APDU.

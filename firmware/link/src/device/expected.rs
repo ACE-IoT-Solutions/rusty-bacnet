@@ -136,13 +136,15 @@ pub fn expected() -> Summary {
     Summary {
         replies,
         link_frames,
-        // Two Who-Is and thirteen requests; the Who-Is for devices 5000 to
-        // 6000 is the one left unanswered.
-        delivered: 15,
-        unanswered: 1,
+        // Two Who-Is, thirteen requests and the two confirmed requests by
+        // broadcast; the Who-Is for devices 5000 to 6000 and the two
+        // broadcasts are left unanswered.
+        delivered: 17,
+        unanswered: 3,
         state: MasterState::Idle,
-        // Two Who-Is, the token, the reply to the poll and the requests.
-        frames_received: 17,
+        // Two Who-Is, the token, the reply to the poll, the requests and the
+        // two broadcasts.
+        frames_received: 19,
         // The I-Am, the poll, the token and the thirteen answers.
         frames_transmitted: 16,
         token_rotations: 1,

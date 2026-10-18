@@ -9,7 +9,7 @@ Parts of this are newer than the v0.13.0 release: the allocation-free profile of
 
 ## Crates by product
 
-Every crate below is `no_std` and needs no allocator. The cores re-export what their API speaks, so you can often depend on one crate: `bacnet-mstp-core` re-exports its codec as `codec` and `bacnet-npdu` as `npdu`, and `bacnet-router-core` re-exports `bip_core`, `mstp_core` and `npdu` with its `bip` and `mstp` features. Depend on the application crates with `default-features = false` to get their allocation-free profile.
+Every crate below is `no_std` and needs no allocator. The cores re-export what their API speaks, so you can often depend on one crate: `bacnet-mstp-core` re-exports its codec as `codec` and `bacnet-npdu` as `npdu`, and `bacnet-router-core` always re-exports `npdu`, and `bip_core` and `mstp_core` with its `bip` and `mstp` features. Depend on the application crates with `default-features = false` to get their allocation-free profile.
 
 | Product | Data link | Network layer | Application layer | Firmware image that measures it |
 | --- | --- | --- | --- | --- |
@@ -20,7 +20,7 @@ Every crate below is `no_std` and needs no allocator. The cores re-export what t
 
 A router is also a device: Clause 6.6 of the standard holds it to the device requirements of Clause 22.1.5, so a product router adds a Device object and the ReadProperty service to the routing the `router` image measures. B/IPv6, BACnet/SC and Ethernet stay hosted, on the standard library.
 
-The `device` image in `firmware/link` is the reference for an MS/TP device: it answers Who-Is with an I-Am and ReadProperty for a Device object and an Analog Input, with the Error, Reject or Abort each refused request needs. Its source, `firmware/link/src/device/app.rs`, is the application part to copy.
+The `device` image in `firmware/link` is the reference for an MS/TP device: it answers Who-Is with an I-Am and ReadProperty for a Device object and an Analog Input, with the Error, Reject or Abort each refused request needs. Its source, `firmware/link/src/device/app.rs`, is the application part to copy. It is a starting point, not a conformant Device as it stands: it lacks Property_List and other properties Clause 12.11 requires of a Device object, and its Vendor_Identifier of 0 is a placeholder. A product fills these in with its own.
 
 ## One clock for every core
 
@@ -45,7 +45,7 @@ CI links each firmware image for four targets and checks it against a budget in 
 | `mstp-extended` | the same with extended frames | 17,048 | 7,696 | 3,776 |
 | `node` | B/IP foreign-device node and its port | 15,128 | 240 | 5,904 |
 | `bbmd` | a BBMD's port and tables | 12,376 | 240 | 2,880 |
-| `device` | a whole MS/TP device with Who-Is and ReadProperty | 29,656 | 3,496 | 3,328 |
+| `device` | a whole MS/TP device with Who-Is and ReadProperty | 29,876 | 3,496 | 3,328 |
 | `router` | a B/IP-to-MS/TP router whose B/IP port is the BBMD | 43,320 | 15,536 | 7,072 |
 
 What drives the RAM:

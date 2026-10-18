@@ -21,7 +21,9 @@
 //!   [`REQUESTS`]: reads that succeed, among them one through the wildcard
 //!   Device instance and one relayed by a router from network 5, reads that
 //!   draw each Error the ReadProperty service lists, a malformed request, a
-//!   service the device doesn't serve and a segmented request.
+//!   service the device doesn't serve and a segmented request. Last, two
+//!   confirmed requests by broadcast, one in a broadcast frame and one to
+//!   every network, which the device leaves unanswered.
 //!
 //! The client is played by the scenario, from frames written by hand: the
 //! octets of each request come from the Clause 6.2 and 20.1 layouts, not
@@ -283,6 +285,14 @@ pub const REQUESTS: [&[u8]; 13] = [
         0x01, 0x0C, 0x00, 0x05, 0x01, 0x07, 0x00, 0x03, 0x0D, 0x0C, 0x0C, 0x02, 0x00, 0x04, 0xD2,
         0x19, 0x61,
     ],
+];
+
+/// A ReadProperty of the Device's Object_Name sent to every network
+/// (control 0x24: DNET 0xFFFF, DLEN 0, hop count 255), which a device must
+/// leave unanswered: confirmed requests don't travel by broadcast.
+pub const GLOBAL_READ_PROPERTY: [u8; 17] = [
+    0x01, 0x24, 0xFF, 0xFF, 0x00, 0xFF, 0x00, 0x03, 0x0E, 0x0C, 0x0C, 0x02, 0x00, 0x04, 0xD2, 0x19,
+    0x4D,
 ];
 
 /// Run the whole scenario in `memory`. The core is built on this function's

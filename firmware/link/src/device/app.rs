@@ -142,8 +142,13 @@ impl Objects {
 ///
 /// Network-layer messages, NPDUs for another network and anything
 /// malformed get [`Answer::Nothing`]: a device that isn't a router drops
-/// them. So does an answer that doesn't fit `out`, which
-/// [`ANSWER_LENGTH`] octets always hold.
+/// them. So does a confirmed request sent to every network (or to a
+/// network's broadcast address): only unconfirmed services travel by
+/// broadcast (Clauses 5.4.5.1 and 6.3), as the hosted network layer also
+/// enforces. A confirmed request in a link-layer broadcast frame is the
+/// link's to drop, since only it sees the frame's destination. An answer
+/// that doesn't fit `out`, which [`ANSWER_LENGTH`] octets always hold, is
+/// dropped too.
 pub fn answer(npdu: &[u8], scratch: &mut Scratch, out: &mut [u8]) -> Answer {
     let (Ok(request), Some(objects)) = (Npdu::decode(npdu), Objects::new()) else {
         return Answer::Nothing;
@@ -152,6 +157,14 @@ pub fn answer(npdu: &[u8], scratch: &mut Scratch, out: &mut [u8]) -> Answer {
         .destination
         .is_none_or(|destination| request.is_global() && destination.mac.is_empty());
     if request.is_network_message() || !for_us {
+        return Answer::Nothing;
+    }
+    // Any destination left here is a broadcast: DNET 0xFFFF with no DADR.
+    let unconfirmed = request
+        .payload
+        .first()
+        .is_some_and(|&first| PduType::from_raw(first >> 4) == PduType::UNCONFIRMED_REQUEST);
+    if request.destination.is_some() && !unconfirmed {
         return Answer::Nothing;
     }
     let Scratch { apdu, value } = scratch;
@@ -279,6 +292,9 @@ fn read_property(
 ) -> Result<(), SinkFull> {
     let service_choice = ConfirmedServiceChoice::READ_PROPERTY;
     let requested = read.object_identifier;
+    // ALL, REQUIRED and OPTIONAL aren't properties, so they fall through to
+    // UNKNOWN_PROPERTY below: a deliberate simplification for this
+    // demonstration, which serves single properties only.
     // The Device instance 4194303 stands for whichever device receives the
     // request (Clause 15.5.2).
     let object_identifier = if requested.object_type() == ObjectType::DEVICE

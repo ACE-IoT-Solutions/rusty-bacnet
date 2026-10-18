@@ -352,7 +352,8 @@ targets, so a crate that needs one builds only with a backend such as
     from network 5, which goes back with that DNET and DADR; the four
     ReadProperty Errors of Clause 15.5.1.3.1; a Reject for a request with
     no property identifier and for WriteProperty; and an Abort for a
-    segmented request. The client's frames are written by hand from the
+    segmented request. Two confirmed requests by broadcast, one in a
+    broadcast frame and one to every network, go unanswered. The client's frames are written by hand from the
     Clause 6.2 and 20.1 layouts, and so are the answers it expects, whose
     hashes `device::expected()` holds.
 

@@ -10,8 +10,8 @@ use bacnet_mstp_core::{
 
 use super::app::{self, Answer, Scratch};
 use super::{
-    read_answer, Core, Reply, Storage, Summary, CLIENT, CONFIG, REQUESTS, STATION,
-    WHO_IS_EVERY_DEVICE, WHO_IS_OTHERS,
+    read_answer, Core, Reply, Storage, Summary, CLIENT, CONFIG, GLOBAL_READ_PROPERTY, REQUESTS,
+    STATION, WHO_IS_EVERY_DEVICE, WHO_IS_OTHERS,
 };
 use crate::tally::{fnv1a, FNV_OFFSET};
 
@@ -93,6 +93,19 @@ pub(super) fn run(
         receive(core, &mut app, wire, frame, &mut clock, summary);
         wait(core, &mut app, &mut clock, summary);
     }
+    // Then two confirmed requests by broadcast, which the device leaves
+    // unanswered: one in a broadcast frame, one sent to every network.
+    for (destination, npdu) in [
+        (BROADCAST, REQUESTS[0]),
+        (STATION, &GLOBAL_READ_PROPERTY[..]),
+    ] {
+        let frame = client(
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+            destination,
+            npdu,
+        );
+        receive(core, &mut app, wire, frame, &mut clock, summary);
+    }
     summary.state = core.state();
     record_counters(core, summary);
 }
@@ -171,12 +184,20 @@ fn drain(core: &mut Core<'_>, app: &mut Application<'_>, clock: &mut Clock, summ
             Action::Transmit { id, .. } => Then::Send(id),
             Action::DeliverNpdu {
                 source,
+                destination,
                 npdu,
                 request_id,
-                ..
             } => {
                 summary.delivered = summary.delivered.saturating_add(1);
                 let answer = app::answer(npdu, app.scratch, app.answer);
+                // A confirmed request in a broadcast frame gets no answer:
+                // only unconfirmed services travel by broadcast (Clause
+                // 5.4.5.1). The application can't see the frame's
+                // destination, so the link drops its reply here.
+                let answer = match answer {
+                    Answer::Reply(_) if destination == BROADCAST => Answer::Nothing,
+                    answer => answer,
+                };
                 route(answer, source, request_id, summary)
             }
         };

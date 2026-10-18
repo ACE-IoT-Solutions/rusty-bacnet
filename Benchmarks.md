@@ -670,7 +670,7 @@ not re-run for this report; see `docs/ci.md`, "Emulation (manual)", and
 | SiFive E (`riscv32imc-unknown-none-elf`) | 1,712 | 2,732 | 2,020 | 4,008 | 2,132 | does not fit | 2,464 |
 
 The `device` image, measured when it joined (#1771) with the same
-toolchain and QEMU: 29,656 bytes of flash on Cortex-M0+, 28,352 on
+toolchain and QEMU: 29,876 bytes of flash on Cortex-M0+, 28,776 on
 Cortex-M4F, and 3,496 bytes of static RAM on every target; its deepest
 stack was 2,652 bytes on the micro:bit board and 2,284 on the LM3S6965.
 

@@ -281,10 +281,14 @@
 # The device rows are from when that image joined, on 2026-10-18, same
 # toolchain (#1771), as text / rodata / data / bss, then flash / ram:
 #
-#   thumbv7m device     23864 / 3472 / 0 / 3496   28360 / 3496
-#   thumbv6m device     25992 / 3472 / 0 / 3496   29656 / 3496
-#   riscv32imc device   28096 / 3956 / 0 / 3496   32074 / 3496
-#   thumbv7em device    23860 / 3468 / 0 / 3496   28352 / 3496
+#   thumbv7m device     24420 / 3492 / 0 / 3496   28936 / 3496
+#   thumbv6m device     26192 / 3492 / 0 / 3496   29876 / 3496
+#   riscv32imc device   28456 / 3976 / 0 / 3496   32454 / 3496
+#   thumbv7em device    24264 / 3488 / 0 / 3496   28776 / 3496
+#
+# These are after the review round that has it leave confirmed requests
+# by broadcast unanswered, and its scenario send two: 0.2-0.6 KB more
+# .text than first measured.
 #
 # It is a whole MS/TP device with no allocator: the MS/TP codec and master
 # core, bacnet-npdu's view, and the allocation-free profile of
@@ -376,11 +380,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7m-none-eabi.device]
-text = 26736
-rodata = 3888
+text = 27360
+rodata = 3920
 data = 64
 bss = 3920
-flash = 31776
+flash = 32416
 ram = 3920
 fmt_functions = 0
 div64_functions = 0
@@ -464,11 +468,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.device]
-text = 29120
-rodata = 3888
+text = 29344
+rodata = 3920
 data = 64
 bss = 3920
-flash = 33216
+flash = 33472
 ram = 3920
 fmt_functions = 0
 div64_functions = 0
@@ -552,11 +556,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.device]
-text = 31472
-rodata = 4432
+text = 31872
+rodata = 4464
 data = 64
 bss = 3920
-flash = 35936
+flash = 36352
 ram = 3920
 fmt_functions = 0
 div64_functions = 0
@@ -640,11 +644,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.device]
-text = 26736
-rodata = 3888
+text = 27184
+rodata = 3920
 data = 64
 bss = 3920
-flash = 31760
+flash = 32240
 ram = 3920
 fmt_functions = 0
 div64_functions = 0
