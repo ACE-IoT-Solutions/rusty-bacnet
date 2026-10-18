@@ -1,7 +1,9 @@
 //! The fixed header of the APDUs that carry service parameters, read and
-//! written without an allocator (#1614): an Unconfirmed-Request, and an
-//! unsegmented Confirmed-Request or ComplexACK (Clauses 20.1.2, 20.1.3 and
-//! 20.1.5).
+//! written without an allocator (#1614): an Unconfirmed-Request, an
+//! unsegmented Confirmed-Request or ComplexACK, and an Error (Clauses
+//! 20.1.2, 20.1.3, 20.1.5 and 20.1.7); and the two answers that are all
+//! header, a Reject and an Abort (Clauses 20.1.8 and 20.1.9), so a device
+//! without a heap can refuse what it doesn't serve (#1771).
 //!
 //! [`ApduHeader::decode`] splits an APDU into its header and the service
 //! parameters after it, borrowed in place; [`ApduHeader::encode_to_sink`]
@@ -9,7 +11,8 @@
 //! the owned `encode_apdu` does. A segmented Confirmed-Request or ComplexACK
 //! is refused with [`DecodingKind::Unsupported`]: reassembling one needs
 //! storage this profile doesn't assume. A device that can't take segmented
-//! requests answers one with an Abort (Clause 5.4.5.1).
+//! requests answers one with an Abort (Clause 5.4.5.1). A SimpleACK or a
+//! SegmentACK is refused the same way.
 //!
 //! ```
 //! use bacnet_encoding::apdu::header::{ApduHeader, MaxApdu, MaxSegments};
@@ -35,7 +38,9 @@
 //! # Ok::<(), Box<dyn core::error::Error>>(())
 //! ```
 
-use bacnet_types::enums::{ConfirmedServiceChoice, PduType, UnconfirmedServiceChoice};
+use bacnet_types::enums::{
+    AbortReason, ConfirmedServiceChoice, PduType, RejectReason, UnconfirmedServiceChoice,
+};
 use bacnet_types::error::{DecodeError, DecodingKind, Error};
 
 use crate::sink::{EncodeSink, SinkFull};
@@ -178,9 +183,12 @@ pub struct ConfirmedRequestHeader {
     pub service_choice: ConfirmedServiceChoice,
 }
 
-/// The header of an APDU that carries service parameters, as the
-/// allocation-free profile reads and writes it.
+/// The header of an APDU that carries service parameters, or the whole of
+/// a Reject or an Abort, as the allocation-free profile reads and writes it.
+///
+/// More PDU types may join it, so a `match` on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ApduHeader {
     /// An unsegmented Confirmed-Request: four octets.
     ConfirmedRequest(ConfirmedRequestHeader),
@@ -193,6 +201,31 @@ pub enum ApduHeader {
         /// The service it answers.
         service_choice: ConfirmedServiceChoice,
     },
+    /// The header of an Error: three octets, followed by the error
+    /// parameters (for most services, the application-tagged error class
+    /// and code).
+    Error {
+        /// The invoke ID of the request it answers.
+        invoke_id: u8,
+        /// The service that failed.
+        service_choice: ConfirmedServiceChoice,
+    },
+    /// A whole Reject: three octets, with no parameters after them.
+    Reject {
+        /// The invoke ID of the request it rejects.
+        invoke_id: u8,
+        /// Why.
+        reason: RejectReason,
+    },
+    /// A whole Abort: three octets, with no parameters after them.
+    Abort {
+        /// Whether the server sent it (the SRV bit), rather than the client.
+        server: bool,
+        /// Which transaction it ends, by invoke ID.
+        invoke_id: u8,
+        /// Why.
+        reason: AbortReason,
+    },
 }
 
 /// The longest header this module writes.
@@ -204,9 +237,12 @@ impl ApduHeader {
     /// Refuses, at offset 0 unless noted: an empty APDU; one whose header is
     /// cut short ([`Error::BufferTooShort`]); a reserved max-APDU code (at
     /// offset 1), segmented or not; a segmented Confirmed-Request or
-    /// ComplexACK, and any other PDU type, with [`DecodingKind::Unsupported`];
-    /// and a PDU type nibble past 7. The more-follows bit of an unsegmented PDU is ignored, as
-    /// Clause 20.1.2.2 asks.
+    /// ComplexACK, a SimpleACK and a SegmentACK, with
+    /// [`DecodingKind::Unsupported`]; and a PDU type nibble past 7. The
+    /// more-follows bit of an unsegmented PDU is ignored, as Clause 20.1.2.2
+    /// asks, and so are the reserved bits of an Error, a Reject or an Abort.
+    /// A Reject or an Abort is the whole PDU: what follows its three octets
+    /// is returned as the parameters, for the caller to refuse.
     pub fn decode(apdu: &[u8]) -> Result<(Self, &[u8]), Error> {
         let Some(&first) = apdu.first() else {
             return Err(Error::decoding(0, "APDU data is empty"));
@@ -260,6 +296,31 @@ impl ApduHeader {
                 },
                 &apdu[3..],
             ))
+        } else if pdu_type == PduType::ERROR
+            || pdu_type == PduType::REJECT
+            || pdu_type == PduType::ABORT
+        {
+            let [_, invoke_id, third, ..] = *apdu else {
+                return Err(Error::buffer_too_short(3, apdu.len()));
+            };
+            let header = if pdu_type == PduType::ERROR {
+                Self::Error {
+                    invoke_id,
+                    service_choice: ConfirmedServiceChoice::from_raw(third),
+                }
+            } else if pdu_type == PduType::REJECT {
+                Self::Reject {
+                    invoke_id,
+                    reason: RejectReason::from_raw(third),
+                }
+            } else {
+                Self::Abort {
+                    server: first & 0x01 != 0,
+                    invoke_id,
+                    reason: AbortReason::from_raw(third),
+                }
+            };
+            Ok((header, &apdu[3..]))
         } else if first >> 4 <= 7 {
             Err(DecodeError::new(
                 DecodingKind::Unsupported,
@@ -279,12 +340,16 @@ impl ApduHeader {
         }
     }
 
-    /// The header's length in octets: 4, 2 or 3.
+    /// The header's length in octets: 4 for a Confirmed-Request, 2 for an
+    /// Unconfirmed-Request and 3 for the rest.
     pub const fn encoded_len(&self) -> usize {
         match self {
             Self::ConfirmedRequest(_) => 4,
             Self::UnconfirmedRequest(_) => 2,
-            Self::ComplexAck { .. } => 3,
+            Self::ComplexAck { .. }
+            | Self::Error { .. }
+            | Self::Reject { .. }
+            | Self::Abort { .. } => 3,
         }
     }
 
@@ -312,6 +377,28 @@ impl ApduHeader {
                 PduType::COMPLEX_ACK.to_raw() << 4,
                 invoke_id,
                 service_choice.to_raw(),
+                0,
+            ],
+            Self::Error {
+                invoke_id,
+                service_choice,
+            } => [
+                PduType::ERROR.to_raw() << 4,
+                invoke_id,
+                service_choice.to_raw(),
+                0,
+            ],
+            Self::Reject { invoke_id, reason } => {
+                [PduType::REJECT.to_raw() << 4, invoke_id, reason.to_raw(), 0]
+            }
+            Self::Abort {
+                server,
+                invoke_id,
+                reason,
+            } => [
+                (PduType::ABORT.to_raw() << 4) | u8::from(server),
+                invoke_id,
+                reason.to_raw(),
                 0,
             ],
         }

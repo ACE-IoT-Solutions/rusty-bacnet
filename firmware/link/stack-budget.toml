@@ -1,6 +1,6 @@
 # Stack budget for the firmware link test's images under emulation (#1660,
-# #1664, #1667, #1679), in octets: one table per board, `[<board>]`, named
-# by its QEMU machine, with a key per image. scripts/emu/emulate-firmware.sh,
+# #1664, #1667, #1679, #1771), in octets: one table per board,
+# `[<board>]`, named by its QEMU machine, with a key per image. scripts/emu/emulate-firmware.sh,
 # the manual emulation check, runs each image on each board it fits (the
 # router doesn't fit the two 16 KiB boards; see below); the image reports
 # how deep its stack went, and scripts/ci/firmware_size.py --stack fails the
@@ -96,6 +96,12 @@
 # Run there, it faults as its stack reaches the statics. No smaller router
 # image is offered: Clause 9.3 asks a router's MS/TP port for extended
 # frames, and their buffers are most of the statics.
+#
+# The device rows are from when that image joined, on 2026-10-18, same
+# toolchain and QEMU (#1771): peaks of 2652 octets on microbit, 2284 on
+# lm3s6965evb, 2292 on netduinoplus2 and 2172 on sifive_e. Its statics,
+# 3,496 octets, leave the 16 KiB boards about 12.9 KB for the stack, so it
+# runs on every board.
 
 [microbit]
 mstp = 2560
@@ -103,6 +109,7 @@ mstp-extended = 3776
 bip = 2784
 node = 5904
 bbmd = 2880
+device = 3328
 apdu = 3472
 
 [lm3s6965evb]
@@ -112,6 +119,7 @@ bip = 2640
 node = 5248
 bbmd = 2800
 router = 7072
+device = 2864
 apdu = 3184
 
 [netduinoplus2]
@@ -121,6 +129,7 @@ bip = 2640
 node = 5248
 bbmd = 2800
 router = 7056
+device = 2880
 apdu = 3184
 
 [sifive_e]
@@ -129,4 +138,5 @@ mstp-extended = 3424
 bip = 2528
 node = 5024
 bbmd = 2672
+device = 2720
 apdu = 3088

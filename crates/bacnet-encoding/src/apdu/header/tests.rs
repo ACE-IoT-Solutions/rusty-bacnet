@@ -1,8 +1,10 @@
 //! The allocation-free APDU header: hand-written octets from Clauses
-//! 20.1.2-20.1.5, refusals, and (with alloc) agreement with the owned codec.
+//! 20.1.2-20.1.9, refusals, and (with alloc) agreement with the owned codec.
 
 use super::*;
-use bacnet_types::enums::{ConfirmedServiceChoice, UnconfirmedServiceChoice};
+use bacnet_types::enums::{
+    AbortReason, ConfirmedServiceChoice, RejectReason, UnconfirmedServiceChoice,
+};
 
 const READ_PROPERTY: ConfirmedServiceChoice = ConfirmedServiceChoice::READ_PROPERTY;
 
@@ -18,8 +20,10 @@ fn request(segmented_response_accepted: bool, max_segments: u8, max_apdu: u8) ->
 
 /// Each header with its octets: the PDU type in the top nibble, then the
 /// SEG/MOR/SA flags; for a Confirmed-Request the segments and size codes,
-/// then the invoke ID and service choice.
-fn goldens() -> [(ApduHeader, &'static [u8]); 5] {
+/// then the invoke ID and service choice. An Error, a Reject and an Abort
+/// carry the invoke ID, then the service, the reason or the reason; an Abort
+/// sent by a server sets the low bit of its first octet.
+fn goldens() -> [(ApduHeader, &'static [u8]); 9] {
     [
         (request(true, 0, 5), &[0x02, 0x05, 0x2A, 0x0C]),
         (request(false, 7, 0), &[0x00, 0x70, 0x2A, 0x0C]),
@@ -34,6 +38,36 @@ fn goldens() -> [(ApduHeader, &'static [u8]); 5] {
                 service_choice: READ_PROPERTY,
             },
             &[0x30, 0x2A, 0x0C],
+        ),
+        (
+            ApduHeader::Error {
+                invoke_id: 42,
+                service_choice: READ_PROPERTY,
+            },
+            &[0x50, 0x2A, 0x0C],
+        ),
+        (
+            ApduHeader::Reject {
+                invoke_id: 42,
+                reason: RejectReason::UNRECOGNIZED_SERVICE,
+            },
+            &[0x60, 0x2A, 0x09],
+        ),
+        (
+            ApduHeader::Abort {
+                server: true,
+                invoke_id: 42,
+                reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
+            },
+            &[0x71, 0x2A, 0x04],
+        ),
+        (
+            ApduHeader::Abort {
+                server: false,
+                invoke_id: 42,
+                reason: AbortReason::OTHER,
+            },
+            &[0x70, 0x2A, 0x00],
         ),
     ]
 }
@@ -152,8 +186,8 @@ fn what_the_header_does_not_read_is_refused() {
         refused(&[0x0A, 0x06, 0x2A, 0x00, 0x01, 0x0C]).decode_fault(),
         Some((1, DecodingKind::InvalidEncoding))
     );
-    // The other PDU types, then nibbles past 7.
-    for first in [0x20, 0x40, 0x50, 0x60, 0x70] {
+    // A SimpleACK and a SegmentACK, then nibbles past 7.
+    for first in [0x20, 0x40] {
         assert_eq!(
             kind(&[first, 0x2A, 0x0C, 0x00]),
             Some(DecodingKind::Unsupported)
@@ -222,8 +256,10 @@ fn field_codes_name_their_sizes() {
 #[test]
 fn the_header_agrees_with_the_owned_codec() {
     use crate::apdu::{
-        decode_apdu, encode_apdu, Apdu, ComplexAck, ConfirmedRequest, UnconfirmedRequest,
+        decode_apdu, encode_apdu, AbortPdu, Apdu, ComplexAck, ConfirmedRequest, ErrorPdu,
+        RejectPdu, UnconfirmedRequest,
     };
+    use bacnet_types::enums::{ErrorClass, ErrorCode};
     use bytes::{Bytes, BytesMut};
 
     let parameters = Bytes::from_static(&[0x0C, 0x00, 0x00, 0x00, 0x01, 0x19, 0x55]);
@@ -259,11 +295,38 @@ fn the_header_agrees_with_the_owned_codec() {
         service_choice: READ_PROPERTY,
         service_ack: parameters.clone(),
     }));
-    for apdu in owned {
+    // The class and code of an Error are its parameters; a Reject and an
+    // Abort have none.
+    let class_and_code: &[u8] = &[0x91, 0x01, 0x91, 0x1F];
+    let mut whole = std::vec::Vec::new();
+    whole.push(Apdu::Error(ErrorPdu {
+        invoke_id: 7,
+        service_choice: READ_PROPERTY,
+        error_class: ErrorClass::OBJECT,
+        error_code: ErrorCode::UNKNOWN_OBJECT,
+        error_data: Bytes::new(),
+    }));
+    whole.push(Apdu::Reject(RejectPdu {
+        invoke_id: 7,
+        reject_reason: RejectReason::MISSING_REQUIRED_PARAMETER,
+    }));
+    for sent_by_server in [false, true] {
+        whole.push(Apdu::Abort(AbortPdu {
+            sent_by_server,
+            invoke_id: 7,
+            abort_reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
+        }));
+    }
+    for apdu in owned.into_iter().chain(whole) {
         let mut wire = BytesMut::new();
         encode_apdu(&mut wire, &apdu).unwrap();
         let (header, rest) = ApduHeader::decode(&wire).unwrap();
-        assert_eq!(rest, &parameters[..], "{apdu:?}");
+        let expected: &[u8] = match apdu {
+            Apdu::Error(_) => class_and_code,
+            Apdu::Reject(_) | Apdu::Abort(_) => &[],
+            _ => &parameters[..],
+        };
+        assert_eq!(rest, expected, "{apdu:?}");
         let mut written = std::vec::Vec::new();
         header
             .encode_with_parameters_to_sink(&mut written, rest)

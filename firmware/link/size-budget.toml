@@ -1,5 +1,5 @@
 # Size budget for the firmware link test's images (#1626, #1635, #1664,
-# #1667, #1679), in octets: one table per target and image,
+# #1667, #1679, #1771), in octets: one table per target and image,
 # `[<target>.<image>]`.
 # scripts/ci/check-firmware-link.sh builds the images with the `firmware`
 # profile and fails when a size outgrows its budget, or when more core::fmt
@@ -277,6 +277,26 @@
 # Read-FDT-Ack (24 more, aligned). The .bss and ram budgets stay at
 # 17,376 octets, as they were: these sizes plus 12% round up to 17,408,
 # and a budget doesn't rise for an image whose RAM shrank.
+#
+# The device rows are from when that image joined, on 2026-10-18, same
+# toolchain (#1771), as text / rodata / data / bss, then flash / ram:
+#
+#   thumbv7m device     23852 / 3472 / 0 / 3496   28348 / 3496
+#   thumbv6m device     25972 / 3472 / 0 / 3496   29636 / 3496
+#   riscv32imc device   28112 / 3956 / 0 / 3496   32090 / 3496
+#   thumbv7em device    23864 / 3468 / 0 / 3496   28356 / 3496
+#
+# It is a whole MS/TP device with no allocator: the MS/TP codec and master
+# core, bacnet-npdu's view, and the allocation-free profile of
+# bacnet-types, bacnet-encoding and bacnet-services, answering Who-Is and
+# ReadProperty for a Device object and an Analog Input. Its .bss is one
+# static of 3,496 octets: the core's StandardStorage<1, 2, 1> (about 3.3 KB: 501
+# octets of receive storage, the queues' three standard slots and the
+# action buffers), the application's scratch (88: 64 for an answer's APDU
+# and 24 for a property value), the 88-octet buffer its answer's NPDU is
+# written into, room for a DADR as long as any data link's, and 64 octets
+# where the scenario encodes the client's frames. It links no core::fmt,
+# 64-bit division or memmove.
 
 [thumbv7m-none-eabi.mstp]
 text = 18320
@@ -351,6 +371,17 @@ data = 64
 bss = 17376
 flash = 47024
 ram = 17376
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7m-none-eabi.device]
+text = 26720
+rodata = 3888
+data = 64
+bss = 3920
+flash = 31760
+ram = 3920
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
@@ -432,6 +463,17 @@ fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
+[thumbv6m-none-eabi.device]
+text = 29088
+rodata = 3888
+data = 64
+bss = 3920
+flash = 33200
+ram = 3920
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
 [riscv32imc-unknown-none-elf.mstp]
 text = 21008
 rodata = 1472
@@ -509,6 +551,17 @@ fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
+[riscv32imc-unknown-none-elf.device]
+text = 31488
+rodata = 4432
+data = 64
+bss = 3920
+flash = 35952
+ram = 3920
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
 [thumbv7em-none-eabihf.mstp]
 text = 18224
 rodata = 1184
@@ -582,6 +635,17 @@ data = 64
 bss = 17376
 flash = 46848
 ram = 17376
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7em-none-eabihf.device]
+text = 26736
+rodata = 3888
+data = 64
+bss = 3920
+flash = 31760
+ram = 3920
 fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
