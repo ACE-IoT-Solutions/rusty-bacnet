@@ -21,6 +21,12 @@ use bytes::{Bytes, BytesMut};
 mod decode_error;
 pub use decode_error::NpduDecodeError;
 
+/// `bacnet-npdu`, whose types this module's API speaks (the priority, the
+/// message type, the decode faults and the address bound), re-exported so
+/// its version can't drift apart from this crate's: the view this codec
+/// runs on is [`view::Npdu`].
+pub use bacnet_npdu as view;
+
 // ---------------------------------------------------------------------------
 // Address used in NPDU routing fields
 // ---------------------------------------------------------------------------

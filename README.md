@@ -287,7 +287,7 @@ How to configure each one:
 | [`bacnet-encoding`](https://crates.io/crates/bacnet-encoding) | ASN.1 tags, APDU/NPDU codecs, segmentation (`no_std` with `alloc`) |
 | [`bacnet-services`](https://crates.io/crates/bacnet-services) | Service request and response types (`no_std` with `alloc`) |
 | [`bacnet-time`](https://crates.io/crates/bacnet-time) | The monotonic `Instant` and `Duration`, in nanoseconds, that the portable cores share, so firmware feeds them one clock; its `std` feature adds a host clock adapter (`no_std`; no allocator, no dependencies; versions on its own) |
-| [`bacnet-npdu`](https://crates.io/crates/bacnet-npdu) | The network-layer vocabulary (Clause 6), one definition of each: a borrowed NPDU view and encoder, network message types, reject reasons, network priority and NPDU limits (`no_std`; no allocator, no dependencies) |
+| [`bacnet-npdu`](crates/bacnet-npdu) | New in 0.14.0: the network-layer vocabulary (Clause 6), one definition of each: a borrowed NPDU view and encoder, network message types, reject reasons, network priority and NPDU limits (`no_std`; no allocator, no dependencies) |
 | [`bacnet-mstp-codec`](https://crates.io/crates/bacnet-mstp-codec) | MS/TP frame codec: CRCs, encode, decode and a stream decoder, for standard and extended (COBS-encoded) frames (`no_std`; no allocator or dependencies by default) |
 | [`bacnet-mstp-core`](https://crates.io/crates/bacnet-mstp-core) | MS/TP master state machine driven by caller-supplied time and events (`no_std`; no allocator by default) |
 | [`bacnet-bip-codec`](https://crates.io/crates/bacnet-bip-codec) | BACnet/IP and BACnet/IPv6 BVLL codec: every Annex J and Annex U message, B/IP and B/IPv6 addresses, VMACs and BDT/FDT tables (`no_std`; no allocator or dependencies by default) |
@@ -302,7 +302,8 @@ How to configure each one:
 | [`bacnet-endpoint`](https://crates.io/crates/bacnet-endpoint) | One transport owner for both client and server roles |
 | [`bacnet-cli`](https://crates.io/crates/bacnet-cli) | The `bacnet` command-line tool (also as release binaries) |
 
-All seventeen are on crates.io at 0.13.0. The
+All but `bacnet-npdu` are on crates.io at 0.13.0; `bacnet-npdu` first
+publishes with 0.14.0. The
 Python package is built from [`crates/rusty-bacnet`](crates/rusty-bacnet) with
 [maturin](https://www.maturin.rs/). The [architecture guide](docs/architecture.md)
 shows how the layers fit together.

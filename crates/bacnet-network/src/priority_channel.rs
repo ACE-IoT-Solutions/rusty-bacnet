@@ -56,14 +56,11 @@ pub struct PriorityReceiver<T> {
 
 /// Map a `NetworkPriority` to a queue index (0 = highest priority).
 pub fn priority_index(p: NetworkPriority) -> usize {
-    if p == NetworkPriority::LifeSafety {
-        0
-    } else if p == NetworkPriority::CriticalEquipment {
-        1
-    } else if p == NetworkPriority::Urgent {
-        2
-    } else {
-        3 // NORMAL and any unknown/vendor values
+    match p {
+        NetworkPriority::LifeSafety => 0,
+        NetworkPriority::CriticalEquipment => 1,
+        NetworkPriority::Urgent => 2,
+        NetworkPriority::Normal => 3,
     }
 }
 
