@@ -451,10 +451,12 @@ pub trait TransportPort: Send + Sync {
 
     /// Send NPDU bytes to a specific MAC address (unicast).
     ///
-    /// A definite refusal because the NPDU or its encoded link frame is
-    /// too long returns [`Error::SendTooLong`] before any bytes are sent or
-    /// queued for writing. Preserve that variant through wrappers. An I/O
-    /// or encoding failure is not evidence of a length refusal.
+    /// When [`Error::SendTooLong`] is returned, the NPDU or its encoded link
+    /// frame exceeded a bound before any bytes were sent or queued for
+    /// writing. BACnet/SC uses it for NPDU and frame-length checks; other
+    /// transports may return their existing error variants. Wrappers must
+    /// preserve `SendTooLong`. Other variants do not identify a definite
+    /// length refusal for the router.
     ///
     /// B/IP refuses a MAC that is one of its group addresses
     /// ([`Self::is_group_destination`]) with an error, sending nothing
@@ -482,8 +484,8 @@ pub trait TransportPort: Send + Sync {
     }
 
     /// Broadcast NPDU bytes on the local network.
-    /// The definite pre-send length-refusal contract of [`Self::send_unicast`]
-    /// applies here too.
+    /// [`Error::SendTooLong`], when returned, has the same meaning as in
+    /// [`Self::send_unicast`].
     fn send_broadcast(
         &self,
         npdu: &[u8],
