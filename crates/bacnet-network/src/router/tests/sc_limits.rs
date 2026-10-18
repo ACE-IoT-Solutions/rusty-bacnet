@@ -12,7 +12,7 @@ use super::*;
 use bacnet_router_core::router::Limits;
 use bacnet_transport::sc::{LoopbackWebSocket, ScReconnectConfig, ScTransport, WebSocketPort};
 use bacnet_transport::sc_frame::{
-    decode_sc_message, encode_sc_message, ScFunction, ScMessage, Vmac,
+    decode_sc_message, encode_sc_message, ScFunction, ScMessage, ScOption, Vmac,
 };
 use tokio::time::{sleep, timeout, Instant};
 
@@ -114,6 +114,10 @@ impl Hubs {
 /// rewritten onto network 2000, which drops the DNET, DADR and hop count
 /// and adds `NODE` as SADR.
 async fn send_to_peer(hub_a: &LoopbackWebSocket, apdu: usize) {
+    send_with_options(hub_a, apdu, Vec::new()).await;
+}
+
+async fn send_with_options(hub_a: &LoopbackWebSocket, apdu: usize, data_options: Vec<ScOption>) {
     let mut payload = vec![0x10, 0x08];
     payload.resize(apdu, 0);
     let npdu = Npdu {
@@ -127,18 +131,26 @@ async fn send_to_peer(hub_a: &LoopbackWebSocket, apdu: usize) {
     };
     let mut npdu_buf = BytesMut::new();
     encode_npdu(&mut npdu_buf, &npdu).unwrap();
+    send_encoded_with_options(hub_a, npdu_buf.freeze(), data_options).await;
+}
+
+async fn send_encoded_with_options(
+    hub: &LoopbackWebSocket,
+    npdu: Bytes,
+    data_options: Vec<ScOption>,
+) {
     let message = ScMessage {
         function: ScFunction::EncapsulatedNpdu,
         message_id: 0x4455,
         originating_vmac: Some(NODE),
         destination_vmac: None,
         dest_options: Vec::new(),
-        data_options: Vec::new(),
-        payload: npdu_buf.freeze(),
+        data_options,
+        payload: npdu,
     };
     let mut buf = BytesMut::new();
     encode_sc_message(&mut buf, &message);
-    hub_a.send(&buf).await.unwrap();
+    hub.send(&buf).await.unwrap();
 }
 
 /// The next NPDU `hub` relays to `to`, skipping everything else.
@@ -191,4 +203,57 @@ async fn a_hub_that_carries_more_takes_what_the_old_one_refused() {
     assert_eq!(next_npdu_to(&failover, PEER).await.len(), 601);
     assert_eq!(router.counters().egress_too_long, 1);
     router.stop().await;
+}
+
+/// The NPDU fits, but forwarded attributes push its encoded SC frame over
+/// the hub's bound. A following fitting send is an ordered progress barrier.
+#[tokio::test]
+async fn forwarded_attributes_beyond_max_bvlc_return_reason_4() {
+    let mut hubs = start((100, 1497)).await;
+    send_with_options(
+        &hubs.hub_a,
+        2,
+        vec![ScOption {
+            option_type: 31,
+            must_understand: false,
+            data: vec![0xAB; 100],
+        }],
+    )
+    .await;
+    send_to_peer(&hubs.hub_a, 2).await;
+    assert_eq!(next_npdu_to(&hubs.primary, PEER).await.len(), 13);
+    let counts = hubs.router.counters();
+    assert_eq!(
+        (counts.egress_too_long, counts.refused, counts.rejects),
+        (1, 1, 1)
+    );
+    assert!(is_reason_4(next_npdu_to(&hubs.hub_a, NODE).await));
+    hubs.router.stop().await;
+}
+
+#[tokio::test]
+async fn forwarded_reject_attributes_beyond_max_bvlc_do_not_make_feedback() {
+    let mut hubs = start((100, 1497)).await;
+    // Directed Reject-Message-To-Network for PEER, naming network 77.
+    let mut reject = vec![1, 0xa0, 7, 0xd0, 6];
+    reject.extend_from_slice(&PEER);
+    reject.extend_from_slice(&[255, 3, 4, 0, 77]);
+    send_encoded_with_options(
+        &hubs.hub_a,
+        Bytes::from(reject),
+        vec![ScOption {
+            option_type: 31,
+            must_understand: false,
+            data: vec![0xab; 100],
+        }],
+    )
+    .await;
+    send_to_peer(&hubs.hub_a, 2).await;
+    assert_eq!(next_npdu_to(&hubs.primary, PEER).await.len(), 13);
+    let counts = hubs.router.counters();
+    assert_eq!(
+        (counts.egress_too_long, counts.refused, counts.rejects),
+        (1, 1, 0)
+    );
+    hubs.router.stop().await;
 }

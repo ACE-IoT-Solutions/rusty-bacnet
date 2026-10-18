@@ -120,10 +120,12 @@ enum SendRequest {
         npdu: Bytes,
         mac: MacAddr,
         data_attributes: Vec<DataAttribute>,
+        reject_origin: Option<bacnet_router_core::router::RejectOrigin>,
     },
     Broadcast {
         npdu: Bytes,
         data_attributes: Vec<DataAttribute>,
+        reject_origin: Option<bacnet_router_core::router::RejectOrigin>,
     },
 }
 
@@ -270,14 +272,14 @@ impl BACnetRouter {
     /// malformed, the relays a spent hop count stopped, the rejects it sent,
     /// the sends too long for their egress port (`egress_too_long`: the
     /// limit its transport's [`TransportPort::max_npdu`] reports, #1665, or
-    /// a send the transport refused as too long after that limit fell,
-    /// #1696),
+    /// a definite pre-send length refusal reported by the transport, including
+    /// BACnet/SC frame attributes and direct-peer bounds, #1716),
     /// and the rewrites it couldn't write (`write_failures`: longer than its
     /// 65,556-octet scratch, or with a field no NPDU may carry). They
     /// saturate and name no peer. The table's own counts are
     /// [`claim_counters`](crate::router_table::Table::claim_counters).
     ///
-    /// They are the counts as of the last frame, sweep or table change the
+    /// They are the counts as of the last frame, send refusal, sweep or table change the
     /// engine finished, copied out before its lock was let go, so reading
     /// them takes no lock: it is safe while a [`RouterTableGuard`] lives,
     /// and so are the four drop counts below, which read them.
@@ -436,18 +438,31 @@ impl BACnetRouter {
             warnings: Default::default(),
         });
 
-        // Move transports into sender tasks
-        let mut send_txs = Vec::new();
-        let mut sender_tasks = Vec::new();
-        for port in ports {
-            let (send_tx, send_rx) = send_queue::channel(send_queue::CAPACITY);
-            send_txs.push(send_tx);
-            sender_tasks.push(tokio::spawn(sender::run(
-                port.transport,
-                send_rx,
-                Arc::clone(&shared),
-            )));
-        }
+        let (send_txs, send_rxs): (Vec<_>, Vec<_>) = (0..ports.len())
+            .map(|_| send_queue::channel(send_queue::CAPACITY))
+            .unzip();
+        let outputs = Arc::new(Outputs {
+            send_txs,
+            local_tx,
+            local_control: local_control::LocalControl::new(
+                network_control,
+                Arc::clone(&network_control_ingress_sequence),
+            ),
+        });
+        // Senders may return a late rejection through these queues, but
+        // must not keep them or the local consumers alive after dispatch.
+        let sender_tasks = ports
+            .into_iter()
+            .zip(send_rxs)
+            .map(|(port, send_rx)| {
+                tokio::spawn(sender::run(
+                    port.transport,
+                    send_rx,
+                    Arc::clone(&shared),
+                    Arc::downgrade(&outputs),
+                ))
+            })
+            .collect();
 
         // Follow the limits of the ports whose transports publish them.
         let limit_tasks = limit_changes
@@ -464,16 +479,8 @@ impl BACnetRouter {
         // Startup: each port hears its own network number, in a
         // Network-Number-Is (R3, Clause 6.4.20), then, in an I-Am-Router,
         // which networks lie beyond the other ports.
-        shared.announce(&send_txs);
+        shared.announce(&outputs.send_txs);
 
-        let outputs = Arc::new(Outputs {
-            send_txs,
-            local_tx,
-            local_control: local_control::LocalControl::new(
-                network_control,
-                Arc::clone(&network_control_ingress_sequence),
-            ),
-        });
         let dispatch_tasks = port_receivers
             .into_iter()
             .enumerate()
@@ -612,6 +619,8 @@ mod fixes_tests;
 mod ingress_harness;
 #[cfg(test)]
 mod init_routing_table_tests;
+#[cfg(test)]
+mod late_refusal_tests;
 #[cfg(test)]
 mod limit_tests;
 #[cfg(test)]

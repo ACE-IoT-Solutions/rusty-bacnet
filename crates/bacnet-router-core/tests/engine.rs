@@ -193,7 +193,7 @@ fn a_later_refusal_is_counted_and_ends_no_answer() {
     );
     assert_eq!(received, Received::Handled);
     assert!(matches!(router.poll_action(), Action::Send(_)));
-    router.refused_later(SendRefusal::TooLong);
+    router.refused_later(SendRefusal::TooLong, None);
     assert_eq!(drain(&mut router).len(), 1, "the second Ack");
     let counters = router.counters();
     assert_eq!((counters.refused, counters.egress_too_long), (1, 1));

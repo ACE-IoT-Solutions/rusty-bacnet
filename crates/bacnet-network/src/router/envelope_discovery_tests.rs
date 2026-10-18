@@ -92,6 +92,7 @@ async fn who_is_scoped_known_network_answered_locally_not_forwarded() {
         SendRequest::Broadcast {
             npdu,
             data_attributes,
+            ..
         } => (npdu, data_attributes),
         SendRequest::Unicast { .. } => panic!("expected broadcast I-Am reply"),
     };
@@ -331,6 +332,7 @@ async fn directed_control_routed_not_consumed() {
             npdu,
             mac,
             data_attributes,
+            ..
         } => {
             assert_eq!(mac.as_slice(), &[5]);
             let decoded = decode_npdu(npdu).unwrap();

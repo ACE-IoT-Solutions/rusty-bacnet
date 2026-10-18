@@ -50,6 +50,8 @@ impl TransportPort for IngressTransport {
                 npdu: Bytes::copy_from_slice(npdu),
                 mac: MacAddr::from_slice(mac),
                 data_attributes: data_attributes.to_vec(),
+
+                reject_origin: None,
             })
             .map_err(|_| Error::Encoding("test wire queue unavailable".into()))
     }
@@ -63,6 +65,8 @@ impl TransportPort for IngressTransport {
             .try_send(SendRequest::Broadcast {
                 npdu: Bytes::copy_from_slice(npdu),
                 data_attributes: data_attributes.to_vec(),
+
+                reject_origin: None,
             })
             .map_err(|_| Error::Encoding("test wire queue unavailable".into()))
     }
@@ -240,6 +244,7 @@ pub(super) async fn barrier(peer: &mut Peer) {
                 npdu,
                 mac,
                 data_attributes,
+                ..
             } => break (npdu, mac, data_attributes),
             SendRequest::Broadcast { npdu, .. } => {
                 let decoded = decode_npdu(npdu).unwrap();
@@ -285,6 +290,7 @@ pub(super) async fn branch_forward(peers: &mut [Peer], branch: LocalBranch, port
             SendRequest::Broadcast {
                 npdu,
                 data_attributes,
+                ..
             } => {
                 let decoded = decode_npdu(npdu.clone()).unwrap();
                 if decoded.message_type

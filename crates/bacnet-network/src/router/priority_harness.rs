@@ -1,8 +1,12 @@
 //! Socket-free router ports whose sends finish only when the test allows it.
 
-use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort};
+use bacnet_transport::port::{DataAttribute, NpduLimits, ReceivedNpdu, TransportPort};
 use bacnet_types::{error::Error, MacAddr};
 use bytes::Bytes;
+use std::sync::{
+    atomic::{AtomicU16, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{timeout, Duration};
 
@@ -14,11 +18,12 @@ pub(super) struct Sending {
     pub(super) npdu: Vec<u8>,
     pub(super) to: Option<Vec<u8>>,
     pub(super) attributes: Vec<DataAttribute>,
-    pub(super) complete: oneshot::Sender<()>,
+    pub(super) complete: oneshot::Sender<Result<(), Error>>,
 }
 
 pub(super) struct Peer {
     pub(super) frames: mpsc::Sender<ReceivedNpdu>,
+    pub(super) limit: Arc<AtomicU16>,
     pub(super) sent: mpsc::UnboundedReceiver<Sending>,
 }
 
@@ -26,6 +31,7 @@ struct Port {
     incoming: Option<mpsc::Receiver<ReceivedNpdu>>,
     sent: mpsc::UnboundedSender<Sending>,
     mac: [u8; 1],
+    limit: Arc<AtomicU16>,
 }
 
 impl Port {
@@ -46,7 +52,7 @@ impl Port {
             .map_err(|_| Error::Encoding("test wire closed".into()))?;
         completion
             .await
-            .map_err(|_| Error::Encoding("test send refused".into()))
+            .map_err(|_| Error::Encoding("test send refused".into()))?
     }
 }
 
@@ -84,6 +90,10 @@ impl TransportPort for Port {
         self.send(npdu, None, attributes).await
     }
 
+    fn max_npdu(&self) -> NpduLimits {
+        NpduLimits::both(self.limit.load(Ordering::SeqCst))
+    }
+
     fn local_mac(&self) -> &[u8] {
         &self.mac
     }
@@ -98,16 +108,22 @@ pub(super) async fn start(count: usize) -> (BACnetRouter, mpsc::Receiver<Receive
         .map(|index| {
             let (frames, incoming) = mpsc::channel(64);
             let (sent, wire) = mpsc::unbounded_channel();
+            let limit = Arc::new(AtomicU16::new(1497));
             (
                 RouterPort {
                     transport: Port {
                         incoming: Some(incoming),
                         sent,
                         mac: [index as u8 + 1],
+                        limit: limit.clone(),
                     },
                     network_number: (index as u16 + 1) * 1000,
                 },
-                Peer { frames, sent: wire },
+                Peer {
+                    frames,
+                    sent: wire,
+                    limit,
+                },
             )
         })
         .unzip();
@@ -119,7 +135,7 @@ pub(super) async fn start(count: usize) -> (BACnetRouter, mpsc::Receiver<Receive
             let announcement = sending(peer).await;
             assert_eq!(&announcement.npdu[..3], &[1, 0x80, kind]);
             assert!(announcement.attributes.is_empty());
-            announcement.complete.send(()).unwrap();
+            announcement.complete.send(Ok(())).unwrap();
         }
     }
     (started.router, started.apdus, peers)

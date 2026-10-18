@@ -738,9 +738,18 @@ router follows it: it gives the engine's port each new limit as soon as it is
 published, and every frame it routes after that goes by it, so an NPDU too
 long for the new hub draws reason 4, and one the old hub refused goes. A send
 already on the port's queue when the limit falls can still be refused by the
-transport; the router counts that refusal in `counters().egress_too_long` and
-`refused` as well as logging it, but answers it with no reject. The default,
-`None`, says the limit never changes once started, which holds for the other
+transport. When a transport returns `Error::SendTooLong`, it guarantees that
+no bytes were queued or written. The router counts that refusal in
+`counters().egress_too_long` and `refused`, then returns reason 4 to an eligible
+origin, naming the original DNET and preserving the arrival's data attributes
+(#1716). BACnet/SC uses this error for its NPDU and encoded-frame bounds,
+including forwarded attributes and direct-peer limits. Forwarded rejects,
+global broadcasts and control fan-outs never draw a reply. The reply enters
+the existing bounded priority queue; refusing that reply cannot start a loop.
+Other failures do not imply a length refusal, even if the port's limit changed.
+
+The default `max_npdu_changes()` result, `None`, says the limit never changes
+once started, which holds for the other
 built-in transports. Wrappers and `AnyTransport` delegate both methods, and a
 wrapper around an MS/TP or BACnet/SC transport that doesn't loses its real
 limit. A custom transport that carries more than 1,497 octets must override
@@ -2338,7 +2347,9 @@ now follows the clause, with no switch to turn back (#1679):
   message the router sends to every other port, leaves out a port too short
   for it, with no reject. Both count in `counters().egress_too_long`, and
   log a warning at most once per interval, with the count since, as a failed
-  send does.
+  send does. A queued send that the transport later refuses before transmission
+  uses the same original destination and return path for its reject (#1716);
+  forwarded rejects and fan-outs still get no reply.
 - **Rejects keep routes (R2).** A received reject changes the table for
   reasons 1 (unreachable) and 2 (busy) only (Clause 6.6.3.5). One with any
   other reason, such as R1's reason 4, leaves a learned route as it is and

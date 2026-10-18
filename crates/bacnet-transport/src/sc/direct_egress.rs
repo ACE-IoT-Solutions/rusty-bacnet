@@ -86,9 +86,10 @@ impl DirectEgress {
         attributes: &[DataAttribute],
     ) -> Result<(), DirectSendError> {
         if npdu.len() > usize::from(self.limits.1) {
-            return Err(DirectSendError::Failed(Error::Encoding(
-                "direct NPDU exceeds peer Max-NPDU-Length".into(),
-            )));
+            return Err(DirectSendError::Failed(Error::SendTooLong {
+                length: npdu.len(),
+                limit: usize::from(self.limits.1),
+            }));
         }
         let frame = ScMessage {
             function: ScFunction::EncapsulatedNpdu,
@@ -106,9 +107,10 @@ impl DirectEgress {
     }
     pub(crate) async fn send_frame(&self, bytes: Bytes) -> Result<(), DirectSendError> {
         if bytes.len() > usize::from(self.limits.0) {
-            return Err(DirectSendError::Failed(Error::Encoding(
-                "direct BVLC exceeds peer Max-BVLC-Length".into(),
-            )));
+            return Err(DirectSendError::Failed(Error::SendTooLong {
+                length: bytes.len(),
+                limit: usize::from(self.limits.0),
+            }));
         }
         let started = Arc::new(AtomicBool::new(false));
         let (done, receive) = oneshot::channel();

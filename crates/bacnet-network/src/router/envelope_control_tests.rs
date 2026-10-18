@@ -203,6 +203,7 @@ async fn reject_requires_exact_length_for_table_change_and_relay() {
             npdu,
             mac,
             data_attributes,
+            ..
         } => {
             assert_eq!(mac.as_slice(), &[7]);
             let decoded = decode_npdu(npdu).unwrap();
@@ -314,6 +315,7 @@ async fn what_is_guards_and_reply() {
         SendRequest::Broadcast {
             npdu,
             data_attributes,
+            ..
         } => {
             let decoded = decode_npdu(npdu).unwrap();
             assert_eq!(
@@ -420,6 +422,7 @@ async fn proprietary_unicast_forward_preserves_identity() {
             npdu,
             mac,
             data_attributes,
+            ..
         } => {
             assert_eq!(mac.as_slice(), &[5]);
             let decoded = decode_npdu(npdu).unwrap();
@@ -516,6 +519,7 @@ async fn unknown_local_control_is_explicitly_rejected() {
             npdu,
             mac,
             data_attributes,
+            ..
         } => {
             assert_eq!(mac.as_slice(), &[7]);
             let decoded = decode_npdu(npdu).unwrap();

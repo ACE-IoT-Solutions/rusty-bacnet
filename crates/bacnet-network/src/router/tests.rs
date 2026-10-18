@@ -211,6 +211,7 @@ fn announcements(networks: &[u16]) -> Vec<Vec<Announced>> {
                     SendRequest::Broadcast {
                         npdu: data,
                         data_attributes,
+                        ..
                     } => {
                         assert!(data_attributes.is_empty());
                         let decoded = decode_npdu(data).unwrap();

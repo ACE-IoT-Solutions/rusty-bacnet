@@ -363,6 +363,8 @@ async fn init_query_answered_in_hardened_full_queue_bounded() {
                 SendRequest::Broadcast {
                     npdu: bytes::Bytes::new(),
                     data_attributes: Vec::new(),
+
+                    reject_origin: None,
                 },
             )
             .unwrap();
@@ -396,6 +398,8 @@ async fn init_query_answered_in_hardened_full_queue_bounded() {
                 SendRequest::Broadcast {
                     npdu: bytes::Bytes::new(),
                     data_attributes: Vec::new(),
+
+                    reject_origin: None,
                 },
             )
             .unwrap();

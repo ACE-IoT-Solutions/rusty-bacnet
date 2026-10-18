@@ -24,6 +24,8 @@ fn request() -> SendRequest {
     SendRequest::Broadcast {
         npdu: Bytes::from_static(&[1, 0, 0x10, 8]),
         data_attributes: Vec::new(),
+
+        reject_origin: None,
     }
 }
 
@@ -109,7 +111,7 @@ async fn ready_transport_yields_before_draining_a_full_backlog() {
     // the 256-item backlog, so cooperation must leave some work queued.
     tokio::select! {
         biased;
-        () = super::run(port, rx, shared()) => panic!("a sender still lives"),
+        () = super::run(port, rx, shared(), std::sync::Weak::new()) => panic!("a sender still lives"),
         () = std::future::ready(()) => {}
     }
     let sent = calls.load(Ordering::SeqCst);
@@ -135,7 +137,7 @@ async fn a_replenished_ready_sender_can_be_aborted_and_joined_before_exhaustion(
         refill: Some(tx.clone()),
         started: Mutex::new(Some(started)),
     };
-    let sender = tokio::spawn(super::run(port, rx, shared()));
+    let sender = tokio::spawn(super::run(port, rx, shared(), std::sync::Weak::new()));
     observe.await.unwrap();
     let sent_before_abort = calls.load(Ordering::SeqCst);
     sender.abort();

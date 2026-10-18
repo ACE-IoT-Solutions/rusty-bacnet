@@ -392,6 +392,22 @@ mod tests {
     }
 
     #[test]
+    fn definite_send_length_refusal_uses_the_existing_base_exception() {
+        Python::initialize();
+        Python::attach(|py| {
+            let error = to_py_err(Error::SendTooLong {
+                length: 1500,
+                limit: 480,
+            });
+            assert!(error.value(py).get_type().is(py.get_type::<BacnetError>()));
+            assert_eq!(
+                error.value(py).str().unwrap().to_str().unwrap(),
+                "send refused before transmission: 1500 octets exceed the 480-octet limit"
+            );
+        });
+    }
+
+    #[test]
     fn transport_errors_are_oserrors_with_errno() {
         Python::initialize();
         Python::attach(|py| {
