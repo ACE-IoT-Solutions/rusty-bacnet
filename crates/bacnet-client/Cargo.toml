@@ -35,7 +35,6 @@ ipv6 = ["bacnet-transport/ipv6"]
 sc-tls = ["bacnet-transport/sc-tls", "dep:tokio-rustls"]
 
 [dev-dependencies]
-bacnet-server.workspace = true
 rcgen.workspace = true
 bacnet-objects.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "macros", "time", "test-util"] }

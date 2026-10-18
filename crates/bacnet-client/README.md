@@ -11,7 +11,7 @@ alloc-only or no-heap profile. For one device combining client and server roles
 under one transport owner, see the separate `bacnet-endpoint` crate and its
 narrower service contract.
 
-## Read a property using development source
+## Send Who-Is using development source
 
 Place an application directory beside a checkout named `rusty-bacnet`, then
 add this exact dependency block to the application's `Cargo.toml`. These paths
@@ -22,82 +22,59 @@ macros and time support; the program needs no multi-thread runtime feature.
 ```toml
 [dependencies]
 bacnet-client = { path = "../rusty-bacnet/crates/bacnet-client", default-features = false }
-bacnet-server = { path = "../rusty-bacnet/crates/bacnet-server", default-features = false }
-bacnet-objects = { path = "../rusty-bacnet/crates/bacnet-objects" }
 bacnet-transport = { path = "../rusty-bacnet/crates/bacnet-transport" }
-bacnet-types = { path = "../rusty-bacnet/crates/bacnet-types" }
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 ```
 
-Save this complete program as `src/main.rs`. It initializes an Analog Input to
-42.0 degrees Celsius, seeds a Device and its Object_List with
-`build_database_with_extra`, and starts a real client and server over bounded
-in-process loopback channels. The read has a two-second outer timeout, a
-one-second APDU timeout and no retries. Its acknowledgement is checked against
-independent application-tagged REAL bytes for 42.0.
+Save this complete program as `src/main.rs`. It starts a real client over
+bounded in-process loopback channels and sends Who-Is without device-instance
+limits. The paired raw transport receives the emitted frame. Sending and
+receiving share a two-second timeout; the complete NPDU is checked against
+independent expected bytes for this global Who-Is request.
 
 ```rust
 use bacnet_client::client::{BACnetClient, ClientConfig};
-use bacnet_objects::analog::AnalogInputObject;
-use bacnet_objects::device_identity::{build_database_with_extra, DeviceIdentity};
-use bacnet_server::server::BACnetServer;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
-use bacnet_types::primitives::ObjectIdentifier;
+use bacnet_transport::port::TransportPort;
 use tokio::time::{timeout, Duration};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let identity = DeviceIdentity::new(1001, 42)?;
-    let mut analog = AnalogInputObject::new(
-        7,
-        "supply-temperature",
-        EngineeringUnits::DEGREES_CELSIUS.to_raw(),
-    )?;
-    analog.set_present_value(42.0);
-    let database = build_database_with_extra(&identity, vec![Box::new(analog)])?;
-    assert!(database.get(&identity.device_oid()).is_some());
-
-    let (client_port, server_port) = LoopbackTransport::pair(vec![1], vec![2]);
-    let mut server = BACnetServer::generic_builder()
-        .device(identity)
-        .database(database)
-        .transport(server_port)
-        .build()
-        .await?;
-    let config = ClientConfig {
-        apdu_timeout_ms: 1_000,
-        apdu_retries: 0,
-        ..ClientConfig::default()
-    };
-    let mut client = BACnetClient::start(config, client_port).await?;
-    let object = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 7)?;
-    let reply = timeout(
-        Duration::from_secs(2),
-        client.read_property(&[2], object, PropertyIdentifier::PRESENT_VALUE, None),
-    )
+    let (client_port, mut peer) = LoopbackTransport::pair(vec![1], vec![2]);
+    let mut frames = peer.start().await?;
+    let mut client = BACnetClient::start(ClientConfig::default(), client_port).await?;
+    let received = timeout(Duration::from_secs(2), async {
+        client.who_is(None).await?;
+        let frame = frames.recv().await.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "loopback peer closed")
+        })?;
+        Ok::<_, Box<dyn std::error::Error>>(frame)
+    })
     .await;
 
     let client_stopped = client.stop().await;
-    let server_stopped = server.stop().await;
-    let ack = reply??;
+    let peer_stopped = peer.stop().await;
+    let frame = received??;
     client_stopped?;
-    server_stopped?;
-    assert_eq!(ack.object_identifier, object);
-    assert_eq!(ack.property_identifier, PropertyIdentifier::PRESENT_VALUE);
-    assert_eq!(ack.property_array_index, None);
-    assert_eq!(ack.property_value, [0x44, 0x42, 0x28, 0x00, 0x00]);
+    peer_stopped?;
+    assert_eq!(
+        &frame.npdu[..],
+        &[0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08]
+    );
+    assert_eq!(&frame.source_mac[..], &[1]);
+    assert!(frame.link_layer_group);
     Ok(())
 }
 ```
 
-Both owners are explicitly stopped before the read result is propagated. The
-read timeout does not impose a shutdown deadline. Directly setting the analog
-value is initialization before server ownership; live updates need the
-server's local mutation APIs and their event/COV processing.
+Both owners are explicitly stopped before the operation result is propagated.
+The operation timeout does not impose a shutdown deadline. This program
+observes an emitted Who-Is frame; it neither receives I-Am nor establishes
+that a device was discovered. For a complete client/server ReadProperty
+exchange, see the [server guide](https://github.com/jscott3201/rusty-bacnet/blob/dev/crates/bacnet-server/README.md).
 
 Loopback sends to its paired peer regardless of the requested destination.
-This program establishes an in-process request/response exchange and cleanup,
+This program establishes in-process transmission, receipt and cleanup,
 not destination filtering, UDP, TLS, serial, physical equipment, timing,
 firmware behavior or BACnet conformance. Enabling an optional feature while
 running it does not exercise that feature's network transport.
@@ -128,8 +105,8 @@ doctest. A local render does not establish a docs.rs deployment.
 
 [`client::BACnetClient::read_property`] returns encoded property data and checks
 that the acknowledgement matches the requested object, property and array
-index. Decode it for your property's expected type; the literal above is an
-independent expectation for this one REAL value, not a general decoder.
+index. Decode it for your property's expected type; the Who-Is byte literal
+above is not a property-value decoder.
 
 Keep the client owner until requests finish, then call
 [`client::BACnetClient::stop`]. Stop aborts and joins its dispatch and local
@@ -138,7 +115,7 @@ cancelled stop waiter retains joins for a later stop; dropping the client is
 not a substitute for awaiting cleanup. The API does not promise a universal
 fixed shutdown deadline.
 
-The paired server's database exposes raw object state; use its `read_local`
+When using a server, its database exposes raw object state; use its `read_local`
 method for executor-owned live properties. Release database guards before
 network requests or shutdown. Server service/mutation/source policies remain
 application decisions, including when a transport authenticates its peers.

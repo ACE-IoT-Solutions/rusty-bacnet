@@ -1,4 +1,4 @@
 ---
 section: Changed
 ---
-- Add canonical object, standalone client and server crate guides with complete development-source examples, feature badges and lifecycle/qualification boundaries (#1723).
+- Add canonical crate guides for object initialization, client Who-Is transmission and server ReadProperty exchange, with complete development-source examples, feature badges and lifecycle/qualification boundaries (#1723).
