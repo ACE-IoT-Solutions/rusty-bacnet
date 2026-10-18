@@ -113,9 +113,10 @@ jobs:
           DRY_RUN_INPUT: ${{ inputs.dry_run }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Every publishable crate carries the workspace version, but for the
-          # few that version on their own (bacnet-time, #1768), and the Python
-          # package takes it from crates/rusty-bacnet.
+          # The release version: every publishable crate carries it, except the
+          # ones release_version.py lists as versioning on their own
+          # (bacnet-time, #1768). The Python package takes it from
+          # crates/rusty-bacnet.
           version=$(cargo metadata --no-deps --format-version 1 --locked | python3 scripts/release/release_version.py)
           tag=
           case "$GITHUB_REF" in refs/tags/v*) tag=${GITHUB_REF#refs/tags/} ;; esac

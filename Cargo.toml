@@ -86,7 +86,7 @@ categories = ["network-programming", "embedded"]
 # bacnet-encoding's `std` feature brings it into a no_std crate.
 # bacnet-time versions on its own (#1768): this is its version, which moves
 # only when its API changes, not the workspace version below it.
-bacnet-time = { version = "0.13.0", path = "crates/bacnet-time" }
+bacnet-time = { version = "0.13.1", path = "crates/bacnet-time" }
 bacnet-types = { version = "0.13.0", path = "crates/bacnet-types", default-features = false }
 bacnet-encoding = { version = "0.13.0", path = "crates/bacnet-encoding", default-features = false }
 bacnet-services = { version = "0.13.0", path = "crates/bacnet-services", default-features = false }

@@ -241,8 +241,8 @@ report one, a forward from the BBMD's own subnet is rebroadcast.
 `BbmdState` maps `std::time::Instant` onto the core's nanosecond clock
 (`bacnet-time`'s `Instant`, which `bacnet-mstp-core` takes too) with a
 centred `bacnet_time::HostClock`: the state's creation sits at the middle
-of the range, so every instant maps exactly both ways. Each decision takes the state's lock once, copies its
-destinations out, and releases it before anything is sent; no await happens
+of the range, so every instant maps exactly both ways. Each decision takes
+the state's lock once, copies its destinations out, and releases it before anything is sent; no await happens
 under the lock. A purge task removes lapsed registrations every second, and
 each decision skips them either way. Firmware can drive the same
 `bacnet_bip_core::bbmd::Tables` directly, sized to fit.

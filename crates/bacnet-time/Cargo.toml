@@ -4,7 +4,7 @@ description = "The no-std monotonic Instant and Duration, in nanoseconds, that t
 # Versioned on its own, not with the workspace: it takes a new version only
 # when its own API changes (#1768). The workspace dependency names this
 # version, not the workspace one.
-version = "0.13.0"
+version = "0.13.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

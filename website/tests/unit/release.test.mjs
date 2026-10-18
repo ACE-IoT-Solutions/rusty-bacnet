@@ -132,5 +132,6 @@ test('the installation page lists exactly the assets release.yml publishes', asy
   assert.ok(listed, `${install} lists the crates`);
   assert.deepEqual([...listed.matchAll(/`([^`]+)`/g)].map(match => match[1]).sort(), crates.filter(name => !independent.includes(name)).sort());
   for (const name of independent) assert.ok(page.includes(`\`${name}\` versions on its own`), `${install} says ${name} versions on its own`);
-  assert.ok(page.includes(`the ${word(crates.length)} crates listed under Rust`));
+  assert.ok(page.includes(`the ${word(crates.length - independent.length)} crates listed under Rust at version {release}`));
+  for (const name of independent) assert.ok(page.includes(`\`${name}\` at its own version`), `${install} publishes ${name} at its own version`);
 });

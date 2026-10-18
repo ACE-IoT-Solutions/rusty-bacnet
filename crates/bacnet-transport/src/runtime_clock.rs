@@ -7,6 +7,8 @@ use bacnet_time::HostClock;
 /// The clock reads `tokio::time::Instant`, as a std instant, so paused-time
 /// tests drive the cores' deadlines with `tokio::time::advance`, and a timer
 /// set at the host instant of a deadline fires on the same clock.
+///
+/// bacnet-network's router has the same constructor (`router/engine.rs`).
 pub(crate) fn tokio_clock() -> HostClock {
     let now = || tokio::time::Instant::now().into_std();
     HostClock::new(now()).reading(now)

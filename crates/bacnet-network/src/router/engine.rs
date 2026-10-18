@@ -68,6 +68,8 @@ const _: () = assert!(
 
 /// Tokio time on the engine's nanosecond timeline, from now: the router's
 /// start. It reads `tokio::time::Instant`, so paused time moves it.
+///
+/// bacnet-transport has the same constructor (`runtime_clock.rs`).
 pub(super) fn tokio_clock() -> HostClock {
     let now = || tokio::time::Instant::now().into_std();
     HostClock::new(now()).reading(now)
