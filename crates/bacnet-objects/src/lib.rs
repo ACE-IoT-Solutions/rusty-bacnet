@@ -1,4 +1,4 @@
-//! BACnet object model: traits, database, and standard object types.
+#![doc = include_str!("../README.md")]
 
 pub mod access_control;
 pub mod accumulator;

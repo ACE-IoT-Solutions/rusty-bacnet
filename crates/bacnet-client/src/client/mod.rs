@@ -558,6 +558,7 @@ impl BACnetClient<BipTransport> {
 #[cfg(feature = "ipv6")]
 impl BACnetClient<Bip6Transport> {
     /// Create a BIP6-specific builder for BACnet/IPv6 transport.
+    #[cfg_attr(docsrs, doc(cfg(feature = "ipv6")))]
     pub fn bip6_builder() -> Bip6ClientBuilder {
         Bip6ClientBuilder {
             config: ClientConfig::default(),
@@ -570,6 +571,7 @@ impl BACnetClient<Bip6Transport> {
 
 /// BIP6-specific builder that constructs `Bip6Transport` from IPv6 interface/port/device-instance.
 #[cfg(feature = "ipv6")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ipv6")))]
 pub struct Bip6ClientBuilder {
     config: ClientConfig,
     options: ClientOptions,
@@ -619,6 +621,7 @@ impl Bip6ClientBuilder {
 #[cfg(feature = "sc-tls")]
 impl BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>> {
     /// Create an SC-specific builder that connects to a BACnet/SC hub.
+    #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
     pub fn sc_builder() -> ScClientBuilder {
         ScClientBuilder {
             config: ClientConfig::default(),
@@ -639,6 +642,7 @@ impl BACnetClient<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
 ///
 /// Created by [`BACnetClient::sc_builder()`].  Requires the `sc-tls` feature.
 #[cfg(feature = "sc-tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
 pub struct ScClientBuilder {
     config: ClientConfig,
     options: ClientOptions,

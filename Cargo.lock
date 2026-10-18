@@ -331,6 +331,7 @@ dependencies = [
  "bacnet-endpoint-core",
  "bacnet-network",
  "bacnet-objects",
+ "bacnet-server",
  "bacnet-services",
  "bacnet-transport",
  "bacnet-types",
