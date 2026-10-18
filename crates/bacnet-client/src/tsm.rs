@@ -8,7 +8,7 @@ use bacnet_types::MacAddr;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 
 mod final_segment;
 #[cfg(test)]
@@ -18,10 +18,13 @@ mod segmented_response;
 pub(crate) use segmented_response::SegmentedResponseAdmission;
 mod completion;
 mod coordinated;
+mod progress;
 pub(crate) use coordinated::{
     CoordinatedCompletion, CoordinatedTerminalPhase, SegmentedAckArrival,
 };
 use coordinated::{PendingLease, PendingRelease};
+use progress::TransactionShared;
+pub(crate) use progress::{ProgressReceiver, TransactionProgress};
 
 /// TSM configuration.
 #[derive(Debug, Clone)]
@@ -168,16 +171,9 @@ pub(crate) enum SegmentAckPhase {
     Idle,
 }
 
-/// Request-side timer state delivered to the task waiting for a response.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TransactionProgress {
-    AwaitingResponse,
-    SegmentedResponse { generation: u64 },
-}
-
 pub(crate) struct TransactionRegistration {
     pub(crate) response: oneshot::Receiver<TsmResponse>,
-    pub(crate) progress: watch::Receiver<TransactionProgress>,
+    pub(crate) progress: ProgressReceiver,
     pub(crate) owner: TransactionOwner,
 }
 
@@ -186,12 +182,15 @@ pub(crate) struct TransactionRegistration {
 /// Pointer identity is stable while delayed work retains a clone. The
 /// allocation therefore cannot be reused for a replacement transaction until
 /// every stale owner reference has gone away.
+///
+/// The same allocation carries the request-side timer progress (#1727), so
+/// a transaction costs one shared allocation rather than two.
 #[derive(Clone, Debug)]
-pub(crate) struct TransactionOwner(Arc<()>);
+pub(crate) struct TransactionOwner(Arc<TransactionShared>);
 
 impl TransactionOwner {
     fn new() -> Self {
-        Self(Arc::new(()))
+        Self(Arc::new(TransactionShared::new()))
     }
 
     pub(crate) fn same_as(&self, other: &Self) -> bool {
@@ -225,7 +224,7 @@ enum TransactionPhase {
 /// A confirmed request awaiting its response.
 struct PendingTransaction {
     responder: oneshot::Sender<TsmResponse>,
-    progress: watch::Sender<TransactionProgress>,
+    /// Also publishes this transaction's timer progress.
     owner: TransactionOwner,
     phase: TransactionPhase,
     final_segment_issue: Option<FinalSegmentIssue>,
@@ -369,14 +368,12 @@ impl Tsm {
         lease: PendingLease,
     ) -> (PendingTransaction, TransactionRegistration) {
         let (tx, rx) = oneshot::channel();
-        let (progress_tx, progress_rx) = watch::channel(TransactionProgress::AwaitingResponse);
         let owner = TransactionOwner::new();
         let final_segment_issue =
             matches!(phase, TransactionPhase::SegmentedRequest { .. }).then(FinalSegmentIssue::new);
         (
             PendingTransaction {
                 responder: tx,
-                progress: progress_tx,
                 owner: owner.clone(),
                 phase,
                 final_segment_issue,
@@ -386,7 +383,7 @@ impl Tsm {
             },
             TransactionRegistration {
                 response: rx,
-                progress: progress_rx,
+                progress: ProgressReceiver::new(owner.clone()),
                 owner,
             },
         )
@@ -475,8 +472,8 @@ impl Tsm {
         }
         pending.phase = TransactionPhase::AwaitingResponse;
         pending
-            .progress
-            .send_replace(TransactionProgress::AwaitingResponse);
+            .owner
+            .publish_progress(TransactionProgress::AwaitingResponse);
         true
     }
 
@@ -553,8 +550,8 @@ impl Tsm {
         pending.phase = TransactionPhase::SegmentedResponse;
         let generation = pending.segment_generation;
         pending
-            .progress
-            .send_replace(TransactionProgress::SegmentedResponse { generation });
+            .owner
+            .publish_progress(TransactionProgress::SegmentedResponse { generation });
         Some(generation)
     }
 
@@ -573,8 +570,8 @@ impl Tsm {
         pending.segment_generation = pending.segment_generation.wrapping_add(1);
         let generation = pending.segment_generation;
         pending
-            .progress
-            .send_replace(TransactionProgress::SegmentedResponse { generation });
+            .owner
+            .publish_progress(TransactionProgress::SegmentedResponse { generation });
         Some(generation)
     }
 
@@ -595,8 +592,8 @@ impl Tsm {
         }
         pending.phase = TransactionPhase::AwaitingResponse;
         pending
-            .progress
-            .send_replace(TransactionProgress::AwaitingResponse);
+            .owner
+            .publish_progress(TransactionProgress::AwaitingResponse);
         true
     }
 

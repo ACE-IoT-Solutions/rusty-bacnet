@@ -545,7 +545,7 @@ fn segmented_admission_and_request_timeout_are_serialized() {
         .begin_segmented_response(&mac, invoke_id, &registration.owner)
         .unwrap();
     assert_eq!(
-        *registration.progress.borrow(),
+        registration.progress.current(),
         TransactionProgress::SegmentedResponse { generation }
     );
     assert_eq!(
@@ -621,7 +621,7 @@ fn stale_segment_timer_generation_cannot_cancel_new_activity() {
     );
     assert_eq!(tsm.pending_count(), 1);
     assert_eq!(
-        *registration.progress.borrow(),
+        registration.progress.current(),
         TransactionProgress::SegmentedResponse {
             generation: current_generation
         }
@@ -693,7 +693,7 @@ async fn stale_owner_cannot_mutate_reused_transaction_key() {
     );
     assert_eq!(tsm.pending_count(), 1);
     assert_eq!(
-        *replacement.progress.borrow(),
+        replacement.progress.current(),
         TransactionProgress::SegmentedResponse { generation }
     );
     assert_eq!(
