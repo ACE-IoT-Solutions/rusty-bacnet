@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use bacnet_mstp_codec::{DecodeEvent, FrameHeader, StreamDecoder, MAX_EXTENDED_FRAME_LENGTH};
-use bacnet_mstp_core::{CoreError, Duration, Instant};
+use bacnet_mstp_core::{Duration, Instant};
 
 use super::master::Input;
 use super::{NodeKind, Sim};
@@ -225,7 +225,7 @@ impl Sim {
         node: usize,
         input: Input,
         wire_end: Instant,
-    ) -> Result<(), CoreError> {
+    ) -> Result<(), super::master::Refused> {
         let NodeKind::Master(master) = &self.nodes[node].kind else {
             return Ok(());
         };

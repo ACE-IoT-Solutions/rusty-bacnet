@@ -149,8 +149,10 @@ pub enum ViolationKind {
     DuplicateToken,
     /// The simulator's pending events grew past their bound.
     EventGrowth,
-    /// A core call failed in a way the adapter contract does not expect.
-    CoreError,
+    /// The core or the adapter broke their contract: a refusal the contract
+    /// does not expect, a start whose octets differ from the frame named, or
+    /// too many actions from one event.
+    ContractBroken,
     /// A core counter that must stay zero moved.
     CoreCounter,
     /// The core asked for a deadline already in the past, or kept asking

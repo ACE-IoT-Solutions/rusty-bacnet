@@ -208,11 +208,11 @@ The firmware link test (#1626, #1635, #1664, #1667, #1679) does.
 credited to a crate reliably within one LTO image:
 
 - `mstp` links `bacnet-mstp-codec` and `bacnet-mstp-core` (default
-  features, with the core's `HeaplessQueues`) and through the core
+  features, with the core's `FixedQueues`) and through the core
   `bacnet-time`, with no global allocator;
 - `mstp-extended` links the same core with extended frames on, and the
   buffers they need: 1516 octets of receive storage, `ExtendedActionBuffers`
-  and `HeaplessQueues<1, 1, 1497>`, with no global allocator;
+  and `FixedQueues<1, 1, 1497>`, with no global allocator;
 - `bip` links `bacnet-bip-codec` (default features, plus its `heapless`
   sink), both its B/IP and its B/IPv6 messages, with no global allocator.
   It links the codec alone, so its budget measures the codec;
@@ -524,13 +524,13 @@ targets, so a crate that needs one builds only with a backend such as
   measures them; the mstp-extended image's scenario is the exception,
   below. The MS/TP image keeps everything large the core borrows in its
   static, the firmware pattern the core's crate docs describe: receive
-  storage, queues (3,360 octets for `HeaplessQueues<4, 2>`) and
+  storage, queues (3,360 octets for `FixedQueues<4, 2>`) and
   `ActionBuffers<1>` (1,028), 5,544 octets in all with the codec part's
   buffers. The core itself, 520
   octets on these targets, is built on the stack. `.bss` doesn't count the
   stack; the [emulation check](#emulation-manual) measures how deep it goes.
   The mstp-extended image's static holds only what the core borrows,
-  7,712 octets: receive storage of 1,516 octets, `HeaplessQueues<1, 1,
+  7,712 octets: receive storage of 1,516 octets, `FixedQueues<1, 1,
   1497>` and `ExtendedActionBuffers<1>`. Each more queue slot would add
   about 1.5 KB. Its scenario keeps its own NPDUs and frames on the stack,
   and only while it builds or checks them. The node image's `.bss` is
@@ -551,7 +551,7 @@ targets, so a crate that needs one builds only with a backend such as
     scratch, a table of 8 routes (120 octets each) and 8 hold-down
     records, 4 searches, the output queue and the counters (16 drained
     `u32`s, which the image takes once, at the end);
-  - the MS/TP core's receive storage (1,516), `HeaplessQueues<1, 2, 1497>`
+  - the MS/TP core's receive storage (1,516), `FixedQueues<1, 2, 1497>`
     (4,688) and `ExtendedActionBuffers<1>` (3,028). Two broadcast slots,
     since the router queues its startup Network-Number-Is and I-Am-Router
     together; one unicast slot, since each step's sends leave on the next

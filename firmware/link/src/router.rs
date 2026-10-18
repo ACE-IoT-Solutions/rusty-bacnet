@@ -89,13 +89,13 @@ use bacnet_router_core::bip_core::codec::{BdtEntries, BdtEntry, BvlcFunction, Bv
 use bacnet_router_core::bip_core::node::{self, Addressed, Datagram, Link, Mode, MAX_DATAGRAM};
 use bacnet_router_core::bip_core::port::{BbmdPort, Datagrams, Ingress};
 use bacnet_router_core::bip_core::LocalSubnet;
-use bacnet_router_core::mstp::MstpPort;
+use bacnet_router_core::mstp::{MstpPort, PortAction};
 use bacnet_router_core::mstp_core::codec::{
-    Frame, FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
+    Frame, FrameType, BROADCAST_MAC, MAX_EXTENDED_MPDU_DATA,
 };
 use bacnet_router_core::mstp_core::{
-    Action as MstpAction, Duration, ExtendedActionBuffers, HeaplessQueues, MasterCore,
-    MstpCoreConfig, RequestId, TransmitId,
+    Action as MstpAction, Duration, ExtendedStorage, FixedQueues, MasterCore, MstpCoreConfig,
+    RequestId, TransmitId,
 };
 use bacnet_router_core::router::{
     Action, Counters, Dest, Discard, Event, Host, Kind, Options, Received,
@@ -128,15 +128,18 @@ pub const UNICAST_SLOTS: usize = 1;
 pub const BROADCAST_SLOTS: usize = 2;
 
 /// The MS/TP core's transmit queues, with slots for extended frames.
-pub type Queues = HeaplessQueues<UNICAST_SLOTS, BROADCAST_SLOTS, MAX_EXTENDED_MPDU_DATA>;
+pub type Queues = FixedQueues<UNICAST_SLOTS, BROADCAST_SLOTS, MAX_EXTENDED_MPDU_DATA>;
 
-/// The MS/TP core's action buffers, sized for extended frames, with one
-/// delivery slot: the scenario polls every action after each call.
-pub type Actions = ExtendedActionBuffers<1>;
+/// What the MS/TP core borrows: its receive storage, queues and action
+/// buffers, sized for extended frames, with one delivery slot: the
+/// scenario polls every action after each call.
+pub type MstpStorage = ExtendedStorage<UNICAST_SLOTS, BROADCAST_SLOTS, 1>;
 
-/// The MS/TP master core, borrowing its queues as it does its receive
-/// storage and action buffers.
+/// The MS/TP master core, borrowing its [`MstpStorage`].
 pub type Core<'m> = MasterCore<'m, &'m mut Queues, MAX_EXTENDED_MPDU_DATA>;
+
+/// The router's MS/TP port, which owns the [`Core`].
+pub type Mstp<'m> = MstpPort<'m, &'m mut Queues>;
 
 /// BDT rows the BBMD has room for, its own included.
 pub const BDT_ROWS: usize = 2;
@@ -157,7 +160,7 @@ pub const MSTP_NETWORK: u16 = 2;
 /// The B/IP port.
 const BIP: BipPort = BipPort::new(PortId(0));
 /// The MS/TP port.
-const MSTP: MstpPort = MstpPort::new(PortId(1));
+const MSTP: PortId = PortId(1);
 
 /// The router, and the BBMD, on the B/IP subnet.
 pub const OWN: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 0xBAC0);
@@ -261,12 +264,8 @@ const fn long_octet(index: usize) -> u8 {
 pub struct Memory {
     /// The router's storage.
     router: RouterStorage,
-    /// The MS/TP core's receive storage: the longest extended frame.
-    rx: [u8; MAX_EXTENDED_FRAME_LENGTH],
-    /// The MS/TP core's transmit queues.
-    queues: Queues,
-    /// The MS/TP core's action buffers.
-    actions: Actions,
+    /// What the MS/TP core borrows.
+    mstp: MstpStorage,
     /// Where the BBMD writes one decision's destinations.
     targets: [Target; BbmdTables::MAX_TARGETS],
     /// Where it writes a Read-FDT-Ack's rows.
@@ -282,9 +281,7 @@ impl Memory {
     pub const fn new() -> Self {
         Self {
             router: RouterStorage::new(),
-            rx: [0; MAX_EXTENDED_FRAME_LENGTH],
-            queues: Queues::new(),
-            actions: Actions::new(),
+            mstp: MstpStorage::new(),
             targets: [Target::UNUSED; BbmdTables::MAX_TARGETS],
             rows: [NO_ROW; FDT_ENTRIES],
             datagram_in: [0; MAX_DATAGRAM],
@@ -434,9 +431,7 @@ impl Summary {
 pub fn run(memory: &mut Memory) -> Summary {
     let Memory {
         router,
-        rx,
-        queues,
-        actions,
+        mstp,
         targets,
         rows,
         datagram_in,
@@ -452,23 +447,26 @@ pub fn run(memory: &mut Memory) -> Summary {
         summary.error();
         return summary;
     };
-    let Ok(mstp_port) = MstpPort::config(&CONFIG, MSTP_NETWORK) else {
+    let Ok(core) = MasterCore::new(CONFIG, mstp, Instant::ZERO) else {
         summary.error();
         return summary;
     };
-    let ports = [BipPort::config(&LINK, BIP_NETWORK), mstp_port];
+    let Ok(mut mstp) = MstpPort::new(MSTP, core) else {
+        summary.error();
+        return summary;
+    };
+    let ports = [
+        BipPort::config(&LINK, BIP_NETWORK),
+        mstp.port_config(MSTP_NETWORK),
+    ];
     let Ok(mut router) = RouterEngine::new(router, &ports, OPTIONS, Instant::ZERO) else {
-        summary.error();
-        return summary;
-    };
-    let Ok(mut core) = MasterCore::new(CONFIG, queues, rx, actions, Instant::ZERO) else {
         summary.error();
         return summary;
     };
     Device {
         router: &mut router,
         bbmd: &mut bbmd,
-        core: &mut core,
+        mstp: &mut mstp,
         host: Hooks {
             events: [None; EVENTS],
         },
@@ -529,7 +527,7 @@ const MAX_ACTIONS: usize = 16;
 struct Device<'d, 'm> {
     router: &'d mut RouterEngine<'m>,
     bbmd: &'d mut Bbmd<'m>,
-    core: &'d mut Core<'m>,
+    mstp: &'d mut Mstp<'m>,
     host: Hooks,
     datagram_in: &'d mut [u8],
     datagram_out: &'d mut [u8],
@@ -547,7 +545,7 @@ struct Device<'d, 'm> {
 /// has ended.
 enum Then {
     Nothing,
-    Send { id: TransmitId, octets: usize },
+    Send { id: TransmitId },
     Release(Option<RequestId>),
 }
 
@@ -626,7 +624,7 @@ impl Device<'_, '_> {
         summary.counters = self.router.take_counters();
         summary.routes = self.router.table().len();
         summary.bip_refused = self.bbmd.take_counters().refused;
-        let counters = self.core.take_counters();
+        let counters = self.mstp.core_mut().take_counters();
         summary.frames_received = counters.frames_received;
         summary.frames_transmitted = counters.frames_transmitted;
         summary.npdus_delivered = counters.npdus_delivered;
@@ -717,7 +715,7 @@ impl Device<'_, '_> {
                 };
                 BIP.send(self.bbmd, &send, self.now, &mut socket)
             } else {
-                MSTP.send(self.core, &send, self.now)
+                self.mstp.send(&send, self.now)
             };
             if let Err(why) = result {
                 self.router.refused(why);
@@ -738,9 +736,7 @@ impl Device<'_, '_> {
         };
         for &octet in wire.iter().take(length) {
             self.now += self.octet;
-            if self.core.on_octet(octet, self.now).is_err() {
-                self.summary.error();
-            }
+            self.mstp.core_mut().on_octet(octet, self.now);
         }
         self.drain();
     }
@@ -779,14 +775,12 @@ impl Device<'_, '_> {
     /// Let time run to the core's next deadline, service it, and carry out
     /// what it asks.
     fn wait(&mut self) {
-        let Some(deadline) = self.core.next_deadline() else {
+        let Some(deadline) = self.mstp.core_mut().next_deadline() else {
             self.summary.error();
             return;
         };
         self.now = self.now.max(deadline);
-        if self.core.on_deadline(self.now).is_err() {
-            self.summary.error();
-        }
+        self.mstp.core_mut().on_deadline(self.now);
         self.drain();
     }
 
@@ -796,50 +790,47 @@ impl Device<'_, '_> {
     /// released, for the core to answer Reply Postponed.
     fn drain(&mut self) {
         for _ in 0..MAX_ACTIONS {
-            let then = match self.core.poll_action() {
-                MstpAction::Idle => return,
-                MstpAction::SetDirection(_) => Then::Nothing,
-                MstpAction::Transmit { id, frame } => {
-                    wired(self.summary, frame);
-                    self.last_frame = frame.get(2).copied().map(FrameType::from_raw);
+            let then = match self.mstp.poll_action() {
+                PortAction::Core(MstpAction::Idle) => return,
+                PortAction::Core(MstpAction::SetDirection(_)) => Then::Nothing,
+                PortAction::Core(MstpAction::Transmit { id, header, .. }) => {
+                    self.last_frame = Some(header.frame_type);
                     self.last_sent_at = self.now;
-                    Then::Send {
-                        id,
-                        octets: frame.len(),
-                    }
+                    Then::Send { id }
                 }
-                MstpAction::DeliverNpdu {
-                    source,
-                    destination,
-                    npdu,
-                    request_id,
-                } => {
-                    let arrived = MSTP.arrived(source, destination, npdu);
+                PortAction::Arrived { arrived, request } => {
                     let received = self
                         .router
                         .receive(arrived.frame(), self.now, &mut self.host);
                     note(self.summary, received.into());
-                    Then::Release(request_id)
+                    Then::Release(request)
                 }
-                MstpAction::DeliverFrame { .. } => {
+                PortAction::Core(_) => {
                     self.summary.error();
                     Then::Nothing
                 }
             };
             match then {
                 Then::Nothing => {}
-                Then::Send { id, octets } => {
-                    if self.core.on_transmit_started(id, self.now).is_err() {
-                        self.summary.error();
-                    }
+                Then::Send { id } => {
+                    // The octets come with the confirmed start: send them
+                    // from the core's frame buffer.
+                    let octets = match self.mstp.core_mut().on_transmit_started(id, self.now) {
+                        Ok(frame) => {
+                            wired(self.summary, frame);
+                            frame.len()
+                        }
+                        Err(_) => {
+                            self.summary.error();
+                            0
+                        }
+                    };
                     let octets = u32::try_from(octets).unwrap_or(u32::MAX);
                     self.now += self.octet.saturating_mul(octets);
-                    if self.core.on_transmit_complete(id, self.now).is_err() {
-                        self.summary.error();
-                    }
+                    self.mstp.core_mut().on_transmit_complete(id, self.now);
                 }
                 Then::Release(request) => {
-                    if MstpPort::release(self.core, request, self.now).is_err() {
+                    if self.mstp.release(request, self.now).is_err() {
                         self.summary.error();
                     }
                     self.carry();
