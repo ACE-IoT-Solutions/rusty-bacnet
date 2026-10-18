@@ -54,6 +54,40 @@ async fn segment_timer_timeout_ends_the_reassembly_session() {
     client.stop().await.unwrap();
 }
 
+/// Each response segment restarts the waiter's SegmentTimer from the moment it
+/// arrives. A missed progress wakeup would leave the running timer to expire
+/// first and only then restart, ending the request a timer period later.
+#[tokio::test(start_paused = true)]
+async fn response_segment_restarts_segment_timer_from_its_arrival() {
+    let config = ClientConfig {
+        apdu_timeout_ms: 100,
+        apdu_retries: 3,
+        ..ClientConfig::default()
+    };
+    // The waiter allows four segment timeouts in SEGMENTED_CONF.
+    let segment_timer = Duration::from_millis(400);
+    let (task, server, mut rx, invoke_id) = start_reassembly(config).await;
+
+    send_to_client(&server, &response_segment(invoke_id, 0, true, &[0x01; 8])).await;
+    expect_segment_ack(&mut rx, invoke_id, 0).await;
+    tokio::time::sleep(segment_timer * 5 / 8).await;
+    send_to_client(&server, &response_segment(invoke_id, 1, true, &[0x02; 8])).await;
+    expect_segment_ack(&mut rx, invoke_id, 1).await;
+    let restarted = tokio::time::Instant::now();
+
+    let (mut client, result) = task.await.unwrap();
+    let waited = restarted.elapsed();
+    assert!(matches!(
+        result,
+        Err(Error::Abort { reason }) if reason == AbortReason::TSM_TIMEOUT.to_raw()
+    ));
+    assert!(
+        waited >= segment_timer && waited < segment_timer + segment_timer / 8,
+        "SegmentTimer ran {waited:?} after the last segment, expected {segment_timer:?}"
+    );
+    client.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn segmented_request_without_segment_ack_returns_local_tsm_timeout() {
     let retries = 2;

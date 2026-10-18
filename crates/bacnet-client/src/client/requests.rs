@@ -390,7 +390,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         &self,
         wait_for: ConfirmedWait<'_>,
         mut response_rx: oneshot::Receiver<TsmResponse>,
-        mut progress_rx: tokio::sync::watch::Receiver<TransactionProgress>,
+        mut progress_rx: ProgressReceiver,
     ) -> Result<TsmResponse, Error> {
         let ConfirmedWait {
             target,
@@ -409,7 +409,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             )
         };
         let mut retries_sent = 0u16;
-        let mut progress = *progress_rx.borrow_and_update();
+        let mut progress = progress_rx.borrow_and_update();
 
         loop {
             let wait = match progress {
@@ -423,13 +423,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 response = &mut response_rx => {
                     return response.map_err(|_| Error::Encoding("TSM response channel closed".into()));
                 }
-                changed = progress_rx.changed() => {
-                    if changed.is_err() {
-                        return (&mut response_rx)
-                            .await
-                            .map_err(|_| Error::Encoding("TSM response channel closed".into()));
-                    }
-                    progress = *progress_rx.borrow_and_update();
+                // Progress is never published after the transaction leaves
+                // the TSM; the response arm above resolves then instead.
+                () = progress_rx.changed() => {
+                    progress = progress_rx.borrow_and_update();
                 }
                 _ = &mut timer => {
                     match progress {

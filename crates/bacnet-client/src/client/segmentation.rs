@@ -606,15 +606,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                     Error::Encoding("TSM response channel closed".into())
                                 });
                             }
-                            changed = progress_rx.changed() => {
-                                if changed.is_err() {
-                                    owns_tsm_cleanup = false;
-                                    return (&mut response_rx).await.map_err(|_| {
-                                        Error::Encoding("TSM response channel closed".into())
-                                    });
-                                }
+                            // A transaction that left the TSM resolves the
+                            // response arm above; progress stays silent.
+                            () = progress_rx.changed() => {
                                 if matches!(
-                                    *progress_rx.borrow_and_update(),
+                                    progress_rx.borrow_and_update(),
                                     TransactionProgress::SegmentedResponse { .. }
                                 ) {
                                     segmented_response_started = true;

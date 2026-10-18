@@ -48,8 +48,8 @@ use crate::segmentation::{
     duplicate_in_window, max_segment_payload, split_payload, SegmentReceiver, SegmentedPduType,
 };
 use crate::tsm::{
-    RequestTimerExpiration, SegmentAckPhase, SegmentTimerExpiration, SegmentedResponseAdmission,
-    TransactionOwner, TransactionProgress, Tsm, TsmConfig, TsmResponse,
+    ProgressReceiver, RequestTimerExpiration, SegmentAckPhase, SegmentTimerExpiration,
+    SegmentedResponseAdmission, TransactionOwner, TransactionProgress, Tsm, TsmConfig, TsmResponse,
 };
 #[cfg(test)]
 use transaction_cleanup::{SegmentedCleanupHook, SegmentedPostWaitCleanupHook};
