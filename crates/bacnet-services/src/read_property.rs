@@ -45,6 +45,7 @@ impl ReadPropertyRequest {
     }
 
     /// Decode the request from service-request octets; fails on malformed or truncated input.
+    #[inline]
     pub fn decode(data: &[u8]) -> Result<Self, Error> {
         // [0] object-identifier
         let (object_identifier, offset) =
@@ -56,14 +57,19 @@ impl ReadPropertyRequest {
         let property_identifier = PropertyIdentifier::from_raw(prop_raw);
 
         // [2] propertyArrayIndex (optional), and nothing after it
-        let (property_array_index, end) = decode_optional_ctx(
-            data,
-            offset,
-            2,
-            "ReadProperty request array-index",
-            decode_ctx_unsigned::<u32>,
-        )?;
-        expect_end(data, end, end, "ReadProperty request")?;
+        let property_array_index = if offset == data.len() {
+            None
+        } else {
+            let (index, end) = decode_optional_ctx(
+                data,
+                offset,
+                2,
+                "ReadProperty request array-index",
+                decode_ctx_unsigned::<u32>,
+            )?;
+            expect_end(data, end, end, "ReadProperty request")?;
+            index
+        };
 
         Ok(Self {
             object_identifier,
@@ -157,7 +163,8 @@ impl ReadPropertyACK {
 mod tests {
     use super::*;
     use bacnet_encoding::tags::TagClass;
-    use bacnet_types::enums::ObjectType;
+    use bacnet_types::enums::{ObjectType, RejectReason};
+    use bacnet_types::error::DecodingKind;
 
     fn object_id() -> ObjectIdentifier {
         ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap()
@@ -385,6 +392,102 @@ mod tests {
         let mut indexed_ack = encode_fields(0, 1, 1, Some((2, 1)), true, false);
         primitives::encode_ctx_unsigned(&mut indexed_ack, 4, 1);
         assert!(ReadPropertyACK::decode(&indexed_ack).is_err());
+    }
+
+    #[test]
+    fn request_optional_index_preserves_error_kinds_offsets_and_rejects() {
+        // Clause 21.2: the optional [2] is the request's final member.
+        let prefix = [0x0c, 0, 0, 0, 1, 0x19, 85];
+        for (suffix, offset, kind, reason) in [
+            (
+                &[0x2d][..],
+                8,
+                DecodingKind::Missing,
+                RejectReason::MISSING_REQUIRED_PARAMETER,
+            ),
+            (
+                &[0xf9][..],
+                8,
+                DecodingKind::Missing,
+                RejectReason::MISSING_REQUIRED_PARAMETER,
+            ),
+            (
+                &[0x2f][..],
+                7,
+                DecodingKind::InvalidTag,
+                RejectReason::INVALID_TAG,
+            ),
+            (
+                &[0x2e][..],
+                7,
+                DecodingKind::Trailing,
+                RejectReason::TOO_MANY_ARGUMENTS,
+            ),
+            (
+                &[0x19, 85][..],
+                7,
+                DecodingKind::Trailing,
+                RejectReason::TOO_MANY_ARGUMENTS,
+            ),
+            (
+                &[0x21, 1][..],
+                7,
+                DecodingKind::Trailing,
+                RejectReason::TOO_MANY_ARGUMENTS,
+            ),
+            (
+                &[0x29, 1, 0xf9][..],
+                9,
+                DecodingKind::InvalidTag,
+                RejectReason::INVALID_TAG,
+            ),
+            (
+                &[0x29, 1, 0x29, 2][..],
+                9,
+                DecodingKind::Trailing,
+                RejectReason::TOO_MANY_ARGUMENTS,
+            ),
+            (
+                &[0x2d, 5, 1, 0, 0, 0, 0][..],
+                7,
+                DecodingKind::OutOfRange,
+                RejectReason::PARAMETER_OUT_OF_RANGE,
+            ),
+        ] {
+            let data = [prefix.as_slice(), suffix].concat();
+            let error = ReadPropertyRequest::decode(&data).unwrap_err();
+            assert_eq!(error.reject_reason(), Some(reason), "{data:02x?}");
+            assert!(
+                matches!(error, Error::Decoding { offset: at, kind: actual, .. } if at == offset && actual == kind),
+                "{data:02x?}: {error:?}"
+            );
+        }
+        let error =
+            ReadPropertyRequest::decode(&[prefix.as_slice(), &[0x29]].concat()).unwrap_err();
+        assert_eq!(
+            error.reject_reason(),
+            Some(RejectReason::MISSING_REQUIRED_PARAMETER)
+        );
+        assert!(matches!(error, Error::BufferTooShort { need: 9, have: 8 }));
+    }
+
+    #[test]
+    fn request_optional_index_accepts_absence_zero_and_extended_length() {
+        let prefix = [0x0c, 0, 0, 0, 1, 0x19, 85];
+        for (suffix, expected) in [
+            (&[][..], None),
+            (&[0x29, 0][..], Some(0)),
+            (&[0x2d, 5, 0, 0, 0, 0, 1][..], Some(1)),
+        ] {
+            let data = [prefix.as_slice(), suffix].concat();
+            let request = ReadPropertyRequest::decode(&data).unwrap();
+            assert_eq!(request.object_identifier, object_id());
+            assert_eq!(
+                request.property_identifier,
+                PropertyIdentifier::PRESENT_VALUE
+            );
+            assert_eq!(request.property_array_index, expected);
+        }
     }
 
     // -----------------------------------------------------------------------
