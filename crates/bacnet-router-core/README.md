@@ -79,7 +79,13 @@ a DADR behind another router or an empty DADR.
 ## Features
 
 None by default. `bip` adds `bacnet-bip-core` (and through it
-`bacnet-bip-codec`), and `mstp` adds `bacnet-mstp-core`. Neither needs `std` or an allocator, and
+`bacnet-bip-codec`), and `mstp` adds `bacnet-mstp-core`. Each re-exports
+its core, as `bip_core` and `mstp_core`, so a router image needs this crate
+alone; `RouterIn` names a router over borrowed storage. The router's
+counters drain like the link cores': `take_counters()` returns `u32` counts
+since the last take, and `counters()` looks without taking.
+`Options::STANDARD` fits any storage; `Options::HOSTED` is the hosted
+router's, with its 256-route cap. Neither needs `std` or an allocator, and
 every combination builds on bare-metal targets.
 
 ## Example

@@ -47,10 +47,19 @@
 //! Both hand the router each NPDU their link delivers as an `Arrived`,
 //! whose frame borrows its link source, and carry out the router's sends on
 //! their link. Each module documents its wiring, and the clauses its tests
-//! cover.
+//! cover. Each feature also re-exports its link core (`bip_core`,
+//! `mstp_core`, and through them their codecs), so a router image depends
+//! on this crate alone, and [`RouterIn`] names a router over borrowed
+//! storage without repeating its sizes.
+//!
+//! The router counts what it drops, sends and is refused as the link cores
+//! count: [`Router::take_counters`] drains `u32` counts that saturate
+//! between takes, for the caller to add to totals as wide as it needs, and
+//! [`Router::counters`] looks without taking.
 //!
 //! The types that may grow are `#[non_exhaustive]`. Start the
-//! [`Options`](router::Options) from `HOSTED` and set the fields to change;
+//! [`Options`](router::Options) from `STANDARD` (or `HOSTED`, the hosted
+//! router's, with its 256-route cap) and set the fields to change;
 //! build a [`Route`](table::Route), for comparison, with its `direct` or
 //! `learned`, and counters from `Default`; and give a `match` on an error,
 //! a refusal, a [`Discard`](router::Discard), an
@@ -94,9 +103,7 @@
 //! // Two ports, a table of 8 routes and 8 hold-down records; firmware
 //! // keeps the storage in a static.
 //! let mut storage = Storage::<2, 8, 8>::new();
-//! let mut options = Options::HOSTED;
-//! options.route_cap = 8;
-//! let mut router = Router::new(&mut storage, &ports, options, Instant::ZERO)?;
+//! let mut router = Router::new(&mut storage, &ports, Options::STANDARD, Instant::ZERO)?;
 //!
 //! // A confirmed request for the node at 192.0.2.9 on network 1.
 //! let node = [192, 0, 2, 9, 0xBA, 0xC0];
@@ -189,8 +196,9 @@
 //! bare-metal targets.
 //!
 //! - `bip`: the B/IP glue, which adds `bacnet-bip-core`, and through it
-//!   `bacnet-bip-codec`.
-//! - `mstp`: the MS/TP glue, which adds `bacnet-mstp-core`.
+//!   `bacnet-bip-codec`, re-exported as `bip_core`.
+//! - `mstp`: the MS/TP glue, which adds `bacnet-mstp-core`, re-exported as
+//!   `mstp_core`.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -215,9 +223,19 @@ pub mod table;
 
 #[cfg(any(feature = "bip", feature = "mstp"))]
 pub use arrived::Arrived;
+/// `bacnet-bip-core`, whose node, port and BBMD types the `bip` glue
+/// speaks: a router image names them through this, so its versions can't
+/// drift apart from the glue's. Its codec is [`bip_core::codec`].
+#[cfg(feature = "bip")]
+pub use bacnet_bip_core as bip_core;
+/// `bacnet-mstp-core`, whose master core the `mstp` glue speaks: a router
+/// image names it through this, so its versions can't drift apart from the
+/// glue's. Its codec is [`mstp_core::codec`].
+#[cfg(feature = "mstp")]
+pub use bacnet_mstp_core as mstp_core;
 pub use bacnet_time::{Duration, Instant};
 pub use npdu::{Mac, MacTooLong};
-pub use router::{Router, Storage};
+pub use router::{Router, RouterIn, Storage};
 
 /// The largest NPDU a B/IP or MS/TP port carries, in octets (Table 6-1;
 /// MS/TP needs extended frames for it, Clause 9.3).

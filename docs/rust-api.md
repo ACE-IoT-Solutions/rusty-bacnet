@@ -2304,7 +2304,9 @@ back as an `Ingress`.
   `node::Permissive` is both.
 - Both count the datagrams of their own the socket refused, drained with
   `take_counters()` (a `PortCounters` of `u32`s) and looked at with
-  `counters()`. `PortError` says why a port refused its node or storage.
+  `counters()`, as the node's own counts are (`Node::take_counters`, and
+  `Node::counters` since #1767). `PortError` says why a port refused its
+  node or storage.
 
 `Tables::serve(request, now, rules, rows)` answers the four management
 requests a BBMD serves (`bbmd::Request`), each with the answer Annex J
@@ -2384,8 +2386,11 @@ management, which no wire-control policy sees; drop the guard soon, since
 every port waits for it. The lock isn't reentrant: calling `table()` again
 while a guard lives on the same thread, or from the control authorizer,
 never returns. `counters()`, the four drop counts, `now()` and
-`control_snapshot()` take no lock, so they are safe to call meanwhile; the
-counts are copied out of the engine before each lock is let go.
+`control_snapshot()` take no lock, so they are safe to call meanwhile: the
+engine's counts are taken and added to the router's `u64` totals before
+each lock is let go. `bacnet_network::router::Counters` holds those totals
+since start, as before #1767; it is the hosted router's own type now, no
+longer a re-export of the engine's, whose counts are drained `u32`s.
 
 ```rust
 use bacnet_network::router_table::{Convergence, Reachability};
@@ -2740,9 +2745,11 @@ back to the hosted router's behaviour before 0.13.0.
 The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
 crate builds them like this:
 
-- `router::Options::HOSTED` (also its `Default`), then set the fields to
-  change: a `Storage` smaller than the hosted router's needs a smaller
-  `route_cap`.
+- `router::Options::STANDARD` (also its `Default`) or `Options::HOSTED`,
+  then set the fields to change. The two differ only in the route cap:
+  `STANDARD` has none of its own (`route_cap: None`), so learning may fill
+  whatever table the `Storage` holds, and `HOSTED` caps it at the hosted
+  router's 256 routes, which `Router::new` refuses over a smaller table.
 - `Route::direct(port)` and `Route::learned(port, next_hop, now)`, to
   compare with what a lookup returns.
 - `router::Counters` and `table::ClaimCounters` from `Default`, then set
@@ -2796,8 +2803,17 @@ and `send(&mut port, &send, now, &mut socket)` for each router send,
 whose refusals it maps to the router's. The ports count what their socket
 refused, drained like the link cores' counts: `take_counters()` returns
 a `PortCounters` of `u32`s that saturate between takes, and `counters()`
-looks without taking. The router keeps its cumulative `u64`
-`counters()`, which `BACnetRouter` reads without its lock.
+looks without taking. The router's counts drain the same way (#1767,
+decision D3): `Router::take_counters()` returns the `u32` counts since the
+last take, which saturate between takes, and `counters()` looks without
+taking. `BACnetRouter` takes them each time it lets the engine's lock go,
+and keeps the `u64` totals its users read.
+
+The `bip` and `mstp` features re-export their link cores, as
+`bacnet_router_core::bip_core` and `mstp_core` (with their codecs), so a
+router image needs this crate alone, at one version. `RouterIn<'s, P, R,
+H>` is a `Router` over a `&'s mut Storage<P, R, H>`, with `D` and `N` as
+`Storage`'s defaults, so firmware names the sizes once.
 
 A foreign-device port holds broadcasts in `HeldBroadcast<N>` slots of `N`
 octets, `MAX_NPDU` by default. `NodePort::new` checks that the link's
@@ -2809,7 +2825,8 @@ open, but `<HeldBroadcast>` names the type, default and all.
 
 The network-message views return `Result<_, DataError>`, and their writers
 `Result<usize, DataError>`. Route discovery's cooldown and maximum age are
-fields of `router::Options` (`Options::HOSTED` holds the hosted router's).
+fields of `router::Options` (`Options::STANDARD` and `HOSTED` hold 5 s and
+30 s).
 bip-core's `PortError::HeldStorage`, `TargetStorage` and `RowStorage`
 carry `needed` and `available`; a link with no send budget, or a broadcast
 limit past the slots, is `PortError::HeldLength`.

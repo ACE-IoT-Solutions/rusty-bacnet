@@ -100,8 +100,11 @@ mod tests {
                 );
             }
             assert!(matches!(router.poll_action(), Action::Idle));
-            assert_eq!(router.counters().group_dadr_drops, drops);
-            assert_eq!(router.counters().refused, 0);
+            drop(router);
+            // The totals since start, which dropping the guard published.
+            let totals = engine.counters();
+            assert_eq!(totals.group_dadr_drops, drops);
+            assert_eq!(totals.refused, 0);
         }
     }
 }

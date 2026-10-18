@@ -501,6 +501,6 @@ fn mstp_six_byte_bip_group_destinations_never_reach_the_sink() {
     }
     assert_eq!(
         router.counters().group_dadr_drops,
-        (local.len() + elsewhere.len()) as u64
+        (local.len() + elsewhere.len()) as u32
     );
 }

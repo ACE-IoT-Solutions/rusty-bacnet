@@ -4,9 +4,9 @@
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
-use bacnet_bip_codec::BvlcFunction;
-use bacnet_mstp_codec::FrameType;
+use bacnet_router_core::bip_core::codec::BvlcFunction;
 use bacnet_router_core::message::{MessageType, RejectReason};
+use bacnet_router_core::mstp_core::codec::FrameType;
 use bacnet_router_core::router::{Counters, Discard, Event, Kind};
 use bacnet_router_core::{Duration, PortId};
 

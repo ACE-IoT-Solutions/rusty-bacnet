@@ -54,9 +54,7 @@ pub enum Group {
 /// let port = PortConfig::new(1, Mac::from_array([1]), Limits::both(1497),
 ///     CustomLink { broadcast: Some(254) });
 /// let mut storage = Storage::<1, 8, 8, 4, 1497, CustomLink>::new();
-/// let mut options = Options::HOSTED;
-/// options.route_cap = 8;
-/// let router = Router::new(&mut storage, &[port], options, Instant::ZERO)?;
+/// let router = Router::new(&mut storage, &[port], Options::STANDARD, Instant::ZERO)?;
 /// assert_eq!(router.ports()[0].groups.classify(&[254]), Group::Broadcast);
 /// # Ok::<(), bacnet_router_core::router::ConfigError>(())
 /// ```

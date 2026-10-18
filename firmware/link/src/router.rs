@@ -1,8 +1,9 @@
-//! The router image's scenario (#1679).
+//! The router image's scenario (#1679, #1766, #1767).
 //!
 //! [`run`] routes between two networks the way router firmware would, with
-//! no allocator: `bacnet-router-core`'s [`Router`] joins a B/IP port and an
-//! MS/TP port through the core's `bip` and `mstp` glue.
+//! no allocator: `bacnet-router-core`'s [`Router`](bacnet_router_core::Router)
+//! joins a B/IP port and an MS/TP port through the core's `bip` and `mstp`
+//! glue.
 //!
 //! - **Port 0, network 1:** B/IP, where the router is also the BBMD
 //!   (`bacnet-bip-core`'s port driver, a [`BbmdPort`] over [`BbmdTables`],
@@ -15,7 +16,10 @@
 //!   station 2, a master; station 5, which never holds the token, takes
 //!   what the router routes to it.
 //!
-//! Time is one injected `bacnet-time` clock that all three cores share.
+//! The image depends on `bacnet-router-core` alone for all three cores:
+//! the glue features re-export the link cores, and their codecs, as
+//! `bip_core` and `mstp_core`. Time is one injected `bacnet-time` clock
+//! that all three cores share.
 //! Every action is carried out: each router send goes to its port's glue,
 //! each datagram through the codec into a buffer, and each MS/TP frame onto
 //! the line, with its octets' time; MS/TP frames come in octet by octet.
@@ -79,23 +83,24 @@ pub use expected::expected;
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
-use bacnet_bip_codec::{BdtEntries, BdtEntry, BvlcFunction, Bvll, FdtEntry};
-use bacnet_bip_core::bbmd::{Tables, Target, TWO_HOP_MASK};
-use bacnet_bip_core::node::{self, Addressed, Datagram, Link, Mode, MAX_DATAGRAM};
-use bacnet_bip_core::port::{BbmdPort, Datagrams, Ingress};
-use bacnet_bip_core::LocalSubnet;
-use bacnet_mstp_codec::{Frame, FrameType, BROADCAST_MAC};
-use bacnet_mstp_core::codec::{MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA};
-use bacnet_mstp_core::{
+use bacnet_router_core::bip::BipPort;
+use bacnet_router_core::bip_core::bbmd::{Tables, Target, TWO_HOP_MASK};
+use bacnet_router_core::bip_core::codec::{BdtEntries, BdtEntry, BvlcFunction, Bvll, FdtEntry};
+use bacnet_router_core::bip_core::node::{self, Addressed, Datagram, Link, Mode, MAX_DATAGRAM};
+use bacnet_router_core::bip_core::port::{BbmdPort, Datagrams, Ingress};
+use bacnet_router_core::bip_core::LocalSubnet;
+use bacnet_router_core::mstp::MstpPort;
+use bacnet_router_core::mstp_core::codec::{
+    Frame, FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
+};
+use bacnet_router_core::mstp_core::{
     Action as MstpAction, Duration, ExtendedActionBuffers, HeaplessQueues, MasterCore,
     MstpCoreConfig, RequestId, TransmitId,
 };
-use bacnet_router_core::bip::BipPort;
-use bacnet_router_core::mstp::MstpPort;
 use bacnet_router_core::router::{
     Action, Counters, Dest, Discard, Event, Host, Kind, Options, Received,
 };
-use bacnet_router_core::{Instant, PortId, Router, Storage, MAX_NPDU};
+use bacnet_router_core::{Instant, PortId, RouterIn, Storage, MAX_NPDU};
 
 use crate::tally::Sent;
 
@@ -113,7 +118,7 @@ pub const SEARCHES: usize = 4;
 pub type RouterStorage = Storage<PORTS, ROUTES, HOLDS, SEARCHES>;
 
 /// The router as the image builds it, over storage it borrows.
-pub type RouterEngine<'m> = Router<&'m mut RouterStorage, PORTS, ROUTES, HOLDS, SEARCHES>;
+pub type RouterEngine<'m> = RouterIn<'m, PORTS, ROUTES, HOLDS, SEARCHES>;
 
 /// Unicast slots in the MS/TP transmit queue. Each step's sends leave on
 /// the next token, so one is enough.
@@ -199,13 +204,8 @@ pub const CONFIG: MstpCoreConfig = {
     config.with_extended_frames()
 };
 
-/// The hosted router's timers and policy, with a route cap of the table's
-/// size.
-pub const OPTIONS: Options = {
-    let mut options = Options::HOSTED;
-    options.route_cap = ROUTES as u16;
-    options
-};
+/// The standard timers and policy, whose route cap is the table's size.
+pub const OPTIONS: Options = Options::STANDARD;
 
 /// Step 2: a Who-Is for station 5 on network 2, from the B/IP node.
 pub const TO_STATION_5: [u8; 9] = [0x01, 0x20, 0x00, 0x02, 0x01, 0x05, 0xFF, 0x10, 0x08];
@@ -365,7 +365,7 @@ pub struct Summary {
     pub sends: [Option<RouterSend>; SENDS],
     /// What it reported to its host, in order.
     pub events: [Option<Event>; EVENTS],
-    /// Its counters at the end.
+    /// What it counted, taken once, at the end.
     pub counters: Counters,
     /// Routes in its table at the end.
     pub routes: usize,
@@ -623,7 +623,7 @@ impl Device<'_, '_> {
     fn finish(&mut self) {
         let summary = &mut *self.summary;
         summary.events = self.host.events;
-        summary.counters = counters(self.router);
+        summary.counters = self.router.take_counters();
         summary.routes = self.router.table().len();
         summary.bip_refused = self.bbmd.take_counters().refused;
         let counters = self.core.take_counters();
@@ -852,15 +852,6 @@ impl Device<'_, '_> {
 
 /// Room for the frames station 2 sends, all short.
 const MSTP_WIRE: usize = 64;
-
-/// The router's counters, returned from a function kept out of line. A
-/// copy straight from the router's storage into the summary, which the
-/// compiler can't prove apart from it, links a memmove call; the value this
-/// returns lands in a slot of the caller's that overlaps nothing.
-#[inline(never)]
-fn counters(router: &RouterEngine<'_>) -> Counters {
-    router.counters()
-}
 
 /// Note what the router made of a frame.
 fn note(summary: &mut Summary, outcome: Outcome) {

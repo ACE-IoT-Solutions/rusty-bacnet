@@ -540,11 +540,12 @@ targets, so a crate that needs one builds only with a backend such as
   what the port lends the tables for a decision's destinations and a
   Read-FDT-Ack's rows, 240 octets. The node and its port, 752 octets and
   a little more on these targets, and the bbmd image's port and tables
-  are built on the stack. The router image's static is 15,600 octets on
+  are built on the stack. The router image's static is 15,536 octets on
   these targets:
-  - the router's `Storage<2, 8, 8, 4>`, 3,216: a 1,497-octet output
+  - the router's `Storage<2, 8, 8, 4>`, 3,152: a 1,497-octet output
     scratch, a table of 8 routes (120 octets each) and 8 hold-down
-    records, 4 searches, the output queue and the counters;
+    records, 4 searches, the output queue and the counters (16 drained
+    `u32`s, which the image takes once, at the end);
   - the MS/TP core's receive storage (1,516), `HeaplessQueues<1, 2, 1497>`
     (4,688) and `ExtendedActionBuffers<1>` (3,028). Two broadcast slots,
     since the router queues its startup Network-Number-Is and I-Am-Router

@@ -617,10 +617,20 @@ impl<const X: usize> Node<X> {
             .map(|lifecycle| lifecycle.snapshot(now.max(self.now)))
     }
 
-    /// The counts since the last call, which start again from zero: add
-    /// them to the host's own totals, as wide as it needs. Each count is a
-    /// `u32` that saturates between calls.
+    /// The counts since the counters were last taken, which then start
+    /// again from zero: add them to the host's own totals, as wide as it
+    /// needs. Each count is a `u32` that saturates between takes.
+    #[must_use = "the counts are gone once taken; add them to your totals"]
     pub fn take_counters(&mut self) -> NodeCounters {
         core::mem::take(&mut self.counters)
+    }
+
+    /// The counts since the counters were last taken, as
+    /// [`take_counters`](Self::take_counters) would return them, without
+    /// taking them: for a look between takes. A node whose counters are
+    /// never taken counts from its start.
+    #[must_use]
+    pub const fn counters(&self) -> NodeCounters {
+        self.counters
     }
 }
