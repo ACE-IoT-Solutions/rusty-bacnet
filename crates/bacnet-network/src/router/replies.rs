@@ -60,7 +60,19 @@ impl RouterResponse {
         }
     }
     pub(crate) fn same_origin(&self, other: &Self) -> bool {
-        self.plan == other.plan && self.lifetime.ptr_eq(&other.lifetime)
+        let same_port = self.plan.port() == other.plan.port();
+        self.lifetime.ptr_eq(&other.lifetime)
+            && self.plan.source() == other.plan.source()
+            && self.plan.destination() == other.plan.destination()
+            // SNET/SADR identifies a routed requester independently of its
+            // immediate return path. Port-local addresses remain scoped to
+            // their ingress link; equal MACs on two links are different peers.
+            && (self.plan.destination().is_some()
+                || (same_port && self.plan.peer() == other.plan.peer()))
+            // With no explicitly addressed endpoint, the ingress port selects
+            // the local endpoint. An explicit endpoint may be reached via any
+            // port of this same router. The saved plan itself never changes.
+            && (self.plan.source().is_some() || same_port)
     }
     pub(crate) fn check(&self) -> Result<(), Error> {
         self.lifetime()?.check()

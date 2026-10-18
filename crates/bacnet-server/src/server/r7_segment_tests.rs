@@ -275,3 +275,200 @@ async fn r7_segmented_ack_retry_and_terminal_abort_use_one_saved_route() {
     assert!(!registry.lock().contains_key(&key));
     routed.router.stop().await;
 }
+
+#[tokio::test]
+async fn r7_segment_alternate_return_paths_keep_opening_reply_plan() {
+    for arrival_port in [0, 2] {
+        let mut routed = Routed::new().await;
+        let mut db = ObjectDatabase::new();
+        db.add(Box::new(AnalogInputObject::new(7, "input", 0).unwrap()))
+            .unwrap();
+        let context = context(db, ServerConfig::default());
+        let Apdu::ConfirmedRequest(mut first) = read(17) else {
+            unreachable!()
+        };
+        let full = first.service_request.clone();
+        let cut = full.len() / 2;
+        first.segmented = true;
+        first.more_follows = true;
+        first.sequence_number = Some(0);
+        first.proposed_window_size = Some(1);
+        first.service_request = full.slice(..cut);
+        let opening = routed
+            .receive(2000, &Apdu::ConfirmedRequest(first.clone()), None)
+            .await;
+        let (key, state, _) = open(&opening, &first);
+        let mut states = HashMap::from([(key.clone(), state)]);
+        let mut last = first.clone();
+        last.more_follows = false;
+        last.sequence_number = Some(1);
+        last.service_request = full.slice(cut..);
+        let mut continuation = routed
+            .receive_via(
+                arrival_port,
+                &[10],
+                Some(address(9000, &[7])),
+                Some(address(2000, &[2])),
+                &Apdu::ConfirmedRequest(last.clone()),
+                None,
+            )
+            .await;
+        assert_eq!(
+            key,
+            segmented_receive_key(
+                &continuation.source_mac,
+                continuation.source_network.as_ref(),
+                last.invoke_id,
+                continuation.provenance,
+            ),
+            "canonical routed requester did not change"
+        );
+        assert!(
+            BACnetServer::<TestTransport>::accept_segment_route(
+                &context.services.network,
+                &mut states,
+                &key,
+                &continuation.response_route(),
+            )
+            .await,
+            "same routed requester and addressed endpoint may change return path"
+        );
+        let mut state = states.remove(&key).unwrap();
+        state
+            .payload
+            .save_new(1, last.service_request, Some(cut))
+            .unwrap();
+        continuation.set_response_route(state.route.clone());
+        let complete = state.payload.complete(2).unwrap();
+        BACnetServer::dispatch(
+            &context,
+            &continuation.source_mac.clone(),
+            Apdu::ConfirmedRequest(complete),
+            continuation,
+        )
+        .await;
+        assert!(
+            matches!(routed.response(2000, 17).await.0, Apdu::ComplexAck(_)),
+            "completion uses original port 1000 and peer 9, never the alternate path"
+        );
+        settled(&context).await;
+
+        let (key, mut state, _) = open(&opening, &first);
+        let now = crate::runtime_clock::now();
+        state.last_activity = now;
+        state.last_progress = now - Duration::from_secs(16);
+        let mut states = HashMap::from([(key.clone(), state)]);
+        let continuation = routed
+            .receive_via(
+                arrival_port,
+                &[10],
+                Some(address(9000, &[7])),
+                Some(address(2000, &[2])),
+                &Apdu::ConfirmedRequest(first),
+                None,
+            )
+            .await;
+        assert!(
+            BACnetServer::<TestTransport>::accept_segment_route(
+                &context.services.network,
+                &mut states,
+                &key,
+                &continuation.response_route(),
+            )
+            .await
+        );
+        BACnetServer::<TestTransport>::reap_expired_requests(
+            &context.services.network,
+            &mut states,
+            now,
+            Duration::from_secs(20),
+        )
+        .await;
+        assert!(
+            matches!(routed.response(2000,17).await.0,Apdu::Abort(x) if x.abort_reason==AbortReason::OTHER)
+        );
+        assert!(states.is_empty() && routed.wire.try_recv().is_err());
+        routed.router.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn r7_segment_origin_comparison_keeps_implicit_and_local_port_isolation() {
+    let mut routed = Routed::new().await;
+    let request = read(18);
+    let endpoint = Some(address(2000, &[2]));
+    let local_a = routed
+        .receive_via(0, &[9], None, endpoint.clone(), &request, None)
+        .await;
+    let local_c = routed
+        .receive_via(2, &[9], None, endpoint.clone(), &request, None)
+        .await;
+    assert!(
+        !local_a
+            .response_route()
+            .same_origin(&local_c.response_route()),
+        "equal link addresses on different ports are different local requesters"
+    );
+    let local_peer = routed
+        .receive_via(0, &[10], None, endpoint.clone(), &request, None)
+        .await;
+    assert!(!local_a
+        .response_route()
+        .same_origin(&local_peer.response_route()));
+    let implicit = routed
+        .receive_via(0, &[9], Some(address(9000, &[7])), None, &request, None)
+        .await;
+    let implicit_peer = routed
+        .receive_via(0, &[10], Some(address(9000, &[7])), None, &request, None)
+        .await;
+    assert!(
+        implicit
+            .response_route()
+            .same_origin(&implicit_peer.response_route()),
+        "a routed requester can change next hop on the same implicit endpoint"
+    );
+    let implicit_port = routed
+        .receive_via(2, &[10], Some(address(9000, &[7])), None, &request, None)
+        .await;
+    assert!(
+        !implicit
+            .response_route()
+            .same_origin(&implicit_port.response_route()),
+        "without an explicit endpoint, a different ingress port names another local endpoint"
+    );
+    let remote = routed
+        .receive_via(
+            0,
+            &[9],
+            Some(address(9000, &[7])),
+            endpoint.clone(),
+            &request,
+            None,
+        )
+        .await;
+    let different_remote = routed
+        .receive_via(
+            0,
+            &[9],
+            Some(address(9000, &[8])),
+            endpoint.clone(),
+            &request,
+            None,
+        )
+        .await;
+    assert!(!remote
+        .response_route()
+        .same_origin(&different_remote.response_route()));
+    let mut replacement = Routed::new().await;
+    let other_router = replacement
+        .receive_via(0, &[9], Some(address(9000, &[7])), endpoint, &request, None)
+        .await;
+    assert!(
+        !remote
+            .response_route()
+            .same_origin(&other_router.response_route()),
+        "a new router instance cannot inherit an opening context"
+    );
+    routed.router.stop().await;
+    replacement.router.stop().await;
+}

@@ -15,7 +15,7 @@ use std::sync::atomic::AtomicUsize;
 
 struct Routed {
     router: BACnetRouter,
-    frames: mpsc::Sender<ReceivedNpdu>,
+    frames: Vec<mpsc::Sender<ReceivedNpdu>>,
     local: mpsc::Receiver<ReceivedApdu>,
     wire: mpsc::UnboundedReceiver<(u16, Bytes, MacAddr)>,
 }
@@ -33,13 +33,11 @@ async fn bounded<F: std::future::Future>(future: F) -> F::Output {
 impl Routed {
     async fn new() -> Self {
         let (wire, receiver) = mpsc::unbounded_channel();
-        let mut frames = None;
+        let mut frames = Vec::new();
         let mut ports = Vec::new();
         for (number, mac) in [(1000, 1), (2000, 2), (3000, 3)] {
             let (tx, rx) = mpsc::channel(16);
-            if number == 1000 {
-                frames = Some(tx);
-            }
+            frames.push(tx);
             let wire = wire.clone();
             let transport = TestTransport::builder()
                 .local_mac(&[mac])
@@ -64,7 +62,7 @@ impl Routed {
         Self {
             router: started.router,
             local: started.apdus,
-            frames: frames.unwrap(),
+            frames,
             wire: receiver,
         }
     }
@@ -74,23 +72,42 @@ impl Routed {
         apdu: &Apdu,
         reply: Option<oneshot::Sender<Bytes>>,
     ) -> ReceivedApdu {
+        self.receive_via(
+            0,
+            &[9],
+            Some(address(9000, &[7])),
+            Some(address(network, &[(network / 1000) as u8])),
+            apdu,
+            reply,
+        )
+        .await
+    }
+    async fn receive_via(
+        &mut self,
+        port: usize,
+        peer: &[u8],
+        source: Option<NpduAddress>,
+        destination: Option<NpduAddress>,
+        apdu: &Apdu,
+        reply: Option<oneshot::Sender<Bytes>>,
+    ) -> ReceivedApdu {
         let mut payload = BytesMut::new();
         encode_apdu(&mut payload, apdu).unwrap();
         let mut bytes = BytesMut::new();
         encode_npdu(
             &mut bytes,
             &Npdu {
-                destination: Some(address(network, &[(network / 1000) as u8])),
-                source: Some(address(9000, &[7])),
+                destination,
+                source,
                 payload: payload.freeze(),
                 ..Npdu::default()
             },
         )
         .unwrap();
-        self.frames
+        self.frames[port]
             .send(ReceivedNpdu::unverified(
                 bytes.freeze(),
-                MacAddr::from_slice(&[9]),
+                MacAddr::from_slice(peer),
                 false,
                 vec![],
                 reply,
