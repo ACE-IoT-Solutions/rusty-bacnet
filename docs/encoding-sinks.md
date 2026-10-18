@@ -1,9 +1,9 @@
 # Encoding into caller-owned storage
 
-The first sink-based encoders cover tag headers and context opening/closing
-markers. They let a caller choose storage while keeping the existing
-`BytesMut` entrypoints and their output unchanged. This is the first part of
-#1614; the other encoder families still use their current buffers.
+Tag headers, context opening/closing markers and the bounded scalar primitive
+family support caller-selected storage. Their existing `BytesMut` entrypoints
+and output remain unchanged. These are parts of #1614; variable-length and
+composite encoder families still use their current buffers.
 
 ## Output contract
 
@@ -17,25 +17,68 @@ markers. They let a caller choose storage while keeping the existing
   slice, or returns an error without changing output bytes or the output
   position. Implementers must preserve this per-write atomicity.
 
-`SinkFull { needed: usize, available: usize }` describes the refused append,
-without a string allocation. An encoder checks advertised capacity before
-calling `write`. A sink can still refuse the write; its error is returned
-unchanged. A custom sink with no advertised bound must also leave its output
-unchanged on failure. This contract is for byte storage, not partial I/O.
+`SinkFull { needed: usize, available: usize }` describes the refused append
+without a string allocation. Each sink encoder returns `Result<usize,
+SinkFull>`, reporting the appended byte count on success. A known shortage
+returns the total required and available lengths without calling `write`.
+A custom sink can still refuse a write despite unknown or sufficient advertised
+capacity; its error is returned unchanged. This contract is for byte storage,
+not partial I/O.
 
-The new `tags::encode_tag_to_sink`, `encode_opening_tag_to_sink` and
-`encode_closing_tag_to_sink` return the number of appended bytes on success.
-Each builds its complete header in at most seven stack bytes and makes one
-write. A capacity refusal therefore leaves the entire header unwritten,
-including when earlier headers already occupy the destination. Opening and
-closing markers need at most two bytes.
+The functions `tags::encode_tag_to_sink`, `encode_opening_tag_to_sink` and
+`encode_closing_tag_to_sink` stage a complete header and make one write. Tag
+headers occupy at most seven bytes, and opening/closing markers at most two.
 
-The contract is atomic per write. It does not promise rollback across several
-successful writes followed by a failure. A total-capacity preflight can prevent
-a known shortage, but cannot roll back earlier writes if an arbitrary custom sink refuses a later one. A later
-encoder family must stage its whole output or document its partial-output
-behavior before adopting this interface. This change adds no rollback,
-seek or allocation interface.
+Each bounded scalar `_to_sink` function also makes one caller write for its
+**whole value**, including any tag and length octets. Tagged values use an
+eleven-byte staging buffer: up to eight content bytes and three header bytes.
+A refusal leaves earlier output, the slice cursor, container length and unused
+tail unchanged. Header and payload are never issued as separate caller writes.
+The eleven-byte output bound does not describe the full call-stack requirement.
+
+Atomicity stops at one encoder call. Several successful calls followed by a
+refusal retain the completed earlier values. A total-capacity preflight does
+not provide rollback if an arbitrary custom sink refuses a later write. No
+rollback, seek or allocation interface is added.
+
+## Scalar entrypoints and wire behavior
+
+The following existing `primitives` functions each have a matching `_to_sink`
+entrypoint. Their sink argument accepts `EncodeSink + ?Sized`.
+
+| Form | Existing names with the new suffix available |
+| --- | --- |
+| Raw contents | `encode_unsigned`, `encode_signed`, `encode_real`, `encode_double` |
+| Application tagged | `encode_app_null`, `encode_app_boolean`, `encode_app_unsigned`, `encode_app_signed`, `encode_app_real`, `encode_app_double`, `encode_app_enumerated`, `encode_app_date`, `encode_app_time`, `encode_app_object_id` |
+| Context tagged | `encode_ctx_unsigned`, `encode_ctx_signed`, `encode_ctx_real`, `encode_ctx_double`, `encode_ctx_enumerated`, `encode_ctx_boolean`, `encode_ctx_object_id`, `encode_ctx_date` |
+
+Unsigned and Signed retain their minimum big-endian widths and the existing
+`unsigned_len` / `signed_len` results. Enumerated uses the unsigned layout.
+Real and Double preserve their IEEE-754 payload bits in big-endian order.
+Application Null has no contents; application Boolean carries its value in the
+header, whereas context Boolean has one content byte. Date and Time retain
+their four fields, including wildcard bytes; ObjectIdentifier retains its
+10-bit type and 22-bit instance. Tag lengths and these scalar layouts follow
+ASHRAE 135-2020 Clauses 20.2.1.3, 20.2.2–20.2.7 and 20.2.11–20.2.15.
+
+For example, context Unsigned 256 under tag 15 occupies four bytes:
+
+```rust
+use bacnet_encoding::primitives::encode_ctx_unsigned_to_sink;
+
+let mut storage = [0xA5; 4];
+let mut tail = &mut storage[..];
+assert_eq!(encode_ctx_unsigned_to_sink(&mut tail, 15, 256).unwrap(), 4);
+assert!(tail.is_empty());
+assert_eq!(storage, [0xFA, 0x0F, 0x01, 0x00]);
+```
+
+The corresponding public rustdoc example is executable in the default and
+alloc-only profiles. Independent literal wire cases cover widths, boundaries,
+inline and extended context tags; a separate unchanged baseline probe checks
+legacy `BytesMut` output. Compatibility cases separately preserve tag 255,
+unvalidated Date/Time fields and nonfinite floating-point payloads. Those cases
+do not advertise the inputs as valid in every BACnet service context.
 
 ## Storage adapters
 
@@ -47,21 +90,21 @@ seek or allocation interface.
 | `bytes::BytesMut` | `None` | Extends after existing bytes and may allocate |
 
 The bounded adapters preserve their bytes, length and remaining slice on a
-failed append. The growable adapters retain their ordinary allocation-failure
-behavior; `SinkFull` is not an allocation-error abstraction. The existing
-`encode_tag`, `encode_opening_tag` and `encode_closing_tag` functions delegate
-to the new implementation using the infallible `BytesMut` sink adapter.
+failed append. Growable adapters retain their ordinary allocation-failure
+behavior; `SinkFull` is not an allocation-error abstraction. Existing tag and
+scalar `BytesMut` functions delegate through that infallible sink adapter.
 
 ## Scope and feature limits
 
-This migration preserves the old encoders' treatment of all input values.
-It adds no semantic validation of tag numbers, application datatype rules or
-length limits. Valid-wire golden cases and legacy unvalidated-input cases are
-tested separately. A decoder's configured length bound does not limit a
-header encoder.
+This migration adds no semantic validation or new raw/context variants.
+Strings, octet strings, bit strings, PropertyValue/composite dispatch,
+timestamps and decoders retain their existing APIs and behavior. Higher-level
+callers use the same scalar `BytesMut` paths; no whole-message atomicity is
+implied by composing them. A decoder's configured length bound does not limit
+a header encoder.
 
-`bacnet-encoding` still requires either `std` or `alloc`, even when using a
-slice or heapless output. The optional `heapless` adapter does not turn the
-rest of the crate into an allocation-free codec. The sink contract and tag
-header assembly themselves need no allocator. They do not depend on the
-MS/TP codec; its existing `FrameSink` only informs the append convention.
+`bacnet-encoding` still requires either `std` or `alloc`, including with slice
+or heapless output. The optional adapter does not make the rest of the crate
+allocation-free. Sink storage selection and bounded staging do not establish
+physical-device operation or a performance improvement. The sink contract,
+tag assembly and bounded scalar assembly themselves need no allocator.

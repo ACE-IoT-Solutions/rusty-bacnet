@@ -2,6 +2,13 @@
 //!
 //! Provides both raw value codecs (no tag header) and application/context-tagged
 //! convenience functions for all BACnet primitive types.
+//!
+//! The bounded scalar encoders also have `_to_sink` entrypoints accepting
+//! [`crate::sink::EncodeSink`]. Each appends its complete value, including any
+//! tag header, in one atomic write and returns the appended byte count. Known
+//! capacity shortages never call the sink; a custom sink's error is unchanged.
+//! The scalar staging buffer is at most eleven bytes. These functions preserve
+//! the existing encoders' input semantics and do not add value validation.
 
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
@@ -13,58 +20,28 @@ use bytes::{BufMut, BytesMut};
 use crate::constructed::tagged::{misplaced_tag, unclosed_kind};
 use crate::tags::{self, app_tag, TagClass};
 
+mod scalar;
+
+pub use scalar::{
+    encode_app_boolean, encode_app_boolean_to_sink, encode_app_date, encode_app_date_to_sink,
+    encode_app_double, encode_app_double_to_sink, encode_app_enumerated,
+    encode_app_enumerated_to_sink, encode_app_null, encode_app_null_to_sink, encode_app_object_id,
+    encode_app_object_id_to_sink, encode_app_real, encode_app_real_to_sink, encode_app_signed,
+    encode_app_signed_to_sink, encode_app_time, encode_app_time_to_sink, encode_app_unsigned,
+    encode_app_unsigned_to_sink, encode_ctx_boolean, encode_ctx_boolean_to_sink, encode_ctx_date,
+    encode_ctx_date_to_sink, encode_ctx_double, encode_ctx_double_to_sink, encode_ctx_enumerated,
+    encode_ctx_enumerated_to_sink, encode_ctx_object_id, encode_ctx_object_id_to_sink,
+    encode_ctx_real, encode_ctx_real_to_sink, encode_ctx_signed, encode_ctx_signed_to_sink,
+    encode_ctx_unsigned, encode_ctx_unsigned_to_sink, encode_double, encode_double_to_sink,
+    encode_real, encode_real_to_sink, encode_signed, encode_signed_to_sink, encode_unsigned,
+    encode_unsigned_to_sink, signed_len, unsigned_len,
+};
+
 // ===========================================================================
 // Raw value codecs (no tag header)
 // ===========================================================================
 
 // --- Unsigned Integer ---
-
-/// Encode an unsigned integer using the minimum number of big-endian octets.
-pub fn encode_unsigned(buf: &mut BytesMut, value: u64) {
-    if value <= 0xFF {
-        buf.put_u8(value as u8);
-    } else if value <= 0xFFFF {
-        buf.put_u16(value as u16);
-    } else if value <= 0xFF_FFFF {
-        buf.put_u8((value >> 16) as u8);
-        buf.put_u16(value as u16);
-    } else if value <= 0xFFFF_FFFF {
-        buf.put_u32(value as u32);
-    } else if value <= 0xFF_FFFF_FFFF {
-        buf.put_u8((value >> 32) as u8);
-        buf.put_u32(value as u32);
-    } else if value <= 0xFFFF_FFFF_FFFF {
-        buf.put_u16((value >> 32) as u16);
-        buf.put_u32(value as u32);
-    } else if value <= 0xFF_FFFF_FFFF_FFFF {
-        buf.put_u8((value >> 48) as u8);
-        buf.put_u16((value >> 32) as u16);
-        buf.put_u32(value as u32);
-    } else {
-        buf.put_u64(value);
-    }
-}
-
-/// Return the number of bytes needed to encode an unsigned value.
-pub fn unsigned_len(value: u64) -> u32 {
-    if value <= 0xFF {
-        1
-    } else if value <= 0xFFFF {
-        2
-    } else if value <= 0xFF_FFFF {
-        3
-    } else if value <= 0xFFFF_FFFF {
-        4
-    } else if value <= 0xFF_FFFF_FFFF {
-        5
-    } else if value <= 0xFFFF_FFFF_FFFF {
-        6
-    } else if value <= 0xFF_FFFF_FFFF_FFFF {
-        7
-    } else {
-        8
-    }
-}
 
 /// Decode an unsigned integer from big-endian bytes (1-8 bytes).
 pub fn decode_unsigned(data: &[u8]) -> Result<u64, Error> {
@@ -107,26 +84,6 @@ pub fn decode_unsigned_u32(data: &[u8]) -> Result<u32, Error> {
 
 // --- Signed Integer ---
 
-/// Encode a signed integer using minimum octets, two's complement, big-endian.
-pub fn encode_signed(buf: &mut BytesMut, value: i32) {
-    let n = signed_len(value);
-    let bytes = value.to_be_bytes();
-    buf.put_slice(&bytes[4 - n as usize..]);
-}
-
-/// Return the number of bytes needed to encode a signed value.
-pub fn signed_len(value: i32) -> u32 {
-    if (-128..=127).contains(&value) {
-        1
-    } else if (-32768..=32767).contains(&value) {
-        2
-    } else if (-8_388_608..=8_388_607).contains(&value) {
-        3
-    } else {
-        4
-    }
-}
-
 /// Decode a signed integer from two's-complement big-endian bytes (1-4 bytes).
 pub fn decode_signed(data: &[u8]) -> Result<i32, Error> {
     if data.is_empty() || data.len() > 4 {
@@ -152,11 +109,6 @@ pub(crate) fn decode_signed_canonical(data: &[u8]) -> Result<i32, Error> {
 
 // --- Real ---
 
-/// Encode an IEEE-754 single-precision float (big-endian, 4 bytes).
-pub fn encode_real(buf: &mut BytesMut, value: f32) {
-    buf.put_f32(value);
-}
-
 /// Decode an IEEE-754 single-precision float from 4 big-endian bytes.
 pub fn decode_real(data: &[u8]) -> Result<f32, Error> {
     if data.len() != 4 {
@@ -169,11 +121,6 @@ pub fn decode_real(data: &[u8]) -> Result<f32, Error> {
 }
 
 // --- Double ---
-
-/// Encode an IEEE-754 double-precision float (big-endian, 8 bytes).
-pub fn encode_double(buf: &mut BytesMut, value: f64) {
-    buf.put_f64(value);
-}
 
 /// Decode an IEEE-754 double-precision float from 8 big-endian bytes.
 pub fn decode_double(data: &[u8]) -> Result<f64, Error> {
@@ -301,49 +248,6 @@ pub fn decode_bit_string(data: &[u8]) -> Result<(u8, Vec<u8>), Error> {
 // Application-tagged encode helpers
 // ===========================================================================
 
-/// Encode an application-tagged Null.
-pub fn encode_app_null(buf: &mut BytesMut) {
-    tags::encode_tag(buf, app_tag::NULL, TagClass::Application, 0);
-}
-
-/// Encode an application-tagged Boolean.
-///
-/// The value is encoded in the tag's L/V/T bits with no content octets.
-pub fn encode_app_boolean(buf: &mut BytesMut, value: bool) {
-    tags::encode_tag(
-        buf,
-        app_tag::BOOLEAN,
-        TagClass::Application,
-        if value { 1 } else { 0 },
-    );
-}
-
-/// Encode an application-tagged Unsigned.
-pub fn encode_app_unsigned(buf: &mut BytesMut, value: u64) {
-    let len = unsigned_len(value);
-    tags::encode_tag(buf, app_tag::UNSIGNED, TagClass::Application, len);
-    encode_unsigned(buf, value);
-}
-
-/// Encode an application-tagged Signed.
-pub fn encode_app_signed(buf: &mut BytesMut, value: i32) {
-    let len = signed_len(value);
-    tags::encode_tag(buf, app_tag::SIGNED, TagClass::Application, len);
-    encode_signed(buf, value);
-}
-
-/// Encode an application-tagged Real (f32).
-pub fn encode_app_real(buf: &mut BytesMut, value: f32) {
-    tags::encode_tag(buf, app_tag::REAL, TagClass::Application, 4);
-    encode_real(buf, value);
-}
-
-/// Encode an application-tagged Double (f64).
-pub fn encode_app_double(buf: &mut BytesMut, value: f64) {
-    tags::encode_tag(buf, app_tag::DOUBLE, TagClass::Application, 8);
-    encode_double(buf, value);
-}
-
 /// Encode an application-tagged OctetString.
 pub fn encode_app_octet_string(buf: &mut BytesMut, data: &[u8]) {
     let data_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
@@ -367,81 +271,9 @@ pub fn encode_app_bit_string(buf: &mut BytesMut, unused_bits: u8, data: &[u8]) {
     encode_bit_string(buf, unused_bits, data);
 }
 
-/// Encode an application-tagged Enumerated.
-pub fn encode_app_enumerated(buf: &mut BytesMut, value: u32) {
-    let len = unsigned_len(value as u64);
-    tags::encode_tag(buf, app_tag::ENUMERATED, TagClass::Application, len);
-    encode_unsigned(buf, value as u64);
-}
-
-/// Encode an application-tagged Date.
-pub fn encode_app_date(buf: &mut BytesMut, date: &Date) {
-    tags::encode_tag(buf, app_tag::DATE, TagClass::Application, 4);
-    buf.put_slice(&date.encode());
-}
-
-/// Encode an application-tagged Time.
-pub fn encode_app_time(buf: &mut BytesMut, time: &Time) {
-    tags::encode_tag(buf, app_tag::TIME, TagClass::Application, 4);
-    buf.put_slice(&time.encode());
-}
-
-/// Encode an application-tagged ObjectIdentifier.
-pub fn encode_app_object_id(buf: &mut BytesMut, oid: &ObjectIdentifier) {
-    tags::encode_tag(buf, app_tag::OBJECT_IDENTIFIER, TagClass::Application, 4);
-    buf.put_slice(&oid.encode());
-}
-
 // ===========================================================================
 // Context-tagged encode helpers
 // ===========================================================================
-
-/// Encode a context-tagged Unsigned.
-pub fn encode_ctx_unsigned(buf: &mut BytesMut, tag: u8, value: u64) {
-    let len = unsigned_len(value);
-    tags::encode_tag(buf, tag, TagClass::Context, len);
-    encode_unsigned(buf, value);
-}
-
-/// Encode a context-tagged Signed.
-pub fn encode_ctx_signed(buf: &mut BytesMut, tag: u8, value: i32) {
-    let len = signed_len(value);
-    tags::encode_tag(buf, tag, TagClass::Context, len);
-    encode_signed(buf, value);
-}
-
-/// Encode a context-tagged Real (f32).
-pub fn encode_ctx_real(buf: &mut BytesMut, tag: u8, value: f32) {
-    tags::encode_tag(buf, tag, TagClass::Context, 4);
-    encode_real(buf, value);
-}
-
-/// Encode a context-tagged Double (f64).
-pub fn encode_ctx_double(buf: &mut BytesMut, tag: u8, value: f64) {
-    tags::encode_tag(buf, tag, TagClass::Context, 8);
-    encode_double(buf, value);
-}
-
-/// Encode a context-tagged Enumerated.
-pub fn encode_ctx_enumerated(buf: &mut BytesMut, tag: u8, value: u32) {
-    let len = unsigned_len(value as u64);
-    tags::encode_tag(buf, tag, TagClass::Context, len);
-    encode_unsigned(buf, value as u64);
-}
-
-/// Encode a context-tagged Boolean.
-///
-/// Context-tagged booleans use a 1-byte content octet (unlike application-tagged).
-pub fn encode_ctx_boolean(buf: &mut BytesMut, tag: u8, value: bool) {
-    tags::encode_tag(buf, tag, TagClass::Context, 1);
-    buf.put_u8(if value { 1 } else { 0 });
-}
-
-/// Encode a context-tagged ObjectIdentifier.
-pub fn encode_ctx_object_id(buf: &mut BytesMut, tag: u8, oid: &ObjectIdentifier) {
-    tags::encode_tag(buf, tag, TagClass::Context, 4);
-    buf.put_slice(&oid.encode());
-}
 
 /// Encode a context-tagged OctetString.
 pub fn encode_ctx_octet_string(buf: &mut BytesMut, tag: u8, data: &[u8]) {
@@ -456,12 +288,6 @@ pub fn encode_ctx_character_string(buf: &mut BytesMut, tag: u8, value: &str) -> 
     tags::encode_tag(buf, tag, TagClass::Context, len);
     encode_character_string(buf, value);
     Ok(())
-}
-
-/// Encode a context-tagged Date.
-pub fn encode_ctx_date(buf: &mut BytesMut, tag: u8, date: &Date) {
-    tags::encode_tag(buf, tag, TagClass::Context, 4);
-    buf.put_slice(&date.encode());
 }
 
 /// Encode a context-tagged BitString.

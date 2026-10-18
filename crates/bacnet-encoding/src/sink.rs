@@ -1,8 +1,9 @@
 //! Append-only output for the sink-based encoders.
 //!
-//! The tag-header functions in [`crate::tags`] support these sinks. Other
-//! encoder families still use their existing buffers. The crate still needs
-//! either its `std` or its `alloc` feature, including with a bounded sink.
+//! The tag-header functions in [`crate::tags`] and bounded scalar encoders in
+//! [`crate::primitives`] support these sinks. Other encoder families still use
+//! their existing buffers. The crate still needs either its `std` or its
+//! `alloc` feature, including with a bounded sink.
 
 use core::fmt;
 
@@ -12,11 +13,12 @@ use core::fmt;
 /// nor the output position may change. Implementers must uphold that contract;
 /// it is not a partial-I/O interface.
 ///
-/// The tag-header encoders check any advertised capacity, then write the whole
-/// header once. They therefore leave no partial header on failure. This does
-/// not promise rollback across several writes: a custom sink can refuse a
-/// later write even after a total-capacity check, leaving earlier writes in
-/// place. A future multi-write encoder must state its own failure behavior.
+/// The tag-header and bounded scalar encoders check any advertised capacity,
+/// then write their complete output once. They leave no partial header or
+/// scalar on failure. This does not promise rollback across several encoder
+/// calls: a custom sink can refuse a later write even after a total-capacity
+/// check, leaving earlier writes in place. A future multi-write encoder must
+/// state its own failure behavior.
 ///
 /// Implemented for `&mut [u8]`, [`alloc::vec::Vec<u8>`], [`bytes::BytesMut`], and
 /// `heapless::Vec<u8, N>` with the `heapless` feature. Growable adapters may
